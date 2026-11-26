@@ -11,6 +11,7 @@ import {
 } from "@legion/contracts/legion-api";
 import {
   OPEN_BLOCK_ASK_THE_HUMAN,
+  OPEN_BLOCK_SETTLES,
   OPEN_BLOCK_WAIVED,
   parseDispatchRef,
   refuseOpenDecisionBlocks,
@@ -811,11 +812,15 @@ async function documentIdOf(
  * (`refuseOpenDecisionBlocks`). */
 const OPEN_BLOCKS_UNDER_A_BASIS = {
   call: "legion register_gate",
+  blocks: "decision block",
+  decidedBy: "version",
   effect:
     "A basis opens the step with no person's review of this document, so its open question would go unanswered, and answering one writes a new version, which this registration does not name.",
   remedy:
     "Do not register on a basis over an open block. " +
     OPEN_BLOCK_ASK_THE_HUMAN +
+    " " +
+    OPEN_BLOCK_SETTLES +
     " " +
     OPEN_BLOCK_WAIVED +
     " and write their decision into the text with dispatch doc-edit. Then register the new version.",

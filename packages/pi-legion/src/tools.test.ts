@@ -1320,6 +1320,165 @@ test("register_gate refuses a basis while the root's document holds an open deci
   expect(paths).toHaveLength(read);
 });
 
+// A basis registers a specific saved version, and an answer settles into a new version that ends
+// the basis: unlike `dispatch request-approval` (whose open request carries forward), a basis waits
+// until the saved version itself records each ask block — own ask or copy — settled.
+test("register_gate on a basis waits for the saved version to record an answered ask or copy settled", async () => {
+  const basisCall = {
+    op: "register_gate",
+    issue: "LEGION-208",
+    artifactId: "spec",
+    version: 4,
+    step: "spec",
+    basis: "dispatch://LEGION-100/spec",
+    basisVersion: 3,
+    reason: "LEGION-208's checks serve P2 of LEGION-100's approved spec.",
+  };
+  const document = (id: string, slug: string, name: string, primary: boolean, latest: number) => ({
+    id,
+    slug,
+    name,
+    kind: "doc",
+    primary,
+    approval: { state: "draft", latest_version: latest },
+  });
+  const runWith = async (scenario: {
+    readonly asks: readonly unknown[];
+    readonly versionOpener: string;
+    readonly liveAsks: readonly unknown[];
+  }) => {
+    const { calls, daemon } = recordingDaemon({});
+    const board = fakeDispatchFetch({
+      routes: {
+        "/api/v1/issues/LEGION-208": {
+          key: "LEGION-208",
+          primary_artifact_id: ROOT_SPEC,
+          artifacts: [document(ROOT_SPEC, "spec", "spec.md", true, 4)],
+        },
+        "/api/v1/issues/LEGION-100": {
+          key: "LEGION-100",
+          primary_artifact_id: ANCESTOR_SPEC,
+          artifacts: [document(ANCESTOR_SPEC, "spec", "spec.md", true, 3)],
+        },
+        [`/api/v1/artifacts/${ROOT_SPEC}/blocks`]: [{ id: "b-1", type: "ask", from: 0, to: 90 }],
+        "/api/v1/issues/LEGION-208/asks": scenario.asks,
+        [`/api/v1/artifacts/${ROOT_SPEC}/versions/4`]: {
+          number: 4,
+          markdown: `## Export\n\n${scenario.versionOpener}\n${OPEN_QUESTION}\n:::`,
+        },
+        [`/api/v1/artifacts/${ROOT_SPEC}/text`]: {
+          markdown: `## Export\n\n:::ask{#b-1 urgency="med" multiple="false"}\n${OPEN_QUESTION}\n:::`,
+          token: "sha256:live",
+          version: 4,
+          asks: scenario.liveAsks,
+        },
+      },
+    });
+    const dispatch = async () =>
+      new DispatchClient("http://dispatch.test", bearerCredential(DISPATCH_TOKEN), board.fetchImpl);
+    const result = await gateTool(daemon, dispatch).execute(
+      "",
+      basisCall,
+      undefined,
+      undefined,
+      context()
+    );
+    const [first] = result.content;
+    return {
+      calls,
+      isError: result.isError === true,
+      text: first?.type === "text" ? first.text : "",
+    };
+  };
+  const ownAsk = (state: "open" | "answered") => ({
+    id: "ask-b-1",
+    kind: "question",
+    block_id: "b-1",
+    block_artifact: { id: ROOT_SPEC },
+    state,
+    question: OPEN_QUESTION,
+  });
+  const answeredLive = {
+    block_id: "b-1",
+    state: "answered",
+    answered_by: "alice",
+    answered_at: "2026-11-20T10:00:00Z",
+    selected: [],
+  };
+  const statelessOpener = ':::ask{#b-1 urgency="med" multiple="false"}';
+  const answeredOpener = ':::ask{#b-1 urgency="med" multiple="false" state="answered"}';
+  const copySource = {
+    copied_from: "ask-source",
+    copied_from_document: "dispatch://LEGION-100/spec",
+  };
+  const copyOpener = (state?: string) =>
+    `:::ask{#b-1 urgency="med" multiple="false"${state === undefined ? "" : ` state="${state}"`} copied_from="${copySource.copied_from}" copied_from_document="${copySource.copied_from_document}"}`;
+
+  // Control: an unanswered own ask is refused before calling the daemon.
+  const unansweredOwn = await runWith({
+    asks: [ownAsk("open")],
+    versionOpener: statelessOpener,
+    liveAsks: [{ block_id: "b-1", state: "open" }],
+  });
+  expect(unansweredOwn.isError).toBe(true);
+  expect(unansweredOwn.calls).toEqual([]);
+  expect(unansweredOwn.text).toContain("legion register_gate was not called");
+  expect(unansweredOwn.text).toContain("(block b-1, ask ask-b-1)");
+  expect(unansweredOwn.text).not.toContain("still open in version 4");
+
+  // An answered own ask whose saved version holds no state is refused, naming the wait.
+  const unsettledOwn = await runWith({
+    asks: [ownAsk("answered")],
+    versionOpener: statelessOpener,
+    liveAsks: [answeredLive],
+  });
+  expect(unsettledOwn.isError).toBe(true);
+  expect(unsettledOwn.calls).toEqual([]);
+  expect(unsettledOwn.text).toContain("answered but still open in version 4");
+  expect(unsettledOwn.text).toContain("wait for that version");
+
+  // Once the saved version records state="answered", registration proceeds.
+  const settledOwn = await runWith({
+    asks: [ownAsk("answered")],
+    versionOpener: answeredOpener,
+    liveAsks: [answeredLive],
+  });
+  expect(settledOwn.isError).toBe(false);
+  expect(registrations(settledOwn.calls)).toHaveLength(1);
+
+  // Control: an open copy is refused with its source's ask.
+  const openCopy = await runWith({
+    asks: [],
+    versionOpener: copyOpener(),
+    liveAsks: [{ block_id: "b-1", state: "open", ...copySource }],
+  });
+  expect(openCopy.isError).toBe(true);
+  expect(openCopy.calls).toEqual([]);
+  expect(openCopy.text).toContain("a copy of ask dispatch://LEGION-100/ask/ask-source");
+  expect(openCopy.text).toContain("answer it there");
+
+  // A settled copy whose saved version holds no state is refused, naming the wait.
+  const unsettledCopy = await runWith({
+    asks: [],
+    versionOpener: copyOpener(),
+    liveAsks: [{ ...answeredLive, ...copySource }],
+  });
+  expect(unsettledCopy.isError).toBe(true);
+  expect(unsettledCopy.calls).toEqual([]);
+  expect(unsettledCopy.text).toContain("a copy of ask dispatch://LEGION-100/ask/ask-source");
+  expect(unsettledCopy.text).toContain("answered but still open in version 4");
+  expect(unsettledCopy.text).toContain("wait for that version");
+
+  // Once the saved version records state="answered" on the copy, registration proceeds.
+  const settledCopy = await runWith({
+    asks: [],
+    versionOpener: copyOpener("answered"),
+    liveAsks: [{ ...answeredLive, ...copySource }],
+  });
+  expect(settledCopy.isError).toBe(false);
+  expect(registrations(settledCopy.calls)).toHaveLength(1);
+});
+
 // The owner's plan (contract 219): register_plan names its document as register_gate does, for any
 // issue of the architect's tree, and answers the plan Legion took; each refusal of the call itself
 // comes before any lookup, grant or request, and the daemon's refusal reaches the agent with its

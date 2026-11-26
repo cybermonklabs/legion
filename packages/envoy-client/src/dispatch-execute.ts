@@ -37,6 +37,7 @@ export {
 export { dispatchRefFromUrl, linkBaseOf } from "./dispatch-commands/links";
 export {
   OPEN_BLOCK_ASK_THE_HUMAN,
+  OPEN_BLOCK_SETTLES,
   OPEN_BLOCK_WAIVED,
   refuseOpenDecisionBlocks,
 } from "./dispatch-commands/open-decision-blocks";
