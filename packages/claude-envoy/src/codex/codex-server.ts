@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process"
+import { type ChildProcess, spawn } from "node:child_process"
 import { unwatchFile, watchFile } from "node:fs"
 import { rm } from "node:fs/promises"
 import { homedir } from "node:os"
@@ -51,9 +51,11 @@ import { askSideQuestion, type CodexCommand, codexProcessEnv, queueMessage } fro
 import { createCodexDelivery } from "./codex-delivery"
 import { codexInboxDirectory, discardWaiting } from "./codex-inbox"
 import {
+  acceptingCodexOwner,
   type CodexServerEntry,
   codexServersDirectory,
   hasStandbyServer,
+  markCodexServerStopping,
   stillOwner,
   unregisterServer,
   waitForOwnership,
@@ -76,6 +78,7 @@ import {
   sharedCodexRecordFile,
   watchRecord,
 } from "./codex-session-record"
+import { spawnCodexEnvoyStandby } from "./codex-standby"
 import { threadIdShape } from "./codex-thread-id"
 import { callSharedCodexTool, serveSharedCodexTools } from "./codex-tool-link"
 import {
@@ -112,6 +115,14 @@ const CODEX_INSTRUCTIONS =
 
 /** How often the session record is looked at while the server waits for it, and after. */
 const RECORD_POLL_MS = 250
+
+// Allow one record poll for a new standby to publish its ownership entry during teardown.
+const STANDBY_START_MS = RECORD_POLL_MS
+
+// If the last thread ended while this helper was waiting, give the existing one-second
+// election time for a final deregistration before the helper exits.
+const STANDBY_EMPTY_GRACE_MS = 2_000
+const STANDBY_LIFETIME_POLL_MS = 500
 
 // Give the new follower two 500 ms polls to find a transcript created after SessionStart.
 const TRANSCRIPT_CATCH_UP_MS = 1_000
@@ -411,6 +422,104 @@ export async function runCodexEnvoyServer(): Promise<void> {
   }
 }
 
+/** A shared app server can stop its sole MCP child while other threads are loaded. The detached
+ *  standby leaves MCP stdio to Codex's own children and takes over the existing owner election. */
+export async function runCodexEnvoyStandby(
+  codexPid: number,
+  appServerStart: string,
+  fromHook: boolean,
+): Promise<void> {
+  if (
+    !Number.isSafeInteger(codexPid) ||
+    codexPid <= 1 ||
+    processStarted(codexPid) !== appServerStart ||
+    !sharedAppServer(codexPid)
+  )
+    return
+
+  const pluginRoot = process.cwd()
+  const stateDirectory = stateDirectoryFor(pluginRoot)
+  const serversDirectory = codexServersDirectory(stateDirectory, codexPid)
+  if (fromHook) {
+    // SessionStart can run while Codex is still starting its normal MCP server.
+    await delay(RECORD_POLL_MS)
+    if ((await acceptingCodexOwner(serversDirectory)) !== undefined) return
+    if (processStarted(codexPid) !== appServerStart || !sharedAppServer(codexPid)) return
+  }
+  const stopping = new AbortController()
+  const stop = (): void => stopping.abort()
+  const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const
+  for (const signal of signals) process.once(signal, stop)
+  let entry: CodexServerEntry | undefined
+  let waiting = true
+  let checking = false
+  let emptySince: number | undefined
+  const checkLifetime = async (): Promise<void> => {
+    // A dead, unreaped Linux process can still report its old start time. Its command is gone.
+    if (processStarted(codexPid) !== appServerStart || !sharedAppServer(codexPid)) {
+      stop()
+      return
+    }
+    if (!waiting || checking || stopping.signal.aborted) return
+    checking = true
+    try {
+      if (fromHook) {
+        const owner = await acceptingCodexOwner(serversDirectory)
+        if (waiting && owner !== undefined && owner.pid !== process.pid) {
+          stop()
+          return
+        }
+      }
+      const state = await readSharedCodexState(stateDirectory, codexPid, appServerStart)
+      if (!waiting) return
+      if (state.live.size > 0) emptySince = undefined
+      else {
+        emptySince ??= performance.now()
+        if (
+          state.endedRegistrations.length === 0 ||
+          performance.now() - emptySince >= STANDBY_EMPTY_GRACE_MS
+        )
+          stop()
+      }
+    } catch {
+      // A read failure does not establish that Codex unloaded its threads.
+    } finally {
+      checking = false
+    }
+  }
+  const lifetime = setInterval(() => void checkLifetime(), STANDBY_LIFETIME_POLL_MS)
+  try {
+    const owner = await waitForOwnership(
+      serversDirectory,
+      process.pid,
+      processStarted(process.pid) ?? null,
+      stopping.signal,
+      (published) => {
+        entry = published
+      },
+    )
+    if (owner === undefined || stopping.signal.aborted) return
+    waiting = false
+    await runSharedCodexOwner(
+      serversDirectory,
+      owner,
+      {
+        stateDirectory,
+        codexPid,
+        configFile: sessionConfigFile("codex", process.env),
+        bundlePath: resolve(pluginRoot, process.argv[1] ?? ""),
+        warn: (text) => void process.stderr.write(`envoy-channel: ${text}\n`),
+      },
+      stopping.signal,
+      appServerStart,
+    )
+  } finally {
+    clearInterval(lifetime)
+    for (const signal of signals) process.off(signal, stop)
+    if (entry !== undefined) await unregisterServer(serversDirectory, entry).catch(() => undefined)
+  }
+}
+
 interface CodexRuntimeOptions {
   readonly stateDirectory: string
   readonly codexPid: number
@@ -430,10 +539,11 @@ async function runSharedCodexOwner(
   owner: CodexServerEntry,
   options: CodexRuntimeOptions,
   signal: AbortSignal,
+  standbyFor?: string,
 ): Promise<void> {
   const { stateDirectory, codexPid, warn } = options
   const started = processStarted(codexPid)
-  if (started === undefined) {
+  if (started === undefined || (standbyFor !== undefined && started !== standbyFor)) {
     warn(`the start of codex process ${codexPid} cannot be read; its threads cannot register`)
     return
   }
@@ -447,16 +557,59 @@ async function runSharedCodexOwner(
       throw new Error("Envoy is not ready: the calling Codex thread has no active session")
     },
   )
+  let standby: ChildProcess | undefined
+  let creatingStandby: Promise<void> | undefined
+  const provisionStandby = (): Promise<void> => {
+    if (standbyFor !== undefined || standby !== undefined) return Promise.resolve()
+    creatingStandby ??= (async () => {
+      if (await hasStandbyServer(serversDirectory, owner)) return
+      if (processStarted(codexPid) !== started) return
+      const child = spawnCodexEnvoyStandby(options.bundlePath, codexPid, started)
+      standby = child
+      child.once("error", (error) => {
+        standby = undefined
+        warn(`could not start the Codex Envoy standby: ${messageFor(error)}`)
+      })
+      child.once("exit", () => {
+        if (standby === child) standby = undefined
+      })
+    })().finally(() => {
+      creatingStandby = undefined
+    })
+    return creatingStandby
+  }
+  let shutdownStandby: Promise<boolean> | undefined
+  const findShutdownStandby = async (): Promise<boolean> => {
+    await markCodexServerStopping(serversDirectory, owner)
+    if (!signal.aborted || processStarted(codexPid) !== started || !sharedAppServer(codexPid))
+      return false
+    if (await hasStandbyServer(serversDirectory, owner)) return true
+    if (standbyFor !== undefined) return false
+
+    // SessionStart may have written a sibling's record between our last scan and Codex closing
+    // this MCP server. Its hook saw this process as owner, so we must arrange its successor.
+    const { live } = await readSharedCodexState(stateDirectory, codexPid, started)
+    if (live.size < 2 && [...live.keys()].every((thread) => threads.has(thread))) return false
+    await provisionStandby()
+    await delay(STANDBY_START_MS)
+    return hasStandbyServer(serversDirectory, owner)
+  }
   const stopThreads = (): void => {
+    shutdownStandby ??= findShutdownStandby().catch((error: unknown) => {
+      warn(`could not prepare the Codex Envoy standby during shutdown: ${messageFor(error)}`)
+      return false
+    })
     for (const [thread, { generation, runtime }] of threads) {
       runtime.stop(async () => {
-        // An unloaded thread must still leave the registry. A loaded sibling keeps its route,
-        // consumer and role until a live standby re-registers it with a fresh client instance.
-        if (!signal.aborted || !(await hasStandbyServer(serversDirectory, owner))) return false
-        if (processStarted(codexPid) !== started) return false
-        return sharedCodexRecordActive(
-          sharedCodexRecordFile(stateDirectory, codexPid, thread),
-          generation,
+        // An unloaded thread must still leave the registry. A loaded sibling keeps its route
+        // until the standby re-registers it with a fresh client instance.
+        return (
+          (await shutdownStandby) === true &&
+          processStarted(codexPid) === started &&
+          (await sharedCodexRecordActive(
+            sharedCodexRecordFile(stateDirectory, codexPid, thread),
+            generation,
+          ))
         )
       })
     }
@@ -488,6 +641,11 @@ async function runSharedCodexOwner(
             })
             .finally(() => threads.delete(thread))
         }
+        if (standbyFor === undefined && state.live.size > 1) {
+          void provisionStandby().catch((error: unknown) => {
+            warn(`could not prepare the Codex Envoy standby: ${messageFor(error)}`)
+          })
+        }
         if (cleanup === undefined) {
           const ended = state.endedRegistrations.filter(
             ({ record }) => !threads.has(record.session_id),
@@ -497,6 +655,10 @@ async function runSharedCodexOwner(
               cleanup = undefined
             })
           }
+        }
+        if (standbyFor !== undefined && state.live.size === 0 && threads.size === 0) {
+          await cleanup
+          return
         }
       }
       await delay(RECORD_POLL_MS, undefined, { signal }).catch((error: unknown) => {
@@ -509,6 +671,7 @@ async function runSharedCodexOwner(
     await Promise.allSettled([
       closeTools(),
       cleanup,
+      shutdownStandby,
       ...[...threads.values()].map(({ runtime }) => runtime.done),
     ])
   }

@@ -64,6 +64,7 @@ interface ModelPlan {
 interface ServerStart {
   readonly pid: number
   readonly parent: number
+  readonly standby: boolean
 }
 interface SessionRow {
   readonly session_id: string
@@ -433,12 +434,13 @@ async function daemon(home: Home) {
   }
 }
 
-function launches() {
+function launches(standby = false) {
   if (!existsSync(launchLog)) return []
   return readFileSync(launchLog, "utf8")
     .trimEnd()
     .split("\n")
     .map((line) => JSON.parse(line) as ServerStart)
+    .filter((row) => row.standby === standby)
 }
 
 function processCommand(pid: number) {
@@ -508,7 +510,7 @@ interface Thread {
   readonly launched: ServerStart
 }
 
-async function startThread(home: Home): Promise<Thread> {
+async function startThread(home: Home, existingServer?: ServerStart): Promise<Thread> {
   const control = await new ControlClient(home).open()
   const before = launches().length
   const { thread } = await control.call<{ thread: { id: string } }>("thread/start", {
@@ -517,7 +519,7 @@ async function startThread(home: Home): Promise<Thread> {
   const launched = await until(
     `MCP parent for ${thread.id}`,
     Date.now() + bound,
-    () => launches()[before],
+    () => launches()[before] ?? existingServer,
   )
   expect(processCommand(launched.parent)).toContain("app-server")
   expect(processCommand(launched.parent)).toContain("--managed-daemon")
@@ -770,7 +772,7 @@ async function setup() {
     plugin,
     "envoy-channel",
     `
-appendFileSync(${JSON.stringify(launchLog)}, JSON.stringify({ pid: process.pid, parent: process.ppid }) + "\\n");
+appendFileSync(${JSON.stringify(launchLog)}, JSON.stringify({ pid: process.pid, parent: process.ppid, standby: process.argv[2] === "--codex-standby" }) + "\\n");
 const stderr = process.stderr.write.bind(process.stderr);
 process.stderr.write = (data, ...args) => {
   appendFileSync(${JSON.stringify(serverLog)}, data);
@@ -1081,6 +1083,50 @@ scenario("resumed", () =>
     await checked([home.codex, "queue", "--resume", "--thread", a.id, "--message", positive], home)
     await carrying(a.id, positive, at)
     await checkResume(home, a, at, b.id)
+  }),
+)
+
+scenario("single-mcp", () =>
+  viaDaemon(async (home) => {
+    const a = await startThread(home)
+    const b = await startThread(home, a.launched)
+    const [firstA, firstB] = await Promise.all([idle(a), idle(b)])
+    await Promise.all([listed(a.id, firstA.at), listed(b.id, firstB.at)])
+    const appServer = a.launched.parent
+    expect(launches().filter(({ parent }) => parent === appServer)).toHaveLength(1)
+
+    const endedAt = await ended(home, a)
+    await absent(a.id, endedAt, b.id)
+    await delivery(b.id, "sibling-without-mcp")
+    await absent(b.id, await ended(home, b))
+    await until(
+      "the standby process to exit",
+      Date.now() + bound,
+      () =>
+        launches(true).every(({ pid }) => {
+          try {
+            return !processCommand(pid).includes("--codex-standby")
+          } catch {
+            return true
+          }
+        }) || undefined,
+    )
+  }),
+)
+
+scenario("first-prompt", () =>
+  viaDaemon(async (home) => {
+    const a = await startThread(home)
+    const b = await startThread(home, a.launched)
+    const firstA = await idle(a)
+    await listed(a.id, firstA.at)
+    await absent(a.id, await ended(home, a))
+    expect((await roster()).listener.some(({ session_id }) => session_id === b.id)).toBe(false)
+
+    const firstB = await idle(b)
+    await listed(b.id, firstB.at)
+    await delivery(b.id, "first-prompt-after-mcp-exit")
+    await absent(b.id, await ended(home, b))
   }),
 )
 

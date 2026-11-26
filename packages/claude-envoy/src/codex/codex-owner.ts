@@ -1,4 +1,4 @@
-import { link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { access, link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
 import { processStarted } from "./codex-session-record"
@@ -120,7 +120,10 @@ async function place(
 export async function unregisterServer(directory: string, self: CodexServerEntry): Promise<void> {
   const file = join(directory, entryName(self))
   const named = await readFile(file, "utf8").then(serverOf, () => undefined)
-  if (named?.pid === self.pid && named.started === self.started) await rm(file, { force: true })
+  if (named?.pid === self.pid && named.started === self.started) {
+    await rm(file, { force: true })
+    await rm(stoppingFile(directory, self), { force: true })
+  }
 }
 
 /** How a liveness check reads a process: `kill(pid, 0)` and its start. */
@@ -358,6 +361,40 @@ export function waitForOwnership(
     })
     void look().catch(failed)
   })
+}
+
+function stoppingFile(directory: string, owner: CodexServerEntry): string {
+  return join(directory, `${owner.seq}.${owner.pid}.stopping`)
+}
+
+/** Signal to hooks that an elected owner will stop scanning, before reading the final records. */
+export async function markCodexServerStopping(
+  directory: string,
+  owner: CodexServerEntry,
+): Promise<void> {
+  await writeFile(stoppingFile(directory, owner), "", { mode: 0o600 })
+}
+
+/** An owner can remain elected while it releases the relay and its inbox. A hook that sees its
+ *  stopping marker prepares a successor instead of depending on that owner's last scan. */
+export async function acceptingCodexOwner(
+  directory: string,
+): Promise<CodexServerEntry | undefined> {
+  const owner = await currentOwner(directory)
+  if (owner === undefined) return undefined
+  try {
+    await access(stoppingFile(directory, owner))
+    return undefined
+  } catch (error) {
+    if (!hasErrnoCode(error, "ENOENT")) throw error
+    // The marker may have gone away with a departing owner. Its old entry is not accepting.
+    const current = await currentOwner(directory)
+    return current?.pid === owner.pid &&
+      current.seq === owner.seq &&
+      current.started === owner.started
+      ? owner
+      : undefined
+  }
 }
 
 /** A live server beside the one leaving can take over its shared threads. */

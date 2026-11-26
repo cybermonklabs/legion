@@ -314,6 +314,10 @@ and does not register.
   when Codex unloads it and registers again under the same id when resumed.
   Codex unloads a thread after `thread_unload_delay_secs` of idle time with no connected client.
   The default is 60 seconds. A message can start a turn while the thread is still loaded.
+  When several loaded threads have only one MCP process, a standby process keeps delivering
+  messages if Codex stops that MCP process. The trusted startup hook also starts an owner if
+  a first prompt arrives with no MCP process. The standby exits when the last thread unloads
+  or Codex stops the app server.
 - In a process of its own, `/new` moves the registration at the new thread's first prompt.
   The new thread can receive messages and call `dispatch` while its MCP server waits for ownership.
   Its Envoy tools become available when its MCP server takes over.

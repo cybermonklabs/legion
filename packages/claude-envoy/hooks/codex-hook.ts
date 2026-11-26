@@ -14,12 +14,15 @@
 // It always exits 0: a session must start without Envoy.
 
 import { rm } from "node:fs/promises"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { formatOpenAsksSummary } from "@legion/envoy-client/dispatch-execute"
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { messageFor } from "@legion/envoy-client/errors"
 import { sessionConfigFile, sessionDispatchSettings } from "@legion/envoy-client/session-settings"
 import { z } from "zod"
 import { configuredValue } from "../src/claude-session"
+import { acceptingCodexOwner, codexServersDirectory } from "../src/codex/codex-owner"
 import {
   codexEndedFile,
   codexExecutable,
@@ -37,6 +40,7 @@ import {
   writeCodexSessionRecord,
   writeSharedCodexRecord,
 } from "../src/codex/codex-session-record"
+import { spawnCodexEnvoyStandby } from "../src/codex/codex-standby"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 
 /** How long the open-asks read may take before the summary says it is unavailable. */
@@ -125,6 +129,17 @@ async function sessionStart(raw: unknown): Promise<void> {
             ...record,
             generation: crypto.randomUUID(),
           })
+          // Codex can leave its MCP subprocess lazy for a new thread even after its first
+          // prompt. A trusted hook can start the owner when no existing MCP process can.
+          if ((await acceptingCodexOwner(codexServersDirectory(pluginData, pid))) === undefined) {
+            const bundle = join(dirname(fileURLToPath(import.meta.url)), "envoy-channel.js")
+            const child = spawnCodexEnvoyStandby(bundle, pid, started, pluginData)
+            child.once("error", (error) => {
+              process.stderr.write(
+                `envoy: could not start the Codex Envoy standby — ${messageFor(error)}\n`,
+              )
+            })
+          }
         } else {
           await rm(codexEndedFile(pluginData, pid, input.session_id), { force: true })
           await writeCodexSessionRecord(codexSessionRecordFile(pluginData, pid), record)

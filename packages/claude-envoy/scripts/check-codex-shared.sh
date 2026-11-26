@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-  echo 'Usage: check-codex-shared.sh {listed|terminals|delivered|isolated|ended|resumed|own-process} [--no-trust] [--plugin-ref COMMIT]'
+  echo 'Usage: check-codex-shared.sh {listed|terminals|delivered|isolated|ended|resumed|single-mcp|first-prompt|own-process} [--no-trust] [--plugin-ref COMMIT]'
 }
 
 die() {
@@ -13,7 +13,7 @@ die() {
 
 case ${1:-} in
   -h|--help) usage; exit 0 ;;
-  listed|terminals|delivered|isolated|ended|resumed|own-process) case_name=$1; shift ;;
+  listed|terminals|delivered|isolated|ended|resumed|single-mcp|first-prompt|own-process) case_name=$1; shift ;;
   *) usage >&2; exit 2 ;;
 esac
 
@@ -73,6 +73,10 @@ install_codex() {
       npm_pin=sha512-1IOFzL2Xg86tLdw6kDo3GoKbkQENgQi7TI6rlEvN132R7ngSw7SNOIQoTcnKzSZZ8kf9N9GynCweSoaFbqk2Eg==
       native_pin=sha512-l66NZkQgdk2C3pbcfULDz42yEUB581MVA6I+Y43Wp4OIqEy73HCdmZ0GTjeAHY2ycuH4N00d9VsLrwT1jxshTw==
       ;;
+    0.172.0)
+      npm_pin=sha512-yHf/6wbw4Zvha2M2ylDhDrU9FgfKLYgV6xSzSjlz3gxQNsiVLkXo+fPGwBqvP0A5geLtZs9wAbq+1v7+ZVWJ0g==
+      native_pin=sha512-YJq6Wz3PFXV5LZ0OQc3/o+gpM3pLmQ/8n8uM2zF/m0O/8zED+uSPT8Ln1KGRrqR8Q6eon9YdWlhueAunVTZ+eg==
+      ;;
     0.154.0)
       npm_pin=sha512-FV/x1OHXYv/ifjf3mXj9ThTTAWcUZN6cGIRQRhRxkKNOPuImu1WW0c8ev1vUkE9XGH90dEnYG1tBjIkxRikg0w==
       native_pin=sha512-a4FI3A8sGtwGrOqltrPbrS2hajrHQG591EwmRfiRoLMb10VxdBtUGW4gu6IJVYENiYGA7k3P4jlRHEoCZU/s9Q==
@@ -107,6 +111,8 @@ versions=(0.171.0 0.170.0)
 if [[ $case_name == own-process ]]; then
   old_binary=$(install_codex 0.154.0)
   versions=(0.171.0)
+elif [[ $case_name == single-mcp || $case_name == first-prompt ]]; then
+  versions=(0.172.0)
 fi
 
 verdict=0
