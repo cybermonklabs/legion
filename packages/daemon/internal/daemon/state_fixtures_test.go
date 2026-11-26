@@ -261,12 +261,15 @@ func (s *seeding) served(c composition) []byte {
 		supervising.cacheStatuses = func() []sandbox.CacheStatus { return c.caches }
 	}
 	// The workflow's records, engine and admission (openWorkflow), over the seed's own record store:
-	// the admission's reading is the state's architect-stalled arms.
+	// the admission's reading is the state's architect-stalled arms. The composition runs no wake
+	// pacer, so it holds no place for a held catch-up (catchUpPacing). The seed's one catch-up row
+	// has a due moment of its own and is not held (record.CatchUpIsHeld), so pacedCatchUps names it
+	// by that moment, as a daemon with or without the pacing does.
 	records := projectRecords{Store: s.records, project: cfg.Project}
 	engineCfg := engineConfig(cfg, "", nil)
 	engineCfg.Clock = clock.Now
 	admission := workflowAdmission(records, workflow.New(records, engineCfg, log), cfg, clock.Now, log)
-	view := stateSource(cfg, s.st, records, c.startedAt, supervising, p, admission.ArchitectStallArms)
+	view := stateSource(cfg, s.st, records, c.startedAt, supervising, p, admission.ArchitectStallArms, nil)
 	view.wakes = func() []supervise.WaitingWake { return c.wakes }
 	if c.dispatchTokens != nil {
 		if !cfg.DispatchTokenBroker {

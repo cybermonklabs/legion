@@ -462,24 +462,32 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if cfg.DispatchURL != "" {
 		log.Info("legion workflow boot stage", "stage", "store")
 	}
-	// One limiter for the whole daemon, built before either lane that reserves from it: every
-	// wake the daemon causes — the role processes supervision launches, the stale-plugin lane's
-	// relaunches among them, and the catch-up the workflow engine writes in place of a launch
-	// — draws from the same rate, because what the organization's cap counts is the uncached
-	// input of the minute after the wake, whichever lane caused it. Its jitter is a draw from
-	// [0, interval), the limiter's own interval: without one, two daemons restarted together
+	// One limiter and one pacer for the whole daemon, built before either lane that waits in it:
+	// every wake the daemon causes — the role processes supervision launches, the stale-plugin
+	// lane's relaunches among them, and the catch-up the workflow engine writes in place of a
+	// launch — is let out at the same rate, because what the organization's cap counts is the
+	// uncached input of the minute after the wake, whichever lane caused it. The limiter's jitter
+	// is a draw from [0, interval), its own interval: without one, two daemons restarted together
 	// would let their wakes out on the same instants, and the organization they share would see
-	// both bursts in one minute. A rate of zero is the pacing off, and each lane is handed no
-	// Reserve at all rather than one that paces nothing, which is how both read the pacing off
-	// (workflow.Config.Reserve, supervise.WakePace.Reserve). wakeInterval is what one wake of it
-	// costs, which the gate reads a launch's lateness by (supervise.WakePace.Interval).
+	// both bursts in one minute.
+	//
+	// Every paced wake waits in front of that limiter in the pacer's two queues, on the machines'
+	// own clock (wakepace.NewPacer, plan.clock): a wake for a role with an Envoy message waiting,
+	// or the relaunch of a role whose own process died, goes ahead of a restart's backlog
+	// (dispatch://INFRA-5682), and the pacer draws each turn from the limiter, so the rate stays
+	// the daemon's one rate. wakeInterval is what one wake of the limiter costs, which the gate
+	// reads how late a place the boot took may run at once by (supervise.WakePace.Interval). A
+	// rate of zero is the pacing off, and each lane is handed no pacer at all rather than one that
+	// paces nothing, which is how both read the pacing off (workflow.Config.HoldCatchUp,
+	// supervise.WakePace.Pacer).
 	var (
-		reserveWake  func(time.Time) time.Time
+		wakePacer    *wakepace.Pacer
 		wakeInterval time.Duration
 	)
 	if cfg.WorkerWakesPerMinute > 0 {
 		limiter := wakepace.New(cfg.WorkerWakesPerMinute, cfg.WorkerWakeBurst, rand.N[time.Duration])
-		reserveWake, wakeInterval = limiter.Reserve, limiter.Interval()
+		wakeInterval = limiter.Interval()
+		wakePacer = supervise.NewPacer(limiter, plan.clock)
 	}
 	// The one gate of the stale-plugin refresh lane, built here because K is that same rate: the
 	// lane may hold one minute of the pacing at a time, and the sweep a minute later admits the
@@ -502,7 +510,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// The workflow reads the machines' clock (overrides.clock, the wall clock in production), so a
 	// test clock moves the engine's deadlines and the idle, wake and stuck passes with the
 	// machines (dispatch://INFRA-3759).
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, dispatchTransport, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now, o.experimentSource, o.appCalls)
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, dispatchTransport, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, wakePacer, plan.clock.Now, o.experimentSource, o.appCalls)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {
@@ -548,7 +556,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// it is built with the workflow, before supervision: the machines are handed its flag, its
 		// stop transaction and its let-out stamp (openSupervision), and the boot loads its flag
 		// before any claim is restored (supervision.start).
-		pauses, err := newProjectPause(cfg, st, plan.project, workflow, plan.clock, log)
+		pauses, err := newProjectPause(ctx, cfg, st, plan.project, workflow, plan.clock, log)
 		if err != nil {
 			workflow.stop()
 			st.Close()
@@ -611,7 +619,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if workflow != nil {
 		apps, pauses = workflow.apps, workflow.pauses
 	}
-	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, wakeInterval, refreshGate, pauses)
+	s, err := openSupervision(boot, cfg, log, plan, st, apps, wakePacer, wakeInterval, refreshGate, pauses)
 	if err != nil {
 		listener.Close()
 		workflow.stop()
@@ -775,6 +783,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	var settle func() error
 	if workflow != nil {
 		settle = func() error {
+			if err := workflow.catchUps.restore(starting, workflow.records, cfg.Project); err != nil {
+				return err
+			}
 			return workflow.replayTerminal(store.WithTransactionTracking(ctx), s.claims, bootTimeout)
 		}
 	}
@@ -1949,7 +1960,13 @@ func (s *supervision) waitingWakes() []supervise.WaitingWake {
 // child's, whose token it is composed for exactly as the line that wake writes composes it (the
 // outbox's wakeRan), since the row names the issue and the kind alone. A project whose outbox
 // holds no such row allocates nothing.
-func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project, dispatchProject string, now time.Time) ([]api.WakeWaiting, error) {
+//
+// A row this daemon's pacer still holds in its queue carries no moment of its own
+// (record.CatchUpIsHeld), so the state names it with the pacer's estimate for its place
+// (catchUpPacing.estimate), and leaves out a held row that has no place yet, whose join is under
+// way. A row with a moment of its own is one a release before the pacing's two queues reserved
+// for it, named by that moment.
+func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project, dispatchProject string, now time.Time, pacing *catchUpPacing) ([]api.WakeWaiting, error) {
 	waiting, err := records.WaitingNotices(ctx, tx, dispatchProject, now)
 	if err != nil {
 		return nil, err
@@ -1968,8 +1985,15 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 		if err != nil {
 			return nil, fmt.Errorf("the architect of the catch-up on row %d: %w", row.ID, err)
 		}
+		due := row.NextAt.UTC()
+		if record.CatchUpIsHeld(due) {
+			due = pacing.estimate(row.ID)
+			if due.IsZero() {
+				continue
+			}
+		}
 		wakes = append(wakes, api.WakeWaiting{
-			Claim: architect, Issue: row.Issue, Role: claim.RoleArchitect, Kind: supervise.WakeCatchUp, DueAt: row.NextAt.UTC(),
+			Claim: architect, Issue: row.Issue, Role: claim.RoleArchitect, Kind: supervise.WakeCatchUp, DueAt: due,
 		})
 	}
 	return wakes, nil
@@ -1980,14 +2004,15 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // workflow's App tokens (nil without a workflow): every step of supervision that can refuse, so a
 // daemon that cannot supervise refuses before its boot is recorded.
 //
-// reserve is the daemon's one wake limiter as the machines reach it (run builds it, before the
-// workflow, which reserves from the same one): the moment each launch may run, and nil while the
-// operator paces nothing, which is the gate's reading of the pacing off (supervise's
-// reserveWake). interval is that limiter's Interval, and it must come from the same limiter: the
-// gate reads how late a launch whose turn the boot reserved may run by it (supervise.WakePace). The
-// rate and the burst go with them for the line every wake writes, never for that decision.
+// pacer is the daemon's one wake pacer (run builds it, then shares it with the workflow):
+// the two queues every paced launch and catch-up takes a place in, and nil while the operator
+// paces nothing, which is the gate's reading
+// of the pacing off (supervise's reserveWake). interval is that limiter's Interval, and it must
+// come from the same limiter: the gate reads how late a place the boot took may run at once by it
+// (supervise.WakePace). The rate and the burst go with them for the line every wake writes, never
+// for that decision.
 //
-// refreshGate is the daemon's one stale-plugin refresh gate, threaded exactly as reserve is and
+// refreshGate is the daemon's one stale-plugin refresh gate, threaded exactly as pacer is and
 // from the same place (run builds both, from the one rate): it goes on the machines' Deps, so
 // every machine of this daemon asks the same gate, and the supervision keeps the same reference,
 // because the refresh pass corrects it from the wakes those machines publish and asks it for
@@ -1995,10 +2020,11 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 //
 // pauses is the project's pause (projectPause, nil without a workflow): the machines read its flag
 // (Deps.Paused, the service's one atomic load), write a pause's stop through its stop transaction
-// (Deps.PauseStopped) and stamp each paced launch's let-out moment through it (Deps.WakeLetOut);
-// it reads the machines this supervisor holds for its catch-up and its resume.
+// (Deps.PauseStopped), stamp each paced launch's let-out moment through it (Deps.WakeLetOut) and
+// tell it each paced launch that begins to wait (Deps.WakeQueued); it reads the machines this
+// supervisor holds for its catch-up and its resume.
 func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source,
-	reserve func(time.Time) time.Time, interval time.Duration, refreshGate supervise.RefreshAdmitter, pauses *projectPause) (*supervision, error) {
+	pacer *wakepace.Pacer, interval time.Duration, refreshGate supervise.RefreshAdmitter, pauses *projectPause) (*supervision, error) {
 	claims, err := st.Claims(boot)
 	if err != nil {
 		return nil, err
@@ -2095,7 +2121,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			LaunchBackoff:         launchBackoffFirst,
 		},
 		WakePace: supervise.WakePace{
-			Reserve:  reserve,
+			Pacer:    pacer,
 			Interval: interval,
 			Rate:     cfg.WorkerWakesPerMinute,
 			Burst:    cfg.WorkerWakeBurst,
@@ -2107,7 +2133,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 	}
 	if pauses != nil {
-		sup.deps.Paused, sup.deps.PauseStopped, sup.deps.WakeLetOut = pauses.service.Paused, pauses.stopped, pauses.wakeLetOut
+		sup.deps.Paused, sup.deps.PauseStopped, sup.deps.WakeLetOut, sup.deps.WakeQueued =
+			pauses.service.Paused, pauses.stopped, pauses.wakeLetOut, pauses.wakeQueued
 		pauses.supervisor = sup
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
@@ -2402,6 +2429,11 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		var err error
 		if open, paused, err = s.pauses.service.Load(boot); err != nil {
 			return fmt.Errorf("read whether the project is paused: %w", err)
+		}
+		// Before any claim is restored, so the machines that park a launch again stop its
+		// resume's clock after this has started it (projectPause.startStoppedResumeClocks).
+		if err := s.pauses.startStoppedResumeClocks(boot); err != nil {
+			return err
 		}
 	}
 	if err := s.holdRecordedSessions(boot); err != nil {
@@ -3009,6 +3041,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var githubAPI string
 	var consumerLag func(context.Context) []intake.ConsumerLag
 	var architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
+	var catchUps *catchUpPacing
 	// The pause service exists only with the workflow, which run builds it with (projectPause): a
 	// daemon without one leaves pauses the nil interface, which the API reads as no pause service
 	// and answers every pause and resume PAUSE_UNAVAILABLE.
@@ -3018,6 +3051,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// a nil *intake.GiveUps, which the API would read as an intake.
 	var giveUps api.GiveUps
 	if workflow != nil {
+		catchUps = workflow.catchUps
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.apps, workflow.grants
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
 		handoffCompleted = workflow.handoffCompleted
@@ -3045,7 +3079,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// boot is the server goroutine below.
 	ready := &servingLatch{}
 	server := api.NewServer(cfg.Bind, cfg.Port, api.Options{
-		State:              stateSource(cfg, st, records, startedAt, s, p, architectStalls),
+		State:              stateSource(cfg, st, records, startedAt, s, p, architectStalls, catchUps),
 		ConsumerLag:        consumerLag,
 		Intake:             giveUps,
 		CallerPod:          callerPodOf(s.runtime),
@@ -3215,7 +3249,8 @@ type source struct {
 	reports func() map[claim.Token]capabilities.Report
 	// wakes is every wake the daemon's machines hold, as each machine last published it
 	// (supervision.waitingWakes); nil for a daemon that supervises nothing.
-	wakes func() []supervise.WaitingWake
+	wakes    func() []supervise.WaitingWake
+	catchUps *catchUpPacing
 	// repositories is the repository state the workflow fills, empty for a daemon with no
 	// workflow, whose state serves no repository.
 	repositories *repositories
@@ -3255,12 +3290,13 @@ type source struct {
 // start, clock and broker login (p); the supervision's deployment, capability reports, waiting
 // wakes and repository caches (s); p's repository state; the session the daemon's own Dispatch
 // calls run under and the Sandbox runtime's Dispatch token counts, under dispatch_token_broker
-// alone (dispatchTokensOf); and architectStalls, nil without a workflow. It is the one place a
-// source of a running daemon is built, so the state fixtures, which build theirs with it
-// (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds), are what a daemon of the same
-// configuration and memory serves.
+// alone (dispatchTokensOf); architectStalls, nil without a workflow; and catchUps, the
+// workflow's place of each held catch-up in the wake pacing, nil without a workflow
+// (pacedCatchUps). It is the one place a source of a running daemon is built, so the state
+// fixtures, which build theirs with it (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds),
+// are what a daemon of the same configuration and memory serves.
 func stateSource(cfg config.Config, st *store.Store, records record.Store, startedAt time.Time, s *supervision, p plan,
-	architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)) *source {
+	architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error), catchUps *catchUpPacing) *source {
 	return &source{
 		store:        st,
 		records:      records,
@@ -3274,6 +3310,7 @@ func stateSource(cfg config.Config, st *store.Store, records record.Store, start
 		deployment:   s.deploymentWith,
 		reports:      s.capabilityReports,
 		wakes:        s.waitingWakes,
+		catchUps:     catchUps,
 		repositories: p.repositories,
 		caches:       s.cacheStatuses,
 		gatedSteps:   cfg.Gates.Steps(),
@@ -3344,9 +3381,10 @@ func stateSource(cfg config.Config, st *store.Store, records record.Store, start
 // refresher runs.
 type projectRecords struct {
 	record.Store
-	project string
-	wake    func(issue string, kind record.OutboxKind)
-	live    func()
+	project  string
+	wake     func(issue string, kind record.OutboxKind)
+	live     func()
+	catchUps *catchUpPacing
 	// log says when a row was written outside a commit scope, and when a write of a row keyed by
 	// another project's issue was refused; nil is the default logger.
 	log *slog.Logger
@@ -3560,11 +3598,15 @@ func (s projectRecords) EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publis
 	return s.Store.EnqueueGatedSteps(ctx, tx, publish, nextAt)
 }
 
-func (s projectRecords) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
+func (s projectRecords) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) ([]int64, error) {
 	if !s.ownsKey(record.OutboxKindNotice, issue) {
-		return nil
+		return nil, nil
 	}
-	return s.Store.DropCatchUps(ctx, tx, issue, now)
+	ids, err := s.Store.DropCatchUps(ctx, tx, issue, now)
+	if err == nil && len(ids) != 0 && s.catchUps != nil {
+		store.OnCommit(ctx, func() { s.catchUps.drop(ids) })
+	}
+	return ids, err
 }
 
 func (s projectRecords) DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue string) error {
@@ -3696,7 +3738,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	//
 	// The two are read before the projection and handed to it, so the state's `wakesWaiting` and
 	// each claim view's own `wake` are set from one list. Each read is of this one snapshot.
-	paced, err := pacedCatchUps(ctx, tx, records, s.projectToken, s.project, now)
+	paced, err := pacedCatchUps(ctx, tx, records, s.projectToken, s.project, now, s.catchUps)
 	if err != nil {
 		return api.State{}, nil, err
 	}
