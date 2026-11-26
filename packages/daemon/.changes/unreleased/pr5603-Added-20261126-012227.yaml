@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+  The daemon keeps each memory kill of its project's issue pods for the kills signal of admission
+  by signals: the memory guard's kill and the microVM kernel's kill, of a role's process and of a
+  process of no role, once by the report's guard and sequence, at the moment the launcher's watch
+  named the kill, so a report a reconnected launcher sends late counts at that moment. A kill in
+  the controller's pod is not kept. The first boot of this release records the moment it began
+  keeping the kills, and the kills signal counts an hour from it. A migration adds the tables
+  `memory_kills` and `signal_inputs`; its header carries the way back.
+
+  An issue pod's launcher now reports the kill of a process of no role too, such as the test
+  database's server, which it logged before and did not report: once, marked `noRole`, on the
+  connection of the first role whose daemon's answer carried `noRoleKills`, which the daemon sets
+  on every issue pod's answer and never on the controller pod's. Where connections are up and none
+  carried it, the launcher drops the report with a line. The daemon tells no role of such a kill.
+  The daemon API entry `20261126011643` (`admission-signals`) adds both members of the launcher
+  wire: an earlier daemon sends no `noRoleKills`, so it is sent no report of no role, and an
+  earlier launcher sends none, and the daemon counts what it sends.
+time: 2026-11-26T01:22:27Z
+custom:
+    Issue: pr5603

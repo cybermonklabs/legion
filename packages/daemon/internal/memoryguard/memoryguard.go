@@ -406,7 +406,7 @@ type Class struct {
 // run at the same time. A pid absent from the map is a process the guard may end, of no role.
 type Classifier func(t *Table) map[int]Class
 
-// Kill is one process the guard ended: the report its role is sent, which names the process by
+// Kill is one process the guard ended: the report the launcher sends of it, which names it by
 // processName and carries none of its arguments, and Role, the role whose process it was, ""
 // outside every role. Rule is which rule of the order of ends put it first (rank: ruleGrew,
 // ruleNew, ruleGrewSinceKill or ruleLargest), or ruleUrgent for a process the urgent rule ended at

@@ -269,8 +269,12 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 // (adoptChildren) is the one fact admission refuses. A Dispatch issue fact's Reread is written
 // first (applyReread), before anything of the fact itself is recorded or promoted. The entry
 // sweep (intake.EntrySweep) is the one fact that promotes nothing: it converges the phase
-// entries and does no more (convergeEntries).
+// entries and does no more (convergeEntries). Before any of it, the fact's inputs of a signal of
+// admission by signals are kept (keepSignalFacts), so the pass this fact runs reads them.
 func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
+	if err := a.keepSignalFacts(ctx, tx, fact); err != nil {
+		return intake.Result{}, err
+	}
 	released, refusal, err := a.applyFact(ctx, tx, fact)
 	if err != nil {
 		return intake.Result{}, err

@@ -1514,7 +1514,8 @@ func (f SessionStoreFault) namedIssue() (string, bool) { return f.Issue, true }
 // was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
 // the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel, or
 // shimwire.MemoryKillCauseKernelProtected for a process that runs the role's session), as the pod's
-// launcher reported it on the connection of the role whose process it was
+// launcher reported it on the connection of the role whose process it was, or, for a process of
+// no role (the report's NoRole), on the connection of one role of the pod
 // (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's frame reaches
 // the runtime, and the daemon's Kubernetes wiring applies one fact per report under the id
 // `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a report the launcher sent
@@ -1523,8 +1524,10 @@ func (f SessionStoreFault) namedIssue() (string, bool) { return f.Issue, true }
 //
 // Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim of
 // the role the connection authenticated for, and that pod), never anything the report says.
-// The workflow tells that role, on its own role topic, which of its processes was ended and why,
-// in the note the report's Cause chooses (workflow's memoryGuardKill).
+// Admission keeps every such kill for the project's kills signal (admit's keepSignalFacts). The
+// workflow tells that role, on its own role topic, which of its processes was ended and why, in
+// the note the report's Cause chooses, and tells no role of a process of no role (workflow's
+// memoryGuardKill).
 type MemoryGuardKill struct {
 	Issue  string
 	Token  claim.Token
@@ -1549,7 +1552,8 @@ func (f MemoryGuardKill) namedIssue() (string, bool) { return f.Issue, true }
 // its pod), never anything the report says. The controller's pod is of no issue, so the fact names
 // none. The workflow tells the project's controller, in a controller notice of its own for each
 // kill, which of its programs was ended and why, in the note the report's Cause chooses
-// (workflow's controllerMemoryGuardKill).
+// (workflow's controllerMemoryGuardKill). Admission keeps none of it: a kill in the controller's
+// pod counts in no signal (admit's keepSignalFacts).
 type ControllerMemoryGuardKill struct {
 	Token  claim.Token
 	PodUID string

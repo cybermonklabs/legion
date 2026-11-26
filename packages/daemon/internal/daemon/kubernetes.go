@@ -721,17 +721,20 @@ func (m *memoryGuardKills) bind(pool *store.Pool, handlers []intake.Handler) {
 
 // killed applies one kill of issue's pod as one intake fact (runtime.MemoryGuardKilled), crediting
 // it to token, the role whose connection carried the report, and to podUID, the pod that launcher
-// runs in, both the session's and never the report's. It runs on the launcher's own frame loop
-// under that loop's bounded context, so an apply that cannot be made is returned to the launcher
-// session, which logs it and drops the report. Every launcher's frame loop runs beside the others
-// and beside the daemon's own loops, so each report applies under a hold mark of its own
-// (store.ForConcurrentWorker): this is a fact source, and a fact source marks its context where
-// it starts (store.ErrNestedAcquire).
+// runs in, both the session's and never the report's. A report of a process of no role
+// (shimwire.LauncherMemoryKill.NoRole) is the same fact, credited the same way: token is then only
+// the connection it came on, and the workflow tells no role of it. Admission keeps every such kill
+// for the project's kills signal in the fact's transaction (admit's keepSignalFacts). It runs on
+// the launcher's own frame loop under that loop's bounded context, so an apply that cannot be made
+// is returned to the launcher session, which logs it and drops the report. Every launcher's frame
+// loop runs beside the others and beside the daemon's own loops, so each report applies under a
+// hold mark of its own (store.ForConcurrentWorker): this is a fact source, and a fact source marks
+// its context where it starts (store.ErrNestedAcquire).
 //
 // The event id is the kill's own identity, the guard's id and its sequence
 // (memoryGuardKillEventID), and never the daemon's receipt: a launcher that wrote a report on a
 // connection it then lost sends it again on the next, and ApplyFact applies one id once, so the
-// role is told of one kill once however often its report arrives.
+// role is told of one kill once, and the kill is kept once, however often its report arrives.
 func (m *memoryGuardKills) killed(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error {
 	return m.apply(ctx, report, intake.MemoryGuardKill{Issue: issue, Token: token, PodUID: podUID, Report: report}, issue, podUID)
 }

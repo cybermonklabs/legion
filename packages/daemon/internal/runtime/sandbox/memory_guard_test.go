@@ -176,9 +176,11 @@ func TestMemoryGuardAControllerPodSettingsChangeReplacesNoPod(t *testing.T) {
 // the controller pod's own (controller_pod's), in a gVisor project and in a microVM one alike. A
 // microVM pod's launcher sends the kernel's reports on kernelKills and nothing else, and a gVisor
 // controller pod's launcher reads the settings and ignores kernelKills, so a controller pod built
-// under either type is answered all it reads (launcherHelloAck). The controller's pod is rendered
-// in the project's sandbox, or the microVM case would prove nothing of a microVM controller. A
-// refused hello is told neither.
+// under either type is answered all it reads (launcherHelloAck). Each role's launcher of an issue
+// pod is also told the daemon knows a report of a process of no role (noRoleKills), whatever the
+// guard's settings, and the controller's launcher never is, since no kill of its pod counts. The
+// controller's pod is rendered in the project's sandbox, or the microVM case would prove nothing
+// of a microVM controller. A refused hello is told none of it.
 func TestKernelKillsTheResolverTellsEveryLauncher(t *testing.T) {
 	t.Parallel()
 	issueSettings, controllerSettings := issueGuardSettings, controllerGuardSettings
@@ -206,18 +208,18 @@ func TestKernelKillsTheResolverTellsEveryLauncher(t *testing.T) {
 					if handler == nil {
 						t.Fatalf("the issue pod's %s launcher was refused: %s", role, reason)
 					}
-					if !ack.KernelKills || !sameGuard(ack.MemoryGuard, tc.issue) {
-						t.Fatalf("the issue pod's %s launcher was answered kernelKills=%t and the memory guard %s, want kernelKills and %s",
-							role, ack.KernelKills, guardText(ack.MemoryGuard), guardText(tc.issue))
+					if !ack.KernelKills || !ack.NoRoleKills || !sameGuard(ack.MemoryGuard, tc.issue) {
+						t.Fatalf("the issue pod's %s launcher was answered kernelKills=%t, noRoleKills=%t and the memory guard %s, want kernelKills, noRoleKills and %s",
+							role, ack.KernelKills, ack.NoRoleKills, guardText(ack.MemoryGuard), guardText(tc.issue))
 					}
 				}
 				handler, ack, reason := accept(rigLauncherHello(g, controller.Sandbox.Name, controller.Sandbox.PodUID, claim.RoleController))
 				if handler == nil {
 					t.Fatalf("the controller's launcher was refused: %s", reason)
 				}
-				if !ack.KernelKills || !sameGuard(ack.MemoryGuard, tc.controller) {
-					t.Fatalf("the controller's launcher was answered kernelKills=%t and the memory guard %s, want kernelKills and the controller pod's %s",
-						ack.KernelKills, guardText(ack.MemoryGuard), guardText(tc.controller))
+				if !ack.KernelKills || ack.NoRoleKills || !sameGuard(ack.MemoryGuard, tc.controller) {
+					t.Fatalf("the controller's launcher was answered kernelKills=%t, noRoleKills=%t and the memory guard %s, want kernelKills, no noRoleKills and the controller pod's %s",
+						ack.KernelKills, ack.NoRoleKills, guardText(ack.MemoryGuard), guardText(tc.controller))
 				}
 				for _, refused := range []shimwire.LauncherHello{
 					rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, claim.RoleTester),
@@ -429,6 +431,31 @@ func TestKernelKillServeLauncherHandsTheReceiverTheReportWithItsCause(t *testing
 	}
 	if text := logs.String(); !strings.Contains(text, "the pod's launcher sent a kill report the daemon cannot apply") || !strings.Contains(text, `cause is \"oom\"`) {
 		t.Fatalf("log = %q, want a warning naming the unknown cause", text)
+	}
+}
+
+// A report of a process of no role, of the guard's cause and of each of the kernel's, reaches the
+// issue pods' receiver as any report of the session's connection does: with the session's own
+// issue, role and pod, never anything the report says, and with its mark, which is what keeps the
+// daemon from telling that role of a kill that was not its own.
+func TestMemoryGuardServeLauncherHandsAReportOfNoRoleToTheReceiverWithItsMark(t *testing.T) {
+	t.Parallel()
+	var logs lockedLog
+	killed, calls := recordedMemoryKills()
+	launchers := newLaunchers(testLeakCheck, nil, nil, killed, nil, nil, slogTo(&logs))
+	session := launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
+	w, _ := serveLauncherPipe(t, session)
+
+	for i, cause := range []shimwire.MemoryKillCause{shimwire.MemoryKillCauseGuard, shimwire.MemoryKillCauseKernel, shimwire.MemoryKillCauseKernelProtected} {
+		report := memoryKillReport(uint64(i + 1))
+		report.Cause, report.NoRole = cause, true
+		sendFrame(t, w, report)
+		if call := nextMemoryKillCall(t, calls); call != (memoryKillCall{issue: testTree, token: workerToken, podUID: "pod-1", report: report, bounded: true}) {
+			t.Fatalf("the receiver was called with %+v, want the session's %s, %s and pod-1 and the report of no role %+v", call, testTree, workerToken, report)
+		}
+	}
+	if text := logs.String(); strings.Contains(text, "launcher memory guard") {
+		t.Fatalf("log = %q, want no warning for a report of no role a receiver took", text)
 	}
 }
 

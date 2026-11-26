@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -2817,6 +2818,20 @@ type Store interface {
 	// without its first, for a caller that judges a run by its claim and reads no queued start
 	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
 	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
+	// KeepMemoryKill keeps report, one memory kill of an issue pod of project, once by its guard
+	// and sequence, at the report's own moment, and deletes the project's kills an hour or more
+	// before now, which no read counts again. Admission calls it in the fact's own transaction,
+	// before that fact's pass (admit's keepSignalFacts).
+	KeepMemoryKill(ctx context.Context, tx pgx.Tx, project string, report shimwire.LauncherMemoryKill, now time.Time) error
+	// MemoryKillsAfter is the moment of each kill of project kept later than after, oldest first:
+	// what the kills signal of a moment reads, with after an hour before it.
+	MemoryKillsAfter(ctx context.Context, tx pgx.Tx, project string, after time.Time) ([]time.Time, error)
+	// BeginSignalInput records at as the moment the daemon began keeping input, one input of a
+	// signal, for project, where none is recorded yet; a later call leaves the first moment.
+	BeginSignalInput(ctx context.Context, tx pgx.Tx, project, input string, at time.Time) error
+	// SignalInputSince is the moment the daemon began keeping input for project, and whether one
+	// is recorded: a signal counted over a span is recorded only from that moment plus its span.
+	SignalInputSince(ctx context.Context, tx pgx.Tx, project, input string) (time.Time, bool, error)
 }
 
 // RoleRunKey identifies one role's run of an issue generation.

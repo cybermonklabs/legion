@@ -205,7 +205,8 @@ type LauncherHello struct {
 
 // LauncherHelloAck admits a launcher to receive child process commands, and hands it the
 // settings its memory guard and its cache trimmer run by, when this daemon has any to hand it,
-// and whether this daemon knows a kill report the pod's own kernel made.
+// whether this daemon knows a kill report the pod's own kernel made, and whether it knows a kill
+// report of a process of no role.
 type LauncherHelloAck struct {
 	// MemoryGuard is absent rather than zero when no settings are sent, and that absence is what
 	// turns the guard off: a daemon built before the guard and a deployment that turned it off
@@ -233,6 +234,16 @@ type LauncherHelloAck struct {
 	// ignores it and sends its guard's reports where MemoryGuard came. It is left out when false,
 	// so an acknowledgement without it is the bytes an older daemon writes.
 	KernelKills bool `json:"kernelKills,omitempty"`
+	// NoRoleKills says the daemon reads a launcher_memory_kill whose NoRole is set as the kill of a
+	// process of no role of an issue pod: it keeps it for the pod's issue's project as it keeps a
+	// role's kill, and tells no role of it. The daemon sets it on every issue pod launcher's
+	// acknowledgement and never on the controller pod's, whose kills it keeps none of. A launcher
+	// sends a report of no role only on a connection whose acknowledgement carries it, beside what
+	// that launcher's reports of a role need there (MemoryGuard for a gVisor pod's, KernelKills for
+	// a microVM pod's), so a daemon built before it, which sends no member and would tell the role
+	// whose connection carried such a report of a kill that was not its own, is never sent one. It
+	// is left out when false, so an acknowledgement without it is the bytes an older daemon writes.
+	NoRoleKills bool `json:"noRoleKills,omitempty"`
 }
 
 // LauncherMemoryGuard is what a launcher's memory guard runs by: it reads the pod's anonymous
@@ -305,10 +316,13 @@ const (
 	MemoryGuardConfigActMax          = 90
 )
 
-// LauncherMemoryKill is one process of a role that was stopped because the pod was out of memory:
-// ended with SIGKILL by the launcher's memory guard, or, in a microVM pod, stopped by the pod's own
-// kernel (Cause). The launcher sends it, unasked, on the connection of the role whose process it
-// was, and the daemon tells that role why the process is gone (INFRA-3557).
+// LauncherMemoryKill is one process of an issue pod or of the controller's pod that was stopped
+// because the pod was out of memory: ended with SIGKILL by the launcher's memory guard, or, in a
+// microVM pod, stopped by the pod's own kernel (Cause). The launcher sends it, unasked, on the
+// connection of the role whose process it was, and the daemon tells that role why the process is
+// gone (INFRA-3557). A process of no role of an issue pod (NoRole) has no role whose connection is
+// its own: its report goes on the connection of one role of the pod, and the daemon keeps it and
+// tells no role.
 //
 // Guard is the identifier the guard minted for itself when the launcher process started, and
 // Sequence the guard's own count of its kills, from 1: together they name the kill once, so a
@@ -326,6 +340,14 @@ const (
 // process the pod's kernel stopped, which the launcher's watch of that kernel reports with an
 // identifier and a count of its own in Guard and Sequence. It is left out when empty, so the
 // guard's report is the bytes it was before the member existed; Validate refuses any other value.
+//
+// NoRole marks the kill of a process of no role of an issue pod: one no role-init is the ancestor
+// of and that shares no role-init's PID namespace, such as the test database's server or a
+// process a `kubectl exec` started. The launcher writes the same `launcher: memory guard: ended`
+// line for it as for a role's, and sends its report only on a connection whose acknowledgement
+// carried LauncherHelloAck.NoRoleKills. It is left out when false, so a role's report is the bytes
+// it was before the member existed, and a launcher built before it, which reports no such kill,
+// sends none.
 type LauncherMemoryKill struct {
 	Guard        string          `json:"guard"`
 	Sequence     uint64          `json:"sequence"`
@@ -337,6 +359,7 @@ type LauncherMemoryKill struct {
 	LimitBytes   uint64          `json:"limitBytes"`
 	At           time.Time       `json:"at"`
 	Cause        MemoryKillCause `json:"cause,omitempty"`
+	NoRole       bool            `json:"noRole,omitempty"`
 }
 
 // MemoryKillCause is what stopped the process a launcher_memory_kill names, which chooses the
@@ -1547,7 +1570,9 @@ func (g LauncherMemoryGuard) Validate() error {
 // guard or a sequence below the 1 the guard counts from, which together are the report's
 // identity; one naming no process or no limit; one whose executable is longer than the bound a
 // role's note is held to; and one whose cause is none of the three MemoryKillCause values, which
-// no note says.
+// no note says. It takes NoRole either way and with each cause: a process of no role is one the
+// guard may end, or one the pod's kernel stops among those the guard may end or among those the
+// launcher protects (the test database's server), and its report is kept with the same identity.
 func (f LauncherMemoryKill) Validate() error {
 	switch {
 	case f.Guard == "":

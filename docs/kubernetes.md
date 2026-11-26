@@ -5133,8 +5133,10 @@ For a process of a role, the watch also gives a report to that role's part of th
   <role>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report
   ```
 
-A process of no role has its `ended` line and no report, whether the classifier protects it or not.
-The daemon chooses the note by the report's cause (`memoryGuardKill`, `packages/daemon/internal/workflow/engine.go`) and queues it to the role's topic with the sizes in binary units.
+A process of no role has its `ended` line and a report too, whether the classifier protects it or not:
+the report carries the kill's `cause` as above and `noRole: true`, and goes to the daemon as the guard's report of a process of no role goes ("The report and the note" in [The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), on a connection whose answer carries `noRoleKills: true` beside `kernelKills: true`.
+The daemon keeps it with the project's kills and tells no role of it.
+For a process of a role, the daemon chooses the note by the report's cause (`memoryGuardKill`, `packages/daemon/internal/workflow/engine.go`) and queues it to the role's topic with the sizes in binary units.
 
 For `cause: kernel` the note is `kernelKillNote`'s, and the daemon logs `workflow: the role whose process the pod's kernel stopped is told why` with the report's `cause`:
 
@@ -7274,7 +7276,7 @@ A panic on the guard's loop writes `off reason=panic: <value> at <function> (<fi
 `unread` comes once for each process the guard could not read, and `kill failed` once for each process a kill failed on, which counts unread from then on; the guard ends no such process, and each is in the `unread_processes` of a `stopped for this rise` line written while it lives.
 Read a pod's hourly lines with `kubectl logs <pod> -c roles | grep '^launcher: memory guard: hour '`.
 
-The launcher writes three lines of its own about the reports below, each behind the role's `<role>: ` prefix:
+The launcher writes three lines of its own about the reports of a role's processes below, each behind the role's `<role>: ` prefix:
 
 ```text
 <role>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=32 reports already wait for a connection, the most a role keeps
@@ -7282,15 +7284,29 @@ The launcher writes three lines of its own about the reports below, each behind 
 <role>: launcher: memory guard: report unsent sequence=<n> pid=<pid> reason=<why>; the next connection carries it
 ```
 
+It writes three more about the reports of processes of no role, behind no role's prefix, as the guard's own lines are:
+
+```text
+launcher: memory guard: report dropped sequence=<n> pid=<pid> role=none reason=32 reports of no role already wait for a connection, the most the pod keeps
+launcher: memory guard: report dropped sequence=<n> pid=<pid> role=none reason=no connection's acknowledgement says the daemon behind it knows a report of a process of no role (noRoleKills)
+launcher: memory guard: report unsent sequence=<n> pid=<pid> role=none reason=<why>; the next connection that can carry it does
+```
+
 **The report and the note.**
 For each process of a role that it ends, the guard gives a report to that role's part of the launcher, which sends it to the daemon as one `launcher_memory_kill` frame on the role's connection:
 the guard's own id, its count of kills, the pid, the process's name as its lines give it (`executable`, at most 256 bytes and no argument), the process's size, the reading, the counter and the limit.
 The launcher sends a report only on a connection whose answer carried settings, since a daemon built before the guard closes a connection on a frame it does not know, and it drops a report waiting for any other connection with a line.
 Up to 32 reports wait while the role has no connection, and a 33rd drops the oldest with a line, or the next oldest while the oldest is being written.
-A process of no role has its `ended` line and no report.
+A process of no role has its `ended` line and a report too, marked `noRole: true`, which waits in one queue of the pod's rather than in a role's (`noRoleReports`, `packages/daemon/internal/launcher/memoryguard.go`).
+It goes once, on the connection of the first role of the pod's role list whose answer carried `noRoleKills: true` beside the settings.
+A daemon that keeps the kills for admission by signals (the `admission-signals` entry of the daemon API contract) sets `noRoleKills` on its answer to every issue pod's launcher, and never on its answer to the controller pod's.
+While no connection is up the report waits, up to 32 as a role's do;
+where connections are up and none of their answers carried `noRoleKills`, the launcher drops every report of no role waiting then with a line, since an earlier daemon would tell the role whose connection carried it of a kill that was not its own.
 The daemon applies each report once, under the event id `memory-guard-kill:<guard>:<sequence>`, so a report sent twice tells the role once.
 It credits the report to the issue, the role and the pod that the connection authenticated as, and never to anything the report says.
-It then queues one message to that role's topic, `notifications.role.<role token>` (`memoryGuardNote`, `packages/daemon/internal/workflow/engine.go`), with the sizes in binary units (`3.13 GiB`).
+It keeps each report of an issue pod, of a role's process or of one of no role, for the project's kills signal, at the moment the guard named the kill, so a report sent late counts at that moment.
+For a process of no role it tells no role.
+For a process of a role it then queues one message to that role's topic, `notifications.role.<role token>` (`memoryGuardNote`, `packages/daemon/internal/workflow/engine.go`), with the sizes in binary units (`3.13 GiB`).
 The message names the process as the lines do, by its executable's base name or its `comm`, escaped and cut, and prints no argument, since an argument may hold a credential that no masking rule names, and the role that started the process already has its arguments:
 
 ```text
@@ -7309,7 +7325,7 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
   a report that fails the frame's own checks, and a valid report it could not record, because its store write failed or the bounded time it gives each report ran out.
   The launcher counted the report as sent once it was written, so it does not send it again.
 
-- The workflow dropped the report, with a line in the daemon's log, because the daemon records no such issue.
+- The workflow told no role, with a line in the daemon's log, because the daemon records no such issue; the daemon keeps the kill all the same.
 
 - The role's session held no topic when the outbox row ran, so the message was not delivered:
   the outbox finishes the row with one log line (`roleMessage`, `packages/daemon/internal/daemon/outbox.go`).

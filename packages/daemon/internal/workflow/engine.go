@@ -1905,10 +1905,21 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 // shimwire.MemoryKillCauseGuard, the only other cause the launcher session lets through
 // (shimwire.LauncherMemoryKill.Validate). The line logged names the cause.
 //
+// A kill of a process of no role (the report's NoRole), which the launcher reports on the
+// connection of one role of the pod, was no role's process, so no role is told of it: the fact is
+// logged and nothing more. Admission keeps it, as it keeps a role's kill (admit's
+// keepSignalFacts), whatever this handler does.
+//
 // An issue the daemon does not record has no role of the workflow's to tell, so the fact is
-// logged and dropped.
+// logged and no role is told; admission keeps the kill all the same.
 func (e *Engine) memoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.MemoryGuardKill) (intake.Result, error) {
 	report := fact.Report
+	if report.NoRole {
+		e.logOnCommit(ctx, "workflow: a memory kill of a process of no role is told to no role",
+			"issue", fact.Issue, "connection", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID,
+			"cause", report.Cause, "sizeBytes", report.SizeBytes, "limitBytes", report.LimitBytes)
+		return intake.Result{}, nil
+	}
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {
 		return intake.Result{}, err
@@ -2031,6 +2042,11 @@ func kernelKillLead(report shimwire.LauncherMemoryKill) string {
 // it, claim.ProjectToken, which is how the sandbox names the controller pod's claim) is no kill of
 // this controller's program: the runtime hands only the controller's pod a session of no issue, so
 // it is logged and dropped rather than told to a reader whose program it was not.
+//
+// A report marked as of no role (the report's NoRole) is no kill of the controller's program
+// either: the daemon never tells the controller pod's launcher that it knows such a report
+// (runtime/sandbox's launcherHelloAck), so its launcher sends none, and one that came anyway is
+// logged and told to nobody, as memoryGuardKill tells no role of one.
 func (e *Engine) controllerMemoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.ControllerMemoryGuardKill) (intake.Result, error) {
 	report := fact.Report
 	project, err := claim.ProjectToken(e.cfg.Project)
@@ -2039,6 +2055,11 @@ func (e *Engine) controllerMemoryGuardKill(ctx context.Context, tx pgx.Tx, fact 
 	}
 	if fact.Token != claim.ControllerToken(project) {
 		e.logOnCommit(ctx, "workflow: a controller memory guard kill names a token that is not this project's controller, so nobody is told",
+			"role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "cause", report.Cause)
+		return intake.Result{}, nil
+	}
+	if report.NoRole {
+		e.logOnCommit(ctx, "workflow: a controller pod's memory kill of a process of no role is told to nobody",
 			"role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "cause", report.Cause)
 		return intake.Result{}, nil
 	}

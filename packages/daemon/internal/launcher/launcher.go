@@ -440,7 +440,7 @@ func (m *manager) serve(ctx context.Context, address string) error {
 			m.writer = nil
 		}
 		if m.reportWriter == writer {
-			m.reportWriter, m.reportsCarried = nil, false
+			m.reportWriter, m.reportsCarried, m.reportsNoRole = nil, false, false
 		}
 		m.mu.Unlock()
 	}()
@@ -453,12 +453,14 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	// as an issue pod's (runsGuest), where it carried KernelKills, whatever MemoryGuard says, since
 	// a daemon that sends guard settings and no KernelKills, as one from before the controller's
 	// pod ran in a microVM answers the controller, would tell a role of the kernel's kill in the
-	// guard's words.
+	// guard's words. The pod's reports of processes of no role may go on it too where the
+	// acknowledgement carried NoRoleKills as well (noRoleReports): a daemon without it would tell
+	// this role of a kill that was not its own.
 	carried := ack.MemoryGuard != nil
 	if m.cfg.runsGuest() {
 		carried = ack.KernelKills
 	}
-	m.openMemoryReports(writer, carried)
+	m.openMemoryReports(writer, carried, carried && ack.NoRoleKills)
 	for {
 		frame, err := readFrame(reader)
 		if err != nil {
@@ -724,17 +726,25 @@ type manager struct {
 	// is the connection they go on, this role's current one from its state frame on, nil while
 	// none is up; reportsCarried is whether that connection's acknowledgement says the daemon
 	// behind it knows the report: guard settings for a gVisor pod's launcher, KernelKills for a
-	// microVM pod's (serve, openMemoryReports). memorySending is the sequence of the oldest report
-	// while it is being written, 0 while none is, since a guard counts its kills from 1
-	// (sendMemoryKills). All four are guarded by mu.
+	// microVM pod's (serve, openMemoryReports); reportsNoRole is whether it says, beside that, that
+	// the daemon knows a report of a process of no role (NoRoleKills), which makes the connection
+	// one the pod's reports of no role may go on (noRoleReports). memorySending is the sequence of
+	// the oldest report while it is being written, 0 while none is, since a guard counts its kills
+	// from 1 (sendMemoryKills). All five are guarded by mu.
 	memoryKills    []shimwire.LauncherMemoryKill
 	reportWriter   *shimwire.Writer
 	reportsCarried bool
+	reportsNoRole  bool
 	memorySending  uint64
 	// memoryWake tells this role's report sender a report is waiting (sendMemoryKillsUntil), and
 	// memorySend holds one send of the waiting reports at a time (sendMemoryKills).
 	memoryWake chan struct{}
 	memorySend sync.Mutex
+	// noRoleReports is the pod's one queue of the reports of processes of no role, which every
+	// role manager of an issue pod's container shares and which sends on the connection of one of
+	// them (serveMemoryGuard). It is nil in the controller pod's single-role form, where every
+	// process is the controller's, and in a launcher that runs no watch.
+	noRoleReports *noRoleReports
 	// volumeTrimSettings is what the latest acknowledgement of this role handed the pod's cache
 	// trimmer, and nil when it handed none (shimwire.LauncherHelloAck.VolumeTrim): on nil the
 	// trimmer reads and deletes nothing, as on settings it refuses (volumeTrimRuns), and a report
