@@ -553,7 +553,7 @@ func endOfTransition(w Walk, trigger TriggerKind, from phase.Phase, to stepSite,
 }
 
 // StartStepRecord writes the start of the step each task of issue stands in, on that task's own
-// walk (standingStep over viewsOf), under the agent that step names (startNamedStep): admission's
+// walk (standingStep over scopes), under the agent that step names (startNamedStep): admission's
 // promotion of a member whose phase worker it does not start (admit's startMidPhaseMembers), whose
 // step starts again all the same. An issue whose plan holds several tasks has no one walk, and
 // each of its running tasks stands at a step of its own; an issue of one task, or of no plan rows,

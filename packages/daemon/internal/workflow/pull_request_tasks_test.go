@@ -50,7 +50,7 @@ func seedTaskBranch(t *testing.T, pool *pgxpool.Pool, key, task, branch string) 
 // implementer's step and leaves b testing.
 //
 // The fault it catches is a pull request's task read from what its row recorded rather than from
-// the branch it is on (its control: viewOfPullRequest on the row's own task, which names none, so
+// the branch it is on (its control: scopeOfPullRequest on the row's own task, which names none, so
 // nobody is told and nothing moves).
 func TestAFactOfThePullRequestOnTheIssuesBranchReachesTheTaskThatHoldsIt(t *testing.T) {
 	for _, tc := range []struct {
@@ -105,7 +105,7 @@ func TestAFactOfThePullRequestOnTheIssuesBranchReachesTheTaskThatHoldsIt(t *test
 // role's phases row, which is keyed by the issue and the role.
 //
 // The fault it catches is a fact of one task's pull request read as the issue's, or as another
-// task's (its control: viewOfPullRequest answering the issue's first running task, a, so the
+// task's (its control: scopeOfPullRequest answering the issue's first running task, a, so the
 // request for changes on b's pull request is read at a's testing and returns nothing).
 func TestAReviewOfOneTasksPullRequestMovesThatTask(t *testing.T) {
 	pool := migratedPool(t)

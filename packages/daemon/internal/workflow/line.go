@@ -169,6 +169,19 @@ func (w Walk) stepAt(place record.TaskPlace) (record.PlanStep, bool) {
 	return record.PlanStep{}, false
 }
 
+// AgentAt is the name of the agent that does the work of place on w: the agent name of the step
+// stepAt reads (record.PlanStep.AgentName), and "" where stepAt holds none, and for a step of the
+// key owner, whose claim is no name on the issue: there the role stands for the agent. Each task's
+// writers that name the agent of a place (its run's end, its scope's step records, a started step)
+// read it here, so stepAt stays the one place a step's agent is read from.
+func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
+	step, ok := w.stepAt(place)
+	if !ok {
+		return ""
+	}
+	return step.AgentName()
+}
+
 // placeIn is where w's task stands while its issue stands in p: for a stored walk, w.Place where
 // the phase it derives for a running task (issuePhaseOf) is p, and no place otherwise; for a walk
 // with no plan rows, and for a stored task at no act whose issue already stands in a step (plan

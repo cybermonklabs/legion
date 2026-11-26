@@ -116,7 +116,7 @@ func TestSharedNewsCreditRunningReadCost(t *testing.T) {
 		t.Fatalf("running-step cost probe saw %d rows, planned=%t, error=%v; want %d real rows", len(rows), planned, err, agents)
 	}
 	t.Logf("SHARED_NEWS_CREDIT_RUNNING_READ agents=%d bytes=%d query_and_decode=%s", agents, len(raw), elapsed)
-	logged := captureLog(t)
+	logged := captureLog(t, r.store.Pool())
 	delivery := r.newsTask("busy-shared-credit")
 	delivery.ConfirmedAt = r.at.Add(time.Second)
 	started = time.Now()

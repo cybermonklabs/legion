@@ -15,7 +15,7 @@ import (
 // now (uncountedRunOpen: this release's end rule does not hold it over, its tree is not the
 // operator's, and its generation started a run) gets an open row there
 // (record.Store.OpenUncountedStep), with the agent and the moment its start would have named
-// (upgradedStart). An issue whose plan holds several tasks is read for each of them (viewsOf), each
+// (upgradedStart). An issue whose plan holds several tasks is read for each of them (scopes), each
 // task's step its own. So a member of a lingering or closed tree, and every issue of a tree whose
 // root waits for the promotion that opens it — a root a hand-over carried in, and the members of a
 // tree admitted again — get none. It queues no record: the run reaches Dispatch with its end,

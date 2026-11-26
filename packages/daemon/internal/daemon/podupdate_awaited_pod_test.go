@@ -305,7 +305,7 @@ func wantReadThroughTheTester(t *testing.T, rig *podUpdateRig, line map[string]a
 	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 1 || reads[0].Issue != podUpdateIssue || reads[0].Token != rig.tokens[claim.RoleTester] {
 		t.Errorf("the workspace was read %+v, want one read of %s through the tester", reads, podUpdateIssue)
 	}
-	if line["workspaceRead"] != found || line["workspaceReadBy"] != string(claim.RoleTester) {
+	if line["workspaceRead"] != found || line["workspaceReadBy"] != string(rig.tokens[claim.RoleTester]) {
 		t.Errorf("the replacement's line names the read %+v, want one the tester made that %s", line, found)
 	}
 }
@@ -502,7 +502,7 @@ func TestPodUpdateReplacementLineNamesEachClaimTheRoundDidNotWaitFor(t *testing.
 // so the pod is replaced through the claim whose launch waits on it (podProcess). The passed-over
 // claim would make a read of the issue's workspace due (readRoundWorkspace), but no role process
 // runs in the pod to make it: the waiting claim runs none there, and the Sandbox runtime refuses a
-// read through a claim that records no process (its runningRoleConn), as the fake is scripted to
+// read through a claim that records no process (its runningClaimConn), as the fake is scripted to
 // here. So the replacement makes no read, as the replacement of a pod no role process ran in makes
 // none (processlessRead). Its line names the read as not made because no role process ran in the
 // pod, and names the claims as every replacement through ReplacePod does. The one message on the

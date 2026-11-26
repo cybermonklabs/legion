@@ -6,6 +6,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -16,7 +17,9 @@ import (
 // phases rows for the entry fence alone, so a row that fails an earlier fence, a start of no entry
 // and a root architect's start, which names no phase, read none; a failed read is the row's error.
 func TestAStartRowNamesTheFirstFenceItFailsAndReadsThePhasesRowsForTheEntryAlone(t *testing.T) {
-	checking := record.Issue{Key: "LEGION-208", Phase: phase.Step, StepRole: "checker", Generation: 2}
+	t.Parallel()
+	checking := record.Issue{Key: "LEGION-208", Phase: phase.Step, Generation: 2, Running: []record.RunningStep{
+		{Task: plan.DefaultTask, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}, Role: "checker", Phase: phase.Step}}}
 	rows := []record.PhaseRow{{Issue: "LEGION-208", Role: "checker", Entry: 5}}
 	for _, tc := range []struct {
 		name      string
@@ -41,6 +44,7 @@ func TestAStartRowNamesTheFirstFenceItFailsAndReadsThePhasesRowsForTheEntryAlone
 			record.SuperviseRequest{Op: "start", Role: claim.RoleArchitect, Entry: 1, Generation: 2}, fenceHolds, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			read := 0
 			got, err := startFenceOf(tc.issue, tc.payload, func() ([]record.PhaseRow, error) {
 				read++

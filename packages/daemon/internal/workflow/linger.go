@@ -311,7 +311,7 @@ func (e *Engine) openCheckIfMerged(ctx context.Context, tx pgx.Tx, issue record.
 // issue whose pull request of its task that merges (record.Store.MergePullRequest) merged stands in
 // merging (or held from it) while any issue beneath it is in the workflow (closeMerged), and
 // closes, as its merge would have, once the last of them leaves. The close is that task's, on the
-// copy of merged read for it (viewOfPullRequest), as the merge's own close is (merged), so an issue
+// copy of merged read for it (scopeOfPullRequest), as the merge's own close is (merged), so an issue
 // whose plan holds several tasks closes too. Which issues still hold it is closeMerged's to judge,
 // so this runs on every merged ancestor of an issue that leaves the workflow and changes nothing
 // for any other. It tells nobody: the architect heard the wait when the close entered it (merged),

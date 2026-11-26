@@ -168,7 +168,7 @@ func pullRequestNews(before, after record.PullRequest) bool {
 // branch's new pull request replaces the merged one. The pull request is recorded on its branch,
 // in place of the row of that branch (replacedPullRequest), so the pull request of one task of an
 // issue never takes the place of another's, and it is the pull request of the task whose branch it
-// is on (viewOfPullRequest): the merge it waits on is the task's, and it moves the task where its
+// is on (scopeOfPullRequest): the merge it waits on is the task's, and it moves the task where its
 // implementer's completion waits for it. It is recorded only on a branch a task of its issue holds
 // (issueForBranch): one on any other branch of an issue's shape, a reopen or a redelivered open of
 // a pull request whose row the record deleted among them, is none of the issue's. And it is
@@ -828,7 +828,7 @@ func leftMergingAt(issue record.Issue, lingers bool, pr *record.PullRequest, num
 // when the issue has left implementing, its implementer's handoff is another commit, or an open or
 // merged pull request is recorded: the read asked GitHub before the record changed, or the merge
 // told the architect (merged) and a completion moves the issue on it. The fact is of the task whose
-// branch it names, read for that task (viewOfPullRequest), whose own pull request is the one that
+// branch it names, read for that task (scopeOfPullRequest), whose own pull request is the one that
 // lets it move (pullRequestOf).
 func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMissing) (intake.Result, error) {
 	recorded, err := e.store.Issue(ctx, tx, fact.Issue)
@@ -850,7 +850,7 @@ func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.
 	if err != nil || record.LetsImplementationMove(pr) {
 		return intake.Result{}, err
 	}
-	worker, err := e.workerClaim(ctx, tx, *issue, claim.RoleImplementer)
+	worker, err := e.workerClaim(ctx, tx, issue, claim.RoleImplementer)
 	if err != nil {
 		return intake.Result{}, err
 	}
