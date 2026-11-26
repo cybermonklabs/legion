@@ -122,6 +122,9 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		// (refreshGitHubCredential).
 		repo, named := fetchRepository(pod)
 		for _, role := range kind.roles() {
+			if r.proxiesGitHubIn(&pod.Spec, role) {
+				continue
+			}
 			r.refreshGitHubCredential(ctx, pod, owner.UID, role, repo, bundles)
 		}
 		if _, issue := kind.(issuePod); !issue || !named {

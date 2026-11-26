@@ -80,7 +80,7 @@ var legionCommands = [][]string{
 // build's: the commands of newRoot that set Hidden, which TestConformanceCaseIsTheTree holds it
 // to. Each sets Hidden, so neither help nor completion offers it, its group's included.
 var legionHidden = [][]string{
-	{"worker-shim"},
+	{"worker-shim"}, {"forwarder"},
 	{"launcher"}, {"launcher", "role-init"}, {"launcher", "volume-trim-delete"},
 	{"claude-bridge"}, {"model-token"}, {"probe-image"},
 	{"workspace-init"}, {"workspace-init", "fetch"},

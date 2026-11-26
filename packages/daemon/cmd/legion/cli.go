@@ -67,6 +67,7 @@ func newRoot(stdout, stderr io.Writer) *cobra.Command {
 			newControllerStartCommand(own, stderr),
 		),
 		newWorkerShimCommand(stdout, own),
+		newForwarderCommand(own),
 		newLauncherCommand(stdout, stderr),
 		newClaudeBridgeCommand(stdout, stderr),
 		newModelTokenCommand(stdout, own),

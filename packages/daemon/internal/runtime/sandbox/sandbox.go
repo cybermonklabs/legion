@@ -120,6 +120,7 @@ type Runtime struct {
 	gitHubCredential        runtime.GitHubCredential
 	controllerCredential    runtime.ControllerCredential
 	gitHubDirs              func(repo ghrepo.Repository, roles []appauth.AppRole) []string
+	gitHubRoute             func(repo ghrepo.Repository) (string, []ghrepo.Rename)
 	store                   Store
 	conns                   runtime.Conns
 	launchers               *launchers
@@ -323,6 +324,8 @@ func checkSupervision(opts Options) error {
 		return refuse("no github credential function for the controller's gh files")
 	case opts.GitHubDirs == nil:
 		return refuse("no github directories function for the pods' gh directories")
+	case opts.AgentSecrets != nil && len(opts.AgentSecrets.GitHub) > 0 && opts.GitHubRoute == nil:
+		return refuse("no github route function for the forwarders' gh bundles")
 	case opts.Store == nil:
 		return refuse("no store")
 	case opts.Conns == nil:
@@ -491,8 +494,8 @@ func configureProber(opts Options) (*Runtime, error) {
 		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting, roundPodEnds: opts.RoundPodEnds, launchTakes: opts.LaunchTakes, launchTook: opts.LaunchTook,
 		memoryGuard: opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard, volumeTrim: opts.VolumeTrim,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
-		gitHubDirs: opts.GitHubDirs,
-		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
+		gitHubDirs: opts.GitHubDirs, gitHubRoute: opts.GitHubRoute,
+		store: opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
 		taken: map[string]sandboxTaken{}, sessions: map[claim.Token]launchedSession{}, dispatchTokenClaims: map[claim.Token]string{},
 		cacheConfig: opts.RepositoryCache, cacheRepositories: opts.CacheRepositories,

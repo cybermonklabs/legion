@@ -630,7 +630,7 @@ func bundleDirs(installed []string, served func(ghrepo.Repository) bool, renames
 	// The rename rule is read per repository: a pair resolves exactly when its `to` is served and
 	// its `from` is not, which is asked of the two repositories themselves.
 	aliases := renames.OwnerAliases(served)
-	moving := renames.Moving(served)
+	dflt, moving := Route(served, renames, repo)
 	owners := make(map[string]bool, len(installed))
 	for _, owner := range installed {
 		owners[strings.ToLower(owner)] = true
@@ -640,7 +640,7 @@ func bundleDirs(installed []string, served func(ghrepo.Repository) bool, renames
 		layout.owners[from] = true
 	}
 	if !repo.IsZero() {
-		layout.dflt, _, _ = ghconfig.RouteDir(moving, repo.Owner(), repo.Name())
+		layout.dflt = dflt
 		layout.owners[layout.dflt] = true
 	}
 	dirs := make([]bundleDir, 0, len(layout.owners))
@@ -669,6 +669,20 @@ func bundleDirs(installed []string, served func(ghrepo.Repository) bool, renames
 		layout.refused = append(layout.refused, dir.name)
 	}
 	return layout, nil
+}
+
+// Route is the rename rule a gh bundle routes by, as bundleDirs reads it: pairs are the configured
+// renames that resolve and move a repository to another owner's installation
+// (ghrepo.Renames.Moving over served), which the bundle's pairs file carries, and dir is the
+// directory repo routes to over them (ghconfig.RouteDir), its GH_CONFIG_DIR's, "" for a zero repo.
+// A role whose GitHub is behind the broker's proxy writes its forwarder's bundle by the same rule
+// (internal/runtime/sandbox's forwarder flags), so the two bundles route one repository alike.
+func Route(served func(ghrepo.Repository) bool, renames ghrepo.Renames, repo ghrepo.Repository) (dir string, pairs []ghrepo.Rename) {
+	pairs = renames.Moving(served)
+	if !repo.IsZero() {
+		dir, _, _ = ghconfig.RouteDir(pairs, repo.Owner(), repo.Name())
+	}
+	return dir, pairs
 }
 
 // noDirectoryName is the refusal of an owner whose name is no directory's (ghconfig.IsOwner):

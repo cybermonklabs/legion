@@ -424,6 +424,52 @@ under a bound of their own, up to 30 minutes. The stack runs in a session of its
 is stopped as one process group, so a stop during the build ends that build with the
 stack.
 
+## proxy-role-check.sh
+
+Runs a Legion role's GitHub access through its forwarder (`legion forwarder`, built from
+this tree) and the broker's proxy on `dev-airlock.sh`'s stack, and says whether each step
+worked. It is the driver of `runtime.kubernetes.agent_secrets.github`
+(`docs/kubernetes.md`).
+
+```bash
+DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/proxy-role-check.sh
+# on a machine whose loopback port 443 this user may not bind:
+DEV_BROKER_POSTGRES_URL=postgres://<user>:<password>@127.0.0.1:<port>/<db> packages/envoy/scripts/proxy-role-check.sh --isolate
+```
+
+It starts `dev-airlock.sh --one-broker`, a minting stand-in GitHub with the App installed
+on two accounts, a TLS stand-in GitHub (`proxy-role/github_standin.py`) on port 443 of
+127.0.0.20 for `api.github.com`, `github.com` and `uploads.github.com`, a broker of its own
+on the stack's database whose profiles add `PROXY_ROLE_APP` (behind the proxy) and
+`PROXY_ROLE_PLAIN` (the same App, released as its tokens), and `legion forwarder` asking that
+broker with the stack's enrolled session's key. It checks `gh api`, `gh pr list`,
+`gh api graphql`, `gh stack --help`, `git ls-remote` and `git push --dry-run`, the stand-in
+recording each account's installation token for a call naming that account, from one grant;
+a revocation, after which the role's gh works again within 60 seconds and no placeholder
+reached the stand-in; a renewal, in which a second forwarder asks for `PROXY_ROLE_RENEW`, whose
+first grant a trigger back-dates in the broker's database to 49 min 45 s of its hour, so the
+forwarder renews 15 seconds in, and a new connection carrying the previous grant's placeholder,
+read before the renewal, must still get the account's token while that grant lives, then that
+forwarder's stop must leave neither of its grants live in the broker's grants table; a public
+fetch while the broker's proxy port answers nothing, with the control that a bound host fails
+then; and that the role's `hosts.yml` files and `legion git-credential` hold placeholders
+alone (`proxy-role/assert.sh`). The renewal check passes only on a broker that swaps the
+placeholder of another live grant of the session on one connection.
+
+Its negative control runs that placeholder assertion over a `hosts.yml` holding the token
+the daemon reads without the role map (`agent-secrets PROXY_ROLE_PLAIN -- printenv
+PROXY_ROLE_PLAIN`), which must fail. It prints a `PASS` or `FAIL` line for each property,
+then `proxy-role-check: passed (<n> of <n>)` or `failed (<k> of <n>)` and a last line naming
+the scenario's outcome, the head commit and the run's duration. It exits 0 only when every
+property passed, 1 when one did not, and 2 on a usage error. No line it prints is a
+credential: the stand-in records each credential by kind and the first 16 hex digits of its
+SHA-256. `--isolate` runs it in a user and network namespace of its own, bridging the
+database's port in through a unix socket, and needs `unshare`, `ip` and `socat`; `--keep`
+leaves the work directory, each step's output under `steps/`. It needs bash, curl, jq, go,
+python3, openssl, git and a gh binary with the `gh-stack` extension (`PROXY_ROLE_GH`, else
+the first gh on `PATH` that is no script). `proxy-role-check.test.sh` tests its usage, its
+placeholder assertion and its stand-in with no stack.
+
 ## project-secrets-check.sh
 
 Shows on the local stack that a private Dispatch project's secret goes only to a

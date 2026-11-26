@@ -19,8 +19,8 @@ const gitCredentialUsage = "usage: legion git-credential get|store|erase  (git's
 // gitCredentialOperationUsage is each operation's own usage, which its --help prints.
 var gitCredentialOperationUsage = map[string]string{
 	"get":   "usage: legion git-credential get  (reads git's request on stdin; answers the token of the owner its path names, or, for a fork whose owner has no gh directory, the token of its parent's owner or else its source's owner; else nothing, exit 1)",
-	"store": "usage: legion git-credential store  (reads git's request on stdin and writes nothing: the daemon is the one writer of the gh files)",
-	"erase": "usage: legion git-credential erase  (reads git's request on stdin and erases nothing: the daemon is the one writer of the gh files)",
+	"store": "usage: legion git-credential store  (reads git's request on stdin and writes nothing: the gh files are the daemon's, or for a role behind the broker's proxy its forwarder's)",
+	"erase": "usage: legion git-credential erase  (reads git's request on stdin and erases nothing: the gh files are the daemon's, or for a role behind the broker's proxy its forwarder's)",
 }
 
 // gitCredentialStdin is where `legion git-credential` reads git's credential request: the
@@ -62,7 +62,8 @@ var gitCredentialStdin io.Reader = os.Stdin
 // pair whose `to` owner has no directory, an unset LEGION_GH_OWNERS_DIR, and a hosts.yml with no
 // token answer nothing too, exit 1, naming why on stderr, and git, which every shared clone tells
 // credential.interactive=false, then fails rather than prompts. `store` and `erase` change
-// nothing: the daemon is the one writer of the gh files.
+// nothing: the gh files are written by the daemon, or, for a role whose GitHub is behind the
+// broker's proxy, by its forwarder (internal/githubproxy), never by git.
 func runGitCredential(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 1 && helpRequested(args[0]) {
 		fmt.Fprintln(stderr, gitCredentialUsage)

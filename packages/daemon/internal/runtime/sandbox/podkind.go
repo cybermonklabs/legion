@@ -499,15 +499,27 @@ func (issuePod) agentEnv(l launch) []corev1.EnvVar {
 // would. No other tool path or helper is told: the agent's git and jj are the image's on PATH, and
 // the helper is the clone's own configuration. Every launcher role, the controller's included,
 // reads its own App's gh bundle at GHConfigDir, so this is appended once for every kind.
+//
+// A role whose GitHub is behind the broker's proxy (launch.proxiesGitHub) reads the bundle its
+// forwarder writes under the generation's private directory instead (gitHubProxyDir), its
+// GH_CONFIG_DIR that bundle's directory of the launch's proxyDefault, and is told the forwarder
+// in HTTPS_PROXY and https_proxy, the two names curl, git, gh and the rest read.
 func ghAgentEnv(l launch) []corev1.EnvVar {
-	return []corev1.EnvVar{
-		{Name: "GH_CONFIG_DIR", Value: ghconfig.Dir(GHConfigDir, l.gitHubDefault)},
+	owners, def := GHConfigDir, l.gitHubDefault
+	var proxy []corev1.EnvVar
+	if l.proxiesGitHub() {
+		owners, def = gitHubProxyDir(l.spec.Generation), l.proxyDefault
+		address := "http://" + forwarderAddress(l.spec.Role)
+		proxy = []corev1.EnvVar{{Name: "HTTPS_PROXY", Value: address}, {Name: "https_proxy", Value: address}}
+	}
+	return append([]corev1.EnvVar{
+		{Name: "GH_CONFIG_DIR", Value: ghconfig.Dir(owners, def)},
 		{Name: "GH_TOKEN", Value: ""},
 		{Name: "GITHUB_TOKEN", Value: ""},
 		{Name: "GH_HOST", Value: ""},
-		{Name: "LEGION_GH_OWNERS_DIR", Value: GHConfigDir},
+		{Name: "LEGION_GH_OWNERS_DIR", Value: owners},
 		{Name: "LEGION_GH_PATH", Value: l.gh},
-	}
+	}, proxy...)
 }
 
 // provision is what a new issue pod needs before it starts: it mints the provisioning token for

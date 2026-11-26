@@ -222,6 +222,8 @@ var settingsExcluded = map[string]string{
 	"Config.DispatchTokenFile":           "the path of a file holding a credential",
 	"Config.DispatchTokenTransitionFile": "the path of a file holding a credential: the shared Dispatch token a launch into a pod built before dispatch_token_broker gets",
 	"AgentSecretsConfig.TokenFile":       "the path of a file holding a credential: the daemon's own broker login token",
+	"AgentSecretsConfig.GitHub":          "not a setting every pod reads: each role whose GitHub is behind the broker's proxy is told its own secret names in its forwarder's start, and no other role's",
+	"AgentSecretsConfig.GitHubHosts":     "not a setting every pod reads: each role whose GitHub is behind the broker's proxy is told the GitHub kind's hosts in its forwarder's start (--github-host), and no other role is",
 	"Kubernetes.Kubeconfig":              "the daemon's cluster credential file",
 	"Kubernetes.Context":                 "the context inside the daemon's cluster credential file",
 	"Kubernetes.Pod":                     "not a daemon setting: the operator's pod pieces, which every pod reads from its own spec and whose lists are Kubernetes API types with no legion.yaml-shaped rendering",

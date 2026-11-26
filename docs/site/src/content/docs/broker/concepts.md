@@ -1360,7 +1360,12 @@ Any other value of `default-grant` is refused
 lifetime and bounds it. The approver sees the lifetime the request asked for before deciding it.
 While a grant lives, a new request from the same session for exactly the same names and the same
 lifetime gets the same grant back, without asking anyone again, as long as the current policy still
-allows it.
+allows it. A grant nobody decided, one the broker granted at once, is handed back only while at
+least half of its own life is left; in its second half the request gets a new grant, and the old
+one stays live until its own expiry, so a client that renews ahead of an expiry moves to the new
+grant while calls made under the old one finish. A grant a person or the judge decided, and one
+that lasts until its session ends, is handed back for as long as it lives. Concurrent requests for
+the same names get one grant between them.
 
 A grant binds to a session name under one principal.
 The box is still there: the grant hangs off one enrollment at a time, and a session reads it only by

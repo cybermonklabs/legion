@@ -465,6 +465,12 @@ type Machine struct {
 	testCommitCut  func() error
 	testHoldCommit func(backend uint32) error
 	testLandedRead func(backend uint32) error
+	// testBeforeCreateTx, when set, runs in Create after an attempt's reuse read found no grant
+	// to hand back and before that attempt's transaction begins, with the attempt's number
+	// (createAttempt). It exists only so a test can hold concurrent asks there until each has
+	// read, the window two asks for the same names both write a grant in, and count attempts; no
+	// production caller sets it.
+	testBeforeCreateTx func(attempt int)
 }
 
 // missRereadLimiter is the per-enrollment buckets MissRereads names, built on the first miss.
@@ -810,8 +816,30 @@ func (m *Machine) create(ctx context.Context, enrollmentID, compactRequest, sess
 // test can write through it the request a broker from before one of them would have stored.
 // With narrowing, a body's github_app field, the request is served as the profile
 // gitHubAppProfile chooses, with narrowing's target, and one that would wait for a person or the
-// judge is refused before it is written.
+// judge is refused before it is written. It makes at most two attempts (createAttempt): a second
+// only where the first found, under the names' locks, a grant a concurrent ask wrote meanwhile.
 func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollmentID, sessionID string, obj record.RequestObject, names []string, narrowing *GitHubAppNarrowing) (Request, error) {
+	request, err := m.createAttempt(ctx, enr, enrollmentID, sessionID, obj, names, narrowing, 1)
+	if errors.Is(err, errGrantWrittenMeanwhile) {
+		request, err = m.createAttempt(ctx, enr, enrollmentID, sessionID, obj, names, narrowing, 2)
+	}
+	return request, err
+}
+
+// errGrantWrittenMeanwhile is createAttempt's answer when, under the names' locks, it found a
+// grant another ask wrote while it waited on them (reuseUnderLock): it wrote nothing, and
+// createChecked makes its one second attempt, whose reuse read hands that grant over.
+var errGrantWrittenMeanwhile = errors.New("a concurrent ask wrote a grant for these names")
+
+// createAttempt is one attempt of createChecked, attempt its number, 1 or 2. Concurrent asks for
+// the same names from one session must get one grant between them, but the reuse read below runs
+// on the pool, with no lock, so two asks can each find nothing to reuse. The first attempt
+// therefore reads the reuse candidates again under the names' locks (reuseUnderLock) and answers
+// errGrantWrittenMeanwhile where another ask wrote a grant meanwhile; the second attempt repeats
+// every check of the first, the github_app field's choice of profile included, and its reuse read
+// hands that grant over after every check a reuse makes. The second attempt does not read again,
+// so an ask makes at most two attempts.
+func (m *Machine) createAttempt(ctx context.Context, enr enrollmentRow, enrollmentID, sessionID string, obj record.RequestObject, names []string, narrowing *GitHubAppNarrowing, attempt int) (Request, error) {
 	// Whether the session's person is a restricted member, asked here, on no transaction and
 	// before a live grant is looked for, so every read below — the reuse's re-check, the judge's
 	// lifetime, the profile check before a person is asked and the transaction's own evaluation —
@@ -897,7 +925,11 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 		}
 	}
 	sorted := sortedCopy(names)
-	if existing, ok, err := m.reuseLiveGrant(ctx, enr, sorted, lifetime, set, target, facts, narrowing); err != nil {
+	seen, err := reuseCandidates(ctx, m.Store.Pool, enrollmentID, lifetime, sorted)
+	if err != nil {
+		return Request{}, err
+	}
+	if existing, ok, err := m.reuseLiveGrant(ctx, enr, seen, lifetime, set, target, facts, narrowing); err != nil {
 		return Request{}, err
 	} else if ok {
 		if err := m.endBesideReusedGrant(ctx, enrollmentID, sorted, existing.ID); err != nil {
@@ -915,6 +947,9 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 		}
 	}
 	assignee := m.claimAssignee(ctx, enr, set, names, obj.Reason, facts)
+	if m.testBeforeCreateTx != nil {
+		m.testBeforeCreateTx(attempt)
+	}
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return Request{}, err
@@ -925,6 +960,14 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 	}
 	if err := lockLiveEnrollment(ctx, tx, enrollmentID); err != nil {
 		return Request{}, err
+	}
+	// The first attempt alone reads again under the names' locks (createChecked).
+	if attempt == 1 {
+		if again, err := reuseUnderLock(ctx, tx, enrollmentID, sorted, lifetime, seen); err != nil {
+			return Request{}, err
+		} else if again {
+			return Request{}, errGrantWrittenMeanwhile
+		}
 	}
 	requester, err := m.requester(ctx, tx, enr, facts)
 	if err != nil {

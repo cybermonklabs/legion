@@ -1,0 +1,17 @@
+kind: Added
+body: |-
+    `runtime.kubernetes.agent_secrets.github` puts a role's GitHub behind the secrets broker's
+    proxy: it maps a role, `controller` among them, to the broker's secret names whose grant that
+    role's gh, gh extensions and git reach GitHub under, and `github_hosts` names the hosts the
+    broker's GitHub kind binds. Such a role holds no GitHub token. Its shim starts
+    `legion forwarder` on a loopback port of the role's own, which `HTTPS_PROXY` and `https_proxy`
+    name; the forwarder asks the broker with the role's own key for an hour's grant with no
+    repository target, writes each account's placeholder into the role's gh bundle, sends GitHub's
+    hosts to the broker's proxy port and opens every other host itself. It asks for the
+    next grant with ten minutes left, asks again at once when the broker ends a grant early, and
+    revokes its grants when the generation stops. The daemon mints no App token for such a role, and
+    a pod that still projects one has drifted for its update round. With the key unset, every role's
+    App token is minted as before.
+time: 2026-11-23T13:04:50Z
+custom:
+    Issue: pr5233

@@ -897,7 +897,9 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 		if !ok {
 			return false, nil
 		}
-		l.gitHubDefault = string(recorded)
+		if !r.proxiesGitHubIn(&pod.Spec, role) {
+			l.gitHubDefault = string(recorded)
+		}
 		if len(secret.Data[LauncherTokenFile]) > 0 {
 			r.cacheLauncherCredential(s, secret)
 		}
@@ -979,6 +981,9 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	}
 	if l.enrolls(r) {
 		shim = append(shim, "--agent-secrets-key-dir", AgentSecretsKeyDir, "--pod-token-file", AgentSecretsTokenDir+"/"+AgentSecretsTokenFile, "--"+shimwire.AgentSecretsBinFlag, r.tools.AgentSecrets)
+		if l.proxiesGitHub() {
+			shim = append(shim, "--github-forwarder", dir+"/"+gitHubForwarderFile)
+		}
 	}
 	_, values := r.launchEnvironment(l)
 	values = append(values, bootTokenKey+"_FILE="+dir+"/"+bootTokenKey)
@@ -988,6 +993,9 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	}
 	files[bootTokenKey] = l.spec.BootToken
 	files[runtime.SystemPromptFile] = l.prompt
+	if l.enrolls(r) && l.proxiesGitHub() {
+		files[gitHubForwarderFile] = r.forwarderFile(l)
+	}
 	claudeDir := ""
 	if l.runsClaude() {
 		claudeDir = claudeConfigDir(l.spec.Role)

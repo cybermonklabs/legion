@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -221,14 +222,26 @@ var runtimeOwnedComposedExchangeOrBroker = func() map[string]bool {
 
 // specOwned is every variable a launch spec may not set under r (runtime.ValidateSpawnSpec): the
 // runtime's own and the composed ones, the exchange identity's two where the deployment names
-// an exchange audience (exchangeOwned), and DISPATCH_TOKEN_BROKER where it sets
-// dispatch_token_broker as well (brokerOwned), as PodExchange reads the two.
+// an exchange audience (exchangeOwned), DISPATCH_TOKEN_BROKER where it sets
+// dispatch_token_broker as well (brokerOwned), as PodExchange reads the two, and the proxy
+// variables where it puts any role's GitHub behind the broker's proxy (proxyOwned). Each set is
+// built once, at init.
 func (r *Runtime) specOwned() map[string]bool {
+	proxied := r.proxiesAnyGitHub()
 	switch exchangeOf(r.agentSecrets, r.dispatch.Broker) {
 	case ExchangeAndBroker:
+		if proxied {
+			return runtimeOwnedComposedExchangeBrokerOrProxy
+		}
 		return runtimeOwnedComposedExchangeOrBroker
 	case ExchangeIdentity:
+		if proxied {
+			return runtimeOwnedComposedExchangeOrProxy
+		}
 		return runtimeOwnedComposedOrExchange
+	}
+	if proxied {
+		return runtimeOwnedComposedOrProxy
 	}
 	return runtimeOwnedOrComposed
 }
@@ -424,6 +437,14 @@ type launch struct {
 	// claude is what a Claude Code launch needs beyond an Oh My Pi one, resolved once in prepare
 	// and zero for every other backend (claudeInputs).
 	claude claudeInputs
+	// proxied is the GitHub proxy decision (Runtime.proxiesGitHubIn) for the pod this launch
+	// builds, and proxyDefault and proxyPairs the account directory its role is told as
+	// GH_CONFIG_DIR and the renames its forwarder's bundle routes by where its GitHub is behind the
+	// proxy (Runtime.proxyRoute), all decided once in prepare; a launch that keeps a pod reads the
+	// pod's own decision instead (launch.proxiesGitHub).
+	proxied      bool
+	proxyDefault string
+	proxyPairs   []ghrepo.Rename
 	// omp is the session an Oh My Pi launch that trades an exchange identity starts its agent
 	// under (ompInputs): prepare fills it where the configuration trades, and relaunch clears it
 	// for a launch that keeps a pod that trades nothing, so it is zero for a Claude Code launch and
@@ -483,6 +504,10 @@ type keptPod struct {
 	// served tarball for the reconnected session, then tells that digest to the role.
 	checker  string
 	recorded bool
+	// proxied is the GitHub proxy decision (Runtime.proxiesGitHubIn) read of this pod when the
+	// launch began: the pod's gh volume for the role projects nothing of its Secret, the
+	// deployment names the role's secrets, and the pod is enrolled.
+	proxied bool
 }
 
 // leakCheckerAnnotation records on a pod template's metadata the manifest digest of the
@@ -895,6 +920,10 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 		secrets[dispatchTokenKey] = r.dispatch.Bearer
 	}
 	l.secrets, l.prompt = secrets, prompt
+	l.proxied = r.proxiesGitHubIn(nil, spec.Role)
+	if l.proxied {
+		l.proxyDefault, l.proxyPairs = r.proxyRoute(spec)
+	}
 	// The prompt travels to the pod in the start command's Files, one frame a launcher reads whole
 	// (checkStartFrame), so a prompt that would overrun it is refused now, before anything of the
 	// pod is touched; relaunch checks the start it sends again.
@@ -1231,7 +1260,7 @@ func (r *Runtime) volumes(l launch) []corev1.Volume {
 			corev1.Volume{Name: roleVolume(stateVolume, role), VolumeSource: memory},
 		)
 		gh := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}
-		if len(ghItems) > 0 {
+		if len(ghItems) > 0 && !r.proxiesGitHubIn(nil, role) {
 			gh = corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
 				SecretName:  roleSecretName(l.name, role),
 				Items:       slices.Clone(ghItems),

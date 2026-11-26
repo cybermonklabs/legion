@@ -75,6 +75,7 @@ func TestWorkerShimRefusesBeforeDialOrSpawn(t *testing.T) {
 		{"--agent-secrets-key-dir alone", append([]string{"--connect", connect, "--boot-token-file", token, "--agent-secrets-key-dir", dir}, omp...), 1, []string{"given together or not at all"}},
 		{"--warm-codegraph without LEGION_WORKSPACE", append([]string{"--connect", connect, "--boot-token-file", token, "--warm-codegraph"}, omp...), 1, []string{"--warm-codegraph", "LEGION_WORKSPACE"}},
 		{"a --stop-grace that is not positive", append([]string{"--connect", connect, "--boot-token-file", token, "--stop-grace", "0s"}, omp...), 1, []string{"--stop-grace 0s is not a positive duration"}},
+		{"--github-forwarder without the agent-secrets flags", append([]string{"--connect", connect, "--boot-token-file", token, "--github-forwarder", token}, omp...), 1, []string{"--github-forwarder needs --agent-secrets-key-dir"}},
 		{"--socket mode, which is not ported", append([]string{"--socket", socket}, omp...), 2, []string{"-socket"}},
 		// A word before -- is no flag of the shim's and no part of the agent's command: Go's flag
 		// package passed it on as the command's first word, and here it is a usage error.

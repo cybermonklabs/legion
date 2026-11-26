@@ -56,6 +56,7 @@ packages/daemon:
       - internal/pause                          # 8 s
       - internal/appauth                        # 8 s
       - internal/podsafety                      # 7 s
+      - internal/githubproxy                    # 3.7 s on a developer box; no merge-group median yet
       - internal/ompsessions                    # 3 s
       - internal/fixtureenv                     # 2 s
       - internal/blockers                       # 2 s

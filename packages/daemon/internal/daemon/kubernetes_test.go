@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
@@ -1117,20 +1118,27 @@ func TestEveryDurationKeyReachesTheRuntimeOptionThatTakesIt(t *testing.T) {
 }
 
 // sandboxOptions carries runtime.kubernetes.agent_secrets straight into the runtime's Options,
-// nil when the configuration sets no block, and the worker image's agent-secrets binary is
-// always the tools path (Task 11 mounts it there whether or not the deployment enrolls).
+// nil when the configuration sets no block, its github map among it, and the worker image's
+// agent-secrets binary is always the tools path (Task 11 mounts it there whether or not the
+// deployment enrolls). The renames a forwarder's bundle routes by come from the runtime factory's
+// GitHubRoute (appauth.Route), not from this block.
 func TestSandboxOptionsCarryTheAgentSecretsBlock(t *testing.T) {
 	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1") // the file's fixture (`:32-41`): testConfig under runtime: kubernetes
 	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{
 		URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpirySeconds: 1800, ExchangeAudience: "legion-broker-exchange",
+		GitHub:      map[claim.Role][]string{claim.RoleImplementer: {"LEGION_IMPLEMENT_APP"}},
+		GitHubHosts: []string{"api.github.com", "github.com"},
 	}
 	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := &sandbox.AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: 30 * time.Minute, ExchangeAudience: "legion-broker-exchange"}
-	if opts.AgentSecrets == nil || *opts.AgentSecrets != *want {
+	want := &sandbox.AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: 30 * time.Minute, ExchangeAudience: "legion-broker-exchange",
+		GitHub:      map[claim.Role][]string{claim.RoleImplementer: {"LEGION_IMPLEMENT_APP"}},
+		GitHubHosts: []string{"api.github.com", "github.com"},
+	}
+	if opts.AgentSecrets == nil || !reflect.DeepEqual(*opts.AgentSecrets, *want) {
 		t.Fatalf("AgentSecrets = %+v, want %+v", opts.AgentSecrets, want)
 	}
 	if opts.Tools.AgentSecrets != "/opt/legion/bin/agent-secrets" {

@@ -76,6 +76,14 @@ func (s *shim) identity() (*shimwire.AgentSecretsHello, error) {
 	thumbprint := s.thumbprint
 	s.mu.Unlock()
 	if thumbprint == "" {
+		// The key directory is a pod volume, which outlives a generation in a kept pod, so it may
+		// hold the enrollment id of the previous generation's key. That id names no enrollment of
+		// the key keygen makes now: it goes before the key does, so the forwarder waits for this
+		// generation's enrollment (cipher.ErrNotEnrolled) rather than pair the old id with the new
+		// key.
+		if err := os.Remove(filepath.Join(a.KeyDir, enrollmentFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("remove the previous enrollment id from %s: %w", a.KeyDir, err)
+		}
 		ctx, cancel := context.WithTimeout(s.loop, keygenTimeout)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, a.Binary, shimwire.AgentSecretsKeygen, "--out", a.KeyDir)
@@ -94,6 +102,7 @@ func (s *shim) identity() (*shimwire.AgentSecretsHello, error) {
 		s.mu.Unlock()
 		s.log.Printf("[worker-shim] agent-secrets: key %s generated in %s", thumbprint, a.KeyDir)
 	}
+	s.startForwarder()
 	token, err := readPodToken(a)
 	if err != nil {
 		return nil, err

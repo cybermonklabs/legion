@@ -433,11 +433,13 @@ func (c *controllerClassifier) classify(t *memoryguard.Table) map[int]memoryguar
 // pod's single-role shim, the one shim this classifier reads, reaps orphans (reapOrphansFlag,
 // which reapingShim gives it), so it also has for direct children the orphans its tree leaves,
 // which nothing in the tree tells from its own but their age and their executable: its own are
-// the agent, the oldest direct child that is not the secrets binary, since an orphan descends from
-// the agent's commands and so is younger than the agent, and the secrets keygen and renewer, the
-// executable the shim's shimwire.AgentSecretsBinFlag names run as shimwire.AgentSecretsKeygen or
-// shimwire.AgentSecretsRenew. Any other direct child is an orphan the shim adopted. An orphan that
-// runs that executable as either task is taken for the shim's own: that is the rule's cost.
+// the agent, the oldest direct child that is neither the secrets binary nor the forwarder, since an
+// orphan descends from the agent's commands and so is younger than the agent; the secrets keygen
+// and renewer, the executable the shim's shimwire.AgentSecretsBinFlag names run as
+// shimwire.AgentSecretsKeygen or shimwire.AgentSecretsRenew; and the GitHub forwarder, the shim's
+// own executable run as shimwire.ForwarderCommand, which the shim starts before the agent, once the
+// role's key exists. Any other direct child is an orphan the shim adopted. An orphan that runs one
+// of those executables as its task is taken for the shim's own: that is the rule's cost.
 func shimOwnChildren(t *memoryguard.Table, shim *memoryguard.Process) []*memoryguard.Process {
 	children := t.Children(shim.PID)
 	options := shim.Args
@@ -457,6 +459,8 @@ func shimOwnChildren(t *memoryguard.Table, shim *memoryguard.Process) []*memoryg
 		task := argument(p, 1)
 		switch {
 		case secrets != "" && p.Exe != "" && (p.Exe == secrets || p.Exe == resolved) && (task == shimwire.AgentSecretsKeygen || task == shimwire.AgentSecretsRenew):
+			own = append(own, p)
+		case p.Exe != "" && p.Exe == shim.Exe && task == shimwire.ForwarderCommand:
 			own = append(own, p)
 		case !agent:
 			agent = true

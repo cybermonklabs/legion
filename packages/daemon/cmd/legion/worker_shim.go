@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,7 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:port> --boot-token-file <path> [--provider-env-dir <dir>] [--pod-safety] [--stop-grace <duration>] [--warm-codegraph] [--reap-orphans] [--agent-secrets-key-dir <dir> --pod-token-file <path> --agent-secrets-bin <path>] -- <omp argv…>"
+const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:port> --boot-token-file <path> [--provider-env-dir <dir>] [--pod-safety] [--stop-grace <duration>] [--warm-codegraph] [--reap-orphans] [--agent-secrets-key-dir <dir> --pod-token-file <path> --agent-secrets-bin <path> [--github-forwarder <file>]] -- <omp argv…>"
 
 // workerShimGrace is how long the shim gives a SIGTERMed agent before it kills it:
 // shim.DefaultGrace, half the daemon's default worker_stop_timeout_seconds. It is a variable so
@@ -91,6 +92,7 @@ func newWorkerShimCommand(stdout, stderr io.Writer) *cobra.Command {
 	flags.StringVar(&given.keyDir, "agent-secrets-key-dir", "", "the pod's tmpfs directory for its agent-secrets key and enrollment id")
 	flags.StringVar(&given.tokenFile, "pod-token-file", "", "the projected service-account token for the secrets broker's audience")
 	flags.StringVar(&given.agentSecretsBin, shimwire.AgentSecretsBinFlag, "", "the agent-secrets binary that generates the key and renews the lease")
+	flags.StringVar(&given.githubForwarder, "github-forwarder", "", "a file holding the JSON list of the role's `legion forwarder` flags, which the shim runs once the role's key exists (needs the agent-secrets flags)")
 	cmd.RunE = runs(func(ctx context.Context, args []string) int {
 		return runWorkerShim(ctx, cmd, given, *podSafety, args, stdout, stderr)
 	})
@@ -167,9 +169,9 @@ func podSafeEnvironment(environ []string) ([]string, error) {
 // workerShimFlags are the command's flag values, as parsed, apart from --pod-safety, which
 // runWorkerShim applies to the environment once the configuration holds.
 type workerShimFlags struct {
-	connect, bootTokenFile, providerEnvDir, keyDir, tokenFile, agentSecretsBin string
-	warmCodegraph, reapOrphans                                                 bool
-	stopGrace                                                                  time.Duration
+	connect, bootTokenFile, providerEnvDir, keyDir, tokenFile, agentSecretsBin, githubForwarder string
+	warmCodegraph, reapOrphans                                                                  bool
+	stopGrace                                                                                   time.Duration
 }
 
 // workerShimConfig is every refusal the command makes, each before anything is dialled or
@@ -214,20 +216,50 @@ func workerShimConfig(set map[string]bool, given workerShimFlags, argv []string)
 	if err != nil {
 		return shim.Config{}, err
 	}
+	var forwarder []string
+	if set["github-forwarder"] {
+		if agentSecrets == nil {
+			return shim.Config{}, errors.New("--github-forwarder needs --agent-secrets-key-dir, --pod-token-file and --agent-secrets-bin: the forwarder asks for its grant with the role's key")
+		}
+		if forwarder, err = readForwarderArgs(given.githubForwarder); err != nil {
+			return shim.Config{}, err
+		}
+	}
 	cfg := shim.Config{
-		Network:      network,
-		Address:      address,
-		BootToken:    token,
-		Argv:         argv,
-		Env:          os.Environ(),
-		ProviderEnv:  providerEnv,
-		AgentSecrets: agentSecrets,
-		Grace:        programbound.Of(&workerShimGrace),
-		StopGrace:    given.stopGrace,
-		ReapOrphans:  given.reapOrphans,
+		Network:         network,
+		Address:         address,
+		BootToken:       token,
+		Argv:            argv,
+		Env:             os.Environ(),
+		ProviderEnv:     providerEnv,
+		AgentSecrets:    agentSecrets,
+		GitHubForwarder: forwarder,
+		Grace:           programbound.Of(&workerShimGrace),
+		StopGrace:       given.stopGrace,
+		ReapOrphans:     given.reapOrphans,
 	}
 	if given.warmCodegraph {
 		cfg.WarmCodegraph = workspace.WarmCodegraphIndex
 	}
 	return cfg, nil
+}
+
+// readForwarderArgs is the role's forwarder's argv: this `legion` and `forwarder`, then the flags
+// the file at path holds as a JSON list of strings, which the daemon writes into the generation's
+// private directory (internal/runtime/sandbox's launcherCommand). A file that cannot be read, or
+// holds no such list, is a refusal naming the path.
+func readForwarderArgs(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("--github-forwarder %s: %w", path, err)
+	}
+	var flags []string
+	if err := json.Unmarshal(data, &flags); err != nil || len(flags) == 0 {
+		return nil, fmt.Errorf("--github-forwarder %s holds no JSON list of the forwarder's flags", path)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("--github-forwarder: find this legion executable: %w", err)
+	}
+	return append([]string{self, shimwire.ForwarderCommand}, flags...), nil
 }

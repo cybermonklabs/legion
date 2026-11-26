@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+    The broker hands an automatic grant, one no person or judge decided, back to an ask for the same
+    names only while at least half of its life is left. An ask in its second half gets a new grant,
+    and the old one stays live until its own expiry, so a client that renews ahead of an expiry, as a
+    Legion role's forwarder does with ten minutes of an hour left, moves to the new grant while calls
+    made under the old one finish. A grant a person or the judge decided, and one that lasts until its
+    session ends, is handed back for as long as it lives, as before. `scripts/proxy-role-check.sh`
+    drives a Legion role's gh and git through its forwarder and the broker's proxy on the local stack.
+    Concurrent asks for the same names from one session get one grant between them: under the names'
+    locks, an ask finds the grant another ask wrote while it waited and is handed that grant.
+time: 2026-11-23T13:04:50Z
+custom:
+    Issue: pr5233

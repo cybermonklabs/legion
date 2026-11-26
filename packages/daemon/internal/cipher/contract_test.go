@@ -16,6 +16,10 @@ package cipher
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"net/http"
 	"os"
@@ -393,5 +397,74 @@ func TestContractALateOldIncarnationWriteKeepsTheNewKey(t *testing.T) {
 	var refused *cipherclient.RefusedError
 	if !errors.As(err, &refused) || refused.Code != "invalid_grant" || !strings.Contains(refused.Description, session) {
 		t.Errorf("a trade for %s proved with the earlier process's key: %v, want it refused invalid_grant naming %s", session, err, session)
+	}
+}
+
+// sessionKeyDir writes key and enrollment as a role's key directory holds them: key.pem as PKCS#8
+// PEM, which the shim's `agent-secrets keygen` writes, and the enrollment id the shim writes when
+// the daemon hands it one.
+func sessionKeyDir(t *testing.T, key *ecdsa.PrivateKey, enrollment string) string {
+	t.Helper()
+	dir := t.TempDir()
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, SessionKeyFile), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if enrollment != "" {
+		if err := os.WriteFile(filepath.Join(dir, SessionEnrollmentFile), []byte(enrollment+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// TestContractARolesSessionAsksReleasesAndEndsItsGrant drives Session against the real broker: a
+// session's key directory, read as a role's forwarder reads it, asks for an agent-tier secret for
+// an hour with a reason, gets it granted at once with the lifetime it asked for, reads the grant's
+// release, and ends the grant, after which the release is refused GRANT_NOT_LIVE. The broker's
+// own proof.Verifier and record.VerifyRequestObject judge the session proof and the request
+// object signSessionProof and signSecretRequest make. A key directory with no enrollment file is
+// ErrNotEnrolled, and a session proving another key is refused.
+func TestContractARolesSessionAsksReleasesAndEndsItsGrant(t *testing.T) {
+	rig := newBrokerRig(t)
+	ctx := context.Background()
+	enrollment, key := rig.NewSession(t, rig.Operator)
+
+	if _, err := LoadSession(rig.URL, sessionKeyDir(t, key, "")); !errors.Is(err, ErrNotEnrolled) {
+		t.Fatalf("LoadSession of a key directory with no enrollment = %v, want ErrNotEnrolled", err)
+	}
+	session, err := LoadSession(rig.URL, sessionKeyDir(t, key, enrollment))
+	if err != nil {
+		t.Fatalf("LoadSession = %v", err)
+	}
+	answer, err := session.Request(ctx, []string{"TEST_AUTO_SECRET"}, "the contract test's role grant", 3600)
+	if err != nil || answer.State != "granted" || answer.GrantID == nil || answer.LifetimeSeconds == nil || *answer.LifetimeSeconds != 3600 {
+		t.Fatalf("Request(TEST_AUTO_SECRET, 1 h) = %+v, %v; want granted at once for 3600 s", answer, err)
+	}
+	release, err := session.Values(ctx, *answer.GrantID)
+	if err != nil || release.ExpiresAt == nil || time.Until(*release.ExpiresAt) < 59*time.Minute || len(release.Values) != 1 {
+		t.Fatalf("Values = expires %v, %d values, %v; want the hour's release", release.ExpiresAt, len(release.Values), err)
+	}
+	if err := session.Revoke(ctx, *answer.GrantID); err != nil {
+		t.Fatalf("Revoke = %v", err)
+	}
+	if err := session.Revoke(ctx, *answer.GrantID); err != nil {
+		t.Fatalf("a second Revoke of the ended grant = %v, want nil: it is ended already", err)
+	}
+	var refused *APIError
+	if _, err := session.Values(ctx, *answer.GrantID); !errors.As(err, &refused) || refused.Code != "GRANT_NOT_LIVE" {
+		t.Fatalf("Values after the revoke = %v, want GRANT_NOT_LIVE", err)
+	}
+
+	other, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impostor := &Session{URL: rig.URL, Key: other, EnrollmentID: enrollment}
+	if _, err := impostor.Request(ctx, []string{"TEST_AUTO_SECRET"}, "another key", 3600); !errors.As(err, &refused) || refused.Status != http.StatusUnauthorized {
+		t.Fatalf("a request proved with another key = %v, want 401", err)
 	}
 }

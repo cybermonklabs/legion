@@ -1673,6 +1673,39 @@ func TestControllerPodMemoryGuardSparesItsOwnProcessesByTheirPlaceInTheTree(t *t
 	}
 }
 
+// The controller's shim starts its GitHub forwarder, `legion forwarder` of the shim's own
+// executable, once the role's key exists and before it starts Oh My Pi, so the forwarder is the
+// shim's oldest direct child. The classifier takes it for one of the shim's own, beside Oh My Pi,
+// and still takes Oh My Pi for the agent, with its helpers spared; a younger orphan of another
+// executable that runs with the same word is not the shim's own.
+func TestControllerPodMemoryGuardTakesTheShimsForwarderForItsOwnBesideTheAgent(t *testing.T) {
+	t.Parallel()
+	const forwarder, impostor = 1499, 1517
+	pod := controllerTree(t, nil)
+	pod.add(
+		guardProcess{pid: forwarder, ppid: ctlShim, exe: launcherExe(t), args: []string{"legion", shimwire.ForwarderCommand, "--role", "controller"}},
+		guardProcess{pid: impostor, ppid: ctlShim, exe: "/usr/bin/node", args: []string{"node", shimwire.ForwarderCommand}},
+	)
+	m, _ := controllerManager()
+	classes := newControllerClassifier(m, &pidGuard{}).classify(scanTable(t, pod))
+	for _, tc := range []struct {
+		pid       int
+		protected bool
+		session   bool
+		what      string
+	}{
+		{forwarder, true, true, "the GitHub forwarder, the shim's oldest child"},
+		{ctlOmp, true, true, "Oh My Pi, the shim's child"},
+		{ctlBroker, true, false, "the daemon broker, a helper Oh My Pi started"},
+		{ctlMux, true, false, "the LSP multiplexer, a helper the broker started"},
+		{impostor, false, false, "an orphan of another executable run with the forwarder's word"},
+	} {
+		if got, want := classes[tc.pid], (memoryguard.Class{Role: "controller", Protected: tc.protected, Session: tc.session}); got != want {
+			t.Errorf("%s (pid %d): %+v, want %+v", tc.what, tc.pid, got, want)
+		}
+	}
+}
+
 // The launcher, the shim, Oh My Pi, its two helpers, the secrets renewer and keygen and what the
 // launcher's pid guard holds are never ended, though each is larger than anything the guard may
 // end: the guard ends what it may, largest first, one rise at a time, the kernels, the shell

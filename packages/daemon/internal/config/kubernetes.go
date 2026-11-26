@@ -460,13 +460,21 @@ var imageDigestRef = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 // (`cipher`) and the lifetime to 3600 s, the most the cluster's admission policy admits for a
 // Legion worker token; the API server issues none under 600. ExchangeAudience is the audience of a
 // second projected token every enrolled pod carries, the identity the broker's exchange trades for
-// a broker token (`BROKER_EXCHANGE_K8S_AUDIENCE`); empty, no pod carries one.
+// a broker token (`BROKER_EXCHANGE_K8S_AUDIENCE`); empty, no pod carries one. GitHub is
+// `github`: by role, the secret names whose grant that role's GitHub access goes through, behind
+// the broker's proxy, by way of the role's forwarder (`legion forwarder`); a role it names gets
+// no App token from the daemon. Nil, every role's App token is minted by the daemon as before.
+// GitHubHosts is `github_hosts`: the hosts the broker's GitHub kind binds, lowercased, which each
+// forwarder is told, so a call to one of them waits for its first grant and every other call goes
+// out at once; required with GitHub, since the daemon holds no copy of the broker's kinds.
 type AgentSecretsConfig struct {
 	URL                string
 	TokenFile          string
 	Audience           string
 	TokenExpirySeconds int
 	ExchangeAudience   string
+	GitHub             map[claim.Role][]string
+	GitHubHosts        []string
 }
 
 // DefaultAgentSecretsAudience is the audience an agent_secrets block that names none settles on,
@@ -543,7 +551,95 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 		return nil, fmt.Errorf("%s.exchange_audience must differ from %s.audience (both %s)", agentSecretsKey, agentSecretsKey, exchange)
 	}
 	block.ExchangeAudience = exchange
+	if github := fields["github"]; github != nil {
+		if block.GitHub, err = readGitHubProxy(github, agentSecretsKey+".github"); err != nil {
+			return nil, err
+		}
+	}
+	if hosts := fields["github_hosts"]; hosts != nil {
+		if block.GitHubHosts, err = readGitHubHosts(hosts, agentSecretsKey+".github_hosts"); err != nil {
+			return nil, err
+		}
+	}
+	if len(block.GitHub) > 0 && len(block.GitHubHosts) == 0 {
+		return nil, fmt.Errorf("%s.github_hosts is required when %s.github names a role: the hosts the broker's GitHub kind binds, which each forwarder sends to the broker", agentSecretsKey, agentSecretsKey)
+	}
 	return block, nil
+}
+
+// hostNamePattern is a DNS name as a kind's hosts are written: lowercase labels of letters, digits
+// and inner hyphens, at least two, optionally after one `*.` (every name under the rest).
+var hostNamePattern = regexp.MustCompile(`^(\*\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+
+// readGitHubHosts is `agent_secrets.github_hosts`: the hosts the broker's GitHub kind binds, which
+// the deployment renders from the profiles file that defines the kind. Each is lowercased; a list
+// that is empty or holds no strings, an entry that is no host name (a port, a URL, a bare `*`) and
+// a host given twice are refused naming the entry.
+func readGitHubHosts(value *yaml.Node, key string) ([]string, error) {
+	list, err := readStrings(value, key)
+	if err != nil {
+		return nil, err
+	}
+	if len(list) == 0 {
+		return nil, fmt.Errorf("%s names no host: give the hosts the broker's GitHub kind binds", key)
+	}
+	hosts := make([]string, 0, len(list))
+	for _, entry := range list {
+		host := strings.ToLower(entry)
+		switch {
+		case !hostNamePattern.MatchString(host):
+			return nil, fmt.Errorf("%s entry %q is no host name: a DNS name, or `*.` and one, with no scheme or port", key, entry)
+		case slices.Contains(hosts, host):
+			return nil, fmt.Errorf("%s names %s twice", key, host)
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts, nil
+}
+
+// secretNamePattern is the name the secrets broker holds a secret under, the one a session asks
+// for: uppercase letters, digits and single underscores, starting with a letter (the broker's
+// policy namePattern).
+var secretNamePattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$`)
+
+// readGitHubProxy is `agent_secrets.github`: a mapping of a Legion role (RoleConfigRoles) to the
+// secret names that role's grant asks for. A key that is no Legion role or names one twice, a
+// list that is empty or holds no strings, a name the broker could hold no secret under and a name
+// given twice are each refused naming the entry: the role's forwarder would ask for it at every
+// generation and be refused every time.
+func readGitHubProxy(value *yaml.Node, key string) (map[claim.Role][]string, error) {
+	if value.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("%s must be a mapping of a role to the secret names its GitHub access goes through the broker's proxy under, e.g. {implementer: [LEGION_IMPLEMENT_APP]}", key)
+	}
+	names := map[claim.Role][]string{}
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		roleNode, listNode := value.Content[i], value.Content[i+1]
+		role := claim.Role(roleNode.Value)
+		if !slices.Contains(RoleConfigRoles, role) {
+			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, roleNode.Value, runtime.JoinRoles(RoleConfigRoles))
+		}
+		if _, seen := names[role]; seen {
+			return nil, fmt.Errorf("%s names %s twice", key, role)
+		}
+		field := key + "." + string(role)
+		list, err := readStrings(listNode, field)
+		if err != nil {
+			return nil, err
+		}
+		if len(list) == 0 {
+			return nil, fmt.Errorf("%s names no secret: give the role at least one, or leave it out", field)
+		}
+		for index, name := range list {
+			switch {
+			case !secretNamePattern.MatchString(name):
+				return nil, fmt.Errorf("%s entry %q is no secret name: uppercase letters, digits and single underscores, starting with a letter", field, name)
+			case slices.Contains(list[:index], name):
+				return nil, fmt.Errorf("%s names %s twice", field, name)
+			}
+		}
+		names[role] = list
+	}
+	return names, nil
 }
 
 // pluginsKey is `runtime.kubernetes.plugins`'s own key.

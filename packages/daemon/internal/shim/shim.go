@@ -121,6 +121,11 @@ type Config struct {
 	// AgentSecrets is the pod's enrollment with the secrets broker (cipher.go); nil on a
 	// tmux pane, which is never enrolled.
 	AgentSecrets *AgentSecrets
+	// GitHubForwarder is the role's GitHub forwarder's argv (`legion forwarder …`), which the
+	// shim starts once the role's key exists and keeps running until its loop ends
+	// (startForwarder); nil starts none: a tmux pane, an unenrolled pod, and a role whose GitHub
+	// secrets the deployment does not put behind the broker's proxy. It needs AgentSecrets.
+	GitHubForwarder []string
 	// WarmCodegraph, when set, is started once with the workspace the shim's LEGION_WORKSPACE
 	// names, on the first line the wrapped process writes: Oh My Pi's `ready` frame comes once its
 	// extensions are loaded and its RPC loop serves, so the index build the pod needs starts
@@ -235,6 +240,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// the daemon asked for and which the wait behind it reaps; the renewer ends with the loop as
 	// well; and the warm-up — ended with the loop too — is waited for last, inside the stop grace.
 	defer s.drainWarmUp()
+	defer s.forwarders.Wait()
 	defer s.renewers.Wait()
 	defer s.drainCommands()
 	defer s.stop()
@@ -320,10 +326,13 @@ type shim struct {
 	childExited chan struct{}
 	thumbprint  string // agent-secrets keygen's thumbprint, generated once per shim
 	renewing    bool   // the agent-secrets renewer goroutine has been started
+	forwarding  bool   // the GitHub forwarder goroutine has been started
 
-	// renewers is the agent-secrets renewer goroutine (cipher.go's startRenewer), reaped by
-	// Run's deferred Wait before it returns.
-	renewers sync.WaitGroup
+	// renewers is the agent-secrets renewer goroutine (cipher.go's startRenewer), and forwarders
+	// the GitHub forwarder's (startForwarder), each reaped by Run's deferred Wait before it
+	// returns.
+	renewers   sync.WaitGroup
+	forwarders sync.WaitGroup
 
 	// warmed guards cfg.WarmCodegraph: called on the child's first line and never again, not for
 	// a later frame and not when a redialled connection finds the child already running. warmUps

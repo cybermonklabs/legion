@@ -389,6 +389,11 @@ type Options struct {
 	// drift evaluation, so it must be cheap and must mint nothing. Required: configure refuses
 	// nil as it refuses a nil GitHubCredential.
 	GitHubDirs func(repo ghrepo.Repository, roles []appauth.AppRole) []string
+	// GitHubRoute is the rename rule the App-token bundle routes by (appauth.Route): the directory
+	// repo routes to and the configured pairs that resolve, which a role whose GitHub is behind the
+	// broker's proxy writes its forwarder's bundle by. New refuses nil where AgentSecrets names a
+	// role's GitHub secrets.
+	GitHubRoute func(repo ghrepo.Repository) (dir string, pairs []ghrepo.Rename)
 	// Conns is the worker stream listener: Suspend's and Release's shutdown frames, and
 	// AdoptWorkingCopy, go through it.
 	Conns runtime.Conns
@@ -537,11 +542,18 @@ type DispatchTokens struct {
 // pod carries for it. Nil enrolls none, and no pod carries the token, the key volume, the
 // variables, or the shim flags. ExchangeAudience, when set, is the audience of a second projected
 // token every enrolled pod carries, the identity the broker's exchange trades for a broker token
-// (runtime.kubernetes.agent_secrets.exchange_audience); empty, no pod carries one.
+// (runtime.kubernetes.agent_secrets.exchange_audience); empty, no pod carries one. GitHub is
+// runtime.kubernetes.agent_secrets.github: by role, the secret names whose grant the role's
+// GitHub access goes through, by way of its forwarder (proxiesGitHubIn); a role it names gets no
+// App token, and its forwarder's bundle routes by Options.GitHubRoute. GitHubHosts is
+// runtime.kubernetes.agent_secrets.github_hosts, the hosts the broker's GitHub kind binds, which
+// each forwarder is told (--github-host); the config refuses a GitHub map without them.
 type AgentSecrets struct {
 	URL, Audience    string
 	TokenExpiry      time.Duration
 	ExchangeAudience string
+	GitHub           map[claim.Role][]string
+	GitHubHosts      []string
 }
 
 // InstallRef names the pieces of Agent Sandbox a cluster must have: the Sandbox CRD, and the
