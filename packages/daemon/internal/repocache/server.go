@@ -500,6 +500,12 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 	bound := workspace.FetchTimeout
 	if first {
 		bound = workspace.CacheFetchTimeout
+		if interrupted {
+			if err := c.clear(defaultBranchFetchFile); err != nil {
+				return time.Time{}, first, err
+			}
+			interrupted = false
+		}
 	} else if err := c.narrow(ctx, false, interrupted); err != nil {
 		if !errors.Is(err, errCacheHeadMissing) {
 			return time.Time{}, first, fmt.Errorf("narrow the cache before its fetch: %w", err)

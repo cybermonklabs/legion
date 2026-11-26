@@ -2427,6 +2427,38 @@ func TestCacheRepacksAnInterruptedDefaultBranchFetch(t *testing.T) {
 	assertTarObjectsAreOnMain(t, again)
 }
 
+// A fetch marker outlives the clone it guarded when a cache process removes that clone. The first
+// clone that replaces it must clear the stale marker instead of treating it as an interrupted fetch
+// and repacking the already single-branch clone.
+func TestCacheClearsAnInterruptedFetchMarkerBeforeAFirstClone(t *testing.T) {
+	remote := newRemote(t)
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	opts.Log = func(string) {}
+	first := cacheOn(t, opts)
+	if err := first.refresh(context.Background()); err != nil {
+		t.Fatalf("making the first cache clone: %v", err)
+	}
+	if err := first.mark(defaultBranchFetchFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(first.dir); err != nil {
+		t.Fatal(err)
+	}
+
+	again := cacheOn(t, opts)
+	if err := again.refresh(context.Background()); err != nil {
+		t.Fatalf("making the replacement cache clone: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(opts.Root, defaultBranchFetchFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the replacement clone kept the interrupted-fetch marker (%v)", err)
+	}
+	if got := run.repacks(); got != 0 {
+		t.Errorf("the replacement default-branch clone ran %d repacks, want none", got)
+	}
+	assertDefaultBranchOnly(t, again.dir)
+}
+
 func TestCacheDoesNotPublishAMarkerBeforeValidatingTheClone(t *testing.T) {
 	remote := newRemote(t)
 	run := newTestRunner(t, remote)
