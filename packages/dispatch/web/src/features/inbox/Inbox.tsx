@@ -61,6 +61,7 @@ import { type CredentialRequests, useCredentialRequests } from "../credentials/p
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { AgentName, useAgentText } from "../refs/AgentName";
+import { useAgentRegistry } from "../refs/agent-registry";
 import { COPY_REF_SELECTOR, CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import {
@@ -1417,6 +1418,11 @@ function InboxBody({
   // What this list holds, and computed here rather than after the early returns so the bindings
   // below speak for exactly the rows on the page.
   const agent = filter.agent;
+  // The agent narrowing's chip names the agent by its registry title (`agentText.part` below),
+  // which reads the agent list only where a view asks for it: main's chip asked by drawing the
+  // agent's name (`AgentName`), and this bar's chip is text, so the list asks while the
+  // narrowing is on.
+  useAgentRegistry(agent !== undefined);
   // An agent filter and `?section=needs-you` both narrow the list to asks, so neither lists a
   // thread: one is about what an agent asked, the other about what waits on the reader now. The
   // Dismissed view is the other way round - an ask is never dismissed, so it holds threads alone.
