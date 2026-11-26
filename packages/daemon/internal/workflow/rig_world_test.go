@@ -551,7 +551,7 @@ func (w rigWalk) owner() {
 		if err != nil {
 			return err
 		}
-		return QueueCatchUp(ctx, tx, w.engine.store, w.engine.cfg.Steps, *issue, 1, "", w.engine.cfg.Clock(), time.Time{})
+		return QueueCatchUp(ctx, tx, w.engine.store, w.engine.cfg.Steps, *issue, 1, "", w.engine.cfg.Clock())
 	})
 }
 

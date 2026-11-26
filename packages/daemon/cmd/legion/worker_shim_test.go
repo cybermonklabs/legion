@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
@@ -25,6 +26,7 @@ import (
 // 590-620), each naming the flag or path at fault: the daemon's pane has nothing to show but
 // this line, and a shim that dialled first would register a pane that can never start OMP.
 func TestWorkerShimRefusesBeforeDialOrSpawn(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion worker-shim` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	dir := t.TempDir()
 	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
@@ -110,6 +112,7 @@ func TestWorkerShimRefusesBeforeDialOrSpawn(t *testing.T) {
 // the child's environment only, and the shim's exit status is the child's — which is what the
 // pane, and the runtime watching it, see.
 func TestWorkerShimBridgesTheChildAndExitsWithItsStatus(t *testing.T) {
+	// Not parallel: it runs `legion worker-shim` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	dir := t.TempDir()
 	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
@@ -175,6 +178,7 @@ func TestWorkerShimBridgesTheChildAndExitsWithItsStatus(t *testing.T) {
 // shim's, and the build never holds it up — here the agent waits for the build, since a warm-up
 // ends with the agent (the test below), and the shim returns the moment both are done.
 func TestWorkerShimWarmsTheWorkspacesCodegraphIndexOnceTheAgentStarts(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion worker-shim` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	dir := t.TempDir()
 	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
@@ -190,7 +194,7 @@ func TestWorkerShimWarmsTheWorkspacesCodegraphIndexOnceTheAgentStarts(t *testing
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(bin, "codegraph"), []byte(fakeCodegraph), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "codegraph"), []byte(fakeCodegraph), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -232,6 +236,7 @@ func TestWorkerShimWarmsTheWorkspacesCodegraphIndexOnceTheAgentStarts(t *testing
 // second later, as the real one does when the group signal reaches it; at the command's return the
 // lease must be gone.
 func TestWorkerShimLetsAnInFlightWarmUpReleaseItsLeaseBeforeItExits(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion worker-shim` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	dir := t.TempDir()
 	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
@@ -253,7 +258,7 @@ case "$1" in
   init) sleep 0.5; exit 1 ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(bin, "codegraph"), []byte(slowInit), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "codegraph"), []byte(slowInit), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -297,6 +302,7 @@ esac
 // not under its state home, not on its scratch. With --pod-safety and a state home whose profile
 // directory cannot be made, the shim refuses naming it, before anything is dialled or spawned.
 func TestWorkerShimStartsAPodsAgentOnTheBaselineAndAPanesAsBefore(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion worker-shim` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	dir := t.TempDir()
 	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
@@ -439,6 +445,7 @@ func acknowledgeHello(ln net.Listener) chan error {
 // both: the line the stop logs to the pane, the agent's own SIGTERM, and the agent's status as
 // the command's.
 func TestWorkerShimStopsOnSIGHUP(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		signal syscall.Signal
@@ -482,7 +489,7 @@ ticks=0
 while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks=$((ticks+1)); done
 exit 9
 `
-			command := exec.Command(os.Args[0], "worker-shim",
+			command := exec.Command(legionCopy(t), "worker-shim",
 				"--connect", "unix://"+socket, "--boot-token-file", token,
 				"--", "sh", "-c", agent, "sh", record, running)
 			command.Env = append(os.Environ(), testMainEnv+"=1")
@@ -532,6 +539,7 @@ exit 9
 // quoted in its refusal: each keeps the URL's host and path, and neither the user name nor the
 // token reaches the pane.
 func TestWorkerShimWritesNoURLCredentials(t *testing.T) {
+	// Not parallel: it runs `legion worker-shim` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	dir := t.TempDir()
 	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
@@ -597,6 +605,7 @@ func TestWorkerShimWritesNoURLCredentials(t *testing.T) {
 // before its "@", where the rule finds no userinfo in what is left and keeps the start of the user
 // name and the password as the URL's host. The shim writes no part of either.
 func TestWorkerShimWritesNoPartOfAUserinfoCutBeforeItsAt(t *testing.T) {
+	// Not parallel: it runs `legion worker-shim` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	// Built as the other tests of this package build one, so the pre-push leak check reads no
 	// credential in the source. The line's first 80 bytes end inside the password, before the "@".
 	const user, pass = "legion-reader", "demopass-not-a-secret-48c1-48c1-48c1-48c1-48c1-48c1"
