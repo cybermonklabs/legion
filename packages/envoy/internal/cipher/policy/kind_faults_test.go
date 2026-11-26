@@ -141,6 +141,86 @@ func TestGrantAndTypeReadsTheTagsInTheLoadsOrder(t *testing.T) {
 	}
 }
 
+// TestSecretOfTagsIsTheLoadsReading: SecretOfTags reads a secret's store tags as the load does,
+// row by row over one store: for a secret the load serves, the same kind, way, proxy-narrowed tag,
+// max-grant, type, fingerprint and source; for one it refuses for a tag SecretOfTags reads, the
+// same reason and detail. The two share grantAndType and proxyTags today; this is the check that
+// catches them drifting apart. The rows cover each way (swap, sign, mint), a narrowed secret, two
+// typed secrets, a secret behind no kind, a cap within a kind's max_grant, and a refusal for each
+// tag SecretOfTags reads: an unknown kind, a way the kind does not hold, a malformed
+// proxy-narrowed tag, a malformed max-grant, a malformed default-grant and an unknown type. The
+// test fails, rather than passing on nothing, if the load serves or refuses fewer rows than it
+// names.
+func TestSecretOfTagsIsTheLoadsReading(t *testing.T) {
+	profiles := policytest.Profiles(t, policytest.KindsFile(), daemonService)
+	tag := func(s secrets.LocalSecret, tags map[string]string) secrets.LocalSecret {
+		for k, v := range tags {
+			s.Tags[k] = v
+		}
+		return s
+	}
+	plain := func(name string) secrets.LocalSecret {
+		return policytest.Secret(name, appOwner, policy.TierAgent, "v1")
+	}
+	federation := func(name string) secrets.LocalSecret {
+		return policytest.TypeSecret(name, appOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation))
+	}
+	rows := []secrets.LocalSecret{
+		tag(plain("SWAP_KEY"), map[string]string{policy.TagProxy: "slack"}),
+		tag(plain("SIGN_KEY"), map[string]string{policy.TagProxy: "aws", policy.TagMaxGrant: "2h"}),
+		tag(plain("NARROW_KEY"), map[string]string{policy.TagProxy: "github", policy.TagProxyNarrowed: policy.ProxyNarrowedTrue}),
+		tag(federation("FED_KEY"), map[string]string{policy.TagProxy: "anthropic", policy.TagMaxGrant: "30m"}),
+		tag(policytest.TypeSecret("LOGIN_KEY", appOwner, policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)), map[string]string{policy.TagProxy: "gcp"}),
+		plain("BARE_KEY"),
+		tag(federation("CAP_KEY"), map[string]string{policy.TagProxy: "anthropic", policy.TagMaxGrant: "1h"}),
+		tag(plain("UNKNOWN_KEY"), map[string]string{policy.TagProxy: "gitlab"}),
+		tag(plain("WAY_KEY"), map[string]string{policy.TagProxy: "anthropic", policy.TagMaxGrant: "1h"}),
+		tag(plain("NARROWED_BAD_KEY"), map[string]string{policy.TagProxyNarrowed: "yes"}),
+		tag(plain("GRANT_BAD_KEY"), map[string]string{policy.TagProxy: "slack", policy.TagMaxGrant: "a day"}),
+		tag(plain("DEFAULT_BAD_KEY"), map[string]string{policy.TagProxy: "slack", policy.TagDefaultGrant: "forever"}),
+		tag(plain("TYPE_BAD_KEY"), map[string]string{policy.TagProxy: "slack", policy.TagType: "no-such-type"}),
+	}
+	wantServed := []string{"SWAP_KEY", "SIGN_KEY", "NARROW_KEY", "FED_KEY", "LOGIN_KEY", "BARE_KEY", "CAP_KEY"}
+	wantRefused := []string{"UNKNOWN_KEY", "WAY_KEY", "NARROWED_BAD_KEY", "GRANT_BAD_KEY", "DEFAULT_BAD_KEY", "TYPE_BAD_KEY"}
+	loader := policytest.Loader(secrets.NewLocal(rows...), daemonService)
+	loader.Profiles = profiles
+	set, err := loader.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range wantServed {
+		if _, ok := set.Secrets[name]; !ok {
+			t.Fatalf("the load refuses %s (%+v), so the row of a served secret compares nothing", name, set.Refused[policytest.ID(name)])
+		}
+	}
+	for _, name := range wantRefused {
+		if _, ok := set.Refused[policytest.ID(name)]; !ok {
+			t.Fatalf("the load serves %s, so the row of a refusal compares nothing", name)
+		}
+	}
+	for _, row := range rows {
+		name := policy.SlugToName(row.Name[len(policytest.Prefix):])
+		got, reason, detail := profiles.SecretOfTags(secrets.LocalARN(row.Name), row.Tags)
+		if refusal, refused := set.Refused[row.Name]; refused {
+			if reason != refusal.Reason || detail != refusal.Detail {
+				t.Errorf("SecretOfTags(%s) = %q, %q; the load refuses it %q, %q", name, reason, detail, refusal.Reason, refusal.Detail)
+			}
+			continue
+		}
+		served := set.Secrets[name]
+		if reason != "" {
+			t.Errorf("SecretOfTags(%s) refuses it %q, %q; the load serves it", name, reason, detail)
+			continue
+		}
+		if got.Proxy != served.Proxy || got.Way != served.Way || got.ProxyNarrowed != served.ProxyNarrowed || got.MaxGrant != served.MaxGrant || got.Type() != served.Type() || got.ProfileDigest != served.ProfileDigest || got.Source != served.Source {
+			t.Errorf("SecretOfTags(%s) = %+v; the load serves %+v", name, got, served)
+		}
+	}
+	if got := set.Secrets["SIGN_KEY"]; got.Way != proxyrules.WaySign || got.MaxGrant != 2*time.Hour {
+		t.Errorf("SIGN_KEY = %+v; want it signed with a 2h cap, so the row checks a way and a cap", got)
+	}
+}
+
 // TestSourceMissingFaultWordsEachStateOfASource: a profile whose source the load does not serve is
 // refused profile-source-missing, with the source's state as its detail, in the words of
 // SourceMissingFault, which `profiles check` reports the same profile in: the source's refusal
