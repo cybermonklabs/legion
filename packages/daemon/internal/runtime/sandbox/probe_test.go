@@ -2103,7 +2103,7 @@ func TestALogTailWithNoNewlineKeepsNoPartOfAURLItsCutFallsInside(t *testing.T) {
 		}
 		return true, &k8sruntime.Unknown{Raw: []byte(log)}, nil
 	})
-	got := g.r.logTail(g.ctx, "legion-pod", fetchContainer)
+	got := g.r.logTail(g.ctx, "legion-pod", initContainer)
 	ruled := redact.Read(got, false)
 	for _, part := range []string{"reader", "@h.example", "planted-query-token-9"} {
 		if strings.Contains(ruled, part) {

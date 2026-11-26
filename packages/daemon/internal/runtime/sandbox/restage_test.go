@@ -670,7 +670,7 @@ func TestARenamedIssuesPodIsUnmovedInEitherOwnerSetState(t *testing.T) {
 	cache := CacheSandboxName(testProject, spec.Repository)
 	// reading is what k5 records of one owner-set state: whether the runtime reports the pod's gh
 	// address moved, the GH_CONFIG_DIR the role's generation is started with, the repository cache
-	// its pod's fetch is addressed at, and the owner that cache's token is minted for.
+	// workspace-init is addressed at, and the owner that cache's token is minted for.
 	type reading struct {
 		moved                           bool
 		configDir, cacheURL, cacheToken string
@@ -681,7 +681,7 @@ func TestARenamedIssuesPodIsUnmovedInEitherOwnerSetState(t *testing.T) {
 		return reading{
 			moved:      moved,
 			configDir:  startEnv(lastStart(t, g, workerToken))["GH_CONFIG_DIR"],
-			cacheURL:   g.fetchEnv(loc.Sandbox.Name)["LEGION_REPOSITORY_CACHE_URL"],
+			cacheURL:   g.initEnv(loc.Sandbox.Name)["LEGION_REPOSITORY_CACHE_URL"],
 			cacheToken: string(g.secret(cacheSecretName(cache)).Data[provisionTokenKey]),
 		}
 	}

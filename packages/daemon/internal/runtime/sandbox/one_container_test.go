@@ -94,8 +94,7 @@ func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
 	// over a lower layer with mounts under it, and binds each back at its own path (role-init).
 	for path, volume := range map[string]string{
 		"/var/run/legion/roles/.homes": "role-homes", TreeRoot: issueVolume,
-		"/var/run/legion/home/.config": configVolume,
-		FeedDir:                        issueVolume, AgentSecretsTokenDir: agentSecretsTokenVolume,
+		"/var/run/legion/home/.config": configVolume, AgentSecretsTokenDir: agentSecretsTokenVolume,
 	} {
 		if got, ok := byPath[path]; !ok || got.Name != volume {
 			t.Errorf("the roles container mounts %+v at %s, want volume %s", got, path, volume)

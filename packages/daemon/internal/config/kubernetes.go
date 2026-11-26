@@ -354,9 +354,9 @@ func (c SandboxConfig) AnyMicroVM() bool {
 	return c.Type == SandboxMicroVM || len(c.CanaryIssues) > 0
 }
 
-// PodResources are the reservations of the two pods the daemon builds, each a whole pod's: every
-// issue pod's one container and its two init containers, workspace-fetch and workspace-init,
-// carry Issue, and the controller's pod's one container Controller.
+// PodResources are the reservations of the two pods the daemon builds, each a whole pod's: an
+// issue pod's roles container and workspace-init carry Issue, and the controller's pod's one
+// container carries Controller.
 type PodResources struct {
 	Issue, Controller Reservation
 }

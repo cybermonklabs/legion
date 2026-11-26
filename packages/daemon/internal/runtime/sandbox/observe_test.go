@@ -73,7 +73,7 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 	failed := func(statuses ...corev1.ContainerStatus) corev1.PodStatus {
 		status := corev1.PodStatus{Phase: corev1.PodFailed}
 		for _, s := range statuses {
-			if s.Name == initContainer || s.Name == fetchContainer {
+			if s.Name == initContainer {
 				status.InitContainerStatuses = append(status.InitContainerStatuses, s)
 			} else {
 				status.ContainerStatuses = append(status.ContainerStatuses, s)
@@ -255,15 +255,15 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 			detail:     []string{"pod " + name, "init container workspace-init terminated (Error, exit code 1)", "last lines of workspace-init:"},
 		},
 		{
-			row: "5 workspace-fetch failed, its repository's cache failing",
-			objects: append(withPod(modeRunning, nil, recorded, sandboxUID, failed(terminated(fetchContainer, 1, "Error")), func(p *corev1.Pod) {
-				p.Spec.InitContainers = []corev1.Container{{Name: fetchContainer, Command: []string{"/opt/legion/bin/legion", "workspace-init", "fetch", "--repo", "acme/widgets", "--feed", FeedDir}}}
+			row: "5 workspace-init failed, its repository's cache failing",
+			objects: append(withPod(modeRunning, nil, recorded, sandboxUID, failed(terminated(initContainer, 1, "Error")), func(p *corev1.Pod) {
+				p.Spec.InitContainers = []corev1.Container{{Name: initContainer, Command: []string{"/opt/legion/bin/legion", "workspace-init", "provision", "--repo", "acme/widgets"}}}
 			}), cacheObject(t, cacheRepo, "uid-cache", modeRunning, ""), crashLooping(cachePod(cacheRepo, "uid-cache-pod", "uid-cache", testImage, corev1.PodRunning))),
 			want:       runtime.Gone,
 			initFailed: true,
 			detail: []string{
-				"init container workspace-fetch terminated (Error, exit code 1)",
-				"; the repository cache of acme/widgets, which a fresh feed comes from alone, is failing: container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
+				"init container workspace-init terminated (Error, exit code 1)",
+				"; the repository cache of acme/widgets, which workspace-init fills the clone from, is failing: container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
 			},
 		},
 		{

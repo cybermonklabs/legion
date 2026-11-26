@@ -136,12 +136,12 @@ func (r *Runtime) cacheManifest(repo ghrepo.Repository) sandbox {
 // cachePodTemplate is a cache's pod: one container, cacheContainer, running `legion workspace-init
 // cache` on the runtime's image, on the Legion pool under gVisor with the workers' pod security and
 // the probe's placement, mounting its volume at CacheRoot and its Secret's two tokens read-only —
-// the provisioning token, as workspace-fetch mounts the issue pod's (LEGION_PROVISION_TOKEN_FILE),
-// and the bearer token its clients present (LEGION_REPOSITORY_CACHE_TOKEN_FILE) — with a memory
-// TMPDIR for the fetch's one-shot credential and a readinessProbe of GET /readyz on
-// repocache.Port, which needs no token. Restarted Always. It carries no model-route volume,
-// provider key, operator mount or Dispatch variable: the process reads GitHub and serves pods,
-// nothing else.
+// the provisioning token, as workspace-init mounts the issue pod's
+// (LEGION_PROVISION_TOKEN_FILE), and the bearer token its clients present
+// (LEGION_REPOSITORY_CACHE_TOKEN_FILE) — with a memory TMPDIR for the cache's one-shot credential
+// and a readinessProbe of GET /readyz on repocache.Port, which needs no token. Restarted Always. It
+// carries no model-route volume, provider key, operator mount or Dispatch variable: the process
+// reads GitHub and serves pods, nothing else.
 func (r *Runtime) cachePodTemplate(name string, repo ghrepo.Repository) podTemplate {
 	memory := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}
 	container := corev1.Container{

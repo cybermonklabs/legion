@@ -19,9 +19,6 @@ import (
 func TestAKeptVolumeOutlivesAnInitContainerTheKubeletLost(t *testing.T) {
 	t.Parallel()
 	name := SandboxName(workerToken)
-	fetched := corev1.ContainerStatus{Name: fetchContainer, State: corev1.ContainerState{
-		Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"},
-	}}
 	// lost is container as the kubelet writes it after it lost the container, with restarts
 	// restarts: under a Waiting state where waiting is set, and as the container's own state where
 	// it is not. Each form carries the kubelet's own message for it.
@@ -42,9 +39,9 @@ func TestAKeptVolumeOutlivesAnInitContainerTheKubeletLost(t *testing.T) {
 		name     string
 		statuses []corev1.ContainerStatus
 	}{
-		{"workspace-init lost, the runtime no longer knows it", []corev1.ContainerStatus{fetched, lost(initContainer, 1, true)}},
-		{"workspace-init lost, the runtime answers its state unknown", []corev1.ContainerStatus{fetched, lost(initContainer, 1, false)}},
-		{"workspace-fetch lost past its restart grace", []corev1.ContainerStatus{lost(fetchContainer, fetchRestartGrace+1, true)}},
+		{"workspace-init lost, the runtime no longer knows it", []corev1.ContainerStatus{lost(initContainer, 1, true)}},
+		{"workspace-init lost, the runtime answers its state unknown", []corev1.ContainerStatus{lost(initContainer, 1, false)}},
+		{"workspace-init lost past its restart grace", []corev1.ContainerStatus{lost(initContainer, initRestartGrace+1, true)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))
@@ -84,7 +81,7 @@ func TestAKeptVolumeOutlivesAnInitContainerTheKubeletLost(t *testing.T) {
 		}
 		before := g.sandbox(name)
 		edit := func(p *corev1.Pod) {
-			p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{fetched, {
+			p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{{
 				Name: initContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "Error"}},
 			}}}
 		}
