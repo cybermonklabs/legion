@@ -80,8 +80,8 @@ export interface StandingAddress {
  * Where the reader stands, kept current for as long as the component that calls this is drawn,
  * and nothing from the moment it is gone. `TreeRows` calls it, since it is drawn for as long as
  * the outline is and no longer. A pick's 201 can come long after the pick, since the write store
- * tries the write again past its deadline, and by then the row may have lost the focus, which
- * takes its menu away, and the reader may be on another page: what a render of the pick held of
+ * tries the write again past its deadline, and by then the row may be gone, folded or filtered
+ * out with its menu, and the reader may be on another page: what a render of the pick held of
  * the address says nothing of where the reader is then, and neither does what a menu that is gone
  * last kept. It is kept as the address is drawn (a layout effect), so no answer that comes after
  * a move reads the address from before it.
@@ -197,11 +197,11 @@ export interface LensInvocation {
  *
  * The node's invocations are kept in the query client under a key of the node's own, and one
  * that has its answer stays there until `forget` lets it go, so its refusal outlives the menu
- * that made it: the menu is drawn only while its row has the focus, and a row that lost the focus
- * while its pick was out says the refusal once it is focused again. For the same reason whether
- * one is out is read from there too (`pending`), as `useSending` reads a send: `mutate` counts the
- * write as out from the pick's own task, before its first await, and a menu drawn again while
- * the write is out reads it.
+ * that made it: the menu closes when the focus leaves its row, and its row can be drawn again, a
+ * fold or a filter away, so a row whose pick was out says the refusal once it is focused again.
+ * For the same reason whether one is out is read from there too (`pending`), as `useSending`
+ * reads a send: `mutate` counts the write as out from the pick's own task, before its first
+ * await, and a menu drawn again while the write is out reads it.
  *
  * A landing reads the outline's read again through the app's refresh scheduler, as the page does
  * for a write it sees, so it never calls off a read already out and keeps to one start a second:
@@ -228,7 +228,7 @@ export function useInvokeLens(
   const mutationKey = ["lens-invocation", issueKey, on];
   const made = useKeyedWrite({
     // An invocation that has its answer stays in the cache, though no menu observes it once its
-    // row has lost the focus, until `forget` lets it go.
+    // row's menu has closed or its row is gone, until `forget` lets it go.
     gcTime: Number.POSITIVE_INFINITY,
     inline: true,
     label: () => LENS_WORDS.menu_title,

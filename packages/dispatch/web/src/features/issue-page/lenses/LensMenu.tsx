@@ -36,7 +36,7 @@ import {
 } from "./lens-reads";
 
 /**
- * What the focused row needs to offer the Lens act: the issue the page is on, the outline the
+ * What each row needs to offer the Lens act: the issue the page is on, the outline the
  * address opens - Conversation or Graph, the two places the act is drawn (R4) - and where the
  * reader stands now, which a pick's answer reads as it lands. `TreeRows.tsx` provides it
  * (`useLensAct`); a route that names no issue, and an address that opens no outline - a filter
@@ -51,8 +51,8 @@ export interface LensAct {
 export const LensActContext = createContext<LensAct | undefined>(undefined);
 
 /**
- * The Lens act the focused row offers, as `TreeRows.tsx` provides it to its rows: the issue the
- * address names and the outline it opens, read as the page's slots read their address
+ * The Lens act each row offers, whatever the focus, as `TreeRows.tsx` provides it to its rows:
+ * the issue the address names and the outline it opens, read as the page's slots read their address
  * (`lensPlaceOf`), and where the reader stands now. A route that names no issue, and an address
  * that opens no outline, offer no act. One value while the address stands, so no row draws
  * again.
@@ -63,8 +63,8 @@ export function useLensAct(): LensAct | undefined {
   const issueKey = place?.issueKey;
   const outline = place?.outline;
   // Where the reader stands now, which a pick's answer reads as it lands, kept for as long as
-  // the caller is drawn: the rows, not the menu that made the pick, which goes with its row's
-  // focus.
+  // the caller is drawn: the rows, not the row that made the pick, which a fold or filter can
+  // unmount while the write is out.
   const standing = useStandingAddress();
   return useMemo(
     () =>
@@ -120,8 +120,9 @@ export function lensActFor(node: TreeNode, act: Pick<LensAct, "issueKey">): bool
 }
 
 /**
- * The Lens act of the focused row and the menu of lens kinds it opens, on a row that offers the
- * act (`lensActFor`); on any other row, nothing. `RowActs` draws it on the focused row alone.
+ * The Lens act of a row and the menu of lens kinds it opens, on every row of Conversation and
+ * Graph whose node the invoke route takes (`lensActFor`), whatever the focus; on any other row,
+ * nothing. The menu opens only on a press and reads the catalogue only then.
  *
  * The act is one of `RowActs`' controls, drawn the way they are and out of the tab order unless
  * `tabStops` holds, so `f` reaches it as a control no key presses (`useTreeKeymap.ts`'s
@@ -138,15 +139,15 @@ export function lensActFor(node: TreeNode, act: Pick<LensAct, "issueKey">): bool
  * a 390 px page. Its keys are `IssuePresets.tsx`'s menu's: it takes the focus as it opens, and
  * the first item once the catalogue answers; Up and Down move, wrapping, Home and End go to the
  * ends, Enter or a press picks, Escape closes it and gives the focus back to the row, Tab closes
- * it, and so does a press outside it.
+ * it, and so does a press or focus moving outside it.
  *
  * A pick sends the node's address and the kind's id, nothing more (`useInvokeLens`), and lands
- * in the outline it was made in. A refusal closes the menu, gives the focus back to the row and
- * says so after the act until the menu opens again on that node. The refusal, and whether the
- * pick's write is out, are kept with the node's invocations, not in the menu, since the row
- * losing the focus takes the act and its menu away: a row that lost the focus while its pick was
- * out says the refusal once it is focused again, and, while the write is still out, its menu says
- * the pick is out and takes no other.
+ * in the outline it was made in. A refusal closes the menu, gives the focus back to the row
+ * where the focus was still in the menu, and says so after the act on that row until the menu
+ * opens again on that node. The refusal, and whether the pick's write is out, are kept with the
+ * node's invocations, not only in local state, so they outlive the menu closing or the row
+ * unmounting: while the write is still out, opening its menu again says the pick is out and
+ * takes no other, and a refusal stands on the row until the menu opens again.
  */
 export function LensMenu({ node, tabStops }: { node: TreeNode; tabStops: boolean }): ReactNode {
   const act = useContext(LensActContext);
@@ -181,7 +182,7 @@ function ActAndMenu({
   // Whether a pick is out, as the menu's line says it and as `pick` reads it. On the menu that
   // made the pick, `picked` holds from the press until `invoke` answers, once the tree is read
   // again. The node's write (`invocation.pending`) holds until it settles, on any menu: a menu
-  // drawn again after its row lost the focus starts with `picked` unset.
+  // drawn again after its row unmounted starts with `picked` unset.
   const [picked, setPicked] = useState(false);
   const examining = picked || invocation.pending;
   const kinds = useQuery(lensKindsQuery(open));
@@ -205,23 +206,28 @@ function ActAndMenu({
   }, [open, listed]);
 
   // A press outside the act and the menu closes it - a press on the line beside the menu too,
-  // which takes no focus - and leaves the focus to the press. Escape is read in the capture
-  // phase, as `IssuePresets.tsx`'s menu reads it, so it is marked before any other listener of
-  // the page's: the tree's own Escape passes a marked key by (`keymap.ts`). A dialog over the
-  // page takes its own presses and its own Escape, wherever the focus is - on the dialog, which
-  // takes it as it opens, or on the page after a press on the dialog's words: whether one is open
-  // is `useDialog`'s registry's answer (`dialogOpen()`), as `IssuePresets.tsx`'s menu asks it.
+  // which takes no focus - and leaves the focus to the press; focus moving outside the act and
+  // the menu (for example to another row) closes it too, unless a dialog over the page holds it.
+  // Escape is read in the capture phase, as `IssuePresets.tsx`'s menu reads it, so it is marked
+  // before any other listener of the page's: the tree's own Escape passes a marked key by
+  // (`keymap.ts`). A dialog over the page takes its own presses and its own Escape, wherever the
+  // focus is - on the dialog, which takes it as it opens, or on the page after a press on the
+  // dialog's words: whether one is open is `useDialog`'s registry's answer (`dialogOpen()`), as
+  // `IssuePresets.tsx`'s menu asks it.
   useEffect(() => {
     if (!open) return;
     const inDialog = (target: EventTarget | null) =>
       target instanceof Element && target.closest('[role="dialog"]') !== null;
+    const isInside = (target: EventTarget | null) =>
+      target instanceof Node &&
+      (menu.current?.contains(target) === true || control.current?.contains(target) === true);
     const closeOutside = (event: PointerEvent) => {
-      const target = event.target;
-      if (inDialog(target)) return;
-      const inside =
-        target instanceof Node &&
-        (menu.current?.contains(target) === true || control.current?.contains(target) === true);
-      if (!inside) setOpen(false);
+      if (inDialog(event.target)) return;
+      if (!isInside(event.target)) setOpen(false);
+    };
+    const closeOnFocusOutside = (event: FocusEvent) => {
+      if (inDialog(event.target) || dialogOpen()) return;
+      if (!isInside(event.target)) setOpen(false);
     };
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || inDialog(event.target)) return;
@@ -231,9 +237,11 @@ function ActAndMenu({
       setOpen(false);
     };
     document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("focusin", closeOnFocusOutside);
     document.addEventListener("keydown", closeOnEscape, true);
     return () => {
       document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("focusin", closeOnFocusOutside);
       document.removeEventListener("keydown", closeOnEscape, true);
     };
   }, [open]);
