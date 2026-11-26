@@ -263,6 +263,24 @@ func TestASocketRevokedBeforeItsUpgradeIsNeverUpgraded(t *testing.T) {
 	}
 }
 
+func TestARevocableSocketWriterAnswersPlainTextBeforeUpgrade(t *testing.T) {
+	t.Parallel()
+	under := httptest.NewRecorder()
+	writer := &revocableSocketWriter{ResponseWriter: under, ctx: context.Background()}
+	if _, err := writer.Write([]byte("<socket error>")); err != nil {
+		t.Fatalf("write pre-upgrade response: %v", err)
+	}
+	if got := under.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", got)
+	}
+	if got := under.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := under.Body.String(); got != "<socket error>" {
+		t.Errorf("body = %q, want <socket error>", got)
+	}
+}
+
 // TestASocketAdmittedAcrossAnAccessCheckIsReadAgainForItsPerson: an access re-check walks the
 // sockets recorded when it begins, so a socket whose admission read its room before a re-check
 // began, and that is recorded only after it, is one that re-check never walked. Its admission reads
