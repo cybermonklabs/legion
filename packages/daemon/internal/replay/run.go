@@ -623,8 +623,10 @@ func (d *driver) lineTimeline() (Timeline, Trace, error) {
 // where it was given none, as a run.json written before it named one holds), d, each signal whose
 // model gives no limit with the model, the ceiling (driver.ceiling), each slot each pass gave out
 // or took back with the pass's kind, each change of the deadline, and each limited signal's value
-// at each probe; never under the key signals, which a comparison's made-up runs use. It holds
-// numbers and names alone, never an assumption's text.
+// at each probe; never under the key signals, which a comparison's made-up runs use. It also holds
+// each draw of a stretch's conflict the run made, its key and its value (Draws), which a comparison
+// reads to show that two rules at one seed draw alike (drawsAgree), and the draws it made that it
+// keys to no stretch (UnkeyedDraws). It holds numbers and names alone, never an assumption's text.
 type runRecord struct {
 	Rule            string                         `json:"rule"`
 	RuleCommit      string                         `json:"ruleCommit"`
@@ -660,6 +662,30 @@ type runRecord struct {
 	SlotPasses      []SlotPass                     `json:"slotPasses"`
 	Deadlines       []DeadlineEntry                `json:"deadlines"`
 	SignalValues    map[string]map[string]*float64 `json:"signalValues"`
+	Draws           []StretchDraw                  `json:"draws"`
+	UnkeyedDraws    UnkeyedDraws                   `json:"unkeyedDraws"`
+}
+
+// UnkeyedDraws is the draws a run made that it keys to no seed, issue and stretch, so that two runs
+// of two rules at one seed need not draw alike at them: the draws of the workflow experiments in
+// the random mode that its window lists (Experiments), which the engine and the admission pass make
+// from one source of the run's seed, afresh at each boot and in the order they record their trees
+// and issues (driver.newChain). A comparison pairs no run of a window that lists such an experiment
+// (windowRecord.unpaired). A window collect wrote lists none, so its runs make none.
+type UnkeyedDraws struct {
+	Experiments int `json:"experiments"`
+}
+
+// StretchDraw is one draw of a stretch's conflict as run.json records it (runRecord.Draws): its key,
+// the stretch's place, alike under every rule and branch at one seed (stretchDraw) — the issue, the
+// recorded start and the phase of the piece whose end ends the stretch, and how many draws of that
+// stretch the run made before it — and its value, the uniform U the run drew there (conflictDraw.u).
+type StretchDraw struct {
+	Issue string      `json:"issue"`
+	Start time.Time   `json:"start"`
+	Phase phase.Phase `json:"phase"`
+	N     int         `json:"n"`
+	U     float64     `json:"u"`
 }
 
 // writeOutputs writes the run's scorecard.json (its snapshot timeline's), scorecard-line.json (its
@@ -678,7 +704,7 @@ func (d *driver) writeOutputs(result RunResult, began time.Time) error {
 		Divergence: result.Divergence, Gaps: result.Gaps, Conflicts: result.Conflicts,
 		GitReads: result.GitReads, GitLoopHours: result.GitLoopHours, GitReadTable: result.GitReadTable,
 		Limits: d.sig.limits, TokenLimit: d.cfg.TokenLimit, IdleAfter: Duration(d.sig.idleAfter), Unlimited: d.sig.unlimited, Ceiling: d.ceiling(), SlotPasses: d.sig.passes,
-		Deadlines: d.sig.deadlines, SignalValues: d.sig.values}
+		Deadlines: d.sig.deadlines, SignalValues: d.sig.values, Draws: d.drawn, UnkeyedDraws: d.unkeyed}
 	for name, value := range map[string]any{scorecardFile: result.Scorecard, lineScorecardFile: result.LineScorecard, runFile: ran} {
 		data, err := json.MarshalIndent(value, "", "  ")
 		if err != nil {

@@ -42,6 +42,7 @@ This file gives the conventions every window is written and worked by, once: the
 | `drawn-boot-earlier-phase` | a boot's draw in an earlier phase than the one its stretch ends in enters its conflict at the stretch's end, in that phase | `legion-v20.42.5` |
 | `drawn-touching-merges` | a draw counts the merges that change a path of the issue's profile, and a stretch with none draws no conflict | `legion-v20.42.5` |
 | `drawn-work-conflict` | drawn work keeps its source's recorded conflict on the main branch, and draws it by its source's profile on the branch that draws | `main`, on two branches |
+| `random-experiment` | a workflow experiment in the `random` mode is drawn for each issue the daemon records, keyed to no issue: the run names those draws as unkeyed, and a comparison pairs no run of the window | `main` |
 
 The three windows of R10, the start of a P0 issue outside the cap, run it under `p0-at-once`, and under `main` once cybermonklabs/legion#5488 merges and `main` starts a P0 issue outside the cap.
 Until then each run under `main` waits on the skip list (`pending_test.go`, ruling D16), and its expected values are those of the run under `p0-at-once`.

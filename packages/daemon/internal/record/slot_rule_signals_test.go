@@ -99,3 +99,38 @@ func TestASignalRuleDecidesInItsOwnModeAndTheDaemonsRuleInTheSnapshots(t *testin
 		}
 	}
 }
+
+// Only a rule that keeps the owner's direction of 2026-11-24 can be named best by a comparison of
+// rules (the replay's spec, R7), and the rule value says which: R10 above P0, the line's priority
+// order below it and admission by signals with the cap as a ceiling only. Of the rules the
+// repository keeps, signals and signals-backoff keep it, and no other does: the daemon's own rule
+// and before-p0 admit below P0 under the cap, p0-at-once and p0-idle start a P0 issue outside the
+// cap and admit below it under the cap, and the recorded windows' rules neither start one outside
+// the cap nor put priority first. A signal rule that loses any one of the three choices keeps it no
+// more, and the zero rule, the daemon's own, does not keep it.
+func TestOnlyTheSignalRulesKeepTheOwnersDirection(t *testing.T) {
+	t.Parallel()
+	keep := map[string]bool{"signals": true, "signals-backoff": true}
+	for _, rule := range SlotRules() {
+		if got := rule.KeepsOwnersDirection(); got != keep[rule.Name] {
+			t.Errorf("the rule %q keeps the owner's direction: %t, want %t", rule.Name, got, keep[rule.Name])
+		}
+	}
+	if (SlotRule{}).KeepsOwnersDirection() {
+		t.Error("the zero rule, the daemon's own, keeps the owner's direction, and it admits below P0 under the cap")
+	}
+	for _, broken := range []struct {
+		name   string
+		change func(*SlotRule)
+	}{
+		{"no P0 outside the cap", func(r *SlotRule) { r.P0AboveCap = false }},
+		{"no priority first", func(r *SlotRule) { r.PriorityFirst = false }},
+		{"no admission by signals", func(r *SlotRule) { r.Signals = signals.Off }},
+	} {
+		rule := keptRule(t, "signals")
+		broken.change(&rule)
+		if rule.KeepsOwnersDirection() {
+			t.Errorf("signals with %s keeps the owner's direction", broken.name)
+		}
+	}
+}

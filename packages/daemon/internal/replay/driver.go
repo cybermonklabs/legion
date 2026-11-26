@@ -271,6 +271,12 @@ type driver struct {
 	// noWork is each issue the replay admitted with no work, recorded or drawn (neverStartedWork),
 	// whose slot-hours the run counts (Divergence.NoWorkSlotHours).
 	noWork map[string]bool
+	// drawn is each draw of a stretch's conflict the run made, in its order, with its key and its
+	// value (recordDraw), which run.json records (runRecord.Draws).
+	drawn []StretchDraw
+	// unkeyed counts the draws the run made that it keys to no stretch (newChain), which run.json
+	// records (runRecord.UnkeyedDraws).
+	unkeyed UnkeyedDraws
 }
 
 // Divergence is what a replay counts of where it left the record's course, which a replay under
@@ -379,7 +385,10 @@ func (d *driver) now() time.Time { return d.clock.Now() }
 // settings and the cap the daemon process running from at served under (processCap), or the run's
 // own cap where it names one (RunConfig.Cap), the replay's tables of what a rule the daemon does not
 // run records (ruleTables), the replay's own handler before the chain, and its reading of the
-// recorded first starts right before the admission pass (firstStartsHandler).
+// recorded first starts right before the admission pass (firstStartsHandler). The source of the
+// experiments' draws starts afresh from the run's seed at each boot and is read in the order the
+// engine and the pass record their trees and issues, keyed to no issue, so the run counts each
+// draw of it (UnkeyedDraws.Experiments).
 func (d *driver) newChain(at time.Time) {
 	w := d.window
 	source := rand.New(rand.NewPCG(uint64(d.cfg.Seed), experimentStream))
@@ -387,6 +396,7 @@ func (d *driver) newChain(at time.Time) {
 		if bound == 0 {
 			return 0, fmt.Errorf("draw a value below %d: there is no value below zero", bound)
 		}
+		d.unkeyed.Experiments++
 		return source.Uint64N(bound), nil
 	}
 	d.engine = workflow.New(d.records, workflow.Config{Project: w.Project, Steps: w.GateSteps, ReviewRoundCap: w.ReviewRoundCap,

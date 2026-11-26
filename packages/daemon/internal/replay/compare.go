@@ -12,11 +12,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// Costs is what a rule is judged on against main (spec R7): the issues finished and the owner's
-// three costs, each read from one scorecard or the mean of a branch's seeds.
+// Costs is what a rule is judged on against main (spec R7), read from one run's scorecard: the
+// issues finished, the owner's three costs and the wait of urgent work (costMeasures).
 type Costs struct {
 	// Done is the issues that reach done.
 	Done float64 `json:"done"`
@@ -31,12 +32,16 @@ type Costs struct {
 	// OtherDelays is the hours of every send-back loop, of every cause, and of every wait on
 	// another issue, whatever ended it.
 	OtherDelays float64 `json:"otherDelays"`
+	// UrgentWaits is the wait of urgent work, P0's and P1's apart, each where an issue counts in it
+	// (Scorecard.UrgentWaits): the median and the 90th percentile of its wait to the first slot and
+	// to done are each a measure (urgentWaitMeasures).
+	UrgentWaits map[string]UrgentWait `json:"urgentWaits,omitempty"`
 }
 
 // costsOf is the costs card gives, its loops and waits summed in the order of their keys so the
 // same card always gives the same sum.
 func costsOf(card Scorecard) Costs {
-	c := Costs{Done: float64(card.Done), WaitOnlyForSlot: card.WaitOnlyForSlot.Hours, PriorityTaken: card.PriorityTakenBanded}
+	c := Costs{Done: float64(card.Done), WaitOnlyForSlot: card.WaitOnlyForSlot.Hours, PriorityTaken: card.PriorityTakenBanded, UrgentWaits: card.UrgentWaits}
 	for _, cause := range slices.Sorted(maps.Keys(card.Loops)) {
 		c.OtherDelays += card.Loops[cause].Hours
 	}
@@ -46,98 +51,273 @@ func costsOf(card Scorecard) Costs {
 	return c
 }
 
-// meanCosts is the mean of the costs of runs, summed in their order.
-func meanCosts(runs []runRead) Costs {
-	var sum Costs
-	for _, run := range runs {
-		sum.Done += run.costs.Done
-		sum.WaitOnlyForSlot += run.costs.WaitOnlyForSlot
-		sum.PriorityTaken += run.costs.PriorityTaken
-		sum.OtherDelays += run.costs.OtherDelays
-	}
-	if n := float64(len(runs)); n > 0 {
-		sum.Done, sum.WaitOnlyForSlot, sum.PriorityTaken, sum.OtherDelays = sum.Done/n, sum.WaitOnlyForSlot/n, sum.PriorityTaken/n, sum.OtherDelays/n
-	}
-	return sum
-}
+// SeedCosts is a rule's costs on one branch of one window at each seed it ran, by the seed: the
+// runs its difference from main is taken over, seed by seed (difference).
+type SeedCosts map[int64]Costs
 
 // costMeasure is one of the measures a rule is judged on: its name, whether more of it is better,
-// R5's gap of it, and its value among a Costs.
+// and its value among a Costs, false where the Costs give none (a wait of urgent work with no issue
+// of its priority).
 type costMeasure struct {
 	name         string
 	higherBetter bool
-	gap          Gap
-	of           func(Costs) float64
+	of           func(Costs) (float64, bool)
 }
 
-// costMeasures is the issues finished and the owner's three costs, each with R5's gap: 10% of the
-// issues finished, 30% of the hours of started work that waits only for a slot, 0.05 of the share
-// of priority taken, read in today's line's order (priorityTakenBanded, which no test of R5 reads,
-// judged within the gap R5 gives the share by rank alone), and 30% of the hours of the other delays.
-var costMeasures = []costMeasure{
-	{name: "done", higherBetter: true, gap: gapTenth, of: func(c Costs) float64 { return c.Done }},
-	{name: "waitOnlyForSlot.hours", gap: gapThirty, of: func(c Costs) float64 { return c.WaitOnlyForSlot }},
-	{name: "priorityTakenBanded", gap: gapPriority, of: func(c Costs) float64 { return c.PriorityTaken }},
-	{name: "otherDelays.hours", gap: gapThirty, of: func(c Costs) float64 { return c.OtherDelays }},
+// costMeasures is every measure a rule is judged on (spec R7): the issues finished; the owner's
+// three costs, the hours of started work that waits only for a slot, priority taken by holders in
+// today's line's order (priorityTakenBanded) and the hours of the other delays; and the wait of
+// urgent work (urgentWaitMeasures).
+var costMeasures = slices.Concat([]costMeasure{
+	{name: "done", higherBetter: true, of: func(c Costs) (float64, bool) { return c.Done, true }},
+	{name: "waitOnlyForSlot.hours", of: func(c Costs) (float64, bool) { return c.WaitOnlyForSlot, true }},
+	{name: "priorityTakenBanded", of: func(c Costs) (float64, bool) { return c.PriorityTaken, true }},
+	{name: "otherDelays.hours", of: func(c Costs) (float64, bool) { return c.OtherDelays, true }},
+}, urgentWaitMeasures())
+
+// urgentWaitMeasures is the wait of urgent work as measures a rule is judged on (spec R4, R7): for
+// P0 and then for P1 (urgentPriorities), the median and the 90th percentile of the wait to the first
+// slot and then of the wait to done, in hours, each none where no issue of the priority counts.
+func urgentWaitMeasures() []costMeasure {
+	var measures []costMeasure
+	for _, priority := range urgentPriorities {
+		key := priority.String()
+		for _, wait := range []struct {
+			name string
+			of   func(UrgentWait) WaitMinutes
+		}{{"firstSlot", func(w UrgentWait) WaitMinutes { return w.FirstSlot }}, {"done", func(w UrgentWait) WaitMinutes { return w.Done }}} {
+			for _, at := range []struct {
+				name string
+				of   func(WaitMinutes) float64
+			}{{"medianHours", func(w WaitMinutes) float64 { return w.MedianMinutes }}, {"p90Hours", func(w WaitMinutes) float64 { return w.P90Minutes }}} {
+				measures = append(measures, costMeasure{name: "urgentWaits[" + key + "]." + wait.name + "." + at.name,
+					of: func(c Costs) (float64, bool) {
+						urgent, counts := c.UrgentWaits[key]
+						return at.of(wait.of(urgent)) / 60, counts
+					}})
+			}
+		}
+	}
+	return measures
 }
 
-// verdict is how a rule stands against main on one measure.
-type verdict int
+// Verdict is how a rule stands against main on one measure of one branch (spec R7).
+type Verdict string
 
 const (
-	// verdictLevel is no worse than main by more than R5's gap, and not better.
-	verdictLevel verdict = iota
-	// verdictBetter is better than main by any amount.
-	verdictBetter
-	// verdictWorse is worse than main by more than R5's gap.
-	verdictWorse
+	// VerdictBetter is better than main: the difference's 95% interval excludes zero and its near
+	// end is farther from zero than the replay's own error on the measure, or, for a single run, the
+	// difference itself is.
+	VerdictBetter Verdict = "better"
+	// VerdictWorse is worse than main in the same sense.
+	VerdictWorse Verdict = "worse"
+	// VerdictTie is every other difference, one whose measure has no error measured among them.
+	VerdictTie Verdict = "tie"
+	// VerdictNone is a measure that no seed both rules ran gives a value of: a wait of urgent work
+	// with no issue of its priority. It is neither better nor worse.
+	VerdictNone Verdict = "none"
+	// VerdictUnpaired is a difference on a window whose runs are not paired, because the window lists
+	// an experiment in the random mode, which a run draws keyed to no issue (windowRecord.unpaired):
+	// the two runs at one seed need not draw alike, so the seed-by-seed difference is no paired one,
+	// and it is neither better nor worse, nor a tie that more seeds would tell apart. It is a verdict
+	// of its own, not a field beside one, so every reader of a verdict (the trade, the standing, the
+	// name of the best rule) counts it as neither better nor worse with no rule of its own.
+	VerdictUnpaired Verdict = "not paired"
 )
 
-// judge is how value, a rule's, stands against main's on m: worse where it is worse by more than
-// R5's gap of main's value, better where it is better at all, and level otherwise.
-func judge(m costMeasure, value, main float64) verdict {
-	worse := value - main
-	if m.higherBetter {
-		worse = -worse
-	}
-	allowed := m.gap.Allowed(main)
-	switch {
-	case worse > allowed+tolerance(allowed, value, main):
-		return verdictWorse
-	case worse < -tolerance(value, main):
-		return verdictBetter
-	}
-	return verdictLevel
+// seedsNeededZ is the normal quantile of the seeds a tie would need (Difference.SeedsNeeded), the
+// 1.96 of ⌈(1.96 s / d)²⌉.
+const seedsNeededZ = 1.96
+
+// Difference is a rule's difference from main on one measure of one branch, taken seed by seed
+// (spec R7): the rule's run less main's run at the same seed, whose draws match at every stretch
+// both reach (drawsAgree), over the Seeds n at which both ran and gave the measure; its mean (d)
+// and its seed-by-seed standard deviation (SD, s, 0 for one seed); its 95% interval, from Low to
+// High, d ± t·s/√n with t the 0.975 quantile of Student's t at n − 1 degrees of freedom
+// (studentQuantile), and for a single run (n 1: a pair of runs that draw nothing) the difference
+// itself; the replay's own error on the measure it is held to, where one is measured (Error,
+// Measured); its verdict; and for a tie the seeds a difference of its size would need,
+// ⌈(1.96 s / d)²⌉ (SeedsNeeded, for more than one seed), or none at all where d is 0 (Never).
+type Difference struct {
+	Measure     string  `json:"measure"`
+	Seeds       int     `json:"seeds"`
+	Mean        float64 `json:"mean"`
+	SD          float64 `json:"sd"`
+	Low         float64 `json:"low"`
+	High        float64 `json:"high"`
+	Error       float64 `json:"error"`
+	Measured    bool    `json:"measured"`
+	Verdict     Verdict `json:"verdict"`
+	SeedsNeeded float64 `json:"seedsNeeded,omitempty"`
+	Never       bool    `json:"never,omitempty"`
 }
 
-// Standing is how a rule stands against main on one branch of one window, over the issues finished
-// and the owner's three costs (costMeasures): the rank whose change the break-even search looks for.
+// difference is rule's difference from main on m over the seeds both ran (Difference), held to
+// held's error of m, the replay's own error on each measure by its name where one is measured;
+// quantile is Student's 0.975 quantile by the degrees of freedom (studentQuantiles). A difference
+// is better or worse only where its near end, d less t·s/√n toward zero, is farther from zero than
+// the error, which also keeps an interval that touches zero a tie.
+func difference(m costMeasure, rule, main SeedCosts, held map[string]float64, quantile func(int) float64) Difference {
+	diff := Difference{Measure: m.name, Verdict: VerdictNone}
+	diff.Error, diff.Measured = held[m.name]
+	values := make([]float64, 0, len(rule))
+	for _, seed := range slices.Sorted(maps.Keys(rule)) {
+		mainCosts, ran := main[seed]
+		if !ran {
+			continue
+		}
+		value, gives := m.of(rule[seed])
+		mainValue, mainGives := m.of(mainCosts)
+		if gives && mainGives {
+			values = append(values, value-mainValue)
+		}
+	}
+	n := len(values)
+	if n == 0 {
+		return diff
+	}
+	diff.Seeds = n
+	diff.Mean, _, _ = spread(values)
+	half := 0.0
+	if n > 1 {
+		squares := 0.0
+		for _, v := range values {
+			squares += (v - diff.Mean) * (v - diff.Mean)
+		}
+		diff.SD = math.Sqrt(squares / float64(n-1))
+		half = quantile(n-1) * diff.SD / math.Sqrt(float64(n))
+	}
+	diff.Low, diff.High = diff.Mean-half, diff.Mean+half
+	if near := math.Abs(diff.Mean) - half; diff.Measured && near > diff.Error+tolerance(diff.Error, diff.Mean) {
+		diff.Verdict = VerdictWorse
+		if (diff.Mean > 0) == m.higherBetter {
+			diff.Verdict = VerdictBetter
+		}
+		return diff
+	}
+	diff.Verdict = VerdictTie
+	switch {
+	case math.Abs(diff.Mean) <= tolerance(diff.Mean):
+		diff.Never = true
+	case n > 1:
+		diff.SeedsNeeded = math.Ceil(math.Pow(seedsNeededZ*diff.SD/diff.Mean, 2))
+	}
+	return diff
+}
+
+// judgeBranch is rule's difference from main on each measure it is judged on (costMeasures), in
+// their order, over one branch's seeds (difference).
+func judgeBranch(rule, main SeedCosts, held map[string]float64, quantile func(int) float64) []Difference {
+	diffs := make([]Difference, len(costMeasures))
+	for i, m := range costMeasures {
+		diffs[i] = difference(m, rule, main, held, quantile)
+	}
+	return diffs
+}
+
+// studentQuantile is the 0.975 quantile of Student's t at df degrees of freedom, with which a
+// two-sided 95% interval of a mean over df + 1 seeds is read (spec R7): the t at which the
+// distribution function, 1 − I_x(df/2, 1/2)/2 with x = df/(df + t²) (regularizedBeta), reaches
+// 0.975, found by bisection; 12.7062 at one degree of freedom, 2.7764 at four, and toward 1.96 as
+// they grow.
+func studentQuantile(df int) float64 {
+	v := float64(df)
+	below := func(t float64) bool { return 1-regularizedBeta(v/(v+t*t), v/2, 0.5)/2 < 0.975 }
+	low, high := 0.0, 2.0
+	for below(high) {
+		low, high = high, 2*high
+	}
+	for range 64 {
+		if mid := (low + high) / 2; below(mid) {
+			low = mid
+		} else {
+			high = mid
+		}
+	}
+	return (low + high) / 2
+}
+
+// studentQuantiles is studentQuantile with each answer kept, for a reader that asks it of one
+// number of seeds for many measures.
+func studentQuantiles() func(df int) float64 {
+	kept := map[int]float64{}
+	return func(df int) float64 {
+		t, ok := kept[df]
+		if !ok {
+			t = studentQuantile(df)
+			kept[df] = t
+		}
+		return t
+	}
+}
+
+// regularizedBeta is the regularized incomplete beta function I_x(a, b), by its continued fraction
+// (betaFraction) on the side of x where it converges quickly, and by I_x(a, b) = 1 − I_{1−x}(b, a)
+// on the other.
+func regularizedBeta(x, a, b float64) float64 {
+	switch {
+	case x <= 0:
+		return 0
+	case x >= 1:
+		return 1
+	}
+	lab, _ := math.Lgamma(a + b)
+	la, _ := math.Lgamma(a)
+	lb, _ := math.Lgamma(b)
+	front := math.Exp(lab - la - lb + a*math.Log(x) + b*math.Log1p(-x))
+	if x < (a+1)/(a+b+2) {
+		return front * betaFraction(x, a, b) / a
+	}
+	return 1 - front*betaFraction(1-x, b, a)/b
+}
+
+// betaFraction is the continued fraction of the incomplete beta function at x, a and b, by the
+// modified Lentz method, to a relative step of 1e-15 or 300 terms.
+func betaFraction(x, a, b float64) float64 {
+	const tiny = 1e-300
+	floor := func(v float64) float64 {
+		if math.Abs(v) < tiny {
+			return tiny
+		}
+		return v
+	}
+	c, d := 1.0, 1/floor(1-(a+b)*x/(a+1))
+	h := d
+	for m := 1.0; m <= 300; m++ {
+		even := m * (b - m) * x / ((a + 2*m - 1) * (a + 2*m))
+		d, c = 1/floor(1+even*d), floor(1+even/c)
+		h *= d * c
+		odd := -(a + m) * (a + b + m) * x / ((a + 2*m) * (a + 2*m + 1))
+		d, c = 1/floor(1+odd*d), floor(1+odd/c)
+		step := d * c
+		h *= step
+		if math.Abs(step-1) < 1e-15 {
+			break
+		}
+	}
+	return h
+}
+
+// Standing is how a rule stands against main on one branch of one window over every measure it is
+// judged on (costMeasures): the rank whose change the break-even search looks for.
 type Standing string
 
 const (
-	// StandingBetter is no worse than main by more than R5's gap on each measure and better on at
-	// least one: what a rule must be on every branch that passes R5 to be named best.
+	// StandingBetter is better than main on at least one measure and worse on none: what a rule
+	// must be on every branch that passes R5 to be named best.
 	StandingBetter Standing = "better"
-	// StandingWorse is worse than main by more than R5's gap on at least one measure and better on
-	// none.
+	// StandingWorse is worse than main on at least one measure and better on none.
 	StandingWorse Standing = "worse"
-	// StandingTrade is worse than main by more than R5's gap on one measure and better on another.
+	// StandingTrade is better than main on one measure and worse on another.
 	StandingTrade Standing = "trade"
-	// StandingLevel is no worse than main by more than R5's gap on any measure and better on none.
+	// StandingLevel is neither better nor worse than main on any measure.
 	StandingLevel Standing = "level"
 )
 
-// standingOf is how rule's costs stand against main's.
-func standingOf(rule, main Costs) Standing {
-	better, worse := false, false
-	for _, m := range costMeasures {
-		switch judge(m, m.of(rule), m.of(main)) {
-		case verdictBetter:
-			better = true
-		case verdictWorse:
-			worse = true
-		}
-	}
+// standingOf is how a rule whose differences from main on one branch are diffs stands against it.
+func standingOf(diffs []Difference) Standing {
+	better := slices.ContainsFunc(diffs, func(d Difference) bool { return d.Verdict == VerdictBetter })
+	worse := slices.ContainsFunc(diffs, func(d Difference) bool { return d.Verdict == VerdictWorse })
 	switch {
 	case better && worse:
 		return StandingTrade
@@ -149,88 +329,124 @@ func standingOf(rule, main Costs) Standing {
 	return StandingLevel
 }
 
-// BranchCosts is every rule's costs on one branch of one window, main's among them, by rule name,
-// and whether the branch gives a comparison: its window's main branch and it pass R5.
+// BranchCosts is every rule's costs at each seed on one branch of one window, main's among them, by
+// rule name, whether the branch gives a comparison (its window's main branch and it pass R5), and
+// why its runs are not paired, "" where they are (windowRecord.unpaired).
 type BranchCosts struct {
-	Window string
-	Branch BranchAt
-	Passes bool
-	Costs  map[string]Costs
+	Window   string
+	Branch   BranchAt
+	Passes   bool
+	Unpaired string
+	Costs    map[string]SeedCosts
 }
 
 // MeasureTrade is how a rule stood against main on one measure over the branches a decision read:
-// on how many it was better, worse by more than R5's gap, and neither.
+// on how many it was better, worse and a tie, on how many no seed gave the measure, and on how
+// many its runs were not paired (VerdictUnpaired).
 type MeasureTrade struct {
-	Measure string `json:"measure"`
-	Better  int    `json:"better"`
-	Worse   int    `json:"worse"`
-	Level   int    `json:"level"`
+	Measure  string `json:"measure"`
+	Better   int    `json:"better"`
+	Worse    int    `json:"worse"`
+	Tie      int    `json:"tie"`
+	None     int    `json:"none"`
+	Unpaired int    `json:"unpaired"`
 }
 
-// Trade is how a rule stood against main on each measure it is judged on (costMeasures).
+// Trade is how a rule stood against main on each measure it is judged on (costMeasures), and
+// whether it keeps the owner's direction (record.SlotRule.KeepsOwnersDirection).
 type Trade struct {
-	Rule     string         `json:"rule"`
-	Measures []MeasureTrade `json:"measures"`
+	Rule           string         `json:"rule"`
+	KeepsDirection bool           `json:"keepsDirection"`
+	Measures       []MeasureTrade `json:"measures"`
 }
 
-// Decision is which rule a comparison names best (spec R7): each rule that, on every branch of the
-// windows that passes R5, is no worse than main by more than R5's gap on the issues finished and on
-// each of the owner's three costs, and better on at least one; how many branches that is; and each
-// rule's trade over them. No branch that fails R5 is read, so none can name a rule, and with no
-// branch that passes no rule is named.
+// Judged is a rule's difference from main on each measure (judgeBranch) on one branch of one window
+// that passes R5.
+type Judged struct {
+	Window      string       `json:"window"`
+	Branch      BranchAt     `json:"branch"`
+	Rule        string       `json:"rule"`
+	Differences []Difference `json:"differences"`
+}
+
+// Decision is which rule a comparison names best (spec R7): each rule that keeps the owner's
+// direction and, on every branch of the windows that passes R5, is worse than main on no measure
+// it is judged on and better on at least one (Best); each rule that meets that test of the
+// measures and does not keep the direction, so it is measured beside and not named (Outside); how
+// many branches pass; each rule's trade over them; each rule's differences on each of them
+// (Judged); and the replay's own error each difference is held to, by measure (Errors). No branch
+// that fails R5 is read, so none can name a rule, and with no branch that passes no rule is named.
 type Decision struct {
-	Best     []string `json:"best"`
-	Branches int      `json:"branches"`
-	Trades   []Trade  `json:"trades"`
+	Best     []string           `json:"best"`
+	Outside  []string           `json:"outside"`
+	Branches int                `json:"branches"`
+	Trades   []Trade            `json:"trades"`
+	Judged   []Judged           `json:"judged"`
+	Errors   map[string]float64 `json:"errors"`
 }
 
-// Decide is the decision over branches for each of rules, main left out of them: main's costs and
-// each rule's on each branch are its branch's Costs.
-func Decide(rules []string, branches []BranchCosts) Decision {
+// Decide is the decision over branches for each of rules, main left out of them, each difference
+// held to held, the replay's own error on each measure by its name where one is measured: main's
+// costs and each rule's on each branch are its branch's Costs. On a branch whose runs are not
+// paired (BranchCosts.Unpaired) each difference a seed gives is not paired (VerdictUnpaired): its
+// mean over the seeds stands, with no interval and no seeds needed.
+func Decide(rules []record.SlotRule, branches []BranchCosts, held map[string]float64) Decision {
 	var passing []BranchCosts
 	for _, b := range branches {
 		if b.Passes {
 			passing = append(passing, b)
 		}
 	}
-	decision := Decision{Best: []string{}, Branches: len(passing), Trades: []Trade{}}
+	decision := Decision{Best: []string{}, Outside: []string{}, Branches: len(passing), Trades: []Trade{}, Judged: []Judged{}, Errors: held}
+	quantile := studentQuantiles()
 	for _, rule := range rules {
-		if rule == record.MainRule.Name {
+		if rule.Name == record.MainRule.Name {
 			continue
 		}
-		trade := Trade{Rule: rule}
+		trade := Trade{Rule: rule.Name, KeepsDirection: rule.KeepsOwnersDirection()}
 		for _, m := range costMeasures {
 			trade.Measures = append(trade.Measures, MeasureTrade{Measure: m.name})
 		}
-		best := len(passing) > 0
+		meets := len(passing) > 0
 		for _, b := range passing {
-			costs, ran := b.Costs[rule]
+			costs, ran := b.Costs[rule.Name]
 			main, mainRan := b.Costs[record.MainRule.Name]
 			if !ran || !mainRan {
-				best = false
+				meets = false
 				continue
 			}
-			// The rule stands better than main on the branch (standingOf) where it is better on some
-			// measure and worse on none.
-			better, worse := false, false
-			for i, m := range costMeasures {
-				switch judge(m, m.of(costs), m.of(main)) {
-				case verdictBetter:
-					trade.Measures[i].Better++
-					better = true
-				case verdictWorse:
-					trade.Measures[i].Worse++
-					worse = true
-				default:
-					trade.Measures[i].Level++
+			diffs := judgeBranch(costs, main, held, quantile)
+			if b.Unpaired != "" {
+				for i, diff := range diffs {
+					if diff.Verdict != VerdictNone {
+						diffs[i] = Difference{Measure: diff.Measure, Seeds: diff.Seeds, Mean: diff.Mean, Error: diff.Error, Measured: diff.Measured, Verdict: VerdictUnpaired}
+					}
 				}
 			}
-			if !better || worse {
-				best = false
+			decision.Judged = append(decision.Judged, Judged{Window: b.Window, Branch: b.Branch, Rule: rule.Name, Differences: diffs})
+			for i, diff := range diffs {
+				switch diff.Verdict {
+				case VerdictBetter:
+					trade.Measures[i].Better++
+				case VerdictWorse:
+					trade.Measures[i].Worse++
+				case VerdictTie:
+					trade.Measures[i].Tie++
+				case VerdictUnpaired:
+					trade.Measures[i].Unpaired++
+				default:
+					trade.Measures[i].None++
+				}
+			}
+			if standingOf(diffs) != StandingBetter {
+				meets = false
 			}
 		}
-		if best {
-			decision.Best = append(decision.Best, rule)
+		switch {
+		case meets && trade.KeepsDirection:
+			decision.Best = append(decision.Best, rule.Name)
+		case meets:
+			decision.Outside = append(decision.Outside, rule.Name)
 		}
 		decision.Trades = append(decision.Trades, trade)
 	}
@@ -253,17 +469,19 @@ type BreakEvenResult struct {
 	Changes   bool             `json:"changes"`
 }
 
-// BreakEven is the break-even search of a rule whose costs on the main branch at each slowdown
-// factor are rule, against main's, main: over factors in order, each that both ran.
-func BreakEven(factors []float64, rule, main map[float64]Costs) BreakEvenResult {
+// BreakEven is the break-even search of a rule whose costs at each seed on the main branch at each
+// slowdown factor are rule, against main's, main: over factors in order, each that both ran, its
+// standing judged as the decision judges a branch, each difference held to held (judgeBranch).
+func BreakEven(factors []float64, rule, main map[float64]SeedCosts, held map[string]float64) BreakEvenResult {
 	result := BreakEvenResult{Standings: []FactorStanding{}}
+	quantile := studentQuantiles()
 	for _, f := range factors {
 		costs, ran := rule[f]
 		mainCosts, mainRan := main[f]
 		if !ran || !mainRan {
 			continue
 		}
-		standing := standingOf(costs, mainCosts)
+		standing := standingOf(judgeBranch(costs, mainCosts, held, quantile))
 		if len(result.Standings) > 0 && !result.Changes && standing != result.Standings[0].Standing {
 			result.Factor, result.Changes = f, true
 		}
@@ -754,64 +972,190 @@ func (r Runs) readComparison() (comparison, error) {
 	return c, nil
 }
 
-// costsAt is the mean costs of rule's runs on the branch labelled label of window.
-func (c comparison) costsAt(window, rule, label string) (Costs, bool) {
+// seedCostsAt is the costs of each of rule's runs on the branch labelled label of window, by its
+// seed; none where the part or the branch holds no run.
+func (c comparison) seedCostsAt(window, rule, label string) SeedCosts {
 	part, ok := c.runs.parts[partKey{window: window, rule: rule}]
 	if !ok {
-		return Costs{}, false
+		return nil
 	}
-	runs, ok := part.runs[label]
-	if !ok || len(runs) == 0 {
-		return Costs{}, false
+	runs := part.runs[label]
+	if len(runs) == 0 {
+		return nil
 	}
-	return meanCosts(runs), true
+	costs := make(SeedCosts, len(runs))
+	for _, run := range runs {
+		costs[run.seed] = run.costs
+	}
+	return costs
+}
+
+// ownErrors is the replay's own error across the recorded change of the rule on each measure a
+// rule is judged on (costMeasures), by its name, where either window measures one: the forecast's
+// measured error (ForecastCards.ownError), the larger of the two windows' errors, each window's
+// replay under its own rule on the main branch (MainBranchAt), the mean over its seeds read from its
+// line timelines, against its record's scorecard. Each difference between two rules is held to it
+// (spec R7).
+func (c comparison) ownErrors() map[string]float64 {
+	own := func(w windowRecord) []Scorecard {
+		return lineCards(c.runs.parts[partKey{window: w.Name, rule: w.Rule}].runs[MainBranchAt.Label()])
+	}
+	before, after := c.windows[0], c.windows[1]
+	cards := ForecastCards{Before: before.Scorecard, After: after.Scorecard, Own: own(before), AfterOwn: own(after)}
+	held := map[string]float64{}
+	for _, m := range costMeasures {
+		if largest, measured := cards.ownError(func(card Scorecard) (float64, bool) { return m.of(costsOf(card)) }); measured {
+			held[m.name] = largest
+		}
+	}
+	return held
 }
 
 // decision is the comparison's decision over every branch of both windows (Decide), each branch
-// passing where its window's validation says it gives a comparison.
+// passing where its window's validation says it gives a comparison, each difference held to the
+// replay's own error (ownErrors).
 func (c comparison) decision() Decision {
 	var branches []BranchCosts
 	for i, w := range c.windows {
 		for _, at := range c.branches {
-			b := BranchCosts{Window: w.Name, Branch: at, Passes: c.validations[i].Compares(at), Costs: map[string]Costs{}}
+			b := BranchCosts{Window: w.Name, Branch: at, Passes: c.validations[i].Compares(at), Unpaired: w.unpaired(), Costs: map[string]SeedCosts{}}
 			for _, rule := range c.rules {
-				if costs, ok := c.costsAt(w.Name, rule, at.Label()); ok {
+				if costs := c.seedCostsAt(w.Name, rule, at.Label()); costs != nil {
 					b.Costs[rule] = costs
 				}
 			}
 			branches = append(branches, b)
 		}
 	}
-	return Decide(c.rules, branches)
+	rules := make([]record.SlotRule, 0, len(c.rules))
+	for _, name := range c.rules {
+		rule, _ := record.SlotRuleNamed(name)
+		rules = append(rules, rule)
+	}
+	return Decide(rules, branches, c.ownErrors())
 }
 
-// breakEven is the break-even search of rule against main on window, over the comparison's factors.
-func (c comparison) breakEven(window, rule string) BreakEvenResult {
-	ruled, mained := map[float64]Costs{}, map[float64]Costs{}
+// breakEven is the break-even search of rule against main on window, over the comparison's factors,
+// each difference held to held (BreakEven).
+func (c comparison) breakEven(window, rule string, held map[string]float64) BreakEvenResult {
+	ruled, mained := map[float64]SeedCosts{}, map[float64]SeedCosts{}
 	for _, f := range c.factors {
 		label := BranchAt{Branch: MainBranch, Slowdown: f}.Label()
-		if costs, ok := c.costsAt(window, rule, label); ok {
+		if costs := c.seedCostsAt(window, rule, label); costs != nil {
 			ruled[f] = costs
 		}
-		if costs, ok := c.costsAt(window, record.MainRule.Name, label); ok {
+		if costs := c.seedCostsAt(window, record.MainRule.Name, label); costs != nil {
 			mained[f] = costs
 		}
 	}
-	return BreakEven(c.factors, ruled, mained)
+	return BreakEven(c.factors, ruled, mained, held)
+}
+
+// keyedDraw is one draw of a stretch's conflict as a comparison reads it from run.json (StretchDraw):
+// its key, the stretch's place folded into one number (stretchDraw.hash), and its value.
+type keyedDraw struct {
+	key uint64
+	u   float64
+}
+
+// keyedDraws is draws by their keys (keyedDraw), in the order of the keys, then of the values; it
+// writes the place of each into places by its key, where places is not nil, so a report can name a
+// stretch it reads by its key alone (stretchDraw.name).
+func keyedDraws(draws []StretchDraw, places map[uint64]stretchDraw) []keyedDraw {
+	keyed := make([]keyedDraw, 0, len(draws))
+	for _, draw := range draws {
+		at := stretchDraw{issue: draw.Issue, start: draw.Start, phase: draw.Phase, n: draw.N}
+		key := at.hash()
+		if places != nil {
+			places[key] = at
+		}
+		keyed = append(keyed, keyedDraw{key: key, u: draw.U})
+	}
+	slices.SortFunc(keyed, func(a, b keyedDraw) int { return cmp.Or(cmp.Compare(a.key, b.key), cmp.Compare(a.u, b.u)) })
+	return keyed
+}
+
+// name is the stretch's draw at as the comparison's document names it: the issue's stretch ended by
+// its piece of at's phase from its recorded start, and the draw's count among that stretch's.
+func (at stretchDraw) name() string {
+	return fmt.Sprintf("%s's stretch ended by its %s piece from %s, draw %d", at.issue, at.phase, at.start.UTC().Format("2006-01-02T15:04Z"), at.n+1)
+}
+
+// drawDifference is a stretch two runs both drew another value at: its key and each run's value.
+type drawDifference struct {
+	key  uint64
+	a, b float64
+}
+
+// drawsAgree is how many stretches two runs both drew, a and b in the order of their keys
+// (keyedDraws), and each of those they drew another value at: none where every draw is keyed to
+// the run's seed, the issue and the stretch alone, as two runs of two rules at one seed are paired
+// on (spec R7).
+func drawsAgree(a, b []keyedDraw) (shared int, differ []drawDifference) {
+	for i, j := 0, 0; i < len(a) && j < len(b); {
+		switch {
+		case a[i].key < b[j].key:
+			i++
+		case a[i].key > b[j].key:
+			j++
+		default:
+			shared++
+			if a[i].u != b[j].u {
+				differ = append(differ, drawDifference{key: a[i].key, a: a[i].u, b: b[j].u})
+			}
+			i, j = i+1, j+1
+		}
+	}
+	return shared, differ
+}
+
+// unpaired is why no run of r is paired with another (spec R7), "" where its runs may be: r's
+// window.json lists an experiment in the random mode, which each run draws from one source of its
+// seed in the order it records its trees and issues, keyed to no issue (UnkeyedDraws), so two rules'
+// runs at one seed need not draw alike.
+func (r windowRecord) unpaired() string {
+	var random []string
+	for _, experiment := range r.Experiments {
+		if experiment.Mode == string(config.ExperimentRandom) {
+			random = append(random, experiment.Name)
+		}
+	}
+	if len(random) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s lists the experiment %s in the random mode, which each run draws from one source of its seed in the order it records its trees and issues, keyed to no issue, so two rules' runs at one seed need not draw alike",
+		r.Name, codeList(random))
+}
+
+// experimentsText is what the comparison's document says of the experiments r lists and of its
+// runs' draws of them, unkeyed in all, over every rule, branch and seed.
+func (r windowRecord) experimentsText(unkeyed int) string {
+	if len(r.Experiments) == 0 {
+		return fmt.Sprintf("%s lists no experiment in its window.json, as collect writes none, so its replays draw no experiment arm, and no draw of its runs is an unkeyed experiment draw.", r.Name)
+	}
+	named := make([]string, 0, len(r.Experiments))
+	for _, experiment := range r.Experiments {
+		named = append(named, fmt.Sprintf("`%s` in the %s mode", experiment.Name, experiment.Mode))
+	}
+	return fmt.Sprintf("%s lists the experiments %s in its window.json, and its runs drew %d values for them that they key to no stretch.", r.Name, strings.Join(named, ", "), unkeyed)
 }
 
 // Comparison is the document of a comparison of slot rules (spec R7), written in Markdown from the
 // runs alone, so it is the same whether one process made every run or many processes each made a
 // part: the windows, rules, build commits of the runs, branches, seeds and factors it read; the
-// rule it names best, or that none is, with each rule's trade and why each candidate added to the
-// spec's rules is compared; each window's scorecard read from its record, the wait of its P0 and
-// P1 work among it; what each rule's grace keeps over the waits that gave a slot back in each
-// window's record; each window's validation; the forecast across the change, with the workflow
-// commits it carries too; which window measures how a rule changes conflicts; the value of every
-// measure for every rule, window and branch, read from the snapshot timeline, with the lowest and
-// the highest seed, the wait of P0 and P1 work among them (urgentRows); where each issue's times
-// are; the gap of each measure between the snapshot and the line timelines; each rule's
-// break-even slowdown factor; and the assumptions and the scenario each run used. Every
+// rule it names best, or that none is, with the replay's own error each difference is held to,
+// whether each window lists an experiment, whose random draws leave its runs unpaired, each rule's
+// trade, whether it keeps the owner's direction and why each candidate added to the spec's rules is
+// compared; each window's scorecard read from its record, the wait of its P0 and P1 work
+// among it; what each rule's grace keeps over the waits that gave a slot back in each window's
+// record; each window's validation; the forecast across the change, with the workflow commits it
+// carries too; which window measures how a rule changes conflicts; the value of every measure for
+// every rule, window and branch, read from the snapshot timeline, with the lowest and the highest
+// seed, the wait of P0 and P1 work among them (urgentRows), and on each branch that passes R5 each
+// rule's difference from main on each judged measure with its verdict (Difference); each run's
+// admissions with no recorded work; the draws each pair of rules' runs share; where each
+// issue's times are; the gap of each measure between the snapshot and the line timelines; each
+// rule's break-even slowdown factor; and the assumptions and the scenario each run used. Every
 // number in it is computed from the runs. Beside it, issues is the comparison's issues file
 // (writeIssues), which the document names by the base name of issuesFile, the path it is written
 // to (IssuesFile).
@@ -825,10 +1169,11 @@ func (r Runs) Comparison(issuesFile string) (document, issues string, err error)
 	if err != nil {
 		return "", "", err
 	}
+	decision := c.decision()
 	var doc strings.Builder
 	p := &printer{w: &doc}
 	c.writeHead(p, forecast)
-	c.writeDecision(p, forecast)
+	c.writeDecision(p, forecast, decision)
 	c.writeScorecards(p)
 	c.writeGraces(p)
 	p.line("## The validation of each window (R5)")
@@ -849,14 +1194,16 @@ func (r Runs) Comparison(issuesFile string) (document, issues string, err error)
 	}
 	p.line("")
 	c.writeConflicts(p)
-	c.writeMatrix(p)
+	c.writeMatrix(p, decision)
+	c.writeNoWork(p)
+	c.writeDraws(p)
 	p.line("## Each issue's first slot and done under each rule")
 	p.line("")
 	p.line("`%s`, beside this document, gives for each window and each rule each issue that held a slot in the record or in the rule's replay on the main branch (`%s`): its first slot and its done in the record and in the replay, each replayed time the median over the main branch's seeds.",
 		filepath.Base(issuesFile), MainBranchAt.Label())
 	p.line("")
 	c.writeGaps(p)
-	c.writeBreakEven(p)
+	c.writeBreakEven(p, decision.Errors)
 	c.writeAssumptions(p)
 	var list strings.Builder
 	q := &printer{w: &list}
@@ -1125,17 +1472,67 @@ func partsText(parts []Part) string {
 	return strings.Join(texts, "; ")
 }
 
-// writeDecision writes the rule the comparison names best, or that none is and why, and each
-// rule's trade against main over the branches that pass R5, beside why each candidate added to the
-// spec's rules is compared (candidateReasons).
-func (c comparison) writeDecision(p *printer, forecast ForecastResult) {
-	decision := c.decision()
+// writeDecision writes how each rule is judged against main (spec R7), the rule the comparison
+// names best, or that none is and why, the replay's own error each difference is held to, and each
+// rule's trade against main over the branches that pass R5, with whether it keeps the owner's
+// direction, beside why each candidate added to the spec's rules is compared (candidateReasons).
+func (c comparison) writeDecision(p *printer, forecast ForecastResult, decision Decision) {
 	p.line("## The rule named best (R7)")
 	p.line("")
-	p.line("A rule is named best when, on every branch of both windows that passes R5, it is no worse than `main` by more than R5's gap on the issues finished (`done`, %s) and on each of the owner's three costs — started work that waits only for a slot (`waitOnlyForSlot.hours`, %s), priority taken by holders in today's line's order, the priority band first (`priorityTakenBanded`, %s, the gap R5 gives the share by rank alone) and the other delays (`otherDelays.hours`: the hours of every send-back loop and every wait on another issue, %s) — and better on at least one, each read from the snapshot timeline as the mean of the branch's seeds.",
-		gapTenth, gapThirty, gapPriority, gapThirty)
+	p.line("Each rule is judged against `main`, today's rule, on each of these measures, read from the snapshot timeline: the issues finished, the owner's three costs — started work that waits only for a slot, priority taken by holders in today's line's order, the priority band first, and the other delays, the hours of every send-back loop and every wait on another issue — and the wait of urgent work, the median and the 90th percentile of the wait of P0 and of P1 work to its first slot and to its done, in hours: %s.",
+		codeList(costMeasureNames()))
 	p.line("Both windows were recorded before the line put priority first, so the tables of every measure give priority taken by rank alone (`priorityTaken`), the order of their own lines, beside it.")
+	most := 1
+	for _, w := range c.windows {
+		for _, run := range c.runs.parts[partKey{window: w.Name, rule: c.rules[0]}].plan.Branches {
+			most = max(most, len(run.Seeds))
+		}
+	}
+	quantile := "no branch of this comparison runs more than one seed"
+	if most > 1 {
+		quantile = fmt.Sprintf("%s at the %d seeds of a branch with a draw", formatNumber(studentQuantile(most-1)), most)
+	}
+	p.line("On each branch that passes R5, a rule's difference from `main` on a measure is taken seed by seed: its run less `main`'s run at the same seed, whose draws match at every stretch both reach (the draws below). Its mean d over the n seeds both ran has the 95%% interval d ± t·s/√n, s the seed-by-seed standard deviation and t the 0.975 quantile of Student's t at n − 1 degrees of freedom (%s).",
+		quantile)
+	p.line("The rule is better or worse than `main` on the measure only where that interval excludes zero and its near end is farther from zero than the replay's own error on the measure across the recorded change of the rule: the larger of the two windows' errors, each window's replay under its own rule on `%s`, the mean over its seeds, against its record, as the forecast measures it.",
+		MainBranchAt.Label())
+	p.line("A branch that draws nothing, the main branch among them under a rule that starts only work the record ran, runs one seed: its difference is a single run's, better or worse only where it is itself farther from zero than that error.")
+	p.line("Every other difference is a tie, and the tables of every measure give, for each tie over more than one seed, the seeds a difference of its size would need, ⌈(1.96 s / d)²⌉, or never where d is 0: the seeds at which its interval would exclude zero, while a tie within the error stays one at any number of seeds.")
+	p.line("A rule that admits issues the record never started is read on the branches that draw their work (`neverStarted=drawn`, `neverStarted=drawn-done`) as on every other branch, and each run's admissions with no recorded work are given below.")
+	var keeping []string
+	for _, trade := range decision.Trades {
+		if trade.KeepsDirection {
+			keeping = append(keeping, trade.Rule)
+		}
+	}
+	direction := "Only a rule that keeps the owner's direction of 2026-11-24 can be named best: R10 above P0, and below it the next issue in priority order while each signal of R11 is under its limit, with the cap as a ceiling only."
+	switch {
+	case len(keeping) == 0:
+		p.line("%s No rule of this comparison keeps it, so none can be named; every rule is measured beside `main`.", direction)
+	default:
+		p.line("%s Of the rules compared, %s keep it, and every other rule is measured beside them.", direction, codeList(keeping))
+	}
+	if slices.Contains(c.rules, "before-p0") {
+		p.line("`before-p0`, the rule before R10, is measured for reference and is never named.")
+	}
+	p.line("A rule is named best when it keeps that direction and, on every branch of both windows that passes R5, it is worse than `main` on no measure and better on at least one.")
 	for i, w := range c.windows {
+		unkeyed := 0
+		for _, part := range c.runs.parts {
+			if part.plan.Window != w.Name {
+				continue
+			}
+			for _, runs := range part.runs {
+				for _, run := range runs {
+					unkeyed += run.unkeyedDraws.Experiments
+				}
+			}
+		}
+		p.line("%s", w.experimentsText(unkeyed))
+		if reason := w.unpaired(); reason != "" {
+			p.line("No difference on %s is paired: %s. So no rule is better or worse than `main` on any branch of it, each of its differences is given as not paired, and no rule can be named best while it is compared.",
+				w.Name, reason)
+		}
 		if !c.validations[i].MainPasses() {
 			p.line("%s gives no comparison: its main branch fails R5, so none of its branches is read.", w.Name)
 		}
@@ -1146,50 +1543,59 @@ func (c comparison) writeDecision(p *printer, forecast ForecastResult) {
 	case decision.Branches == 0:
 		p.line("No rule is named best: no branch of either window passes R5.")
 	case len(decision.Best) == 1:
-		p.line("`%s` is named best: on each of the %d branches that pass R5 it is no worse than `main` by more than R5's gap on each measure, and better on at least one.",
+		p.line("`%s` is named best: it keeps the owner's direction, and on each of the %d branches that pass R5 it is worse than `main` on no measure and better on at least one.",
 			decision.Best[0], decision.Branches)
 	case len(decision.Best) > 1:
-		p.line("No one rule is named best: %s each meet the test on the %d branches that pass R5, so the comparison names none over the others.",
+		p.line("No one rule is named best: %s each keep the owner's direction and meet the test on the %d branches that pass R5, so the comparison names none over the others.",
 			codeList(decision.Best), decision.Branches)
 	default:
-		p.line("No rule is named best: of the %d branches that pass R5, each rule has one on which it is worse than `main` by more than R5's gap on some measure, or better on none.",
+		p.line("No rule is named best: of the %d branches that pass R5, each rule that keeps the owner's direction has one on which it is worse than `main` on some measure, or better on none.",
 			decision.Branches)
 	}
+	if len(decision.Outside) > 0 {
+		p.line("%s meet that test of the measures but do not keep the owner's direction, so they are measured beside it and not named.", codeList(decision.Outside))
+	}
 	p.line("")
-	p.line("Each rule's trade against `main` over the %d branches that pass R5: on how many it is better, worse by more than R5's gap, and neither; and why each rule the spec does not name was added.",
+	p.line("The replay's own error across the change that each difference is held to:")
+	p.line("")
+	p.line("| measure | error |")
+	p.line("| --- | --- |")
+	for _, m := range costMeasures {
+		p.line("| %s | %s |", m.name, errorText(decision.Errors, m.name))
+	}
+	p.line("")
+	p.line("Each rule's trade against `main` over the %d branches that pass R5: on how many it is better, worse and a tie on each measure, and on how many no seed gives the measure; whether it keeps the owner's direction; and why each rule the spec does not name was added.",
 		decision.Branches)
 	p.line("")
-	p.line("%s", tableHead("rule", slices.Concat(costMeasureNames(), []string{"why it was added"})))
+	p.line("%s", tableHead("rule", slices.Concat([]string{"keeps the owner's direction"}, costMeasureNames(), []string{"why it was added"})))
 	for _, trade := range decision.Trades {
-		row := "| `" + trade.Rule + "` |"
+		keeps := "no"
+		if trade.KeepsDirection {
+			keeps = "yes"
+		}
+		row := "| `" + trade.Rule + "` | " + keeps + " |"
 		for _, m := range trade.Measures {
-			row += fmt.Sprintf(" better %d, worse %d, neither %d |", m.Better, m.Worse, m.Level)
+			cell := fmt.Sprintf("better %d, worse %d, tie %d", m.Better, m.Worse, m.Tie)
+			if m.None > 0 {
+				cell += fmt.Sprintf(", none %d", m.None)
+			}
+			if m.Unpaired > 0 {
+				cell += fmt.Sprintf(", not paired %d", m.Unpaired)
+			}
+			row += " " + cell + " |"
 		}
 		p.line("%s", row+" "+candidateReasons[trade.Rule]+" |")
 	}
 	p.line("")
-	p.line("Each rule's costs and `main`'s on the main branch of each window:")
-	p.line("")
-	p.line("%s", tableHead("window", slices.Concat([]string{"rule"}, costMeasureNames(), []string{"standing against main"})))
-	for _, w := range c.windows {
-		main, _ := c.costsAt(w.Name, record.MainRule.Name, MainBranchAt.Label())
-		for _, rule := range c.rules {
-			costs, ok := c.costsAt(w.Name, rule, MainBranchAt.Label())
-			if !ok {
-				continue
-			}
-			standing := "(the rule judged against)"
-			if rule != record.MainRule.Name {
-				standing = string(standingOf(costs, main))
-			}
-			row := "| " + w.Name + " | `" + rule + "` |"
-			for _, m := range costMeasures {
-				row += " " + formatNumber(m.of(costs)) + " |"
-			}
-			p.line("%s", row+" "+standing+" |")
-		}
+}
+
+// errorText is the replay's own error on the measure name among held as the document gives it, and
+// "not measured" where neither window measures one.
+func errorText(held map[string]float64, name string) string {
+	if value, measured := held[name]; measured {
+		return formatNumber(value)
 	}
-	p.line("")
+	return "not measured"
 }
 
 // costMeasureNames is the name of each measure a rule's costs are judged on (costMeasures), in
@@ -1302,12 +1708,25 @@ func (c comparison) writeConflicts(p *printer) {
 // writeMatrix writes the value of every measure for every rule, window and branch, read from the
 // snapshot timeline, a table for each window and branch with a column for each rule, the wait of
 // urgent work among them (urgentRows), and below them the issues done by anyone, which only a run's
-// line timeline gives (Scorecard.DoneByAnyone).
-func (c comparison) writeMatrix(p *printer) {
+// line timeline gives (Scorecard.DoneByAnyone); and below each table of a branch that passes R5,
+// each rule's difference from main on each measure it is judged on (decision's Judged), with the
+// replay's own error it is held to (Difference.cell). A branch that fails R5 judges no rule.
+func (c comparison) writeMatrix(p *printer, decision Decision) {
+	judged := map[string][]Difference{}
+	for _, j := range decision.Judged {
+		judged[j.Window+"\x00"+j.Branch.Label()+"\x00"+j.Rule] = j.Differences
+	}
+	var rules []string
+	for _, rule := range c.rules {
+		if rule != record.MainRule.Name {
+			rules = append(rules, rule)
+		}
+	}
 	p.line("## Every measure for every rule, window and branch (the snapshot timeline)")
 	p.line("")
 	writeUrgentNote(p)
 	p.line("`priorityTaken` ranks by rank alone, the order of the recorded windows' lines, and `priorityTakenBanded` in today's line's order, the band of the Dispatch priority that places each issue first.")
+	p.line("Below the table of a branch that passes R5, each rule's difference from `main` on each measure it is judged on: d, the mean over the seeds both ran of the rule's run less `main`'s at the same seed, with its 95%% interval, or a single run's difference alone; its verdict; and for a tie the seeds a difference of its size would need, or never where d is 0. The error column is the replay's own error across the change that each difference is held to.")
 	for i, w := range c.windows {
 		for _, at := range c.branches {
 			values := map[string][][]float64{}
@@ -1368,9 +1787,162 @@ func (c comparison) writeMatrix(p *printer) {
 				row += " " + spreadCell(mean, low, high, len(column)) + " |"
 			}
 			p.line("%s", row)
+			p.line("")
+			if !c.validations[i].Compares(at) {
+				p.line("The branch gives no comparison, so no rule is judged on it.")
+				continue
+			}
+			if reason := w.unpaired(); reason != "" {
+				p.line("No difference on this branch is paired: %s.", reason)
+				p.line("")
+			}
+			p.line("%s", tableHead("judged against `main`", slices.Concat([]string{"error"}, coded(rules))))
+			for k, m := range costMeasures {
+				row := "| " + m.name + " | " + errorText(decision.Errors, m.name) + " |"
+				for _, rule := range rules {
+					cell := "no run"
+					if diffs, ok := judged[w.Name+"\x00"+at.Label()+"\x00"+rule]; ok {
+						cell = diffs[k].cell()
+					}
+					row += " " + cell + " |"
+				}
+				p.line("%s", row)
+			}
 		}
 	}
 	p.line("")
+}
+
+// cell is d as the tables of every measure give it: none where no seed gives the measure; d with
+// its 95% interval and the seeds it is taken over, or a single run's d alone; its verdict; and for a
+// tie the seeds a difference of its size would need, or never where d is 0. A difference that is not
+// paired gives d over its seeds alone, with no interval.
+func (d Difference) cell() string {
+	switch {
+	case d.Verdict == VerdictNone:
+		return "none"
+	case d.Verdict == VerdictUnpaired && d.Seeds > 1:
+		return fmt.Sprintf("%s over %d seeds: %s", formatNumber(d.Mean), d.Seeds, d.Verdict)
+	}
+	text := formatNumber(d.Mean) + ", a single run: " + string(d.Verdict)
+	if d.Seeds > 1 {
+		text = fmt.Sprintf("%s [%s, %s] over %d seeds: %s", formatNumber(d.Mean), formatNumber(d.Low), formatNumber(d.High), d.Seeds, d.Verdict)
+	}
+	switch {
+	case d.Verdict != VerdictTie:
+	case d.Never:
+		text += ", never"
+	case d.Seeds > 1 && d.SeedsNeeded == 1:
+		text += ", 1 seed needed"
+	case d.Seeds > 1:
+		text += ", " + formatNumber(d.SeedsNeeded) + " seeds needed"
+	}
+	return text
+}
+
+// writeNoWork writes each run's admissions with no recorded work and the slot-hours they hold
+// (spec R7; runRead.noWork, runRead.noWorkHours): for each window, rule, branch and break-even
+// factor, and seed, in the order of the parts' plans.
+func (c comparison) writeNoWork(p *printer) {
+	p.line("## Admissions with no recorded work")
+	p.line("")
+	p.line("Each run's admissions of an issue that holds its slot with no work, recorded or drawn: an issue the record never started, on a branch that draws no work for it (`neverStarted=none`) or in a window that holds no issue to draw its work from, with the slot-hours such issues hold in the window, read from the snapshot timeline.")
+	p.line("")
+	p.line("| window | rule | branch | seed | admissions with no work | their slot-hours |")
+	p.line("| --- | --- | --- | --- | --- | --- |")
+	for _, w := range c.windows {
+		for _, rule := range c.rules {
+			part := c.runs.parts[partKey{window: w.Name, rule: rule}]
+			for _, run := range slices.Concat(part.plan.Branches, part.plan.BreakEven) {
+				label := run.label()
+				for _, read := range part.runs[label] {
+					p.line("| %s | `%s` | `%s` | %d | %d | %s |", w.Name, rule, label, read.seed, read.noWork, formatNumber(read.noWorkHours))
+				}
+			}
+		}
+	}
+	p.line("")
+}
+
+// writeDraws writes, for each window and each seed, the pairs of the comparison's rules whose runs
+// it compared there, the stretches the two runs of a pair at the seed both drew, over every branch
+// and break-even factor, and how many of them drew another value (drawsAgree), none where every
+// draw is keyed to the seed, the issue and the stretch alone (spec R7): one line for each seed, and
+// below a seed at which some pair drew another value, each such pair, branch and stretch with the
+// two values. Two rules can share a stretch that main never reaches, so every pair is compared.
+func (c comparison) writeDraws(p *printer) {
+	p.line("## The draws that each pair of rules shares")
+	p.line("")
+	p.line("Each run records each draw of a stretch's conflict it made, with its key — the issue, the recorded start and the phase of the piece whose end ends the stretch, and how many draws of that stretch came before it — and its value. A draw is keyed to the run's seed, the issue and the stretch, so the runs of two rules at one seed draw one value at every stretch both reach, whatever either rule moves.")
+	p.line("For each window and seed, a line gives the pairs of rules compared, the stretches that the two runs of a pair both drew on one branch, over every branch and pair, and how many of them drew another value, which must be none; a branch that draws no conflict adds none. Below a seed at which some did, each such pair, branch and stretch is named with the two values.")
+	p.line("The work of an issue that never started (`neverStarted=drawn`, `neverStarted=drawn-done`) is drawn before the run from its seed and the record alone, so no rule moves it, and no load model draws a random value: the kills, the tokens and the merge queue are read from the window's record at the replay's work in flight.")
+	p.line("A workflow experiment in the `random` mode, which a window's window.json may list, is drawn keyed to no issue: each run counts those draws apart, and the decision above says, for each window, whether it lists one, and pairs no difference on a window that does.")
+	for _, w := range c.windows {
+		parts := make([]*partRead, len(c.rules))
+		seeds := map[int64]bool{}
+		for i, rule := range c.rules {
+			parts[i] = c.runs.parts[partKey{window: w.Name, rule: rule}]
+			for _, runs := range parts[i].runs {
+				for _, run := range runs {
+					seeds[run.seed] = true
+				}
+			}
+		}
+		var labels []string
+		for _, run := range slices.Concat(parts[0].plan.Branches, parts[0].plan.BreakEven) {
+			labels = append(labels, run.label())
+		}
+		p.line("")
+		p.line("### %s", w.Name)
+		p.line("")
+		for _, seed := range slices.Sorted(maps.Keys(seeds)) {
+			pairs, shared := 0, 0
+			var differing []string
+			for i := range parts {
+				for j := i + 1; j < len(parts); j++ {
+					compared := false
+					for _, label := range labels {
+						a, b := parts[i].runAt(label, seed), parts[j].runAt(label, seed)
+						if a == nil || b == nil {
+							continue
+						}
+						compared = true
+						both, other := drawsAgree(a.draws, b.draws)
+						shared += both
+						for _, d := range other {
+							differing = append(differing, fmt.Sprintf("  - `%s` and `%s` on `%s`: %s, %s and %s", c.rules[i], c.rules[j], label,
+								parts[i].places[d.key].name(), formatNumber(d.a), formatNumber(d.b)))
+						}
+					}
+					if compared {
+						pairs++
+					}
+				}
+			}
+			if len(differing) == 0 {
+				p.line("- seed %d: %d pairs of rules compared, %d stretches that both runs of a pair drew, none of them another value.", seed, pairs, shared)
+				continue
+			}
+			p.line("- seed %d: %d pairs of rules compared, %d stretches that both runs of a pair drew, %d of them another value:", seed, pairs, shared, len(differing))
+			p.line("")
+			for _, line := range differing {
+				p.line("%s", line)
+			}
+			p.line("")
+		}
+	}
+	p.line("")
+}
+
+// runAt is part's run on the branch labelled label at seed, nil where it ran none there.
+func (part *partRead) runAt(label string, seed int64) *runRead {
+	runs := part.runs[label]
+	for k := range runs {
+		if runs[k].seed == seed {
+			return &runs[k]
+		}
+	}
+	return nil
 }
 
 // tableHead is the head of a table whose first column is first and whose other columns are
@@ -1430,18 +2002,19 @@ func (c comparison) writeGaps(p *printer) {
 }
 
 // writeBreakEven writes each rule's break-even slowdown factor against main on each window, and
-// its standing at each factor searched.
-func (c comparison) writeBreakEven(p *printer) {
+// its standing at each factor searched, each difference held to held, the replay's own error on
+// each measure (BreakEven).
+func (c comparison) writeBreakEven(p *printer, held map[string]float64) {
 	p.line("## The break-even slowdown factor of each rule against main")
 	p.line("")
-	p.line("A rule's rank against `main` is its standing on the main branch: better, worse, a trade, or level (the rule named best is better on every branch).")
+	p.line("A rule's rank against `main` is its standing on the main branch, each measure judged as the rule named best is judged (R7): better on some measure and worse on none, worse on some and better on none, a trade, or level, a tie or no value on each (the rule named best is better on every branch).")
 	p.line("The break-even factor is the first slowdown factor of the search at which that standing differs from its standing at the first.")
 	p.line("")
 	results := map[partKey]BreakEvenResult{}
 	for _, rule := range c.rules {
 		for _, w := range c.windows {
 			if rule != record.MainRule.Name {
-				results[partKey{window: w.Name, rule: rule}] = c.breakEven(w.Name, rule)
+				results[partKey{window: w.Name, rule: rule}] = c.breakEven(w.Name, rule, held)
 			}
 		}
 	}
@@ -1457,6 +2030,8 @@ func (c comparison) writeBreakEven(p *printer) {
 			switch {
 			case !c.validations[i].MainPasses():
 				row += " no comparison: the window's main branch fails R5 |"
+			case w.unpaired() != "":
+				row += " not paired: the window lists an experiment in the random mode |"
 			case len(result.Standings) == 0:
 				row += " no run of the main branch |"
 			case result.Changes:

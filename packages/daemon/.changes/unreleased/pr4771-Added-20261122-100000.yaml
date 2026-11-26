@@ -26,8 +26,16 @@ body: |-
     `validate` checks all three conflict branches and reports Git read counts and conflict hours.
     `--main-only` runs just the main branch at slowdown 1. `forecast` checks the tool against
     a recorded change of rule. `compare` compares rules on two windows and writes each issue's first slot
-    and done time under each rule beside the record. `rules` prints the twenty rules that a
-    replay can run, each with its commit: the daemon's own, the rules of three recorded windows
+    and done time under each rule beside the record. It judges each rule against `main` seed by
+    seed on the issues finished, the owner's three costs and the wait of P0 and P1 work: a rule is
+    better or worse on a measure only where the 95% interval of the paired difference excludes zero
+    and its near end is past the replay's own error across the change of rule, every other
+    difference is a tie with the seeds it would need, and only a rule that keeps the owner's
+    direction (`signals`, `signals-backoff`) can be named best. `run.json` gives each draw of a
+    stretch's conflict with its key and value, and `compare` counts the draws that each rule's runs
+    share with `main`'s and gives each run's admissions with no recorded work. `rules` prints the
+    twenty rules that a replay can run, each with its commit: the daemon's own, the rules of three
+    recorded windows
     (`legion-v20.42.5`, `legion-v19.57.3` and `legion-v22.14.1`), and sixteen candidates. The
     daemon's own rule and every candidate place the line by Dispatch priority first, as the daemon
     does, and the rules of the recorded windows, whose releases came before that order, do not; the

@@ -1209,9 +1209,9 @@ func (d *driver) drewStretch(key string) bool {
 
 // recordDraw keeps draw, a draw of stretch made while a piece in running ran: the stretch draws no
 // more, a conflict drawn while the issue stood in another phase than the fitted one waits for the
-// stretch's end in the fitted phase (liveStretch.won), and the run tells of the draw
-// (RunConfig.onDraw) and writes its line (conflictDrawnLine). It answers draw with its live
-// stretch, its running phase and its outcome.
+// stretch's end in the fitted phase (liveStretch.won), the run records the draw's key and value for
+// run.json (driver.drawn) and tells of the draw (RunConfig.onDraw), and it writes its line
+// (conflictDrawnLine). It answers draw with its live stretch, its running phase and its outcome.
 func (d *driver) recordDraw(stretch *liveStretch, draw conflictDraw, running phase.Phase) conflictDraw {
 	stretch.drew = true
 	draw.stretch, draw.running, draw.outcome = stretch.id, running, drawnClean
@@ -1222,6 +1222,7 @@ func (d *driver) recordDraw(stretch *liveStretch, draw conflictDraw, running pha
 	default:
 		draw.outcome = drawnConflict
 	}
+	d.drawn = append(d.drawn, StretchDraw{Issue: draw.at.issue, Start: draw.at.start, Phase: draw.at.phase, N: draw.at.n, U: draw.u})
 	if d.cfg.onDraw != nil {
 		d.cfg.onDraw(draw)
 	}

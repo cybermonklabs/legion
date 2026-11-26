@@ -237,6 +237,41 @@ type ForecastCards struct {
 	Forecasts, Own, AfterOwn, Controls []Scorecard
 }
 
+// ownError is the replay's own error across the recorded change of the rule on the number that of
+// reads from a scorecard (plan t34 (d)), which a measured number of the forecast takes as its gap and
+// the comparison of rules holds each difference between two rules to (spec R7): the larger of the
+// two windows' errors, each the mean over the seeds of the window's replays under its own rule (Own,
+// AfterOwn) against its record's value (Before, After). A window whose record, or each of whose
+// replays, gives no value of the number (of answers false: a wait of urgent work with no issue of
+// its priority) gives no error; measured is false where cards hold no replay of one of the windows
+// under its own rule, or where neither window gives an error.
+func (cards ForecastCards) ownError(of func(Scorecard) (float64, bool)) (largest float64, measured bool) {
+	if len(cards.Own) == 0 || len(cards.AfterOwn) == 0 {
+		return 0, false
+	}
+	for _, w := range []struct {
+		record  Scorecard
+		replays []Scorecard
+	}{{cards.Before, cards.Own}, {cards.After, cards.AfterOwn}} {
+		recorded, ok := of(w.record)
+		if !ok {
+			continue
+		}
+		values := make([]float64, 0, len(w.replays))
+		for _, card := range w.replays {
+			if value, ok := of(card); ok {
+				values = append(values, value)
+			}
+		}
+		if len(values) == 0 {
+			continue
+		}
+		mean, _, _ := spread(values)
+		largest, measured = max(largest, math.Abs(mean-recorded)), true
+	}
+	return largest, measured
+}
+
 // ForecastChecks compares cards' forecasts with the record of the window after the change (spec
 // R5): on rates per hour, averages and shares, never on totals, each within twice its gap of the
 // record's value. A number's gap is R5's, or, for a measured one, the replay's own error on its
@@ -260,14 +295,8 @@ func ForecastChecks(cards ForecastCards) []ForecastCheck {
 		check.Forecast, check.Low, check.High = over(q, cards.Forecasts)
 		gap := q.gap
 		if q.measured {
-			if len(cards.Own) == 0 || len(cards.AfterOwn) == 0 {
-				check.Scored = false
-			} else {
-				own, _, _ := over(q, cards.Own)
-				afterOwn, _, _ := over(q, cards.AfterOwn)
-				check.Error = max(math.Abs(own-q.of(cards.Before)), math.Abs(afterOwn-check.After))
-				gap = Gap{Amount: check.Error}
-			}
+			check.Error, check.Scored = cards.ownError(func(card Scorecard) (float64, bool) { return q.of(card), true })
+			gap = Gap{Amount: check.Error}
 		}
 		check.Gap = gap.Twice()
 		check.Pass = check.Scored && check.Gap.Within(check.After, check.Forecast)

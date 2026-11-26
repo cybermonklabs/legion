@@ -17,7 +17,7 @@ import (
 // (record.SlotRule.P0AboveCap), so their expected values, R10's, are those of each window's run
 // under p0-at-once meanwhile, which passes. That forward merge removes the three names.
 var pendingUntilBuilt = map[string]string{
-	"TestTheDocumentHasEveryRuleWindowBranchAndMeasure": "t35 (signals at limits) and t36 (no-work admissions)",
+	"TestTheDocumentHasEveryRuleWindowBranchAndMeasure": "t35 (signals at limits)",
 	"TestFixtureWindows/p0-at-a-full-cap/main":          d16Main,
 	"TestFixtureWindows/p0-at-its-bound/main":           d16Main,
 	"TestFixtureWindows/urgent-work-waits/main":         d16Main,

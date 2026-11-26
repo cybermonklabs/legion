@@ -777,6 +777,9 @@ A move back, the merge, a move out of the stretch's phases or the issue's leave 
 `run` writes a line of its own to `log.jsonl` for each draw, at the moment of the draw, with the msg `replay: a stretch's conflict drawn`.
 Its attributes are `issue`, `stretch` (the number of the issue's stretch in the run), `running` (the phase of the work segment that ran at the draw), `fitted` (the phase in which the record ends the stretch, whose chance the draw read), `start` (the replay's start of the stretch), `merges`, `by` (`boot` or `end`), `chance`, `u` (the number drawn) and `outcome`: `clean`, `conflict`, or `deferred` for a conflict that waits for the stretch's end.
 No daemon writes that line, and neither timeline reads a move or a measure from it.
+`run.json` gives each draw under `draws`, in the order of the draws, with its key and its value: `issue`, `start` (the recorded start of the work segment that ends the stretch), `phase` (the phase in which the record ends the stretch), `n` (how many times the stretch drew before) and `u`.
+`compare` reads them to count, for each pair of rules at each seed, the stretches that both runs drew and how many of them drew another value.
+`run.json` also gives `unkeyedDraws`: the draws that the run keys to no stretch, `experiments` for the draws of a workflow experiment in the `random` mode ([A limit beside the assumptions](#a-limit-beside-the-assumptions-a-workflow-experiment-drawn-at-random)).
 Under a rule whose conflicting head moves back, an issue whose stretch draws a conflict runs a recorded conflict loop, drawn with `--seed` among the loops of the window whose conflict left the same phase.
 Where the window records no loop from that phase, the replay draws among the loops that left a later phase, and cuts the drawn loop at its first work segment in that phase or a later one, so the issue returns to the phase that its conflict left.
 Where the window records only loops that left an earlier phase, the replay draws among those, and after the loop the issue goes back to the phase that its conflict left through copies of its own last work segments in each phase between.
@@ -1170,22 +1173,44 @@ The document gives:
 
 - the value of every measure for every rule, window and branch, with the lowest and the highest seed, the wait of P0 and P1 work among them, and below each table the issues done by anyone, which only each run's line timeline gives
 
+- below the table of each branch that passes the validation, each rule's difference from `main` on each measure that a rule is judged on: its mean over the seeds with its 95% interval, or a single run's difference, its verdict, the error that it is held to, and for a tie the seeds that a difference of its size would need
+
+- each run's admissions of an issue that holds its slot with no recorded work, and the slot-hours that those issues hold
+
+- for each window and seed, the pairs of rules compared, the stretches that the two runs of a pair both drew, and how many of them drew another value, which must be none, with each pair, branch and stretch at which one did
+
 - the name of the issues file, and what it gives
 
 - the gap of each measure between the snapshot and the line timelines
 
 - each rule's break-even factor: the f at which its rank against `main` changes, or that no f up to 2 changes it
 
-- the rule that it names best, or that no rule is best, with each rule's trade, and, beside the trade of each candidate that was added to the rules of the comparison's spec, the reason for that candidate
+- the rule that it names best, or that no rule is best, with whether each window lists an experiment, the replay's own error that each difference is held to, each rule's trade, whether the rule keeps the owner's direction, and, beside the trade of each candidate that was added to the rules of the comparison's spec, the reason for that candidate
 
 - the assumptions and the scenario that each run used
 
-A rule is best when it is no worse than `main` on each of four numbers by more than that number's allowance, and better on at least one.
-That must be true in every branch of both windows that passes the validation.
-The four numbers are the issues finished, the hours of started work that waits only for a slot, the priority taken by holders in today's line's order (`priorityTakenBanded`), and the hours of the other delays.
-Every rule is read in that one order, whatever order its own line keeps, so that the rules stand on one scale.
-Until the comparison reads its error across the change of the rule, it judges `priorityTakenBanded` within 0.05, the allowance of `priorityTaken`.
+A rule is judged against `main` on twelve measures, each read from the snapshot timeline.
+They are the issues finished (`done`), the hours of started work that waits only for a slot (`waitOnlyForSlot.hours`), the priority taken by holders in today's line's order (`priorityTakenBanded`), the hours of the other delays (`otherDelays.hours`), and the wait of urgent work ([The wait of urgent work](#the-wait-of-urgent-work)).
+The wait of urgent work gives eight of them: for P0 and for P1 apart, the median and the 90th percentile of the wait to the first slot and to done, in hours, such as `urgentWaits[P0].firstSlot.medianHours`.
+Every rule is read in today's line's order, whatever order its own line keeps, so that the rules stand on one scale.
 Both windows were recorded before the line put priority first, so each table gives priority taken by rank alone (`priorityTaken`) beside it.
+
+On each branch that passes the validation, a rule's difference from `main` is taken seed by seed: the rule's run less `main`'s run at the same seed.
+Each draw is keyed to the seed, the issue and the stretch, so the two runs draw the same value at each stretch that both of them reach.
+Over the n seeds that both ran, the mean difference d has the 95% interval d ± t·s/√n.
+Here s is the standard deviation of the differences, and t is the 0.975 quantile of Student's t at n − 1 degrees of freedom, 2.7764 at the 5 seeds of a branch with a draw.
+A rule is better or worse than `main` on a measure only where that interval excludes zero and its near end is farther from zero than the replay's own error on that measure.
+That error is the larger of the two windows' errors: each window replayed under its own rule on `main@1`, the mean over its seeds, against its record, as the forecast measures it.
+A branch that draws nothing runs one seed, and its difference is a single run's: it is better or worse only where it is farther from zero than the error.
+Each other difference is a tie, and the document gives the seeds that a difference of its size would need, ⌈(1.96 s / d)²⌉, or `never` where d is 0.
+That count is the number of seeds at which the interval would exclude zero, so a tie within the error stays a tie at any number of seeds.
+
+A rule is best when it keeps the owner's direction of 2026-11-24 and, in every branch of both windows that passes the validation, it is worse than `main` on no measure and better on at least one.
+The owner's direction is the start of a P0 issue outside the cap, and below P0 the next issue in priority order while each signal is under its limit, with the cap as a ceiling only.
+Of the rules that the repository keeps, `signals` and `signals-backoff` keep it.
+Every other rule is measured beside them, and `before-p0`, the rule before the start of a P0 issue outside the cap, is measured for reference and never named.
+A rule that admits issues that the record never started is read on `main+neverStarted=drawn` and `main+neverStarted=drawn-done` as on every other branch.
+On a window whose `window.json` lists a workflow experiment in the `random` mode, no difference is paired, so no rule is better or worse than `main` there, and no rule is named best while that window is compared ([A limit beside the assumptions](#a-limit-beside-the-assumptions-a-workflow-experiment-drawn-at-random)).
 
 The part on the graces gives one row for each window and each rule with a grace.
 For the fixture windows `one-minute-wait` and `two-waiters-one-blocker` of the tool's tests, it reads:
@@ -2162,6 +2187,19 @@ For assumptions 1 to 18, sound, doubtful and wrong are that review's verdicts, b
 For assumptions 19 to 49, a verdict is the tool's own.
 Numbers from the prototype's record come from that deployment's daemon log over four days, in which every slot was in use for 99.95% of the time.
 That record is not in this repository.
+
+### A limit beside the assumptions: a workflow experiment drawn at random
+
+A window may list workflow experiments in its `window.json` (`experiments`), as the daemon's configuration declares them.
+`collect` writes none, so the replay of a collected window draws no experiment arm, and only a window written by hand lists one.
+An experiment in the `random` mode draws an arm for each issue or tree that the daemon records, from one source of the run's seed.
+That source starts afresh at each boot and is read in the order in which the engine and the admission pass record their issues and trees, so a draw is keyed to no issue and no stretch.
+A rule that records issues in another order, or at another boot, draws another arm for one of them.
+So the runs of two rules at one seed are not paired on such a window, and the tool does not key those draws, because keying them would change the daemon's own experiment code.
+Each run counts those draws in `run.json`, as `unkeyedDraws.experiments`.
+`compare` says, for each window, whether its `window.json` lists an experiment.
+On a window that lists one in the `random` mode, `compare` calls no rule better or worse than `main`: it gives each difference there as not paired, and names no rule best while that window is compared.
+The fixture window `random-experiment` is such a window.
 
 ### Assumption 1: A work segment takes its recorded time at any start and at any number in flight
 
