@@ -202,6 +202,38 @@ func TestACheckStartOfAnIssueRunningAgainFinishesWithoutActing(t *testing.T) {
 	}
 }
 
+// A check start of an issue waiting in verifying runs its look: the issue is in the workflow, so
+// RunsAgain is what decides it, and RunsAgain is false in verifying (record.RunsAgain). This is the
+// row checkLookHolds gates, and the one place the difference between RunsAgain and InWorkflow is
+// visible: under InWorkflow alone the issue would read as running again and the row would finish
+// without acting, so the looks of every waiting issue would stop. The workflow package cannot see
+// it, since its tests read the check and the start row inside the fact and never run this row.
+func TestACheckStartOfAnIssueWaitingInVerifyingRunsItsLook(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	root := checkRoot()
+	root.Phase, root.Status, root.LingerUntil = phase.Verifying, workflow.PhaseStatus(phase.Verifying), nil
+	putOutboxIssue(t, pool, records, root)
+	putProductionCheck(t, pool, records, openCheck(root, "a1b2c3d4"))
+	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+	machine, _ := suspendedImplementer(t, sup, root, supervise.SuspendedByDaemon)
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), log: quietLogger(), now: time.Now}
+
+	row := checkStart(t, root, 1)
+	if err := runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("check start of an issue in verifying = %v, want the implementer started", err)
+	}
+	if got := machine.Claim(); got.LastStartRow != row.ID || len(rt.CallsOf("Resume")) != 1 {
+		t.Fatalf("implementer after the look's start = %s with last start %d and %d resumes, want it resumed by row %d: a look runs while its issue waits for its checks",
+			got.State, got.LastStartRow, len(rt.CallsOf("Resume")), row.ID)
+	}
+	after := readIssue(t, pool, root.Key)
+	if after == nil || after.Phase != phase.Verifying {
+		t.Fatalf("%s after the look's start = %+v, want it left waiting in verifying", root.Key, after)
+	}
+}
+
 // An operator's suspension of the implementer holds a phase start on the row's backoff until the
 // operator resumes it; a look cannot wait that long, so the check start finishes without acting and
 // ends the look as one nobody reported, with the hold as its cause, of the check the row's issue
