@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -50,6 +51,10 @@ type podKind interface {
 	// resources are the reservation every container of the pod carries, its init containers'
 	// included (Options.Resources).
 	resources(r *Runtime) corev1.ResourceRequirements
+	// serviceAccount is the ServiceAccount the pod runs as, "" for the namespace's default: the
+	// one its template names (podTemplate) and the one a live pod of the kind is held to
+	// (accountDrift).
+	serviceAccount(r *Runtime) string
 	// asksExtendedRunTime is whether a pod of this kind, under the deployment's reservations, asks
 	// GKE Autopilot for extended run time, which is the one thing that decides whether its
 	// template carries safeToEvictAnnotation (podTemplate). The controller's pod asks always; an
@@ -206,6 +211,10 @@ func guaranteedReservation(resources corev1.ResourceRequirements) bool {
 	}
 	return true
 }
+
+// serviceAccount is the operator's runtime.kubernetes.pod.service_account, every pod's but the
+// controller's.
+func (issuePod) serviceAccount(r *Runtime) string { return r.pod.ServiceAccount }
 
 func (issuePod) claimToken(project, issue string, role claim.Role) (claim.Token, error) {
 	return claim.NewToken(project, issue, role)
@@ -652,6 +661,13 @@ func (controllerPod) resources(r *Runtime) corev1.ResourceRequirements { return 
 // pod's alone: an issue's roles continue in the issue's next pod, and nothing else can run the
 // controller's turn.
 func (controllerPod) asksExtendedRunTime(*Runtime) bool { return true }
+
+// serviceAccount is runtime.kubernetes.pod.controller_service_account where the operator names one,
+// and the account every other pod runs as (service_account) where not, so a deployment that names
+// no controller account runs its controller as it always did.
+func (controllerPod) serviceAccount(r *Runtime) string {
+	return cmp.Or(r.pod.ControllerServiceAccount, r.pod.ServiceAccount)
+}
 
 func (controllerPod) claimToken(project, _ string, _ claim.Role) (claim.Token, error) {
 	return claim.ControllerToken(project), nil

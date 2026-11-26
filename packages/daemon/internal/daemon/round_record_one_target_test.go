@@ -76,7 +76,7 @@ func TestAReplacementByIssueThatALaunchsReplacementOvertookTellsTheArchitectOnce
 		}
 		rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{launchReadCommit}, Count: 1})
 		rig.intoRoundPod(claim.RoleImplementer)
-		rig.handle(claim.RoleImplementer, supervise.RequestResume{Claim: rig.tokens[claim.RoleImplementer]})
+		rig.handle(claim.RoleImplementer, supervise.RequestResume{Claim: rig.tokens[claim.RoleImplementer], By: supervise.SuspendedByOperator})
 	})
 	rig.tick()
 	if !launched {

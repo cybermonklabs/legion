@@ -147,12 +147,12 @@ type ActivityReport struct {
 // — a spawn, a resume, a retry, and every relaunch whose process an earlier step of the same
 // recovery already let go — and a retirement that ends the claim's work on purpose, the tree's
 // or the issue's close and the agent's own exit (retire). endStopped is a stop's (RequestStop:
-// `legion claims stop`, the operator's close of a tree stopping its other claims, and the daemon
+// `legion claims stop`, the operator's close of a tree stopping its other agents, and the daemon
 // stopping a controller it launched once the deployment leaves the controller to its operator),
-// since every retry that keeps the session relaunches a stopped claim on the session it records —
-// the operator's (`legion claims retry`: RequestOperatorRetry for an architect or a worker whose
-// issue works no phase of its role, and the workflow's start of that phase, below, for a worker
-// in its phase), the controller keeper's retry of a retired controller (daemon's
+// since every retry that keeps the session relaunches a stopped agent on the session its claim
+// records — the operator's (`legion claims retry`: RequestAskedRetry for an architect or a worker
+// whose issue works no phase of its role, and the workflow's start of that phase, below, for a
+// worker in its phase), the controller keeper's retry of a retired controller (daemon's
 // controllerKeeper.keep, RequestRetry) and the workflow's start of a retired worker's phase
 // (daemon's outbox.supervise, RequestRetry) — and that session's next turn reads what the stop
 // ended (dispatch://INFRA-3276 R3). endDisplaced and endFromOutside are the two causes of a process
@@ -233,6 +233,13 @@ func endStalled(bound time.Duration, inTurn bool) string {
 		return fmt.Sprintf("its turn showed no progress for %s", bound)
 	}
 	return fmt.Sprintf("its claim showed no progress for %s", bound)
+}
+
+// endedPastBound is the cause of the controller keeper's end of a controller turn open longer
+// than its bound (Machine.endTurnPastBound, dispatch://INFRA-2045 R2), with that bound, as
+// endStalled is the stall backstop's.
+func endedPastBound(bound time.Duration) string {
+	return fmt.Sprintf("its turn stayed open longer than %s, so the daemon ended it", bound)
 }
 
 // endSuspended is a suspension's cause, naming who suspended the claim.
@@ -343,11 +350,9 @@ func (m *Machine) recordEnd(ctx context.Context, cause string, death runtime.Dea
 	}
 	// A report read before the claim's last turn began has said nothing about that turn
 	// (claim.ReadSessionWork), so it is no report of it, though the background work it saw is
-	// kept above. LastTurnStart is the daemon's first word of the turn: its agent_start as read
-	// (beginTurn); the busy answer that recorded the turn, until that start is read
-	// (recordBusyTurn); or the agent's answer that it is streaming, which puts a restored ready or
-	// idle claim in working (sendPending's askFirst branch, answerAskFirstAfterDrop). A daemon
-	// restarted under a working claim reads the one the daemon before it stored.
+	// kept above. LastTurnStart is the daemon's first word of the turn (Claim.LastTurnStart's doc
+	// lists who dates it). A daemon restarted under a working claim reads the one the daemon before
+	// it stored.
 	ended.Reported = reported && !(ranTurn && report.At.Before(m.claim.LastTurnStart))
 	kept := ended.Death != "" && HoldsTask(m.claim.Pending)
 	if !kept && !ended.Turn && !ended.TaskTurn && !ended.Background && (ended.Reported || !ranTurn) {

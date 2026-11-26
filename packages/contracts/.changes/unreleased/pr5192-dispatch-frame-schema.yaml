@@ -1,0 +1,12 @@
+kind: Added
+custom:
+  Issue: pr5192
+body: |-
+  `DispatchTargetedFrameSchema`, `RecoverableDispatchDeliveryFailureSchema` and
+  `isCommentTargetedDelivery` move here from `envoy-client`, beside a new `readDispatchPayload`,
+  the one reader of a Dispatch payload: an event a host shows (with its delivery line for a
+  targeted frame), a targeted frame it refuses by name, or a payload it reads as neither.
+  `envoy-client`'s `renderInbound` reads every Dispatch payload through it. `bun run gen:go`
+  renders `schemas/dispatch-frame.schema.json` from those zod schemas, the Go copy the edge
+  listener checks a payload by, and `fixtures/dispatch-frame-verdicts.json`, `readDispatchPayload`'s
+  verdict on every payload of a corpus, which the Go reader is tested against.

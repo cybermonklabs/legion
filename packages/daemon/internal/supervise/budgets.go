@@ -214,11 +214,12 @@ func (m *Machine) deathLaunchFailureCharged(cause FailureCause) bool {
 // nothing, so a parked agent killed again before it read it holds that and nothing else, and its
 // death is not counted either.
 //
-// The death ends the turn it interrupted (Claim.LastTurnEnd), which no other path does: a turn
-// records its end only when the agent ends it, so a turn whose agent died would otherwise stay
-// open for ever and every later death of the relaunched agent — idle, with nothing pending —
-// would be charged against it, failing a claim that is doing nothing wrong. Each death after
-// this one is judged on the turn it finds, as the first was.
+// The death ends the turn it interrupted (Claim.LastTurnEnd), as the controller keeper's end of a
+// turn open past its bound does (endTurnPastBound) and a compaction's start does for a turn whose
+// end was never dated (compactStart): a turn whose agent died would otherwise stay open until one
+// of those, and every later death of the relaunched agent — idle, with nothing pending — would be
+// charged against it, failing a claim that is doing nothing wrong. Each death after this one is
+// judged on the turn it finds, as the first was.
 func (m *Machine) chargeDeath() bool {
 	if slices.Contains(unready, m.claim.State) {
 		return false
@@ -240,7 +241,8 @@ func (m *Machine) chargeDeath() bool {
 // say so. Both are persisted, so the answer survives the restart that rebuilt the machine, and
 // the times answer for a claim whose state has already moved on.
 func (m *Machine) turnOpen() bool {
-	return m.claim.State == StateWorking || m.claim.LastTurnStart.After(m.claim.LastTurnEnd)
+	_, open := m.claim.OpenTurn()
+	return m.claim.State == StateWorking || open
 }
 
 // chargePrompt counts one prompt failure. At the limit the process is retired — suspended, the

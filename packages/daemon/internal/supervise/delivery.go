@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // CheckLook names one look of one production check: the look's number and the check instance the
@@ -684,10 +685,10 @@ func (m *Machine) given(request RequestDeliver) bool {
 // task is such a request.
 //
 // It answers false while anything of p is in the agent's hands: a send of it in flight
-// (Machine.send), or a prompt of it Oh My Pi acknowledged that still waits on its result
-// (awaitsResult). That prompt's turn is the session's next, and a newer task put in p's place
-// would be confirmed by p's turn and retired by its end, unsent (replaceable says the same of the
-// relaunch's record).
+// (Machine.send), or a prompt of it still outstanding, acknowledged or held (awaitsResult). An
+// acknowledged prompt's turn is the session's next, and a held one can still start its turn once
+// the handoff ends, so a newer task put in p's place would be confirmed by p's turn and retired by
+// its end, unsent (replaceable says the same of the relaunch's record).
 //
 // A superseded p ends no credit, since it holds none: its retirement removes a row no turn
 // confirmed, and the claim store counts only a confirmed row's copy as a credit
@@ -945,6 +946,21 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		}
 		return nil
 	}
+	// No prompt goes out under an id a prompt's result has already answered (Machine.resulted).
+	// Every answer that keeps the task takes it back under a new id first (takeBackPending), but a
+	// take-back whose write the store did not take keeps the id it could not move the task from,
+	// and the shim answers a prompt it has a record of from that record, without a second turn
+	// (shimwire's dedupe): a retry sent under that id would be answered by the turn that already
+	// ended, its replayed acknowledgement and turn taken for a retry that never ran. So the task is
+	// taken back again here, and goes under the id that take-back gives it once the store has taken
+	// it; while the store takes nothing, the task waits under the old id and nothing is sent.
+	if p.ID == m.resulted {
+		if err := m.takeBackPending(ctx, taskRead); err != nil {
+			m.log.Warn("supervise: the task still carries the id of a prompt whose result came, and its new id was not written; it waits rather than go under the old one",
+				"delivery", p.ID, "error", err)
+			return err
+		}
+	}
 	// A root architect's task of a run (asksRoot) is one of the two deliveries the question a
 	// restart left never answers (the other is below): such a task may be one nobody has ever
 	// sent — it is held on the claim while its root has no architect to hear it, across restarts —
@@ -998,15 +1014,11 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	m.askFirst = false
 	if askAgent {
 		if streaming, _ := m.streaming(ctx, conn); streaming {
-			// The agent's answer is the daemon's first word of the turn, so the turn is dated
-			// from it (Claim.LastTurnStart), as recordBusyTurn dates a turn from a busy answer,
-			// and the confirmation's write carries the date: a let-go in this turn reads a report
-			// older than it as no report of the turn (recordEnd), where the start of the turn
-			// before it would count the report that turn's end left as one of this turn.
-			m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()
-			// The turn this claim is put in is logged before the write that records it, as
-			// turnStarted logs its own: a line written after the write would say nothing of the
-			// turn whose write failed.
+			// The agent's answer is the daemon's first word of the turn. The turn this claim is
+			// put in is dated and logged before the write that records it (startTurn,
+			// Claim.LastTurnStart), as turnStarted logs its own: a line written after the write
+			// would say nothing of the turn whose write failed.
+			m.claim.State = StateWorking
 			m.startTurn(p.ID)
 			m.log.Info("supervise: the agent is in a turn; confirming the delivery an earlier daemon sent", "delivery", p.ID)
 			news, _ := m.turnAnswers()
@@ -1241,14 +1253,15 @@ func (m *Machine) currentNews(ctx context.Context) (bool, error) {
 // (askFirst), and every drop of a delivery runs it in the same step as the drop: sendPending's
 // four — the task its issue's phase has left behind, an older daemon's ask of an update round,
 // the daemon's own delivery of a relaunch's record that no longer tells, and the task queued for
-// news of which nothing stands now (currentNews) — the retirement's (machine.go's retire), and
-// dropUpdateTask, which makes it of its own for the three drops a round that is over makes
-// through it (leaveRound, endPodUpdate, openPodUpdate's round switch). The one drop that does not
-// run it is currentRootTask's retirement of a root architect's held task that names nothing any
-// more: sendPending's asksRoot branch clears askFirst before it, without asking, so no question
-// is left to answer. Left armed over nothing pending, the question would make the claim's next
-// task the running turn's — confirmed by a turn of another cause, never prompted, and retired
-// unsent by that turn's end — and the worker would never receive that task at all.
+// news of which nothing stands now (currentNews) — the retirement's (machine.go's retire), the
+// retirement of the task of a phase the workflow stopped (RetireStoppedTask), and dropUpdateTask,
+// which makes it of its own for the three drops a round that is over makes through it
+// (leaveRound, endPodUpdate, openPodUpdate's round switch). The one drop that does not run it is
+// currentRootTask's retirement of a root architect's held task that names nothing any more:
+// sendPending's asksRoot branch clears askFirst before it, without asking, so no question is left
+// to answer. Left armed over nothing pending, the question would make the claim's next task the
+// running turn's — confirmed by a turn of another cause, never prompted, and retired unsent by
+// that turn's end — and the worker would never receive that task at all.
 //
 // It asks what a send would have asked, and confirms nothing: no delivery is left to confirm, so
 // an agent the ask finds in a turn only moves the claim to working, dated from the answer
@@ -1284,11 +1297,10 @@ func (m *Machine) answerAskFirstAfterDrop(ctx context.Context) error {
 		return nil
 	}
 	m.log.Info("supervise: the agent is in a turn of its own after its task was dropped")
-	// The turn is dated from the agent's answer, the daemon's first word of it, as the askFirst
-	// branch of sendPending dates the turn it confirms a task by (Claim.LastTurnStart).
-	m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()
+	m.claim.State = StateWorking
 	// The guard above has already established that the claim holds no delivery, so this turn is
-	// no task's and the line names none. It goes before the write, as the others do.
+	// no task's and the line names none. The turn is dated from the agent's answer, the daemon's
+	// first word of it (startTurn, Claim.LastTurnStart), before the write, as the others are.
 	m.startTurn("")
 	return m.persist(ctx)
 }
@@ -1306,6 +1318,72 @@ func (m *Machine) dropPending(ctx context.Context) error {
 	return m.answerAskFirstAfterDrop(ctx)
 }
 
+// ErrTaskSending is RetireStoppedTask finding the task it would retire on its way to the agent
+// (Machine.send): the prompt is already leaving, so the retirement waits for the send to settle
+// and is asked again, when the task is either confirmed by the turn it started or back as
+// unsent, and either way retired then.
+var ErrTaskSending = wait.New("the task is on its way to the agent")
+
+// RetireStoppedTask retires the task this claim holds for phase p of run generation, at an entry
+// no later than entry (0 for a stop that names no entry), and answers whether it held one. It is
+// the retirement of the task of a phase the workflow stopped under its worker: the admission
+// pass's move of a parent into awaiting_children, which holds that phase's start on the record
+// and gives it back later on an entry of its own (internal/workflow's StopForChildren and
+// ReturnFromChildren). Its one caller is the outbox, which runs the move's `retire_task` row
+// (internal/daemon's outbox).
+//
+// The task goes whether or not a turn has taken it. Unsent, every send already drops it while
+// the issue waits (sendPending asks PhaseHolds first), but the return puts the issue back in that
+// same phase at the same run, where PhaseHolds holds it again, and a task held back the whole
+// wait — behind a suspension, an answered update round, a paced launch, a stale plugin or a turn
+// that outlives the wait — would then reach the worker before the return's own start is given
+// its slot. Taken, the turn that took it runs on, and a death that takes it back marked
+// interrupted would send it again the same way. So it goes here, as a newer task retires one a
+// turn has taken (queue), and the claim keeps its state, its turn and its session: the task is
+// stale, not the agent.
+//
+// A task of another phase or run, one of a later entry — the return's own start, should it reach
+// the claim before this row runs — and a task of no phase (an operator's own, an architect's, the
+// daemon's own delivery of a relaunch's record) are not this phase's work and are left where they
+// are. A task on its way to the agent is answered ErrTaskSending and retired when the outbox runs
+// the row again.
+//
+// The retirement holds to the rules a busy answer, a late turn and a relaunch's record keep. The
+// prompts the task waited on a result for go with it (retirePending, Machine.outstanding), and so
+// does the wait for the turn of a prompt Oh My Pi acknowledged and has not started (TimerTurn).
+// That wait names the retired id, so its timer is fenced out when it fires and never clears it;
+// left armed, it would hold every later send of the claim (sendPending) and take the late turn of
+// the retired prompt for the next task's (beginTurn). That late turn once it starts, and the turn
+// a busy answer recorded the claim working for (recordBusyTurn), are then no task's turn, and the
+// end of each sends the next task. A record of the last let-go that a turn's confirmation of this
+// task told stays told, as it does where a newer task retires one a turn has taken (queue): that
+// turn read the sentence the prompt carried. A record that still tells is handled as at each of
+// sendPending's drops (relaunchAfterDrop): the claim, which holds nothing now, is given the
+// daemon's own delivery of that record and sent it, since the task that would have carried the
+// sentence in front of itself is gone. That delivery names no phase, so this row never retires it.
+func (m *Machine) RetireStoppedTask(ctx context.Context, p phase.Phase, generation uint64, entry int64) (bool, error) {
+	m.mu.Lock()
+	defer m.unlock()
+	d := m.claim.Pending
+	if d == nil || d.Phase == "" || d.Phase != p || d.Generation != generation || (entry > 0 && d.Entry > entry) {
+		return false, nil
+	}
+	if m.send != nil {
+		return false, ErrTaskSending
+	}
+	m.log.Info("supervise: the workflow stopped the phase this task was queued for; it is retired rather than kept",
+		"delivery", d.ID, "issue", m.claim.Issue, "phase", p, "entry", d.Entry, "confirmed", !d.ConfirmedAt.IsZero(),
+		"outstanding", m.outstanding)
+	if err := m.retirePending(ctx); err != nil {
+		return false, err
+	}
+	m.disarm(TimerTurn)
+	if err := m.answerAskFirstAfterDrop(ctx); err != nil {
+		return true, err
+	}
+	return true, m.relaunchAfterDrop(ctx)
+}
+
 // relaunchAfterDrop gives a claim that one of sendPending's drops left holding nothing the
 // daemon's own delivery of its record of the last let-go (queueRelaunch), when that record still
 // tells, and sends it. The ready queues that delivery only for a claim that holds nothing when it
@@ -1313,7 +1391,8 @@ func (m *Machine) dropPending(ctx context.Context) error {
 // its phase gone, an older daemon's ask of an update round, a task queued for news of the
 // approved design alone with nothing left to say (currentNews), or a root architect's held task
 // left naming nothing (currentRootTask) — leaves the claim holding nothing, and the sentence
-// would wait for whatever task came next.
+// would wait for whatever task came next. The retirement of the task of a phase the workflow
+// stopped (RetireStoppedTask) leaves the claim the same way, and ends the same way.
 //
 // It runs after the drop's retirement and after the answer to the question a restart armed for
 // the dropped delivery (answerAskFirstAfterDrop), which asks only of a claim holding nothing, so
@@ -1532,7 +1611,7 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 		p.Prompted = true
 	}
 	send := &sending{id: d.ID, generation: generation}
-	m.send, m.helloDuringSend = send, false
+	m.send, m.helloDuringSend, m.heldSend = send, false, ""
 	if seq := conn.Sequence(); seq > m.sentThrough {
 		m.sentThrough = seq
 	}
@@ -1708,10 +1787,17 @@ func (m *Machine) confirmCarrying(ctx context.Context, news []byte) error {
 // (inFlight). beginTurn confirms the task by it, and so does sendPending where a restart's question
 // finds the agent in a turn, so a new reason a turn is the task's is written here once. In order:
 //
-//   - While a prompt of the task Oh My Pi acknowledged waits on its result (Machine.outstanding),
-//     the turn is the first of them's: the pinned Oh My Pi runs one admitted prompt at a time, and
-//     a later send it answered busy carried nothing that turn reads. So a resend that rendered an
-//     opening the first prompt did not carry adds none to what the turn's confirmation credits.
+//   - While a prompt of the task waits on its result (Machine.outstanding), acknowledged or held
+//     (awaitedPrompt), the turn is taken for the first of them's, and its confirmation credits
+//     that prompt's news. An acknowledged prompt is one Oh My Pi admitted, and the pinned Oh My Pi
+//     runs one admitted prompt at a time, so the turn is that prompt's. A held prompt is one whose
+//     frame the daemon wrote while a compaction held the send and whose reply did not come:
+//     written, not known to be received, and parked by Oh My Pi until the handoff ends if it was.
+//     The turn confirms it only tentatively, since a turn is no proof that Oh My Pi admitted it: a
+//     confirmation that rests on held prompts alone is unproven, and a let-go takes it back
+//     (sendUnproven). A later send Oh My Pi answered busy carried nothing that turn reads, so a
+//     resend that rendered an opening the first prompt did not carry adds none to what the turn's
+//     confirmation credits.
 //   - Otherwise, while a send of the pending task is in flight and no answer has made it moot
 //     (sendUnanswered), the turn is that send's (the INFRA-264 race, where the prompt's own turn
 //     starts before its acknowledgement), and its confirmation credits what that send carries,
@@ -1779,15 +1865,15 @@ func (m *Machine) turnAnswers() (news []byte, inFlight bool) {
 // turn the prompt ran, so the wait is milliseconds; a prompt the agent refused or a daemon
 // restart leaves none outstanding, and the turn's end decides as it always did.
 //
-// The same holds while the send of the task's prompt is in flight and no answer has made it moot
-// (sending.resulted): its own result or its refusal after the acknowledgement, or a
-// turn-reporting result of any prompt of the task (resultPending's send window). A turn that
-// starts then is taken for the task's (turnAnswers), and its end can be decided before the send's
-// acknowledgement, which reaches the machine on the send's own goroutine (sending). A task
-// retired at that end would have its prompt's result dropped as stale (fence), and with it the
-// final credit of the news the prompt carried, which would then be owed and sent again, or the
-// provider error that leaves the work owed (providerErrored). The send's outcome and the prompt's
-// result say which turn it was, as they do for a prompt acknowledged first.
+// A confirmed task likewise stays while a send of the task's prompt is in flight and no answer has
+// made it moot (sending.resulted): its own result or its refusal after the acknowledgement, or a
+// turn-reporting result of any prompt of the task (resultPending's send window). A turn that starts
+// then is taken for the task's (turnAnswers), and its end can be decided before the send's
+// acknowledgement, which reaches the machine on the send's own goroutine (sending). A task retired
+// at that end would have its prompt's result dropped as stale (fence), and with it the final credit
+// of the news the prompt carried, which would then be owed and sent again, or the provider error
+// that leaves the work owed (providerErrored). The send's outcome and the prompt's result say which
+// turn it was, as they do for a prompt acknowledged first.
 //
 // A daemon suspension ends the claim's phase, so a task queued for a phase is the finished phase's
 // and goes with it; the next resume is handed its new phase's task, never that one. An operator
@@ -1812,6 +1898,20 @@ func (m *Machine) settle(ctx context.Context) error {
 		return nil
 	}
 	return m.retirePending(ctx)
+}
+
+// sendUnproven is whether the pending task's confirmation is in doubt (confirmationInDoubt, which
+// reads the pending task, its confirmation and the successful result) and rests on nothing Oh My
+// Pi admitted: no acknowledged prompt of the task is outstanding, and either the task's own send is
+// still in flight or only held prompts are outstanding (awaitedPrompt's two states). A turn took the
+// task for its own on the strength of a send whose answer has not come, so it may have been another
+// input's. A let-go fences out the answer that would settle it and takes the confirmation back
+// (letGo). It is the one reading of that rule there.
+func (m *Machine) sendUnproven() bool {
+	if !m.confirmationInDoubt() || slices.ContainsFunc(m.outstanding, func(o awaitedPrompt) bool { return !o.held }) {
+		return false
+	}
+	return m.awaitsResult() || m.send.id == m.claim.Pending.ID
 }
 
 // promptFailed is a prompt that was acknowledged and then came to nothing: the wait for its turn
@@ -1851,13 +1951,21 @@ func interruptedTask(cause string) string {
 }
 
 // abandonedTask begins the first prompt given to the agent that replaced a session the claim
-// abandoned (forgetSession): one whose last turns the provider refused, one an operator retried
-// with --fresh-session, or one no session store holds any more. Nothing in a new session says
-// that an older one existed, so a worker reading an empty transcript takes its task for a fresh
-// start and does again what is already pushed (dispatch://INFRA-714, item 4 of the refusal
-// section). It names the session that was left behind and why in the words the claim recorded,
-// and then the two things that outlive a session: the issue's branch, and the handoff records its
-// phases wrote on the Dispatch issue. The controller is told neither, since it works no checkout.
+// abandoned (forgetSession): one whose last turns the provider refused, one left behind by a
+// fresh session the operator or the controller asked for or by the operator's forget-session
+// (forgottenBy), one no session store holds any more, or one the daemon replaced for the project
+// controller (replaceEndedSession, replaceAgedSession). Nothing in a new session says that an
+// older one existed, so a worker reading an empty transcript takes its task for a fresh start and
+// does again what is already pushed (item 4 of the refusal section of the phase-workflow spec). It
+// names the session that was left behind and why in the words the claim recorded, and then the
+// two things that outlive a session: the issue's branch, and the handoff records its phases wrote
+// on the Dispatch issue.
+//
+// The controller works no checkout and has no architect, so it is told neither: its sentence
+// (controllerAbandonedTask) names the session it replaces and why, and says that Envoy messages
+// sent to that session may be lost, before the start message its keeper sends it
+// (dispatch://INFRA-2045 R4).
+//
 // last is whether this sentence is the last one before the task, and so ends in the task's own
 // instruction: in front of a task with no record's sentence after it. Where the record's sentence
 // follows it (EndedWork.Tells), that sentence is the last and carries the instruction instead
@@ -1871,17 +1979,33 @@ func interruptedTask(cause string) string {
 // escaped rather than ending the sentence that carries it, so no refusal text can read as an
 // instruction of the daemon's own. The abandoned session's id is quoted the same way, with %q.
 func abandonedTask(c Claim, last bool) string {
-	read := "read the issue"
-	if c.Role != claim.RoleController {
-		read = fmt.Sprintf("read the issue, then your branch %s and the handoff records its phases wrote on "+
-			"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
-			claim.IssueBranch(c.Issue), c.Issue, handoffWords())
+	if c.Role == claim.RoleController {
+		return controllerAbandonedTask(c, last)
 	}
+	read := fmt.Sprintf("read the issue, then your branch %s and the handoff records its phases wrote on "+
+		"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
+		claim.IssueBranch(c.Issue), c.Issue, handoffWords())
 	sentence := fmt.Sprintf("The session this claim ran before this one, %q, was abandoned where it stood: %q. "+
 		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+
 		"gone, and only what it pushed and committed survives. Before you repeat any of that work, %s, and "+
 		"tell the architect your Legion addressing line names what you found, unless that is you or it names none.",
 		c.Abandoned.Session, c.Abandoned.Why, read)
+	if last {
+		sentence += " Then continue the task."
+	}
+	return sentence + "\n\n"
+}
+
+// controllerAbandonedTask is abandonedTask for the project's controller: the session it replaces
+// and why, quoted as abandonedTask quotes them, that the old session's work is gone, and that an
+// Envoy message sent to the old session may never reach this one, so the controller reads the
+// records its start procedure reads rather than wait for a message it may never get.
+func controllerAbandonedTask(c Claim, last bool) string {
+	sentence := fmt.Sprintf("The session this controller ran before this one, %q, was replaced by this one: %q. "+
+		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+
+		"gone, and Envoy messages sent to that session may be lost, so read the daemon's state and the Dispatch "+
+		"records your start procedure reads before you act on any of that session's work.",
+		c.Abandoned.Session, c.Abandoned.Why)
 	if last {
 		sentence += " Then continue the task."
 	}
@@ -2121,10 +2245,44 @@ func (m *Machine) awaitResult(id string, news []byte) {
 	m.outstanding = append(m.outstanding, awaitedPrompt{id: id, news: news})
 }
 
+// keepHeldPrompt keeps the prompt of a send the compaction held, whose frame the daemon wrote and
+// whose wait ran out with no answer, as a held prompt of the pending task (heldSend,
+// awaitedPrompt's held). The write proves the frame went out, not that Oh My Pi received it. Where
+// it did, the pinned Oh My Pi parks a prompt that reaches it while a handoff runs, and admits and
+// acknowledges it only once the handoff ends, so the turn that prompt starts is taken for the
+// task's, tentatively, whichever comes first, that turn's start or the compaction's end
+// (turnAnswers, sendUnproven, compactEnded). The acknowledgement Oh My Pi then writes reaches no
+// daemon request (stream's Conn.answer), so the prompt is outstanding with no acknowledgement and
+// its task is not marked read. The wait for its turn is armed from the moment the turn can start:
+// here once the compaction is over, and at its end while it runs (compactEnded). A task its turn
+// already confirmed waits for no turn.
+func (m *Machine) keepHeldPrompt(r PromptRefused) {
+	p := m.claim.Pending
+	if !m.outstandingPrompt(p.ID) {
+		m.outstanding = append(m.outstanding, awaitedPrompt{id: p.ID, news: p.News, held: true})
+	}
+	m.log.Info("supervise: the prompt's send ran out while the handoff held it; its turn is still the task's",
+		"delivery", p.ID, "error", r.Err)
+	if m.compacting == nil && p.ConfirmedAt.IsZero() {
+		m.disarm(TimerTurn)
+		m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
+	}
+}
+
+// heldPrompt is the delivery id of the outstanding prompt a send the compaction held left with no
+// acknowledgement (keepHeldPrompt), and whether there is one.
+func (m *Machine) heldPrompt() (string, bool) {
+	at := slices.IndexFunc(m.outstanding, func(o awaitedPrompt) bool { return o.held })
+	if at < 0 {
+		return "", false
+	}
+	return m.outstanding[at].id, true
+}
+
 // forgetOutstanding ends the wait for every prompt of the pending task at once
 // (Machine.outstanding): a turn's result, the sweep's answer that the agent is in no prompt, a
-// compaction, a let-go, a take-back of a task whose turn its process can no longer finish, and a
-// retirement each end the wait for all of them.
+// let-go, a take-back of a task whose turn its process can no longer finish, and a retirement
+// each end the wait for all of them.
 func (m *Machine) forgetOutstanding() {
 	m.outstanding = nil
 }
@@ -2155,9 +2313,10 @@ func (m *Machine) outstandingPrompt(id string) bool {
 func (m *Machine) awaitsResult() bool { return len(m.outstanding) > 0 }
 
 // turnNews is the news of the approved design the first prompt of the pending task still
-// outstanding carried, nil where none is outstanding: the pinned Oh My Pi runs one admitted prompt
-// at a time, so the session's next turn is that prompt's (Machine.outstanding), and that is what
-// a confirmation of it credits (turnAnswers).
+// outstanding carried, acknowledged or held, nil where none is outstanding: that is what a
+// confirmation of the session's next turn credits. turnAnswers says why the turn is taken for that
+// prompt's, and when the confirmation is only tentative: an entry carries its prompt's news, and
+// only an acknowledged one proves Oh My Pi admitted the prompt (awaitedPrompt).
 func (m *Machine) turnNews() []byte {
 	if !m.awaitsResult() {
 		return nil
@@ -2170,26 +2329,28 @@ func (m *Machine) turnNews() []byte {
 // with the wait for its turn disarmed.
 //
 // While a prompt of the task is still outstanding once the caller has dropped the one its answer
-// named (awaitsResult), the pinned Oh My Pi runs one admitted prompt at a time and refuses the
-// rest, so the session's next turn, running or still to come, is that prompt's: the task keeps
-// its confirmation and its read mark for it, and only the pending id moves. That is the busy
-// answer of a send made while the first prompt's turn is late — refused because that very turn is
-// being prepared or run — which takes back nothing of that turn. With none outstanding, the wait
-// for the task's results is over, and the task goes back unconfirmed if a turn had confirmed it,
-// and a task taken back unread loses the mark, so nothing the worker reports from whatever turn
-// follows belongs to it. A caller whose prompt's turn is over or aborted therefore leaves nothing
-// of the task outstanding before it calls, since the set is what this reads to tell the two
-// apart: a provider error's result has ended the wait already (promptResulted), and a compaction
-// ends it itself (compactStart).
+// named (awaitsResult), acknowledged or held, that prompt can still answer, so the task keeps its
+// confirmation and its read mark for it, and only the pending id moves. For an acknowledged
+// prompt the session's next turn, running or still to come, is that prompt's: the pinned Oh My Pi
+// runs one admitted prompt at a time and refuses the rest. A held prompt is not known to be
+// admitted, and a confirmation that rests on held prompts alone stays tentative (sendUnproven).
+// The usual case is the busy answer of a send made while the first prompt's turn is late —
+// refused because that very turn is being prepared or run — which takes back nothing of that
+// turn. With none outstanding, the wait for the task's results is over, and the task goes back
+// unconfirmed if a turn had confirmed it, and a task taken back unread loses the mark, so nothing
+// the worker reports from whatever turn follows belongs to it. A caller whose prompt's turn is
+// over or aborted therefore leaves nothing of the task outstanding before it calls, since the set
+// is what this reads to tell the two apart: a provider error's result has ended the wait already
+// (promptResulted).
 //
 // A confirmation it clears was taken by a turn that was not the task's — another input's, or one
 // the prompt's own answer says came to nothing — so what it told goes back to untold with it, and
-// the next prompt carries that sentence again (moveTelling). Two callers clear a confirmation a
-// turn of the task itself may have taken, and the untelling is right for both: a provider error
+// the next prompt carries that sentence again (moveTelling). One caller clears a confirmation a
+// turn of the task itself may have taken, and the untelling is right for it: a provider error
 // (providerErrored) is a model call that failed, often the turn's first, so the agent never read
 // the prompt, and where an earlier call of the turn did, the sentence is told twice rather than
-// lost; a compaction (compactStart) aborts the turn, and the sentence repeated in the next prompt
-// is the safe way round. A confirmation kept for an outstanding prompt keeps its telling too,
+// lost. A compaction takes nothing back: it is Oh My Pi's handoff, which aborts no turn
+// (compactStart). A confirmation kept for an outstanding prompt keeps its telling too,
 // moved with it to the new id, so that a later take-back of the same confirmation under that id
 // still finds it.
 //
@@ -2256,16 +2417,17 @@ func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 // takeBackConfirmation clears the pending delivery p's confirmation, and the claim's handshake's
 // with it where that confirmation was p's own (EntryHandshake.unconfirmed). It answers whether the
 // handshake changed, which is whether the write that records the take-back must carry the claim.
-// A let-go's take-back (interrupted) does not come here, since its task becomes the claim's only
-// once its write lands: it gives the handshake's confirmation back by the same reading where the
-// confirmation is in doubt (confirmationInDoubt), and keeps it where a turn of the task did take
-// it.
+// A let-go's take-back of the task (interrupted) does not come here, since its task becomes the
+// claim's only once its write lands: it gives the handshake's confirmation back by the same
+// reading where the confirmation is in doubt (confirmationInDoubt), and keeps it where a turn of
+// the task did take it.
 //
-// Both callers take a confirmation back with no prompt of the task outstanding (takeBackPending,
-// refused), so no turn of a prompt that carried news of the approved design can start any more,
-// and the copy of that news goes with the confirmation (Delivery.Carried, copyTurnNews, which
-// writes none with no prompt outstanding): the write that records the take-back ends the credit
-// the copy held, and no other (the claim store's design_news_told_in).
+// Its three callers each take a confirmation back with no prompt of the task acknowledged and still
+// outstanding (takeBackPending, refused; letGo, for a confirmation that rests on its own send
+// alone, sendUnproven), so no turn of a prompt that carried news of the approved design can start
+// any more, and the copy of that news goes with the confirmation (Delivery.Carried, copyTurnNews,
+// which writes none with no prompt outstanding): the write that records the take-back ends the
+// credit the copy held, and no other (the claim store's design_news_told_in).
 func (m *Machine) takeBackConfirmation(p *Delivery) bool {
 	handshake, moved := m.claim.Handshake.unconfirmed(*p)
 	p.ConfirmedAt = time.Time{}
@@ -2289,10 +2451,10 @@ func (m *Machine) takeBackConfirmation(p *Delivery) bool {
 //   - takeBackPending, a prompt that came to nothing: a late busy answer, refusal or result that
 //     ran no turn (lateRefused, refusedElsewhere, refusedUnprompted, waitedOutAnswer,
 //     promptResulted), a wait for a turn that ran out (noTurn; it and the answers that charge the
-//     prompt go through promptFailed), a provider error (providerErrored) and a compaction
-//     (compactStart). With no prompt of the task left outstanding it takes the telling back; with
-//     one outstanding it keeps the confirmation and moves the telling to the new id. Either way it
-//     writes the claim with the delivery (putClaimAndDelivery) when this reports true.
+//     prompt go through promptFailed) and a provider error (providerErrored). With no prompt of
+//     the task left outstanding it takes the telling back; with one outstanding it keeps the
+//     confirmation and moves the telling to the new id. Either way it writes the claim with the
+//     delivery (putClaimAndDelivery) when this reports true.
 //   - takeBackPending again, where that write failed in the kept case: it moves the telling back
 //     to the id the store still holds the confirmation under, and writes nothing, since the store
 //     never took the move.
@@ -2317,34 +2479,36 @@ func (m *Machine) moveTelling(from, to string) bool {
 
 // confirmationInDoubt is whether the pending task's confirmation is one a let-go cannot vouch for:
 // it stands while a send is in flight whose answer is still to come (sendUnanswered) or a prompt
-// of the task still waits on its result (awaitsResult). untellInFlight states the rule and why;
-// this is its one reading, which interrupted makes for the claim's handshake too. It reads the
-// send and the prompts outstanding, so it is read before the let-go forgets them (letGo,
-// forgetSend; interrupted).
+// of the task still waits on its result (awaitsResult), acknowledged or held (awaitedPrompt), and
+// no prompt's successful result has said a turn ran the task (Machine.ranTask). untellInFlight
+// states the rule and why; this is its one reading, which recordEnd makes for the telling,
+// interrupted for the claim's handshake and sendUnproven for the confirmation, so the result, the
+// confirmation and the telling always agree. It reads the send and the prompts outstanding, so it
+// is read before the let-go forgets them (letGo, forgetSend; interrupted).
 func (m *Machine) confirmationInDoubt() bool {
 	p := m.claim.Pending
-	return (m.sendUnanswered() || m.awaitsResult()) && p != nil && !p.ConfirmedAt.IsZero()
+	return p != nil && !p.ConfirmedAt.IsZero() && m.ranTask != p.ID && (m.sendUnanswered() || m.awaitsResult())
 }
 
 // untellInFlight is the rule for a confirmation a let-go cannot vouch for (confirmationInDoubt).
 // The pending task's confirmation is uncertain at a let-go while a send is in flight whose answer
 // is still to come (sendUnanswered) or any prompt of the task still waits on its result
-// (awaitsResult). A turn that starts then is taken for the task's (beginTurn): with a send in
-// flight, the INFRA-264 race, and with an acknowledged prompt outstanding, however late the turn
-// starts. Either way the turn may be another input's, an Envoy notice's, and what would say so is
-// still to come: the send's busy answer (refused), or the prompt's own answer, a busy answer or a
-// late refusal that ran no turn (promptResulted, lateRefused, takeBackPending), each of which
-// takes the confirmation back. The let-go forgets the send and the prompts outstanding (letGo,
-// forgetSend; interrupted), so that answer is fenced out (fenceOutcome, fence) and never takes
-// anything back. So the let-go takes back what the confirmation told (moveTelling): the record
-// goes back to untold, the record of this let-go joins it rather than replacing it (recordEnd,
-// joined), and the next prompt carries its sentence again. Where the turn was the task's own, the
-// agent is told twice, which is the accepted cost: told twice, never not at all. A confirmation
-// whose prompt's result has come stands, whether or not the outcome of that prompt's send has
-// been read yet (sending.resulted): that result says a turn ran the prompt (promptResulted), so
-// the agent read the sentence the prompt carried, and a let-go after it, in that turn or later,
-// keeps the record told. The take-back of the task gives the claim's handshake's confirmation
-// back by the same reading (interrupted).
+// (awaitsResult), acknowledged or held. A turn that starts then is taken for the task's
+// (beginTurn): with a send in flight, the INFRA-264 race, and with a prompt outstanding, however
+// late the turn starts. Either way the turn may be another input's, an Envoy notice's, and what
+// would say so is still to come: the send's busy answer (refused), or the prompt's own answer, a
+// busy answer or a late refusal that ran no turn (promptResulted, lateRefused, takeBackPending),
+// each of which takes the confirmation back. The let-go forgets the send and the prompts
+// outstanding (letGo, forgetSend; interrupted), so that answer is fenced out (fenceOutcome,
+// fence) and never takes anything back. So the let-go takes back what the confirmation told
+// (moveTelling): the record goes back to untold, the record of this let-go joins it rather than
+// replacing it (recordEnd, joined), and the next prompt carries its sentence again. Where the turn
+// was the task's own, the agent is told twice, which is the accepted cost: told twice, never not
+// at all. A confirmation whose prompt's result has come stands, whether or not the outcome of that
+// prompt's send has been read yet (sending.resulted): that result says a turn ran the prompt
+// (promptResulted), so the agent read the sentence the prompt carried, and a let-go after it, in
+// that turn or later, keeps the record told. The take-back of the task gives the claim's handshake's
+// confirmation back by the same reading (interrupted).
 //
 // It reports whether a telling moved, and it is idempotent: once it has run, no record is told by
 // the pending id. recordEnd and interrupted both call it, and whichever of them a let-go runs first
