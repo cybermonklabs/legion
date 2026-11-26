@@ -44,17 +44,6 @@ const phaseEntryMigration = 20261111225552
 // beside the phase entry and the upgrade under test applies them.
 const olderReleasesNewestMigration = 20261112180548
 
-// appliedWithTheFixture are the migrations above olderReleasesNewestMigration that preEntryStore
-// applies with the fixture's own rather than withholding them for the upgrade under test: the tree
-// is recorded through this release's PutIssue, so each migration that adds a column PutIssue
-// writes must stand before the tree is seeded. Each adds a column of issues, which no statement of
-// the phase entry reads or writes, so it changes nothing the upgrade under test reads.
-// 20261124060500_issue_priority adds issues.priority, 20261125004932_done_by_checks adds the close
-// wait's columns, and 20261125181828_p0_bound adds issues.resolved_known, issues.resolved_priority
-// and issues.priority_from (it also makes the table project_p0_bound_changes, which the phase entry
-// does not read).
-var appliedWithTheFixture = []int{20261124060500, 20261125004932, 20261125181828}
-
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its
 // root. Each shape is a member of that one tree, standing in testing, so the role every shape is
 // read on is the tester (phase.RoleFor).
@@ -97,7 +86,7 @@ func preEntryStore(t *testing.T) *store.Store {
 	}
 	widened := false
 	for _, migration := range all {
-		if migration.Version == phaseEntryMigration || migration.Version > olderReleasesNewestMigration && !slices.Contains(appliedWithTheFixture, migration.Version) {
+		if migration.Version == phaseEntryMigration || migration.Version > olderReleasesNewestMigration {
 			continue
 		}
 		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
@@ -119,9 +108,8 @@ func preEntryStore(t *testing.T) *store.Store {
 	return st
 }
 
-// migrationsAbove is how many embedded migrations carry a version above version, less those
-// appliedWithTheFixture names: beside the phase entry, what preEntryStore withheld, and so what
-// the upgrade under test applies.
+// migrationsAbove is how many embedded migrations carry a version above version: beside the phase
+// entry, what preEntryStore withheld, and so what the upgrade under test applies.
 func migrationsAbove(t *testing.T, version int) int {
 	t.Helper()
 	all, err := migrations.All()
@@ -130,7 +118,7 @@ func migrationsAbove(t *testing.T, version int) int {
 	}
 	withheld := 0
 	for _, migration := range all {
-		if migration.Version > version && !slices.Contains(appliedWithTheFixture, migration.Version) {
+		if migration.Version > version {
 			withheld++
 		}
 	}
