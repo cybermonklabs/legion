@@ -27,6 +27,11 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
     ("scripts/third-party-notices.ts", "`packages/dispatch/web/vite.config.ts#thirdPartyNotices` (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ("scripts/e2e/lib/process-tree.sh", "`packages/dispatch/e2e/acceptance/replace-blocks.sh#$repo_root/scripts/e2e/lib/process-tree.sh` sources it, and "
                                         f"e2e/__tests__/replace-blocks-guard.test.ts, which {at('dispatch-ui', 'Test dispatch dashboard')} runs, runs that script"),
+    (f"{ENVOY}/internal/dispatch/githubapi/testdata/proxy-contract.json",
+     "`packages/dispatch/e2e/__tests__/stub-recordings.test.ts#proxyContract` reads it at a new URL: the GitHub "
+     "proxy's contract (its prefix, forwarded paths, workflow-runs query, error codes and trimmed fields, which "
+     "githubapi/contract_test.go holds to proxy.go) that every committed GitHub entry is held to, which this "
+     "job's test step runs"),
     (".github/workflows/dispatch-unit-repeat.yaml",
      "`packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts#each budget of the repeat workflow is exactly its rule over the measurement beside it` reads it at a new URL and holds the workflow's "
      "budgets to the measurements beside them, and `packages/dispatch/e2e/__tests__/unit-repeat.test.ts#a step the run cancels names its running row, as GitHub's runner signals it` runs the test step's own "
@@ -43,7 +48,7 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
                      "above import, and `packages/dispatch/e2e/read-token-live.ts#brokerCredential` imports "
                      "@legion/envoy-client/broker-credential, so this job's program holds envoy-client's sources "
                      "(check-ts-filters.sh measures it)")
-  + bun_job("dispatch-ui"))
+  + dispatch_api_types(at("dispatch-ui", "Typecheck dispatch dashboard")) + bun_job("dispatch-ui"))
 GATE = with_reads(GATE, [
     Read('packages/envoy-client/test/**', "filter dispatch_ui held packages/envoy-client/test/** by hand before the filters were computed: it selected 10 file(s) no other read of this gate declares"),
 ])

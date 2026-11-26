@@ -229,3 +229,18 @@ test("no proxy variable can take the identity token", async () => {
   expect(taken).toEqual([]);
   expect(metadata.asked.length).toBe(1);
 });
+
+test("a machine's identity names GCE_METADATA_HOST only while it is set", () => {
+  // A Compute Engine VM's metadata server is at Google's own address, which no setting names.
+  expect(metadataIdentity("example-audience", {} as NodeJS.ProcessEnv).describe()).toBe(
+    "this machine's Google identity token for example-audience"
+  );
+  // Control: a set variable is named.
+  expect(
+    metadataIdentity("example-audience", {
+      [METADATA_HOST_VAR]: "127.0.0.1:9",
+    } as NodeJS.ProcessEnv).describe()
+  ).toBe(
+    `this machine's Google identity token for example-audience (${METADATA_HOST_VAR} names the metadata server)`
+  );
+});
