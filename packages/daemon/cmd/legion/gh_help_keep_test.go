@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/sjawhar/envoy/testexec"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
@@ -33,7 +33,7 @@ func loggingGh(t *testing.T) (stub, log string) {
 	stub, log = filepath.Join(dir, "gh"), filepath.Join(dir, "processes.log")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>'" + log + "'\n" +
 		strings.TrimPrefix(ghStandInPrefix(help), "#!/bin/sh\n") + "echo 'gh ran'\n"
-	if err := testexec.WriteFile(stub, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return stub, log
@@ -92,7 +92,7 @@ func ghTargetOfKept(t *testing.T, argv []string, env map[string]string, help fun
 	want, wantErr := ghTargetOf(argv, env, help, remotes, dirFor)
 	// The gh the keep is keyed on, which it never runs: help answers in its place.
 	gh := filepath.Join(t.TempDir(), "gh")
-	if err := testexec.WriteFile(gh, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+	if err := execfile.Write(gh, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	keepEnv := map[string]string{"XDG_STATE_HOME": t.TempDir(), "GH_CONFIG_DIR": t.TempDir(), "XDG_DATA_HOME": t.TempDir()}
@@ -134,6 +134,7 @@ func errorText(err error) string {
 // shared check's own read, which `legion gh` answers through the guard's REST read. No state
 // directory is given, so no kept help could stand in for a help read.
 func TestLegionGhReadsNoHelpForTheGuardsVisibilityReads(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	stub, log := loggingGh(t)
 	const slug = "sjawhar/legion"
@@ -177,6 +178,7 @@ func TestLegionGhReadsNoHelpForTheGuardsVisibilityReads(t *testing.T) {
 // names a rule file (the fixture's), so the guard runs whole and reads the visibility, and the
 // stand-in answers private, which the guard reads again for every call.
 func TestLegionGhRunsTwoGhProcessesForARepeatedAPICall(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	stub, log := loggingGh(t)
 	env := map[string]string{
@@ -206,6 +208,7 @@ func TestLegionGhRunsTwoGhProcessesForARepeatedAPICall(t *testing.T) {
 // first call kept, which are what gh printed, in files of mode 0600 owned by this user, in a
 // directory of mode 0700.
 func TestGhHelpKeepReadsEachHelpOnce(t *testing.T) {
+	t.Parallel()
 	stub, log := loggingGh(t)
 	env := helpKeepEnv(t)
 	first := readHelps(t, stub, env)
@@ -239,20 +242,14 @@ func TestGhHelpKeepReadsEachHelpOnce(t *testing.T) {
 // its modification time kept, config.yml made unreadable, a hosts.yml written, an extension
 // installed, and a variable that changes how gh prints.
 func TestGhHelpKeepReadsAgainAfterItsInputsChange(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		change func(t *testing.T, stub string, env map[string]string)
 	}{
 		{"the binary's size", func(t *testing.T, stub string, _ map[string]string) {
 			info := stat(t, stub)
-			file, err := os.OpenFile(stub, os.O_APPEND|os.O_WRONLY, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := file.WriteString("# a later build\n"); err != nil {
-				t.Fatal(err)
-			}
-			if err := file.Close(); err != nil {
+			if err := execfile.Append(stub, []byte("# a later build\n")); err != nil {
 				t.Fatal(err)
 			}
 			chtimes(t, stub, info.ModTime())
@@ -267,7 +264,7 @@ func TestGhHelpKeepReadsAgainAfterItsInputsChange(t *testing.T) {
 			}
 			info := stat(t, stub)
 			next := stub + ".next"
-			if err := testexec.WriteFile(next, content, 0o700); err != nil {
+			if err := execfile.Write(next, content, 0o700); err != nil {
 				t.Fatal(err)
 			}
 			chtimes(t, next, info.ModTime())
@@ -353,6 +350,7 @@ func TestGhHelpKeepReadsAgainAfterItsInputsChange(t *testing.T) {
 // A variable of the caller's that gh is never handed (ghChildEnviron) changes no help gh prints,
 // so the copies kept without it still answer: the call after it is set runs no gh.
 func TestGhHelpKeepKeysOnlyWhatGhIsHanded(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"GH_FORCE_TTY", "GH_PAGER", "GH_DEBUG", "GH_EDITOR", "GH_TELEMETRY"} {
 		t.Run(name, func(t *testing.T) {
 			stub, log := loggingGh(t)
@@ -379,18 +377,19 @@ func TestGhHelpKeepKeysOnlyWhatGhIsHanded(t *testing.T) {
 // changes. Every call reads both helps from the gh the multiplexer picked, the call after another
 // gh was picked too.
 func TestGhHelpKeepKeepsNothingForAMultiplexer(t *testing.T) {
+	t.Parallel()
 	stub, log := loggingGh(t)
 	content, err := os.ReadFile(stub)
 	if err != nil {
 		t.Fatal(err)
 	}
 	other := filepath.Join(t.TempDir(), "gh")
-	if err := testexec.WriteFile(other, content, 0o700); err != nil {
+	if err := execfile.Write(other, content, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	bin := t.TempDir()
 	current, mise := filepath.Join(bin, "current"), filepath.Join(bin, "mise")
-	if err := testexec.WriteFile(mise, []byte("#!/bin/sh\nexec \"$(cat '"+current+"')\" \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(mise, []byte("#!/bin/sh\nexec \"$(cat '"+current+"')\" \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	shim := filepath.Join(t.TempDir(), "gh")
@@ -419,6 +418,7 @@ func TestGhHelpKeepKeepsNothingForAMultiplexer(t *testing.T) {
 // Where the directory is still this user's, the fresh read is kept again, as a file of mode 0600
 // in a directory of mode 0700.
 func TestGhHelpKeepIgnoresACopyThatIsNotTheUsersAlone(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// tamper changes the kept copy in dir, or the keep the next call reads it with.
@@ -506,6 +506,7 @@ func TestGhHelpKeepIgnoresACopyThatIsNotTheUsersAlone(t *testing.T) {
 // answers ELOOP. Here both opens follow every link, so only ghOpenPrivate's own check of each path
 // can refuse one; a directory and a copy that are no link are still opened.
 func TestGhOpenPrivateRefusesALinkItsOpenFollowed(t *testing.T) {
+	// Not parallel: it sets the package variables ghOpenAt and ghOpenDir.
 	openDir, openAt := ghOpenDir, ghOpenAt
 	ghOpenDir = func(dir string) (*os.File, error) { return os.OpenFile(dir, os.O_RDONLY|unix.O_DIRECTORY, 0) }
 	ghOpenAt = func(parent int, name string) (int, error) {
@@ -565,8 +566,9 @@ func TestGhOpenPrivateRefusesALinkItsOpenFollowed(t *testing.T) {
 // user it is asked about with no permission for its group or others, and no file of another
 // user's or one its group or others may read or write.
 func TestGhPrivateIsTheUsersAlone(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "copy")
-	if err := testexec.WriteFile(path, []byte("{}"), 0o600); err != nil {
+	if err := execfile.Write(path, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {

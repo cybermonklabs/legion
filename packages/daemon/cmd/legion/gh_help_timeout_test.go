@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/sjawhar/envoy/testexec"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -38,6 +38,7 @@ import (
 // wait has the test binary's deadline as its only bound, and each stand-in sleeps about a day, so a
 // stop that never comes fails the row by name and no sleep ends by itself before it.
 func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
+	// Not parallel: it sets the package variable ghHelpTimeout.
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this row reads from it whether gh's helper is still running", err)
 	}
@@ -63,7 +64,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 		dir := t.TempDir()
 		gh, ghPid := filepath.Join(dir, "gh"), filepath.Join(dir, "gh.pid")
 		const ghSeconds = "86398"
-		if err := testexec.WriteFile(gh, []byte("#!/bin/sh\n"+holdsStandIn(ghPid, ghSeconds)), 0o700); err != nil {
+		if err := execfile.Write(gh, []byte("#!/bin/sh\n"+holdsStandIn(ghPid, ghSeconds)), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		killRecordedHelper(t, ghPid, ghSeconds)
@@ -82,7 +83,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 	t.Run("a timeout that passed before gh started is said as the timeout", func(t *testing.T) {
 		dir := t.TempDir()
 		gh, ran := filepath.Join(dir, "gh"), filepath.Join(dir, "ran")
-		if err := testexec.WriteFile(gh, []byte("#!/bin/sh\n: >'"+ran+"'\n"), 0o700); err != nil {
+		if err := execfile.Write(gh, []byte("#!/bin/sh\n: >'"+ran+"'\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		timeout := ghHelpTimeout
@@ -102,7 +103,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 		gh, ghPid, helperPid := filepath.Join(dir, "gh"), filepath.Join(dir, "gh.pid"), filepath.Join(dir, "helper.pid")
 		const ghSeconds, helperSeconds = "86400", "86399"
 		script := "#!/bin/sh\nsleep " + helperSeconds + " </dev/null >/dev/null 2>&1 &\necho $! >" + shellprefix.Literal(helperPid) + "\n" + holdsStandIn(ghPid, ghSeconds)
-		if err := testexec.WriteFile(gh, []byte(script), 0o700); err != nil {
+		if err := execfile.Write(gh, []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		killRecordedHelper(t, helperPid, helperSeconds)
@@ -188,6 +189,7 @@ func (d *passedDeadline) Err() error {
 // (TestAHelpReadThatTimesOutStopsWhatGhStarted), would put the help read in that last case too
 // without the handling these rows read.
 func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
+	t.Parallel()
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this row reads from it whether the stand-in is still running", err)
 	}
@@ -266,7 +268,7 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 				dir := t.TempDir()
 				pidFile := filepath.Join(dir, "stand-in")
 				stub := filepath.Join(dir, "gh")
-				if err := testexec.WriteFile(stub, []byte(held.gh(pidFile, held.seconds)), 0o700); err != nil {
+				if err := execfile.Write(stub, []byte(held.gh(pidFile, held.seconds)), 0o700); err != nil {
 					t.Fatal(err)
 				}
 				state := t.TempDir()
@@ -278,7 +280,7 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 				}
 				if held.git != nil {
 					bin := t.TempDir()
-					if err := testexec.WriteFile(filepath.Join(bin, "git"), []byte(held.git(pidFile, held.seconds)), 0o700); err != nil {
+					if err := execfile.Write(filepath.Join(bin, "git"), []byte(held.git(pidFile, held.seconds)), 0o700); err != nil {
 						t.Fatal(err)
 					}
 					env["PATH"] = bin + string(os.PathListSeparator) + ghWrapperDir(t) + string(os.PathListSeparator) + os.Getenv("PATH")

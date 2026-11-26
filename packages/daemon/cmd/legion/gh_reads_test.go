@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/sjawhar/envoy/testexec"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -218,6 +218,7 @@ var ghGuardedCalls = [][]string{
 // products with a guarded option or a guarded endpoint, each option before and after each
 // endpoint, among them.
 func TestGhWritesNothingReadsTheLeafAndTheMethod(t *testing.T) {
+	t.Parallel()
 	guardedAPI := slices.Concat(
 		ghAPICalls(ghAPIGuardedSpellings, ghAPIReadEndpoints),
 		ghAPICalls(ghAPIReadSpellings, ghAPIGuardedEndpoints),
@@ -250,6 +251,7 @@ func TestGhWritesNothingReadsTheLeafAndTheMethod(t *testing.T) {
 // case and wherever it stands. A call it admits is one ghTargetOf reads, and still one that does
 // not write nothing by ghWritesNothing's rule, which the guard's reading of the call rests on.
 func TestGhGraphQLQueryRead(t *testing.T) {
+	t.Parallel()
 	graphql := func(words ...string) []string { return append([]string{"api", "graphql"}, words...) }
 	const viewer = "query={viewer{login}}"
 	const paged = "query=query($endCursor:String){viewer{repositories(first:1,after:$endCursor){nodes{name}pageInfo{hasNextPage endCursor}}}}"
@@ -375,6 +377,7 @@ func TestGhGraphQLQueryRead(t *testing.T) {
 // own reads in a read grammar: each gives --hostname, and the GraphQL read is a POST to `graphql`
 // with fields, so none would be taken for a read if the order changed.
 func TestGhCallModeDecidesTheUncheckedCallsBeforeTheReadGrammar(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		rateLimitRead, visibilityRead, writesNothing bool
 		want                                         ghCallMode
@@ -408,6 +411,7 @@ func TestGhCallModeDecidesTheUncheckedCallsBeforeTheReadGrammar(t *testing.T) {
 // hands the guard for every call, whatever checker a role is told. A bump of the pin
 // fails here until the tag, the sha256 and that port all move.
 func TestGhReadsAreProvenAgainstThePinnedCheck(t *testing.T) {
+	t.Parallel()
 	const prove = "follow the steps in ghReadsProvenCheck's comment (gh_reads.go): read the definitions it lists and every definition they reach in the new check, port each change to what they read as a read into ghPinnedCheckReads and the new sha256 into ghPinnedCheckPortSHA256 (gh_pinned_check_test.go), run INFRA-3562's xcheck4069 harness (xcheck4069.tar.gz) against the check with 0 mismatching rows, then name its tag and the sha256 of its public_leak_check.py in ghReadsProvenCheck"
 	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "docker", "worker.Dockerfile"))
 	if err != nil {
@@ -432,6 +436,7 @@ func TestGhReadsAreProvenAgainstThePinnedCheck(t *testing.T) {
 // the leaf it is keyed by, and ghGuardedCalls holds a write of every family of commands the list
 // reads from but search, which has none.
 func TestGhReadLeafCallsCoverEveryReadLeaf(t *testing.T) {
+	t.Parallel()
 	for leaf := range ghReadLeaves {
 		if _, ok := ghReadLeafCalls[leaf]; !ok {
 			t.Errorf("ghReadLeaves lists %q, and ghReadLeafCalls holds no call of it", leaf)
@@ -463,6 +468,7 @@ func TestGhReadLeafCallsCoverEveryReadLeaf(t *testing.T) {
 // it sends no file, which ghTargetOf's writesNothing relies on. A gh whose help moves an option a
 // grammar names fails this once its help is saved here.
 func TestGhReadGrammarNamesEachOptionAsItsHelpDoes(t *testing.T) {
+	t.Parallel()
 	grammars := maps.Clone(ghReadLeaves)
 	grammars["api"] = ghAPIReadOptions
 	for leaf, options := range grammars {
@@ -588,7 +594,7 @@ func ghGuardRigWith(t *testing.T, checker, rules string) func(t *testing.T, chec
 		"printf 'env GH_PAGER=%s GH_BROWSER=%s BROWSER=%s GH_EDITOR=%s EDITOR=%s VISUAL=%s\\n' \"${GH_PAGER-unset}\" \"${GH_BROWSER-unset}\" \"${BROWSER-unset}\" \"${GH_EDITOR-unset}\" \"${EDITOR-unset}\" \"${VISUAL-unset}\" >>\"$GH_STANDIN_RECORD\"\n" +
 		"printf 'stdin %s\\n' \"$(cat)\" >>\"$GH_STANDIN_RECORD\"\n" +
 		"exit 7\n"
-	if err := testexec.WriteFile(stub, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return func(t *testing.T, check, stdin string, args ...string) ghGuardRecord {
@@ -667,6 +673,7 @@ func ghCheckWithProgram(t *testing.T, script, program string) string {
 // BROWSER, though the caller set all three. Its line in the call log says
 // `visibility="checked-only"` and names the repository the call resolved.
 func TestLegionGhChecksAReadAndReadsNoVisibility(t *testing.T) {
+	t.Parallel()
 	run := ghGuardRig(t, "")
 	const stdin = "a line on standard input\n"
 	for _, args := range ghReadCalls() {
@@ -704,6 +711,7 @@ func TestLegionGhChecksAReadAndReadsNoVisibility(t *testing.T) {
 // refuses a credential in every call the wrapper counts as a read (ghWritesNothing). Each of
 // these is in a read grammar as typed, and the refusal comes before any visibility read.
 func TestLegionGhRefusesAReadThatCarriesACredential(t *testing.T) {
+	t.Parallel()
 	run := ghGuardRig(t, "")
 	for _, args := range [][]string{
 		{"pr", "list", "-R", "acme/widgets", "--search", ghFakeToken},
@@ -733,6 +741,7 @@ func TestLegionGhRefusesAReadThatCarriesACredential(t *testing.T) {
 // guard's setup error, and never reaches gh: a check that is not there, and one that exits with
 // its own setup error (exit 2), have cleared nothing.
 func TestLegionGhRefusesAReadWhoseGuardCannotRun(t *testing.T) {
+	t.Parallel()
 	run := ghGuardRig(t, "")
 	for _, tc := range []struct {
 		name  string
@@ -767,13 +776,14 @@ func TestLegionGhRefusesAReadWhoseGuardCannotRun(t *testing.T) {
 // process group (procgroup). The bound the guard reads a check's stop against is leakguard's own
 // test of a read past its bound (TestAGhCallThatWritesNothingRunsTheSharedCheckAlone).
 func TestLegionGhRefusesAReadWhoseGuardIsStopped(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	stub := filepath.Join(t.TempDir(), "gh")
-	if err := testexec.WriteFile(stub, []byte(ghStandInPrefix(help)+"printf 'gh %s\\n' \"$*\" >>\"$GH_STANDIN_RECORD\"\nexit 7\n"), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(ghStandInPrefix(help)+"printf 'gh %s\\n' \"$*\" >>\"$GH_STANDIN_RECORD\"\nexit 7\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	records := t.TempDir()
@@ -824,6 +834,7 @@ func TestLegionGhRefusesAReadWhoseGuardIsStopped(t *testing.T) {
 // daemon with no leak check setting is: told one, a check whose program is not that checker is
 // refused before the read (TestGhReadsUnderTheDeploymentsChecker).
 func TestLegionGhGuardsAReadWholeUnderAnUnprovenCheck(t *testing.T) {
+	t.Parallel()
 	run := ghGuardRigWith(t, "", leakguardtest.WriteRules(t, t.TempDir()))
 	for _, program := range []struct{ name, text string }{
 		{"another program", ghProvenProgram + "# an edit under the same tag\n"},
@@ -848,6 +859,7 @@ func TestLegionGhGuardsAReadWholeUnderAnUnprovenCheck(t *testing.T) {
 // deployment's, so the guard refuses the call before gh runs, naming the digest it was told and
 // the check's own.
 func TestGhReadsUnderTheDeploymentsChecker(t *testing.T) {
+	t.Parallel()
 	args := []string{"pr", "view", "1", "-R", "acme/widgets"}
 	for _, tc := range []struct{ name, checker string }{
 		{name: "the check's own manifest digest", checker: ghOwnManifest},
@@ -877,6 +889,7 @@ func TestGhReadsUnderTheDeploymentsChecker(t *testing.T) {
 // digest `legion gh` holds names, so the guard reads the call's visibility and runs the
 // private-name pass as for a write, under the rule file the deployment names (the fixture's).
 func TestARoleCheckerNamingAnotherDigestGetsTheWholeGuard(t *testing.T) {
+	t.Parallel()
 	const another = "# another shared check, which the read rule was never compared with\n"
 	sum := sha256.Sum256([]byte(another))
 	if hex.EncodeToString(sum[:]) == ghProvenProgramSHA256 {
@@ -927,6 +940,7 @@ func guardedWhole(t *testing.T, got ghGuardRecord, args []string) {
 // typed outside their grammar, and gh api calls with a guarded option, the spellings review
 // 5911414081 named among them, or a guarded endpoint.
 func TestLegionGhGuardsEveryWrite(t *testing.T) {
+	t.Parallel()
 	run := ghGuardRig(t, leakguardtest.WriteRules(t, t.TempDir()))
 	for _, args := range slices.Concat(ghGuardedCalls, ghGuardedLeafSpellings, ghGuardedAPICalls()) {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -951,6 +965,7 @@ func TestLegionGhGuardsEveryWrite(t *testing.T) {
 // alone. A read the shared check alone clears skips no private-name step, and its log line stays
 // checked-only.
 func TestLegionGhRunsAWriteWithNoRuleFile(t *testing.T) {
+	t.Parallel()
 	run := ghGuardRig(t, "")
 	body := filepath.Join(t.TempDir(), "body.md")
 	if err := os.WriteFile(body, []byte("the runner answers at "+leakguardtest.RulesHost+" today\n"), 0o600); err != nil {

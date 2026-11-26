@@ -33,7 +33,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/sjawhar/envoy/testexec"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 )
 
 // CheckName is the shared check's file name, which is how the guard finds it on PATH. The guard
@@ -142,7 +142,7 @@ func Reading(status int, report string) string {
 // stand-in, written once for the package's own home).
 func WriteFile(dir, script string) (string, error) {
 	path := filepath.Join(dir, CheckName)
-	if err := testexec.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o700); err != nil {
+	if err := execfile.Write(path, []byte("#!/bin/sh\n"+script), 0o700); err != nil {
 		return "", err
 	}
 	return path, nil

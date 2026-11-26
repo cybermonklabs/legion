@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/sjawhar/envoy/testexec"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 )
 
 // binaries are the binaries the capability check's image rows look for.
@@ -37,7 +37,7 @@ func LockPath(home string) string {
 func InstallBinaries(t testing.TB, bin string) {
 	t.Helper()
 	for _, name := range binaries {
-		if err := testexec.WriteFile(filepath.Join(bin, name), []byte(BinaryScript), 0o755); err != nil {
+		if err := execfile.Write(filepath.Join(bin, name), []byte(BinaryScript), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}

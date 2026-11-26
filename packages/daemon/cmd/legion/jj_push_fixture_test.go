@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/testexec"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
@@ -344,7 +344,7 @@ func (f *rolePushFixture) script(dir, name, body string) string {
 		f.t.Fatal(err)
 	}
 	path := filepath.Join(dir, name)
-	if err := testexec.WriteFile(path, []byte(body), 0o700); err != nil {
+	if err := execfile.Write(path, []byte(body), 0o700); err != nil {
 		f.t.Fatal(err)
 	}
 	return path
