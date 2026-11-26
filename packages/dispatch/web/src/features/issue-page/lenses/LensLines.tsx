@@ -1,10 +1,14 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
+import { useLocation } from "react-router-dom";
 
 import { pageQuietText } from "../../../theme/classes";
+import { usePlainHeadline } from "../../refs/plain-text";
 import type { TreeNode } from "../issue-tree";
 import { authorText, pageChrome } from "../page-structure";
 import { LENS_WORDS } from "../page-words";
+import { titleReading } from "../tree-drafts";
 import { type FactParts, filled, type LensChip } from "./lens-drafts";
+import { lensPlaceOf } from "./lens-reads";
 import { NodeLink } from "./NodeLink";
 
 /** What a line is marked with (`data-lens-line`): the `LENS_WORDS` key of its label, and for a
@@ -25,8 +29,10 @@ export type LineName = keyof typeof LENS_WORDS | "reference";
  * no line of its own for them. Each label is the page's, from `LENS_WORDS`; each stored string is
  * the author's. Each fact line is drawn as its one field holds it (`LensFacts`), so a line that
  * names a lens, a risk, a constraint or a finding the tree read holds draws that name as a link
- * to the node's row, as a chip is drawn (`FactWords`). The lines are small and quiet, as the
- * row's parent line is, and the words in them wrap.
+ * to the node's row, as a chip is drawn (`FactWords`), and its other words through the
+ * plain-text projection (`FactString`), so a reference in them reads as its target's name and
+ * never as a raw address. The lines are small and quiet, as the row's parent line is, and the
+ * words in them wrap.
  */
 export function LensLines({ node, tabStops }: { node: TreeNode; tabStops: boolean }): ReactNode {
   const lens = node.lens;
@@ -128,9 +134,10 @@ function Words({ children }: { children: ReactNode }): ReactNode {
 }
 
 /** A fact line, drawn as `Words`, as its one `LensFacts` field holds it: its words, or, where the
- *  line names a node the tree read holds, its parts (`FactParts`): each string as text, and each
- *  chip as a link to that node's row (`NodeLink`), as a line's chips are. Drawn so, the parts
- *  read as their words (`factText`). */
+ *  line names a node the tree read holds, its parts (`FactParts`): each string through the
+ *  plain-text projection (`FactString`), and each chip as a link to that node's row
+ *  (`NodeLink`), as a line's chips are, named as `store-words.ts` named it (decision 388). Drawn
+ *  so, the parts read as their words (`factText`), a reference in a string as its target's name. */
 function FactWords({
   tabStops,
   words,
@@ -140,17 +147,51 @@ function FactWords({
 }): ReactNode {
   return (
     <Words>
-      {typeof words === "string"
-        ? words
-        : words.map((part, at) =>
-            typeof part === "string" ? (
-              part
-            ) : (
-              // biome-ignore lint/suspicious/noArrayIndexKey: a line's parts are its words, in order.
-              <NodeLink chip={part} key={at} tabStops={tabStops} />
-            )
-          )}
+      {typeof words === "string" ? (
+        <FactString words={words} />
+      ) : (
+        words.map((part, at) =>
+          typeof part === "string" ? (
+            // biome-ignore lint/suspicious/noArrayIndexKey: a line's parts are its words, in order.
+            <FactString key={at} words={part} />
+          ) : (
+            // biome-ignore lint/suspicious/noArrayIndexKey: a line's parts are its words, in order.
+            <NodeLink chip={part} key={at} tabStops={tabStops} />
+          )
+        )
+      )}
     </Words>
+  );
+}
+
+/**
+ * One stored string of a fact line, drawn through the framework's plain-text projection
+ * (`usePlainHeadline`, the reading list's `lens-fact-line`): each reference in it reads as its
+ * target's name, by the name the page published for it and else by a read of its own, and never
+ * as a raw address (R22). The words are read as one text run (`titleReading`), since the step
+ * read them to their plain words already (`storedFacts`), and a role in them by the issue the page
+ * is on. The projection trims the words it reads, so the one space a part keeps at either end
+ * beside a chip is drawn around them, once for a part that is space alone. Nothing until the
+ * projection has answered.
+ */
+function FactString({ words }: { words: string }): ReactNode {
+  const { pathname, search } = useLocation();
+  const issue = lensPlaceOf(pathname, search)?.issueKey;
+  const reading = useMemo(() => titleReading(words), [words]);
+  const { reads, text } = usePlainHeadline(reading, undefined, {
+    issue,
+    surface: "lens-fact-line",
+  });
+  if (text === undefined) return reads;
+  const before = words.startsWith(" ") ? " " : null;
+  const after = words.endsWith(" ") && text.text !== "" ? " " : null;
+  return (
+    <>
+      {reads}
+      {before}
+      {text.text}
+      {after}
+    </>
   );
 }
 

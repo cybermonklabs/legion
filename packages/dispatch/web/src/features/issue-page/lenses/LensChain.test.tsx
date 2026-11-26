@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import type { LensChain as ChainRead, LensRead, NodeLenses } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
@@ -10,6 +10,12 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { answerRequests } from "../../../__tests__/network";
 import { pageKindBullet, pageKindTag } from "../../../theme/classes";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import {
+  PublishedReferenceNames,
+  type PublishedReferences,
+  ReferenceNamesProvider,
+  usePublishReferenceNames,
+} from "../../refs/reference-names";
 import { node } from "../decisions-filter/decisions-fixtures";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
@@ -21,6 +27,7 @@ import {
   LENS_WORDS,
   NODE_TYPE_NAMES,
 } from "../page-words";
+import { publishedNames } from "../projection-fixture";
 import { issueDetails, statementRef } from "../spec-filter/spec-fixtures";
 import { blockNodeId } from "../tree-drafts";
 import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
@@ -34,8 +41,14 @@ import { lensChainQuery } from "./lens-reads";
  *
  * The chain is read through the page's own client (`lens-reads.ts`, `api.getLenses`), answered at
  * `fetch` by the suite's network (`answerRequests`), so a request the row sends is one the test
- * counts. A failed read is not retried, as in the page's other rendering tests.
+ * counts. A failed read is not retried, as in the page's other rendering tests. A fact line's words
+ * and a chain entry's are drawn through the plain-text projection, which answers in the render that
+ * draws them once the engine has loaded, so every case runs with it loaded.
  */
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const KEY = "CORE-1";
 
@@ -174,6 +187,20 @@ function renderOnIssue(
       </MemoryRouter>
     </QueryClientProvider>
   );
+}
+
+/** Publishes `published` to the names store while it is drawn, and hands it to what it draws in
+ *  the render that draws it, as the page publishes its one batched read and hands it its rows
+ *  (`NodeRow.drawn.test.tsx`'s `Named`). Drawn inside the names store (`ReferenceNamesProvider`). */
+function Named({
+  children,
+  published,
+}: {
+  children: ReactNode;
+  published: PublishedReferences;
+}): ReactNode {
+  usePublishReferenceNames(published);
+  return <PublishedReferenceNames published={published}>{children}</PublishedReferenceNames>;
 }
 
 function showChain(view: RenderResult): HTMLButtonElement | null {
@@ -334,6 +361,51 @@ test("only the chain that holds the lens is drawn", async () => {
   }
 });
 
+// R22 over the one reference framework: a chain entry names the row its lens stands under by that
+// row's whole words, read through the plain-text projection as every one-line view reads them,
+// so a `dispatch://` address in them reads as the name the page published for its target, never
+// as the address, and the line makes no read of its own for a target the page named.
+test("a chain entry reads a dispatch:// reference the page published by its target's name", async () => {
+  const user = userEvent.setup();
+  const address = "dispatch://CORE-1/spec#b-r1";
+  answerLensReads(() =>
+    Response.json(lensesOf([chain([lensRead(TRADE_OFF, null), lensRead(PREMORTEM, null)])]))
+  );
+  const words = `Store the notices as ${address} says`;
+  const places: ReadonlyMap<string, LensPlace> = new Map([
+    [TRADE_OFF, { id: "lens/1111", kindWords: "trade-off analysis", onWords: words }],
+    [PREMORTEM, { id: "lens/2222", kindWords: "pre-mortem", onWords: words }],
+  ]);
+  const queryClient = testClient();
+  const view = renderOnIssue(
+    <ReferenceNamesProvider>
+      <Named published={publishedNames(new Map([[address, "Draw the rows"]]))}>
+        <LensRow drawn={premortem(places)} focused />
+      </Named>
+    </ReferenceNamesProvider>,
+    queryClient
+  );
+  try {
+    await user.click(await drawnControl(view));
+    await waitFor(() =>
+      expect(chainEntries(view).map(({ line }) => line)).toEqual([
+        "Store the notices as Draw the rows says",
+        "Store the notices as Draw the rows says",
+      ])
+    );
+    expect(
+      queryClient
+        .getQueryCache()
+        .getAll()
+        .map((query) => query.queryKey)
+        .filter((key) => JSON.stringify(key).includes("spec#b-r1")),
+      "the line read a target the page named"
+    ).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
 // A chain the read cut at its depth names the lens it stopped at, last, by a chip of its
 // kind's words, whole as the tag is, linked to its row where the tree drew one.
 test("a stopped_at ends the chain with More lenses past this one", async () => {
@@ -463,11 +535,13 @@ test("a chain drawn stays drawn when a read again fails", async () => {
  */
 function linesDrawn(drawn: TreeNode, path = `/issues/${KEY}`) {
   const view = render(
-    <MemoryRouter initialEntries={[path]}>
-      <Routes>
-        <Route element={<LensLines node={drawn} tabStops={false} />} path="/issues/:key/*" />
-      </Routes>
-    </MemoryRouter>
+    <QueryClientProvider client={testClient()}>
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route element={<LensLines node={drawn} tabStops={false} />} path="/issues/:key/*" />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>
   );
   try {
     return [...view.container.querySelectorAll("[data-lens-line]")].map((line) => {
@@ -987,4 +1061,56 @@ test("a risk row draws its early warning's author's link of marked words as one 
       [["the HTTP rule", `/issues/${KEY}?node=${constraint}`]],
     ]
   );
+});
+
+// R22 over the one reference framework: a risk's fact line reads a `dispatch://` address in its
+// words as every one-line view reads one, through the plain-text projection: by the name the page
+// published for its target, never as the address, and with no read of its own for a target the
+// page named. A line that names a node the tree read holds keeps that name as the chip that links
+// the node's row, and the words on either side of the chip are read alike, the spaces beside it
+// kept.
+test("a fact line reads a dispatch:// reference the page published by its target's name", async () => {
+  const address = "dispatch://CORE-1/spec#b-r1";
+  const drawn = risk({
+    earlyWarning: `Notices pile up past ${address}`,
+    prevention: [
+      "Run ",
+      { address: ISSUE_CONSTRAINT, id: "constraint/9a1b", words: "Retention under 24 hours" },
+      ` before ${address} is read.`,
+    ],
+  });
+  const queryClient = testClient();
+  const view = renderOnIssue(
+    <ReferenceNamesProvider>
+      <Named published={publishedNames(new Map([[address, "Draw the rows"]]))}>
+        <LensLines node={drawn} tabStops={false} />
+      </Named>
+    </ReferenceNamesProvider>,
+    queryClient
+  );
+  try {
+    const words = (line: string) =>
+      view.container.querySelector(`[data-lens-line="${line}"] [data-author-text]`)?.textContent;
+    await waitFor(() =>
+      expect([words("early_warning"), words("prevention")]).toEqual([
+        "Notices pile up past Draw the rows",
+        "Run Retention under 24 hours before Draw the rows is read.",
+      ])
+    );
+    expect(
+      view.container
+        .querySelector('[data-lens-line="prevention"] [data-node-chip] a')
+        ?.getAttribute("href")
+    ).toBe("/issues/CORE-1?node=constraint%2F9a1b");
+    expect(
+      queryClient
+        .getQueryCache()
+        .getAll()
+        .map((query) => query.queryKey)
+        .filter((key) => JSON.stringify(key).includes("spec#b-r1")),
+      "the line read a target the page named"
+    ).toEqual([]);
+  } finally {
+    view.unmount();
+  }
 });
