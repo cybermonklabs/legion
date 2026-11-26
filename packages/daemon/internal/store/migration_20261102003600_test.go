@@ -29,6 +29,7 @@ import (
 // TestAMigratedStatusRowRunsUnderItsOwnRule, which this package cannot call: the daemon imports
 // the store, so a test of this package importing the daemon would be an import cycle.
 func TestEveryQueuedStatusRowCarriesItsKindAfter20261102003600(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 20261029121200)

@@ -19,6 +19,7 @@ import (
 // it, so the id never prints, and the result still classifies as the failure it holds
 // (errors.As, retryable). Control: the failure on its own still prints the route it was given.
 func TestATypedIDIsLeftOutOfAFailedCallEvenWhereALayerWrapsIt(t *testing.T) {
+	t.Parallel()
 	typed := "hunter2pw-" + "typedroute-" + "8a0c"
 	const base = "http://127.0.0.1:1"
 	const route = "/v1/operator/machines/(the machine id, not printed)/revoke"
