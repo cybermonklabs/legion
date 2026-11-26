@@ -329,7 +329,6 @@ func TestAnOldControllerSessionIsReplacedAtADaemonDrivenRelaunch(t *testing.T) {
 			t.Fatalf("the lines for an id the rule reads no age off are %+v, want one at Warn", lines)
 		}
 	})
-
 }
 
 // storedDelivery is the delivery the test store holds for the controller's claim, and whether it
@@ -463,16 +462,12 @@ func TestAControllerSessionReplacementIsLoggedAndTold(t *testing.T) {
 	conn := fake.NewConn()
 	sup.deps.Conns.(*fake.Conns).Register(token, conn)
 	fresh := sessionAged(now, 0)
-	for _, ev := range []supervise.Event{
-		supervise.StreamHello{Claim: token, Generation: m.Claim().Generation},
-		supervise.RequestRegister{Claim: token, Generation: m.Claim().Generation, Session: fresh, SessionFile: "/sessions/fresh.jsonl",
+	generation := m.Claim().Generation
+	handleAll(t, m,
+		supervise.StreamHello{Claim: token, Generation: generation},
+		supervise.RequestRegister{Claim: token, Generation: generation, Session: fresh, SessionFile: "/sessions/fresh.jsonl",
 			CapabilityHash: []byte("capability"), PluginContract: sup.deps.PluginContract},
-		supervise.RequestReady{Claim: token, Generation: m.Claim().Generation, Session: fresh},
-	} {
-		if err := m.Handle(context.Background(), ev); err != nil {
-			t.Fatalf("handle %T: %v", ev, err)
-		}
-	}
+		supervise.RequestReady{Claim: token, Generation: generation, Session: fresh})
 	ready := linesOf(t, logs, "supervise: the controller's fresh session is ready in place of the session it replaced")
 	if len(ready) != 1 || ready[0]["oldSession"] != old || ready[0]["newSession"] != fresh || ready[0]["claim"] != string(token) {
 		t.Fatalf("the fresh session's ready lines are %+v, want one naming %s and %s", ready, old, fresh)

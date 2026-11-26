@@ -284,9 +284,11 @@ func (k *controllerKeeper) ready(c supervise.Claim) {
 	}
 }
 
-// startMessageRefusedLine is the keeper's Info line for a start message a suspended controller
-// refused (ready, supervise.RequestDeliver.ResumesNothing): an operator suspended it at or after
-// this ready, and the next launch's ready sends the message again.
+// startMessageRefusedLine is the keeper's Info line for a start message the machine refused with a
+// *RefusedError (ready): a controller that left its ready before the message — suspended, by an
+// operator at or after this ready or by anyone else (supervise.RequestDeliver.ResumesNothing), or
+// failed, retired or launch-uncertain, each of which ignores a delivery. The next launch's ready
+// sends the message again.
 const startMessageRefusedLine = "controller: the start message is not sent: the controller left its ready before it"
 
 // stopLaunchedController ends the daemon's own controller on a daemon that leaves the controller to
