@@ -186,6 +186,7 @@ test("answerLegionTool closes only a step and answers an update without closing 
   const runtime = {
     daemon: client,
     claim: () => implementer,
+    env: PANE_ENV,
     handoffReport: async () => ({ commit: "c0ffee" }),
     branchHead: async () => "",
   }
@@ -223,6 +224,7 @@ test("a named look of a running issue reaches the daemon through executeLegionTo
   const runtime = {
     daemon: client,
     claim: () => ({ ...implementer, role: "tester" as const }),
+    env: PANE_ENV,
     handoffReport: async (): Promise<never> => {
       throw new Error("look reads no handoff")
     },

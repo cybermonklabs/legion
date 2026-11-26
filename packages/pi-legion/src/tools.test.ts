@@ -1178,6 +1178,7 @@ test("a named look's report leaves the phase open and a step's completion closes
       completed++;
     },
     onUpdateAnswered: () => undefined,
+    env: PANE_ENV,
     handoffReport: async () => ({ commit: TIP, handoffId: RECORD.id, handoffVersion: 2 }),
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -2591,6 +2592,7 @@ test("a phase worker and an architect have neither replay_give_up nor discard_gi
       controllerGrant: noControllerGrant,
       onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
+      env: PANE_ENV,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
