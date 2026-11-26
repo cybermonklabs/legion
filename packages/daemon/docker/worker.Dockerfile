@@ -122,7 +122,7 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # archive of the gh release ARG GH_TOOL names (gh_<version>_linux_amd64.tar.gz of cli/cli). A pin
 # and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
-# Oh My Pi's was read on 2026-11-25 at its 18.18.6-sami.20261125-001804 pin, jj's on 2026-11-25 at
+# Oh My Pi's was read on 2026-11-25 at its 18.18.6-sami.20261125-164517 pin, jj's on 2026-11-25 at
 # its 0.46.0-sami.20261125-112159 pin and gh's on 2026-11-22 at 2.98.0, each as the `digest`
 # GitHub's API gives the release asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq
 # '.assets[]'`), and each equals the sha256 of the archive downloaded from the address the tools
@@ -132,7 +132,7 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # sami-build.yml workflow at refs/heads/release-candidate (`gh attestation verify <archive> --repo
 # cybermonklabs/oh-my-pi`); the jj release carries no attestation (the command answers 404). A
 # bump repeats those reads.
-ARG OMP_SHA256=bedea356fa433d3114780b4d0960cc46c715271c915732a7edd5194a1f664632
+ARG OMP_SHA256=359f95dec797f1a507accbd2f3b56b3ef9b5dfc5fb5cd4c8652a326175ad6c85
 ARG JJ_SHA256=2e47fd34fc59a50c0db0a231db018dcf672e9640b494bdc57fe01d6b9560167e
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The SHA-256 of the linux-amd64 binary of the gh-stack release ARG GH_STACK_TOOL names (the release
@@ -1415,9 +1415,12 @@ WORKDIR /home/legion
 #    path (bootgate.go's pod lane reads the explicit root's manifest for the contract and holds
 #    pi-envoy to its root): explicit roots and an unlinked profile are one decision. This is OMP's
 #    first run in the image, so the CodeGraph link also extracts OMP's native module from the
-#    binary (no network) into /home/legion/.omp/natives/<version>/ — the build's success is the
-#    check. From 18.11.0 OMP writes only the variant the CPU selects, so this is the build runner's
-#    (ubuntu-24.04, AVX2), 123 MiB; this layer ships it, so a pod whose node selects the same
+#    binary (no network) into /home/legion/.omp/natives/<version>-<digest prefix>/ (the version and
+#    the first 12 hexadecimal digits of the embedded addons' digest; getNativesDir in
+#    @oh-my-pi/pi-natives native/natives-dir.js names .omp/natives, since the build sets none of
+#    PI_NATIVES_DIR, OMP_DOWNLOAD_ROOT, XDG_CACHE_HOME and OMP_CONFIG_ROOT) — the build's success is
+#    the check. From 18.11.0 OMP writes only the variant the CPU selects, so this is the build runner's
+#    (ubuntu-24.04, AVX2), 124 MiB; this layer ships it, so a pod whose node selects the same
 #    variant extracts nothing, while a node that selects the other has each role write that one into
 #    its own home overlay's upper layer, on the pod's role-homes volume, at its first OMP run: up to
 #    six copies in an issue pod. The probes in the final step never wait on it.
@@ -1642,7 +1645,10 @@ COPY --chmod=0755 packages/daemon/docker/git /opt/legion/bin/git
 # after a push. jj's push is a `git … push --porcelain --no-verify`, so that wrapper is what puts
 # the leak guard in front of it. Before a `jj git push` or `jj gerrit upload`, aliases and the
 # default command expanded as jj expands them, it also checks that the git on PATH is the wrapper
-# and refuses a push whose configuration names another git, rather than pushing unchecked:
+# and refuses a push whose configuration names another git, rather than pushing unchecked. It
+# hands a `jj git push` to `legion jj --real /usr/local/bin/jj`, whose push step sets the author of
+# a commit the push sends from that commit's Legion-Role trailer, where its rules let it, and which
+# then runs the real jj:
 # packages/daemon/docker/jj.
 COPY --chmod=0755 packages/daemon/docker/jj /opt/legion/bin/jj
 # The pre-push hook the git wrapper points git at, in a root-owned directory no role can write:

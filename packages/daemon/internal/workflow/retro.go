@@ -524,27 +524,22 @@ func (e *Engine) closeTreeAfterRetros(ctx context.Context, tx pgx.Tx, root recor
 }
 
 // retroWake wakes the architect of a tree root whose claim the tree's close suspended, or the
-// linger's end retired, on a message somebody published to its role topic token while no live
-// session held it (P6, a listener's role_message wake that found no released claim of the token):
-// while a retro after a close of the tree is open, the retro's agent publishes its findings there,
-// and the woken architect gets the message Envoy kept. It wakes nothing for a token that is no
-// tree root architect's of this daemon's record, for a claim in any other state (a release's is
-// wakeReleased's, a live one hears the message itself), for a tree with no retro open, and where
-// such a wake is already queued. The wake is a start of the architect with the wake's kind, no
-// phase and no run, marked as a retro's wake (record.SuperviseRequest.RetroWake), which the outbox
-// lets past the guard that drops a wake of a claim the daemon suspended.
-func (e *Engine) retroWake(ctx context.Context, tx pgx.Tx, token claim.Token) error {
-	if role, ok := token.Role(); !ok || role != claim.RoleArchitect {
+// linger's end retired, on a message somebody published to its role topic while no live session
+// held it (P6, a listener's role_message report naming held, a claim that is not released, as the
+// listener's report read it: Pods.ClaimByToken): while a retro after a close of the tree is open,
+// the retro's agent publishes its findings there, and the woken architect gets the message Envoy
+// kept. It wakes nothing for a claim that is no tree root architect's of this daemon's record, for
+// a claim in any other state (a release's is wakeReleased's, a live one hears the message itself),
+// for a tree with no retro open, and where such a wake is already queued. The wake is a start of
+// the architect with the wake's kind, no phase and no run, marked as a retro's wake
+// (record.SuperviseRequest.RetroWake), which the outbox lets past the guard that drops a wake of a
+// claim the daemon suspended.
+func (e *Engine) retroWake(ctx context.Context, tx pgx.Tx, held supervise.Claim) error {
+	if held.Role != claim.RoleArchitect ||
+		!(held.State == supervise.StateSuspended && held.SuspendedBy == supervise.SuspendedByDaemon || held.State == supervise.StateRetired) {
 		return nil
 	}
-	claims, err := e.store.RoleClaims(ctx, tx, []claim.Token{token})
-	if err != nil {
-		return err
-	}
-	held := claims[token]
-	if held == nil || !(held.State == supervise.StateSuspended && held.SuspendedBy == supervise.SuspendedByDaemon || held.State == supervise.StateRetired) {
-		return nil
-	}
+	token := held.Token
 	root, err := e.store.Issue(ctx, tx, held.Tree)
 	if err != nil || root == nil || !claim.IsTreeRoot(root.Key, root.Tree) {
 		return err

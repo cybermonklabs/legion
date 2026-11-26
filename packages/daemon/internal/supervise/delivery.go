@@ -33,12 +33,12 @@ type CheckLook struct {
 // RetroRun names the retro Legion runs after an issue's close, by the run it is of (the issue's
 // generation, record.SuperviseRequest.RetroRun): the one number the start row that delivers the
 // retro's task carries. A claim serves it as it serves a production check's look
-// (Claim.ServingRetro, beside ServingCheck), so a completion from the claim is the retro's report
-// (api/handoff.go) and not a phase completion or a look's report. The zero value is a task, or a
-// claim, that is no retro's after a close: every phase task, a look's, an operator's own, a
-// resume. It is comparable, so the one rule that picks what a claim is serving reads it as it
-// reads the run, the entry and the look (serving). Machine.queue copies it from the request onto
-// the delivery, and the retire of a confirmed delivery leaves it on the claim
+// (Claim.ServingRetro, beside ServingCheck), so a completion from the claim that names no check
+// (api/handoff.go, checkOpenedAt) is the retro's report and not a phase completion. The zero
+// value is a task, or a claim, that is no retro's after a close: every phase task, a look's, an
+// operator's own, a resume. It is comparable, so the one rule that picks what a claim is serving
+// reads it as it reads the run, the entry and the look (serving). Machine.queue copies it from the
+// request onto the delivery, and the retire of a confirmed delivery leaves it on the claim
 // (Claim.ServingRetroRun), as it leaves the look.
 type RetroRun uint64
 
@@ -88,17 +88,15 @@ type Delivery struct {
 	// was upgraded to number them. The promotion's resume of a mid-phase worker is no such task:
 	// it carries the entry it raised (workflow.Engine.StartPromotedWorker).
 	Entry int64
-	// CheckLook is the look of a closed issue's production check this task is of, from the start
-	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). It is what says a
-	// turn's completion is a check report rather than a phase completion: the API routes on the
-	// look the claim's worker took (Claim.ServingCheck), and the report is of that look rather
-	// than of whichever look the check has reached (api/handoff.go, checkReport). The zero value
-	// is a task of no look: every phase task, an operator's own, a resume.
+	// CheckLook is the look and check instance this task gives the worker. ServingCheck uses it
+	// to attribute an explicitly named check report to the look the worker took, not to choose
+	// between a report and a phase completion. Phase tasks, operator tasks and resumes carry zero.
 	CheckLook CheckLook
 	// RetroRun is the run of the retro after a close this task is of, from the start row that
-	// queued it (record.SuperviseRequest.RetroRun). It says a turn's completion is that retro's
-	// report: the API routes on the run the claim's worker took (Claim.ServingRetro). The zero
-	// value is a task of no retro: every phase task, a look's, an operator's own, a resume.
+	// queued it (record.SuperviseRequest.RetroRun). It says a turn's completion that names no
+	// check is that retro's report: the API routes on the run the claim's worker took
+	// (Claim.ServingRetro). The zero value is a task of no retro: every phase task, a look's, an
+	// operator's own, a resume.
 	RetroRun    RetroRun
 	Phase       phase.Phase
 	QueuedAt    time.Time

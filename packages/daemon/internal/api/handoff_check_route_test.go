@@ -76,8 +76,7 @@ func (c liveClaim) worksLook(t *testing.T, look int, openedAt time.Time) {
 }
 
 // newCheckLookClaim is the live claim of role on key whose worker took look of key's production
-// check, the check seedCheck records: what the look's start leaves, and what the completion route
-// reads to tell a report on that look from a phase completion.
+// check, the check seedCheck records: the assignment an explicitly named report must match.
 func newCheckLookClaim(t *testing.T, h *harness, key string, role claim.Role, look int) liveClaim {
 	t.Helper()
 	c := newLiveClaim(t, h, key, role)
@@ -146,15 +145,11 @@ func theCheckIsUntouched(t *testing.T, h *harness, facts *factRecorder) {
 	}
 }
 
-// The reviewer's trace, which the issue's phase cannot tell apart from a check report and the
-// caller's own assignment can. The tester ends the testing turn the close ran behind with a
-// verdict of pass — which is also a check verdict.
-//
-// Routed by the issue's phase, that completion was recorded as the production check passing with
-// nobody having looked at production. Routed by the claim's own live assignment, which is still
-// the testing task's, it is no report on the check — and no phase completion either, since a done
-// issue runs no phase, so the route names the cause (CHECK_LOOK_NOT_SERVED) rather than holding
-// an answer the agent cannot give to a field. Nothing is recorded, and the check is untouched.
+// A tester ends its testing turn after the merge closed the issue. Its verdict also names a
+// valid check outcome, but only checkOpenedAt selects a check report. This fieldless call is a
+// phase completion, and a done issue runs no phase. The route refuses it with
+// CHECK_LOOK_NOT_SERVED and the check identity's recovery path. It records nothing and leaves
+// the check untouched.
 func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *testing.T) {
 	h, facts, tester, machine := mergedCloseBehindATestingTurn(t)
 	if p := machine.Claim().Pending; p == nil || p.ConfirmedAt.IsZero() || p.Entry != 1 {
@@ -167,8 +162,8 @@ func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *tes
 	// The testing turn ends with the verdict a check report also names.
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-	if !strings.Contains(message, "works no look") || !strings.Contains(message, "recorded nothing") {
-		t.Fatalf("the refusal is %q, want it to say this session works no look and recorded nothing", message)
+	if !strings.Contains(message, "checkOpenedAt") || !strings.Contains(message, "recorded nothing") {
+		t.Fatalf("the refusal is %q, want the missing check identity and nothing recorded", message)
 	}
 	theCheckIsUntouched(t, h, facts)
 }
@@ -213,25 +208,24 @@ func TestATestingVerdictBehindAnUnreadLooksTaskIsNoReportOnTheProductionCheck(t 
 
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-	if !strings.Contains(message, "works no look") || !strings.Contains(message, "recorded nothing") {
-		t.Fatalf("the refusal is %q, want it to say this session works no look and recorded nothing", message)
+	if !strings.Contains(message, "checkOpenedAt") || !strings.Contains(message, "recorded nothing") {
+		t.Fatalf("the refusal is %q, want the missing check identity and nothing recorded", message)
 	}
 	theCheckIsUntouched(t, h, facts)
 }
 
-// A session that works neither a look of a done issue's production check nor the retro Legion
-// runs after its close completes nothing: the issue runs no phase. Held to the phase path, an
-// implementer's and a merger's completion is refused for its commit (MISSING_FIELD), which the
-// plugin's done branch never sends — it sends what a check report or a retro's report sends
-// (pi-shared's legion-phase-ops.ts) — so that answer names a field no turn of theirs can fill. The
-// route names the cause instead and says what the agent does next. A late implementer or merger
-// turn after the close lands here, and so does a look a restart left unrecorded on its claim (the
-// 20261105231916 migration backfills none). Nothing is recorded either way, so the answer is the
-// whole of it, and it names whose report the issue takes (INFRA-5602's s4): the check's role, which
-// reports on a look, and the agent of the retro after the close, which reports that retro, so a
-// report of either from any other session says who has one to make. A retro's report from a claim
-// that is not the retro's agent, and a look's report where only that retro is open, name that agent
-// rather than saying no role has anything to report.
+// A session that names no check with checkOpenedAt and works no retro Legion runs after a done
+// issue's close completes nothing: the issue runs no phase. Held to the phase path, an
+// implementer's and a merger's completion that carries no commit is refused for it
+// (MISSING_FIELD), an answer that names a field rather than the cause. The route names the cause
+// instead and says what the agent does next. A late implementer or merger turn after the close
+// lands here, and so does a look's report that left out checkOpenedAt. Nothing is recorded either
+// way, so the answer is the whole of it, and it names whose report the issue takes (INFRA-5602's
+// s4): the check's role, which reports on a look, and the agent of the retro after the close,
+// which reports that retro, so a report of either from any other session says who has one to make.
+// A retro's report from a claim that is not the retro's agent, and a look's report that left out
+// checkOpenedAt where only that retro is open, name that agent rather than saying no role has
+// anything to report.
 func TestACompletionOfADoneIssueFromASessionWorkingNoRetroOrLookIsRefused(t *testing.T) {
 	retroReport := retroReportBy("")
 	for _, tc := range []struct {
@@ -247,10 +241,10 @@ func TestACompletionOfADoneIssueFromASessionWorkingNoRetroOrLookIsRefused(t *tes
 	}{
 		{name: "the plugin's done branch, which sends no commit", check: true, role: claim.RoleImplementer,
 			req:   HandoffCompleteRequest{Summary: "production carries it", Verdict: "pass"},
-			wants: []string{"LEGION-208 is done", "works no look", "recorded nothing", "pass, pending or fail"}},
+			wants: []string{"LEGION-208 is done", "checkOpenedAt", "recorded nothing", "pass, pending or fail"}},
 		{name: "a phase completion at its commit", check: true, role: claim.RoleImplementer,
 			req:   HandoffCompleteRequest{Summary: "merged", Commit: headSHA},
-			wants: []string{"LEGION-208 is done", "works no look", "recorded nothing", "pass, pending or fail"}},
+			wants: []string{"LEGION-208 is done", "checkOpenedAt", "recorded nothing", "pass, pending or fail"}},
 		{name: "a retro's report from a claim that is not the retro's agent", retro: true, role: claim.RoleTester,
 			req:   retroReport,
 			wants: []string{"LEGION-208 is done", "recorded nothing", "retro", "implementer"},
@@ -426,7 +420,7 @@ func TestACompletionOfADoneIssueWithNoOpenProductionCheckIsRefused(t *testing.T)
 
 			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t),
 				Summary: "production carries it", Verdict: "pass"}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-			for _, want := range []string{"LEGION-208 is done", "works no look", "recorded nothing",
+			for _, want := range []string{"LEGION-208 is done", "checkOpenedAt", "recorded nothing",
 				"no open production check", "nothing here for any role to report"} {
 				if !strings.Contains(message, want) {
 					t.Fatalf("the refusal is %q, want it to say %q", message, want)
@@ -470,17 +464,16 @@ func TestAPhaseCompletionNamingAWakeIsRefused(t *testing.T) {
 	}
 }
 
-// A worker whose live assignment is a check look reports on that look, not on whichever look the
-// check has reached: a report from a turn that outlived its look names the look it was given, and
-// the engine's own fence refuses it (CHECK_LOOK_NOT_OPEN) instead of recording it as the current
-// look's.
+// A report that names its check carries the look this session served, not whichever look the
+// check has reached. The engine refuses a turn that outlived its look (CHECK_LOOK_NOT_OPEN)
+// instead of recording it as the current look's report.
 func TestACheckReportCarriesTheLookTheClaimWasGivenNotTheChecksCurrentOne(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Done)
 	seedCheck(t, h, "LEGION-208", claim.RoleImplementer, false, false)
 	implementer := newCheckLookClaim(t, h, "LEGION-208", claim.RoleImplementer, 1)
 
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass"}))
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass", CheckOpenedAt: &checkOpenedAt}))
 	want := intake.CheckReport{Issue: "LEGION-208", Claim: implementer.token, Look: 1, Verdict: "pass", Summary: "looked"}
 	if got := lastCheckReport(t, facts); !sameCheckReport(got, want) {
 		t.Fatalf("check report = %+v, want %+v: the record is at look 2, and this worker's look is 1", got, want)
@@ -497,10 +490,11 @@ func TestACheckReportOfAReplacedChecksLookIsRefused(t *testing.T) {
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	implementer.worksLook(t, 2, checkOpenedAt.Add(-24*time.Hour))
 
-	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass"}),
+	opened := checkOpenedAt.Add(-24 * time.Hour)
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass", CheckOpenedAt: &opened}),
 		http.StatusConflict, "CHECK_NOT_OPEN")
-	if !strings.Contains(message, "replaced") {
-		t.Fatalf("the refusal is %q, want it to say a later merge replaced the check this look belongs to", message)
+	if !strings.Contains(message, opened.UTC().Format(time.RFC3339Nano)) {
+		t.Fatalf("the refusal is %q, want the named check's opening time", message)
 	}
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts = %#v, want none", got)

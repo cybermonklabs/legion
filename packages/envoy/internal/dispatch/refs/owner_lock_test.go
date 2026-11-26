@@ -172,7 +172,7 @@ func TestADrainOfACommentWaitsForItsOwnerLock(t *testing.T) {
 				t.Fatalf("read the comment's block index: %v", err)
 			}
 			located := text.ExtractAt(drainer.editedBody, itemBlockServer)
-			indexing, err := PlanItemIndex(index.Edited(), ItemComment, comment, drainer.editedBody, editedAt, located, nil)
+			indexing, err := PlanItemIndex(index.Edited(), ItemComment, comment, drainer.editedBody, itemBlockServer, editedAt, located, nil)
 			if err != nil {
 				t.Fatalf("plan the edited comment's blocks: %v", err)
 			}

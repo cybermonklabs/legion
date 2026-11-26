@@ -123,6 +123,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the store never writes it, so the state route would serve a constant for it while the operator route reads the live machine"},
 	{Field: "DeathCharged", Column: ColumnWithheld,
 		Reason: "the supervisor's own accounting of one dead process: the record that keeps a second report of that process from being charged a second death"},
+	{Field: "MessageMarkAt", Column: ColumnWithheld,
+		Reason: "the wake pacing's own reading of a role with an Envoy message waiting, which sorts its paced wake into the first queue; the message itself is Envoy's, and a reader decides nothing on when the daemon saw it"},
 	{Field: "AwaitsPod", Column: ColumnWithheld,
 		Reason: "the update round's own reading of a claim that records no process, which the store never writes and a restart forgets; the claim's lastStartFailure names the same pod in the runtime's words"},
 	{Field: "RegisteredPods", Column: ColumnWithheld,

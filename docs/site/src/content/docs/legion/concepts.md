@@ -183,12 +183,18 @@ the default steps, the tester before the reviewer sees it. A head that starts co
 base moves no phase (below). Red CI sends nothing
 back from anywhere: the review round and CI are two rules, each read on its own.
 The round reads no check's conclusion, since the reviewer reads the code commit's checks on GitHub
-before it approves ([review signalling](#review-signalling)), but an approved head that GitHub
-holds blocked, on a check or a review the base branch requires, keeps the issue in `reviewing`
-until that merge state comes clean. What a red check does is reach the architect that owns
-the issue, the worker of the issue's current phase and the implementer, as one message naming each
-check and its conclusion; and hold the merge, where GitHub applies the base branch's own required
-checks.
+before it approves ([review signalling](#review-signalling)). An approved head that GitHub holds
+blocked keeps the issue in `reviewing` while a check or a commit status of that head is still
+running, while GitHub has not yet computed whether the head merges cleanly, and while GitHub holds
+a review request open on the pull request. Once the head is mergeable, nothing of it runs, its own
+checks have concluded and no review is asked for, the approval ends the round even though GitHub
+still reports the head blocked: that state is GitHub's answer to the reader, and a rule about the
+reader or another pull request's checks on the same commit can hold it where the merge would not
+be held. The merger's merge is then what GitHub answers, accepted or refused with its reason,
+and the merger brings a refusal to the architect. What a red check does is reach the architect
+that owns the issue, the worker of the issue's current phase and the implementer, as one message
+naming each check and its conclusion; and hold the merge, where GitHub applies the base branch's
+own required checks.
 
 ### The plan of an issue
 
@@ -480,8 +486,10 @@ Legion uses GitHub's own review mechanisms rather than labels:
   undecided until the new head arrives; anything else sets it aside, and only an approval of the
   head itself or a request for changes ends the round. An approval does not end it on its own:
   the round ends once the record reaches the approved head and GitHub reports that head one the
-  issue may advance on. A head GitHub holds blocked, on a check or a review the repository
-  requires, leaves the issue in `reviewing` until that merge state comes clean.
+  issue may advance on. A head GitHub holds blocked leaves the issue in `reviewing` while a check of
+  it runs, while GitHub has not computed whether it merges, and while GitHub holds a review request
+  open; once it is mergeable, nothing of it runs, its own checks have concluded and no review is
+  asked for, the approval ends the round and the merger's merge answers the blocked state.
 - **CI** on the pull request's head is information, not a verdict. When GitHub's checks settle, the
   daemon names every check GitHub reported, with the conclusion GitHub gave it, and judges none of
   them: it sends one message each to the architect that owns the issue, the worker of the issue's
@@ -676,6 +684,9 @@ controller, which gives it to the tree that owns that code and files an issue on
 One that needs a decision is a Dispatch ask on Legion's
 daily report issue, so you decide whether it needs an issue.
 The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message.
+Each look's report names `check_opened_at`, the RFC 3339 opening time its task gives, with the
+stored microseconds unchanged. That field alone selects a report on that check: without it,
+`handoff_complete` completes a step, never a look, whatever phase the issue is in.
 
 Nothing waits for the deploy, and the agent names its own next look. A `pending` on any look but
 the check's last carries `wake_at`, an RFC 3339 time: when the agent wants to look again. The

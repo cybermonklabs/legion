@@ -33,6 +33,7 @@ import (
 // allowing for the time this process was held up (requireOnTime). The same command again,
 // answered at once, exits 0 with that row's id, and the broker still holds that one live row.
 func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling (main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireCommandOnTime, onTimeWithin at waits_test.go:245).
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	slow := &slowEnrollments{base: http.DefaultTransport, hold: time.Hour}
@@ -119,6 +120,7 @@ func hangUpHelper(t *testing.T) string {
 // --helper` exits 1 saying it is not known if the broker made the enrollment, and `unenroll
 // --helper` exits 1 saying it is not known if the broker revoked it.
 func TestEnrollAndUnenrollSayTheOutcomeIsUnknownWhenTheHelperGivesNoAnswer(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	env := []string{"AGENT_SECRETS_HELPER_SOCK=" + hangUpHelper(t)}
 	keyDir := filepath.Join(t.TempDir(), "keys")
@@ -138,6 +140,7 @@ func TestEnrollAndUnenrollSayTheOutcomeIsUnknownWhenTheHelperGivesNoAnswer(t *te
 // it. `enroll --helper` exits 1 naming enr-13 and the key directory by its variable - never its
 // path, since it holds key.pem - and prints no id.
 func TestEnrollNamesTheEnrollmentWhenItCannotRecordIt(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, EnrollmentID: "enr-13", LeaseExpires: time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)})
 	keyDir := t.TempDir()
@@ -161,6 +164,7 @@ func TestEnrollNamesTheEnrollmentWhenItCannotRecordIt(t *testing.T) {
 // back, a key dir that cannot be made would exit 1 after the broker enrolled, with no id: an R2
 // violation.
 func TestEnrollMakesItsKeyDirectoryBeforeItAsksTheHelper(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock, reqs := fakeHelper(t, helper.Response{OK: true, EnrollmentID: "enr-should-not-happen",
 		LeaseExpires: time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)})

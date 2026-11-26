@@ -580,8 +580,10 @@ func TestARetroAfterACloseSurvivesARestart(t *testing.T) {
 // whose pull request merged before its done, under `production_check: implementer`, where the
 // close opens both for the implementer (INFRA-5602's s12). Each start is delivered in turn: the
 // one queued behind the other's running turn waits until that turn ends, and the report a turn
-// makes is routed to the handler of the task that turn is on — the look's to the check, the
-// retro's to the retro — whichever start came first.
+// makes is routed by what it names and what its claim serves: the look's report names its check
+// (checkOpenedAt, which main's #5463 made the one field that selects a check report) and goes to
+// the check, the retro's names none and, from the claim serving the retro, goes to the retro —
+// whichever start came first.
 func TestARetroAndALookOfOneClaimAreServedInTurn(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -608,7 +610,8 @@ func TestARetroAndALookOfOneClaimAreServedInTurn(t *testing.T) {
 			if tc.retroFirst {
 				first, second = retroRow, lookRow
 			}
-			lookReport := api.HandoffCompleteRequest{Summary: "production carries the merge", Verdict: "pass"}
+			opened := check.OpenedAt
+			lookReport := api.HandoffCompleteRequest{Summary: "production carries the merge", Verdict: "pass", CheckOpenedAt: &opened}
 			report := func(row record.OutboxRow) api.HandoffCompleteRequest {
 				if row.ID == retroRow.ID {
 					return retroReport()

@@ -209,10 +209,10 @@ func TestTheRunAClaimServes(t *testing.T) {
 			serving: 5, entry: 4, look: look,
 		},
 		{
-			name: "a phase task on a claim left serving a look: the look goes with the phase work",
+			name: "a phase task on a claim left serving a look: the confirmed look stays on the claim",
 			claim: Claim{ServingGeneration: 5, ServedEntry: 4, ServingCheckLook: look, Pending: &Delivery{
 				Generation: 6, Entry: 6, Phase: phase.Testing, DeliveredAt: at, ConfirmedAt: at}},
-			serving: 6, entry: 6,
+			serving: 6, entry: 6, look: look,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -233,12 +233,12 @@ func TestTheRunAClaimServes(t *testing.T) {
 // report of the retro Legion runs after its close (INFRA-5602), read from the same three sources
 // in the same order as the run, the entry and the look (serving): the task whose turn is running,
 // else what the claim was left serving, else, for a claim that has served nothing, the task it
-// may have read. It parts from the look in what takes it back. A phase task takes it back, as it
-// takes a look back, and so does the confirmed task of a look, as the confirmed task of a retro
-// takes the look back (ServingCheck): a task of the other kind queued behind a running turn
-// leaves that turn's marker standing, because it is only the task whose own turn runs that
-// changes which report the claim's worker makes. An operator's task, which carries neither, leaves
-// both alone.
+// may have read. It parts from the look in what takes it back. A phase task takes it back, and so
+// does the confirmed task of a look; the task of a retro takes no look back (ServingCheck), since
+// only a completion's checkOpenedAt makes it a report on a look. A look's task queued behind a
+// running retro turn leaves that turn's retro standing, because it is only the task whose own turn
+// runs that changes which report the claim's worker makes. An operator's task, which carries
+// neither, leaves both alone.
 func TestTheRetroRunAClaimServes(t *testing.T) {
 	at := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
 	opened := time.Date(2026, 11, 25, 8, 0, 0, 0, time.UTC)
@@ -295,10 +295,10 @@ func TestTheRetroRunAClaimServes(t *testing.T) {
 			look: look,
 		},
 		{
-			name: "the retro's task, whose turn is running, on a claim left serving a look: the retro takes the look back",
+			name: "the retro's task, whose turn is running, on a claim left serving a look: the look stays on the claim",
 			claim: Claim{ServingGeneration: 5, ServingCheckLook: look, Pending: &Delivery{
 				Generation: 5, RetroRun: 5, DeliveredAt: at, ConfirmedAt: at}},
-			retro: 5,
+			retro: 5, look: look,
 		},
 		{
 			name: "a retro task queued behind a look's turn: the look's marker stands, the retro's task is not taken yet",
