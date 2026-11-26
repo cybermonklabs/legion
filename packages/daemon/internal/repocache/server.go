@@ -381,6 +381,14 @@ func (c *cache) refresh(ctx context.Context) error {
 		return err
 	}
 	c.room.setFetch(time.Time{})
+	// A fresh fill (the first one onto an empty volume, or the one after a clone the cache removed)
+	// starts its own repack clock: its packs are new, and a record that outlived the old clone on
+	// the volume would repack the new one at once, on a volume that may have had no room minutes
+	// before.
+	if first {
+		c.recordRepack(fetched)
+		return nil
+	}
 	if c.lastRepack.IsZero() {
 		at, ok := c.recordedRepack()
 		if !ok {

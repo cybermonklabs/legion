@@ -2485,6 +2485,38 @@ func TestCacheClearsAnInterruptedFetchMarkerBeforeAFirstClone(t *testing.T) {
 	assertDefaultBranchOnly(t, again.dir)
 }
 
+// The last-repack record lives on the volume beside the clone, so it outlives a clone the cache
+// removes (a foreign shape, or a narrowing that ran out of space). The fill that replaces that clone
+// starts its own repack clock: its packs are new, and a record older than repackEvery must not
+// repack it at once.
+func TestAReplacementCloneStartsItsOwnRepackClock(t *testing.T) {
+	remote := newRemote(t)
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	opts.Log = func(string) {}
+	first := cacheOn(t, opts)
+	if err := first.refresh(context.Background()); err != nil {
+		t.Fatalf("making the first cache clone: %v", err)
+	}
+	old := time.Now().Add(-2 * repackEvery).UTC().Format(time.RFC3339)
+	if err := os.WriteFile(filepath.Join(opts.Root, lastRepackFile), []byte(old+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(first.dir); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now().Add(-time.Second)
+	if err := cacheOn(t, opts).refresh(context.Background()); err != nil {
+		t.Fatalf("making the replacement cache clone: %v", err)
+	}
+	if got := run.repacks(); got != 0 {
+		t.Errorf("the replacement clone ran %d repacks under a %s-old record, want none", got, 2*repackEvery)
+	}
+	if at := recorded(t, opts.Root); at.Before(before.Truncate(time.Second)) {
+		t.Errorf("the replacement clone left the record at %s, want its own fill's time, after %s", at, before)
+	}
+}
+
 func TestCacheDoesNotPublishAMarkerBeforeValidatingTheClone(t *testing.T) {
 	remote := newRemote(t)
 	run := newTestRunner(t, remote)
