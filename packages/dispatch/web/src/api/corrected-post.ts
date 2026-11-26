@@ -277,6 +277,7 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "user-state": "the reader's read, pin and dismiss marks per issue",
   users: "everyone who has signed in",
   whoami: "the signed-in principal",
+  "whoami-scopes": "the scopes the signed-in person's own credential holds (GET /api/v1/whoami)",
 };
 
 /**
