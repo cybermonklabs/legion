@@ -150,18 +150,20 @@ def decode_stream(text: str) -> list:
         out.append(obj)
 
 
-def compiled(module: Path, goos: str, goarch: str, tags: list, dirs: list) -> set:
+def compiled(module: Path, goos: str, goarch: str, tags: list, dirs: list, **env) -> set:
     """The files, as resolved paths, that go list compiles in `dirs` (each named as a directory,
     not a pattern, so a directory whose every file is excluded is still listed) for goos/goarch
     under `tags`: a package's files and its test files, which a vet reads too. `-find` keeps go
     list from loading the packages these import; in module mode go still resolves each import,
     which would download every module a cold runner's cache lacks. So it runs with GOPROXY=off:
     such an import is then a load error -e keeps, and the file lists, which go reads off each
-    directory under the build context, are the same."""
+    directory under the build context, are the same. `env` adds to the environment, as
+    CGO_ENABLED=1 does for a listing of a native runner's build from a machine of another GOARCH,
+    where go would otherwise turn cgo off."""
     base = module.resolve()
     patterns = ["." if d.resolve() == base else f"./{d.resolve().relative_to(base).as_posix()}" for d in dirs]
     out = go(module, ["list", "-e", "-find", f"-json=Dir,{','.join(LISTED)}", "-tags", ",".join(tags), *patterns],
-             GOOS=goos, GOARCH=goarch, GOPROXY="off")
+             GOOS=goos, GOARCH=goarch, GOPROXY="off", **env)
     return {str((Path(package["Dir"]) / name).resolve())
             for package in decode_stream(out) for field in LISTED for name in package.get(field) or []}
 

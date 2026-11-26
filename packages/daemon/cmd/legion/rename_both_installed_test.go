@@ -105,7 +105,7 @@ func TestLegionGhRefusesACommandWhoseRepositoriesRouteToTwoDirectories(t *testin
 		named []string // what the refusal names
 	}{
 		{"the moved repository beside a sibling", []string{"search", "prs", "--repo", "sjawhar/legion", "--repo", "sjawhar/ygo"}, "",
-			[]string{"more than one owner", "cybermonklabs (--repo sjawhar/legion)", "sjawhar (--repo sjawhar/ygo)", "sends no token"}},
+			[]string{"more than one owner", "cybermonklabs (a -R value naming sjawhar/legion)", "sjawhar (a -R value naming sjawhar/ygo)", "sends no token"}},
 		{"the moved repository by both of its names", []string{"search", "prs", "--repo", "cybermonklabs/legion", "--repo", "sjawhar/legion"}, "ghs_implement_write_cybermonklabs", nil},
 		{"the moved repository alone", []string{"search", "prs", "--repo", "sjawhar/legion"}, "ghs_implement_write_cybermonklabs", nil},
 		{"a sibling alone", []string{"search", "prs", "--repo", "sjawhar/ygo"}, "ghs_implement_write_sjawhar", nil},

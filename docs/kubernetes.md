@@ -1085,9 +1085,9 @@ and a member the mapping does not model is refused by name (`readSessionStore` a
 
 `impersonate_service_account` is optional.
 The loader refuses a value of it that is not a Google service account's email:
-`runtime.kubernetes.session_database.impersonate_service_account "<value>" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`.
+`runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com` (the value is not quoted, since a key pasted there would print).
 When the member is set, the loader also refuses a `user` that is not that account's IAM login:
-`runtime.kubernetes.session_database.user "<user>" must be "<login>": Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com`.
+`runtime.kubernetes.session_database.user must be "<login>": Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com` (the value is not quoted, since a token pasted there would print).
 Both checks use `ompsessions.ServiceAccountLogin` (`internal/ompsessions/store.go`), and the pod's proxy holds to the same rule.
 
 **What a pod signs in as, and what a deployment grants for it.**
@@ -1230,7 +1230,7 @@ A Claude Code start into such a pod is admitted: the launcher matches no agent's
 `postgres` holds the whole connection URL, password and all, in one providers-Secret key.
 The daemon never holds the connection string:
 put it in the providers Secret (`legion-<project>-providers`) under the key `session_dsn_secret` names, as one `postgres://…` URL.
-Every issue pod, the controller's pod and the image probe mount that key read-only at `/var/run/legion/providers/OMP_SESSION_SQL_DSN`, whatever the key is called, so a Secret without it refuses boot at the image probe, naming the Secret and its keys (`internal/runtime/sandbox/manifest.go`, `providers`).
+Every issue pod, the controller's pod and the image probe mount that key read-only at `/var/run/legion/providers/OMP_SESSION_SQL_DSN`, whatever the key is called, so a Secret without it refuses boot at the image probe, naming the Secret and the settings whose keys every pod mounts (`runtime.kubernetes.session_dsn_secret` among them), never a key of the Secret (`internal/runtime/sandbox/probe.go`, `providersMountFault`).
 
 With the store settled, every generation a launcher starts gets two variables in its start command (`mainEnvironment`):
 `OMP_SESSION_STORAGE=sql` and `OMP_SESSION_SQL_DSN_FILE=/var/run/legion/providers/OMP_SESSION_SQL_DSN`.
@@ -4667,7 +4667,7 @@ A phase worker `worker_backends` puts on `claude` runs Claude Code in its pod, a
 Legion adds no key and no settings file for it.
 The credential goes in `provider_keys` (`ANTHROPIC_API_KEY: <the providers Secret's key>`), which the shim exports into the agent's environment and nowhere else;
 the other two, which are not credentials, go in `runtime.kubernetes.pod.env`.
-The split is `pod.env`'s own rule: it refuses a credential-shaped name outright (`sets ANTHROPIC_API_KEY, a credential-shaped name: a credential comes from a
+The split is `pod.env`'s own rule: it refuses a credential-shaped name outright (`entry <n> sets a credential-shaped variable: a credential comes from a
 Secret, …`), which is why the key takes the `provider_keys` route.
 A provider key reaches every role's child under this runtime, Oh My Pi's included
 — that is this runtime's standing rule for every provider key, not something a Claude Code role changes:
@@ -4752,6 +4752,19 @@ Every address a pod is handed must be one a pod can reach, so `daemon_url`, `env
 This is a breaking configuration change for a file that names a host in Unicode; write it in its `xn--` form.
 `envoy_url` and each `nats_urls` entry are endpoints, not request URLs: they refuse a query string or fragment.
 This is a breaking configuration change for a file that has either; put credentials in URL userinfo or in a Secret, never in a query.
+`envoy_url`, `dispatch_url`, `daemon_url` and each `nats_urls` entry also refuse an `@` after the host, which is how a token or password holding an unescaped `/`, `?` or `#` written in the userinfo parses; write such a credential percent-encoded (`%2F`, `%3F`, `%23`).
+The check reads the decoded path, so a `%40` in the path is refused as an `@` is; an endpoint's path that holds one has to drop it.
+The refusal names the key, or a `nats_urls` entry by its position, and quotes none of the URL.
+A `runtime.kubernetes.plugins` http(s) source refuses an `@` in its query, in its fragment, or in any path segment other than the plugins' scope `@sjawhar`, which a registry tarball URL holds as a segment of its own (`/@sjawhar/pi-legion/-/pi-legion-<v>.tgz`, Artifactory's `/api/npm/<repo>/@sjawhar/…`, GitHub Packages' `/download/@sjawhar/…`), naming the key alone.
+The fragment and the path are read decoded, so a `%40` in either counts as an `@`; the query is read as written, so a `%40` there loads, and it is no userinfo for a credential to land in.
+A credential pasted as the URL's user lands there when it holds a `/`, `?` or `#`: write it percent-encoded (`%2F`, `%3F`, `%23`); an `@` the path itself holds outside the scope, remove.
+No plugin refusal quotes the source, the version refusal included.
+A `nats_urls` entry with an `@` after its host, or holding a comma, is refused too, and so is one that does not parse, and a websocket entry whose path or host stops parsing once the NATS client's handshake decodes it.
+The NATS client reads a comma as the end of a server URL, so list each server as its own entry.
+A user name or password holding an unescaped `/`, `?`, `#`, space or comma ends the URL's host part early or splits it into two servers, so write such a credential percent-encoded (`%2F`, `%3F`, `%23`, `%20`, `%2C`).
+An unquoted item of a `[...]` list that carries a user name or password, tagged `!!str` or not, is refused: YAML splits such an item at every comma, so quote it or write the list as a block list.
+So is a list that mixes websocket (`ws`, `wss`) and other schemes, an entry that is empty or no string, and an entry whose host and port are not written as an address the NATS client dials (a port past 65535 or of 0, three colons, an IPv6 address with a port and no brackets, a zone among them, though the client would bracket that one itself): write an IPv6 host in brackets (`nats://[::1]:4222`), and a port from 1 to 65535 or none.
+Each refusal names the entry by its position alone (`nats_urls entry 2 …`), never by any of its text.
 `advertise_host` is an IP address or an ASCII DNS name, the host alone, and only `runtime: kubernetes` accepts it.
 A pod's own IP changes on every restart, so a daemon running inside the cluster binds `0.0.0.0` and lets `advertise_host` name the Service DNS name that reaches whichever pod is live.
 Pods dial it at the port the worker stream listens on, so the Service exposes `worker_stream_port` as that same port number.
@@ -4803,7 +4816,7 @@ What it does not do is what boot writes or runs: the state directory, secretsd's
 
 The NATS nkey seed is optional, as on tmux:
 `nats_nkey_seed_file` (relative to `legion.yaml`'s directory), else `NATS_NKEY_SEED_FILE`, else `NATS_NKEY_SEED` in the daemon's environment, is the `legion-pane` user every pod connects as, and the user the daemon's own NATS connection authenticates as when it has no seed of its own (below).
-A set source that is empty, missing, unreadable, blank, readable by more than its owner, or not an nkey user seed refuses boot, naming the key and the path.
+A set source that is empty, missing, unreadable, blank, readable by more than its owner, or not an nkey user seed refuses boot, naming the key; a file that could not be read is named by the key and the system's reason, never by its path, and only a file that was opened is named by its path too.
 One exception: when root owns the file and the daemon is not root, its group may read it, since a daemon running as a non-root uid in a pod reads a mounted Secret
 — always root's — only through the pod's `fsGroup`.
 Mount it with `defaultMode: 0440`, never the kubelet's default `0644`, which others can read;
@@ -6778,7 +6791,7 @@ A role holding any other value is reported `stale_address` rather than `alive` (
 tcp://192.0.2.5:13371, now tcp://192.0.2.7:13371`, `ENVOY_URL https://envoy.internal.example, now
 https://ENVOY.INTERNAL.EXAMPLE`, or `agent-secrets-token audience=agent-secrets expiry=3600s
 path=token, now audience=agent-secrets-next expiry=3600s path=token`).
-The supervisor logs that detail, so every printed endpoint is constructed from its scheme, host and port alone, adding `xxxxx@` when userinfo is present.
+The supervisor logs that detail, so every printed endpoint is constructed from its scheme, host and port alone, or, when userinfo is present, its scheme and `[a URL with credentials]`, since a password holding an unencoded `@` leaves its tail after the last `@`, where a host would be.
 Path, query and fragment never appear, which also protects a value an earlier daemon accepted before the current endpoint grammar refused queries and fragments, and a value that yields no scheme and host is named only `xxxxx`.
 `ENVOY_NATS_URL` is named entry by entry from the URLs the loader accepted, never by splitting the joined value, since raw commas are valid in userinfo.
 A role this daemon started always compares equal, so only the roles a daemon under another configuration started are ever reported, from the boot that re-adopts them; nobody runs a command for it.
@@ -9623,7 +9636,7 @@ The Go coordinator's pods (`packages/daemon`) keep to that rule with two init co
   — `RPC failed; …` for a request of the transfer, `unable to access '…': …` for the first request
   — naming 408, 429 or a 5xx, or a connection that could not be made or broke (connect, DNS, reset, timeout, empty reply, a transfer cut short, an HTTP/2 stream reset, a TLS session closed);
   or, with no cause line, a pack stream that ended early.
-  Each retry logs the attempt's error on stdout as one line, a URL's userinfo and query removed whole and the token anywhere else replaced by `***`, removes whatever a failed clone left beside the feed, and waits 5 s, 15 s, 30 s, then a minute:
+  Each retry logs the attempt's error on stdout as one line, a URL's query removed, a URL whose authority carries userinfo shown as its scheme and `[a URL with credentials]`, and the token anywhere else replaced by `***`, removes whatever a failed clone left beside the feed, and waits 5 s, 15 s, 30 s, then a minute:
   four retries at most, so a transfer still failing after the fourth fails the fetch.
   No retry starts past the bound.
   Any other failure — a token refused, a repository not found or not granted, a certificate that does not verify, a curl error the list does not name
@@ -10033,6 +10046,10 @@ each issue's pod (every role of it alike) and the image probe's.
   every link an agent's `dispatch` command prints, which agents repeat in Slack replies, pull requests and comments, then points there, and a pasted dashboard link on either address resolves.
   Load refuses, naming it, a value that is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens (no `xn--` label, no trailing dot, a last label that is not a number), a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535:
   a rule narrower than the agents' URL parser, so a value load accepts never turns Dispatch off in an agent.
+  It refuses an `@` after the host too, in the path, the query or the fragment: that is where a credential holding a `/`, `?` or `#` written as the user lands, its head read as the host every link would name.
+  Percent-encode such a credential's `/`, `?` and `#`, or give the dashboard address with no credential.
+  A refused value with an `@`, a `?` or a `#` is named without its userinfo, query and fragment.
+  A query or a fragment loads: an agent's links then fall back to `dispatch://` references.
   The controller's `slack_post` refuses a reply linking an address inside the cluster.
   Like every `pod.env` variable, it reaches an agent with the start command of its next generation, so set it in the same restart that installs this release, which relaunches the controller once.
   To hand a later change to a running agent, start its next generation with `legion claims suspend` and then `legion claims resume`, which resumes its session.
@@ -10621,8 +10638,9 @@ each issue's pod (every role of it alike) and the image probe's.
   The one other key a pod mounts is `NATS_NKEY_SEED`, when the daemon has a NATS nkey seed:
   the operator puts the `legion-pane` seed there, and every pod reads it through `NATS_NKEY_SEED_FILE`, which the shim does not export ([Configuration](#configuration)).
   (The TypeScript daemon's [providers Secret](#the-providers-secret) mounts every key; the Go runtime does not.)
-  A Secret or key the kubelet cannot mount is refused at boot by the image probe, naming the Secret and keys.
+  A Secret or key the kubelet cannot mount is refused at boot by the image probe, naming the Secret, the settings whose keys every pod mounts (`provider_keys.<VAR>`, `runtime.kubernetes.session_dsn_secret`) and the setting whose key is missing, never a key of the Secret.
   A `provider_keys` variable that anything else in the pod sets is refused at load.
+  A `provider_keys` variable must be upper case (upper-case letters, digits and underscores, not starting with a digit), as every provider's variable is; one with a lowercase letter is refused at load as `provider_keys entry <n>: its key (the variable OMP reads) must be an upper-case environment variable name …`.
 
 - **Settings order.**
   Oh My Pi reads `PI_CONFIG_FILES` in order, each overlay outranking the ones before it and all of them outranking a repository's `.omp/config.yml`.

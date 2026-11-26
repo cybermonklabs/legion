@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -266,7 +267,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{nil, []string{"api", "--", "repos/sjawhar/legion"}, "sjawhar", ""},
 		{nil, []string{"pr", "view", "--json", "title", "--", "https://github.com/sjawhar/legion/pull/1"}, "sjawhar", ""},
 		{nil, []string{"repo", "deploy-key", "add", "key.pub", "-R", "sjawhar/legion", "--title", "-Racme/widgets"}, "sjawhar", ""},
-		{nil, []string{"pr", "--json", "title", "view", "https://github.com/sjawhar/legion/pull/1"}, "", `"--json" comes before the command's name`},
+		{nil, []string{"pr", "--json", "title", "view", "https://github.com/sjawhar/legion/pull/1"}, "", "an option given before the command's name is refused"},
 		// The first review's reproductions.
 		{[]string{"GH_REPO=acme/widgets"}, []string{"api", "repos/sjawhar/legion"}, "sjawhar", ""},
 		{[]string{"GH_REPO=acme/widgets"}, []string{"pr", "view", "1", "-R", "sjawhar/legion", "--json", "title"}, "sjawhar", ""},
@@ -291,7 +292,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{nil, []string{"copilot"}, "", "`gh copilot` runs another program"},
 		{nil, []string{"search", "issues", "(repo:sjawhar/legion)"}, "", "is a search qualifier this cannot read for certain"},
 		{nil, []string{"search", "issues", "repo:sjawhar/legion", "is:open"}, "sjawhar", ""},
-		{[]string{"GH_HOST=ghe.example.com"}, []string{"api", "repos/sjawhar/legion"}, "", `GH_HOST is "ghe.example.com"`},
+		{[]string{"GH_HOST=ghe.example.com"}, []string{"api", "repos/sjawhar/legion"}, "", "GH_HOST names another host than github.com"},
 		{[]string{"LEGION_GH_PATH=" + drift}, []string{"pr", "view", "--json", "title", "https://github.com/sjawhar/legion/pull/1"}, "", "<URL>"},
 		// The third re-review's: gh's help of an extension runs the extension, so a help target is
 		// read as a command, a gh alias or an extension refused; and a plural slot takes one or
@@ -310,7 +311,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{nil, []string{"--version", "shx"}, "", `"--version" comes before the command's name`},
 		{nil, []string{"-R", "sjawhar/legion", "--version", "hello"}, "", `"--version" comes before the command's name`},
 		{nil, []string{"extension", "exec", "hello"}, "", "`gh extension exec` runs another program"},
-		{[]string{"CI=1"}, []string{"stack"}, "", `"stack" is no command gh's own help lists`},
+		{[]string{"CI=1"}, []string{"stack"}, "", "the command's first word is no command gh's own help lists"},
 		{nil, []string{"repo", "sync", "acme/widgets", "--source", "sjawhar/legion"}, "", "more than one owner"},
 		{[]string{"GH_REPO=sjawhar/legion"}, []string{"api", "graphql", "-F", "o=:owner", "-F", "r=:repo", "-f", "query=query($o:String!,$r:String!){repository(owner:$o,name:$r){id}}"}, "sjawhar", ""},
 		// Controls: the issue owner's repository, a command naming none, and an option the leaf's
@@ -318,10 +319,10 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{nil, []string{"pr", "view", "--json", "title", "https://github.com/sjawhar/legion/pull/2"}, "sjawhar", ""},
 		{nil, []string{"api", "repos/acme/widgets"}, "acme", ""},
 		{nil, []string{"api", "graphql", "-f", "query={viewer{login}}"}, "acme", ""},
-		{nil, []string{"pr", "view", "1", "-R", "sjawhar/legion", "--bogus"}, "", `"--bogus" is no option`},
+		{nil, []string{"pr", "view", "1", "-R", "sjawhar/legion", "--bogus"}, "", "an option the command's help does not list is given to `gh pr view`"},
 		// gh 2.104.0's --attach uploads a file the leak guard does not read, so it is refused by
-		// name; a gh with no --attach refuses it as an option its help does not list.
-		{nil, []string{"issue", "comment", "1", "-R", "sjawhar/legion", "--body", "capture", "--attach", "notes.svg"}, "", `"--attach"`},
+		// name; a gh with no --attach refuses it as an option its help does not list, by its place.
+		{nil, []string{"issue", "comment", "1", "-R", "sjawhar/legion", "--body", "capture", "--attach", "notes.svg"}, "", `"--attach"||an option the command's help does not list`},
 		// gh 2.104.0 sends github.com's API requests, with the directory's token, to the host
 		// api_host names; gh writes that key, and any key it does not know, with `config set`.
 		{nil, []string{"config", "set", "api_host", "api.example.invalid", "--host", "github.com"}, "", "`gh config set` writes the gh directory's configuration"},
@@ -394,9 +395,9 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		args   []string
 		refuse string
 	}{
-		{[]string{"GH_EDITOR=" + editor}, []string{"issue", "comment", "1", "-R", "acme/widgets", "-e"}, `"-e" runs an editor program`},
+		{[]string{"GH_EDITOR=" + editor}, []string{"issue", "comment", "1", "-R", "acme/widgets", "-e"}, `"--editor" runs an editor program`},
 		{[]string{"EDITOR=" + editor}, []string{"pr", "comment", "1", "-R", "acme/widgets", "--editor"}, `"--editor" runs an editor program`},
-		{[]string{"VISUAL=" + editor}, []string{"issue", "create", "-R", "acme/widgets", "--title", "t", "-e"}, `"-e" runs an editor program`},
+		{[]string{"VISUAL=" + editor}, []string{"issue", "create", "-R", "acme/widgets", "--title", "t", "-e"}, `"--editor" runs an editor program`},
 		{[]string{"GH_EDITOR=" + editor}, []string{"gist", "edit", "0123456789abcdef"}, "`gh gist edit` opens an editor program"},
 		{nil, []string{"agent-task", "list"}, "`gh agent-task` sends the token to the Copilot API host"},
 	} {
@@ -563,22 +564,22 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{otherClone, nil, []string{"api", "repos/{owner}/{repo}"}, "sjawhar", ""},
 		{otherClone, nil, []string{"-R", "acme/widgets", "pr", "view", "1", "--json", "title"}, "acme", ""},
 		{outsideClone, nil, []string{"pr", "list", "--json", "title"}, "", `the role's GitHub App is not installed on "octocat"`},
-		{upstream, nil, []string{"pr", "list", "--json", "title"}, "", `remote "upstream" (git@github.com:sjawhar/legion.git)`},
+		{upstream, nil, []string{"pr", "list", "--json", "title"}, "", `remote "upstream" (ssh://` + redact.URLWithCredentials + `/sjawhar/legion.git)`},
 		{setDefault, nil, []string{"pr", "list", "--json", "title"}, "", "remote.origin.gh-resolved sjawhar/legion"},
 		// Round 4's: remote spellings gh reads as github.com's (deep 2, quality A, final B1).
 		{gitPlusHTTPS, nil, []string{"pr", "view", "1", "--json", "title"}, "sjawhar", ""},
 		// Round 4's: an option or another repository naming one owner while gh acts on the
 		// working directory's (deep 1, quality B, final B2), and the options of deep 3.
 		{issueWorkspace, nil, []string{"pr", "comment", "5", "--body", "https://github.com/sjawhar/legion/pull/2"}, "acme", ""},
-		{issueWorkspace, nil, []string{"issue", "edit", "5", "--add-blocked-by", "https://github.com/sjawhar/legion/issues/9"}, "", "more than one owner||is no option"},
+		{issueWorkspace, nil, []string{"issue", "edit", "5", "--add-blocked-by", "https://github.com/sjawhar/legion/issues/9"}, "", "more than one owner||an option the command's help does not list"},
 		{issueWorkspace, nil, []string{"repo", "fork", "--org", "sjawhar", "--clone=false", "--remote=false"}, "", "more than one owner"},
-		{issueWorkspace, nil, []string{"issue", "create", "--title", "t", "--body", "b", "--blocked-by", "1,https://github.com/sjawhar/legion/issues/5"}, "", "more than one owner||is no option"},
+		{issueWorkspace, nil, []string{"issue", "create", "--title", "t", "--body", "b", "--blocked-by", "1,https://github.com/sjawhar/legion/issues/5"}, "", "more than one owner||an option the command's help does not list"},
 		{otherClone, nil, []string{"pr", "comment", "1", "--body", "https://github.com/acme/widgets/pull/9"}, "sjawhar", ""},
-		{otherClone, nil, []string{"issue", "close", "3", "--duplicate-of", "https://github.com/acme/widgets/issues/1"}, "", "more than one owner||is no option"},
+		{otherClone, nil, []string{"issue", "close", "3", "--duplicate-of", "https://github.com/acme/widgets/issues/1"}, "", "more than one owner||an option the command's help does not list"},
 		{otherClone, nil, []string{"repo", "sync", "--source", "acme/widgets"}, "", "more than one owner"},
 		{otherClone, nil, []string{"issue", "develop", "3", "--branch-repo", "acme/widgets", "--name", "x"}, "", "more than one owner"},
 		{outsideClone, nil, []string{"pr", "comment", "1", "--body", "https://github.com/sjawhar/legion/pull/2"}, "", `the role's GitHub App is not installed on "octocat"`},
-		{home, []string{"GH_REPO=acme/widgets"}, []string{"issue", "close", "3", "--duplicate-of", "https://github.com/sjawhar/legion/issues/5"}, "", "more than one owner||is no option"},
+		{home, []string{"GH_REPO=acme/widgets"}, []string{"issue", "close", "3", "--duplicate-of", "https://github.com/sjawhar/legion/issues/5"}, "", "more than one owner||an option the command's help does not list"},
 		{issueWorkspace, []string{"GH_REPO=sjawhar/legion"}, []string{"project", "link", "1", "--owner", "acme"}, "", "more than one owner"},
 		// Round 5's: a passthrough leaf's repository after `--` (deep 1); repo set-default's
 		// remotes whatever its argument names (deep 2, quality 1); a pr command's OWNER/REPO#N or
@@ -627,15 +628,15 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		// objects come from is refused and sends nothing; the flags a fixture clone of
 		// scripts/e2e passes reach GitHub with the owner's token.
 		row{issueWorkspace, nil, []string{"pr", "checkout", "1", "--recurse-submodules"}, "", `"--recurse-submodules" runs`},
-		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--config", "http.https://github.com/.sslVerify=false"}, "", `hands "--config" to git clone`},
-		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--conf", "http.https://github.com/.sslVerify=false"}, "", `hands "--conf" to git clone`},
-		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--recursive"}, "", `hands "--recursive" to git clone`},
-		row{home, nil, []string{"repo", "clone", "acme/widgets", "widgets-dir", "--", "--recurse-submodules=lib"}, "", `hands "--recurse-submodules=lib" to git clone`},
-		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--template", "/tmp/example-template"}, "", `hands "--template" to git clone`},
-		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--reference", "/tmp/example-reference"}, "", `hands "--reference" to git clone`},
-		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--separate-git-dir", "/tmp/example-git-dir"}, "", `hands "--separate-git-dir" to git clone`},
-		row{home, nil, []string{"repo", "fork", "acme/widgets", "--clone", "--", "--recurse-submodules"}, "", `hands "--recurse-submodules" to git clone`},
-		row{home, nil, []string{"gist", "clone", "0123456789abcdef", "--", "--config", "core.hooksPath=/tmp/example-hooks"}, "", `hands "--config" to git clone`},
+		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--config", "http.https://github.com/.sslVerify=false"}, "", "hands a git flag after -- to git clone"},
+		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--conf", "http.https://github.com/.sslVerify=false"}, "", "hands a git flag after -- to git clone"},
+		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--recursive"}, "", "hands a git flag after -- to git clone"},
+		row{home, nil, []string{"repo", "clone", "acme/widgets", "widgets-dir", "--", "--recurse-submodules=lib"}, "", "hands a git flag after -- to git clone"},
+		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--template", "/tmp/example-template"}, "", "hands a git flag after -- to git clone"},
+		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--reference", "/tmp/example-reference"}, "", "hands a git flag after -- to git clone"},
+		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--separate-git-dir", "/tmp/example-git-dir"}, "", "hands a git flag after -- to git clone"},
+		row{home, nil, []string{"repo", "fork", "acme/widgets", "--clone", "--", "--recurse-submodules"}, "", "hands a git flag after -- to git clone"},
+		row{home, nil, []string{"gist", "clone", "0123456789abcdef", "--", "--config", "core.hooksPath=/tmp/example-hooks"}, "", "hands a git flag after -- to git clone"},
 		row{home, nil, []string{"repo", "clone", "acme/widgets", filepath.Join(t.TempDir(), "widgets"), "--", "--quiet", "--depth", "1", "--branch", "main"}, "acme", ""},
 	)
 	for _, scheme := range []string{"git+https://github.com/sjawhar/legion.git", "ftp://github.com/sjawhar/legion", "ftps://github.com/sjawhar/legion", "file://github.com/sjawhar/legion", "github.com://sjawhar/legion", "git@github.com/sjawhar:legion"} {
@@ -920,8 +921,8 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		induced.takeConnects()
 		code, out := runIn(t.TempDir(), ghEnv, legionCopy(t), append([]string{"gh"}, tc.args...)...)
 		proxy.clearAnswers()
-		if code != 2 || !strings.Contains(out, `hands "-c" to git clone`) {
-			t.Errorf("%s with -c flags after -- = exit %d, %q; want exit 2 naming -c", tc.name, code, out)
+		if code != 2 || !strings.Contains(out, "hands a git flag after -- to git clone") {
+			t.Errorf("%s with -c flags after -- = exit %d, %q; want exit 2 refusing the git flag", tc.name, code, out)
 		}
 		if connects, requests := induced.takeConnects(), induced.take(); len(connects) != 0 || len(requests) != 0 {
 			t.Errorf("%s sent the proxy its -c flags name %+v and %+v, want nothing", tc.name, connects, requests)

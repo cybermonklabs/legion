@@ -225,6 +225,38 @@ func TestTokenAnswersTheChallengeWithThePodsTokenAndReturnsOnlyTheAccessToken(t 
 	}
 }
 
+// An --endpoint whose made-up password holds an unencoded "@" leaves the password's tail where the
+// host goes, and the dial's error names that host, in its ASCII form, or in the `xn--` form a tail
+// that is not ASCII is dialed by, and a tail ending in ":<digits>" is read as the port, which the
+// dialer's refusal quotes: the error Token returns holds none of them, and still says which call
+// failed to dial.
+func TestTokenNamesNoPartOfTheEndpointsPassword(t *testing.T) {
+	passwordAt := "op:madeuphead0123" + "@"
+	for name, tc := range map[string]struct{ endpoint, secret string }{
+		"an ASCII tail":            {"https://" + passwordAt + "madeuptail0123.invalid", "madeuptail"},
+		"a tail that is not ASCII": {"https://" + passwordAt + "madeuptail0123\u00f6rd.invalid", "madeuptail"},
+		"a tail ending in digits":  {"https://" + passwordAt + "madeuptail0123.invalid:98765432", "98765432"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			token, err := Token(ctx, testConfig(t, tc.endpoint))
+			if err == nil || token != "" {
+				t.Fatalf("Token = %q, %v; want no token and the failed dial", token, err)
+			}
+			lower := strings.ToLower(err.Error())
+			if !strings.HasPrefix(err.Error(), "Cognito InitiateAuth: ") {
+				t.Errorf("Token = %v, want the failed call named", err)
+			}
+			for _, part := range []string{tc.secret, "madeuphead", "xn--"} {
+				if strings.Contains(lower, part) {
+					t.Errorf("Token = %v, which holds %q of the endpoint's password", err, part)
+				}
+			}
+		})
+	}
+}
+
 // Oh My Pi re-runs the command only after a 401, so every run must sign in afresh rather than hand
 // back a token a gateway just refused.
 func TestTokenSignsInOnEveryRun(t *testing.T) {
