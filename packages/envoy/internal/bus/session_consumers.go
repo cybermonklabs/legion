@@ -325,8 +325,14 @@ func (s *SessionConsumers) Drain(timeout time.Duration) error { return s.client.
 
 // Publish publishes msg over core NATS on the connection, waiting for a connection nats.go is
 // replacing until ctx ends: a relay frame on a session's DeliverSubject, which the stream does not
-// store, so it travels on the connection the frame's message was pulled and is answered on.
+// store, so it travels on the connection the frame's message was pulled and is answered on. A
+// frame carries a stored message whole, of any size its sender gave it under the bound, with the
+// relay's own headers beside it, so it can pass the server's max payload by those headers: such a
+// frame is ErrTooLarge before the wait for a connection (Client.checkSend).
 func (s *SessionConsumers) Publish(ctx context.Context, msg *nats.Msg) error {
+	if err := s.client.checkSend(msg); err != nil {
+		return err
+	}
 	if err := s.client.ensureConnWithContext(ctx); err != nil {
 		return err
 	}

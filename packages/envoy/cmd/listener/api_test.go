@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -2964,125 +2963,6 @@ func quotedOrAbsent(raw string) string {
 		return "no expects_reply key"
 	}
 	return raw
-}
-
-// A caller's message NATS cannot take whole is the caller's to fix, so both message routes answer
-// it 413 and say how large it was against the server's max payload, rather than a 500 that reads
-// as the listener's own failure.
-func TestMessageHandlersAnswerAMessageNATSCannotTakeWholeWith413(t *testing.T) {
-	t.Parallel()
-	client := setupPublishTestClient(t)
-	registry, sessions := setupSessionsTest(t, map[string][]string{}, []string{"ses_target"})
-	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
-	message := strings.Repeat("m", 2<<20)
-	for _, tc := range []struct {
-		path    string
-		handler http.Handler
-		body    map[string]string
-	}{
-		{"/v1/messages/publish", publishHandler(state, logging.New("test")), map[string]string{
-			"topic": "notifications.github.example-org.example-repo.pr.1", "message": message,
-		}},
-		{"/v1/messages/send", sendHandler(state, logging.New("test")), map[string]string{"target_session": "ses_target", "message": message}},
-	} {
-		t.Run(tc.path, func(t *testing.T) {
-			body, err := json.Marshal(tc.body)
-			if err != nil {
-				t.Fatalf("marshal request: %v", err)
-			}
-			recorder := httptest.NewRecorder()
-			tc.handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(string(body))))
-			if recorder.Code != http.StatusRequestEntityTooLarge {
-				t.Fatalf("status = %d, want 413; body = %.300s", recorder.Code, recorder.Body.String())
-			}
-			if got := recorder.Body.String(); !strings.Contains(got, "max payload of 1048576 bytes") {
-				t.Fatalf("body = %.300s, want it to name the server's max payload", got)
-			}
-		})
-	}
-}
-
-// A message NATS cannot take whole is refused before either message route asks the bus anything,
-// so its 413 does not depend on what is left of the route's deadline, and costs no bus request.
-// Each oversized message is sent twice. Once its request arrives with its context's deadline
-// already past: both routes take their deadline from the request's own context, so this is the
-// state a route reaches every time when the reading and encoding of a large message on loaded CPUs
-// have spent its budget before the publish. A refusal made by the publish itself answered such a
-// request the bus-unavailable 503, "envoy: the message bus did not answer: context deadline
-// exceeded": nats.go reads a JetStream publish's context before it measures the message, so the
-// bus, never asked, was reported silent. Once with a live deadline, where the refusal made by the
-// publish came only after the route's reads: a send to a live session in consumer delivery probes
-// its connection, and a send to a stopped session that only its known-session record names reads
-// the session bucket. The rows are those two sends and a topic publish. Every request must be 413
-// naming the server's max payload, with no Retry-After, and the connection every bus call of the
-// routes runs on, which sends nothing of its own here (newQuietKnownSessionRig), must send nothing
-// for any of them. The control is the same three with a message within the max payload and a live
-// deadline: each is published, and the same count sees each go out, so a count that could not see
-// a request cannot pass the refusals.
-func TestAMessageNATSCannotTakeWholeIs413BeforeTheBusIsAskedWhateverIsLeftOfTheDeadline(t *testing.T) {
-	t.Parallel()
-	rig := newQuietKnownSessionRig(t)
-	const live, stopped = "ses_413_live", "ses_413_stopped"
-	rig.register(t, live, nil)
-	rig.register(t, stopped, nil)
-	rig.stop(t, stopped)
-	rig.awaitNoConsumer(t, stopped)
-	rows := []struct {
-		name string
-		path string
-		body map[string]string
-	}{
-		{"a topic publish", "/v1/messages/publish", map[string]string{"topic": "notifications.team.too-large"}},
-		{"a send to a live session", "/v1/messages/send", map[string]string{"target_session": live}},
-		{"a send to a stopped session", "/v1/messages/send", map[string]string{"target_session": stopped}},
-	}
-	conn := rig.harness.client.Conn
-	// request serves one request through the rig's routes and answers it with how many messages
-	// the listener's connection sent while the route ran.
-	request := func(ctx context.Context, path string, fields map[string]string, message string) (*httptest.ResponseRecorder, uint64) {
-		body := map[string]string{"source": "agent", "message": message}
-		maps.Copy(body, fields)
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			t.Fatalf("marshal request: %v", err)
-		}
-		recorder := httptest.NewRecorder()
-		sentBefore := conn.Stats().OutMsgs
-		rig.mux.ServeHTTP(recorder, httptest.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(encoded)))
-		return recorder, conn.Stats().OutMsgs - sentBefore
-	}
-
-	spent, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer cancel()
-	oversized := strings.Repeat("m", 2<<20)
-	for _, row := range rows {
-		for _, deadline := range []struct {
-			name string
-			ctx  context.Context
-		}{{"its deadline spent", spent}, {"its deadline live", context.Background()}} {
-			recorder, sent := request(deadline.ctx, row.path, row.body, oversized)
-			if recorder.Code != http.StatusRequestEntityTooLarge || !strings.Contains(recorder.Body.String(), "max payload of 1048576 bytes") {
-				t.Errorf("%s of a message past the max payload, %s: status = %d, want 413 naming the server's max payload; body = %.300s",
-					row.name, deadline.name, recorder.Code, recorder.Body.String())
-			}
-			if retry := recorder.Header().Get("Retry-After"); retry != "" {
-				t.Errorf("%s, %s, carries Retry-After %q: the same message is refused however often it is sent", row.name, deadline.name, retry)
-			}
-			if sent != 0 {
-				t.Errorf("%s of a message past the max payload, %s, sent %d messages on the listener's connection, want none", row.name, deadline.name, sent)
-			}
-		}
-	}
-
-	for _, row := range rows {
-		recorder, sent := request(context.Background(), row.path, row.body, "a message within the max payload")
-		if recorder.Code != http.StatusOK {
-			t.Errorf("control: %s of a message within the max payload: status = %d, want 200; body = %.300s", row.name, recorder.Code, recorder.Body.String())
-		}
-		if sent == 0 {
-			t.Errorf("control: %s was answered %d and the listener's connection counted no message sent, so the count sees nothing", row.name, recorder.Code)
-		}
-	}
 }
 
 // A session id or role a caller names becomes a KV key, and a key NATS would refuse (one long enough

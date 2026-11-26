@@ -761,23 +761,27 @@ const sendSessionReadTimeout = 1 * time.Second
 // connection probe shares this second with the stamp (connectionProbeTimeout).
 const senderStampReadTimeout = 1 * time.Second
 
-// refuseTooLargeToPublish answers a message whose envelope, as its route built it, is past the
-// server's max payload (bus.Client.TooLargeToPublish) with the 413 naming the envelope's size and
-// that bound, with no Retry-After, and reports whether it answered. NATS takes a message only
-// whole, so the same message is refused however often it is sent. Both message routes ask it once
-// the envelope is built and before the sender limit's take, so such a message is refused at any
-// count, before anything is read, resolved, reported or published, and whatever is left of the
-// route's deadline: nats.go makes the same refusal only after a publish has read its context, so a
-// request whose deadline the reads and the encoding of a large message had spent was answered as a
-// bus that did not answer, though the bus was never asked. The answer is the one the publish's own
-// refusal still gives (writeNATSError) to an envelope that crosses the bound only with what is
-// added after this, the sender stamp and the publish's headers.
+// refuseTooLargeToPublish answers a message whose publish on its own topic the bus would refuse
+// for its size (bus.Client.TooLargeToPublish: the envelope as the route built it and the message
+// id header that publish carries, past the server's max payload), and reports whether it
+// answered. The answer is the bus refusal's own (refuseBusUnavailable: 413 naming the size and the
+// bound, no Retry-After, recorded too_large), since NATS takes a message only whole and the same
+// message is refused however often it is sent. The bus refuses such a message at its own publish
+// too, before that reads the route's deadline (bus.Client.checkSend); this check guards what the
+// route does before the publish. Both routes ask it once the request's own fields are checked
+// (after Validate, and on the publish route ReachesNoSession's and roleLaneProjectError's 400s) and
+// before the sender limit's take, so such a message costs no read of a session, no connection
+// probe, no wake report, no role resolution, forward or keep, and nothing of its sender's count:
+// it is the 413 before the 429 a sender at its limit gets and before the 404 an unknown target
+// gets. A message that passes the bound only with what is added after this - the sender stamp, or
+// a role forward's own dedupe key and header - is refused by the bus at that send instead, before
+// it reads the route's deadline (bus.Client.checkSend).
 func refuseTooLargeToPublish(w http.ResponseWriter, d *listenerDeps, record *requestRecord, item contracts.Envelope) bool {
 	err := d.client.TooLargeToPublish(item)
 	if err == nil {
 		return false
 	}
-	record.refuse(w, http.StatusRequestEntityTooLarge, outcomeTooLarge, err.Error())
+	record.refuseBusUnavailable(w, err)
 	return true
 }
 

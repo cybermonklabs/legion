@@ -128,7 +128,7 @@ func (c *Client) WriteTakeoverRecordAt(ctx context.Context, stored StoredTakeove
 	if err != nil {
 		return 0, err
 	}
-	ack, err := c.publishStoredRaw(ctx, stored.Subject, data, nats.ExpectLastSequencePerSubject(stored.Sequence))
+	ack, err := c.publishStoredRaw(ctx, stored.Subject, data, expectLastSubjectSequence(stored.Sequence))
 	if err != nil {
 		if preconditionLost(err) {
 			return 0, fmt.Errorf("%w: %s after %d: %w", ErrTakeoverRecordMoved, stored.Subject, stored.Sequence, err)

@@ -578,6 +578,13 @@ type Client struct {
 	// reconnecting, one per pass of its loop that waits; a test reads it to bound them.
 	reconnectWaits atomic.Uint64
 
+	// maxPayload is the max payload of the server c.Conn is on, as that server's INFO gave it, set
+	// where a connection becomes the client's (install, ensureConnWithContext) and at every connect
+	// and reconnect of it (onConnect, onReconnect), from a read made outside mu; 0 while the client
+	// knows none. The size checks read it (knownMaxPayload) rather than nats.Conn.MaxPayload, which
+	// takes nats.go's connection lock, held across a reconnect attempt's dial and handshake.
+	maxPayload atomic.Int64
+
 	// streamConfig is the stream an owning client ensures on its first connect and on every
 	// connection event after it (ensureStreamOn); nil for a client that owns no stream.
 	streamConfig *nats.StreamConfig
@@ -931,8 +938,10 @@ func (c *Client) install(nc *nats.Conn, ensure bool) error {
 			return err
 		}
 	}
+	maxPayload := nc.MaxPayload()
 	c.mu.Lock()
 	c.Conn, c.js = nc, c.readsOwnRefusals(nc, js)
+	c.maxPayload.Store(maxPayload)
 	c.noteSeverable(nc)
 	c.connectionChangedLocked()
 	// install runs only from the constructor, before any connection is c.Conn, so the record holds
@@ -2228,7 +2237,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			nc.Close()
 			return err
 		}
-
+		maxPayload := nc.MaxPayload()
 		c.mu.Lock()
 		// Drain and Close read c.Conn under c.mu after stopping the client, so checking here, under
 		// the same lock, means a connection dialled while they ran is either theirs to close or
@@ -2252,6 +2261,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			continue
 		}
 		c.Conn = nc
+		c.maxPayload.Store(maxPayload)
 		c.noteSeverable(nc)
 		c.js = c.readsOwnRefusals(nc, js)
 		c.markHooksDueLocked()
@@ -2552,23 +2562,29 @@ func validSubject(subject string) bool {
 }
 
 // refused names nats.go's refusal of a message past the server's max payload as the ErrTooLarge it
-// is, naming its envelope of size bytes, in TooLargeToPublish's words. checkSubject has already
-// refused every subject nats.go would.
+// is, naming the message's size bytes, its headers included (messageBytes), in the words of every
+// size refusal (pastMaxPayload). A send reaches it only when its own size check (checkSend) let the
+// message through because the client had not read the max payload of the server the message went
+// to: a Client built around a connection of its own, which reads none (knownMaxPayload), or a
+// reconnect to a server that takes less, in the moment before onReconnect reads it. checkSubject
+// has already refused every subject nats.go would.
 func (c *Client) refused(err error, size int) error {
 	if errors.Is(err, nats.ErrMaxPayload) {
-		return envelopeTooLarge(int64(size), c.Connection().MaxPayload())
+		return pastMaxPayload(int64(size), c.Connection().MaxPayload())
 	}
 	return err
 }
 
-// TooLargeToPublish answers the ErrTooLarge a publish of item would meet because the envelope is
-// past the max payload of the server the client's connection is on (knownMaxPayload), and nil for
-// an envelope within it, or while the client knows no max payload: a nil client, one with no
-// connection, or one that has not connected yet. It sends nothing and waits on nothing, so a
-// caller can refuse such a message before it does any other bus work for it. The envelope is
-// measured as a publish encodes it, counted rather than kept. A publish adds its headers, and a
-// caller may add fields before it publishes (cmd/listener's sender stamp), so nil does not promise
-// the publish fits: refused still names what nats.go refuses then.
+// TooLargeToPublish answers the ErrTooLarge a publish of item on its own topic (PublishAckWithin)
+// would meet because the message - the envelope as that publish encodes it, and the Nats-Msg-Id
+// header it carries where the envelope earns one (storedMsgID) - is past the max payload the
+// client last read (knownMaxPayload), and nil for a message within it or while the client knows no
+// max payload. It sends nothing and reads no state of nats.go's, so no lock a reconnect holds keeps
+// it waiting, and a caller asks it before any other bus work for the message. The envelope is
+// counted as it is encoded rather than kept. A caller may add fields before it publishes
+// (cmd/listener's sender stamp), and a forward of the envelope carries another dedupe key and
+// header (StartRequestStoredTo), so nil does not promise every later send fits: each send makes
+// its own check (checkSend).
 func (c *Client) TooLargeToPublish(item contracts.Envelope) error {
 	maxPayload := c.knownMaxPayload()
 	if maxPayload <= 0 {
@@ -2582,50 +2598,84 @@ func (c *Client) TooLargeToPublish(item contracts.Envelope) error {
 	}
 	// Encode ends what it writes with a newline, which json.Marshal, and so the publish, leaves
 	// out.
-	return payloadTooLarge(int64(encoded)-1, maxPayload)
+	size := int64(encoded) - 1
+	if c.publishPathOf(item.Topic) == overJetStream {
+		size += int64(messageBytes(&nats.Msg{Header: msgIDHeader(storedMsgID(item))}))
+	}
+	return payloadTooLarge(size, maxPayload)
 }
 
-// knownMaxPayload is the largest message the server the client's connection is on takes
-// (nats.Conn.MaxPayload, which that server's INFO sets and a reconnect renews), and 0 while the
-// client knows none: a nil client (a listener's deps a test built without one), a client with no
-// connection (a zero Client, whose publish ensureConnWithContext answers), or a connection that has
-// not connected yet. The size checks read it before anything else of the publish, so it touches
-// no connection that is not there.
+// knownMaxPayload is the max payload of the server the client's connection is on, as the client
+// last read it (Client.maxPayload, read where a connection becomes the client's and at every
+// connect and reconnect of it), and 0 while the client knows none: a nil client (a listener's deps
+// a test built without one), a zero Client, one built around a connection of its own, or one whose
+// first connection has not connected yet. It reads no state of nats.go's: nats.Conn.MaxPayload
+// takes nats.go's connection lock, which a reconnect attempt holds across its dial and handshake
+// (nats.go v1.55.0 doReconnect, :3554-3581), up to connectTimeout.
 func (c *Client) knownMaxPayload() int64 {
 	if c == nil {
 		return 0
 	}
-	conn := c.Connection()
-	if conn == nil {
-		return 0
-	}
-	return conn.MaxPayload()
+	return c.maxPayload.Load()
 }
 
-// payloadTooLarge is the ErrTooLarge of a body of size bytes past maxPayload, the max payload of
-// the server a client's connection is on, and nil for a body within it or for a maxPayload of 0,
-// which a client that has not connected yet reads. Every stored and core publish asks it of the
-// bytes it is about to send (PublishStoredAck, publishStoredRaw, PublishCoreContext), before it
-// waits on a reconnect or reads its context, and TooLargeToPublish asks it of an envelope before
-// any bus work. nats.go refuses the same bytes before sending them (nats.ErrMaxPayload, which
-// refused names), but a JetStream publish reads its context first (nats.go v1.55.0
-// requestWithContext) and a core one is refused on an ended context first (publishConfirmed), so
-// a caller whose deadline ended before its publish read that refusal as ctx's error, a bus that
-// did not answer, though the bus was never asked. It counts no header, which nats.go counts, so a
-// body within the bound can still be refused once the publish adds its headers, and refused names
-// that.
+// checkSend is the size check every send of the client makes of msg before it waits on a
+// reconnect, reads its context or deadline, or sends anything: the ErrTooLarge of a message whose
+// data and headers (messageBytes) are past the max payload the client last read
+// (knownMaxPayload), and nil otherwise. nats.go refuses such a message before sending it
+// (nats.ErrMaxPayload, which refused names), but a JetStream publish reads its context first
+// (nats.go v1.55.0 requestWithContext), a core one is refused on an ended context first
+// (publishConfirmed), and a wait for a reconnect or a window's deadline comes before either, so a
+// caller whose time had run out read the refusal as a bus that did not answer, though the bus was
+// never asked. The sends that make it are every one a caller's payload reaches: PublishStoredAck
+// and the raw stored writes through publishStoredRaw, PublishCoreContext, StartRequestStoredTo, a
+// window's sends (window.send, window.request) and SessionConsumers.Publish.
+func (c *Client) checkSend(msg *nats.Msg) error {
+	return payloadTooLarge(int64(messageBytes(msg)), c.knownMaxPayload())
+}
+
+// payloadTooLarge is the ErrTooLarge of a message of size bytes, headers included, past maxPayload,
+// and nil for one within it or for a maxPayload of 0, which a client that knows no max payload
+// reads.
 func payloadTooLarge(size, maxPayload int64) error {
 	if maxPayload <= 0 || size <= maxPayload {
 		return nil
 	}
-	return envelopeTooLarge(size, maxPayload)
+	return pastMaxPayload(size, maxPayload)
 }
 
-// envelopeTooLarge is the ErrTooLarge of an envelope of size bytes past the server's max payload,
-// in the one wording every refusal of one uses (payloadTooLarge before a publish, refused after
+// pastMaxPayload is the ErrTooLarge of a message of size bytes past the server's max payload, in
+// the one wording every refusal of one uses (payloadTooLarge before a send, refused after
 // nats.go's), so a caller reads one answer whichever made it.
-func envelopeTooLarge(size, maxPayload int64) error {
-	return fmt.Errorf("%w: an envelope of %d bytes against the server's max payload of %d bytes", ErrTooLarge, size, maxPayload)
+func pastMaxPayload(size, maxPayload int64) error {
+	return fmt.Errorf("%w: a message of %d bytes, its headers included, against the server's max payload of %d bytes", ErrTooLarge, size, maxPayload)
+}
+
+// messageBytes is what nats.go holds msg to against the server's max payload: its data and its
+// headers as nats.go encodes them (nats.go v1.55.0 Conn.publish counts len(data)+len(hdr)), which
+// nats.Msg.Size counts with the subject and the reply, which the max payload leaves out.
+func messageBytes(msg *nats.Msg) int {
+	return msg.Size() - len(msg.Subject) - len(msg.Reply)
+}
+
+// msgIDHeader is the header a stored publish under msgID carries: Nats-Msg-Id, or none for an
+// empty msgID.
+func msgIDHeader(msgID string) nats.Header {
+	if msgID == "" {
+		return nil
+	}
+	return nats.Header{nats.MsgIdHdr: []string{msgID}}
+}
+
+// storedMsgID is the message id an envelope is stored under on its own topic: the dedupe key and
+// the topic together where the dedupe key names the upstream event
+// (contracts.DedupeKeyNamesTheUpstreamEvent), because one upstream event can be published on
+// several topics under one key and each copy must be retained, and none otherwise.
+func storedMsgID(item contracts.Envelope) string {
+	if !contracts.DedupeKeyNamesTheUpstreamEvent(item) {
+		return ""
+	}
+	return ForwardMsgID(item.DedupeKey, item.Topic)
 }
 
 // byteCount is an io.Writer that counts the bytes written to it and keeps none of them.
@@ -2768,31 +2818,16 @@ type StoredAck struct {
 // holds, and Resent where it answers a resend. Its refusals are those of every stored publish,
 // which publishJetStream describes (ErrTooLarge, ErrRefused, ErrPublishDenied, ErrStreamFull), and
 // ErrDuplicateInProcess while a clustered stream is still storing an earlier publish under the
-// same id; subject must be one the stream captures, or nothing answers the publish. A body past
-// the server's max payload is ErrTooLarge before the wait for a reconnect or the read of ctx
-// (payloadTooLarge). A failure after a send that nothing answered wraps ErrUnacknowledged, since
-// the stream may hold the copy (sendStored).
+// same id; subject must be one the stream captures, or nothing answers the publish. A message
+// past the server's max payload, the header included, is ErrTooLarge before the wait for a
+// reconnect or the read of ctx (publishStoredRaw, checkSend). A failure after a send that nothing
+// answered wraps ErrUnacknowledged, since the stream may hold the copy (sendStored).
 func (c *Client) PublishStoredAck(ctx context.Context, subject string, item contracts.Envelope, msgID string) (StoredAck, error) {
-	if err := checkSubject(subject); err != nil {
-		return StoredAck{}, err
-	}
 	data, err := json.Marshal(item)
 	if err != nil {
 		return StoredAck{}, err
 	}
-	if err := payloadTooLarge(int64(len(data)), c.knownMaxPayload()); err != nil {
-		return StoredAck{}, err
-	}
-	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
-	defer cancel()
-	if err := c.ensureConnWithContext(ctx); err != nil {
-		return StoredAck{}, err
-	}
-	options := []nats.PubOpt{nats.Context(ctx)}
-	if msgID != "" {
-		options = append(options, nats.MsgId(msgID))
-	}
-	return c.sendStored(ctx, subject, data, options...)
+	return c.publishStoredRaw(ctx, subject, data, msgIDHeader(msgID))
 }
 
 // PublishStoredAs is PublishStoredAck for a caller that needs no acknowledgement: the listener's
@@ -2806,10 +2841,9 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 }
 
 // publishJetStream publishes item to the notification stream within ctx's bound, and returns the
-// stream's acknowledgement (StoredAck). The MsgId, where the envelope earns one, is the dedupe key
-// and the topic together, because one upstream event can be published on several topics under one
-// key - a GitHub comment that mentions the trigger is published on its mention topic beside its
-// comment topic - and each of those must be retained. The bound PublishStoredAck sets is the
+// stream's acknowledgement (StoredAck), under the message id the envelope earns (storedMsgID): a
+// GitHub comment that mentions the trigger is published on its mention topic beside its comment
+// topic under one key, and each of those must be retained. The bound PublishStoredAck sets is the
 // earlier of the caller's own deadline and publishBound, since WithTimeout keeps the parent's
 // deadline when that is the earlier one; publishBound is what bounds a caller that passed none.
 // The acknowledgement wait is still taken from publishAcknowledgementClock, the seam a test uses
@@ -2839,11 +2873,7 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 // ambiguity, which the MsgId's duplicate window absorbs for an envelope that earns one, and which
 // the failure names (ErrUnacknowledged, sendStored).
 func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope) (StoredAck, error) {
-	msgID := ""
-	if contracts.DedupeKeyNamesTheUpstreamEvent(item) {
-		msgID = ForwardMsgID(item.DedupeKey, item.Topic)
-	}
-	return c.PublishStoredAck(ctx, item.Topic, item, msgID)
+	return c.PublishStoredAck(ctx, item.Topic, item, storedMsgID(item))
 }
 
 // ErrUnacknowledged is wrapped by the error of a stored publish that failed and may still have put
@@ -2888,21 +2918,21 @@ func unacknowledged(err error, mayHold bool) error {
 	return fmt.Errorf("%w: %w", ErrUnacknowledged, err)
 }
 
-// sendStored publishes data to subject on the notification stream under options, once more if the
-// connection had closed under it, and names a refusal as the ErrPublishDenied, ErrTooLarge,
-// ErrStreamFull or ErrDuplicateInProcess it is. It is the one send of the stored path: its callers
-// (PublishStoredAck, publishStoredRaw) bound ctx, connected first and pass nats.Context(ctx)
-// among the options, so the acknowledgement wait ends with that bound.
+// sendStored publishes msg to the notification stream under ctx, once more if the connection had
+// closed under it, and names a refusal as the ErrPublishDenied, ErrTooLarge, ErrStreamFull or
+// ErrDuplicateInProcess it is. It is the one send of the stored path: its caller
+// (publishStoredRaw) checked msg's size, bound ctx and connected first, and the send carries
+// nats.Context(ctx), so the acknowledgement wait ends with that bound.
 //
 // A failure after a send that may have reached the stream wraps ErrUnacknowledged: ctx was live
 // as the send was made, read just before it, and what came back was no answer (sendUnanswered).
 // Once one send of the call is such a send, every failure after it wraps it too, the resend's and
 // that of the reconnect before the resend, since the first send may have stored the message. The
 // resend's acknowledgement is Resent, since its Duplicate may name the copy the first send stored.
-func (c *Client) sendStored(ctx context.Context, subject string, data []byte, options ...nats.PubOpt) (StoredAck, error) {
+func (c *Client) sendStored(ctx context.Context, msg *nats.Msg) (StoredAck, error) {
 	sentAt := time.Now()
 	live := ctx.Err() == nil
-	ack, err := c.JS().Publish(subject, data, options...)
+	ack, err := c.JS().PublishMsg(msg, nats.Context(ctx))
 	mayHold := live && sendUnanswered(err)
 	resent := false
 	if err != nil && (errors.Is(err, nats.ErrConnectionClosed) || errors.Is(err, nats.ErrDisconnected)) {
@@ -2912,14 +2942,14 @@ func (c *Client) sendStored(ctx context.Context, subject string, data []byte, op
 		sentAt = time.Now()
 		resent = true
 		live = ctx.Err() == nil
-		ack, err = c.JS().Publish(subject, data, options...)
+		ack, err = c.JS().PublishMsg(msg, nats.Context(ctx))
 		mayHold = mayHold || live && sendUnanswered(err)
 	}
 	if err != nil {
-		if denied := c.deniedPublish(subject, sentAt); denied != nil {
+		if denied := c.deniedPublish(msg.Subject, sentAt); denied != nil {
 			return StoredAck{}, denied
 		}
-		return StoredAck{}, unacknowledged(storedRefusal(c.refused(err, len(data))), mayHold)
+		return StoredAck{}, unacknowledged(storedRefusal(c.refused(err, messageBytes(msg))), mayHold)
 	}
 	return StoredAck{Sequence: ack.Sequence, Duplicate: ack.Duplicate, Resent: resent}, nil
 }
@@ -2949,7 +2979,7 @@ var ErrCursorMoved = errors.New("the cursor moved under this write")
 // sequence wraps ErrUnacknowledged too, not ErrCursorMoved: the first send may have stored it and
 // moved the cursor itself, so the caller reads the cursor back to tell (cursorMoved).
 func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byte, expected uint64) (uint64, error) {
-	ack, err := c.publishStoredRaw(ctx, subject, data, nats.ExpectLastSequencePerSubject(expected))
+	ack, err := c.publishStoredRaw(ctx, subject, data, expectLastSubjectSequence(expected))
 	if err != nil {
 		return 0, cursorMoved(err)
 	}
@@ -2957,24 +2987,23 @@ func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byt
 }
 
 // publishStoredRaw publishes the raw bytes data to the notification stream on subject - bytes of
-// the caller's own rather than an envelope - under extra, one publish option beyond the context
-// the send already carries, or none when extra is nil, and returns the server's acknowledgement.
-// It is the body of every raw write of the stored path: the subject check, the size check
-// (payloadTooLarge), the acknowledgement bound, the connect and the send (sendStored). Its callers
-// name their own failures, since what a refusal means is theirs: PublishCursorAt and
+// the caller's own rather than an envelope - under header, the stored write's one header or none
+// (msgIDHeader, expectLastSubjectSequence), and returns the server's acknowledgement. It is the
+// body of every stored write: the subject check, the size check of data and header together
+// (checkSend), the acknowledgement bound, the connect and the send (sendStored). The header rides
+// the message rather than a publish option, so the size check counts the bytes nats.go counts.
+// Its callers name their own failures, since what a refusal means is theirs: PublishStoredAck,
+// which stores an envelope under its message id; PublishCursorAt and
 // Client.WriteTakeoverRecordAt, which write under a precondition and read a lost one by
 // preconditionLost; SessionConsumers.recordResumeFloorAt, which writes a record whose one writer
 // keeps no sequence to write against, so the newest write stands; and Client.WriteTakeoverRecord,
 // which writes a subject no other writer has.
-//
-// extra is one option rather than a variadic list because each caller has exactly one or none:
-// a list would have the caller build a slice and this method append to it, where the two sends
-// below build sendStored's own variadic slice once, exactly as each caller built it before.
-func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []byte, extra nats.PubOpt) (StoredAck, error) {
+func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []byte, header nats.Header) (StoredAck, error) {
 	if err := checkSubject(subject); err != nil {
 		return StoredAck{}, err
 	}
-	if err := payloadTooLarge(int64(len(data)), c.knownMaxPayload()); err != nil {
+	msg := &nats.Msg{Subject: subject, Data: data, Header: header}
+	if err := c.checkSend(msg); err != nil {
 		return StoredAck{}, err
 	}
 	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
@@ -2982,10 +3011,13 @@ func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []by
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return StoredAck{}, err
 	}
-	if extra == nil {
-		return c.sendStored(ctx, subject, data, nats.Context(ctx))
-	}
-	return c.sendStored(ctx, subject, data, nats.Context(ctx), extra)
+	return c.sendStored(ctx, msg)
+}
+
+// expectLastSubjectSequence is the header of a stored write that lands only while the stream's
+// last sequence on its subject is expected, as nats.ExpectLastSequencePerSubject writes it.
+func expectLastSubjectSequence(expected uint64) nats.Header {
+	return nats.Header{nats.ExpectedLastSubjSeqHdr: []string{strconv.FormatUint(expected, 10)}}
 }
 
 // cursorMoved names a cursor write's lost precondition (preconditionLost) as the ErrCursorMoved it
@@ -3023,12 +3055,12 @@ func preconditionLost(err error) bool {
 // keeps the parent's deadline when that is the earlier one; publishBound is what bounds a caller
 // that passed none.
 //
-// A body past the server's max payload is ErrTooLarge before anything below reads ctx
-// (payloadTooLarge). A ctx that has ended puts nothing on the wire: ensureConnWithContext returns
-// its error rather than wait for a reconnect or dial one, and publishConfirmed refuses it
-// immediately before the publish, which also catches a cancel that lands as a reconnect completes.
-// A deadline arrives spent through publishHandler (cmd/listener/api.go), whose reads before the
-// publish (the sender stamp's) share the route's deadline with it.
+// A message past the server's max payload is ErrTooLarge before anything below reads ctx
+// (checkSend). A ctx that has ended puts nothing on the wire: ensureConnWithContext returns its
+// error rather than wait for a reconnect or dial one, and publishConfirmed refuses it immediately
+// before the publish, which also catches a cancel that lands as a reconnect completes. A deadline
+// arrives spent through publishHandler (cmd/listener/api.go), whose reads before the publish (the
+// sender stamp's) share the route's deadline with it.
 func (c *Client) PublishCoreContext(ctx context.Context, subject string, item contracts.Envelope) error {
 	if err := checkSubject(subject); err != nil {
 		return err
@@ -3037,7 +3069,8 @@ func (c *Client) PublishCoreContext(ctx context.Context, subject string, item co
 	if err != nil {
 		return err
 	}
-	if err := payloadTooLarge(int64(len(data)), c.knownMaxPayload()); err != nil {
+	msg := &nats.Msg{Subject: subject, Data: data}
+	if err := c.checkSend(msg); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, publishBound)
@@ -3046,7 +3079,7 @@ func (c *Client) PublishCoreContext(ctx context.Context, subject string, item co
 		return err
 	}
 	conn := c.Conn
-	return c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: data}, conn.PublishMsg)
+	return c.publishConfirmed(ctx, conn, msg, conn.PublishMsg)
 }
 
 // ForwardMsgID is the Nats-Msg-Id of an envelope whose dedupe key is dedupeKey
@@ -3098,8 +3131,10 @@ var ErrForwardNotStored = errors.New("bus: the stream did not acknowledge storin
 // ErrNoForwardMsgID before anything is sent. A sender that forwards one
 // envelope again under one MsgId until it is stored leaves the stream one copy per message and
 // recipient, however many attempts it makes, and the stream acknowledges each repeat as a
-// duplicate, which counts as stored. An error here is the publish's own, before any reply could
-// arrive (a refused, denied or invalid forward, a connection that never came back within
+// duplicate, which counts as stored. A forward past the server's max payload, its header
+// included, is ErrTooLarge before the wait for a connection or anything else (checkSend): a role
+// forward carries a message a caller sent. An error here is the publish's own, before any reply
+// could arrive (a refused, denied or invalid forward, a connection that never came back within
 // timeout); every returned forward must be waited for, which releases its reply subscription.
 func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (*PendingForward, error) {
 	if msgID == "" {
@@ -3112,6 +3147,10 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	if err != nil {
 		return nil, err
 	}
+	forward := &nats.Msg{Subject: subject, Data: data, Header: msgIDHeader(msgID)}
+	if err := c.checkSend(forward); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if err := c.ensureConnWithContext(ctx); err != nil {
@@ -3119,16 +3158,10 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	}
 	deadline, _ := ctx.Deadline()
 	conn := c.Conn
-	inbox := conn.NewInbox()
-	replies, err := conn.SubscribeSync(inbox)
+	forward.Reply = conn.NewInbox()
+	replies, err := conn.SubscribeSync(forward.Reply)
 	if err != nil {
 		return nil, err
-	}
-	forward := &nats.Msg{
-		Subject: subject,
-		Reply:   inbox,
-		Data:    data,
-		Header:  nats.Header{nats.MsgIdHdr: []string{msgID}},
 	}
 	err = c.publishConfirmed(ctx, conn, forward, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {

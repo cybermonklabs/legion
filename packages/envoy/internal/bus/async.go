@@ -135,11 +135,13 @@ type RequestOptions struct {
 // call from several goroutines at once.
 //
 // The window's sends never write at or past deadline, read again at each check so a deadline that
-// moves on (a hold's renewal) is the one in force. A send checks it before anything else, its first
-// send waits for a connection no later than it, and every send checks it again once pinned, the
-// last act before the write; a send that finds it passed at any of these answers ErrWindowDeadline,
-// in the channel when the send returns, and sends nothing. A nil deadline is none. A Probe sends no
-// envelope and does not check it.
+// moves on (a hold's renewal) is the one in force. A send checks it once it has refused what it
+// refuses whatever the deadline - a subject NATS would not accept or the stream does not capture,
+// and a message past the server's max payload (checkSend), which would otherwise read as the
+// deadline's refusal - and before anything else; its first send waits for a connection no later
+// than it, and every send checks it again once pinned, the last act before the write; a send that
+// finds it passed at any of these answers ErrWindowDeadline, in the channel when the send returns,
+// and sends nothing. A nil deadline is none. A Probe sends no envelope and does not check it.
 func (c *Client) WindowUntil(deadline func() time.Time) Sender {
 	return &window{client: c, deadline: deadline}
 }
@@ -169,11 +171,7 @@ type window struct {
 }
 
 func (w *window) PublishAsync(item contracts.Envelope) <-chan error {
-	msgID := ""
-	if contracts.DedupeKeyNamesTheUpstreamEvent(item) {
-		msgID = ForwardMsgID(item.DedupeKey, item.Topic)
-	}
-	return outcomeOf(w.send(item.Topic, item, msgID))
+	return outcomeOf(w.send(item.Topic, item, storedMsgID(item)))
 }
 
 func (w *window) PublishStoredAsync(subject string, item contracts.Envelope, msgID string) <-chan error {
@@ -194,11 +192,11 @@ func outcomeOf(answer func() error, err error) <-chan error {
 
 // send writes item to the window's connection on subject, under msgID as its Nats-Msg-Id when
 // that is not empty, and returns what waits for the stream's answer. The envelope is encoded as
-// it is, so a copy stored away from its own topic keeps that topic (PublishStoredAsync).
+// it is, so a copy stored away from its own topic keeps that topic (PublishStoredAsync). A message
+// past the server's max payload, its header included, is ErrTooLarge before the window's deadline
+// is read or a connection waited for (checkSend): a window sends envelopes its callers built,
+// Dispatch's outbox among them, of any size they were given.
 func (w *window) send(subject string, item contracts.Envelope, msgID string) (func() error, error) {
-	if err := w.expired(); err != nil {
-		return nil, err
-	}
 	if err := checkSubject(subject); err != nil {
 		return nil, err
 	}
@@ -209,10 +207,17 @@ func (w *window) send(subject string, item contracts.Envelope, msgID string) (fu
 	if err != nil {
 		return nil, err
 	}
+	msg := &nats.Msg{Subject: subject, Data: data, Header: msgIDHeader(msgID)}
+	if err := w.client.checkSend(msg); err != nil {
+		return nil, err
+	}
+	if err := w.expired(); err != nil {
+		return nil, err
+	}
 	if err := w.pinToSend(); err != nil {
 		return nil, err
 	}
-	return w.sendJetStream(subject, msgID, data)
+	return w.sendJetStream(msg)
 }
 
 // pin pins the window to the client's connection at its first send, waiting up to wait for the
@@ -364,27 +369,22 @@ func (w *window) lifeEnded() <-chan struct{} {
 	return w.life
 }
 
-// sendJetStream publishes data, an envelope's encoding, to the stream on subject, under msgID as
-// its Nats-Msg-Id when that is not empty, and returns what waits for its acknowledgement. It
-// notes the time it put the message on the wire, which is what its acknowledgement reads a denial
-// of this send alone by (acknowledged). A failure is ErrUnavailable once the window's connection
-// is no longer current or nats.go reports the disconnect, and ErrNotAcknowledged when the
-// acknowledgement ran out of time or the server answered with no responders on a connection that
-// stayed current.
-func (w *window) sendJetStream(subject, msgID string, data []byte) (func() error, error) {
-	var options []nats.PubOpt
-	if msgID != "" {
-		options = append(options, nats.MsgId(msgID))
-	}
+// sendJetStream publishes msg, an envelope's encoding under its Nats-Msg-Id header when it has
+// one, to the stream, and returns what waits for its acknowledgement. It notes the time it put the
+// message on the wire, which is what its acknowledgement reads a denial of this send alone by
+// (acknowledged). A failure is ErrUnavailable once the window's connection is no longer current
+// or nats.go reports the disconnect, and ErrNotAcknowledged when the acknowledgement ran out of
+// time or the server answered with no responders on a connection that stayed current.
+func (w *window) sendJetStream(msg *nats.Msg) (func() error, error) {
 	// The refusal signal is taken before the message goes out, so a violation of this send closes
 	// it whenever it is recorded (acknowledged).
 	signal := w.client.refusalSignal()
 	sentAt := time.Now()
-	future, err := w.js.PublishMsgAsync(&nats.Msg{Subject: subject, Data: data}, options...)
+	future, err := w.js.PublishMsgAsync(msg)
 	if err != nil {
-		return nil, w.unsent(err, len(data))
+		return nil, w.unsent(err, messageBytes(msg))
 	}
-	return func() error { return w.acknowledged(future, subject, sentAt, signal) }, nil
+	return func() error { return w.acknowledged(future, msg.Subject, sentAt, signal) }, nil
 }
 
 // requestReplies is how many replies to one Request wait to be read: it expects the stream's
@@ -431,9 +431,6 @@ func (w *window) Request(subject string, item contracts.Envelope, opts RequestOp
 
 // request sends item as Request describes and returns what waits for its answer.
 func (w *window) request(subject string, item contracts.Envelope, opts RequestOptions) (func() error, error) {
-	if err := w.expired(); err != nil {
-		return nil, err
-	}
 	if opts.MsgID == "" {
 		return nil, fmt.Errorf("%w: to %q", ErrNoForwardMsgID, subject)
 	}
@@ -444,23 +441,26 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	if err != nil {
 		return nil, err
 	}
+	msg := &nats.Msg{Subject: subject, Data: data, Header: msgIDHeader(opts.MsgID)}
+	// The size check comes before the window's deadline is read and its connection waited for, as
+	// send's does: a request carries an envelope its caller built.
+	if err := w.client.checkSend(msg); err != nil {
+		return nil, err
+	}
+	if err := w.expired(); err != nil {
+		return nil, err
+	}
 	if err := w.pinToSend(); err != nil {
 		return nil, err
 	}
 	// The life the pin holds the window to: it never changes once pinned, so its end, at any moment
 	// from here on, is the loss this request answers.
 	ended := w.lifeEnded()
-	inbox := w.conn.NewInbox()
+	msg.Reply = w.conn.NewInbox()
 	replies := make(chan *nats.Msg, requestReplies)
-	inboxSub, err := w.conn.ChanSubscribe(inbox, replies)
+	inboxSub, err := w.conn.ChanSubscribe(msg.Reply, replies)
 	if err != nil {
-		return nil, w.unsent(err, len(data))
-	}
-	msg := &nats.Msg{
-		Subject: subject,
-		Reply:   inbox,
-		Data:    data,
-		Header:  nats.Header{nats.MsgIdHdr: []string{opts.MsgID}},
+		return nil, w.unsent(err, messageBytes(msg))
 	}
 	deadline := time.Now().Add(cmp.Or(opts.Timeout, publishAcknowledgementTimeout))
 	before := observe(w.conn)
@@ -472,7 +472,7 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	sentAt := time.Now()
 	if err := w.conn.PublishMsg(msg); err != nil {
 		_ = inboxSub.Unsubscribe()
-		return nil, w.unsent(err, len(data))
+		return nil, w.unsent(err, messageBytes(msg))
 	}
 	return func() error {
 		defer inboxSub.Unsubscribe()
