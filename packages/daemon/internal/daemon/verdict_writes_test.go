@@ -2484,6 +2484,45 @@ func TestLegionVerdictARecordedRunAnotherTokenTurnedIsCorrectedWhileNoDecisionSt
 	}
 }
 
+// While no decision stands, the conclusion the sweep puts over a head (undecidedOver) is success only
+// where the store's newest write there is success, the store holds a run there, and GitHub lists
+// each run the store holds at success; anything else is failure, which fails safe.
+func TestLegionVerdictUndecidedOverIsSuccessOnlyWhereGitHubShowsEveryRecordedRunAtSuccess(t *testing.T) {
+	recorded := func(newest verdict.Conclusion, runs ...int64) verdictWritesAt {
+		at := verdictWritesAt{runs: map[int64]bool{}, statuses: map[int64]bool{600: true}, newest: newest}
+		for _, id := range runs {
+			at.runs[id] = true
+		}
+		return at
+	}
+	listed := func(conclusions map[int64]string) []listedCheckRun {
+		var runs []listedCheckRun
+		for id, conclusion := range conclusions {
+			runs = append(runs, listedCheckRun{ID: id, Conclusion: conclusion})
+		}
+		return runs
+	}
+	for _, tc := range []struct {
+		name     string
+		recorded verdictWritesAt
+		runs     []listedCheckRun
+		want     verdict.Conclusion
+	}{
+		{"the newest write success, and GitHub shows its run at success", recorded(verdict.Success, 1001), listed(map[int64]string{1001: "success"}), verdict.Success},
+		{"the newest write failure", recorded(verdict.Failure, 1001), listed(map[int64]string{1001: "success"}), verdict.Failure},
+		{"no write recorded", recorded(verdict.None), nil, verdict.Failure},
+		{"GitHub shows a recorded run at failure", recorded(verdict.Success, 1001), listed(map[int64]string{1001: "failure"}), verdict.Failure},
+		{"GitHub no longer lists one of the recorded runs", recorded(verdict.Success, 1001, 1002), listed(map[int64]string{1001: "success"}), verdict.Failure},
+		{"the store holds statuses alone", recorded(verdict.Success), listed(map[int64]string{900: "success"}), verdict.Failure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := undecidedOver(tc.recorded, tc.runs); got != tc.want {
+				t.Fatalf("undecidedOver = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // R4 while no decision stands: the writers' sweep writes success over a head only where the store's
 // newest write there is success and GitHub shows every run the store holds at success too, never
 // from the store alone. Here the owner's acceptance writes success at code, the reviewer's commit
