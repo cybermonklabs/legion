@@ -9,15 +9,17 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
 
 // processGone says whether the process pid has ended: /proc holds it no more, or holds it a zombie
-// no one has reaped yet, which holds no memory.
+// no one has reaped yet, which holds no memory, or answers its read with ESRCH, which the kernel
+// gives while it releases a process whose reaper has just reaped it: such a process has ended too.
 func processGone(pid int) bool {
 	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
 		return true
 	}
 	end := strings.LastIndexByte(string(stat), ')')
@@ -66,11 +68,15 @@ func TestTheGitGuardKillsAProcessGroupAboveItsCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the child file holds %q, not a pid", data)
 	}
-	for deadline := time.Now().Add(10 * time.Second); !processGone(child) && time.Now().Before(deadline); {
+	// The child is its group's last process: once its shell is gone, init reaps it whenever it
+	// gets to it, so the test waits on both ending rather than on a time.
+	shellGone, childGone := processGone(shell), processGone(child)
+	for deadline := time.Now().Add(10 * time.Second); !(shellGone && childGone) && time.Now().Before(deadline); {
 		time.Sleep(50 * time.Millisecond)
+		shellGone, childGone = processGone(shell), processGone(child)
 	}
-	if !processGone(shell) || !processGone(child) {
-		t.Errorf("the shell %d ended %v and its child %d ended %v; want the whole group ended", shell, processGone(shell), child, processGone(child))
+	if !shellGone || !childGone {
+		t.Errorf("the shell %d ended %v and its child %d ended %v; want the whole group ended", shell, shellGone, child, childGone)
 	}
 	mu.Lock()
 	defer mu.Unlock()
