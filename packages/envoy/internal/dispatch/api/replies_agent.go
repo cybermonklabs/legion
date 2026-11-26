@@ -107,13 +107,25 @@ func agentMarkOf(session string) string {
 }
 
 // myAgentUnreadReplyTest is this file's one spelling of "a reply the person has not read": newer
-// than the mark for its session, and not read by its id (replyReadByID). reply names the reply and
-// mark the mark, both as expressions, since each read asks it of a row of its own walk - and each
-// read takes the mark once per root rather than once per reply, which is two index reads a reply
-// saved.
-func myAgentUnreadReplyTest(reply, mark string) string {
-	return `created_at > ` + mark + `
-			  and not ` + replyReadByID(reply)
+// than the mark for its session, and not read by its id (replyReadByID). row names the walk's row
+// the reply is read from and mark the mark, as expressions, since each read asks it of a row of
+// its own walk - and each read takes the mark once per root rather than once per reply, which is
+// two index reads a reply saved.
+//
+// The time test is asked first, and the read-by-id test only of a reply newer than the mark, by a
+// case rather than an `and`: Postgres orders a filter's conditions by what it estimates each
+// costs, and it costs replyReadByID's two probes at nothing while user_agent_reply_read holds no
+// row that no tuple states yet, which is every database the backfill has passed. So an `and` ran
+// both probes for every session reply of every root before it looked at the time, which answers
+// no for nearly all of them: c-p99's Mark all read of the heavy person spent 19.5 ms in its Agent
+// read, which walks 2,000 roots, where the base build, whose one probe Postgres runs as an
+// anti-join after the time test, spent 7.7 ms (pg_stat_statements, 201 presses, 2026-11-25), and
+// the same read with this case took 7.3 ms at its p50 against 18.4 to 24.5 as an `and`. The two
+// answer alike for every row: neither side of the `and` is ever null - a message's created_at is
+// never null, and mark is read through agentMarkOf, which is never null either.
+func myAgentUnreadReplyTest(row, mark string) string {
+	return `(case when ` + row + `.created_at > ` + mark + `
+			  then not ` + replyReadByID(row+".id") + ` else false end)`
 }
 
 // myAgentRootFilter is what makes a message one of the person's one-off messages to a session: an
@@ -236,7 +248,7 @@ var myAgentRowFacts = `
 		),
 		replies as (
 			select t.id, t.author, t.created_at, t.body,
-			       t.` + myAgentUnreadReplyTest("t.id", "(select at from mark)") + ` as unread
+			       ` + myAgentUnreadReplyTest("t", "(select at from mark)") + ` as unread
 			from thread t where t.author->>'kind' = 'session'
 		)
 		select (select session_id from root) as session_id, (select body from root) as subject,
@@ -269,7 +281,7 @@ func myAgentUnreadRootsOf(from, live string) string {
 		  and exists (` + agentThreadCTE("m.id") + `
 			select 1 from thread t
 			where t.author->>'kind' = 'session'
-			  and t.` + myAgentUnreadReplyTest("t.id", "mark.at") + `
+			  and ` + myAgentUnreadReplyTest("t", "mark.at") + `
 		  )`
 }
 
