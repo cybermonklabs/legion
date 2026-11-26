@@ -510,6 +510,7 @@ export function ThreadCard({
     foldFocus.handBack();
     onToggle();
   };
+  const endReply = onReplyCancel ?? foldFromReply;
   /* Mounted while the card is expanded, under the thread's reply send name, so a reply still
      out or refused - which the held-send store keeps for the thread - is there each time the
      card expands. A closed issue takes a reply as it takes any comment, so the composer shows
@@ -539,8 +540,8 @@ export function ThreadCard({
           inline
           kind="comment"
           mutationKey={replyMutationKey}
-          onCancelReply={onReplyCancel ?? foldFromReply}
-          onClose={onReplyCancel ?? foldFromReply}
+          onCancelReply={endReply}
+          onClose={endReply}
           onSent={() => {}}
           owner={composerOwner(owner)}
           replyParent={root}

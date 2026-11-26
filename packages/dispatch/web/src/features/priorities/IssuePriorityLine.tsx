@@ -74,8 +74,8 @@ interface AdvancesWrite {
   readonly advances_revision: number;
 }
 
-/** What the line draws from its write (`useIssuePriorityWrite`). */
-export interface IssuePriorityWrite {
+/** What the line draws from its write (`usePriorityLineWrite`). */
+interface PriorityLineWrite {
   /** Whether the trigger is held: a write of the line is out within its deadline. */
   readonly held: boolean;
   /** Why the reads the latest write made stale have not settled, once the hold over them ran
@@ -94,7 +94,7 @@ export interface IssuePriorityWrite {
  * (`IssueMargin.tsx`): held in the line, the write's hold, its refusal and why its reads have not
  * settled would go with the place it leaves. Every other line holds its own.
  */
-export function useIssuePriorityWrite(issueKey: string): IssuePriorityWrite {
+export function usePriorityLineWrite(issueKey: string): PriorityLineWrite {
   const page = usePageWords();
   const queryClient = useQueryClient();
   const [unsettled, holdThrough] = useReadBound();
@@ -187,9 +187,9 @@ export function IssuePriorityLine({
   ...line
 }: IssuePriorityLineProps & {
   /** The line's write and its hold, where the page holds them rather than the line
-   *  (`useIssuePriorityWrite`): Details, which draws the line in one of two places. Absent, the
+   *  (`usePriorityLineWrite`): Details, which draws the line in one of two places. Absent, the
    *  line holds its own (`LineWithOwnWrite`). */
-  priorityWrite?: IssuePriorityWrite;
+  priorityWrite?: PriorityLineWrite;
 }): ReactNode {
   return priorityWrite === undefined ? (
     <LineWithOwnWrite {...line} />
@@ -200,7 +200,7 @@ export function IssuePriorityLine({
 
 /** The line where the page holds no write for it: the line holds its own. */
 function LineWithOwnWrite(line: IssuePriorityLineProps): ReactNode {
-  const priorityWrite = useIssuePriorityWrite(line.issue.key);
+  const priorityWrite = usePriorityLineWrite(line.issue.key);
   return <PriorityLine {...line} priorityWrite={priorityWrite} />;
 }
 
@@ -223,7 +223,7 @@ function PriorityLine({
   inRow = false,
   issue,
   priorityWrite,
-}: IssuePriorityLineProps & { priorityWrite: IssuePriorityWrite }): ReactNode {
+}: IssuePriorityLineProps & { priorityWrite: PriorityLineWrite }): ReactNode {
   const page = usePageWords();
   const inDetails = page !== null && inRow;
   const advances = issue.advances ?? [];

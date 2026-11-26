@@ -6,7 +6,6 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ApiError, api } from "../../api/client";
-import { useListReadBound } from "../../api/read-bound";
 import type {
   Agent,
   Comment,
@@ -18,7 +17,7 @@ import type {
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { agentRow, plannerAgentRow } from "../threads/replies-fixture";
-import { ThreadRowCard } from "./ThreadRowCard";
+import { ListedCards } from "./thread-cards-fixture";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -119,20 +118,6 @@ function comment(id: string, body: string, overrides: Partial<Comment> = {}): Co
     turn: null,
     ...overrides,
   };
-}
-
-/** Thread cards drawn as the Inbox's list draws them, under the list's one hold through the read
- *  a Mark read makes (`useListReadBound`). */
-function ListedCards({ threads }: { readonly threads: readonly MyReplyRow[] }): ReactNode {
-  const [unsettledOf, holdThrough] = useListReadBound();
-  return threads.map((thread) => (
-    <ThreadRowCard
-      holdThrough={holdThrough}
-      key={thread.thread_id}
-      thread={thread}
-      unsettled={unsettledOf(thread.thread_id)}
-    />
-  ));
 }
 
 function renderCard(thread: MyReplyRow): QueryClient {

@@ -32,6 +32,11 @@ export function NewPriority(): ReactNode {
   const [title, setTitle] = useState("");
   const focusBack = useFocusBack(adding);
   if (!canWrite) return null;
+  const closeForm = () => {
+    focusBack.handBack();
+    setTitle("");
+    setAdding(false);
+  };
   return (
     <>
       <button
@@ -51,9 +56,7 @@ export function NewPriority(): ReactNode {
             const named = title.trim();
             if (named === "") return;
             add.mutate({ title: named });
-            focusBack.handBack();
-            setTitle("");
-            setAdding(false);
+            closeForm();
           }}
         >
           <input
@@ -71,15 +74,7 @@ export function NewPriority(): ReactNode {
           >
             Add priority
           </button>
-          <button
-            className={BUTTON}
-            onClick={() => {
-              focusBack.handBack();
-              setAdding(false);
-              setTitle("");
-            }}
-            type="button"
-          >
+          <button className={BUTTON} onClick={closeForm} type="button">
             Cancel
           </button>
         </form>

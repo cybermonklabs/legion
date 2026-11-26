@@ -1445,9 +1445,10 @@ function InboxBody({
   // reads in flight at the pick and holds back every read asked while it is out until Dispatch
   // has taken it (`useAskSnooze.tsx`: the row's write through `holds` and `cancelQueries` in
   // `onMutate`, the bar's through `holdBackReads` and `cancelQueries` in `submit`). So a row that
-  // read leaves in its band is staying, as a list with no Later band leaves it. The name ends at once where Dispatch refused the write that made
-  // it - the row's own, whose refusal stays with the ask until its next press, or the bar's
-  // newest pick - since the rollback has put the row's moment back and the row is staying.
+  // read leaves in its band is staying, as a list with no Later band leaves it. The name ends at
+  // once where Dispatch refused the write that made it - the row's own, whose refusal stays with
+  // the ask until its next press, or the bar's newest pick - since the rollback has put the row's
+  // moment back and the row is staying.
   useLayoutEffect(() => {
     const drawn = new Set(rowsIn(listRef.current).map((row) => row.dataset.inboxRow ?? ""));
     forgetDismissed((id) => drawn.has(id));

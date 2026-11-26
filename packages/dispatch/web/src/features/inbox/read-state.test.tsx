@@ -7,7 +7,6 @@ import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { onlineManager, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { onFakeClock, realClock, tick } from "../../__tests__/fake-clock";
@@ -30,7 +29,6 @@ import {
   whoAmIQuery,
 } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
-import { useListReadBound } from "../../api/read-bound";
 import type {
   Agent,
   Comment,
@@ -46,7 +44,7 @@ import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
 import { widenToReadingPane } from "./inbox-fixture";
-import { ThreadRowCard } from "./ThreadRowCard";
+import { ListedCards } from "./thread-cards-fixture";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -134,20 +132,6 @@ function seeded(
   // The unread set `useMarkThreadRead` watches: without the thread in it nothing is marked.
   client.setQueryData(myRepliesOwnerQuery({ issue: "CORE-1" }).queryKey, threadsRead(rows));
   return client;
-}
-
-/** Thread cards drawn as the Inbox's list draws them, under the list's one hold through the read
- *  a Mark read makes (`useListReadBound`). */
-function ListedCards({ threads }: { readonly threads: readonly MyReplyRow[] }): ReactNode {
-  const [unsettledOf, holdThrough] = useListReadBound();
-  return threads.map((thread) => (
-    <ThreadRowCard
-      holdThrough={holdThrough}
-      key={thread.thread_id}
-      thread={thread}
-      unsettled={unsettledOf(thread.thread_id)}
-    />
-  ));
 }
 
 function renderInbox(client: QueryClient): void {

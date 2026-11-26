@@ -8,7 +8,7 @@ import type { KeyedPress } from "../writes/useKeyedWrite";
 import { canHoldFocus } from "./focus-keeper";
 import { firstUsable } from "./usable-control";
 
-/** The priority line's write as the mutation cache holds it (`useIssuePriorityWrite`): the press
+/** The priority line's write as the mutation cache holds it (`usePriorityLineWrite`): the press
  *  its keyed write made (`KeyedPress`), with the set of the issue's own priorities it sends and
  *  the revision of the read that set was drawn from, as the issue's PATCH body names them. */
 type AdvancesSave = KeyedPress<Pick<UpdateIssueInput, "advances" | "advances_revision">>;
@@ -62,7 +62,7 @@ function sameMembers<T>(a: readonly T[], b: readonly T[], same: (x: T, y: T) => 
  * line draws there, and where a close drawn in the same read disables that, to
  * `developmentHeading`, the button that opens and closes the section these rows are in. Each
  * trigger is found by its property mark. Details holds the line's write for both places
- * (`useIssuePriorityWrite`), so the trigger in the place the line moves to is held
+ * (`usePriorityLineWrite`), so the trigger in the place the line moves to is held
  * (`aria-disabled`) while the write that moved it still holds its reads, and it takes the focus
  * all the same: a held control keeps the focus by design (`components/held-press.ts`). A trigger
  * that can take no focus - disabled, or under a hidden element (`canHoldFocus`) - passes it on,

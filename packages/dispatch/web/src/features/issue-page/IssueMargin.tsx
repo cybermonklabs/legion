@@ -27,7 +27,7 @@ import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
 import { propertyControlSelector } from "../issue/property-control";
 import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
-import { IssuePriorityLine, useIssuePriorityWrite } from "../priorities/IssuePriorityLine";
+import { IssuePriorityLine, usePriorityLineWrite } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
@@ -404,8 +404,8 @@ export function IssueMarginPanel({
   // The priority line's write, with its hold and its refusal, held here rather than in the line:
   // the line is drawn in one of two places, and the first priority added and the last one
   // removed take it from the place the write was made in to the other as the read after that
-  // write is drawn (`useIssuePriorityWrite`).
-  const priorityWrite = useIssuePriorityWrite(issue.key);
+  // write is drawn (`usePriorityLineWrite`).
+  const priorityWrite = usePriorityLineWrite(issue.key);
   // The Repository row's control draws its own refused write, and hands it to the row to say
   // (`sayFailure`), as Details says its own. A failed read of the project list, which the box's
   // suggestion of the project's default repository comes from, costs the suggestion and says

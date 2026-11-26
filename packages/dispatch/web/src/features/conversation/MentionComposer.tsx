@@ -599,6 +599,13 @@ export function MentionComposer({
   // re-bound each render for it.
   const closeOrAskNow = useRef(closeOrAsk);
   closeOrAskNow.current = closeOrAsk;
+  /** Back to the field the reader was writing in before `Discard draft?` (`closeOrAsk`), with no
+   *  scroll of the browser's own, which would centre a field not wholly in view: it is brought
+   *  into view only where the reader cannot see it whole (`focusIntoView`). */
+  const focusAskedField = () => {
+    const field = lastFocusedField.current;
+    if (field !== null) focusIntoView(field);
+  };
   /** Adds `texts` to the end of the field - the references of files that landed into the draft it
    *  shows (`useDraftHomes`) - where the reader did not type them, so their next edit is measured
    *  from here (`previousBody`). A pick is the field's own edit, which `onBodyChange` measures. */
@@ -1090,13 +1097,12 @@ export function MentionComposer({
           <button
             className="font-semibold underline"
             onClick={() => {
-              // Back to the field the reader was writing in before the question, as Keep gives
-              // it back (`focusIntoView`), and ahead of the host's `onClose`: the Discard that
-              // held the focus goes with the question, so a composer that stays - the
-              // Conversation's docked one - keeps the caret in its field, and a host whose
-              // `onClose` ends the composer or moves the focus moves it on from there.
-              const field = lastFocusedField.current;
-              if (field !== null) focusIntoView(field);
+              // Back to the field, as Keep gives it back (`focusAskedField`), and ahead of the
+              // host's `onClose`: the Discard that held the focus goes with the question, so a
+              // composer that stays - the Conversation's docked one - keeps the caret in its
+              // field, and a host whose `onClose` ends the composer or moves the focus moves it
+              // on from there.
+              focusAskedField();
               discard();
             }}
             type="button"
@@ -1107,11 +1113,7 @@ export function MentionComposer({
             className="underline"
             onClick={() => {
               setConfirmingDiscard(false);
-              // Back to the field the reader was writing in, with no scroll of the browser's own,
-              // which would centre a field not wholly in view: it is brought into view only where
-              // the reader cannot see it whole (`focusIntoView`).
-              const field = lastFocusedField.current;
-              if (field !== null) focusIntoView(field);
+              focusAskedField();
             }}
             type="button"
           >

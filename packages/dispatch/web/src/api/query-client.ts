@@ -67,6 +67,12 @@ export function queryRetryDelay(
   return QUERY_RETRY_DELAY_MS;
 }
 
+/** The promise of `query`'s fetch that is out, fetching or paused by the network, else undefined:
+ *  only `idle` says no fetch is out. */
+function fetchOut(query: Query): Promise<unknown> | undefined {
+  return query.state.fetchStatus === "idle" ? undefined : query.promise;
+}
+
 /**
  * Dispatch's query client: TanStack's, except that no read ever has two requests in flight.
  * `refetchQueries` - and through it `invalidateQueries` and `resetQueries`, which TanStack routes
@@ -155,7 +161,7 @@ export class DispatchQueryClient extends QueryClient {
   }
 
   #refetch(query: Query, options: RefetchOptions): Promise<void> {
-    const running = query.state.fetchStatus === "idle" ? undefined : query.promise;
+    const running = fetchOut(query);
     if (running === undefined) {
       const fetched = query.fetch(undefined, { ...options, cancelRefetch: false });
       // `query.fetch` has made the fetch's retryer by now, and `query.promise` is its promise,
@@ -181,7 +187,7 @@ export class DispatchQueryClient extends QueryClient {
           }
           // A fetch that began after the one waited on was composed after this call: it answers,
           // or the newer fetch a cancel of it leaves running does (`#answered`).
-          const newer = query.state.fetchStatus === "idle" ? undefined : query.promise;
+          const newer = fetchOut(query);
           if (newer !== undefined) {
             return this.#answered(query, newer, newer).then(
               () => undefined,
@@ -211,7 +217,7 @@ export class DispatchQueryClient extends QueryClient {
     return request.then(
       () => fetched,
       (error: unknown) => {
-        const newer = query.state.fetchStatus === "idle" ? undefined : query.promise;
+        const newer = fetchOut(query);
         if (!(error instanceof CancelledError) || newer === undefined || newer === request) {
           return fetched;
         }
@@ -288,8 +294,7 @@ export async function askSignInAgain(client: QueryClient): Promise<void> {
   await client.invalidateQueries({ queryKey: ["whoami"] });
   const whoami = client.getQueryCache().find({ exact: true, queryKey: ["whoami"] });
   for (;;) {
-    const out =
-      whoami === undefined || whoami.state.fetchStatus === "idle" ? undefined : whoami.promise;
+    const out = whoami === undefined ? undefined : fetchOut(whoami);
     if (out === undefined) return;
     await out.catch(() => undefined);
   }
