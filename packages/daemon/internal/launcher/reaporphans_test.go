@@ -27,7 +27,7 @@ func TestOnlyTheSingleRoleShimIsToldToReapOrphans(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := slices.Concat(shim[:2], []string{"--reap-orphans"}, shim[2:])
+		want := slices.Concat(shim[:2], []string{reapOrphansFlag}, shim[2:])
 		if !slices.Equal(process.cmd.Args, want) {
 			t.Errorf("the shim's command is %q, want %q", process.cmd.Args, want)
 		}
@@ -66,7 +66,7 @@ func TestOnlyTheSingleRoleShimIsToldToReapOrphans(t *testing.T) {
 			t.Fatalf("role-init's command %q does not end with the shim's argv %q", args, shim)
 		}
 		for _, word := range slices.Concat(process.cmd.Args, process.cmd.Env) {
-			if strings.Contains(word, "--reap-orphans") {
+			if strings.Contains(word, reapOrphansFlag) {
 				t.Errorf("role-init's command or environment holds %q: a shim under role-init must never reap orphans", word)
 			}
 		}

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -33,7 +34,7 @@ func TestTheWorkerShimWarmsWithTheWorkspacesWarmUp(t *testing.T) {
 	}
 
 	given.warmCodegraph, given.reapOrphans = true, true
-	set["warm-codegraph"], set["reap-orphans"] = true, true
+	set["warm-codegraph"], set[shimwire.ReapOrphansFlag] = true, true
 	cfg, err = workerShimConfig(set, given, []string{"omp"})
 	if err != nil {
 		t.Fatal(err)

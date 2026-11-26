@@ -316,6 +316,10 @@ func TestARolesGroupSignalEndsTheShimAndRoleInitReportsAndDrains(t *testing.T) {
 				t.Errorf("role-init ended with %q: the %s its process group got ended it, with no report of the shim's status and no drain\n%s",
 					report["role-init"], unix.SignalName(sig), output)
 			}
+			if report["ignored"] != "no" {
+				t.Errorf("the stand-in shim reads %s as ignored: %q, want %q: role-init ignored it rather than catching it, and the shim inherited the ignore across exec\n%s",
+					unix.SignalName(sig), report["ignored"], "no", output)
+			}
 			if report["signalled"] != "yes" {
 				t.Errorf("the stand-in shim never got the %s it sent its group, so the case shows nothing\n%s", unix.SignalName(sig), output)
 			}
@@ -523,8 +527,16 @@ func TestRoleGroupShimHelper(t *testing.T) {
 
 // groupShimSignal is a shim that sends sig to its own process group, which is role-init's
 // (kill(0, sig)), and takes it as its stop, as `legion worker-shim` takes SIGHUP: it catches sig,
-// says it got it, and exits 0.
+// says it got it, and exits 0. It first reports whether it started with sig ignored, before its
+// own Notify installs a handler over an inherited SIG_IGN and hides it: the Go runtime keeps an
+// inherited SIG_IGN for SIGHUP and SIGINT and records it, which signal.Ignored reads, so a
+// role-init that ignored SIGHUP rather than catching it shows here.
 func groupShimSignal(sig syscall.Signal) int {
+	ignored := "no"
+	if signal.Ignored(sig) {
+		ignored = "yes"
+	}
+	fmt.Printf("group ignored=%s\n", ignored)
 	got := make(chan os.Signal, 1)
 	signal.Notify(got, sig)
 	if err := syscall.Kill(0, sig); err != nil {
