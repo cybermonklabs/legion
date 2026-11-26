@@ -139,11 +139,10 @@ const (
 )
 
 // liveIssueVolume is the issue volume's size, the daemon configuration's default. The run sets no
-// scheduling beyond the Legion pool the runtime selects: no pod asks for another pod's node or
-// keeps off one (every issue pod owns its volume, LEGION-632), and every pod reserves what
-// liveResources gives its roles, so the scheduler, and Karpenter under the `legion` NodePool's
-// floor (karpenter.k8s.aws/instance-cpu Gt 3, set in the deployment repository), place it where
-// the pool has room.
+// scheduling: no pod asks for another pod's node or keeps off one (every issue pod owns its volume,
+// LEGION-632), and every pod reserves what liveResources gives its roles, so the scheduler places
+// it wherever a node of the cluster has room, and the cluster's autoscaler adds a node when none
+// has.
 var liveIssueVolume = resource.MustParse("20Gi")
 
 // liveRepositoryCache is the daemon's default repository cache (config.DefaultRepositoryCache), as
@@ -179,9 +178,11 @@ func (r *liveRig) cacheRepository(repo ghrepo.Repository) {
 // `runtime.kubernetes.resources.issue` does, field by field: its cpu and memory, which the stub
 // agents need little of, and its ephemeral-storage limit and request, both explicitly configured
 // and equal at the GKE Autopilot cap; the controller's pod keeps config.DefaultResources(). The
-// stub agent sleeps, so the override sizes the issue pod down from the default 3 CPU and 19 GiB to
-// 2 CPU and 4 GiB, which nproc and MemTotal in the pod are then checked against.
-var liveIssueOverride = config.Reservation{CPU: "2", Memory: "4Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "10Gi"}
+// stub agent sleeps, so the override sizes the issue pod's memory down from the default 8 GiB to
+// 4 GiB. Its cpu, 2500m, sits above the default's 2, so nproc in the pod, 3, and the pod's cgroup
+// cpu quota, 2.5, read the override and not the default; nproc or the quota, and MemTotal, are
+// what the pod is then checked against.
+var liveIssueOverride = config.Reservation{CPU: "2500m", Memory: "4Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "10Gi"}
 
 // liveResources are the reservations the rig hands the runtime (Options.Resources): the daemon's
 // defaults as it translates them (reservations, manifest_test.go) with liveIssueOverride applied
@@ -285,6 +286,10 @@ type liveEnv struct {
 	// unlike the rest of liveEnv: unset is a blocked run of the secrets-* checks, never a refusal
 	// to start (secretsBlocked).
 	agentSecretsURL, agentSecretsAutoSHA, agentSecretsBin, agentSecretsTokenFile string
+	// agentSecretsAudience is the audience the run enrolls its pods for, the one the namespace's
+	// daemons use (deploymentBrokerAudience), read through the operator context once a broker URL
+	// is set; the script mints the run's login token for the same one.
+	agentSecretsAudience string
 	// The scratch Postgres the script started, which every pod of the run keeps its sessions in:
 	// the file holding its URL at streamAdvertiseHost, which the script also wrote into the
 	// providers Secret under liveSessionsSecretKey for every pod to dial as it dials the worker
@@ -751,6 +756,7 @@ type liveRig struct {
 }
 
 func TestStage4aSandboxRuntimeLive(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (fixtureenv.Live).
 	fixtureenv.Live(t)
 	env := readLiveEnv(t)
 	r := newLiveRig(t, env)
@@ -827,6 +833,16 @@ func newLiveRig(t *testing.T, env liveEnv) *liveRig {
 	}
 	if r.dyn, err = dynamic.NewForConfig(own); err != nil {
 		fail("%v", err)
+	}
+	if env.agentSecretsURL != "" {
+		configMaps, err := r.kubectl("get", "configmaps", "-o", "json")
+		if err != nil {
+			fail("%v", err)
+		}
+		if r.env.agentSecretsAudience, err = deploymentBrokerAudience([]byte(configMaps)); err != nil {
+			fail("%v", err)
+		}
+		note("operator", "the namespace's daemons enroll their pods for the broker audience %s, and so does the run", r.env.agentSecretsAudience)
 	}
 	if agentSecretsBlockReason(env.agentSecretsURL, env.agentSecretsAutoSHA, env.agentSecretsBin, env.agentSecretsTokenFile) == "" {
 		// The run logs in as the daemon does, with the ServiceAccount token the script minted; no
@@ -982,7 +998,7 @@ func (r *liveRig) runtimeOptions(address string, ln *stream.Listener) Options {
 		CacheRepositories:     r.cacheRepositories,
 	}
 	if r.env.agentSecretsURL != "" {
-		opts.AgentSecrets = &AgentSecrets{URL: r.env.agentSecretsURL, Audience: "agent-secrets", TokenExpiry: time.Hour}
+		opts.AgentSecrets = &AgentSecrets{URL: r.env.agentSecretsURL, Audience: r.env.agentSecretsAudience, TokenExpiry: time.Hour}
 	}
 	return opts
 }

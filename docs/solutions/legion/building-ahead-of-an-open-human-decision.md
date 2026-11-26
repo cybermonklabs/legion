@@ -29,9 +29,11 @@ runbook prescribing it for the LEGION deployment — move the two App keys to th
 relaunch the daemon from a terminal pane, rotate. The store choice (human tier now / wait for
 Kubernetes / second Unix user) needed Sami's risk appetite and his dotfiles, so it was an open
 "Decisions needed" item while the tree ran. PR #1017 merged with the runbook stating the human
-tier as this deployment's instructions. Sami then answered **Wait for Kubernetes** (2026-09-13
-13:46 UTC, after a "Why is this important?" round), and a second, docs-only PR (#1033) had to
-correct the runbook. Three things a future architect and implementer should take from it.
+tier as this deployment's instructions. On 2026-09-13 Sami decided that the GitHub App keys would
+stay agent-tier until the daemon ran in its own Kubernetes pod
+(https://github.com/cybermonklabs/legion/pull/1033#pullrequestreview-5191338654), and a second,
+docs-only PR (#1033) corrected the runbook. Three things a future architect and implementer should
+take from it.
 
 ## 1. With `gates.design: off`, the design gate is not a human channel
 
@@ -45,7 +47,7 @@ never folded into "Decisions needed" on the assumption the gate will surface it.
 Evidence from this tree on which channel worked: the operator session put the same choice to Sami
 as a plain `dispatch_message` on LEGION-74 at 08:45 UTC and it went unanswered; the architect's
 separate `dispatch_ask` on LEGION-77 (three options, cost stated, recommendation) drew a
-clarification reply and then the answer. The deployment's standing rule decides the channel; what
+clarification reply and then the answer. The deployment's instructions decide the channel; what
 this tree proves is only that the gate is not one.
 
 ## 2. A runbook written before the answer describes an option, not the deployment
@@ -76,7 +78,7 @@ The correction (#1033, one commit) was a reframing, not a revert:
 
 And the deferral was recorded where it will be carried: a comment on LEGION-19 ("Legion on
 Kubernetes") stating the requirement the pod boundary must now satisfy — App keys mounted into the
-daemon pod only, rotation at the cutover — with the ask reference and Sami's answer as provenance.
+daemon pod only, rotation at the cutover — with the ask reference as provenance.
 The LEGION-77 spec kept its deferred acceptance items in place, each marked deferred with that
 provenance, rather than deleting them; the record of what was asked and decided stays with the issue
 that asked.

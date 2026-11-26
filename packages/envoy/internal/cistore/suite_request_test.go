@@ -46,7 +46,7 @@ func TestASuiteRequestLeavesTheRecordAsItWas(t *testing.T) {
 		sha    = "abcdef1234567890abcdef1234567890abcdef12"
 	)
 	key := cistore.Key("example-org", "example-repo", "42", sha)
-	handler := webhook.GitHubHandler(secret, "@legion", "", client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
+	handler := webhook.GitHubHandler(secret, "@legion", "", "", client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	post := func(event, delivery, body string) {
 		t.Helper()
 		req := httptest.NewRequest("POST", "/webhook/github", strings.NewReader(body))

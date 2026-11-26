@@ -20,6 +20,7 @@ const endedWorkVersion = 20261113082415
 // work from is the activity report of the launch it lets go, and of no other (ClaimActivity); and
 // the migration is read back under both: every row the table already holds takes null.
 func TestARelaunchRecordsItsEndedWorkOnTheClaimRow(t *testing.T) {
+	t.Parallel()
 	t.Run("the record round-trips with the claim, and its absence is null", func(t *testing.T) {
 		ctx := context.Background()
 		store := migratedStore(t)

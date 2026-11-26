@@ -34,7 +34,7 @@ func TestAnEdgeRoleMessageReachesNoHolderOfAnotherProjectsRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registerConsumerSession(shared.port, holder); err != nil {
+	if _, err := registerConsumerSession(shared.port, holder); err != nil {
 		t.Fatal(err)
 	}
 	postListener(t, shared.port, "/v1/roles/set", `{"session_id":"`+holder+`","role":"`+otherProjectRole+`"}`)

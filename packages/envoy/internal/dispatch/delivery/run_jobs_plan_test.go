@@ -41,7 +41,7 @@ func TestTheRunJobsReadKeysTheJobsItNames(t *testing.T) {
 	if read := scannedRelations(t, plan); !slices.Equal(read, []string{"delivery_run_jobs"}) {
 		t.Fatalf("the run jobs read reads %v; want delivery_run_jobs alone:\n%s", read, raw)
 	}
-	scan := indexScanOf(t, plan, raw, "delivery_run_jobs", "delivery_run_jobs_pkey")
+	scan := indexScanOf(t, plan, raw, "delivery_run_jobs_pkey")
 	for _, key := range []string{"repo =", "run_id = ANY", "name = ANY"} {
 		if !strings.Contains(scan.Cond, key) {
 			t.Fatalf("the run jobs read's index condition %q holds no %q; want each of repo, run_id and name to key the primary key:\n%s", scan.Cond, key, raw)
@@ -153,7 +153,7 @@ func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
 		if explaintest.SeqScansRelation(t, read.plan, "delivery_run_jobs") {
 			t.Fatalf("the timeline's %s jobs read scans delivery_run_jobs whole:\n%s", read.what, read.raw)
 		}
-		scan := indexScanOf(t, read.plan, read.raw, "delivery_run_jobs", read.index)
+		scan := indexScanOf(t, read.plan, read.raw, read.index)
 		for _, key := range read.keys {
 			if !strings.Contains(scan.Cond, key) {
 				t.Fatalf("the %s read's index condition %q holds no %q; want each of %q to key %s:\n%s", read.what, scan.Cond, key, read.keys, read.index, read.raw)

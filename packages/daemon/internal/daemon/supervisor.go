@@ -215,16 +215,17 @@ func (s *supervisor) restore(ctx context.Context, claims []supervise.Claim) ([]c
 	var unfinished []claim.Token
 	live := supervise.LiveStates()
 	for i, c := range claims {
+		// Before the repair below moves a ready, working or idle claim to launch_uncertain: the
+		// start failure goes by the state the claim's agent last reached.
+		dropped := supervise.DropStaleStartFailure(&c)
 		repaired := (c.Locator == nil && slices.Contains(live, c.State)) || c.ReleasedLaunch()
 		if repaired {
 			s.log.Warn("supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no process is recorded for it",
 				"claim", c.Token, "stored", c.State, "generation", c.Generation)
 			c.State = supervise.StateLaunchUncertain
 		}
-		before := c
-		enrollment := supervise.NormalizeClaim(&c)
-		normalized := repaired || len(c.CapabilityHash) != len(before.CapabilityHash) ||
-			c.SuspendedBy != before.SuspendedBy || c.Enrollment != before.Enrollment
+		enrollment, normalized := supervise.NormalizeClaim(&c)
+		normalized = normalized || repaired || dropped
 		if normalized {
 			if err := s.deps.Store.PutClaim(ctx, supervise.StoredClaim(c)); err != nil {
 				return nil, err
@@ -426,10 +427,11 @@ func (s *supervisor) supervised() []*supervise.Machine {
 // (supervised), for a reader inside a fact's transaction: Create holds mu across the store's
 // AdmitClaim, which waits on the fact lock (intake.SerializeFacts), so a reader holding that lock
 // and waiting on mu would wait on a Create that waits on it, which nothing in PostgreSQL can see
-// or break. A machine's published view names its claim without its lock either (View).
+// or break. A machine's published claim names it without its lock either (Machine.Published),
+// and is shared rather than copied, since this reads its token alone.
 func (s *supervisor) supervisedMachine(token claim.Token) (*supervise.Machine, bool) {
 	for _, machine := range s.supervised() {
-		if machine.View().Token == token {
+		if machine.Published().Token == token {
 			return machine, true
 		}
 	}
@@ -537,7 +539,7 @@ func superviseEvent(ev stream.Event) (supervise.Event, error) {
 	case stream.PromptResult:
 		return supervise.StreamPromptResult{Claim: ev.Claim, DeliveryID: ev.DeliveryID,
 			AgentInvoked: ev.AgentInvoked, Error: ev.Error, Retryable: ev.Retryable,
-			HTTPStatus: ev.HTTPStatus, Provider: ev.Provider, Model: ev.Model}, nil
+			HTTPStatus: ev.HTTPStatus, Provider: ev.Provider, Model: ev.Model, Code: ev.Code}, nil
 	case stream.LateRefusal:
 		return supervise.StreamLateRefusal{Claim: ev.Claim, DeliveryID: ev.DeliveryID, Error: ev.Error, Replayed: ev.Replayed,
 			ConnSequence: ev.ConnSequence}, nil

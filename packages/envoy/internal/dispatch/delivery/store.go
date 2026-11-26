@@ -946,7 +946,7 @@ func ListRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64
 const runJobsNamedForRunsQuery = `select ` + JobColumns + ` from delivery_run_jobs where repo = $1 and run_id = any($2) and name = any($3)`
 
 // runJobsFailedForRunsQuery is listRunJobsFailedForRuns' read: each run's failed jobs not named
-// $3, through delivery_run_jobs_failed (migration 20261123235431), the partial index of the failed
+// $3, through delivery_run_jobs_failed (migration 20261126203311), the partial index of the failed
 // jobs alone, keyed by the run. `name <> all($3)` leaves a named job that failed to the read by
 // name (runJobsNamedForRunsQuery), so the two answer no job in common. The failure is written
 // into the statement, not bound, so the planner proves the index's predicate from the statement
@@ -1320,10 +1320,10 @@ func ListPullRequestsInWindow(ctx context.Context, q Querier, from, to time.Time
 	return prs, rows.Err()
 }
 
-// openP0KeysQuery is OpenP0Keys' read. Its clauses are issues_open_p0's predicate (migration
-// 20261117100010), so the planner proves the index from them and reads the whole of that index,
+// openP0KeysQuery is OpenP0Keys' read. Its clauses are issues_open_p0's predicate
+// (openP0Predicate), so the planner proves the index from them and reads the whole of that index,
 // which holds the open P0 issues alone, rather than scanning every issue of every project.
-const openP0KeysQuery = `select key from issues where priority = 0 and status <> 'done'`
+const openP0KeysQuery = `select key from issues where ` + openP0Predicate
 
 // OpenP0Keys is every open P0 issue's key, across every project: the issues whose change can move
 // the measures' unowned_p0 list. The delivery live hub (api/delivery_live_hub.go) loads it at start

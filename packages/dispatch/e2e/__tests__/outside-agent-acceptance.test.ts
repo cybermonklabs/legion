@@ -393,6 +393,126 @@ done
       // The shape script, a bounded child under the short bound.
       rowLimit("short")
     );
+
+    // await_child looks at its child, pauses (`pause`, a `sleep 0.1`) and looks again, and returns
+    // once the child has ended, or at its bound (outside-agent-lib.sh, end_within). The row reads
+    // each wait in its pauses rather than in seconds: a `sleep` of the row's own stands ahead on
+    // PATH, writes a line for each sleep the waits run, with its argument and whether the child
+    // the script names in WAITED had ended as it began, and runs the real one. A child that never
+    // ends is the control: its wait returns with no exit status, the child still listed, after at
+    // least a second of its 2 s bound. A child that ends at 0.2 s ends its wait then, with its own
+    // exit status: every sleep of the waits is a pause, so the wait looks every pause, and no
+    // more than one pause begins once the child has ended, since the shell reaps the child while
+    // it waits for that pause and the next look finds it gone. A wait that looked only every 5 s,
+    // the slow wait #5247 removed, sleeps 5; one that looked on past the child's end pauses again
+    // with it ended. stop_child's TERM ends the first child inside its 10 s bound: the status its
+    // wait read (end_within_exit, which stop_child holds local and kill_child, run next, sees) is
+    // 143, where a child its TERM did not end is still running at the bound, and nothing is left
+    // running. No clock decides a verdict: in a builds pod running this row beside the whole
+    // harness, the wait came back 3.02 s to 5.24 s after the child's end in 12 of 768 runs, past
+    // the 3 s the row once held it to, and the stop took up to 8.53 s of its 9, each look of each
+    // wait a fork the load slowed (dispatch://INFRA-3904).
+    test(
+      "await_child ends as its child ends, and at its bound for one that never does",
+      async () => {
+        const base = `9${Math.floor(Math.random() * 1e6)
+          .toString()
+          .padStart(6, "0")}`;
+        const sleep = hostTool("sleep") as string;
+        const directory = scratch("waits");
+        const sleeps = join(directory, "sleeps");
+        const shims = scratch("shims");
+        script(
+          join(shims, "sleep"),
+          `#!/usr/bin/env bash
+state=running
+if [ -e /proc/self/stat ]; then
+  { read -r stat <"/proc/$WAITED/stat"; } 2>/dev/null || stat=''
+  case $stat in '' | *') Z '*) state=ended ;; esac
+else
+  stat=$(ps -o stat= -p "$WAITED" 2>/dev/null)
+  case $stat in '' | Z*) state=ended ;; esac
+fi
+printf '%s %s %s\\n' "$WAITED" "$*" "$state" >>'${sleeps}'
+exec '${sleep}' "$@"
+`
+        );
+        const waits = script(
+          join(directory, "waits.sh"),
+          `#!/usr/bin/env bash
+set -u
+. '${join(acceptance, "outside-agent-lib.sh")}'
+background=''
+clock() { printf '%s' "\${EPOCHREALTIME:-$(date +%s.%N)}"; }
+since() { awk -v a="$1" -v b="$(clock)" 'BEGIN { printf "%.2f", b - a }'; }
+listed() { case " $background " in *" $1 "*) echo yes ;; *) echo no ;; esac; }
+'${sleep}' ${base}1 &
+never=$!
+background="$background $never"
+export WAITED=$never
+began=$(clock)
+await_child "$never" 2
+echo "never pid=$never exit=\${child_exit:-none} seconds=$(since "$began") listed=$(listed "$never")"
+( '${sleep}' 0.2; exit 7 ) &
+seven=$!
+background="$background $seven"
+WAITED=$seven
+await_child "$seven" 30
+echo "seven pid=$seven exit=\${child_exit:-none} listed=$(listed "$seven")"
+eval "lib_$(declare -f kill_child)"
+kill_child() { stop_exit=\${end_within_exit:-running}; lib_kill_child "$@"; }
+WAITED=$never
+stop_child "$never"
+echo "stopped exit=\${stop_exit:-none} left=$(pgrep -f "^${sleep} ${base}1\\$" | wc -l | tr -d ' ')"
+`
+        );
+        const { code, stdout } = await runBounded({
+          argv: ["bash", waits],
+          bound: "short",
+          cwd: scratch("cwd"),
+          env: { PATH: `${shims}:${process.env.PATH ?? ""}` },
+          from: import.meta.url,
+        });
+        const read = (name: string) =>
+          Object.fromEntries(
+            (stdout.split("\n").find((line) => line.startsWith(`${name} `)) ?? "")
+              .split(" ")
+              .slice(1)
+              .map((pair) => pair.split("=") as [string, string])
+          );
+        const never = read("never");
+        const seven = read("seven");
+        const stopped = read("stopped");
+        const slept = (existsSync(sleeps) ? readFileSync(sleeps, "utf8") : "")
+          .split("\n")
+          .filter((line) => line !== "")
+          .map((line) => line.split(" "));
+        const pausesOnceSevenEnded = slept.filter(
+          ([pid, , state]) => pid === seven.pid && state === "ended"
+        ).length;
+        expect({
+          code,
+          never: { exit: never.exit, listed: never.listed, atTheBound: Number(never.seconds) >= 1 },
+          seven: {
+            exit: seven.exit,
+            listed: seven.listed,
+            atMostOnePauseOnceEnded: pausesOnceSevenEnded <= 1,
+          },
+          sleepsThatAreNoPause: slept.filter(([, seconds]) => seconds !== "0.1"),
+          stopped: { exit: stopped.exit, left: stopped.left },
+          stdout,
+          sleeps: slept.map((line) => line.join(" ")),
+        }).toMatchObject({
+          code: 0,
+          never: { exit: "none", listed: "yes", atTheBound: true },
+          seven: { exit: "7", listed: "no", atMostOnePauseOnceEnded: true },
+          sleepsThatAreNoPause: [],
+          stopped: { exit: "143", left: "0" },
+        });
+      },
+      // The script, a bounded child under the short bound.
+      rowLimit("short")
+    );
   }
 );
 

@@ -144,7 +144,7 @@ func TestTheFactsNameWhenAnIssueOpenedClosedAndWasWorked(t *testing.T) {
 func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 	database := storetest.Open(t)
 	// Two trees, so a read of one tree's issues covers one tree and leaves the other unread.
-	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Trees: 2})
+	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Trees: 2, AwaitingChildren: true})
 	now := fixture.To
 	// The first tree: Seed writes each tree's root and then that tree's children, so the
 	// history's first issues per tree are the first tree.
@@ -189,6 +189,9 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 	if compared == 0 || worked == 0 {
 		t.Fatalf("%d of the tree's issues were compared and %d of them hold work hours, which proves nothing",
 			compared, worked)
+	}
+	if got := whole[fixture.Roots[0]].PhaseHours[legion.ColumnAwaitingChildren]; got <= 0 {
+		t.Errorf("root %s holds %g h in awaiting_children, want nonzero awaiting_children phase hours", fixture.Roots[0], got)
 	}
 	// The other tree is outside the keys asked for, so its issues carry no Legion work this read
 	// gathered and no facts: that is what makes the two reads different reads.

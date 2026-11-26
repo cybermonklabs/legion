@@ -8,9 +8,9 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// indexScanOf is the one scan of plan that reads relation through index, failing the test when
-// the plan holds none or more than one.
-func indexScanOf(t *testing.T, plan json.RawMessage, raw, relation, index string) explaintest.IndexScan {
+// indexScanOf is the one scan of plan through index, failing the test when the plan holds none or
+// more than one.
+func indexScanOf(t *testing.T, plan json.RawMessage, raw, index string) explaintest.IndexScan {
 	t.Helper()
 	var found []explaintest.IndexScan
 	for _, scan := range explaintest.IndexScans(t, plan) {
@@ -19,7 +19,7 @@ func indexScanOf(t *testing.T, plan json.RawMessage, raw, relation, index string
 		}
 	}
 	if len(found) != 1 {
-		t.Fatalf("the plan reads %s through %s %d times; want once:\n%s", relation, index, len(found), raw)
+		t.Fatalf("the plan reads through %s %d times; want once:\n%s", index, len(found), raw)
 	}
 	return found[0]
 }

@@ -21,6 +21,10 @@ import (
 // this package's tests can give it their own deadline (programbound).
 var visibilityAnswerBound = 15 * time.Second
 
+func init() {
+	programbound.Register(&visibilityAnswerBound)
+}
+
 // sharedCheckVisibilityRead is the repository the shared public leak check's own visibility read
 // names, and whether argv is that read: exactly leakguard.VisibilityReadArgs of the repository
 // PUBLIC_LEAK_CHECK_VISIBILITY_READ names, a name GitHub could serve. runGh decides it before it

@@ -49,6 +49,7 @@ var breakdownParts = []struct {
 	{legion.ColumnAccepting, []string{legion.PhaseAccepting}},
 	{legion.ColumnRetro, []string{legion.PhaseRetro}},
 	{legion.ColumnMerging, []string{legion.PhaseMerging, legion.PhaseAwaitingMerge}},
+	{legion.ColumnAwaitingChildren, []string{legion.PhaseAwaitingChildren}},
 	{breakdownPerson, []string{legion.PhaseAwaitingPerson}},
 	{legion.ColumnHeld, []string{legion.PhaseHeld}},
 }

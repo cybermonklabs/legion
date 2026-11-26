@@ -31,18 +31,20 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
-// The places the proxy port refuses a call, each one no other row drives: the seven of the
+// The places the proxy port refuses a call, each one no other row drives: the eight of the
 // outer server and the 407 among them, and the refusals of a call to a bound host that bound.go,
 // azure.go and aws.go hand to refuse.
 const (
 	siteNotAProxyRequest = "proxy.go serveProxy: a request that is no proxy request (400)"
 	siteCredential       = "proxy.go refuseCredential: a credential that opens nothing (407)"
 	siteGrantRefused     = "proxy.go serveProxy: a grant the broker refuses (403)"
-	siteConnectTarget    = "proxy.go serveConnect: a CONNECT target that is no host and port (400)"
-	siteConnectAddress   = "proxy.go serveConnect: an address the proxy never dials (403)"
+	siteHeldConnection   = "proxy.go serveProxy: a grant whose session acts for a person Dispatch holds (403)"
+	siteConnectTarget    = "connect.go serveConnect: a CONNECT target that is no host and port (400)"
+	siteConnectAddress   = "connect.go serveConnect: an address the proxy never dials (403)"
 	sitePlainBound       = "proxy.go servePlain: plain http to a bound host (403)"
 	sitePlainAddress     = "proxy.go servePlain: an address the proxy never dials (403)"
 	siteBoundConnection  = "bound.go serveBound: a grant that ended on an open connection"
+	siteHeldRequest      = "bound.go serveBound: a person Dispatch held after their connection opened"
 	siteProtocolSwitch   = "bound.go serveBound: a CONNECT on a connection the proxy decrypted"
 	siteBoundValues      = "bound.go serveBound: a grant the release checks refuse"
 	siteBoundDecision    = "bound.go serveBound: a request the decision refuses"
@@ -55,10 +57,10 @@ const (
 
 // refusalSites is every site above, in the order the table names them.
 var refusalSites = []string{
-	siteNotAProxyRequest, siteCredential, siteGrantRefused, siteConnectTarget, siteConnectAddress,
-	sitePlainBound, sitePlainAddress, siteBoundConnection, siteProtocolSwitch, siteBoundValues,
-	siteBoundDecision, siteAWSSignature, siteBoundCut, siteFederatedSwap, siteAzureAssertion,
-	siteAzureBound,
+	siteNotAProxyRequest, siteCredential, siteGrantRefused, siteHeldConnection, siteConnectTarget,
+	siteConnectAddress, sitePlainBound, sitePlainAddress, siteBoundConnection, siteHeldRequest,
+	siteProtocolSwitch, siteBoundValues, siteBoundDecision, siteAWSSignature, siteBoundCut,
+	siteFederatedSwap, siteAzureAssertion, siteAzureBound,
 }
 
 // answerIDPattern is an answer id: 16 random bytes, in hex (answer.NewID).
@@ -150,6 +152,14 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 	plain := func(t *testing.T) *rig { return newRig(t, Options{Answers: answers}) }
 	refused := fmt.Errorf("%w: AUTO_TOKEN", requests.ErrSecretNotInStore)
 	chain := fmt.Errorf("%w: record 9f2c: stored body does not reproduce its id", requests.ErrGrantChainInvalid)
+	// held is the rig of the hold's row being driven, which its drive moves into the hold: the
+	// rig a real gate stands in front of (heldRig), set by that row's rig, as the rows run one at
+	// a time.
+	var held *heldRig
+	holding := func(t *testing.T) *rig {
+		held = newHeldRig(t, registry, answers)
+		return held.rig
+	}
 
 	drove := map[string]bool{}
 	for _, row := range []struct {
@@ -206,6 +216,14 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			status: http.StatusForbidden, code: codeSecretNotInStore, reason: refused.Error(), host: boundHost,
 		},
 		{
+			site: siteHeldConnection, name: "a CONNECT of ada's grant once Dispatch holds her", rig: holding,
+			drive: func(t *testing.T, r *rig) proxyAnswer {
+				held.dispatch.SetHeld(heldPerson, true)
+				return connectAnswer(t, r, net.JoinHostPort(boundHost, "443"), basic(workerPlaceholder))
+			},
+			status: http.StatusForbidden, code: "MEMBERSHIP_HELD", reason: adaHeld, caller: boundCaller, host: boundHost,
+		},
+		{
 			site: siteConnectTarget, name: "a CONNECT of a bracketed address with no port", rig: plain,
 			drive: func(t *testing.T, r *rig) proxyAnswer {
 				return connectAnswer(t, r, "[::1]", basic(workerPlaceholder))
@@ -254,6 +272,20 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			caller: boundCaller, host: boundHost, path: "/v1/things",
 		},
 		{
+			site: siteHeldRequest, name: "the second call of ada's connection, Dispatch holding her since the first", rig: holding,
+			drive: func(t *testing.T, r *rig) proxyAnswer {
+				client := r.client(workerPlaceholder)
+				if first, body := r.get(client, "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+workerPlaceholder); first.StatusCode != http.StatusOK {
+					t.Fatalf("the first call answered %d %q; want 200", first.StatusCode, body)
+				}
+				held.dispatch.SetHeld(heldPerson, true)
+				held.passThirtySeconds()
+				return answeredBy(r.get(client, "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+workerPlaceholder))
+			},
+			status: http.StatusForbidden, code: "MEMBERSHIP_HELD", reason: adaHeld,
+			caller: boundCaller, host: boundHost, path: "/v1/things",
+		},
+		{
 			site: siteProtocolSwitch, name: "a CONNECT written inside the decrypted connection", rig: plain,
 			drive: func(t *testing.T, r *rig) proxyAnswer {
 				_, conn, _ := r.connectRaw(net.JoinHostPort(boundHost, "443"), basic(workerPlaceholder))
@@ -292,7 +324,7 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 		{
 			site: siteAWSSignature, name: "a call signed with Signature Version 4a",
 			rig: func(t *testing.T) *rig {
-				r := newRig(t, Options{Rules: awsRules(), Answers: answers})
+				r := newRuledRig(t, awsRules(), Options{Answers: answers})
 				awsGrant(r, false)
 				return r
 			},

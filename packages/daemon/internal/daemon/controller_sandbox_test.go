@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -43,14 +44,11 @@ import (
 )
 
 // The names the Sandbox runtime puts on the controller's pod and in its launcher's private
-// directory, written out because they are package sandbox's own (manifest.go's poolKey,
-// poolValue, gvisor, microVMRuntimeClass and computeClassKey, names.go's labelSandbox and
-// bootTokenKey, drift.go's podShapeAnnotation, podkind.go's --microvm): a test of what the daemon
-// renders reads them off the pod the fake cluster made, as an operator reads them off the
-// cluster.
+// directory, written out because they are package sandbox's own (manifest.go's gvisor,
+// microVMRuntimeClass and computeClassKey, names.go's labelSandbox and bootTokenKey, drift.go's
+// podShapeAnnotation, podkind.go's --microvm): a test of what the daemon renders reads them off the
+// pod the fake cluster made, as an operator reads them off the cluster.
 const (
-	controllerSandboxPoolKey       = "legion.dev/pool"
-	controllerSandboxPoolValue     = "legion"
 	controllerSandboxComputeKey    = "cloud.google.com/compute-class"
 	controllerSandboxLabel         = "legion.dev/sandbox"
 	controllerSandboxShapeKey      = "legion.dev/pod-shape"
@@ -147,28 +145,25 @@ type controllerSandboxPlacement struct {
 
 // placement is the controller's pod a daemon on s renders: under microvm, the microvm
 // RuntimeClass, the operator's selector with the block's ComputeClass in place of Scale-Out, the
-// pool's toleration, the operator's other one and the class's, Scale-Out's dropped, the label,
-// the flag, and the recorded runtime and compute class (the block names no metadata endpoint, and
-// the controller's shape records no disk class); under gvisor, the pod as the operator's
-// scheduling is written, with none of those.
+// operator's other toleration and the class's, Scale-Out's dropped, the label, the flag, and the
+// recorded runtime and compute class (the block names no metadata endpoint, and the controller's
+// shape records no disk class); under gvisor, the pod as the operator's scheduling is written,
+// with none of those.
 func (s controllerSandboxSetting) placement() controllerSandboxPlacement {
-	pool := controllerSandboxToleration(controllerSandboxPoolKey, controllerSandboxPoolValue)
 	dedicated := controllerSandboxToleration("dedicated", "legion")
 	if s.microVM() {
 		return controllerSandboxPlacement{
 			runtimeClass: controllerSandboxMicroVMClass,
-			nodeSelector: map[string]string{controllerSandboxPoolKey: controllerSandboxPoolValue, "kubernetes.io/arch": "amd64",
-				controllerSandboxComputeKey: controllerSandboxComputeClass},
-			tolerations: []corev1.Toleration{pool, dedicated, controllerSandboxToleration(controllerSandboxComputeKey, controllerSandboxComputeClass)},
-			microVM:     true,
-			shape:       map[string]any{"runtime_class": controllerSandboxMicroVMClass, "compute_class": controllerSandboxComputeClass},
+			nodeSelector: map[string]string{"kubernetes.io/arch": "amd64", controllerSandboxComputeKey: controllerSandboxComputeClass},
+			tolerations:  []corev1.Toleration{dedicated, controllerSandboxToleration(controllerSandboxComputeKey, controllerSandboxComputeClass)},
+			microVM:      true,
+			shape:        map[string]any{"runtime_class": controllerSandboxMicroVMClass, "compute_class": controllerSandboxComputeClass},
 		}
 	}
 	return controllerSandboxPlacement{
 		runtimeClass: controllerSandboxGVisorClass,
-		nodeSelector: map[string]string{controllerSandboxPoolKey: controllerSandboxPoolValue, "kubernetes.io/arch": "amd64",
-			controllerSandboxComputeKey: controllerSandboxScaleOut},
-		tolerations: []corev1.Toleration{pool, controllerSandboxToleration(controllerSandboxComputeKey, controllerSandboxScaleOut), dedicated},
+		nodeSelector: map[string]string{"kubernetes.io/arch": "amd64", controllerSandboxComputeKey: controllerSandboxScaleOut},
+		tolerations:  []corev1.Toleration{controllerSandboxToleration(controllerSandboxComputeKey, controllerSandboxScaleOut), dedicated},
 	}
 }
 
@@ -216,7 +211,7 @@ var (
 // TestTheControllerPodRunsInTheProjectsSandbox's with its uid and the sandbox its shape records,
 // and `at=` naming the step: first-boot, second-boot, relaunch.
 func TestTheDaemonsControllerMovesIntoTheProjectsSandboxAtItsNextLaunch(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (controllerSandboxMove).
+	t.Parallel()
 	gvisor := controllerSandboxSetting{name: "gvisor", sandbox: config.SandboxConfig{Type: config.SandboxGVisor, MicroVM: controllerSandboxBlock()}}
 	microVM := controllerSandboxSetting{name: "microvm", sandbox: config.SandboxConfig{Type: config.SandboxMicroVM, MicroVM: controllerSandboxBlock()}}
 	for _, direction := range []struct {
@@ -285,6 +280,10 @@ type controllerSandboxRig struct {
 	// logs is the daemon's log and its runtime's, every boot's.
 	logs *syncBuffer
 	d    *daemon
+	// apiSocket and streamSocket are the rig's descriptors of the listening sockets on cfg's port
+	// and worker_stream_port, held from the rig's start until the test ends; every boot serves on
+	// descriptors of its own of the two (heldSocketListen).
+	apiSocket, streamSocket *os.File
 }
 
 // newControllerSandboxRig readies every part a boot needs and serves the fake cluster, its
@@ -301,9 +300,18 @@ type controllerSandboxRig struct {
 // The worker stream listens on a port of the rig's own rather than one the kernel picks at each
 // bind (testConfig's 0): a pod's launcher dials the stream named in its command for the pod's
 // life, so the second boot must listen where the first pod dials, as a deployment's fixed
-// worker_stream_port does. That port is found free and given back (idleRigFreePort), so another
-// process could take it before the daemon binds it, which fails the boot loudly rather than
-// passing it: the stream binds inside the daemon (stream.Listen), past the reach of heldListen.
+// worker_stream_port does. The rig holds a listening socket on that port (heldSocket), and takes
+// the one testConfig holds on the API port (takeHeldSocket), from its start until the test ends;
+// each boot serves on descriptors of its own of the two (heldSocketListen, through
+// overrides.listen and overrides.streamListen). A daemon's stop closes its descriptors and the
+// rig's keep both sockets listening, so no other program can take either port before the first
+// boot or between the two. A port found free and given back would be any program's to take before
+// the daemon bound it, and on a shared CI runner one was taken, which failed the boot with
+// `bind: address already in use`. Because the rig's sockets keep listening, a launcher's redial
+// between the two boots is queued, not refused as it is in a deployment's restart, where the
+// daemon's close frees the port: the kernel completes the dial, the launcher writes its hello and
+// waits for the acknowledgement, and the second boot's stream listener accepts it. Nothing this
+// test asserts reads a refused redial.
 // The probe interval is a second, so the runtime's sweep of every watched claim, which a boot's
 // re-adoption is held against (controllerSandboxSettled), runs several times inside the test's
 // own window.
@@ -319,7 +327,9 @@ func newControllerSandboxRig(t *testing.T, first controllerSandboxSetting) *cont
 	cfg := workflowConfig(t, natsURL)
 	cfg.PostgresDSN = pool.Config().ConnString()
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
-	cfg.WorkerStreamPort = idleRigFreePort(t)
+	apiSocket := takeHeldSocket(t, net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port)))
+	streamSocket, streamPort := heldSocket(t)
+	cfg.WorkerStreamPort = streamPort
 	cfg.ProbeInterval = time.Second
 	cfg.Runtime = kubernetesConfig(t, kube.url).Runtime
 	k := cfg.Runtime.Kubernetes
@@ -340,7 +350,8 @@ func newControllerSandboxRig(t *testing.T, first controllerSandboxSetting) *cont
 	// longest of those is a die file of a generation number at its widest.
 	tools := testtmp.Dir(t, "die-18446744073709551615")
 	r := &controllerSandboxRig{t: t, cfg: cfg, token: token, name: sandbox.SandboxName(token), project: project,
-		kube: kube, legion: controllerSandboxLegionTool(t, tools), agent: idleRigAgentTool(t, tools), logs: &syncBuffer{}}
+		kube: kube, legion: controllerSandboxLegionTool(t, tools), agent: idleRigAgentTool(t, tools), logs: &syncBuffer{},
+		apiSocket: apiSocket, streamSocket: streamSocket}
 	r.pods = newControllerSandboxPods(t, kube, tools, cfg.DaemonURL, pool, k.SessionStore.Database,
 		func(context.Context, sessionproxy.Signer) (sessionproxy.Dialer, error) {
 			return idleRigDialer{address: idleRigHostPort(t, pool)}, nil
@@ -365,24 +376,23 @@ func (r *controllerSandboxRig) boot() {
 	cfg := r.cfg
 	logger := slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	r.d = startDaemonWithin(r.t, cfg, overrides{
-		listen: heldListen, runtime: r.runtimeFor(cfg), clock: stillClock{}, workflowTokens: &workflowTokenRecorder{},
+		listen: heldSocketListen(r.apiSocket, cfg.Port), streamListen: heldSocketListen(r.streamSocket, cfg.WorkerStreamPort),
+		runtime: r.runtimeFor(cfg), clock: stillClock{}, workflowTokens: &workflowTokenRecorder{},
 	}, logger, 30*time.Second)
 	r.d.client.Timeout = controllerSandboxStep
 }
 
 // restart stops the daemon and boots it again on to's sandbox block, over the same database,
-// worker stream port and API port. The API port is held again for the next daemon to take
-// (holdPortAt, heldListen) rather than rebound (rebindHeldPorts): the daemon's URL is an address
-// every generation is handed and the Sandbox records (sandbox's handedAddresses), and a boot that
-// moved it would have the controller's next launch replace its pod for the moved address whatever
-// its shape.
+// worker stream port and API port, which the rig held through the stop (heldSocketListen): the
+// daemon's URL is an address every generation is handed and the Sandbox records (sandbox's
+// handedAddresses), and a boot that moved it would have the controller's next launch replace its
+// pod for the moved address whatever its shape.
 func (r *controllerSandboxRig) restart(to controllerSandboxSetting) {
 	r.t.Helper()
 	r.d.stop()
 	k := *r.cfg.Runtime.Kubernetes
 	k.Sandbox = to.sandbox
 	r.cfg.Runtime.Kubernetes = &k
-	holdPortAt(r.t, "127.0.0.1", r.cfg.Port)
 	r.boot()
 }
 
@@ -396,7 +406,7 @@ func (r *controllerSandboxRig) runtimeFor(cfg config.Config) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, _ appauth.Source,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository,
 	) (legionruntime.Runtime, error) {
-		opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, r.project, "placeholder-dispatch-token", lookup(nil),
+		opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, r.project, sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup(nil),
 			slog.New(slog.NewJSONHandler(r.logs, nil)))
 		if err != nil {
 			return nil, fmt.Errorf("sandboxOptions: %w", err)
@@ -741,7 +751,7 @@ func controllerSandboxLegionTool(t *testing.T, dir string) string {
 		": >" + shellQuote(filepath.Join(dir, "run-")) + "\"$LEGION_GENERATION\"\n" +
 		"while [ ! -e " + shellQuote(filepath.Join(dir, "die-")) + "\"$LEGION_GENERATION\" ]; do sleep 0.1; done\n" +
 		"exit 1\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the controller's legion stand-in: %v", err)
 	}
 	return path
@@ -1084,7 +1094,7 @@ func (s *controllerSandboxShim) register() error {
 	for {
 		status, err := s.post("/legion/v1/claims/register", claim.RegisterRequest{
 			BootToken: s.bootToken, SessionID: controllerSandboxSession, OmpSessionFile: controllerSandboxSessionFile,
-			AgentID: controllerSandboxSession, PluginContract: api.DaemonAPIVersion,
+			AgentID: controllerSandboxSession, PluginContract: api.DaemonAPIVersion(),
 		}, &registration)
 		if err == nil && status == http.StatusOK {
 			break

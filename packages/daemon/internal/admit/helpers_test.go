@@ -107,8 +107,16 @@ func newAdmissionWithSteps(t *testing.T, cap int, steps []record.DesignStep, log
 // under, and a test of two keys proves a behaviour reads none of it.
 func newAdmissionForProject(t *testing.T, project string, cap int, steps []record.DesignStep, log *slog.Logger) *Admission {
 	t.Helper()
+	return newAdmissionDrawing(t, project, cap, steps, log, nil)
+}
+
+// newAdmissionDrawing is newAdmissionForProject whose engine draws every `random` experiment from
+// source, the one source admission draws with too (workflow.Engine's ExperimentSource); nil is the
+// engine's own, experiment.CryptoSource.
+func newAdmissionDrawing(t *testing.T, project string, cap int, steps []record.DesignStep, log *slog.Logger, source func(uint64) (uint64, error)) *Admission {
+	t.Helper()
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: project, Repositories: testRepositories, Steps: steps,
-		Clock: func() time.Time { return fixedNow }}, log)
+		ExperimentSource: source, Clock: func() time.Time { return fixedNow }}, log)
 	admission := New(record.NewStore(), engine, cap, project, log)
 	admission.now = func() time.Time { return fixedNow }
 	return admission
@@ -117,12 +125,12 @@ func newAdmissionForProject(t *testing.T, project string, cap int, steps []recor
 // architectStart is the task admission queues with the start of a root architect
 // (workflow.ArchitectStartTask), derived from the record exactly as admission derives it: what
 // workflow.ArchitectStartOf reads of the root as it stands now — whether a hand-over carried it in,
-// the design gate rows it holds and the run its architect claim last served — under the gate
-// steps its own admission runs, and what its tree is owed where a person decided something on it
-// while nobody in the tree could hear them (decided). A test about what admission writes names the
-// task through this helper; which shape each root gets, and the whole text of each shape, are
-// pinned in internal/workflow (TestTheArchitectTaskOfEachShape, TestTheArchitectTaskShapeRule)
-// and the delivery to a launched architect in internal/daemon
+// the design gate rows it holds, the run its architect claim last served and the roots that rest
+// on its approval — under the gate steps its own admission runs, and what its tree is owed where a
+// person decided something on it while nobody in the tree could hear them (decided). A test about
+// what admission writes names the task through this helper; which shape each root gets, and the
+// whole text of each shape, are pinned in internal/workflow (TestTheArchitectTaskOfEachShape,
+// TestTheArchitectTaskShapeRule) and the delivery to a launched architect in internal/daemon
 // (TestAFreshAdmissionGivesItsArchitectItsStartTask).
 func architectStart(t *testing.T, pool *pgxpool.Pool, admission *Admission, key, decided string) string {
 	t.Helper()

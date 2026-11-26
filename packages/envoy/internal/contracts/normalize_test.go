@@ -1,5 +1,8 @@
 package contracts
 
+//ci:reads packages/contracts/fixtures/github-envelopes/* TestGithubTopicKindsHoldEveryTokenAfterTheRepository
+//ci:reads packages/envoy/scripts/fixtures/github/* TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload and TestAGithubEnvelopeStaysUnderNATSMaxPayloadWhateverItsFieldsHold
+
 import (
 	"encoding/json"
 	"maps"
@@ -21,6 +24,7 @@ func decodePayload(t *testing.T, raw string) map[string]string {
 }
 
 func TestGithubEnvelope(t *testing.T) {
+	t.Parallel()
 	item := GithubEnvelope(GithubEnvelopeInput{
 		Event:    "pull_request",
 		Delivery: "d1",
@@ -56,6 +60,7 @@ func TestGithubEnvelope(t *testing.T) {
 }
 
 func TestSlackEnvelope(t *testing.T) {
+	t.Parallel()
 	item := SlackEnvelope(SlackEnvelopeInput{
 		EventID: "e1",
 		TraceID: "t1",
@@ -82,6 +87,7 @@ func TestSlackEnvelope(t *testing.T) {
 }
 
 func TestContainsMention(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		body    string
@@ -110,6 +116,7 @@ func TestContainsMention(t *testing.T) {
 }
 
 func TestGithubEnvelopesNoMention(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "issue_comment",
 		Delivery: "d1",
@@ -140,6 +147,7 @@ func TestGithubEnvelopesNoMention(t *testing.T) {
 }
 
 func TestGithubEnvelopesWithMention(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "issue_comment",
 		Delivery: "d1",
@@ -179,6 +187,7 @@ func TestGithubEnvelopesWithMention(t *testing.T) {
 }
 
 func TestGithubEnvelopesReview(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "pull_request_review",
 		Delivery: "d1",
@@ -210,6 +219,7 @@ func TestGithubEnvelopesReview(t *testing.T) {
 }
 
 func TestGithubEnvelopesEmptyReview(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "pull_request_review",
 		Delivery: "d1",
@@ -238,6 +248,7 @@ func TestGithubEnvelopesEmptyReview(t *testing.T) {
 }
 
 func TestGithubEnvelopesIssueCommentEditedDoesNotCreateMentionEnvelope(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "issue_comment",
 		Delivery: "d1",
@@ -272,6 +283,7 @@ func TestGithubEnvelopesIssueCommentEditedDoesNotCreateMentionEnvelope(t *testin
 }
 
 func TestGithubEnvelopesReviewRequiresSubmittedActionForMentionFanout(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "pull_request_review",
 		Delivery: "d1",
@@ -307,6 +319,7 @@ func TestGithubEnvelopesReviewRequiresSubmittedActionForMentionFanout(t *testing
 }
 
 func TestGithubIsBotSender(t *testing.T) {
+	t.Parallel()
 	if !GithubIsBotSender(map[string]any{"sender": map[string]any{"type": "Bot"}}) {
 		t.Fatal("expected bot sender to be true")
 	}
@@ -319,6 +332,7 @@ func TestGithubIsBotSender(t *testing.T) {
 }
 
 func TestGithubEnvelopesPRNumber(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "pull_request",
 		Delivery: "d1",
@@ -351,6 +365,7 @@ func TestGithubEnvelopesPRNumber(t *testing.T) {
 }
 
 func TestGithubEnvelopesIssueCommentNumber(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "issue_comment",
 		Delivery: "d1",
@@ -392,6 +407,7 @@ func TestGithubEnvelopesIssueCommentNumber(t *testing.T) {
 // parent_issue_* one, so a number on a topic is always that repository's issue. The payload names
 // both issues and the repository each is in: the webhook's own when GitHub names no other.
 func TestASubIssuesDeliveryIsPublishedOnItsOwnRepositorysIssue(t *testing.T) {
+	t.Parallel()
 	repository := map[string]any{"name": "example-repo", "full_name": "example-org/example-repo", "owner": map[string]any{"login": "example-org"}}
 	other := map[string]any{"name": "other-repo", "full_name": "example-org/other-repo", "owner": map[string]any{"login": "example-org"}}
 	issues := map[string]any{"parent_issue": map[string]any{"number": float64(41)}, "sub_issue": map[string]any{"number": float64(7)}}
@@ -451,6 +467,7 @@ func TestASubIssuesDeliveryIsPublishedOnItsOwnRepositorysIssue(t *testing.T) {
 }
 
 func TestGithubEnvelopesSubIssuesTopic(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		action     string
@@ -495,6 +512,7 @@ func TestGithubEnvelopesSubIssuesTopic(t *testing.T) {
 }
 
 func TestGithubEnvelopesMentionWithNumber(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "issue_comment",
 		Delivery: "d1",
@@ -541,6 +559,7 @@ func TestGithubEnvelopesMentionWithNumber(t *testing.T) {
 }
 
 func TestSlackEnvelopesThread(t *testing.T) {
+	t.Parallel()
 	items := SlackEnvelopes(SlackEnvelopeInput{
 		EventID: "e1",
 		TraceID: "t1",
@@ -576,6 +595,7 @@ func TestSlackEnvelopesThread(t *testing.T) {
 }
 
 func TestSlackEnvelopesThreadMention(t *testing.T) {
+	t.Parallel()
 	items := SlackEnvelopes(SlackEnvelopeInput{
 		EventID: "e1",
 		TraceID: "t1",
@@ -606,6 +626,7 @@ func TestSlackEnvelopesThreadMention(t *testing.T) {
 }
 
 func TestSlackEnvelopesNoThread(t *testing.T) {
+	t.Parallel()
 	items := SlackEnvelopes(SlackEnvelopeInput{
 		EventID: "e1",
 		TraceID: "t1",
@@ -631,6 +652,7 @@ func TestSlackEnvelopesNoThread(t *testing.T) {
 }
 
 func TestSlackEnvelopeDefaultsUnknownTeamAndChannel(t *testing.T) {
+	t.Parallel()
 	item := SlackEnvelope(SlackEnvelopeInput{
 		EventID: "e1",
 		TraceID: "t1",
@@ -651,6 +673,7 @@ func TestSlackEnvelopeDefaultsUnknownTeamAndChannel(t *testing.T) {
 }
 
 func TestGithubSummaryCapsLongFields(t *testing.T) {
+	t.Parallel()
 	summary := githubSummary("issues", map[string]any{
 		"action": "opened",
 		"repository": map[string]any{
@@ -671,6 +694,7 @@ func TestGithubSummaryCapsLongFields(t *testing.T) {
 }
 
 func TestGithubSummaryTruncatesTitleRunes(t *testing.T) {
+	t.Parallel()
 	title := strings.Repeat("🌍", 100)
 	summary := githubSummary("pull_request", map[string]any{
 		"action":       "opened",
@@ -684,6 +708,7 @@ func TestGithubSummaryTruncatesTitleRunes(t *testing.T) {
 }
 
 func TestGithubResourceSubject(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		owner        string
 		repo         string
@@ -708,6 +733,7 @@ func TestGithubResourceSubject(t *testing.T) {
 // `sjawhar/.github` is otherwise an empty token no stream stores, and `acme/a.b` lands inside
 // `acme/a`'s `notifications.github.acme.a.>`. A name without a dot is written as it is.
 func TestGithubSubjectsWriteADottedOwnerOrNameAsOneSegment(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ got, want string }{
 		{GithubSubject("sjawhar", ".github", "mention"), "notifications.github.sjawhar._github.mention"},
 		{GithubResourceSubject("acme", "a.b", "pr", "7"), "notifications.github.acme.a_b.pr.7"},
@@ -727,6 +753,7 @@ func TestGithubSubjectsWriteADottedOwnerOrNameAsOneSegment(t *testing.T) {
 // every event the two tables name (an event they do not name is published nowhere), the mention,
 // push, workflow, job and checks topics, and every golden envelope's topic.
 func TestGithubTopicKindsHoldEveryTokenAfterTheRepository(t *testing.T) {
+	t.Parallel()
 	const prefix = "notifications.github.example-org.example-repo."
 	topics := []string{
 		GithubSubject("example-org", "example-repo", "mention"),
@@ -779,6 +806,7 @@ func TestGithubTopicKindsHoldEveryTokenAfterTheRepository(t *testing.T) {
 // webhook handler's CIRecorder; the summary loop emits one settled checks envelope when the head's
 // CI is complete.
 func TestGithubEnvelopesCheckRunNotPublished(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "check_run",
 		Delivery: "d1",
@@ -809,6 +837,7 @@ func TestGithubEnvelopesCheckRunNotPublished(t *testing.T) {
 }
 
 func TestGithubEnvelopesCheckSuiteNotPublished(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "check_suite",
 		Delivery: "d2",
@@ -874,6 +903,7 @@ func checkRunEnvelopes(body map[string]any) []Envelope {
 // itself, on its run's job topic, so a consumer learns a job ended before its run does (Dispatch's
 // Delivery page shows a deploy once its production job finishes).
 func TestACompletedActionsCheckRunWithNoPullRequestIsAJobEnvelope(t *testing.T) {
+	t.Parallel()
 	items := checkRunEnvelopes(actionsJob(nil))
 	if len(items) != 1 {
 		t.Fatalf("envelopes = %d, want 1", len(items))
@@ -910,6 +940,7 @@ func TestACompletedActionsCheckRunWithNoPullRequestIsAJobEnvelope(t *testing.T) 
 }
 
 func TestACheckRunWithAPullRequestStaysOnTheChecksPath(t *testing.T) {
+	t.Parallel()
 	body := actionsJob(func(_, checkRun map[string]any) {
 		checkRun["pull_requests"] = []any{map[string]any{"number": float64(7)}}
 	})
@@ -919,6 +950,7 @@ func TestACheckRunWithAPullRequestStaysOnTheChecksPath(t *testing.T) {
 }
 
 func TestACheckRunFromAnotherAppIsNotAJob(t *testing.T) {
+	t.Parallel()
 	body := actionsJob(func(_, checkRun map[string]any) {
 		checkRun["app"] = map[string]any{"id": float64(77), "slug": "acme-ci"}
 	})
@@ -928,6 +960,7 @@ func TestACheckRunFromAnotherAppIsNotAJob(t *testing.T) {
 }
 
 func TestACheckRunNotYetCompletedIsNotAJob(t *testing.T) {
+	t.Parallel()
 	body := actionsJob(func(body, checkRun map[string]any) {
 		body["action"] = "created"
 		checkRun["status"] = "in_progress"
@@ -940,6 +973,7 @@ func TestACheckRunNotYetCompletedIsNotAJob(t *testing.T) {
 }
 
 func TestACheckRunWhoseDetailsURLNamesNoRunIsNotAJob(t *testing.T) {
+	t.Parallel()
 	for _, url := range []string{
 		"",
 		"https://github.com/acme/widgets/runs/9001",
@@ -956,6 +990,7 @@ func TestACheckRunWhoseDetailsURLNamesNoRunIsNotAJob(t *testing.T) {
 }
 
 func TestJobIsAGithubTopicKind(t *testing.T) {
+	t.Parallel()
 	if !slices.Contains(GithubTopicKinds, "job") {
 		t.Fatalf("GithubTopicKinds = %v, want it to hold job", GithubTopicKinds)
 	}
@@ -963,6 +998,7 @@ func TestJobIsAGithubTopicKind(t *testing.T) {
 
 // The rule is the repository's own default branch, whatever it is called.
 func TestAJobOnADefaultBranchNamedOtherThanMainIsAJob(t *testing.T) {
+	t.Parallel()
 	body := actionsJob(func(body, checkRun map[string]any) {
 		body["repository"].(map[string]any)["default_branch"] = "trunk"
 		checkRun["check_suite"].(map[string]any)["head_branch"] = "trunk"
@@ -975,6 +1011,7 @@ func TestAJobOnADefaultBranchNamedOtherThanMainIsAJob(t *testing.T) {
 // Only the default branch's jobs are published: a merge queue's commit and a branch push run with no
 // pull request too, and would publish most of a busy repository's jobs.
 func TestAJobOfARunOnAnotherBranchIsNotAJob(t *testing.T) {
+	t.Parallel()
 	for _, branch := range []string{"gh-readonly-queue/main/pr-1-abcdef1234567890abcdef1234567890abcdef12", "feature/widgets", "Main"} {
 		body := actionsJob(func(_, checkRun map[string]any) {
 			checkRun["check_suite"].(map[string]any)["head_branch"] = branch
@@ -988,6 +1025,7 @@ func TestAJobOfARunOnAnotherBranchIsNotAJob(t *testing.T) {
 // A payload that does not name both branches cannot show the job is the default branch's, so it is
 // not published.
 func TestAJobWhosePayloadNamesNoBranchIsNotAJob(t *testing.T) {
+	t.Parallel()
 	for name, change := range map[string]func(body, checkRun map[string]any){
 		"no check suite branch": func(_, checkRun map[string]any) {
 			delete(checkRun["check_suite"].(map[string]any), "head_branch")
@@ -1011,6 +1049,7 @@ func TestAJobWhosePayloadNamesNoBranchIsNotAJob(t *testing.T) {
 // A job envelope copies a repository's texts (a job's name above all), so each is capped like every
 // other envelope text, and its summary stays one line of at most 160 runes.
 func TestAJobEnvelopeCapsEveryTextItCopies(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("界", 3000)
 	body := actionsJob(func(_, checkRun map[string]any) {
 		for _, key := range []string{"name", "status", "conclusion", "started_at", "completed_at", "head_sha", "html_url"} {
@@ -1032,6 +1071,7 @@ func TestAJobEnvelopeCapsEveryTextItCopies(t *testing.T) {
 }
 
 func TestGithubCIObservations(t *testing.T) {
+	t.Parallel()
 	checkRunBody := func(prs []any) map[string]any {
 		return map[string]any{
 			"action": "completed",
@@ -1055,7 +1095,7 @@ func TestGithubCIObservations(t *testing.T) {
 	}
 
 	t.Run("check_run one PR", func(t *testing.T) {
-		obs := GithubCIObservations("check_run", checkRunBody([]any{map[string]any{"number": 42}}))
+		obs := GithubCIObservations("check_run", checkRunBody([]any{map[string]any{"number": 42}}), "")
 		if len(obs) != 1 {
 			t.Fatalf("expected 1 observation, got %d", len(obs))
 		}
@@ -1072,7 +1112,8 @@ func TestGithubCIObservations(t *testing.T) {
 		obs := GithubCIObservations("check_run", checkRunBody([]any{
 			map[string]any{"number": 42},
 			map[string]any{"number": 43},
-		}))
+		}), "")
+
 		if len(obs) != 2 {
 			t.Fatalf("expected 2 observations, got %d", len(obs))
 		}
@@ -1082,7 +1123,7 @@ func TestGithubCIObservations(t *testing.T) {
 	})
 
 	t.Run("check_run no PR yields nothing", func(t *testing.T) {
-		if obs := GithubCIObservations("check_run", checkRunBody([]any{})); len(obs) != 0 {
+		if obs := GithubCIObservations("check_run", checkRunBody([]any{}), ""); len(obs) != 0 {
 			t.Fatalf("expected no observations for un-PR'd check_run, got %d", len(obs))
 		}
 	})
@@ -1102,7 +1143,8 @@ func TestGithubCIObservations(t *testing.T) {
 		obs := GithubCIObservations("check_run", suiteBody(map[string]any{
 			"id":          float64(900),
 			"head_branch": "refs/pull/42/head",
-		}))
+		}), "")
+
 		if len(obs) != 1 {
 			t.Fatalf("expected 1 observation, got %d", len(obs))
 		}
@@ -1127,14 +1169,14 @@ func TestGithubCIObservations(t *testing.T) {
 	} {
 		t.Run("check_run with no PR on "+head.name+" yields nothing", func(t *testing.T) {
 			body := suiteBody(map[string]any{"id": float64(900), "head_branch": head.branch})
-			if obs := GithubCIObservations("check_run", body); len(obs) != 0 {
+			if obs := GithubCIObservations("check_run", body, ""); len(obs) != 0 {
 				t.Fatalf("head branch %q yielded %+v", head.branch, obs)
 			}
 		})
 	}
 
 	t.Run("check_run with no PR and no check_suite yields nothing", func(t *testing.T) {
-		if obs := GithubCIObservations("check_run", suiteBody(nil)); len(obs) != 0 {
+		if obs := GithubCIObservations("check_run", suiteBody(nil), ""); len(obs) != 0 {
 			t.Fatalf("a run carrying no check suite yielded %+v", obs)
 		}
 	})
@@ -1158,7 +1200,7 @@ func TestGithubCIObservations(t *testing.T) {
 				"pull_requests": []any{},
 			},
 		}
-		obs := GithubCIObservations("check_suite", body)
+		obs := GithubCIObservations("check_suite", body, "")
 		if len(obs) != 1 {
 			t.Fatalf("expected 1 observation, got %d", len(obs))
 		}
@@ -1180,7 +1222,7 @@ func TestGithubCIObservations(t *testing.T) {
 	t.Run("check_run missing head_sha yields nothing", func(t *testing.T) {
 		body := checkRunBody([]any{map[string]any{"number": 42}})
 		delete(body["check_run"].(map[string]any), "head_sha")
-		if obs := GithubCIObservations("check_run", body); len(obs) != 0 {
+		if obs := GithubCIObservations("check_run", body, ""); len(obs) != 0 {
 			t.Fatalf("expected no observations without head_sha, got %d", len(obs))
 		}
 	})
@@ -1188,6 +1230,7 @@ func TestGithubCIObservations(t *testing.T) {
 }
 
 func TestGithubCIObservationsSkipMalformedPRNumbers(t *testing.T) {
+	t.Parallel()
 	for _, number := range []any{42.5, "abc"} {
 		body := map[string]any{
 			"repository": map[string]any{
@@ -1201,12 +1244,13 @@ func TestGithubCIObservationsSkipMalformedPRNumbers(t *testing.T) {
 				"pull_requests": []any{map[string]any{"number": number}},
 			},
 		}
-		if observations := GithubCIObservations("check_run", body); len(observations) != 0 {
+		if observations := GithubCIObservations("check_run", body, ""); len(observations) != 0 {
 			t.Fatalf("PR number %v yielded observations: %+v", number, observations)
 		}
 	}
 }
 func TestGithubCIObservationsSkipMalformedCheckRunIDs(t *testing.T) {
+	t.Parallel()
 	for _, checkRunID := range []any{nil, float64(0), "0", "not-an-id", float64(12.5), "-1"} {
 		body := map[string]any{
 			"repository": map[string]any{
@@ -1220,7 +1264,7 @@ func TestGithubCIObservationsSkipMalformedCheckRunIDs(t *testing.T) {
 				"pull_requests": []any{map[string]any{"number": 42}},
 			},
 		}
-		if observations := GithubCIObservations("check_run", body); len(observations) != 0 {
+		if observations := GithubCIObservations("check_run", body, ""); len(observations) != 0 {
 			t.Fatalf("check run ID %v yielded observations: %+v", checkRunID, observations)
 		}
 	}
@@ -1230,6 +1274,7 @@ func TestGithubCIObservationsSkipMalformedCheckRunIDs(t *testing.T) {
 // outside any webhook body, with a short check_suite that carries no head_branch, so a caller
 // reading it names the pull request number itself and the mapper attributes nothing.
 func TestGithubCIObservationMapsARestListedCheckRun(t *testing.T) {
+	t.Parallel()
 	object := map[string]any{
 		"id":           float64(126934155799),
 		"name":         "ci-ok",
@@ -1266,6 +1311,7 @@ func TestGithubCIObservationMapsARestListedCheckRun(t *testing.T) {
 // The mapper is the one rule behind every observation: the webhook's fan-out and a caller that
 // names the number itself record the same bytes for the same GitHub object.
 func TestGithubCIObservationAgreesWithTheWebhooksFanOut(t *testing.T) {
+	t.Parallel()
 	run := map[string]any{
 		"id":            float64(987654321),
 		"name":          "unit-tests",
@@ -1287,7 +1333,7 @@ func TestGithubCIObservationAgreesWithTheWebhooksFanOut(t *testing.T) {
 		},
 		"check_run": run,
 	}
-	fanned := GithubCIObservations("check_run", body)
+	fanned := GithubCIObservations("check_run", body, "")
 	if len(fanned) != 1 {
 		t.Fatalf("expected 1 observation, got %d", len(fanned))
 	}
@@ -1300,6 +1346,7 @@ func TestGithubCIObservationAgreesWithTheWebhooksFanOut(t *testing.T) {
 // The reviewer rule decides one check run by its name and the App that created it; the handler
 // that drops a verdict logs what it dropped.
 func TestReviewerVerdictDecision(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		checkName     string
 		appID         string
@@ -1323,6 +1370,7 @@ func TestReviewerVerdictDecision(t *testing.T) {
 }
 
 func TestGhostWisprSubject(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		sessionId string
 		kind      string
@@ -1341,6 +1389,7 @@ func TestGhostWisprSubject(t *testing.T) {
 }
 
 func TestGhostWisprTopicPrefix(t *testing.T) {
+	t.Parallel()
 	if GhostWisprTopicPrefix != "notifications.ghostwispr." {
 		t.Fatalf("unexpected prefix: %s", GhostWisprTopicPrefix)
 	}
@@ -1351,6 +1400,7 @@ func TestGhostWisprTopicPrefix(t *testing.T) {
 }
 
 func TestGhostWisprSourceValidation(t *testing.T) {
+	t.Parallel()
 	env := Envelope{
 		EventID:        "evt-1",
 		Source:         "ghostwispr",
@@ -1367,6 +1417,7 @@ func TestGhostWisprSourceValidation(t *testing.T) {
 }
 
 func TestWhatsappSubject(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		phone string
 		jid   string
@@ -1386,6 +1437,7 @@ func TestWhatsappSubject(t *testing.T) {
 }
 
 func TestWhatsappSourceValidation(t *testing.T) {
+	t.Parallel()
 	env := Envelope{
 		EventID:        "evt-wa",
 		Source:         "whatsapp",
@@ -1402,6 +1454,7 @@ func TestWhatsappSourceValidation(t *testing.T) {
 }
 
 func TestSlackEnvelopeHandlesNonObjectEvent(t *testing.T) {
+	t.Parallel()
 	item := SlackEnvelope(SlackEnvelopeInput{
 		EventID: "e-malformed",
 		TraceID: "t-malformed",
@@ -1420,6 +1473,7 @@ func TestSlackEnvelopeHandlesNonObjectEvent(t *testing.T) {
 }
 
 func TestGithubEnvelopesPushToBranch(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "push",
 		Delivery: "d-push-1",
@@ -1443,6 +1497,7 @@ func TestGithubEnvelopesPushToBranch(t *testing.T) {
 }
 
 func TestGithubEnvelopesPushToTag(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "push",
 		Delivery: "d-push-2",
@@ -1466,6 +1521,7 @@ func TestGithubEnvelopesPushToTag(t *testing.T) {
 }
 
 func TestGithubEnvelopesPushToDottedBranch(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "push",
 		Delivery: "d-push-3",
@@ -1489,6 +1545,7 @@ func TestGithubEnvelopesPushToDottedBranch(t *testing.T) {
 }
 
 func TestGithubEnvelopesPushToSlashedBranch(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "push",
 		Delivery: "d-push-4",
@@ -1512,6 +1569,7 @@ func TestGithubEnvelopesPushToSlashedBranch(t *testing.T) {
 }
 
 func TestGithubEnvelopesPushToNonHeadsTagsRefDropsEnvelope(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "push",
 		Delivery: "d-push-5",
@@ -1532,6 +1590,7 @@ func TestGithubEnvelopesPushToNonHeadsTagsRefDropsEnvelope(t *testing.T) {
 }
 
 func TestGithubEnvelopesWorkflowRunInProgress(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "workflow_run",
 		Delivery: "d-wf-1",
@@ -1566,6 +1625,7 @@ func TestGithubEnvelopesWorkflowRunInProgress(t *testing.T) {
 }
 
 func TestGithubEnvelopesWorkflowRunCompleted(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "workflow_run",
 		Delivery: "d-wf-2",
@@ -1608,6 +1668,7 @@ func TestGithubEnvelopesWorkflowRunCompleted(t *testing.T) {
 }
 
 func TestGithubEnvelopesWorkflowRunLargeRunIDNotScientific(t *testing.T) {
+	t.Parallel()
 	// Real GitHub run_ids are 11+ digit integers. JSON unmarshals them as
 	// float64, and fmt.Sprintf("%v", ...) renders those in scientific notation
 	// (e.g. "2.5964358269e+10"). The payload must carry the integer form so
@@ -1648,6 +1709,7 @@ func TestGithubEnvelopesWorkflowRunLargeRunIDNotScientific(t *testing.T) {
 }
 
 func TestGithubEnvelopesWorkflowRunMissingPathDropsEnvelope(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event:    "workflow_run",
 		Delivery: "d-wf-3",
@@ -1672,6 +1734,7 @@ func TestGithubEnvelopesWorkflowRunMissingPathDropsEnvelope(t *testing.T) {
 }
 
 func TestGhostWisprEnvelopeSessionEnded(t *testing.T) {
+	t.Parallel()
 	item := GhostWisprEnvelope(GhostWisprEnvelopeInput{
 		EventType: "session_ended",
 		Delivery:  "gw-delivery-1",
@@ -1712,6 +1775,7 @@ func TestGhostWisprEnvelopeSessionEnded(t *testing.T) {
 }
 
 func TestGhostWisprEnvelopeSummaryReady(t *testing.T) {
+	t.Parallel()
 	item := GhostWisprEnvelope(GhostWisprEnvelopeInput{
 		EventType: "summary_ready",
 		Delivery:  "gw-delivery-2",
@@ -1749,6 +1813,7 @@ func TestGhostWisprEnvelopeSummaryReady(t *testing.T) {
 }
 
 func TestGhostWisprEnvelopeSessionStarted(t *testing.T) {
+	t.Parallel()
 	item := GhostWisprEnvelope(GhostWisprEnvelopeInput{
 		EventType: "session_started",
 		Delivery:  "gw-delivery-3",
@@ -1775,6 +1840,7 @@ func TestGhostWisprEnvelopeSessionStarted(t *testing.T) {
 }
 
 func TestGhostWisprEnvelopeMissingSessionIdUsesUnknownTopic(t *testing.T) {
+	t.Parallel()
 	item := GhostWisprEnvelope(GhostWisprEnvelopeInput{
 		EventType: "session_ended",
 		Delivery:  "gw-delivery-4",
@@ -1794,6 +1860,7 @@ func TestGhostWisprEnvelopeMissingSessionIdUsesUnknownTopic(t *testing.T) {
 }
 
 func TestGhostWisprKindMapping(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		eventType string
 		wantKind  string
@@ -1821,6 +1888,7 @@ func TestGhostWisprKindMapping(t *testing.T) {
 }
 
 func TestGhostWisprEnvelopeSanitizesSessionID(t *testing.T) {
+	t.Parallel()
 	item := GhostWisprEnvelope(GhostWisprEnvelopeInput{
 		EventType: "session_ended",
 		Delivery:  "gw-delivery-sanitize",
@@ -1843,6 +1911,7 @@ func TestGhostWisprEnvelopeSanitizesSessionID(t *testing.T) {
 }
 
 func TestGhostWisprEnvelopeNormalizesEventType(t *testing.T) {
+	t.Parallel()
 	item := GhostWisprEnvelope(GhostWisprEnvelopeInput{
 		EventType: " SUMMARY.READY ",
 		Delivery:  "gw-delivery-normalized",
@@ -1861,6 +1930,7 @@ func TestGhostWisprEnvelopeNormalizesEventType(t *testing.T) {
 }
 
 func TestGhostWisprSummaryTruncatesTitle(t *testing.T) {
+	t.Parallel()
 	item := GhostWisprEnvelope(GhostWisprEnvelopeInput{
 		EventType: "summary_ready",
 		Delivery:  "gw-delivery-title",
@@ -1880,6 +1950,7 @@ func TestGhostWisprSummaryTruncatesTitle(t *testing.T) {
 }
 
 func TestGithubPayloadCapsBodyRunes(t *testing.T) {
+	t.Parallel()
 	body := strings.Repeat("🔥", 3000)
 	payload := decodePayload(t, GithubEnvelope(GithubEnvelopeInput{
 		Event:    "issue_comment",
@@ -1905,6 +1976,7 @@ func TestGithubPayloadCapsBodyRunes(t *testing.T) {
 }
 
 func TestGithubPayloadAllEventTypes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		event      string
@@ -2014,6 +2086,7 @@ var githubEventsNotNormalized = []string{
 // was published on the repository's own `comment` topic with no payload, which every Legion daemon
 // that hears the repository terminated as poison, one ERROR line per delivery.
 func TestGithubEnvelopesPublishNoEventTheListenerDoesNotNormalize(t *testing.T) {
+	t.Parallel()
 	for _, event := range githubEventsNotNormalized {
 		t.Run(event, func(t *testing.T) {
 			if _, named := githubEventKinds[event]; named {
@@ -2048,6 +2121,7 @@ func TestGithubEnvelopesPublishNoEventTheListenerDoesNotNormalize(t *testing.T) 
 // its topic with no payload, which every Legion daemon that hears the repository would terminate
 // as poison.
 func TestGithubEnvelopesPublishNoEnvelopeWithAnEmptyPayload(t *testing.T) {
+	// Not parallel: it writes the package variable githubEventKinds, which every normalization reads.
 	const event = "example_unnormalized_event"
 	githubEventKinds[event] = "example"
 	t.Cleanup(func() { delete(githubEventKinds, event) })
@@ -2073,6 +2147,7 @@ func TestGithubEnvelopesPublishNoEnvelopeWithAnEmptyPayload(t *testing.T) {
 // without a normalizer fails here rather than in a daemon's log. The comment and review events are
 // published again with a body past every cap, with bytes that are not UTF-8, edited and deleted.
 func TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload(t *testing.T) {
+	t.Parallel()
 	fixture := func(name string) map[string]any {
 		t.Helper()
 		raw, err := os.ReadFile(filepath.Join("..", "..", "scripts", "fixtures", "github", name+".json"))
@@ -2185,6 +2260,7 @@ func TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload(t *testing.T) {
 }
 
 func TestGithubSummary(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		event string
@@ -2371,6 +2447,7 @@ func TestGithubSummary(t *testing.T) {
 }
 
 func TestGithubPayloadFields(t *testing.T) {
+	t.Parallel()
 	longBody := strings.Repeat("a", 3000)
 	longBodyWithFooter := strings.Repeat("a", 3000) + `<!-- legion:{"session":"worker-1"} -->`
 	// A real subject line from this repository, its issue reference dropped, well past the 70-rune
@@ -2600,6 +2677,7 @@ func TestGithubPayloadFields(t *testing.T) {
 // request title keeps it under the envelope's text cap, because a publish past NATS's max
 // payload fails; a title GitHub itself allows (at most 256 characters) is copied whole.
 func TestEnvelopeTitlesAreCappedAtTheEnvelopeTextCap(t *testing.T) {
+	t.Parallel()
 	repository := map[string]any{"full_name": "example-org/example-repo"}
 	comment := map[string]any{"body": "noted", "user": map[string]any{"login": "commenter"}}
 	review := map[string]any{
@@ -2648,6 +2726,7 @@ func TestEnvelopeTitlesAreCappedAtTheEnvelopeTextCap(t *testing.T) {
 }
 
 func TestGhostWisprTitleIsCappedAtTheEnvelopeTextCap(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, title, want string }{
 		{"a title past the cap is cut", strings.Repeat("g", 3000), strings.Repeat("g", 2048) + "…"},
 		{"a real session title is kept whole", "How are we gonna do the", "How are we gonna do the"},
@@ -2677,6 +2756,7 @@ func TestGhostWisprTitleIsCappedAtTheEnvelopeTextCap(t *testing.T) {
 // on, which is bounded where it is published (bus.ErrTooLarge), not cut here, since a cut subject
 // would reach the wrong subscribers.
 func TestAGithubEnvelopeStaysUnderNATSMaxPayloadWhateverItsFieldsHold(t *testing.T) {
+	t.Parallel()
 	const natsDefaultMaxPayload = 1 << 20
 	grow := strings.Repeat("<", 256<<10)
 	var inflate func(value any) any
@@ -2743,6 +2823,7 @@ func TestAGithubEnvelopeStaysUnderNATSMaxPayloadWhateverItsFieldsHold(t *testing
 // What a CI observation copies from its check run goes to the listener's CI store, which writes the
 // record with a publish, so each text is capped like an envelope's.
 func TestACheckRunIsCappedAtTheEnvelopeTextCap(t *testing.T) {
+	t.Parallel()
 	observe := func(t *testing.T, checkRun map[string]any) CIObservation {
 		t.Helper()
 		fields := map[string]any{
@@ -2755,7 +2836,8 @@ func TestACheckRunIsCappedAtTheEnvelopeTextCap(t *testing.T) {
 		observations := GithubCIObservations("check_run", map[string]any{
 			"repository": map[string]any{"name": "widgets", "owner": map[string]any{"login": "acme"}},
 			"check_run":  fields,
-		})
+		}, "")
+
 		if len(observations) != 1 {
 			t.Fatalf("observations = %d, want 1", len(observations))
 		}
@@ -2806,6 +2888,7 @@ func TestACheckRunIsCappedAtTheEnvelopeTextCap(t *testing.T) {
 // may hold no whitespace (nats.go refuses it) or wildcard, so its segment writes each as `_`, as it
 // writes a dot.
 func TestAWorkflowFileNameIsOneValidSubjectSegment(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ file, want string }{
 		{"my ci.yml", "notifications.github.acme.widgets.workflow.my_ci_yml.completed"},
 		{"a\tb\nc*d>e.yml", "notifications.github.acme.widgets.workflow.a_b_c_d_e_yml.completed"},
@@ -2829,6 +2912,7 @@ func TestAWorkflowFileNameIsOneValidSubjectSegment(t *testing.T) {
 // forced, which no daemon reads since sjawhar/legion#2354 moved Legion's handoffs onto their
 // Dispatch issues.
 func TestGithubPayloadPushCarriesExactlyTheKeysTheListenerPublishes(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("testdata", "push_handoff_only.json"))
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
@@ -2862,6 +2946,7 @@ func TestGithubPayloadPushCarriesExactlyTheKeysTheListenerPublishes(t *testing.T
 }
 
 func TestGithubEnvelopesWorkflowRunWithPullRequestsDropsEnvelope(t *testing.T) {
+	t.Parallel()
 	items := GithubEnvelopes(GithubEnvelopeInput{
 		Event: "workflow_run", Delivery: "delivery", EventID: "event", TraceID: "trace",
 		Body: map[string]any{
@@ -2880,6 +2965,7 @@ func TestGithubEnvelopesWorkflowRunWithPullRequestsDropsEnvelope(t *testing.T) {
 }
 
 func TestSlackSummary(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		body map[string]any
@@ -2971,6 +3057,7 @@ func TestSlackSummary(t *testing.T) {
 }
 
 func TestSlackPayload(t *testing.T) {
+	t.Parallel()
 	longText := strings.Repeat("a", 3000)
 	tests := []struct {
 		name        string
@@ -3077,6 +3164,7 @@ func TestSlackPayload(t *testing.T) {
 }
 
 func TestSlackDeliveredText(t *testing.T) {
+	t.Parallel()
 	ownWords := strings.Repeat("a", 2040)
 	tests := []struct {
 		name          string
@@ -3783,6 +3871,7 @@ func TestSlackDeliveredText(t *testing.T) {
 }
 
 func TestGhostWisprSummary(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		eventType string
@@ -3825,6 +3914,7 @@ func TestGhostWisprSummary(t *testing.T) {
 }
 
 func TestGhostWisprPayload(t *testing.T) {
+	t.Parallel()
 	longSummary := strings.Repeat("s", 3000)
 	tests := []struct {
 		name           string
@@ -3922,6 +4012,7 @@ func TestGhostWisprPayload(t *testing.T) {
 }
 
 func TestGithubSummaryUsesFullNameFallback(t *testing.T) {
+	t.Parallel()
 	got := githubSummary("issues", map[string]any{
 		"action":     "opened",
 		"repository": map[string]any{"full_name": "example-org/example-repo"},
@@ -3934,6 +4025,7 @@ func TestGithubSummaryUsesFullNameFallback(t *testing.T) {
 }
 
 func TestPayloadJSONOmitsEmptyFields(t *testing.T) {
+	t.Parallel()
 	got := payloadJSON(map[string]string{"present": "value", "empty": ""})
 	const want = `{"present":"value"}`
 	if got != want {
@@ -3942,6 +4034,7 @@ func TestPayloadJSONOmitsEmptyFields(t *testing.T) {
 }
 
 func TestGithubPayloadUsesRepositoryPartsFallback(t *testing.T) {
+	t.Parallel()
 	payload := decodePayload(t, GithubEnvelope(GithubEnvelopeInput{
 		Event: "issues",
 		Body: map[string]any{
@@ -3955,6 +4048,7 @@ func TestGithubPayloadUsesRepositoryPartsFallback(t *testing.T) {
 	}
 }
 func TestOneLineSummarySkipsLeadingBlankLinesAndCapsRunes(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("界", 161)
 	if got := OneLineSummary("\n \r\n  first useful line\nsecond line"); got != "first useful line" {
 		t.Fatalf("summary = %q", got)
@@ -3964,6 +4058,7 @@ func TestOneLineSummarySkipsLeadingBlankLinesAndCapsRunes(t *testing.T) {
 	}
 }
 func TestFirstSkipsLeadingBlankLines(t *testing.T) {
+	t.Parallel()
 	if got := first("\n \r\n\tfirst useful line\nsecond line", 160); got != "first useful line" {
 		t.Fatalf("first = %q, want first useful line", got)
 	}

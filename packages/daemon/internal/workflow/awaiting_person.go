@@ -17,12 +17,13 @@ import (
 // returns why it may not, or "" when it may.
 // Its hand-over label gone, or its leaving the workflow, ends that, and so does a Dispatch claim
 // held by a person or by a session outside its tree, which owns the issue instead; the daemon's own
-// session and a session that claims within the tree are legitimate holders. The claim is the one
-// the daemon's mirror of Dispatch's issues shows (record.Store.DispatchClaim). ReconcileAwaiting
-// keeps a root it answers no for at admitted, where it holds its slot unless it waits on another
-// issue (blockers.waitsOf), and admission removes an awaiting root, and skips an answered one,
-// that it answers no for.
-func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (string, error) {
+// session and a session that claims within the tree are legitimate holders. The daemon's own
+// session is the session of project, the daemon's own Dispatch project (dispatch.DaemonSession).
+// The claim is the one the daemon's mirror of Dispatch's issues shows (record.Store.DispatchClaim).
+// ReconcileAwaiting keeps a root it answers no for at admitted, where it holds its slot unless it
+// waits on another issue (blockers.waitsOf), and admission removes an awaiting root, and skips an
+// answered one, that it answers no for.
+func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, project string, issue record.Issue) (string, error) {
 	switch {
 	case !issue.HandedOver:
 		return "the legion label was removed", nil
@@ -37,7 +38,7 @@ func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, issue recor
 	if !found || kind == "" || id == "" {
 		return fmt.Sprintf("its Dispatch claim is held by %q", claimedBy), nil
 	}
-	if kind == "session" && id == dispatch.DaemonSession(issue.Key) {
+	if kind == "session" && id == dispatch.DaemonSession(project) {
 		return "", nil
 	}
 	if kind == "session" {
@@ -160,7 +161,7 @@ func (e *Engine) catchUpApplied(ctx context.Context, tx pgx.Tx, fact intake.Catc
 }
 
 // answerWait records that by answered root's wait now, with detail, which puts the root in the
-// waiting line (record.Waiting) — among the issues whose work came back, oldest first — and
+// waiting line (record.Waiting) — within its priority, among the issues whose work came back, oldest first — and
 // names the act in the task its architect resumes with (resumeTask). The detail is the act's
 // own: the ask a person acted on, the version and reason of the review that answered, or who
 // took the question away, so a later act of the same kind does not rename it.

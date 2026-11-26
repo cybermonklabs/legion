@@ -133,9 +133,10 @@ var unsetDefaultSteps = func() []plan.Step {
 
 // RunsByDefault is the project's default steps: the steps a task whose plan block names neither
 // steps nor a sub-owner runs, and the steps of the one task `default` of an issue whose owner
-// gives no plan. They are `default_steps`, or today's line up to the owner's acceptance for
-// a project that names none, and for a Project the loader never read, so a configuration built
-// without the field runs today's line rather than no step. The answer is the caller's own.
+// gives no plan or whose experiment's group takes none. They are `default_steps`, or today's line
+// up to the owner's acceptance for a project that names none, and for a Project the loader never
+// read, so a configuration built without the field runs today's line rather than no step. The
+// answer is the caller's own.
 func (p Project) RunsByDefault() []plan.Step {
 	if p.DefaultSteps != nil {
 		return slices.Clone(p.DefaultSteps)
@@ -185,7 +186,6 @@ const missingDispatchTokenFile = "dispatch_token_file is required when dispatch_
 
 var (
 	projectKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*$`)
-	roleNamePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 	// slackChannelPattern is a Slack channel id: C for a public channel, G for a private one, then
 	// capital letters and digits. It is one NATS subject token of the mention topic the controller
 	// subscribes to (notifications.slack.<team>.<channel>.mention), so nothing else is taken.
@@ -282,7 +282,12 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 		// The block and `experiments.memory` are one experiment spelled two ways, and only here
 		// are both spellings in view: the memory member is read by the mapping's own key rather
 		// than by the block's value, so an empty block counts as written (checkExperimentMemory).
+		// The rules of `plan` come after it, so `plan` on `experiments.memory` gets that check's
+		// one refusal rather than the plan rules' advice to write `unit: issue`.
 		if err := checkExperimentMemory(project.Experiments, fields["memory"] != nil, key); err != nil {
+			return Project{}, nil, err
+		}
+		if err := checkExperimentPlans(project.Experiments, key); err != nil {
 			return Project{}, nil, err
 		}
 	}
@@ -737,6 +742,40 @@ func commandError(field string, err error) error {
 	return fmt.Errorf("%s failed (%s)", field, end)
 }
 
+// resolveDispatchTokenBroker settles `dispatch_token_broker` and `dispatch_token_transition_file`,
+// refusing each misuse with a message that names the key. resolve runs it before the runtime's own
+// required keys (checkKubernetesKeys), so a file that sets the broker without dispatch_url is told
+// about the broker and not only about the URL. The broker is the daemon's own pod identity, so
+// only `runtime: kubernetes` takes either key. It also needs the exchange audience, since a
+// launch then carries no Dispatch token and each role trades its pod's exchange identity for its
+// own. The transition file holds the shared token a pod built before the setting gets, so it is
+// taken only beside the setting. A `dispatch_token_broker: false` is the setting off, which every
+// runtime runs.
+func resolveDispatchTokenBroker(file fileConfig, configDir string, cfg *Config) error {
+	broker := file.DispatchTokenBroker != nil && *file.DispatchTokenBroker
+	switch {
+	case broker && file.Kubernetes == nil:
+		return errors.New("dispatch_token_broker is not used when runtime is tmux: a tmux daemon has no pod identity to trade at the secrets broker; remove dispatch_token_broker")
+	case file.DispatchTokenTransitionFile != nil && file.Kubernetes == nil:
+		return errors.New("dispatch_token_transition_file is not used when runtime is tmux: it holds the shared Dispatch token a pod built before dispatch_token_broker gets, and a tmux daemon starts no pod; remove dispatch_token_transition_file")
+	case file.DispatchTokenTransitionFile != nil && !broker:
+		return errors.New("dispatch_token_transition_file is set but dispatch_token_broker is not true: the file holds the shared Dispatch token a pod built before dispatch_token_broker gets, so the daemon reads it only under that setting")
+	case !broker:
+		return nil
+	case file.DispatchTokenFile != nil:
+		return errors.New("dispatch_token_file and dispatch_token_broker are both set: the daemon's Dispatch credential is the bearer a file holds or its own pod identity traded at the secrets broker, never both")
+	case file.DispatchURL == nil:
+		return errors.New("dispatch_token_broker is set but dispatch_url is not")
+	case file.Kubernetes.AgentSecrets == nil || file.Kubernetes.AgentSecrets.ExchangeAudience == "":
+		return errors.New("dispatch_token_broker needs runtime.kubernetes.agent_secrets.exchange_audience: under the setting a launch carries no Dispatch token, and each role trades its pod's exchange identity for its own, which no pod carries while exchange_audience is unset")
+	}
+	cfg.DispatchTokenBroker = true
+	if file.DispatchTokenTransitionFile != nil {
+		cfg.DispatchTokenTransitionFile = underConfig(*file.DispatchTokenTransitionFile, configDir)
+	}
+	return nil
+}
+
 func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
 	if file.DispatchURL != nil {
 		url, err := dispatchBase(*file.DispatchURL, "dispatch_url")
@@ -765,11 +804,13 @@ func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
 	if file.GitHubApps != nil {
 		cfg.GitHubApps = *file.GitHubApps
 	}
-	// A workflow boot needs its Dispatch bearer, its intake, and its own project; each is refused
-	// here, so `legion config check` never passes a file `legion start` refuses.
+	// A workflow boot needs its Dispatch credential, its intake, and its own project; each is
+	// refused here, so `legion config check` never passes a file `legion start` refuses.
+	// The credential is the bearer dispatch_token_file names, or, under dispatch_token_broker, the
+	// daemon's own pod identity (resolveDispatchTokenBroker).
 	if file.DispatchURL != nil {
 		switch _, ok := cfg.Projects[cfg.Project]; {
-		case cfg.DispatchTokenFile == "":
+		case cfg.DispatchTokenFile == "" && !cfg.DispatchTokenBroker:
 			return errors.New(missingDispatchTokenFile)
 		case len(cfg.NatsURLs) == 0:
 			return errors.New("nats_urls is required when dispatch_url is configured: the workflow's intake reads Envoy's notification stream")

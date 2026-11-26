@@ -7,13 +7,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,6 +101,14 @@ type relaySocketRigConfig struct {
 	// budget is what the replica's sockets together may hold, relaySocketReplicaPendingBytes by
 	// default, and callerBudget what one caller's may, relaySocketCallerPendingBytes by default.
 	budget, callerBudget int64
+	// closeGrace is how long a closed socket waits for its close frame to be written,
+	// relaySocketCloseGrace by default.
+	closeGrace time.Duration
+	// writeWait bounds one data frame's write and one ping's, relaySocketWriteWait by default.
+	writeWait time.Duration
+	// held, when set, is the gate every connection the replica's server accepts writes through
+	// (heldWrites), which a row holds to hold a socket's writer inside a write.
+	held *heldWrites
 }
 
 func withSocketNATSLatency(rtt time.Duration) relaySocketRigOption {
@@ -121,6 +133,26 @@ func withReplicaBudget(bytes int64) relaySocketRigOption {
 
 func withCallerBudget(bytes int64) relaySocketRigOption {
 	return func(c *relaySocketRigConfig) { c.callerBudget = bytes }
+}
+
+// withCloseGrace raises how long a closed socket waits for its close frame to be written
+// (relaySockets.closeGrace, relaySocketCloseGrace by default), so a row reads the order of a close
+// and a data frame on the wire with no deadline deciding it.
+func withCloseGrace(grace time.Duration) relaySocketRigOption {
+	return func(c *relaySocketRigConfig) { c.closeGrace = grace }
+}
+
+// withWriteWait raises how long one data frame's write and one ping's may take
+// (relaySockets.writeWait, relaySocketWriteWait by default), so a row that holds its client's
+// reads decides nothing by that deadline.
+func withWriteWait(wait time.Duration) relaySocketRigOption {
+	return func(c *relaySocketRigConfig) { c.writeWait = wait }
+}
+
+// withHeldWrites has every connection the socket's replica accepts write through held's gate, so a
+// row holds a socket's writer inside a write for as long as the row takes (heldWrites).
+func withHeldWrites(held *heldWrites) relaySocketRigOption {
+	return func(c *relaySocketRigConfig) { c.held = held }
 }
 
 func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySocketRig {
@@ -156,7 +188,7 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 	verifier, err := ciphertoken.New(ciphertoken.Options{
 		BrokerURL: broker.Server.URL,
 		Account:   listenerBrokerAccount("listener-account-token"),
-		Origin:    listenerBrokerOrigin,
+		Origins:   []string{listenerBrokerOrigin},
 		Replay:    &spentProofsInMemory{},
 		Address:   listenerSourceAddress,
 		Now:       clock.now,
@@ -187,10 +219,20 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 	if config.callerBudget > 0 {
 		sockets.callerBudget = config.callerBudget
 	}
+	if config.closeGrace > 0 {
+		sockets.closeGrace = config.closeGrace
+	}
+	if config.writeWait > 0 {
+		sockets.writeWait = config.writeWait
+	}
 	sockets.now = clock.now
 	routes := http.NewServeMux()
 	registerV1Routes(routes, &listenerDeps{client: client, relaySockets: sockets}, "edge-b", logger)
-	server := httptest.NewServer(apiAuth(listenerAPIAuth{brokers: tokens, logger: logger}, routes))
+	server := httptest.NewUnstartedServer(apiAuth(listenerAPIAuth{brokers: tokens, logger: logger}, routes))
+	if config.held != nil {
+		server.Listener = config.held.listen(server.Listener)
+	}
+	server.Start()
 	t.Cleanup(server.Close)
 	t.Cleanup(sockets.stop)
 	return &relaySocketRig{
@@ -390,18 +432,47 @@ func (c *relaySocketClient) ping() {
 	}
 }
 
-// next is the next frame within the bound, failing the test when none arrives.
+// next is the next frame within the bound, failing the test when none arrives. A frame the reader
+// queued before the close came first on the wire, and is the next frame: the reader puts each frame
+// on frames before it reads on, so once the close is on closed, every frame before it is already on
+// frames. A select over both would pick either at random when both are ready - under load, where
+// the reader queues the server's last frame and its close before the row asks - and report a frame
+// that did arrive as missing; so next takes a queued frame first, and on the close looks at frames
+// once more before it fails, putting the close back for closeCode.
 func (c *relaySocketClient) next(within time.Duration) relayFrameRead {
 	c.t.Helper()
 	select {
 	case frame := <-c.frames:
 		return frame
+	default:
+	}
+	select {
+	case frame := <-c.frames:
+		return frame
 	case err := <-c.closed:
+		select {
+		case frame := <-c.frames:
+			c.closed <- err
+			return frame
+		default:
+		}
 		c.t.Fatalf("the socket closed (%v) before a frame arrived", err)
 	case <-time.After(within):
 		c.t.Fatalf("no frame arrived within %s", within)
 	}
 	return relayFrameRead{}
+}
+
+// closeQueued waits for the reader to have read the server's close, after every frame before it:
+// the state in which next must still answer the frames first. A row calls it to stand where load
+// puts it. It sets no span of its own: a close that load holds back is still a close, so the wait
+// ends when the close is queued or gives up 30 s before the test binary's deadline (testwait.Until).
+func (c *relaySocketClient) closeQueued() {
+	c.t.Helper()
+	testwait.Until(c.t, "the reader to read the server's close", func() (int, bool) {
+		queued := len(c.closed)
+		return queued, queued == 1
+	})
 }
 
 // none fails the test when a frame arrives within the window.
@@ -467,7 +538,7 @@ func (f relayFrameRead) data(t *testing.T) []byte {
 func (rig *relaySocketRig) openSocket(t *testing.T, session string) *relaySocket {
 	t.Helper()
 	var found *relaySocket
-	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool {
+	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool {
 		rig.sockets.mu.Lock()
 		defer rig.sockets.mu.Unlock()
 		for socket := range rig.sockets.open[session] {
@@ -488,7 +559,7 @@ func (rig *relaySocketRig) openSocket(t *testing.T, session string) *relaySocket
 func (socket *relaySocket) awaitSubscription(t *testing.T) *natsgo.Subscription {
 	t.Helper()
 	var held *natsgo.Subscription
-	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool {
+	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool {
 		socket.subsMu.Lock()
 		defer socket.subsMu.Unlock()
 		for _, sub := range socket.subs {
@@ -557,7 +628,14 @@ func publishRelayFrame(t *testing.T, url, session string, header natsgo.Header) 
 // once the replica holds its subscription.
 func (rig *relaySocketRig) dialStalled(t *testing.T, session, token string) (*websocket.Conn, *relaySocket) {
 	t.Helper()
-	dialer := websocket.Dialer{Subprotocols: []string{relaySubprotocol}, HandshakeTimeout: 5 * time.Second}
+	return rig.dialSubscribed(t, session, token, &websocket.Dialer{Subprotocols: []string{relaySubprotocol}, HandshakeTimeout: 5 * time.Second})
+}
+
+// dialSubscribed opens session's socket with token through dialer, which the row reads itself,
+// subscribes the session's relay subject as sid 1, and answers the client's connection and the
+// replica's socket once the replica holds its subscription.
+func (rig *relaySocketRig) dialSubscribed(t *testing.T, session, token string, dialer *websocket.Dialer) (*websocket.Conn, *relaySocket) {
+	t.Helper()
 	conn, response, err := dialer.Dial("ws"+strings.TrimPrefix(rig.server.URL, "http")+relaySocketPath(session), rig.upgradeHeader(t, session, token))
 	if err != nil {
 		t.Fatalf("open the socket of %s: %v (%s)", session, err, describeUpgrade(response))
@@ -569,6 +647,184 @@ func (rig *relaySocketRig) dialStalled(t *testing.T, session, token string) (*we
 	socket := rig.openSocket(t, session)
 	socket.awaitSubscription(t)
 	return conn, socket
+}
+
+// countedConn is a client's connection that counts what it has read.
+type countedConn struct {
+	net.Conn
+	read atomic.Int64
+}
+
+func (c *countedConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	c.read.Add(int64(n))
+	return n, err
+}
+
+// dialCounted opens session's socket with token on a client that counts what it reads
+// (countedConn), subscribes the session's relay subject as sid 1 (dialSubscribed), and answers the
+// client's connection, its countedConn and the replica's socket once the replica holds its
+// subscription.
+func (rig *relaySocketRig) dialCounted(t *testing.T, session, token string) (*websocket.Conn, *countedConn, *relaySocket) {
+	t.Helper()
+	var counted *countedConn
+	dialer := &websocket.Dialer{
+		Subprotocols:     []string{relaySubprotocol},
+		HandshakeTimeout: 5 * time.Second,
+		NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			counted = &countedConn{Conn: conn}
+			return counted, nil
+		},
+	}
+	conn, socket := rig.dialSubscribed(t, session, token, dialer)
+	return conn, counted, socket
+}
+
+// heldWrites wraps the socket replica's listener (withHeldWrites) so a row can hold a socket's
+// writer inside a write, as a client that reads nothing holds it, and know that it stays held until
+// the row lets it go: the shape of internal/dispatch/api's heldWrites. gorilla/websocket holds its
+// connection's write lock for the whole of each write to the connection, so a writer held at the
+// gate holds that lock, and a close or a ping (WriteControl) waits for it. Holding the writer with
+// TCP backpressure instead (a client that reads nothing, through the least buffers the kernel
+// allows) holds the lock only while the kernel blocks a write: between two fragments of a frame the
+// writer holds no lock, and a close or a ping that comes then takes it at once.
+type heldWrites struct {
+	mu sync.Mutex
+	// gate is open (nil) or, while the row holds writes, the channel release closes.
+	gate chan struct{}
+	// waiting counts the writes waiting at the gate.
+	waiting atomic.Int32
+}
+
+// listen is newRelaySocketRig's: every connection the server accepts writes through the gate.
+func (held *heldWrites) listen(listener net.Listener) net.Listener {
+	return heldListener{Listener: listener, held: held}
+}
+
+// hold makes every write the server starts from now on wait at the gate until release, however
+// long the row takes to release it. The row's cleanup releases it, ahead of the rig's, so no
+// socket's writer is left waiting at the gate.
+func (held *heldWrites) hold(t *testing.T) {
+	t.Helper()
+	held.mu.Lock()
+	defer held.mu.Unlock()
+	if held.gate == nil {
+		held.gate = make(chan struct{})
+	}
+	t.Cleanup(held.release)
+}
+
+// release lets every waiting write through and opens the gate.
+func (held *heldWrites) release() {
+	held.mu.Lock()
+	defer held.mu.Unlock()
+	if held.gate != nil {
+		close(held.gate)
+		held.gate = nil
+	}
+}
+
+// waitHeld returns once a write waits at the gate, bounded only by the test binary's deadline: from
+// then on its writer holds the connection's write lock until release.
+func (held *heldWrites) waitHeld(t *testing.T, what string) {
+	t.Helper()
+	testwait.Until(t, what, func() (int32, bool) {
+		waiting := held.waiting.Load()
+		return waiting, waiting > 0
+	})
+}
+
+func (held *heldWrites) current() chan struct{} {
+	held.mu.Lock()
+	defer held.mu.Unlock()
+	return held.gate
+}
+
+type heldListener struct {
+	net.Listener
+	held *heldWrites
+}
+
+func (l heldListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return conn, err
+	}
+	return &heldConn{Conn: conn, held: l.held}, nil
+}
+
+// heldConn is one accepted connection whose writes wait at the gate. A write waits there for the
+// row's release alone: the write deadline the writer set moves on by the time the write waited, so
+// a release later than that deadline still lets the write through rather than failing it.
+type heldConn struct {
+	net.Conn
+	held     *heldWrites
+	mu       sync.Mutex
+	deadline time.Time
+}
+
+func (c *heldConn) SetDeadline(at time.Time) error {
+	c.setWriteDeadline(at)
+	return c.Conn.SetDeadline(at)
+}
+
+func (c *heldConn) SetWriteDeadline(at time.Time) error {
+	c.setWriteDeadline(at)
+	return c.Conn.SetWriteDeadline(at)
+}
+
+func (c *heldConn) setWriteDeadline(at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deadline = at
+}
+
+func (c *heldConn) Write(p []byte) (int, error) {
+	if gate := c.held.current(); gate != nil {
+		reached := time.Now()
+		c.held.waiting.Add(1)
+		<-gate
+		c.held.waiting.Add(-1)
+		c.mu.Lock()
+		deadline := c.deadline
+		c.mu.Unlock()
+		if !deadline.IsZero() {
+			if err := c.Conn.SetWriteDeadline(deadline.Add(time.Since(reached))); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return c.Conn.Write(p)
+}
+
+// awaitControlWriteWaiting returns once a goroutine of the process waits in gorilla/websocket's
+// WriteControl for its connection's write lock (blocked in its select), bounded only by the test
+// binary's deadline: a close or a ping is then queued for that lock, so it is handed the lock the
+// moment the write holding it lets go (a send on a channel a receiver waits on passes to that
+// receiver). The wait comes only while the lock is held, so the row holds the socket's writer
+// inside a write (heldWrites) before the close or the ping comes. The row's socket must be the
+// only one of the process with a control frame to write.
+func awaitControlWriteWaiting(t *testing.T, what string) {
+	t.Helper()
+	testwait.Until(t, what, func() (string, bool) {
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		for n == len(buf) {
+			buf = make([]byte, 2*len(buf))
+			n = runtime.Stack(buf, true)
+		}
+		for _, goroutine := range strings.Split(string(buf[:n]), "\n\n") {
+			header, _, _ := strings.Cut(goroutine, "\n")
+			if strings.Contains(header, "[select") && strings.Contains(goroutine, "gorilla/websocket.(*Conn).WriteControl(") {
+				return header, true
+			}
+		}
+		return "no goroutine waits in WriteControl", false
+	})
 }
 
 // flood publishes n relay frames of 512 KiB on session's relay subject, far more than a
@@ -594,7 +850,7 @@ func flood(t *testing.T, url, session string, n int) {
 // client, failing the test when it never does within 10 s.
 func awaitBlockedWrite(t *testing.T, socket *relaySocket) {
 	t.Helper()
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool {
 		frames, _ := socket.held()
 		return frames > 1
 	}) {

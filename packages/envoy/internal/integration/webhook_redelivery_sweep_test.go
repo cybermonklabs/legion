@@ -28,8 +28,9 @@ import (
 //   - A delivery the listener refused with 400 (a build that could not read it) is asked for
 //     again like any other failure, recovered once the listener reads it, and logged recovered.
 func TestWebhookRedelivery_TheSweepRecoversFailedDeliveriesThroughTheListener(t *testing.T) {
+	t.Parallel()
 	env := setupTestEnv(t)
-	handler := webhook.GitHubHandler(redeliverySecret, "@legion", "", env.client, refusingRecorder{t}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
+	handler := webhook.GitHubHandler(redeliverySecret, "@legion", "", "", env.client, refusingRecorder{t}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	var started, refusing atomic.Bool
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !started.Load() {

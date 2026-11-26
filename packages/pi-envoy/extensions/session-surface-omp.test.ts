@@ -6,6 +6,7 @@ import * as path from "node:path";
 import {
   type Block,
   type Cleanup,
+  deleteRelayCapturingStreams,
   isSummarization,
   messageStream,
   ompRoot,
@@ -344,6 +345,9 @@ async function startSession(
   );
   const connection: NatsConnection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
+  // No stream another suite left on this server may answer the frames
+  // (`deleteRelayCapturingStreams`).
+  await deleteRelayCapturingStreams(connection);
   const codec = StringCodec();
   const subject = `notifications.agent.${sid}`;
   const control = `agentstream.${sid}.control`;
@@ -1252,19 +1256,32 @@ test.skipIf(skip)(
 );
 
 // One command runs for a session at a time: a second is answered naming the first rather than
-// queued behind it.
+// queued behind it. The first runs until the case releases it, on a session whose limit is the
+// default two minutes, so it is still running when the second is taken however long that takes.
+// On the shell session's 2 s limit the first `!sleep 600` could end before the second was taken,
+// and the second then ran; the limit's own answer is the row above's. The case releases the
+// first in a `finally`, and its loop also ends once the workspace is gone with the `holding` it
+// wrote, so a case that fails leaves no shell spinning after the binary is stopped.
 test.skipIf(skip)(
   "a second `!` sent while one runs is answered naming the command still running",
   async () => {
-    const session = await shellSession();
-    const first = await session.send("!sleep 600");
-    const second = await session.send("!printf hi");
-    expect(await session.reply(second, "the reply to the second command")).toBe(
-      "!printf hi\n\nThe command was not run: this session is still running !sleep 600."
-    );
-    expect(await session.reply(first, "the reply to the command still running")).toBe(
-      `!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
-    );
+    const session = await startSession();
+    const released = path.join(session.workspace, "released");
+    const command =
+      "!: > holding; while [ ! -f released ] && [ -f holding ]; do sleep 0.05; done; printf released";
+    try {
+      const first = await session.send(command);
+      const second = await session.send("!printf hi");
+      expect(await session.reply(second, "the reply to the second command")).toBe(
+        `!printf hi\n\nThe command was not run: this session is still running ${command}.`
+      );
+      await Bun.write(released, "");
+      expect(await session.reply(first, "the reply to the first command once released")).toBe(
+        `${command}\n\n\`\`\`\nreleased\n\`\`\``
+      );
+    } finally {
+      await Bun.write(released, "");
+    }
   },
   120_000
 );
@@ -1359,30 +1376,36 @@ test.skipIf(skip)(
 // A `!command` runs on its own promise, never inside the queued delivery task (D11): a command
 // that runs for minutes must not hold the session's other Dispatch messages behind it. This
 // session's limit is the default two minutes, and the command ends when the case says so, so the
-// second message is answered with the first command demonstrably still running.
+// second message is answered with the first command demonstrably still running. The case
+// releases it in a `finally`, and its loop also ends once the workspace is gone with the
+// `holding` it wrote, so a case that fails leaves no shell spinning after the binary is stopped.
 test.skipIf(skip)(
   "a `!sleep` holds none of the session's other Dispatch messages",
   async () => {
     const session = await startSession();
     const release = path.join(session.workspace, "release");
-    const waiting = await session.send(
-      `!while [ ! -f ${release} ]; do sleep 0.05; done; printf released`
-    );
+    try {
+      const waiting = await session.send(
+        "!: > holding; while [ ! -f release ] && [ -f holding ]; do sleep 0.05; done; printf released"
+      );
 
-    const prompt = await session.send("Are you still taking messages?");
-    const turn = await session.nextTurn("the turn the second message started");
-    expect(conversation(turn.request)).toContain("Are you still taking messages?");
-    // The first command is still running: its own answer is not on Dispatch yet.
-    expect(session.replied(waiting)).toBe(false);
-    turn.reply([text("Still taking them.")]);
-    await session.settled();
-    expect(session.replied(waiting)).toBe(false);
-    expect(session.replied(prompt)).toBe(false);
+      const prompt = await session.send("Are you still taking messages?");
+      const turn = await session.nextTurn("the turn the second message started");
+      expect(conversation(turn.request)).toContain("Are you still taking messages?");
+      // The first command is still running: its own answer is not on Dispatch yet.
+      expect(session.replied(waiting)).toBe(false);
+      turn.reply([text("Still taking them.")]);
+      await session.settled();
+      expect(session.replied(waiting)).toBe(false);
+      expect(session.replied(prompt)).toBe(false);
 
-    await Bun.write(release, "");
-    expect(await session.reply(waiting, "the reply once the command ended")).toEndWith(
-      "```\nreleased\n```"
-    );
+      await Bun.write(release, "");
+      expect(await session.reply(waiting, "the reply once the command ended")).toEndWith(
+        "```\nreleased\n```"
+      );
+    } finally {
+      await Bun.write(release, "");
+    }
   },
   120_000
 );

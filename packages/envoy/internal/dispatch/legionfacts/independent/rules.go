@@ -19,17 +19,18 @@ import (
 // The phases the daemon reports, written out here rather than taken from another package, so
 // this reading stands on the words and not on another reader's constants.
 const (
-	phaseAdmitted       = "admitted"
-	phaseAwaitingPerson = "awaiting_person"
-	phasePlanning       = "planning"
-	phaseImplementing   = "implementing"
-	phaseTesting        = "testing"
-	phaseReviewing      = "reviewing"
-	phaseAccepting      = "accepting"
-	phaseRetro          = "retro"
-	phaseMerging        = "merging"
-	phaseAwaitingMerge  = "awaiting_merge"
-	phaseHeld           = "held"
+	phaseAdmitted         = "admitted"
+	phaseAwaitingPerson   = "awaiting_person"
+	phaseAwaitingChildren = "awaiting_children"
+	phasePlanning         = "planning"
+	phaseImplementing     = "implementing"
+	phaseTesting          = "testing"
+	phaseReviewing        = "reviewing"
+	phaseAccepting        = "accepting"
+	phaseRetro            = "retro"
+	phaseMerging          = "merging"
+	phaseAwaitingMerge    = "awaiting_merge"
+	phaseHeld             = "held"
 )
 
 // The two phases this reading tells apart inside the daemon's `admitted`, which the daemon does
@@ -73,8 +74,10 @@ const (
 
 // parts is "hours by phase": one part per column of the board, each holding the daemon's phases
 // that fall in it, and `other` for an hour of the work time in a phase no column names. Retro has
-// a column of its own, and merging holds merging and awaiting merge alone (the board's eleven
-// columns since dispatch://INFRA-1077's b74df7a79b).
+// a column of its own, merging holds merging and awaiting merge alone (dispatch://INFRA-1077's
+// b74df7a79b), and `awaiting_children` has a column of its own for a parent waiting on its open
+// children (dispatch://INFRA-3320), giving the board twelve columns. Any hour of that phase while
+// a child is working is already removed with the root's child wait, so this part holds the rest.
 var parts = []struct {
 	id     string
 	phases []string
@@ -87,15 +90,17 @@ var parts = []struct {
 	{"accepting", []string{phaseAccepting}},
 	{"retro", []string{phaseRetro}},
 	{"merging", []string{phaseMerging, phaseAwaitingMerge}},
+	{"awaiting_children", []string{phaseAwaitingChildren}},
 	{partPerson, []string{phaseAwaitingPerson}},
 	{"held", []string{phaseHeld}},
 }
 
 // childWorkingPhases are the phases "from planning to awaiting merge": a root with a child in
-// one of them is waiting on that child.
+// one of them is waiting on that child. `awaiting_children` is one of them too: a child enters it
+// while waiting on children of its own that are still at work, so its root waits on it.
 var childWorkingPhases = []string{
 	phasePlanning, phaseImplementing, phaseTesting, phaseReviewing, phaseAccepting,
-	phaseRetro, phaseMerging, phaseAwaitingMerge,
+	phaseRetro, phaseMerging, phaseAwaitingMerge, phaseAwaitingChildren,
 }
 
 // phaseSpan is one stretch of one phase.

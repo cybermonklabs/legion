@@ -5,7 +5,7 @@ body: |-
   through the primary key of `delivery_run_jobs`, where the read of every job of each run cost
   660 ms a call at ten times the stated run rate. The timeline reads each deploy run's production
   jobs by name and its failed jobs through the new partial index `delivery_run_jobs_failed`
-  (migration `20261123235431`, built `concurrently`), rather than every job of every run.
+  (migration `20261126203311`, built `concurrently`), rather than every job of every run.
 time: 2026-11-24T03:47:51Z
 custom:
     Issue: INFRA-5576

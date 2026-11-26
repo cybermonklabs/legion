@@ -48,6 +48,17 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
   const suppressed = new Set<string>();
   /** Selectors this session can use no model for. */
   const unresolvable = new Set<string>();
+  /** Every model below a selector in this deployment's chain, in order, where a case names more
+   * than the one `chain` holds. */
+  const chainList = new Map<string, string[]>();
+  /** The family the host's catalog gives each selector; a selector absent here names none. */
+  const families = new Map<string, string>();
+  const hostModel = (selector: string): HostModel => {
+    const family = families.get(selector);
+    return family === undefined
+      ? model(selector)
+      : { ...model(selector), identity: { class: family } };
+  };
   const live = {
     now: 1_000_000_000,
     current: startOn,
@@ -97,8 +108,8 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
     hasPendingMessages: () => live.pending,
     models: {
       list: () => [],
-      current: () => model(live.current),
-      resolve: (spec) => (unresolvable.has(spec) ? undefined : model(spec)),
+      current: () => hostModel(live.current),
+      resolve: (spec) => (unresolvable.has(spec) ? undefined : hostModel(spec)),
     },
     modelRegistry: {
       // The chain walk itself is the `nextModel` dep here, so the lookup is never consulted; it
@@ -116,7 +127,7 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
       await live.setModelHeld;
       if (!live.setModelAnswers) return false;
       // `pi.setModel` clears the active retry fallback and appends an ordinary `model_change`
-      // (`session/model-controls.ts:322-325` at the pinned tag), never a fallback claim.
+      // (`session/model-controls.ts:327-331` at the pinned tag), never a fallback claim.
       append(`${next.provider}/${next.id}`, "default", false);
       return true;
     },
@@ -126,6 +137,11 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
     nextModel: async (_chain, current) => {
       const next = chain.get(`${current.provider}/${current.id}`);
       return next === undefined ? undefined : model(next);
+    },
+    fallbackModels: async (_chain, current) => {
+      const selector = `${current.provider}/${current.id}`;
+      const below = chainList.get(selector) ?? [chain.get(selector)].flatMap((next) => next ?? []);
+      return below.filter((next) => !unresolvable.has(next)).map(hostModel);
     },
     log: { warn: (message) => void warnings.push(message) },
     // The host's timer, which a test runs when it chooses (`fireTimers`), with no clock involved:
@@ -150,6 +166,8 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
     saved,
     warnings,
     chain,
+    chainList,
+    families,
     suppressed,
     unresolvable,
     live,
@@ -857,6 +875,105 @@ describe("the return to the session's own model", () => {
   });
 });
 
+// A launch that names its model (`--model @default`) puts the session on that model and writes
+// no `model_change` entry, so the arming's own entry is still the newest one the branch holds. A
+// deployment that raised a role's model while the arming waited must keep the newer model: the
+// return undoes the fallback's own move, and only while the session still runs the model that
+// move put it on (dispatch://INFRA-3747 R1).
+describe("a return that falls due after a launch moved the session to another model", () => {
+  const ROLE = "anthropic/claude-opus-5";
+  const FALLBACK = "anthropic/claude-opus-4-8";
+  const LAUNCHED = "anthropic/claude-opus-5-5";
+
+  /** A session the host walked from the role's model to the fallback for a refusal, armed from
+   * the host's own event: its return falls due an hour later. */
+  const armed = () => {
+    const pane = fixture(ROLE);
+    pane.modelChange(ROLE);
+    pane.hostFallback(FALLBACK);
+    pane.runner.armFromEvent(applied(ROLE, FALLBACK, "default", REFUSAL_REASON), pane.ctx);
+    return pane;
+  };
+
+  test("goes back at its due time while the session still runs the fallback model", async () => {
+    const pane = armed();
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([ROLE]);
+    expect(pane.last()?.arming).toBeUndefined();
+  });
+
+  test("sets no model and steps superseded when the session runs a third model no model_change names", async () => {
+    const pane = armed();
+    // The launch's own `--model`: the session's model moves and the branch records nothing.
+    pane.live.current = LAUNCHED;
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([]);
+    expect(pane.live.current).toBe(LAUNCHED);
+    expect(pane.last()?.arming).toBeUndefined();
+    expect(pane.last()?.levels).toEqual({ [ROLE]: 2 });
+  });
+
+  test("read back from the transcript by a worker relaunched on a newer model sets no model", async () => {
+    const before = armed();
+    // The relaunch: a new process on the model its launch named, with the branch the old one
+    // wrote and the arming that branch records.
+    const after = fixture(LAUNCHED);
+    after.branch.push(...before.branch);
+    after.runner.restore(before.last(), after.ctx);
+
+    after.live.now += HOUR;
+    await after.runner.maybeRestore(after.ctx);
+
+    expect(after.setModelCalls).toEqual([]);
+    expect(after.last()?.arming).toBeUndefined();
+    expect(after.last()?.levels).toEqual({ [ROLE]: 2 });
+  });
+
+  test("armed from the branch of a worker relaunched on a newer model sets no model", async () => {
+    // The relaunch finds no arming of this plugin's, and the newest model change on its branch is
+    // the host's walk to the fallback, so the session is armed from that entry's own time.
+    const pane = fixture(LAUNCHED);
+    pane.branch.push(
+      { type: "model_change", id: "entry-role", model: ROLE, role: "default" },
+      {
+        type: "model_change",
+        id: "entry-walk",
+        timestamp: new Date(pane.live.now - 2 * HOUR).toISOString(),
+        model: FALLBACK,
+        role: "fallback",
+        resolvedModelIsFallback: true,
+      }
+    );
+    pane.runner.restore(undefined, pane.ctx);
+    expect(pane.last()?.arming?.entryId).toBe("entry-walk");
+
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([]);
+    expect(pane.last()?.arming).toBeUndefined();
+  });
+
+  test("sets no model when the host names no model the session runs", async () => {
+    const pane = armed();
+    const unnamed: ModelFallbackContext = {
+      ...pane.ctx,
+      models: { list: () => [], current: () => undefined, resolve: (spec) => model(spec) },
+    };
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(unnamed);
+
+    expect(pane.setModelCalls).toEqual([]);
+    expect(pane.last()?.arming).toBeUndefined();
+  });
+});
+
 // Plan answer 5 (dispatch://INFRA-956 R1): a session already sitting on a fallback when this
 // build starts — one applied before the plugin shipped, or a host walk `ownFallback` did not
 // claim — has no record of its own to restore, and nothing else would ever bring it back.
@@ -1005,5 +1122,64 @@ describe("a session this runner finds already on a fallback", () => {
     await pane.runner.maybeRestore(switched.ctx);
     expect(switched.setModelCalls).toEqual([]);
     expect(pane.setModelCalls).toEqual([]);
+  });
+});
+
+describe("the cyber_policy ladder's weaker model of the same family", () => {
+  const WEAKER_GPT = "openai/gpt-5.4-mini";
+
+  test("is the first model below in the chain whose family is the session model's own", async () => {
+    const pane = fixture(GPT);
+    pane.families.set(GPT, "openai");
+    pane.families.set(SONNET, "anthropic");
+    pane.families.set(WEAKER_GPT, "openai");
+    pane.chainList.set(GPT, [SONNET, WEAKER_GPT]);
+
+    // Sonnet is first in the chain and of another family: passed over.
+    expect(await pane.runner.sameFamilyFallback(pane.ctx)).toMatchObject(model(WEAKER_GPT));
+  });
+
+  test("is none when the chain holds only models of another family", async () => {
+    const pane = fixture(GPT);
+    pane.families.set(GPT, "openai");
+    pane.families.set(SONNET, "anthropic");
+    pane.chainList.set(GPT, [SONNET]);
+
+    expect(await pane.runner.sameFamilyFallback(pane.ctx)).toBeUndefined();
+  });
+
+  test("is none, with a warning, for a model whose family the catalog cannot tell", async () => {
+    const pane = fixture(GPT);
+    pane.families.set(GPT, "unknown");
+    pane.families.set(WEAKER_GPT, "unknown");
+    pane.chainList.set(GPT, [WEAKER_GPT]);
+
+    expect(await pane.runner.sameFamilyFallback(pane.ctx)).toBeUndefined();
+    expect(pane.warnings).toEqual([
+      "legion: the session's model names no family the catalog knows, so no weaker model of its family is chosen",
+    ]);
+  });
+
+  test("a step to it sets the model and arms the return to the model the walk left", async () => {
+    const pane = fixture(GPT);
+    pane.modelChange(GPT);
+
+    expect(await pane.runner.stepDownTo(pane.ctx, model(WEAKER_GPT))).toBe(true);
+
+    expect(pane.setModelCalls).toEqual([WEAKER_GPT]);
+    expect(pane.last()?.arming).toMatchObject({
+      restoreTo: GPT,
+      cause: "refusal",
+      dueAt: pane.live.now + HOUR,
+    });
+  });
+
+  test("a step the host refuses leaves the model and arms nothing", async () => {
+    const pane = fixture(GPT);
+    pane.modelChange(GPT);
+    pane.live.setModelAnswers = false;
+
+    expect(await pane.runner.stepDownTo(pane.ctx, model(WEAKER_GPT))).toBe(false);
+    expect(pane.saved).toEqual([]);
   });
 });

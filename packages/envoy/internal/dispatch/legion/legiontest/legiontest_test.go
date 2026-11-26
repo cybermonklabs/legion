@@ -24,7 +24,7 @@ func TestTheSeededHistoryAnswersFactsForEveryIssueLegionWorked(t *testing.T) {
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 
 	started := time.Now()
-	fixture := Seed(t, database.Pool, Spec{Project: "LEGION", Now: now})
+	fixture := Seed(t, database.Pool, Spec{Project: "LEGION", Now: now, AwaitingChildren: true})
 	seeded := time.Since(started)
 
 	population, err := metrics.ReadProject(t.Context(), database.Pool, fixture.Project, now)
@@ -94,9 +94,9 @@ func TestTheSeededHistoryAnswersFactsForEveryIssueLegionWorked(t *testing.T) {
 	}
 
 	// What the history is for: hours that land in more than one part, review rounds above one,
-	// and roots that waited on a person. A fixture whose every issue holds one part states
-	// nothing about a computation that shares hours out part by part.
-	parts, rounds, waited := 0, 0, 0
+	// and roots that waited on a person and on children. A fixture whose every issue holds one
+	// part states nothing about a computation that shares hours out part by part.
+	parts, rounds, waited, waitedChildren := 0, 0, 0, 0
 	for key, got := range facts {
 		if len(got.PhaseHours) >= 3 {
 			parts++
@@ -107,13 +107,16 @@ func TestTheSeededHistoryAnswersFactsForEveryIssueLegionWorked(t *testing.T) {
 		if got.Root && got.PhaseHours[legion.ColumnAwaiting] > 0 {
 			waited++
 		}
+		if got.Root && got.PhaseHours[legion.ColumnAwaitingChildren] > 0 {
+			waitedChildren++
+		}
 		if got.Tree == "" {
 			t.Fatalf("%s holds the facts %+v and names no tree", key, got)
 		}
 	}
-	if parts == 0 || rounds == 0 || waited == 0 {
-		t.Errorf("%d issues hold three parts or more, %d hold two review rounds or more and %d roots waited on a person, want each above zero",
-			parts, rounds, waited)
+	if parts == 0 || rounds == 0 || waited == 0 || waitedChildren == 0 {
+		t.Errorf("%d issues hold three parts or more, %d hold two review rounds or more, %d roots waited on a person and %d roots hold awaiting_children hours, want each above zero",
+			parts, rounds, waited, waitedChildren)
 	}
 
 	t.Logf("%d issues seeded in %s, %d with facts, %d open (%d of them with hours above zero), %d with no measured work, %d no role worked; the window runs %s to %s",

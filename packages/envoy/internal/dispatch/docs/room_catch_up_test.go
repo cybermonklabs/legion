@@ -20,6 +20,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A room this process holds for a document another process writes follows that write: the write
@@ -93,8 +95,8 @@ func waitNote(t *testing.T, notes chan string, artifactID, what string) {
 	}
 }
 
-// countNotes is how many notes for artifactID arrive within quiet of each other.
-func countNotes(notes chan string, artifactID string, quiet time.Duration) int {
+// countNotes is how many notes for artifactID notes holds now; it takes them all.
+func countNotes(notes chan string, artifactID string) int {
 	count := 0
 	for {
 		select {
@@ -102,9 +104,32 @@ func countNotes(notes chan string, artifactID string, quiet time.Duration) int {
 			if room == artifactID {
 				count++
 			}
-		case <-time.After(quiet):
+		default:
 			return count
 		}
+	}
+}
+
+// awaitCatchUpLane returns once service's catch-up lane has run everything queued on it now, and
+// everything the work it was running then queued in turn. The lane runs its work in the order it
+// was queued (roomSyncLane), and a notification's decision queues the catch-up it asks for before
+// it notes the decision (roomCatchUps.request), so once a marker queued after the decisions a test
+// heard has run, every catch-up they asked for has read. But a catch-up the test heard read may
+// still be running when that marker is queued, and a catch-up it queues itself (closeReplaced's
+// c.request) lands behind the marker. So a second marker follows the first: once the first has
+// run, that catch-up has returned, and what it queued stands ahead of the second.
+func awaitCatchUpLane(t *testing.T, service *Service) {
+	t.Helper()
+	service.catchUps.mu.Lock()
+	lane := service.catchUps.lane
+	service.catchUps.mu.Unlock()
+	for _, what := range []string{
+		"the catch-up lane to run a marker queued after the decisions",
+		"the catch-up lane to run a marker queued after what the running catch-up queued",
+	} {
+		reached := make(chan struct{})
+		lane.push(func(context.Context) { close(reached) })
+		testwait.Receive(t, what, reached)
 	}
 }
 
@@ -149,6 +174,7 @@ func replaceStoredHistory(t *testing.T, database *store.Store, artifactID, markd
 // trip, and the room is not closed: the browser's socket stays open, the room is the instance it
 // was, its cursor stands at the head, and it writes again.
 func TestAWriteOnTheOtherProcessReachesThisProcessesBrowserWithoutAClose(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	runCatchUps(t, pair.taskA)
 	browser := connectPeer(t, pair.serverA.URL, pair.artifactID, "alice")
@@ -188,6 +214,7 @@ func TestAWriteOnTheOtherProcessReachesThisProcessesBrowserWithoutAClose(t *test
 // holds what it announced. Its bare twin on documentChangedChannel is dropped with it. Another
 // process's announcement for the same room does read, which is the control.
 func TestAHeadAnnouncementFromThisProcessReadsNothing(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	editAsConnectedPeer(t, pair.taskA, pair.artifactID, 1, alice, appendBlocks(t, "Alice types once.\n"))
@@ -202,7 +229,8 @@ func TestAHeadAnnouncementFromThisProcessReadsNothing(t *testing.T) {
 		waitNote(t, notes.decided, pair.artifactID, fmt.Sprintf("keystroke %d's head announcement", keystroke))
 		waitNote(t, notes.decided, pair.artifactID, fmt.Sprintf("keystroke %d's bare announcement", keystroke))
 	}
-	if reads := countNotes(notes.reads, pair.artifactID, 100*time.Millisecond); reads != 0 {
+	awaitCatchUpLane(t, pair.taskA)
+	if reads := countNotes(notes.reads, pair.artifactID); reads != 0 {
 		t.Fatalf("task A's own appends cost %d catch-up reads, want none", reads)
 	}
 
@@ -215,6 +243,7 @@ func TestAHeadAnnouncementFromThisProcessReadsNothing(t *testing.T) {
 // another process's row was not caught up yet - and folds them into through once the gap fills,
 // as roomHold.since folds into roomHold.loaded.
 func TestOwnAppendsMadeWhileBehindFoldIntoTheCursor(t *testing.T) {
+	t.Parallel()
 	cursor := &roomCursor{through: 4}
 	advanceRoomCursor(cursor, 6)
 	advanceRoomCursor(cursor, 7)
@@ -238,6 +267,7 @@ func TestOwnAppendsMadeWhileBehindFoldIntoTheCursor(t *testing.T) {
 // that row in folds both, so the room then stands at the head and its derived writes pass the gate
 // again.
 func TestABrowserAppendFromARoomBehindTheHeadIsStoredAndTheRoomNeverFails(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	pair.leaveTaskABehind(t, 1, model.Actor{Kind: "user", ID: "bob-on-task-b"}, "Bob's paragraph.\n")
 	room := pair.taskA.srv.GetDoc(pair.artifactID)
@@ -290,6 +320,7 @@ func liveMarkdownOf(t *testing.T, service *Service, artifactID string) string {
 // update is in the room. Here the cursor claims a row whose update the room does not hold, so a
 // catch-up that applied it anyway shows as that row's paragraph in the room.
 func TestACatchUpSkipsTheRowsItsInstanceHolds(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	bob := model.Actor{Kind: "user", ID: "bob-on-task-b"}
 	pair.leaveTaskABehind(t, 1, bob, "Bob's first paragraph.\n")
@@ -325,6 +356,7 @@ func TestACatchUpSkipsTheRowsItsInstanceHolds(t *testing.T) {
 // block (observeAskBlocksForUpdate). Credited, alice - connected to task A, typing nothing - was
 // listed on the version holding bob's words, and named the author of bob's ask.
 func TestARemoteUpdateCreditsNoLocalPeerAndAttributesNoAskBlock(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	alice := model.Actor{Kind: "user", ID: "alice-on-task-a"}
 	bob := model.Actor{Kind: "user", ID: "bob-on-task-b"}
@@ -332,7 +364,7 @@ func TestARemoteUpdateCreditsNoLocalPeerAndAttributesNoAskBlock(t *testing.T) {
 		":::ask{#bob-ask urgency=\"high\" multiple=\"false\"}\nWhich transport?\n:::\n")
 	room := pair.taskA.srv.GetDoc(pair.artifactID)
 	pair.taskA.addConnection(pair.artifactID, 7, alice)
-	t.Cleanup(func() { pair.taskA.removeConnection(pair.artifactID, 7) })
+	testcleanup.Add(t, func() { pair.taskA.removeConnection(pair.artifactID, 7) })
 	state := pair.taskA.room(pair.artifactID)
 	state.mu.Lock()
 	before := state.creditSeq.Load()
@@ -372,6 +404,7 @@ func TestARemoteUpdateCreditsNoLocalPeerAndAttributesNoAskBlock(t *testing.T) {
 // The rebuild announces itself, task A's catch-up finds the history replaced, and the room is
 // closed - its browser's socket ends - and reloads the rebuilt document.
 func TestARebuildOnTheOtherProcessClosesAResidentRoom(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	runCatchUps(t, pair.taskA)
 	browser := connectPeer(t, pair.serverA.URL, pair.artifactID, "alice")
@@ -399,6 +432,7 @@ func TestARebuildOnTheOtherProcessClosesAResidentRoom(t *testing.T) {
 // a room standing at the head is unaffected, its next catch-up finds a history it holds, and a
 // write on the other process after the compaction is caught up as any other.
 func TestACompactionLeavesACurrentRoomOpen(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	if err := pair.taskA.warmLiveDocument(context.Background(), pair.artifactID); err != nil {
 		t.Fatalf("load task A's room: %v", err)
@@ -437,6 +471,7 @@ func TestACompactionLeavesACurrentRoomOpen(t *testing.T) {
 // before it closes anything (historyReplacedUnderLock), and under it the write has committed, so
 // the room stays open.
 func TestACatchUpInsideThisProcessesOwnCommitWindowClosesNothing(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	service, _ := newTestServiceInstance(t, database)
@@ -492,6 +527,7 @@ func TestACatchUpInsideThisProcessesOwnCommitWindowClosesNothing(t *testing.T) {
 // the settlement, which holds that lock until its commit, and then finds the room at the head;
 // closed instead, the room would lose its readers over this process's own repair.
 func TestACatchUpInsideARepairingSettlementsCommitWindowClosesNothing(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	service, _ := newTestServiceInstance(t, database)
@@ -566,6 +602,7 @@ func waitingAdvisoryLocks(t *testing.T, database *store.Store) int {
 // the way a pool refuses a second connection under a transaction (store.ErrNestedAcquire). Once
 // the reads answer again the wake catches the room up.
 func TestAFailedCatchUpReadIsTriedAgainWithBackoff(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	catchUps := pair.taskA.catchUps
 	now := time.Now()
@@ -605,6 +642,7 @@ func TestAFailedCatchUpReadIsTriedAgainWithBackoff(t *testing.T) {
 
 // A notification for a document this process holds no room for reads nothing and loads nothing.
 func TestACatchUpForADocumentWithNoRoomHereDoesNothing(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	elsewhere := createDocument(t, pair.database, "# Elsewhere")
 	seedServiceText(t, pair.taskB, elsewhere, "Only the other process holds this.\n")
@@ -615,7 +653,7 @@ func TestACatchUpForADocumentWithNoRoomHereDoesNothing(t *testing.T) {
 	if pair.taskA.srv.GetDoc(elsewhere) != nil {
 		t.Fatal("the catch-up loaded a room for a document nobody here had open")
 	}
-	if reads := countNotes(notes.reads, elsewhere, 0); reads != 0 {
+	if reads := countNotes(notes.reads, elsewhere); reads != 0 {
 		t.Fatalf("the catch-up read %d time(s) for a document with no room here", reads)
 	}
 }
@@ -625,6 +663,7 @@ func TestACatchUpForADocumentWithNoRoomHereDoesNothing(t *testing.T) {
 // each LISTEN stands catches up every room this process has loaded (roomSync.connected,
 // roomCatchUps.sweep), which is why the wait below is on the reconnect and not on a notification.
 func TestARoomLeftBehindWhileTheListenerWasDownIsCaughtUpOnTheReconnect(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	hub := newListenerHub(pair.taskA)
 	up := make(chan struct{})
@@ -683,8 +722,13 @@ func waitForCatchUpsIdle(t *testing.T, service *Service, artifactID string) {
 // An old build's write during a roll announces only the bare artifact id. A burst of those for one
 // room that arrives before its catch-up runs costs that one catch-up: a request for a room whose
 // catch-up is queued adds nothing. The lane is held while the burst arrives, so every
-// announcement is queued before the first is decided.
+// announcement is queued before the first is decided. The burst is sent only once the lane runs
+// the task that holds it, and the lane takes that task off its queue as it runs it
+// (roomSyncLane.pop), so the queue the wait below counts holds the burst's announcements alone:
+// counted while the task still waited on the queue, four announcements and the task read as the
+// whole burst, and the fifth came after the lane was let go, asking for a catch-up of its own.
 func TestABurstOfBareAnnouncementsCostsOneCatchUp(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	if err := pair.taskA.warmLiveDocument(context.Background(), pair.artifactID); err != nil {
 		t.Fatalf("load task A's room: %v", err)
@@ -697,8 +741,13 @@ func TestABurstOfBareAnnouncementsCostsOneCatchUp(t *testing.T) {
 	catchUps.mu.Unlock()
 	held := make(chan struct{})
 	release := sync.OnceFunc(func() { close(held) })
-	t.Cleanup(release)
-	lane.push(func(context.Context) { <-held })
+	testcleanup.Add(t, release)
+	holding := make(chan struct{})
+	lane.push(func(context.Context) {
+		close(holding)
+		<-held
+	})
+	testwait.Receive(t, "the lane to run the task that holds it", holding)
 
 	const burst = 5
 	update := paragraphUpdate()
@@ -723,7 +772,8 @@ func TestABurstOfBareAnnouncementsCostsOneCatchUp(t *testing.T) {
 		waitNote(t, notes.decided, pair.artifactID, "the burst's announcements")
 	}
 	waitNote(t, notes.reads, pair.artifactID, "the burst's catch-up")
-	if reads := countNotes(notes.reads, pair.artifactID, 300*time.Millisecond); reads != 0 {
+	awaitCatchUpLane(t, pair.taskA)
+	if reads := countNotes(notes.reads, pair.artifactID); reads != 0 {
 		t.Fatalf("a burst of %d bare announcements cost %d catch-up reads, want one", burst, reads+1)
 	}
 	if roomBehind(t, pair.taskA, pair.artifactID) {
@@ -761,7 +811,7 @@ func listenForDocumentChanges(t *testing.T, database *store.Store) <-chan docume
 		defer close(done)
 		listener.Run(ctx)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		cancel()
 		<-done
 	})
@@ -817,6 +867,7 @@ func requireNoAnnouncement(t *testing.T, heard <-chan documentHeadNotification, 
 // the stored document as it was, and must wake nobody's catch-up. The announcement carries the
 // head the append left and the process that made it.
 func TestADurableAppendIsAnnouncedOnlyWhenItsTransactionCommits(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	heard := listenForDocumentChanges(t, database)
@@ -852,6 +903,7 @@ func TestADurableAppendIsAnnouncedOnlyWhenItsTransactionCommits(t *testing.T) {
 // text change and its margin projection - and announces it once, at its commit, with the last
 // version it appended (Ledger.announceAppends), not once per append.
 func TestAJoinedTransactionAnnouncesEachDocumentOnceWithItsLastVersion(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -887,12 +939,13 @@ func TestAJoinedTransactionAnnouncesEachDocumentOnceWithItsLastVersion(t *testin
 // announces it there too, with the head it seeded: every room resident elsewhere holds a history
 // that no longer exists.
 func TestARebuildAnnouncesTheDocumentsChange(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	// invalid makes the document's first load unreadable, which is what a rebuild needs to see
 	// before it replaces the history (rebuild_test.go).
 	service := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	heard := listenForDocumentChanges(t, database)
 
 	replacement := "Rebuilt.\n"

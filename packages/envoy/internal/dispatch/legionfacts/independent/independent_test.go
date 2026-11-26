@@ -36,7 +36,7 @@ const issueFloor = 200
 func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 	database := storetest.Open(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
-	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "LEGION", Now: now})
+	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "LEGION", Now: now, AwaitingChildren: true})
 
 	population, err := metrics.ReadProject(t.Context(), database.Pool, fixture.Project, now)
 	if err != nil {
@@ -67,7 +67,7 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 			window, computedWindow)
 	}
 
-	compared, zeroHours, differences := 0, 0, 0
+	compared, zeroHours, awaitingChildren, differences := 0, 0, 0, 0
 	for _, key := range slices.Sorted(maps.Keys(union(reading.Issues, computed))) {
 		mine, read := reading.Issues[key]
 		theirs, computedIt := computed[key]
@@ -85,6 +85,9 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 		if mine.ZeroHours() {
 			zeroHours++
 		}
+		if mine.Root && mine.PhaseHours["awaiting_children"] > 0 && theirs.PhaseHours["awaiting_children"] > 0 {
+			awaitingChildren++
+		}
 		differences += compareFacts(t, key, mine, theirs)
 	}
 
@@ -97,13 +100,18 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 		t.Errorf("no issue of the %d compared has hours that are all zero, and the history holds %d",
 			compared, len(fixture.NoMeasuredWork))
 	}
+	// The history holds parents that waited in `awaiting_children` past their working children's
+	// spans, so both sides must compare nonzero `awaiting_children` hours on a real parent.
+	if awaitingChildren == 0 {
+		t.Errorf("no root of the %d compared issues holds nonzero awaiting_children phase hours on both sides", compared)
+	}
 	if differences > 0 {
 		t.Errorf("%d facts differ between the reading and the computation", differences)
 	}
 	t.Logf("the independent reading covered scope %s over window %s; the computation covered scope %s over window %s",
 		scope, window, computedScope, computedWindow)
-	t.Logf("%d issues compared, %d of them with hours that are all zero, %d differences",
-		compared, zeroHours, differences)
+	t.Logf("%d issues compared, %d of them with hours that are all zero, %d roots with awaiting_children hours, %d differences",
+		compared, zeroHours, awaitingChildren, differences)
 }
 
 // compareFacts reads each of one issue's five facts against the other side's, and answers how

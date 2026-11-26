@@ -126,6 +126,12 @@ type Spec struct {
 	// (by_the_controller). A person closes each an hour after it is filed, and no Legion role works
 	// it. They are numbered after every tree's issues, so the trees keep their numbers.
 	Filings bool
+	// AwaitingChildren has each observed root spend hours 40 to 48 of its history in
+	// `awaiting_children` before returning to `accepting` at hour 48. Its open child is still in
+	// `testing` from hour 40 to 44 (attributed to the working child) and sits `held` from hour 44
+	// on with every other child closed, so hours 44 to 48 stand as nonzero `awaiting_children`
+	// hours on the root. Off by default so the golden files keep their recorded rows.
+	AwaitingChildren bool
 }
 
 // spacing is how long before the tree after it each tree opens.
@@ -351,15 +357,23 @@ func (s *seeding) tree(index int) {
 	}
 	s.claim(root, "architect", at(1), at(6))
 	s.claim(root, "planner", at(6), at(8))
-	s.phases(root, at, []phaseMark{
+	rootPhases := []phaseMark{
 		{admitted, legion.PhaseAdmitted},
 		{6, legion.PhasePlanning},
 		{20, legion.PhaseAccepting},
 		{30, legion.PhaseAwaitingPerson},
 		{34, legion.PhaseAccepting},
-		{50, legion.PhaseAwaitingMerge},
-		{56, legion.PhaseDone},
-	})
+	}
+	if s.spec.AwaitingChildren {
+		rootPhases = append(rootPhases,
+			phaseMark{40, legion.PhaseAwaitingChildren},
+			phaseMark{48, legion.PhaseAccepting},
+		)
+	}
+	s.phases(root, at, append(rootPhases,
+		phaseMark{50, legion.PhaseAwaitingMerge},
+		phaseMark{56, legion.PhaseDone},
+	))
 	s.waiting(root, "gate", at(30), at(34))
 
 	// The child the architect filed first: implemented, tested, sent back once and reviewed

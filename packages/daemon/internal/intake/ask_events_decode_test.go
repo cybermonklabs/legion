@@ -11,9 +11,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// decodeEvent decodes one Dispatch event of LEGION-7, built from its fields, as the consumer
-// would: the fact, and the fields the decoder could not read.
-func decodeEvent(t *testing.T, eventType string, actor, payload map[string]any) decodedMessage {
+// dispatchEventJSON is one Dispatch event of LEGION-7, built from its fields, as Dispatch writes
+// it.
+func dispatchEventJSON(t *testing.T, eventType string, actor, payload map[string]any) []byte {
 	t.Helper()
 	event, err := json.Marshal(map[string]any{
 		"id": 40, "issue_key": "LEGION-7", "seq": 12, "type": eventType, "notify": true,
@@ -22,6 +22,14 @@ func decodeEvent(t *testing.T, eventType string, actor, payload map[string]any) 
 	if err != nil {
 		t.Fatalf("encode the event: %v", err)
 	}
+	return event
+}
+
+// decodeEvent decodes one Dispatch event of LEGION-7, built from its fields (dispatchEventJSON),
+// as the consumer would: the fact, and the fields the decoder could not read.
+func decodeEvent(t *testing.T, eventType string, actor, payload map[string]any) decodedMessage {
+	t.Helper()
+	event := dispatchEventJSON(t, eventType, actor, payload)
 	decoded, err := decodeMessage("notifications.dispatch.issue.LEGION-7."+eventType, "LEGION", nil, envelopeJSON(t, "dispatch-40", "dispatch", string(event)))
 	if err != nil {
 		t.Fatalf("decode %s: %v, want no poison", eventType, err)
@@ -35,6 +43,7 @@ var askEventMark = record.EventMark{Seq: 12, At: time.Date(2026, 10, 25, 12, 0, 
 // thread's ask, its state and whose turn it leaves, as a comment.created reply does: both decode to
 // the same reply, and a reply on a closed ask decodes with no turn. A comment on no ask is no fact.
 func TestACallbackReplyDecodesAsTheReplyItIs(t *testing.T) {
+	t.Parallel()
 	architect := map[string]any{"kind": "session", "id": "session-architect"}
 	for _, eventType := range []string{"comment.created", "comment.answered"} {
 		decoded := decodeEvent(t, eventType, architect, map[string]any{"id": "comment-1", "ask_id": "ask-approval", "ask_state": "open", "ask_waiting_on": "human"})
@@ -53,11 +62,70 @@ func TestACallbackReplyDecodesAsTheReplyItIs(t *testing.T) {
 	}
 }
 
+// decodeLoggedEvent decodes one Dispatch event of LEGION-7, built from its fields
+// (dispatchEventJSON), as the boot catch-up does: as Dispatch's issue event log serves it
+// (DecodeDispatchEvent), which is where a deleted post's events are read masked.
+func decodeLoggedEvent(t *testing.T, eventType string, actor, payload map[string]any) decodedMessage {
+	t.Helper()
+	fact, unread, err := DecodeDispatchEvent("LEGION", "LEGION-7", dispatchEventJSON(t, eventType, actor, payload))
+	if err != nil {
+		t.Fatalf("decode %s from the event log: %v, want no refusal", eventType, err)
+	}
+	return decodedMessage{Fact: fact, Unread: unread}
+}
+
+// A reply its author deleted is read from Dispatch's event log masked: its comment.created
+// carries deleted_at and deleted_by in place of its body (Dispatch's attachPostMarks). A deleted
+// reply still decides the ask's turn on Dispatch, so it decodes to the reply the live event was,
+// on the live stream and from the log alike. The corrections an author makes - comment.edited and
+// comment.deleted, which carry the reply's ask_id, and message.edited and message.deleted - move
+// no turn: each decodes to no fact, and none is poison.
+func TestADeletedReplyDecodesAsItsReplyAndACorrectionAsNoFact(t *testing.T) {
+	t.Parallel()
+	person := map[string]any{"kind": "user", "id": "alice"}
+	deletedAt, deletedBy := "2026-10-25T12:05:00Z", map[string]any{"kind": "user", "id": "alice"}
+	decoders := map[string]func(*testing.T, string, map[string]any, map[string]any) decodedMessage{
+		"the live stream": decodeEvent, "the event log": decodeLoggedEvent,
+	}
+	for from, decode := range decoders {
+		masked := decode(t, "comment.created", person, map[string]any{
+			"id": "comment-1", "ask_id": "ask-approval", "ask_state": "open", "ask_waiting_on": "agent",
+			"thread_root_id": "comment-root", "deleted_at": deletedAt, "deleted_by": deletedBy,
+		})
+		want := DispatchAskReply{Key: "LEGION-7", Ask: "ask-approval", WaitingOn: "agent",
+			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark, Comment: "comment-1"}
+		if !reflect.DeepEqual(masked.Fact, want) || len(masked.Unread) != 0 {
+			t.Fatalf("a deleted reply's comment.created from %s decoded to %#v, unread %q; want %#v",
+				from, masked.Fact, masked.Unread, want)
+		}
+		for _, correction := range []struct {
+			eventType string
+			payload   map[string]any
+		}{
+			{"comment.edited", map[string]any{"id": "comment-1", "ask_id": "ask-approval", "body": "Approve it after the rollback note.",
+				"edited_at": deletedAt, "thread_root_id": "comment-root"}},
+			{"comment.deleted", map[string]any{"id": "comment-1", "ask_id": "ask-approval", "body": "",
+				"deleted_at": deletedAt, "deleted_by": deletedBy, "thread_root_id": "comment-root"}},
+			{"message.edited", map[string]any{"id": "message-1", "body": "The staging run is green again.", "edited_at": deletedAt}},
+			{"message.deleted", map[string]any{"id": "message-1", "body": "", "deleted_at": deletedAt, "deleted_by": deletedBy}},
+			// A deleted message's message.created, as every read of the log serves it: its marks and
+			// no body. The intake reads no message's body, so it is no fact and no failure, and never
+			// a message the intake gives up on (main's #4590).
+			{"message.created", map[string]any{"id": "message-1", "deleted_at": deletedAt, "deleted_by": deletedBy}},
+		} {
+			if decoded := decode(t, correction.eventType, person, correction.payload); decoded.Fact != nil || len(decoded.Unread) != 0 {
+				t.Fatalf("%s from %s decoded to %#v, unread %q; want no fact", correction.eventType, from, decoded.Fact, decoded.Unread)
+			}
+		}
+	}
+}
+
 // Settlement restoring a decision block it retracted appends the ask's event again — ask.answered
 // with the answer given before the retraction, or ask.opened with the block's original author —
 // marked restored: nobody asked or answered anything, so each decodes to the ask's state alone,
 // never the act the same event without the mark decodes as.
 func TestARestoredAskEventIsNobodysAct(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		eventType string
@@ -98,6 +166,7 @@ func TestARestoredAskEventIsNobodysAct(t *testing.T) {
 // payload is the ask: decoded as a reply that leaves the turn with the human, from the actor who
 // handed it back.
 func TestADispatchAskHandedBackIsAHumanTurnReplyFromItsActor(t *testing.T) {
+	t.Parallel()
 	decoded := decodeEvent(t, "ask.handed_back", map[string]any{"kind": "session", "id": "session-architect"},
 		map[string]any{"id": "ask-approval", "kind": "approval", "state": "open"})
 	want := DispatchAskReply{Key: "LEGION-7", Ask: "ask-approval", Kind: "approval", WaitingOn: "human",
@@ -110,6 +179,7 @@ func TestADispatchAskHandedBackIsAHumanTurnReplyFromItsActor(t *testing.T) {
 // Every ask.* event of an approval request carries the document it asks a person to approve, and
 // each decodes with it; a question's events carry none.
 func TestAnApprovalRequestsEventsCarryItsDocument(t *testing.T) {
+	t.Parallel()
 	person := map[string]any{"kind": "user", "id": "alice"}
 	approval := map[string]any{"artifact_id": "artifact-7", "version": 3, "requested_version": 3}
 	for _, tc := range []struct {
@@ -138,6 +208,7 @@ func TestAnApprovalRequestsEventsCarryItsDocument(t *testing.T) {
 // which Dispatch then shows waiting on its agent, and decodes as that move. Any other edit, of a
 // request still at the version handed to the person or of a question, is no fact.
 func TestAnEditThatMovesAnApprovalRequestDecodesAsItsMove(t *testing.T) {
+	t.Parallel()
 	person := map[string]any{"kind": "user", "id": "alice"}
 	moved := decodeEvent(t, "ask.edited", person, map[string]any{"id": "ask-approval", "kind": "approval", "quiet": true,
 		"approval": map[string]any{"artifact_id": "artifact-7", "version": 4, "requested_version": 3}})
@@ -168,6 +239,7 @@ func TestAnEditThatMovesAnApprovalRequestDecodesAsItsMove(t *testing.T) {
 // session to the tree, so it records none, and the decoder reports the author instead of making
 // the event poison.
 func TestAnAskOpenedByASessionWithNoIDIsStillAnOpening(t *testing.T) {
+	t.Parallel()
 	decoded := decodeEvent(t, "ask.opened", map[string]any{"kind": "user", "id": "alice"}, map[string]any{"id": "ask-q", "kind": "question",
 		"author": map[string]any{"kind": "session"}})
 	if want := (DispatchAskOpened{Key: "LEGION-7", Ask: "ask-q", Kind: "question", Mark: askEventMark}); !reflect.DeepEqual(decoded.Fact, want) || len(decoded.Unread) != 1 {
@@ -179,6 +251,7 @@ func TestAnAskOpenedByASessionWithNoIDIsStillAnOpening(t *testing.T) {
 // approvals, whose kind is `action` — decodes with no kind and names the kind as unread: the ask's
 // event is not poison, and nothing it carries is lost but the kind.
 func TestAnUnknownAskKindDecodesWithNoKindAndIsReported(t *testing.T) {
+	t.Parallel()
 	person := map[string]any{"kind": "user", "id": "alice"}
 	for _, tc := range []struct {
 		eventType string
@@ -218,6 +291,7 @@ const declineDispatchWords = "The person chose not to answer this question. " +
 // with carries the sentences and an empty note. A close whose payload has no resolution, and one
 // whose resolution kind this daemon does not know, decode as a close carrying no decline at all.
 func TestADeclinedResolutionDecodesAsADecline(t *testing.T) {
+	t.Parallel()
 	person := map[string]any{"kind": "user", "id": "alice"}
 	closed := func(decline *record.AskDecline) Fact {
 		return DispatchAskClosed{Key: "LEGION-7", Ask: "ask-q", Kind: "question", State: "resolved", Decline: decline,
@@ -259,6 +333,7 @@ func TestADeclinedResolutionDecodesAsADecline(t *testing.T) {
 // Dispatch that predates claims, which says nothing of the claim. A claim that names no actor is
 // unknown and reported, never poison: the issue event is one the workflow acts on.
 func TestADispatchIssueEventCarriesItsClaimHolder(t *testing.T) {
+	t.Parallel()
 	original := string(capturedIssueUpdatedEnvelope(t))
 	anchor := `\"resolved_repo\":\"sjawhar/legion\"`
 	if !strings.Contains(original, anchor) || strings.Contains(original, `\"claim\"`) {
@@ -293,6 +368,7 @@ func TestADispatchIssueEventCarriesItsClaimHolder(t *testing.T) {
 // A claim event whose claim cannot be named — issue.claimed with no claim, or a claim naming no
 // actor — records nothing and is reported, as a reply whose turn the daemon cannot read is.
 func TestAnUnreadableClaimOrTurnIsNoFact(t *testing.T) {
+	t.Parallel()
 	person := map[string]any{"kind": "user", "id": "alice"}
 	for _, tc := range []struct {
 		name      string

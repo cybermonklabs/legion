@@ -20,7 +20,7 @@
 # The lines that open with # are this header, the one blank line under them ends it, and every
 # line after that blank line is the block's own bytes, to the end of the file.
 
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 alter table phases add column if not exists assignment text not null default '';
 alter table claims add column if not exists serving_assignment text not null default '';

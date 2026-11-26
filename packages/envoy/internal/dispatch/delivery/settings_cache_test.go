@@ -127,12 +127,13 @@ func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 // Ten job events of a tracked deploy run are checked against the cached settings: none of them
 // reads delivery_settings, and they still schedule the run's read.
 func TestJobEventsReadNoSettings(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
 	counted, counter := countedDeliveryPool(t, pool)
 	clock := newFakeJobClock()
-	jobs := newJobIntake(nil, counted, nil, newJobsFake(t).newTestClient(), clock, loadedSettingsCache(t, ctx, counted))
+	jobs := newJobIntake(tuningFor(t), nil, counted, nil, newJobsFake(t).newTestClient(), clock, loadedSettingsCache(t, ctx, counted))
 
 	before := counter.reads.Load()
 	for range 10 {
@@ -146,30 +147,19 @@ func TestJobEventsReadNoSettings(t *testing.T) {
 	}
 }
 
-// A read that finds no row leaves the cache empty and says nothing changed; the first settings
-// written are stored and close the channel Changed handed out before them; a later read whose
-// deploy repository is malformed keeps the settings before it.
+// A read that finds no row leaves the cache empty; the first settings written are stored; a later
+// read whose deploy repository is malformed keeps the settings before it.
 func TestTheSettingsCacheKeepsTheLastValidSettings(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	cache := newSettingsCache(pool, nil)
-	changed := cache.Changed()
+	cache := newSettingsCache(pool, nil, nil)
 	if !cache.reload(ctx) || cache.Load() != nil {
 		t.Fatalf("a read with no row = %+v, want nothing held", cache.Load())
-	}
-	select {
-	case <-changed:
-		t.Fatal("a read with no row signalled a change")
-	default:
 	}
 
 	seeded := seedDeliverySettings(t, ctx, pool)
 	if !cache.reload(ctx) {
 		t.Fatal("read the seeded settings")
-	}
-	select {
-	case <-changed:
-	default:
-		t.Fatal("storing the first settings did not close the channel Changed handed out before them")
 	}
 	if held := cache.Load(); held == nil || held.DeployRepo != seeded.DeployRepo {
 		t.Fatalf("held settings = %+v, want deploy repository %s", held, seeded.DeployRepo)
@@ -183,5 +173,57 @@ func TestTheSettingsCacheKeepsTheLastValidSettings(t *testing.T) {
 	}
 	if held := cache.Load(); held == nil || held.DeployRepo != seeded.DeployRepo {
 		t.Fatalf("held settings after a malformed deploy repository = %+v, want %s kept", held, seeded.DeployRepo)
+	}
+}
+
+// SettingsCache.Read's channel is closed by the first read that answers, whatever it found, and by
+// no read that failed: a read on a cancelled context fails and leaves it open; a read that finds a
+// deploy repository it refuses answers, holds nothing, and closes it; and a first read that finds
+// no row closes it.
+func TestTheSettingsCachesFirstReadIsTheFirstReadThatAnswers(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	closed := func(cache *SettingsCache) bool {
+		select {
+		case <-cache.Read():
+			return true
+		default:
+			return false
+		}
+	}
+
+	cache := newSettingsCache(pool, nil, nil)
+	if closed(cache) {
+		t.Fatal("a settings cache that has read nothing has its first read closed")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if cache.reload(cancelled) {
+		t.Fatal("control: a read on a cancelled context answered")
+	}
+	if closed(cache) {
+		t.Fatal("a read that failed closed the settings cache's first read")
+	}
+
+	seedDeliverySettings(t, ctx, pool)
+	if _, err := pool.Exec(ctx, `update delivery_settings set deploy_repo = 'no-slash' where singleton`); err != nil {
+		t.Fatalf("write a malformed deploy repository: %v", err)
+	}
+	if !cache.reload(ctx) {
+		t.Fatal("read the malformed settings")
+	}
+	if held := cache.Load(); held != nil {
+		t.Fatalf("held settings after a refused deploy repository = %+v, want nothing", held)
+	}
+	if !closed(cache) {
+		t.Fatal("a read that refused the deploy repository left the settings cache's first read open")
+	}
+
+	if _, err := pool.Exec(ctx, `delete from delivery_settings`); err != nil {
+		t.Fatalf("delete the delivery settings: %v", err)
+	}
+	empty := newSettingsCache(pool, nil, nil)
+	if !empty.reload(ctx) || !closed(empty) {
+		t.Fatal("a first read that found no row left the settings cache's first read open")
 	}
 }

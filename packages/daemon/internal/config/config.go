@@ -9,13 +9,15 @@
 // also refuses what a pod could not run with: the `runtime.kubernetes` block's own values, and the
 // keys outside it every pod needs.
 //
-// Load reads the file and nothing it names: a path key (`instructions`, `envoy_token_file`,
-// `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
+// Load reads the file and nothing it names: a path key (`instructions`, `private_name_rules_file`,
+// `envoy_token_file`, `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
 // `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
-// ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
+// ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, the daemon's read of the
+// private-name rule file (internal/daemon's launchSecrets), and the runtime's client, so a
 // configuration loads on a machine that has none of the files it names; `legion config check`
-// then reads them as boot does (daemon.CheckStart).
+// then reads them as boot does (daemon.CheckStart). The daemon reads an instructions file again
+// at each launch, so an edit of one needs no restart.
 package config
 
 import (
@@ -39,6 +41,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shim"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // Runtime is the `runtime` block: its name, under kubernetes the settled `runtime.kubernetes` block
@@ -85,6 +88,12 @@ type Config struct {
 	StateDir      string
 	Runtime       Runtime
 	AdmissionCap  int
+	// AdmissionP0Bound is `admission_p0_bound`: how many P0 issues may hold a slot at once outside
+	// the cap (R10 of dispatch://INFRA-3199), a whole number from 1 to 2147483647 (the most the
+	// store's integer column holds), or nil where the file gives none, which is no bound. It is the
+	// bound the daemon boots with; the controller or the operator sets another while the daemon
+	// runs, which stands until it is cleared (store.EffectiveP0Bound).
+	AdmissionP0Bound *int
 
 	// DaemonURL is the API address every pane is told (`LEGION_DAEMON_URL`), with no trailing
 	// slash; the loopback address on Port unless the file names another.
@@ -109,6 +118,16 @@ type Config struct {
 	// InstructionsPath is the operator's deployment instructions, "" when none; boot copies it to
 	// `<state_dir>/deployment-instructions.md` (MaterializeDeploymentInstructions).
 	InstructionsPath string
+	// PrivateNameRulesFile is the deployment's private-name rule file, a gitleaks rule file the
+	// daemon reads and compiles at boot and hands every launch as the launch secret
+	// leakguard.RulesSecret, so that every role's leak guard runs it (internal/daemon's readBoot
+	// and launchSecrets): `private_name_rules_file`, resolved against the file's directory, else
+	// LEGION_PRIVATE_NAME_RULES_FILE (leakguard.RulesFileVar) in the daemon's environment, as
+	// written. "" names none, and every role's guard then runs no private-name rule.
+	// PrivateNameRulesNamedBy is which of the two named it, as the operator wrote it, so that a
+	// refusal of the file names the setting the operator has to change; "" when none is named.
+	PrivateNameRulesFile    string
+	PrivateNameRulesNamedBy string
 	// WorkerStreamPort is the worker stream listener's TCP port under a runtime that dials it by
 	// TCP; Port + 1 unless the file names another.
 	WorkerStreamPort int
@@ -142,6 +161,15 @@ type Config struct {
 	WorkerWakesPerMinute int
 	WorkerWakeBurst      int
 
+	// GitHubGraphQLShare is the share of the time this daemon's GraphQL queries of one GitHub App
+	// installation may keep GitHub at work (`github_graphql_share`, DefaultGitHubGraphQLShare
+	// when the file names none): after each query the next waits (1 - share) / share of the time
+	// it took (internal/daemon's queryGate). GitHub allows an installation 60 seconds of query
+	// processing time in 60 seconds, and every daemon that reads with the same installation
+	// spends that one allowance, so a deployment sets it near 1 divided by the number of daemons
+	// sharing the installation. It is at least MinGitHubGraphQLShare and at most 1 (readShare).
+	GitHubGraphQLShare float64
+
 	// OperatorTokenFile is the bearer the operator routes compare against, as a path; "" when
 	// the file sets none.
 	OperatorTokenFile string
@@ -163,9 +191,20 @@ type Config struct {
 	// bearer only after every local configuration refusal has passed.
 	DispatchURL       string
 	DispatchTokenFile string
-	Projects          map[string]Project
-	Gates             Gates
-	GitHubApps        GitHubApps
+	// DispatchTokenBroker is `dispatch_token_broker`: the daemon's Dispatch credential is its own
+	// pod identity, traded at the secrets broker, rather than the bearer DispatchTokenFile names,
+	// which is "" whenever this is true (resolveDispatchTokenBroker). Only `runtime: kubernetes`
+	// takes it, and only beside DispatchURL and runtime.kubernetes.agent_secrets.exchange_audience.
+	// The loader reads no environment, so it decides nothing about that trade: boot makes it.
+	DispatchTokenBroker bool
+	// DispatchTokenTransitionFile is `dispatch_token_transition_file`, a path like
+	// DispatchTokenFile and "" when the file names none: the file holding the shared Dispatch
+	// token a launch into a pod built before DispatchTokenBroker was on gets. The daemon never
+	// calls Dispatch with it, and the loader takes it only beside DispatchTokenBroker.
+	DispatchTokenTransitionFile string
+	Projects                    map[string]Project
+	Gates                       Gates
+	GitHubApps                  GitHubApps
 	// Linger is how long a finished tree keeps its workspace before it closes (`linger_hours`).
 	Linger time.Duration
 	// ProductionCheckBound is how long a closed issue's production check stays open after the
@@ -234,6 +273,19 @@ type Config struct {
 	// ControllerLaunch is who launches the project's controller (`controller`): the operator unless
 	// the file says the daemon does.
 	ControllerLaunch ControllerLaunch
+	// ControllerTurnBound is `controller_turn_bound_minutes`: how long a turn of the daemon's own
+	// controller (`controller: daemon`) may stay open before its keeper ends that launch, whether
+	// or not steps still arrive in the turn, and counts the end against the session
+	// (internal/daemon's controllerKeeper, dispatch://INFRA-2045 R2). Ninety minutes by default,
+	// above every turn of a measured week of INFRA's controller but one (defaultControllerTurnBound);
+	// 0 turns the rule off.
+	ControllerTurnBound time.Duration
+	// ControllerSessionMaxAge is `controller_session_max_age_hours`: how old the session of the
+	// daemon's own controller may grow, read from its id (a UUIDv7), before a relaunch the daemon
+	// makes of it starts a fresh session in its place (supervise.Deps.ControllerSessionMaxAge,
+	// dispatch://INFRA-2045 R3); the daemon stops no live controller for it. Seventy-two hours by
+	// default (defaultControllerSessionMaxAge); 0 turns the rule off.
+	ControllerSessionMaxAge time.Duration
 	// Capabilities is the `capabilities` block; the zero value with none.
 	Capabilities Capabilities
 	// WorkerBackends is `worker_backends`: the phase-worker roles that run on a backend other than
@@ -293,6 +345,13 @@ const (
 	defaultRuntimeName          = "tmux"
 	defaultEnvoyURL             = "http://127.0.0.1:9020"
 
+	// DefaultGitHubGraphQLShare is `github_graphql_share`'s default: half, so each query of an
+	// installation is followed by a pause as long as it took.
+	DefaultGitHubGraphQLShare = 0.5
+	// MinGitHubGraphQLShare is the smallest `github_graphql_share` the loader takes: one daemon in
+	// a hundred sharing an installation, a pause 99 times as long as each query.
+	MinGitHubGraphQLShare = 0.01
+
 	// maxTimerSeconds is the shipped bound on every duration key (config.ts MAX_TIMER_SECONDS):
 	// the largest whole number of seconds whose milliseconds fit a signed 32-bit timer. Go's
 	// timers are not so bounded; the bound is kept so a file one daemon accepts, the other
@@ -335,6 +394,17 @@ const (
 	// minutes of the ask, so thirty minutes is three times that answer and still inside one tick
 	// of a roll (dispatch://INFRA-2981 R2).
 	defaultPodUpdateGrace = 30 * time.Minute
+
+	// defaultControllerTurnBound is `controller_turn_bound_minutes`'s default
+	// (Config.ControllerTurnBound): of 3,037 turns INFRA's controller ran from 2026-11-18 to
+	// 2026-11-24, 99.9% ended in 70 minutes and one ran longer than 90, so a lower bound would end
+	// working turns (dispatch://INFRA-2045 R2).
+	defaultControllerTurnBound = 90 * time.Minute
+	// defaultControllerSessionMaxAge is `controller_session_max_age_hours`'s default
+	// (Config.ControllerSessionMaxAge): the youngest of the four measured controller sessions that
+	// failed at a resume was 4.6 days old, and 72 hours is below it by 38 hours
+	// (dispatch://INFRA-2045 R3).
+	defaultControllerSessionMaxAge = 72 * time.Hour
 
 	// DefaultReviewRoundCap is `review_round_cap`'s default (Config.ReviewRoundCap). It is exported
 	// for a test that builds its Config by hand: the daemon API contract takes a positive cap
@@ -392,6 +462,7 @@ type fileConfig struct {
 	PostgresDSN      *string
 	StateDir         *string
 	AdmissionCap     *int
+	AdmissionP0Bound *int
 	Kubernetes       *Kubernetes
 	Tmux             *Tmux
 	DaemonURL        *string
@@ -404,6 +475,7 @@ type fileConfig struct {
 	// key: 0 is a value an operator may set, and the count reader refuses it.
 	WorkerWakesPerMinute *int
 	OperatorTokenFile    *string
+	PrivateNameRulesFile *string
 	EnvoyURL             *string
 	NatsURLs             []string
 	EnvoyTokenFile       *string
@@ -412,19 +484,28 @@ type fileConfig struct {
 	NatsDaemonNkeySeedFile *string
 	DispatchURL            *string
 	DispatchTokenFile      *string
-	Projects               map[string]Project
-	Gates                  *Gates
-	GitHubApps             *GitHubApps
-	Linger                 *time.Duration
-	ProductionCheckBound   *time.Duration
-	PodUpdateGrace         *time.Duration
-	StalledTreeNotice      *time.Duration
+	// DispatchTokenBroker is `dispatch_token_broker`, nil when the file leaves it out, and
+	// DispatchTokenTransitionFile `dispatch_token_transition_file`.
+	DispatchTokenBroker         *bool
+	DispatchTokenTransitionFile *string
+	Projects                    map[string]Project
+	Gates                       *Gates
+	GitHubApps                  *GitHubApps
+	Linger                      *time.Duration
+	ProductionCheckBound        *time.Duration
+	PodUpdateGrace              *time.Duration
+	StalledTreeNotice           *time.Duration
 	// WorkerSilence is `worker_silence_minutes` and WorkerBackground `worker_background_hours`,
 	// pointers as every other duration key here is: a file that leaves a key out is
 	// distinguishable from one that sets it, so resolve leaves the default standing for the
 	// first and carries the operator's number for the second.
 	WorkerSilence    *time.Duration
 	WorkerBackground *time.Duration
+	// ControllerTurnBound is `controller_turn_bound_minutes` and ControllerSessionMaxAge
+	// `controller_session_max_age_hours`, each read with 0 as the rule off (readMinutesOrOff,
+	// readHoursOrOff); nil for a file that names neither, which leaves the default standing.
+	ControllerTurnBound     *time.Duration
+	ControllerSessionMaxAge *time.Duration
 	// PodUpdateMaxOpenRounds is `pod_update_max_open_rounds` and PodUpdateRoundsPerMinute
 	// `pod_update_rounds_per_minute`; each stays nil when the file leaves its key out, which is
 	// how resolve tells an absent key from a number and leaves Config's own pointer nil.
@@ -440,6 +521,8 @@ type fileConfig struct {
 	WorkerStallBackstops     map[claim.Role]time.Duration
 	RepositoryRenames        []ghrepo.Rename
 	LeakCheck                *fileLeakCheck
+	// GitHubGraphQLShare is `github_graphql_share` (readShare).
+	GitHubGraphQLShare *float64
 	// Hooks is `hooks`, a pointer so the settle tells a file that names no key, which runs
 	// DefaultHooks(), from one that writes the empty list, which runs no hook.
 	Hooks *[]Hook
@@ -585,6 +668,19 @@ func readString(value *yaml.Node, key string) (*string, error) {
 	var read string
 	if value.Kind != yaml.ScalarNode || value.Decode(&read) != nil {
 		return nil, fmt.Errorf("%s must be a string", key)
+	}
+	return &read, nil
+}
+
+// readBool reads a key that is only true or false, as the controller's loader reads its own
+// `dispatch_token_broker`; nil for an unset one (absent from its mapping, or null).
+func readBool(value *yaml.Node, key string) (*bool, error) {
+	if value == nil || value.Tag == "!!null" {
+		return nil, nil
+	}
+	var read bool
+	if value.Tag != "!!bool" || value.Decode(&read) != nil {
+		return nil, fmt.Errorf("%s must be true or false", key)
 	}
 	return &read, nil
 }
@@ -821,8 +917,9 @@ var paneGitHubEnv = []string{"GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HO
 // readProviderKeys is `provider_keys`: a mapping of the variable OMP reads to the key that holds
 // it, both sides environment variable names, or to `file:` and the absolute path of the file that
 // holds it, in file order. A variable named twice is refused rather than one entry silently
-// winning, as is one the daemon sets on every pane itself. Which runtime reads a file is resolve's
-// to check (checkProviderKeyFiles).
+// winning, as is one the daemon sets on every pane itself. Which runtime reads a file, and which
+// of the names runtime.PaneVariableRefusal refuses a tmux pane, are resolve's to check
+// (checkProviderKeyFiles, checkTmuxProviderKeyNames).
 func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -936,6 +1033,55 @@ func readUnit(value *yaml.Node, key string, unit time.Duration, most int) (*time
 	return &duration, nil
 }
 
+// readMinutesOrOff is readMinutes for a key whose 0 turns its rule off
+// (`controller_turn_bound_minutes`), and readHoursOrOff readHours for one in hours
+// (`controller_session_max_age_hours`): 0 reads as a zero duration, which the rule reads as off,
+// and every other value is read as readUnit reads it, so a negative value, one too small to hold a
+// nanosecond and one past the timer bound are still refused, each refusal saying that 0 is the
+// rule off.
+func readMinutesOrOff(value *yaml.Node, key string) (*time.Duration, error) {
+	return readUnitOrOff(value, key, time.Minute, maxTimerMinutes)
+}
+
+func readHoursOrOff(value *yaml.Node, key string) (*time.Duration, error) {
+	return readUnitOrOff(value, key, time.Hour, maxTimerSeconds/3600)
+}
+
+// readUnitOrOff is the body readMinutesOrOff and readHoursOrOff share (readUnit's, with 0 taken).
+func readUnitOrOff(value *yaml.Node, key string, unit time.Duration, most int) (*time.Duration, error) {
+	var read float64
+	if (value.Tag == "!!int" || value.Tag == "!!float") && value.Decode(&read) == nil && read == 0 {
+		off := time.Duration(0)
+		return &off, nil
+	}
+	duration, err := readUnit(value, key, unit, most)
+	if err != nil {
+		return nil, fmt.Errorf("%w, or 0 to turn the rule off", err)
+	}
+	return duration, nil
+}
+
+// readShare is a key written as a share of a whole (`github_graphql_share`): a finite number at
+// least MinGitHubGraphQLShare and at most 1, a decimal among them, and nil for a key the file
+// writes with no value at all. A share below the floor asks for a pause no deployment needs -
+// one of 0 would wait forever after the first query, and a share of 1e-12 a pause past what a
+// time.Duration holds - and one above 1 a pause below nothing, so both are refused, as are NaN,
+// the infinities and anything that is not a number (`1/4` among them, which YAML reads as a
+// string).
+func readShare(value *yaml.Node, key string) (*float64, error) {
+	if value.Tag == "!!null" {
+		return nil, nil
+	}
+	var read float64
+	if (value.Tag != "!!int" && value.Tag != "!!float") || value.Decode(&read) != nil {
+		return nil, fmt.Errorf("%s must be a number", key)
+	}
+	if math.IsNaN(read) || math.IsInf(read, 0) || read < MinGitHubGraphQLShare || read > 1 {
+		return nil, fmt.Errorf("%s must be at least %v and at most 1", key, MinGitHubGraphQLShare)
+	}
+	return &read, nil
+}
+
 // validURL is the shipped `validateUrl` (config.ts) for the URLs this daemon dials or
 // hands out: a scheme and a host, or the key is refused.
 func validURL(value, key string) (*url.URL, error) {
@@ -1006,6 +1152,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		Runtime:              Runtime{Name: defaultRuntimeName},
 		AdmissionCap:         defaultAdmissionCap,
 		WorkerWakesPerMinute: defaultWorkerWakesPerMinute,
+		GitHubGraphQLShare:   DefaultGitHubGraphQLShare,
 		EnvoyURL:             defaultEnvoyURL,
 		Gates:                Gates{Design: DesignGateRootIssues.Steps()},
 		Linger:               72 * time.Hour,
@@ -1015,7 +1162,11 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		WorkerSilence:        defaultWorkerSilence,
 		WorkerBackground:     defaultWorkerBackground,
 		ReviewRoundCap:       DefaultReviewRoundCap,
-		Warnings:             file.Warnings,
+		// The two controller replacement bounds take their defaults here and the file's number,
+		// 0 among them, below.
+		ControllerTurnBound:     defaultControllerTurnBound,
+		ControllerSessionMaxAge: defaultControllerSessionMaxAge,
+		Warnings:                file.Warnings,
 	}
 	if file.Project == nil || strings.TrimSpace(*file.Project) == "" {
 		return Config{}, errors.New("project is required")
@@ -1033,6 +1184,19 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	}
 	if strings.TrimSpace(cfg.PostgresDSN) == "" {
 		return Config{}, errors.New("postgres_dsn is required (or set LEGION_POSTGRES_DSN)")
+	}
+
+	// The deployment's private-name rule file: the variable first and the file's key over it, as
+	// postgres_dsn is read. A variable set to the empty string names none, as a role's guard reads
+	// the same variable (leakguard.Guard.rules); a key set to it is refused by its reader, as every
+	// other path key's is. The variable is a setting of its own and not a fallback the key retires:
+	// a daemon of an earlier release refuses the key, so a deployment that may roll back names the
+	// file there.
+	if named := env(leakguard.RulesFileVar); named != "" {
+		cfg.PrivateNameRulesFile, cfg.PrivateNameRulesNamedBy = named, leakguard.RulesFileVar
+	}
+	if file.PrivateNameRulesFile != nil {
+		cfg.PrivateNameRulesFile, cfg.PrivateNameRulesNamedBy = underConfig(*file.PrivateNameRulesFile, configDir), "private_name_rules_file"
 	}
 
 	if file.Port != nil {
@@ -1054,6 +1218,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		}
 		cfg.AdvertiseHost = *file.AdvertiseHost
 	}
+	if err := resolveDispatchTokenBroker(file, configDir, &cfg); err != nil {
+		return Config{}, err
+	}
 
 	if file.Kubernetes != nil {
 		if err := resolveKubernetes(file, configDir, &cfg); err != nil {
@@ -1062,6 +1229,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	}
 	cfg.Runtime.Tmux = resolveTmux(file.Tmux, configDir)
 	if err := checkProviderKeyFiles(file); err != nil {
+		return Config{}, err
+	}
+	if err := checkTmuxProviderKeyNames(file); err != nil {
 		return Config{}, err
 	}
 
@@ -1078,6 +1248,12 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if cfg.AdmissionCap < 1 {
 		return Config{}, errors.New("admission_cap must be a positive integer")
 	}
+	if file.AdmissionP0Bound != nil {
+		if !store.ValidP0Bound(*file.AdmissionP0Bound) {
+			return Config{}, fmt.Errorf("admission_p0_bound must be %s, or left out for no bound", store.P0BoundRange)
+		}
+		cfg.AdmissionP0Bound = new(*file.AdmissionP0Bound)
+	}
 
 	if file.WorkerWakesPerMinute != nil {
 		cfg.WorkerWakesPerMinute = *file.WorkerWakesPerMinute
@@ -1086,6 +1262,16 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	// refuses it.
 	if cfg.WorkerWakesPerMinute < 0 {
 		return Config{}, errors.New("worker_wakes_per_minute must be 0 (the pacing off) or a positive integer")
+	}
+	if file.ControllerTurnBound != nil {
+		cfg.ControllerTurnBound = *file.ControllerTurnBound
+	}
+	if file.ControllerSessionMaxAge != nil {
+		cfg.ControllerSessionMaxAge = *file.ControllerSessionMaxAge
+	}
+
+	if file.GitHubGraphQLShare != nil {
+		cfg.GitHubGraphQLShare = *file.GitHubGraphQLShare
 	}
 
 	if err := resolveStage2(file, configDir, &cfg); err != nil {
@@ -1160,6 +1346,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 // operator's launch refuses the key wherever the file names it, an entry setting no field included,
 // rather than read a key that sizes nothing. The file's own block is read: the settled one holds
 // the controller's default reservation whether or not the file named it.
+// runtime.kubernetes.pod.controller_service_account names the ServiceAccount that same pod runs as,
+// so the operator's launch refuses it too, as a key that names the account of no pod; a named one
+// is never blank, since the loader refuses a blank value (optionalString).
 func resolveControllerLaunch(file fileConfig, cfg *Config) error {
 	cfg.ControllerLaunch = ControllerLaunchOperator
 	if file.Controller != nil {
@@ -1177,6 +1366,9 @@ func resolveControllerLaunch(file fileConfig, cfg *Config) error {
 	if k := file.Kubernetes; k != nil && cfg.ControllerLaunch != ControllerLaunchDaemon && k.controllerNamed {
 		return errors.New("runtime.kubernetes.resources.controller sizes the pod of the controller the daemon launches, and controller: operator launches none: set controller: daemon or drop the key")
 	}
+	if k := file.Kubernetes; k != nil && cfg.ControllerLaunch != ControllerLaunchDaemon && k.Pod.ControllerServiceAccount != "" {
+		return errors.New("runtime.kubernetes.pod.controller_service_account names the ServiceAccount of the pod of the controller the daemon launches, and controller: operator launches none: set controller: daemon or drop the key")
+	}
 	return nil
 }
 
@@ -1190,6 +1382,26 @@ func checkProviderKeyFiles(file fileConfig) error {
 	for _, key := range file.ProviderKeys {
 		if key.File != "" {
 			return fmt.Errorf("provider_keys.%s names the file %s, which only runtime tmux reads: under runtime kubernetes a provider key is a key of the providers Secret", key.Env, key.File)
+		}
+	}
+	return nil
+}
+
+// checkTmuxProviderKeyNames refuses, under runtime tmux, a `provider_keys` entry with a name
+// runtime.PaneVariableRefusal refuses with no value, naming the variable and that function's
+// reason. The shim exports a provider key into the agent's environment, where it acts as the pane
+// variable of that name, so the tmux runtime refuses the same name at its construction, at boot
+// (tmux's readProviderKeyNames, which also refuses names only the tmux runtime knows, such as one
+// every pane carries); refusing it here lets `legion config check` see it. Under runtime
+// kubernetes it refuses nothing: there sandbox.CheckPod holds each provider key to the variables a
+// pod sets (podVariables).
+func checkTmuxProviderKeyNames(file fileConfig) error {
+	if file.Kubernetes != nil {
+		return nil
+	}
+	for _, key := range file.ProviderKeys {
+		if why := runtime.PaneVariableRefusal(key.Env, ""); why != "" {
+			return fmt.Errorf("provider_keys names %s: %s", key.Env, why)
 		}
 	}
 	return nil

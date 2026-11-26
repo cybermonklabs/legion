@@ -44,6 +44,7 @@ const (
 // round's decision holds the body with U+FFFD where the NUL was, and the GitHub consumer
 // delivered the event once and acknowledged it.
 func TestAReviewWhoseBodyHoldsNULIsAppliedOnceWithAReplacementCharacter(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := testpg.ClonePool(t, "legion_intake_nul_test")
 	seedNULIssue(t, pool, phase.Reviewing, "needs_review", claim.RoleReviewer)
@@ -89,6 +90,7 @@ func TestAReviewWhoseBodyHoldsNULIsAppliedOnceWithAReplacementCharacter(t *testi
 // record's title holds U+FFFD where the NUL was, and the Dispatch consumer delivered the event
 // once and acknowledged it.
 func TestAnIssueEventWhoseTitleHoldsNULIsAppliedOnceWithAReplacementCharacter(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := testpg.ClonePool(t, "legion_intake_nul_test")
 	seedNULIssue(t, pool, phase.Implementing, "in_progress", claim.RoleImplementer)
@@ -205,8 +207,8 @@ func requestContext(t *testing.T) context.Context {
 
 // seedNULIssue records nulIssue as a root standing in at with the status given, slotted, with its
 // Dispatch mirror row, its tree's lifecycle open under the workflow and the claim of the role
-// working its phase, so the admission pass after each fact finds the tree as a running daemon
-// leaves it (seedRedeliveredIssue says why each row is there).
+// working its phase, so the admission pass after each fact that runs one finds the tree as a
+// running daemon leaves it (seedRedeliveredIssue says why each row is there).
 func seedNULIssue(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string, role claim.Role) {
 	t.Helper()
 	ctx := context.Background()

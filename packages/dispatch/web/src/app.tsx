@@ -26,6 +26,7 @@ import { draftStoresSignedIn, draftStoresSignedOut } from "./features/conversati
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
+import { useInboxFillsViewport } from "./features/inbox/fills-viewport";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
 import { useInboxCount } from "./features/inbox/useInboxCount";
@@ -38,7 +39,6 @@ import {
   type MarginDrawerPage,
   MarginSlotProvider,
 } from "./features/issue-page/margin-slot";
-import { ReferenceNamesProvider } from "./features/issue-page/reference-names";
 import {
   type ShellNavigation,
   ShellNavigationContext,
@@ -51,6 +51,7 @@ import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { TextAskCard } from "./features/refs/markdown-cards";
 import { RefPreviewHost } from "./features/refs/RefPreview";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./features/refs/ref-preview-card";
+import { ReferenceNamesProvider } from "./features/refs/reference-names";
 import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
@@ -88,7 +89,6 @@ import {
 import {
   COMPACT_VIEWPORT_QUERY,
   MD_VIEWPORT_QUERY,
-  READING_PANE_QUERY,
   useDialog,
   useMediaQuery,
 } from "./features/shell/useDialog";
@@ -102,7 +102,7 @@ import { SendStoppedError, stoppedWriteNote } from "./features/writes/keyed-writ
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
 import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
-import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
+import { DOCUMENT_SCROLL_ATTRIBUTE, useFootInset } from "./hooks/useFootInset";
 import {
   backdrop50,
   badgeBlocking,
@@ -294,13 +294,24 @@ function ShellMessagePage({ children, title }: { children?: ReactNode; title: st
   );
 }
 
+/**
+ * The Inbox page, in two named groups in this order:
+ *
+ * - **Heading**: the page's title, then **Answered by you**. Too narrow for both on one line,
+ *   the link moves whole to a line of its own under the title; the title never shortens.
+ * - **Inbox**: the list and the row the reader is reading (`Inbox`), below the heading at every
+ *   width. From the reading column's width, and below it while the reader has a row open, it
+ *   fills the height left under the heading (`useInboxFillsViewport`); otherwise the page
+ *   scrolls as one document.
+ */
 function InboxPage(): ReactNode {
   useDocumentTitle("Inbox · Dispatch");
-  // From the reading pane's width the page fills the viewport (`fillsViewport` below), and the
-  // two columns divide the height left under the heading; below it the page scrolls as ever.
-  const readingPaneShown = useMediaQuery(READING_PANE_QUERY);
+  // From the reading pane's width, and below it while a row's reading view is open, the page
+  // fills the viewport (`fillsViewport` below) and the Inbox divides the height left under the
+  // heading; otherwise the page scrolls as ever.
+  const fillsViewport = useInboxFillsViewport();
   return (
-    <section className={readingPaneShown ? "flex min-h-0 flex-1 flex-col" : undefined}>
+    <section className={fillsViewport ? "flex min-h-0 flex-1 flex-col" : undefined}>
       {/* Only the page links to the answers page; the drawer's Inbox stays a peek. */}
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <h1 className="text-[22px] font-semibold tracking-tight">Inbox</h1>
@@ -538,6 +549,25 @@ function ShellProviders({
   );
 }
 
+/**
+ * The signed-in frame, in three named groups in this order:
+ *
+ * - **Navigation**: below the compact width, a top bar - the title, the Inbox count or Peek, the
+ *   unread replies, then Menu - whose counts wrap whole onto a second row of the bar, with the
+ *   navigation itself in a drawer the reader opens with Menu. From the compact width up it is
+ *   the sidebar, or the rail the reader collapses it to; the issue frame draws its icon rail
+ *   from the `md` width instead and opens the same drawer from it.
+ * - **Main**: the page (`<main>`).
+ * - **Margin**: the details column, which the reader collapses or resizes (`MarginColumn`).
+ *
+ * Below `xl` Navigation stands above Main; from `xl` the groups stand side by side, in that
+ * order. The Margin's own narrow forms - its rail, the issue frame's Details drawer - are
+ * `Margin`'s (`features/margin/Margin.tsx`). A page that
+ * scrolls inside itself - the Inbox from its reading column's width, or below it with a row
+ * open (`useInboxFillsViewport`) - gets a viewport-tall frame whose Main hands that page the
+ * height left under Navigation. The status corner, the search bar, the Inbox drawer and the
+ * dialogs float over the frame and are in none of its groups.
+ */
 function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
@@ -629,11 +659,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // the browser has them, so a phone's collapsing toolbar is accounted for), with `<main>` a
   // flex column that hands it the height left below the compact header, capped above an iOS
   // on-screen keyboard while its composer has focus. The Inbox is one of them wherever its
-  // reading pane shows: each of the pane's two columns scrolls in itself, which it cannot do
-  // while the page scrolls as one. Below that width the Inbox scrolls the document as ever.
-  const readingPaneShown = useMediaQuery(READING_PANE_QUERY);
+  // reading pane shows, and below that width while a row's reading view is open
+  // (`useInboxFillsViewport`): each scrolls in itself, which it cannot do while the page
+  // scrolls as one. Otherwise the Inbox scrolls the document as ever.
+  const inboxFillsViewport = useInboxFillsViewport();
   const fillsViewport =
-    routeFillsViewport(location.pathname) || (routeIsInbox(location.pathname) && readingPaneShown);
+    routeFillsViewport(location.pathname) ||
+    (routeIsInbox(location.pathname) && inboxFillsViewport);
   // The session whose live view the address names, or `null` on every other page. The shell
   // mounts that view and the one the person left (`MountedLiveViews`, below `<Routes>`), so it
   // is the one thing about the live view the router still decides.
@@ -683,13 +715,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  // The status corner floats over the foot of the screen as the composers it sits above do, so
-  // it publishes its own reach the same way: a control floating at that foot - the
-  // Conversation's `Jump to latest` - rides above the whole corner rather than under the
-  // pending-writes indicator or the connection pill. An empty corner has no box, so it publishes
-  // nothing and the property is unset.
+  // The status corner is the one float of the foot's status layer (`hooks/useFootInset.ts` lists
+  // the foot's layers and the elements in each). The hook holds its height and its floor, so the
+  // top layer's floats keep clear of the whole corner rather than sit over the pending-writes
+  // indicator or the connection pill. An empty corner has no box, so it counts nothing.
   const statusCornerRef = useRef<HTMLDivElement>(null);
-  useFootInset(statusCornerRef, true, FOOT_STATUS_INSET_PROPERTY);
+  useFootInset(statusCornerRef, true, "status");
   const isFirstRender = useRef(true);
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
   // In the frame the navigation's sheet is what the rail's foot control and the header's `☰`
@@ -935,14 +966,16 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           Skip to content
         </a>
         {/* The shell's status corner: the pending-writes indicator and the word on drafts the tab
-            cannot keep for a reload above the connection pill. Above the highest composer fixed
-            at the foot of the screen (`--foot-composer-inset`, `useFootInset`), so neither sits
-            over its controls; otherwise just above the phone's bottom bar. Only what it shows
+            cannot keep for a reload above the connection pill. It is a float of the foot's status
+            layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in each): it
+            stands 1rem above the banner layer's property, which the hook chooses so the corner
+            lies over nothing else fixed or stuck at the foot of the screen, and never lower than
+            its floor (`--foot-floor`, which its classes set per breakpoint). Only what it shows
             takes the pointer. A socket Dispatch refuses carries no status the page can read, so
             nothing in the pill is terminal: once reconnecting has gone on for two minutes it
             offers a reload, and the page keeps trying underneath. */}
         <div
-          className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto"
+          className="pointer-events-none fixed right-4 bottom-[max(var(--foot-floor),calc(var(--foot-banner-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 [--foot-floor:5rem] xl:[--foot-floor:0px] *:pointer-events-auto"
           ref={statusCornerRef}
         >
           <PendingWritesIndicator />
@@ -1076,7 +1109,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         {/* In the frame `<main>` has no padding of its own: the page's header, its view row, its
             Contents pane and its column each keep the inset the prototype gives them, the pane
             against the rail, which `md:pl-14` makes room for. Its references open no card on
-            hover (R6). */}
+            hover (R6). Outside the frame, on a page that does not fill the screen, `main`
+            carries `data-document-scroll`, so the foot's end room goes here; in the frame the
+            column beside the Contents pane carries it (`IssueOutlinePage.tsx`; `FOOT_LAYERS` in
+            `hooks/useFootInset.ts` says why). */}
         <main
           className={
             issueFrame
@@ -1085,6 +1121,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           }
           data-shell-layout={issueFrame || fullWidth ? "full-width" : "standard"}
           {...(issueFrame ? { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" } : {})}
+          {...(!issueFrame && !fillsViewport ? { [DOCUMENT_SCROLL_ATTRIBUTE]: "" } : {})}
           data-testid="main-content"
           id="main-content"
           ref={mainRef}
@@ -1146,7 +1183,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
         {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
-        <RefPreviewHost />
+        <RefPreviewHost surface="reference-hover-card" />
       </div>
     </ShellProviders>
   );

@@ -65,8 +65,9 @@ var sessionTitlesSliceVersions = []int{20261117100008, 20261117100010, 202611171
 //  1. migrates it with every shipped migration but the four;
 //  2. writes sessionTitlesScaleIssues issues, and the floor of events, every one by a session
 //     actor that stamps a title, spread over that many sessions, each with a payload of about
-//     2 KB of JSON (production's mean in a read of 500 events after id 1,072,000), as wide as a
-//     row of the heap holds whole (writeSessionTitlesScaleStore);
+//     1.7 KB of JSON that does not compress (production's mean, in a read of 500 events after id
+//     1,072,000, is about 2 KB), as wide as a row of the heap holds whole
+//     (writeSessionTitlesScaleStore);
 //  3. vacuums and analyzes events and issues, as autovacuum has production's, and checkpoints;
 //  4. applies the four migrations with Migrate, and runs FillSessionTitles once, timing the two
 //     as one span.
@@ -77,6 +78,8 @@ var sessionTitlesSliceVersions = []int{20261117100008, 20261117100010, 202611171
 // every number its verdict rests on, on standard output, so a reader of the Job's log judges the
 // run from that line.
 func TestSessionTitlesBootScale(t *testing.T) {
+	// Not parallel: it holds the boot's migrations and fill to a wall-clock bound
+	// (sessionTitlesScaleBound, 60 s), which the load of the package's parallel tests would distort.
 	server := os.Getenv(sessionTitlesScaleURLEnv)
 	if server == "" {
 		t.Skip(sessionTitlesScaleURLEnv + " is unset: it must name a Postgres server this test may create and drop " +

@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // A deployment that configured neither setting answers both empty, so the bar files an issue
@@ -70,7 +72,7 @@ func TestNewDepsRefusesNewIssueSettingsNoIssueCouldTake(t *testing.T) {
 		!strings.Contains(err.Error(), "DISPATCH_NEW_ISSUE_SESSION") {
 		t.Fatalf("a session that is no session id = %v, want it named", err)
 	}
-	if _, err := NewDeps(DepsInput{NewIssueLabel: strings.Repeat("x", maxIssueLabel16+1)}); err == nil ||
+	if _, err := NewDeps(DepsInput{NewIssueLabel: strings.Repeat("x", contracts.IssueLabelMax+1)}); err == nil ||
 		!strings.Contains(err.Error(), "DISPATCH_NEW_ISSUE_LABEL") {
 		t.Fatalf("a label no issue may carry = %v, want it named", err)
 	}
