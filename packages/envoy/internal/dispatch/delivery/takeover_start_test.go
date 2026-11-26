@@ -180,14 +180,16 @@ func TestATakeOverOfADurableThatDeliveredNothingStartsAfterTheStreamsLastMessage
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	key := seedHeadIssue(t, ctx, pool, 62)
+	fake := newFakeGitHub(t)
+	github := serveGitHubPulls(t, fake, deliveryRepo)
 	natsClient := intakeTestClient(t)
 
 	const agedOut, beforeCreate, afterCreate, afterTakeOver = 6200, 6201, 6202, 6203
-	purged := publishPullRequestEnvelope(t, natsClient, "acme", "widgets", agedOut, openedForKey(agedOut, key, "6200620062006200620062006200620062006200"))
+	purged := publishAnswered(t, natsClient, github, agedOut, openedForKey(agedOut, key, "6200620062006200620062006200620062006200"))
 	if err := natsClient.JS().PurgeStream(bus.Stream, &natsgo.StreamPurgeRequest{Sequence: purged + 1}); err != nil {
 		t.Fatalf("purge the stream's first message: %v", err)
 	}
-	first := publishPullRequestEnvelope(t, natsClient, "acme", "widgets", beforeCreate, openedForKey(beforeCreate, key, "6201620162016201620162016201620162016201"))
+	first := publishAnswered(t, natsClient, github, beforeCreate, openedForKey(beforeCreate, key, "6201620162016201620162016201620162016201"))
 	old, err := natsClient.JS().AddConsumer(bus.Stream, &natsgo.ConsumerConfig{
 		Durable:        bus.DispatchDeliveryDurable,
 		DeliverSubject: natsgo.NewInbox(),
@@ -201,14 +203,14 @@ func TestATakeOverOfADurableThatDeliveredNothingStartsAfterTheStreamsLastMessage
 		t.Fatalf("control: the server reports the generation-1 durable as delivered stream %d consumer %d, ack floor consumer %d; want stream %d, the sequence before the stream's first, and both own counts 0",
 			old.Delivered.Stream, old.Delivered.Consumer, old.AckFloor.Consumer, first-1)
 	}
-	last := publishPullRequestEnvelope(t, natsClient, "acme", "widgets", afterCreate, openedForKey(afterCreate, key, "6202620262026202620262026202620262026202"))
+	last := publishAnswered(t, natsClient, github, afterCreate, openedForKey(afterCreate, key, "6202620262026202620262026202620262026202"))
 
-	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	taken := awaitPushBound(t, natsClient, old.Config.DeliverSubject, "the intake never took the generation-1 durable over")
 	if taken.Config.OptStartSeq != last+1 {
 		t.Fatalf("the take-over created the durable at %d, want %d, the sequence after the stream's last", taken.Config.OptStartSeq, last+1)
 	}
-	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", afterTakeOver, openedForKey(afterTakeOver, key, "6203620362036203620362036203620362036203"))
+	publishAnswered(t, natsClient, github, afterTakeOver, openedForKey(afterTakeOver, key, "6203620362036203620362036203620362036203"))
 	awaitAcknowledged(t, natsClient)
 	if rows := headRows(t, ctx, pool, afterTakeOver); rows != 1 {
 		t.Fatalf("%s#%d, opened after the take-over, has %d head rows, want 1", deliveryRepo, afterTakeOver, rows)
@@ -233,6 +235,8 @@ func TestATakeOverOfADurableWhoseFloorLiesPastTheStreamsEndStartsAtItsFirstMessa
 	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	key := seedHeadIssue(t, ctx, pool, 63)
+	fake := newFakeGitHub(t)
+	github := serveGitHubPulls(t, fake, deliveryRepo)
 	srv, uri := testnats.Start(t)
 	connect := func() *bus.Client {
 		client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
@@ -248,7 +252,7 @@ func TestATakeOverOfADurableWhoseFloorLiesPastTheStreamsEndStartsAtItsFirstMessa
 	for i := range before {
 		publishGitHubEnvelope(t, publisher, fmt.Sprintf("notifications.github.acme.widgets.pr.%d.comment", 6300+i), `{"kind":"comment"}`)
 	}
-	stopFirst := runIntake(t, newIntake(tuningFor(t), connect(), pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	stopFirst := runIntake(t, newIntake(tuningFor(t), connect(), pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	first := awaitPushBound(t, publisher, "", "the first intake never bound its durable")
 	if first.Config.OptStartSeq != before+1 {
 		t.Fatalf("the first intake created the durable at %d, want %d", first.Config.OptStartSeq, before+1)
@@ -269,8 +273,8 @@ func TestATakeOverOfADurableWhoseFloorLiesPastTheStreamsEndStartsAtItsFirstMessa
 		t.Fatalf("the stream's last sequence after the whole block was cut is %d, want 0", stored)
 	}
 	const firstAfter, secondAfter = 6321, 6322
-	publishPullRequestEnvelope(t, publisher, "acme", "widgets", firstAfter, openedForKey(firstAfter, key, "6321632163216321632163216321632163216321"))
-	publishPullRequestEnvelope(t, publisher, "acme", "widgets", secondAfter, openedForKey(secondAfter, key, "6322632263226322632263226322632263226322"))
+	publishAnswered(t, publisher, github, firstAfter, openedForKey(firstAfter, key, "6321632163216321632163216321632163216321"))
+	publishAnswered(t, publisher, github, secondAfter, openedForKey(secondAfter, key, "6322632263226322632263226322632263226322"))
 	cut, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 	if err != nil {
 		t.Fatalf("read the durable after the cut: %v", err)
@@ -279,7 +283,7 @@ func TestATakeOverOfADurableWhoseFloorLiesPastTheStreamsEndStartsAtItsFirstMessa
 		t.Fatalf("control: after the cut the server reports the durable's ack floor as %d, want it above the stream's last sequence 2: the durable this case is for is the one nats-server v2.15.1 leaves at its floor of %d", cut.AckFloor.Stream, before)
 	}
 
-	startIntake(t, newIntake(tuningFor(t), connect(), pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	startIntake(t, newIntake(tuningFor(t), connect(), pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	taken := awaitPushBound(t, publisher, first.Config.DeliverSubject, "the second intake never took the durable over")
 	for _, number := range []int{firstAfter, secondAfter} {
 		waitFor(t, 20*time.Second, func() bool { return headRows(t, ctx, pool, number) == 1 }, func() string {

@@ -10,11 +10,13 @@ package delivery
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -44,14 +46,41 @@ func headRows(t *testing.T, ctx context.Context, pool *store.Pool, number int) i
 	return rows
 }
 
+// publishAnswered makes GitHub hold deliveryRepo's pull request number as envelope reports it
+// (its head, branch, title, body, state and merge), then publishes envelope: the intake writes a
+// head from GitHub's answer to its read, never from the envelope's own fields
+// (recordPullRequestHead), so a test whose envelope must write a head serves the pull request
+// first. It answers the published message's stream sequence.
+func publishAnswered(t *testing.T, client *bus.Client, github *githubPulls, number int, envelope map[string]string) uint64 {
+	t.Helper()
+	updatedAt, err := time.Parse(time.RFC3339, envelope["updated_at"])
+	if err != nil {
+		t.Fatalf("the envelope of %s#%d carries updated_at %q: %v", deliveryRepo, number, envelope["updated_at"], err)
+	}
+	state := "open"
+	if envelope["action"] == "closed" {
+		state = "closed"
+	}
+	github.set(deliveryRepo, number, state, envelope["head_sha"], envelope["head_ref"], envelope["body"], updatedAt)
+	github.edit(number, func(pull map[string]any) {
+		pull["title"] = envelope["title"]
+		if envelope["merged"] == "true" {
+			pull["merged"] = true
+			pull["merged_at"] = envelope["updated_at"]
+			pull["merge_commit_sha"] = strings.Repeat("f", 40)
+		}
+	})
+	return publishPullRequestEnvelope(t, client, "acme", "widgets", number, envelope)
+}
+
 // The reported case: a deployment with no delivery_settings row, and a pull request opened on a
 // repository Dispatch serves, its branch legion/<KEY> and its body `Dispatch: <KEY>`. The intake
 // binds its durable, writes the head row attributed to KEY, and the read `dispatch results` makes
 // (NewestPullRequestHead) finds that head, so a check CI proves is derived at it rather than read
-// as no_head. The branch names an issue held to the pull request's repository, so no commit
-// message is read and GitHub is asked nothing. A workflow run and a merge in the same deployment
-// are the delivery timeline's: the run is acknowledged and fetches nothing, and the merge writes
-// its head row and no delivery row.
+// as no_head. The intake writes a head from GitHub's answer to its read of the pull request, never
+// from the envelope's own fields, so GitHub is asked for each pull request, under one installation
+// token. A workflow run and a merge in the same deployment are the delivery timeline's: the run is
+// acknowledged and fetches nothing, and the merge writes its head row and no delivery row.
 func TestAnIntakeWithNoDeliverySettingsRecordsAPullRequestsHead(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -61,6 +90,7 @@ func TestAnIntakeWithNoDeliverySettingsRecordsAPullRequestsHead(t *testing.T) {
 		t.Fatalf("the settings cache holds %+v in a database with no delivery_settings row, want nothing", held)
 	}
 	fake := newFakeGitHub(t)
+	github := serveGitHubPulls(t, fake, deliveryRepo)
 	natsClient := intakeTestClient(t)
 	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), settings, unrenamed())
 	startIntake(t, intake)
@@ -68,7 +98,7 @@ func TestAnIntakeWithNoDeliverySettingsRecordsAPullRequestsHead(t *testing.T) {
 
 	const number = 5801
 	sha := "5801580158015801580158015801580158015801"
-	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", number, openedForKey(number, key, sha))
+	publishAnswered(t, natsClient, github, number, openedForKey(number, key, sha))
 	waitFor(t, 20*time.Second, func() bool { return headRows(t, ctx, pool, number) == 1 }, func() string {
 		return fmt.Sprintf("%s#%d has %d head rows 20s after its opened envelope, want 1\n%s",
 			deliveryRepo, number, headRows(t, ctx, pool, number), intakeStateReport(t, natsClient))
@@ -85,7 +115,7 @@ func TestAnIntakeWithNoDeliverySettingsRecordsAPullRequestsHead(t *testing.T) {
 	const merged = 5802
 	mergedEnvelope := openedForKey(merged, key, "5802580258025802580258025802580258025802")
 	mergedEnvelope["action"], mergedEnvelope["merged"], mergedEnvelope["author"] = "closed", "true", "octocat"
-	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", merged, mergedEnvelope)
+	publishAnswered(t, natsClient, github, merged, mergedEnvelope)
 	publishWorkflowEnvelope(t, natsClient, "acme", "widgets", ".github/workflows/deploy.yml", 9101)
 	awaitAcknowledged(t, natsClient)
 	if rows := headRows(t, ctx, pool, merged); rows != 1 {
@@ -101,8 +131,8 @@ func TestAnIntakeWithNoDeliverySettingsRecordsAPullRequestsHead(t *testing.T) {
 	if runs := countRuns(t, ctx, pool); runs != 0 {
 		t.Fatalf("delivery_runs rows = %d after a workflow run with no delivery settings, want 0", runs)
 	}
-	if mints := fake.tokenMints.Load(); mints != 0 {
-		t.Fatalf("minted %d installation tokens, want none: the branch attributes the pull requests, and with no settings a merge and a workflow run fetch nothing", mints)
+	if mints := fake.tokenMints.Load(); mints != 1 {
+		t.Fatalf("minted %d installation tokens, want 1: the intake reads each pull request from GitHub under one token, and with no settings a merge and a workflow run fetch nothing more", mints)
 	}
 }
 
@@ -118,10 +148,11 @@ func TestAFirstBindStartsAtTheStreamsNextMessageAndATakeOverKeepsThatStart(t *te
 	pool, ctx := deliveryTestPool(t)
 	key := seedHeadIssue(t, ctx, pool, 59)
 	fake := newFakeGitHub(t)
+	github := serveGitHubPulls(t, fake, deliveryRepo)
 	publisher := intakeTestClient(t)
 
 	const before, after = 5901, 5902
-	stored := publishPullRequestEnvelope(t, publisher, "acme", "widgets", before, openedForKey(before, key, "5901590159015901590159015901590159015901"))
+	stored := publishAnswered(t, publisher, github, before, openedForKey(before, key, "5901590159015901590159015901590159015901"))
 
 	firstClient := intakeTestClient(t)
 	first := newIntake(tuningFor(t), firstClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
@@ -146,7 +177,7 @@ func TestAFirstBindStartsAtTheStreamsNextMessageAndATakeOverKeepsThatStart(t *te
 	second := newIntake(tuningFor(t), intakeTestClient(t), pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	startIntake(t, second)
 	awaitPushBound(t, publisher, bound.Config.DeliverSubject, "the take-over did not bind the durable afresh")
-	publishPullRequestEnvelope(t, publisher, "acme", "widgets", after, openedForKey(after, key, "5902590259025902590259025902590259025902"))
+	publishAnswered(t, publisher, github, after, openedForKey(after, key, "5902590259025902590259025902590259025902"))
 	awaitAcknowledged(t, publisher)
 	if rows := headRows(t, ctx, pool, after); rows != 1 {
 		t.Fatalf("%s#%d, opened after the take-over, has %d head rows, want 1", deliveryRepo, after, rows)

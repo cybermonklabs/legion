@@ -27,14 +27,16 @@ func TestADurableLostOutsideATakeOverIsCreatedAgainAfterTheLastAckFloorRead(t *t
 	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	key := seedHeadIssue(t, ctx, pool, 61)
+	fake := newFakeGitHub(t)
+	github := serveGitHubPulls(t, fake, deliveryRepo)
 	natsClient := intakeTestClient(t)
 	leases := deliveryTestLeases(t, pool)
-	startIntake(t, newIntake(tuningFor(t), natsClient, pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, leases, fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	bound := awaitPushBound(t, natsClient, "", "the intake never bound its durable")
 
 	const firstBefore, secondBefore, firstAfter, secondAfter = 6101, 6102, 6103, 6104
-	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", firstBefore, openedForKey(firstBefore, key, "6101610161016101610161016101610161016101"))
-	lastAcked := publishPullRequestEnvelope(t, natsClient, "acme", "widgets", secondBefore, openedForKey(secondBefore, key, "6102610261026102610261026102610261026102"))
+	publishAnswered(t, natsClient, github, firstBefore, openedForKey(firstBefore, key, "6101610161016101610161016101610161016101"))
+	lastAcked := publishAnswered(t, natsClient, github, secondBefore, openedForKey(secondBefore, key, "6102610261026102610261026102610261026102"))
 	awaitAcknowledged(t, natsClient)
 	// Two of the intake's checks (intakeHoldRenew) and a second: at least one reads the ack floor
 	// at the second pull request.
@@ -59,8 +61,8 @@ func TestADurableLostOutsideATakeOverIsCreatedAgainAfterTheLastAckFloorRead(t *t
 	if err := natsClient.JS().DeleteConsumer(bus.Stream, bus.DispatchDeliveryDurable); err != nil {
 		t.Fatalf("delete the delivery durable: %v", err)
 	}
-	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", firstAfter, openedForKey(firstAfter, key, "6103610361036103610361036103610361036103"))
-	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", secondAfter, openedForKey(secondAfter, key, "6104610461046104610461046104610461046104"))
+	publishAnswered(t, natsClient, github, firstAfter, openedForKey(firstAfter, key, "6103610361036103610361036103610361036103"))
+	publishAnswered(t, natsClient, github, secondAfter, openedForKey(secondAfter, key, "6104610461046104610461046104610461046104"))
 
 	lost := func() bool {
 		for _, record := range logs() {
