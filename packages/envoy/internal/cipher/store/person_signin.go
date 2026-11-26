@@ -25,8 +25,10 @@ import (
 // a person who revokes a sign-in is not undone by the box trading the very key again. A person
 // signing in on a second box is a second thumbprint and a row of its own, which is why revoking
 // one leaves the others working. The one row ever deleted is a live one from before migration
-// 0045, which records no account: the next trade under its key ends it and everything it holds
-// and writes a row of its own (RecordPersonSignIn), so a row's account is never changed.
+// 0045, which records no account, and only where the broker asks Dispatch
+// (SignInTrade.EndUnrecorded): there the next trade under its key ends it and everything it holds
+// and writes a row of its own (RecordPersonSignIn). Elsewhere such a row goes on recording none.
+// Either way a row's account is never changed.
 //
 // The three vocabularies - a lowercase login, an RFC 7638 thumbprint and a lowercase Google
 // account - are closed by the migration's own check constraints, which are the one place they
@@ -225,9 +227,10 @@ func (s *Store) PersonSignIns(ctx context.Context, person string) ([]PersonSignI
 }
 
 // SubjectSignInsTx answers, in tx, the ids of person's live sign-ins that account may have made:
-// those recorded as its, and those recorded as nobody's, rows from before migration 0045 that no
-// trade has traded since, which might be any account's. A sign-in another account made is not
-// among them. The caller holds LockPerson, so no trade of person adds a row while it reads.
+// those recorded as its, and those recorded as nobody's, rows from before migration 0045 that are
+// still live (a trade ends one only with SignInTrade.EndUnrecorded), which might be any account's.
+// A sign-in another account made is not among them. The caller holds LockPerson, so no trade of
+// person adds a row while it reads.
 func SubjectSignInsTx(ctx context.Context, tx pgx.Tx, person string, account IssuerSubject) ([]string, error) {
 	rows, err := tx.Query(ctx, `select id::text from person_signins
 		where person = $1 and revoked_at is null and (subject is null or (issuer, subject) = ($2, $3))

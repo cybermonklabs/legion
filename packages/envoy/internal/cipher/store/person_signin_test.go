@@ -240,9 +240,10 @@ func TestRevokingASignInEndsTheTokensMintedUnderIt(t *testing.T) {
 }
 
 // A sign-in row from before migration 0045 records no account, and might be any account's. A trade
-// under its key never gives it one: it ends the row, deleting it, ends every live token already
-// traded on that person's key, and inserts a row of its own recording the trade's account, all in
-// its transaction, and says so (the answer the caller ends the row's credential by). The person's
+// under its key with SignInTrade.EndUnrecorded, as where the broker asks Dispatch, never gives it
+// one: it ends the row, deleting it, ends every live token already traded on that person's key,
+// and inserts a row of its own recording the trade's account, all in its transaction, and says so
+// (the answer the caller ends the row's credential by). The person's
 // token on another box and another person's token on this key are left alone; a later trade of
 // the same account is the same sign-in, so it ends nothing and answers so.
 //
