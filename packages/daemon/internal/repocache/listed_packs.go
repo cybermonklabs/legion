@@ -66,7 +66,8 @@ func (s *listedSet) holds(name string) bool {
 
 // holdsSame reports whether the set lists o's name with o's size and SHA-256: an object this
 // process uploaded whole, or found whole, before it installed the set, which a later set lists
-// again with no request to the bucket. A nil set lists nothing.
+// again with no put, as long as the sync's list of the bucket still answers it (putObjects). A nil
+// set lists nothing.
 func (s *listedSet) holdsSame(o listedObject) bool {
 	return s != nil && slices.ContainsFunc(s.objects, o.same)
 }
@@ -120,18 +121,24 @@ func (c *cache) syncPacks(ctx context.Context) {
 // server's identity and the clients, which is no check of the cache's start, so a bucket that
 // cannot be opened yet is tried again at the next sync); takes the clone's snapshot (snapshotSet),
 // whose set holds every pack of the clone that has its index, each with that index, and nothing
-// else; uploads each pack and index the listed set does not hold already, each put returning only
-// once Cloud Storage stored the whole object, or found an object of that name holding the same
-// bytes; and only then installs the new set, with one atomic store, so /packs never names an
-// object that is not whole in the bucket, and a pack never without its index. The first failure
-// ends it before the store, leaving the set before it listed. Once the new set is installed, it
-// retires what no set names any more (retire). A snapshot that lists exactly the listed set's refs
-// and objects (listedSet.lists) installs nothing: that set stays listed, so a /packs answer signed
-// from it while the sync ran is no answer from a set that was switched, and retire runs at the
-// sync's time as it does after a switch, so each object's clock still counts. The line it logs of a
-// switch counts apart the objects put wrote and those it found whole in the bucket already and took
-// as they were (reused), so a restarted cache, whose first sync finds its whole clone in the bucket,
-// logs none of it uploaded.
+// else; lists the bucket once (listBucket); uploads each pack and index of the new set that the
+// listed set does not hold already, and each the listed set holds that the list did not answer,
+// which a retention rule or another writer deleted behind the cache's back (putObjects), each put
+// returning only once Cloud Storage stored the whole object, or found an object of that name
+// holding the same bytes; and only then installs the new set, with one atomic store, so /packs
+// never names an object that is not whole in the bucket, and a pack never without its index. The
+// first failure ends it before the store, leaving the set before it listed. Once the new set is
+// installed, it retires what no set names any more (retire), from the same list. A snapshot that
+// lists exactly the listed set's refs and objects (listedSet.lists) installs nothing: that set
+// stays listed, so a /packs answer signed from it while the sync ran is no answer from a set that
+// was switched; each of its objects the list did not answer is uploaded again all the same, so a
+// set never goes on naming an object the bucket lost, and retire then runs at the sync's time as
+// it does after a switch, so each object's clock still counts. A list that fails is logged and
+// holds back no switch: the sync skips the objects the listed set holds, as it would with them all
+// in the bucket, puts back nothing and retires nothing, and the next sync lists again. The line it
+// logs of a switch counts apart the objects put wrote and those it found whole in the bucket
+// already and took as they were (reused), so a restarted cache, whose first sync finds its whole
+// clone in the bucket, logs none of it uploaded.
 func (c *cache) publishPacks(ctx context.Context) error {
 	if c.store == nil {
 		store, err := openBucket(ctx, c.opts.Bucket, c.opts.Repo)
@@ -144,33 +151,89 @@ func (c *cache) publishPacks(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	stored := c.listBucket(ctx)
 	current := c.listed.Load()
 	if current.lists(next) {
-		c.retire(ctx, current, inventory, c.clock.Now())
-		return nil
-	}
-	uploaded, reused := 0, 0
-	for _, object := range next.objects {
-		if current.holdsSame(object) {
-			continue
+		if stored == nil {
+			return nil
 		}
-		wrote, err := c.store.put(ctx, object.name, object.local)
-		if err != nil {
+		if _, _, err := c.putObjects(ctx, current, current, stored); err != nil {
 			return err
 		}
-		if wrote {
-			uploaded++
-		} else {
-			reused++
-		}
+		c.retire(ctx, current, inventory, stored, c.clock.Now())
+		return nil
+	}
+	uploaded, reused, err := c.putObjects(ctx, next, current, stored)
+	if err != nil {
+		return err
 	}
 	c.listed.Store(next)
 	switched := c.clock.Now()
 	if current == nil || uploaded+reused > 0 {
 		c.opts.Log(fmt.Sprintf("listed %d packs and indexes in bucket %s, %d of them uploaded now, %d reused as the bucket held them", len(next.objects), c.opts.Bucket, uploaded, reused))
 	}
-	c.retire(ctx, next, inventory, switched)
+	if stored != nil {
+		c.retire(ctx, next, inventory, stored, switched)
+	}
 	return nil
+}
+
+// listBucket is the sync's one list of the bucket (bucket.list): every pack and index of the
+// repository's prefix it holds, by object name, from which the sync both puts back what the listed
+// set names and the bucket lost (putObjects) and retires what no set names (retire). Each name
+// under the prefix that the cache does not write is logged, once by this process, and never
+// deleted. It answers nil where the list fails, which it logs: the sync then neither puts back nor
+// retires anything, and the next sync lists again.
+func (c *cache) listBucket(ctx context.Context) map[string]storedObject {
+	stored, foreign, err := c.store.list(ctx)
+	if err != nil {
+		c.opts.Log("list the bucket's packs to put back those the listed set names and retire those no set names; tried again at the next sync: " + oneLine(err))
+		return nil
+	}
+	for _, name := range foreign {
+		if !c.foreign[name] {
+			c.foreign[name] = true
+			c.opts.Log(fmt.Sprintf("bucket %s holds %s under the repository's prefix, which is no pack or index the cache writes: it is left as it is", c.store.name, name))
+		}
+	}
+	return stored
+}
+
+// putObjects uploads each object of set, the set that is listed once the sync ends, that the
+// bucket must hold for set to be listed (bucket.put), in set's order: each that current, the set
+// listed now, does not hold already (listedSet.holdsSame), and each that current holds but stored,
+// the sync's list of the bucket, does not, which a retention rule of the deployment or another
+// writer deleted behind the cache's back. Each of the second kind is logged by name once it is
+// back. A nil stored is a list that failed, which puts back nothing: each object current holds is
+// taken as the bucket still holding it, as it was before the bucket was listed at all. It answers
+// how many objects put wrote and how many it found whole in the bucket already, and its first
+// failure ends it, naming an object it was putting back as such.
+func (c *cache) putObjects(ctx context.Context, set, current *listedSet, stored map[string]storedObject) (uploaded, reused int, err error) {
+	for _, object := range set.objects {
+		listed := current.holdsSame(object)
+		if _, held := stored[object.name]; listed && (stored == nil || held) {
+			continue
+		}
+		wrote, err := c.store.put(ctx, object.name, object.local)
+		if err != nil {
+			if listed {
+				err = fmt.Errorf("put back %s, which the listed set names and bucket %s no longer held: %w", object.name, c.opts.Bucket, err)
+			}
+			return uploaded, reused, err
+		}
+		if wrote {
+			uploaded++
+		} else {
+			reused++
+		}
+		switch {
+		case listed && wrote:
+			c.opts.Log(fmt.Sprintf("bucket %s no longer held %s, which the listed set names: uploaded it again", c.opts.Bucket, object.name))
+		case listed:
+			c.opts.Log(fmt.Sprintf("bucket %s no longer held %s, which the listed set names, and held it whole again when the cache came to upload it: took it as it was", c.opts.Bucket, object.name))
+		}
+	}
+	return uploaded, reused, nil
 }
 
 // snapshotSet is the set the clone's snapshot makes, unlisted yet: the snapshot is the one every
@@ -288,39 +351,31 @@ func (c *cache) digest(path string, file *os.File, next map[string]packDigest) (
 	return local, nil
 }
 
-// retire deletes from the bucket each object of the repository's prefix that neither the clone's
-// inventory nor set holds, set being the one listed at switched: the time of the sync that just
-// installed it, or that found the clone's snapshot to list it still (publishPacks). It deletes such
-// an object once retireAfter has passed since the sync that first left it out. Each such object is
-// recorded in cache.absent at the first sync that finds it left out, with that sync's time; the
-// record is dropped when the clone or a later set holds the object again, so its clock starts
-// afresh if it is left out later; and the object is deleted, matching the generation the bucket
-// listed, once a sync comes retireAfter or more after the record's. A record lives in this process
-// alone, so a restarted cache counts no object's time from before its own first sync, and never
-// from the object's creation, which says nothing of when a set last named it. An object a sync
-// uploaded whose set was never installed, which an interrupted upload leaves, is retired the same
-// way once a later set does not hold it either.
+// retire deletes from the bucket each object of the repository's prefix that stored, the sync's
+// one list of the bucket (listBucket), answered and that neither the clone's inventory nor set
+// holds, set being the one listed at switched: the time of the sync that just installed it, or
+// that found the clone's snapshot to list it still (publishPacks). It deletes such an object once
+// retireAfter has passed since the sync that first left it out. Each such object is recorded in
+// cache.absent at the first sync that finds it left out, with that sync's time; the record is
+// dropped when the clone or a later set holds the object again, or the list no longer answers it,
+// so its clock starts afresh if it is left out later; and the object is deleted, matching the
+// generation the bucket listed, once a sync comes retireAfter or more after the record's. A record
+// lives in this process alone, so a restarted cache counts no object's time from before its own
+// first sync, and never from the object's creation, which says nothing of when a set last named
+// it. An object a sync uploaded whose set was never installed, which an interrupted upload leaves,
+// is retired the same way once a later set does not hold it either.
 //
-// It runs only after a successful snapshot, and after its switch where the snapshot made a set of
-// its own (publishPacks). A failed list or delete is logged and tried again at the next sync, the
-// record kept. It touches only what the bucket's list answers under the repository's prefix whose
-// name the cache writes (bucket.list): another repository's objects, and a name under the prefix
-// the cache did not write, are never deleted, the second logged once by this process. Only a
-// running cache retires its own objects: a cache the daemon retires
+// It runs only after a successful snapshot and list, once the sync has put back each object of set
+// the list did not answer, and after its switch where the snapshot made a set of its own
+// (publishPacks), so the list it reads was taken before that sync's uploads: each object those
+// wrote is one set holds, which retire never deletes. A sync whose list failed runs no retire. A
+// failed delete is logged and tried again at the next sync, the record kept. It touches only what
+// the list answers under the repository's prefix whose name the cache writes (bucket.list): another
+// repository's objects, and a name under the prefix the cache did not write, are never deleted.
+// Only a running cache retires its own objects: a cache the daemon retires
 // (runtime.kubernetes.repository_cache.retain_hours) ends with its pod and deletes nothing in the
 // bucket, whose retention the deployment sets.
-func (c *cache) retire(ctx context.Context, set *listedSet, inventory map[string]bool, switched time.Time) {
-	stored, foreign, err := set.store.list(ctx)
-	if err != nil {
-		c.opts.Log("list the bucket's packs to retire those no set names; tried again at the next sync: " + oneLine(err))
-		return
-	}
-	for _, name := range foreign {
-		if !c.foreign[name] {
-			c.foreign[name] = true
-			c.opts.Log(fmt.Sprintf("bucket %s holds %s under the repository's prefix, which is no pack or index the cache writes: it is left as it is", set.store.name, name))
-		}
-	}
+func (c *cache) retire(ctx context.Context, set *listedSet, inventory map[string]bool, stored map[string]storedObject, switched time.Time) {
 	for name := range c.absent {
 		if _, ok := stored[name]; !ok {
 			delete(c.absent, name)

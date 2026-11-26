@@ -216,6 +216,50 @@ func (r *packsRig) stray(t *testing.T, name string) int64 {
 	return r.reader.seed(t, name, content, map[string]string{sha256Metadata: sha256Of(content)})
 }
 
+// lose deletes name's object from the double behind the cache's back, as a retention rule of the
+// deployment or another writer would, through the double's JSON API apart from the cache's code,
+// and fails the test unless the double deleted it.
+func (r *packsRig) lose(t *testing.T, name string) {
+	t.Helper()
+	target := r.running.URL() + "/storage/v1/b/" + testBucket + "/o/" + url.PathEscape(name)
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodDelete, target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+r.double.Token())
+	if status, body := do(t, request); status != http.StatusNoContent {
+		t.Fatalf("the double's delete of %s answered %d, not 204: %s", name, status, body)
+	}
+}
+
+// firstPack is the first pack, in byte order, of the objects l lists, failing the test where it
+// lists none.
+func firstPack(t *testing.T, l listing) string {
+	t.Helper()
+	for _, name := range slices.Sorted(maps.Keys(l.objects)) {
+		if strings.HasSuffix(name, ".pack") {
+			return name
+		}
+	}
+	t.Fatalf("the listing %v holds no pack", slices.Sorted(maps.Keys(l.objects)))
+	return ""
+}
+
+// requireHeldAsInClone fails the test unless the double holds name's object with the bytes of the
+// clone's file of that name, by the size, CRC32C and MD5 the double computed of what it stored.
+func (r *packsRig) requireHeldAsInClone(t *testing.T, name, what string) {
+	t.Helper()
+	local, err := os.ReadFile(filepath.Join(r.c.dir, "objects", "pack", strings.TrimPrefix(name, testPrefix)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, res := r.reader.resource(t, name)
+	if status != http.StatusOK {
+		t.Fatalf("%s the bucket reads %s %d, not 200; log %q", what, name, status, r.log.all())
+	}
+	requireHolds(t, res, local)
+}
+
 // present reports whether the double holds name, as its JSON API reads it apart from the cache.
 func (r *packsRig) present(t *testing.T, name string) bool {
 	t.Helper()
@@ -358,6 +402,9 @@ func formatInt(n int64) string { return strconv.FormatInt(n, 10) }
 // the old set listed, /tar and /healthz answering, and the next refresh tries again; and a pack
 // without its index, or an index without its pack, is left out of the set, which lists the rest of
 // the clone. Every answer of every row holds the invariant requireWhole checks.
+// An object of the listed set that the bucket lost behind the cache's back, as a retention rule or
+// another writer deletes one, is uploaded again with the clone's bytes at the next sync, logged by
+// name, whether that sync keeps the set or switches it.
 func TestCachePublishesCompletePackSets(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -370,6 +417,8 @@ func TestCachePublishesCompletePackSets(t *testing.T) {
 		{"a pack without its index and an index without its pack are left out, and the rest of the clone is listed", testLoneFilesLeftOut},
 		{"a bucket that cannot be opened leaves /tar and /healthz answering, and the next refresh opens it", testBucketOpenTriedAgain},
 		{"a restarted cache whose bucket holds every pack already uploads none, and its log counts none uploaded", testRestartCountsNoUpload},
+		{"a listed pack and its index the bucket lost are uploaded again at the next sync, which keeps the set, each logged by name", testLostObjectsPutBack},
+		{"a listed pack the bucket lost is uploaded again at a fetch's switch, whose set lists it beside the fetch's pack and index", testLostPackPutBackAtASwitch},
 	} {
 		t.Run(row.name, row.run)
 	}
@@ -629,6 +678,71 @@ func testRestartCountsNoUpload(t *testing.T) {
 	}
 }
 
+// testLostObjectsPutBack: once the first clone's set is listed, its pack and that pack's index,
+// deleted from the bucket behind the cache's back, are uploaded again at the next sync, which
+// brings nothing and keeps the same set: one upload each, the bucket holding each with the clone's
+// own bytes again, a log line naming each, and /packs answering the set it answered before, whole.
+func testLostObjectsPutBack(t *testing.T) {
+	r := newPacksRig(t)
+	r.refresh(t)
+	listed := r.c.listed.Load()
+	before := listingOf(t, r.requirePacks(t))
+	lost := pair(strings.TrimSuffix(firstPack(t, before), ".pack"))
+	for _, name := range lost {
+		r.lose(t, name)
+	}
+	r.requirePresent(t, false, "once deleted behind the cache's back,", lost...)
+	uploads := r.double.Count(fakegcs.RouteUpload).Requests
+	r.refresh(t)
+	if r.c.listed.Load() != listed {
+		t.Errorf("the sync that put the lost pack and index back, which brought nothing, installed a set of its own")
+	}
+	requireListing(t, listingOf(t, r.requirePacks(t)), before, "after the sync that put the lost pack and index back,")
+	if sent := r.double.Count(fakegcs.RouteUpload).Requests - uploads; sent != len(lost) {
+		t.Errorf("the sync sent %d uploads, not one for each of the %d lost objects; log %q", sent, len(lost), r.log.all())
+	}
+	for _, name := range lost {
+		r.requireHeldAsInClone(t, name, "after the sync that put it back,")
+		if !logged(r.log.all(), "bucket "+testBucket+" no longer held "+name+", which the listed set names: uploaded it again") {
+			t.Errorf("the upload of %s again was not logged by name: %q", name, r.log.all())
+		}
+	}
+}
+
+// testLostPackPutBackAtASwitch: a pack of the first clone's set, deleted from the bucket behind the
+// cache's back, is uploaded again by the next sync, a fetch's, which switches to a set that lists
+// it still beside the fetch's own pack and index: the switch lists the clone whole, the bucket
+// holds the lost pack with the clone's bytes again, a log line names it, and the switch's line
+// counts it among the three objects it uploaded.
+func testLostPackPutBackAtASwitch(t *testing.T) {
+	r := newPacksRig(t)
+	r.refresh(t)
+	before := listingOf(t, r.requirePacks(t))
+	lost := firstPack(t, before)
+	r.lose(t, lost)
+	advance(t, r.remote, "moved")
+	uploads := r.double.Count(fakegcs.RouteUpload).Requests
+	r.refresh(t)
+	got := listingOf(t, r.requirePacks(t))
+	requireListing(t, got, cloneListing(t, r.c.dir), "after the fetch's switch,")
+	if _, ok := got.objects[lost]; !ok {
+		t.Fatalf("the fetch's set dropped %s, which the clone still holds", lost)
+	}
+	if fresh := added(before, got); len(fresh) != 2 {
+		t.Fatalf("the fetch added %q to the listed set, not one pack and its index", fresh)
+	}
+	if sent := r.double.Count(fakegcs.RouteUpload).Requests - uploads; sent != 3 {
+		t.Errorf("the switch sent %d uploads, not 3: the fetch's pack and index and the lost pack; log %q", sent, r.log.all())
+	}
+	r.requireHeldAsInClone(t, lost, "after the fetch's switch,")
+	if !logged(r.log.all(), "bucket "+testBucket+" no longer held "+lost+", which the listed set names: uploaded it again") {
+		t.Errorf("the upload of %s again was not logged by name: %q", lost, r.log.all())
+	}
+	if line := "listed " + strconv.Itoa(len(got.objects)) + " packs and indexes in bucket " + testBucket + ", 3 of them uploaded now, 0 reused as the bucket held them"; !logged(r.log.all(), line) {
+		t.Errorf("the switch did not log %q: %q", line, r.log.all())
+	}
+}
+
 // TestCacheRetiresOnlyUnlistedPacks holds the cache's retirement of objects no set names (R2): an
 // object of the repository's prefix that neither the clone nor the listed set holds is deleted no
 // sooner than 30 minutes after the switch that first left it out, and from then; one the clone
@@ -725,7 +839,7 @@ func testHeldByOneSide(t *testing.T, byClone bool) {
 	ctx := testwait.Context(t)
 	r.c.maint.Lock()
 	for _, at := range []time.Duration{0, retireAfter, 2 * retireAfter} {
-		r.c.retire(ctx, set, inventory, packsStart.Add(at))
+		r.c.retire(ctx, set, inventory, r.c.listBucket(ctx), packsStart.Add(at))
 	}
 	r.c.maint.Unlock()
 	r.requirePresent(t, true, "an hour after it was held by one side alone,", held)

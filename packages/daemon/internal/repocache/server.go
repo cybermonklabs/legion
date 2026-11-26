@@ -202,12 +202,13 @@ var maxStreams = 32
 //
 // Where Options.Bucket names a bucket, the cache publishes its packs there (syncPacks) after every
 // fetch that succeeds, the first clone included, and again after every repack that succeeds; a
-// restart whose first fetch fails publishes the clone it serves as it was. Each sync uploads the
-// packs and indexes the listed set lacks, then switches the listed set to the clone's snapshot, so
+// restart whose first fetch fails publishes the clone it serves as it was. Each sync lists the
+// bucket once, uploads the packs and indexes the listed set lacks and each of the listed set's that
+// the bucket no longer holds (putObjects), then switches the listed set to the clone's snapshot, so
 // /packs answers the set before it until every object of the new one is in the bucket whole, and
 // then retires what no set names any more (retire); a snapshot that lists what the listed set
-// lists already keeps that set. A sync holds no lock /tar takes and fails on its own: the cache
-// serves /tar and /healthz as it would with no bucket.
+// lists already keeps that set, its lost objects put back. A sync holds no lock /tar takes and
+// fails on its own: the cache serves /tar and /healthz as it would with no bucket.
 func Serve(ctx context.Context, opts Options) error {
 	if err := opts.check(); err != nil {
 		return err
