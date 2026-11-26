@@ -49,9 +49,10 @@
 -- every row the upgrade finds.
 --
 -- The outbox's kind check is one list, so it is rewritten whole naming every kind: the list of
--- 20261119203047_design_news.up.sql with retro_bound added, the row that ends a retro after a
--- close nobody reported at its bound (record.RetroBound). Its version stands above that list's, so
--- it is the last word on any database.
+-- 20261122154643_outbox_kinds_with_the_basis_seeds.up.sql (the design news's list of
+-- 20261119203047 with pending_basis_seed and reparent_seed added) with retro_bound added, the row
+-- that ends a retro after a close nobody reported at its bound (record.RetroBound). Its version
+-- stands above that list's, so it is the last word on any database.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
@@ -121,7 +122,8 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'conflict_confirm', 'merge_forward', 'design_changes', 'retro_bound'));
+  'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
+  'retro_bound'));
 
 -- own is each recorded issue's current run that started of itself: the issue stands in a phase
 -- that carries a run, or holds a step start of the run's generation. started_at is the run's

@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -78,6 +79,10 @@ type recordView struct {
 	// Profiles is each profile the record asks for, with the scope an approval grants
 	// (profileViewOf); none for a record of stored secrets alone and for a machine login.
 	Profiles []profileView
+	// Proxied is each stored secret the record asks for that its proxy tag puts behind a kind,
+	// served by its own name with no profile, with the scope an approval grants (proxiedViewOf):
+	// its kind, the hosts and the requests the kind lets its credential reach.
+	Proxied []proxiedView
 	// Projects is one row per requested secret tagged with a Dispatch project: the secret, its
 	// project, whether that project is private (or one Dispatch does not hold), and whether the
 	// requesting session names it. Empty for a record touching no project, which prints as before.
@@ -127,13 +132,13 @@ type profileView struct {
 	ProxyHosts                                  string
 }
 
-// profileViewOf is p as the page prints it, from the live profiles file and the record's own
-// target (requests.RecordProfile). A GitHub profile that names no repository reaches every one
-// its installations on its accounts reach, and a record that names no target asks for the whole
-// profile; the page says both rather than print nothing, since each is part of what an approval
-// grants.
+// profileViewOf is p as the page prints it, from the live profiles file, the record's own target
+// and the hosts its credential may go to (requests.RecordProfile, hostsWords). A GitHub profile
+// that names no repository reaches every one its installations on its accounts reach, and a record
+// that names no target asks for the whole profile; the page says both rather than print nothing,
+// since each is part of what an approval grants.
 func profileViewOf(p requests.RecordProfile) profileView {
-	v := profileView{Name: p.Name, Source: p.Profile.Source}
+	v := profileView{Name: p.Name, Source: p.Profile.Source, ProxyHosts: hostsWords(p)}
 	if block := p.Profile.GitHub; block != nil {
 		v.Accounts = strings.Join(block.Accounts, ", ")
 		v.Repositories = "every repository the App's installations on these accounts reach"
@@ -150,16 +155,58 @@ func profileViewOf(p requests.RecordProfile) profileView {
 	if block := p.Profile.Google; block != nil {
 		v.GoogleScopes = strings.Join(block.Scopes, ", ")
 	}
-	if proxy := p.Profile.Proxy; proxy != nil {
-		v.ProxyHosts = strings.Join(proxy.Hosts, ", ")
+	return v
+}
+
+// proxiedView is one stored secret a record asks for that is served by its own name behind a
+// kind, as the page prints it: its name, the kind, the hosts the kind lets its credential go to and
+// the requests the kind allows there. Such a secret has no profile, so the kind is the whole of
+// where an approval sends its credential.
+type proxiedView struct {
+	Name, Kind, ProxyHosts, Allow string
+}
+
+// proxiedViewOf is p, a stored secret behind a kind with no profile (requests.RecordProfile with
+// no Profile), as the page prints it: its kind, the hosts its credential may go to (hostsWords) and
+// the kind's allow rows, each as policy.RowWords words a row. A kind with no allow allows any
+// request on its hosts, and one with an empty allow none, and the page says each rather than print
+// no rows, which would read as the other.
+func proxiedViewOf(p requests.RecordProfile) proxiedView {
+	v := proxiedView{Name: p.Name, Kind: p.Kind, ProxyHosts: hostsWords(p)}
+	switch {
+	case p.Allow == nil:
+		v.Allow = "any method on any path of these hosts"
+	case len(p.Allow) == 0:
+		v.Allow = "none: the kind allows no request"
+	default:
+		rows := make([]string, len(p.Allow))
+		for i, row := range p.Allow {
+			rows[i] = policy.RowWords(row)
+		}
+		v.Allow = strings.Join(rows, ", ")
 	}
 	return v
 }
 
+// hostsWords is the hosts p's credential may go to (requests.RecordProfile.Hosts) as the page
+// prints them: none for a name behind no kind, whose credential the release hands to the command,
+// and for a profile whose own allow holds no row, which no kind's hosts can be, a line that says
+// so rather than no line, which would read as a name behind no proxy.
+func hostsWords(p requests.RecordProfile) string {
+	switch {
+	case p.Kind == "":
+		return ""
+	case len(p.Hosts) == 0:
+		return "none: the profile's allow names no request"
+	}
+	return strings.Join(p.Hosts, ", ")
+}
+
 // tokenFields are the hidden fields every decision form carries: the records the page printed with
 // a button, the token binding them to the session, its expiry, and the fingerprint of each
-// profile those records ask for as the page printed it (profileDigestFields), which an approval
-// is refused against when the live one is another (profilesMoved).
+// profile, and of each stored secret behind a kind, those records ask for as the page printed it
+// (profileDigestFields), which an approval is refused against when the live one is another
+// (profilesMoved).
 type tokenFields struct {
 	Printed  []string
 	Token    string
@@ -168,9 +215,10 @@ type tokenFields struct {
 }
 
 // profileDigestFields are the profile_digest fields a decision form carries for the profiles d
-// asks for, one each: the record's id, the profile's name and its fingerprint as the page printed
-// it, separated by single spaces. None of the three holds a space: a record id is hex, a secret's
-// name is letters, digits and underscores, and a fingerprint is hex.
+// asks for, and the stored secrets it asks for behind a kind (requests.RecordDetail.Profiles), one
+// each: the record's id, the name and its fingerprint as the page printed it, separated by single
+// spaces. None of the three holds a space: a record id is hex, a secret's name is letters, digits
+// and underscores, and a fingerprint is hex.
 func profileDigestFields(d requests.RecordDetail) []string {
 	fields := make([]string, len(d.Profiles))
 	for i, profile := range d.Profiles {
@@ -417,6 +465,10 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 	v.JudgeDeciding = v.Pending && d.JudgeDeciding
 	v.Buttons = v.Pending && !v.MachineLogin && v.MayDecide && !v.JudgeDeciding
 	for _, profile := range d.Profiles {
+		if profile.Profile == nil {
+			v.Proxied = append(v.Proxied, proxiedViewOf(profile))
+			continue
+		}
 		v.Profiles = append(v.Profiles, profileViewOf(profile))
 	}
 	v.SessionProjects = d.SessionProjects
@@ -700,7 +752,7 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 		}
 		if moved {
 			writeMessage(w, http.StatusForbidden, codeProfileChanged, say("Profile changed",
-				"A profile this page printed has changed since the page was made, so nothing was decided. Open the request again to read what an approval grants now."))
+				"A profile this page printed, or the kind a secret it printed is behind, has changed since the page was made, so nothing was decided. Open the request again to read what an approval grants now."))
 			return
 		}
 	}
@@ -752,15 +804,17 @@ func profileDigests(values []string) map[string]map[string]string {
 }
 
 // profilesMoved reports whether a record of ids names a secret whose live profile fingerprint is
-// not the one printed holds for it: "" for a name the live policy serves as no profile, and for
-// one the page printed none for. So a profile edited since the page, one added to a name the page
-// printed as a stored secret, and one taken away are each a move, since each changes what an
-// approval would grant. A record the broker no longer has, and a machine login, are left to
-// decide's own answer. It reads each record through requests.Machine.RecordProfiles, which asks
-// Dispatch nothing, so every record is checked while Dispatch is down too: a record Dispatch
-// cannot answer for is then decided by nobody (decide), and the POST's other records as ever,
-// rather than the POST answering 503 for all of them. Skipping such a record here instead would
-// let it through unchecked to a Dispatch that answers again by the time decide reads it.
+// not the one printed holds for it: "" for a name the live policy serves as no profile and behind
+// no kind, and for one the page printed none for. So a profile edited since the page, one added to
+// a name the page printed as a stored secret, and one taken away are each a move, since each
+// changes what an approval would grant; and so is a stored secret's proxy tag set, changed or
+// taken off, whose kind is in its fingerprint (requests.RecordProfile). A record the broker no
+// longer has, and a machine login, are left to decide's own answer. It reads each record through
+// requests.Machine.RecordProfiles, which asks Dispatch nothing, so every record is checked while
+// Dispatch is down too: a record Dispatch cannot answer for is then decided by nobody (decide),
+// and the POST's other records as ever, rather than the POST answering 503 for all of them.
+// Skipping such a record here instead would let it through unchecked to a Dispatch that answers
+// again by the time decide reads it.
 func (p *Page) profilesMoved(ctx context.Context, ids []string, printed map[string]map[string]string) (bool, error) {
 	for _, id := range ids {
 		kind, identifiers, profiles, err := p.cfg.Machine.RecordProfiles(ctx, id)

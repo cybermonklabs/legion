@@ -51,12 +51,15 @@ type runAt struct {
 }
 
 // factRuns is what one fact names of the runs it ends that the record does not hold: the end each
-// move of the table names for the run it leaves, and the trees whose linger it closed. settled says
-// the fact's runs are settled already: an engine and the admission that holds it share one fact.
+// move of the table names for the run it leaves, and the trees whose linger it closed. unrested is
+// each ancestor a root stopped resting on in the fact (restEnded), which writes no record of the
+// ancestor's tree. settled says the fact's runs are settled already: an engine and the admission
+// that holds it share one fact.
 type factRuns struct {
-	ends    map[runAt]StepEnd
-	closed  map[string]bool
-	settled bool
+	ends     map[runAt]StepEnd
+	closed   map[string]bool
+	unrested []string
+	settled  bool
 }
 
 // factRunsKey is the context key of a fact's factRuns.
@@ -96,7 +99,8 @@ func (e *Engine) OpenFact(ctx context.Context) context.Context {
 
 // SettleFact settles the record the fact left, once its last handler has applied it, in its
 // transaction (intake.Settler): first each parent held before its retro whose tree the fact wrote
-// an issue of is released where nothing beneath it is open (releaseHeldParents), and then each run
+// an issue of, or whose tree holds an ancestor a root stopped resting on in the fact (restEnded),
+// has its retro started where nothing holds it any longer (releaseHeldParents), and then each run
 // the fact left over ends (runOver): the runs of each issue the fact touched, the released parents
 // among them, of each issue whose run it named an end for (nameEnd) though it wrote no record of
 // that issue, as the end of a retro after a close names one (retroReported), and of each member of
@@ -108,7 +112,7 @@ func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 		return nil
 	}
 	runs.settled = true
-	if err := e.releaseHeldParents(ctx, tx, record.IssuesWritten(ctx)); err != nil {
+	if err := e.releaseHeldParents(ctx, tx, slices.Concat(record.IssuesWritten(ctx), runs.unrested)); err != nil {
 		return err
 	}
 	return e.settleRuns(ctx, tx, runs, append(record.IssuesWritten(ctx), runs.named()...), nil)
@@ -158,6 +162,20 @@ func (e *Engine) closeLinger(ctx context.Context, tree string) error {
 	}
 	runs.closed[tree] = true
 	return nil
+}
+
+// restEnded names ancestor as one a root stopped resting on in this fact (dispatch://INFRA-3320
+// R8): the root left the workflow (tellRestingLeft), or its step's wait on ancestor's approval
+// request ended (tellPendingEnded). A parent held before its retro waits for each root still in
+// the workflow that rests on it (StartHeldRetro), and neither end writes a record of the parent's
+// tree, so the fact's settle reads ancestor's tree as it reads a tree the fact wrote
+// (releaseHeldParents). A transaction no fact opened has no settle to read it in, and names
+// nothing: the next admission pass of the held parent's project reads it again (admit's
+// childrenWaits).
+func (e *Engine) restEnded(ctx context.Context, ancestor string) {
+	if runs, ok := ctx.Value(factRunsKey{}).(*factRuns); ok && !slices.Contains(runs.unrested, ancestor) {
+		runs.unrested = append(runs.unrested, ancestor)
+	}
 }
 
 // settleStart ends, before a start of place on issue, each of the issue's runs that is over, the
