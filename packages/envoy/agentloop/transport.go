@@ -264,7 +264,7 @@ func offersTools(body []byte, members []jsonPart) bool {
 // together with the comma that parted it from its neighbour: the one before it, or for the first
 // of several the one after it. Every other byte stays as it came.
 func withoutMember(object []byte, parts []jsonPart, j int) []byte {
-	from, to := 1, parts[j].end
+	from, to := bytes.IndexByte(object, '{')+1, parts[j].end
 	switch {
 	case j > 0:
 		from = parts[j-1].end

@@ -254,6 +254,9 @@ func TestAMessagesBodyThatOffersAToolIsSentWithoutItsSchema(t *testing.T) {
 		{name: "the format alone, first in the body", kind: AnthropicMessages,
 			body: `{"output_config":{"format":` + format + `},"model":"m",` + tools + `,"tool_choice":{"type":"auto","disable_parallel_tool_use":true}}`,
 			sent: `{"model":"m",` + tools + `,"tool_choice":{"type":"auto","disable_parallel_tool_use":true}}`},
+		{name: "leading whitespace with the format alone, first in the body", kind: AnthropicMessages,
+			body: " \n{\"output_config\":{\"format\":" + format + `},"model":"m",` + tools + `,"tool_choice":{"type":"auto"}}`,
+			sent: " \n{\"model\":\"m\"," + tools + `,"tool_choice":{"type":"auto"}}`},
 		{name: "the format alone, last in the body, with no tool choice", kind: AnthropicMessages,
 			body: `{"model":"m",` + tools + `,"output_config":{"format":` + format + `}}`,
 			sent: `{"model":"m",` + tools + `}`},
@@ -290,6 +293,9 @@ func TestAMessagesBodyThatOffersAToolIsSentWithoutItsSchema(t *testing.T) {
 				t.Fatalf("%d attempts, want the call and its one retry", len(base.bodies))
 			}
 			for attempt, got := range base.bodies {
+				if !json.Valid(got) {
+					t.Errorf("attempt %d sent invalid JSON:\n%s", attempt, got)
+				}
 				if string(got) != c.sent {
 					t.Errorf("attempt %d sent\n%s\nwant\n%s", attempt, got, c.sent)
 				}

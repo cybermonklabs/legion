@@ -10,19 +10,19 @@
 // retry, the step bound with no tool on the last allowed call and the message that call carries,
 // the thinking and reasoning options, the cache marks, the reply's schema, which on Anthropic's
 // Messages API rides only on a call that offers no tool, the check of every reply against it, the
-// one last call after a reply out of form on a call that offered a tool, the one ask again for a
-// reply the form's own rules refuse and the one call again for a reply the provider cut at
-// output_tokens are all its. This package is its caller: it builds the request (the conversation
-// as agentloop's messages, the system prompt, the reply form as the request's Final schema, the
-// form's own rules as its Check, the gh tool described for the agent's repository, the dispatch
-// tool for its session and the web_search tool, the last call's message, the bounds and the
-// endpoint `answers.providers` names, whose key is read again for every call), decides the faults
-// that need no model call (no_provider, no_price, unknown_format), refuses an answer whose calls
-// the provider metered nothing for (unmetered), maps agentloop's faults onto the daemon's own
-// reasons, refuses each tool call that writes while the project is paused (toolSet), and reads
-// the run back as the agent's reply, the turns to append (an answer's, or those of a run that
-// gave none, for the caller to end with its own reply), each call agentloop dropped left out (a
-// cut reply, or a reply out of form), and what the answer cost.
+// one last call after a reply out of form on a Messages API call that offered a tool, the one ask
+// again for a reply the form's own rules refuse and the one call again for a reply the provider
+// cut at output_tokens are all its. This package is its caller: it builds the request (the
+// conversation as agentloop's messages, the system prompt, the reply form as the request's Final
+// schema, the form's own rules as its Check, the gh tool described for the agent's repository, the
+// dispatch tool for its session and the web_search tool, the last call's message, the bounds and
+// the endpoint `answers.providers` names, whose key is read again for every call), decides the
+// faults that need no model call (no_provider, no_price, unknown_format), refuses an answer whose
+// calls the provider metered nothing for (unmetered), maps agentloop's faults onto the daemon's
+// own reasons, refuses each tool call that writes while the project is paused (toolSet), and reads
+// the run back as the agent's reply, the turns to append (an answer's, or those of a run that gave
+// none, for the caller to end with its own reply), each call agentloop dropped left out (a cut
+// reply, or a reply out of form on a Messages API call with tools), and what the answer cost.
 package answer
 
 import (
@@ -251,8 +251,8 @@ type Reply struct {
 	// own instruction to that call and no part of what the agent did, so the agent's
 	// conversation never holds it. Nor does it hold a reply agentloop dropped
 	// (agentloop.Step.Dropped), which no later call was sent: one the provider cut at
-	// output_tokens whose call agentloop made again, or one out of form on a call that offered a
-	// tool (finalSchema).
+	// output_tokens whose call agentloop made again, or one out of form on a Messages API call
+	// that offered a tool (finalSchema).
 	Append conversation.Append
 	// Calls is how many model calls the answer made, each call agentloop dropped included; Usage
 	// their tokens and costs summed, cache writes and reads included, reasoning counted as
@@ -616,9 +616,9 @@ func firstToolIndex(earlier []store.AnswerToolCall) int {
 
 // exchange is the run as the turns to append under front's question: every call of the run in
 // order but one agentloop dropped, a cut one whose call it made again or a reply out of form on a
-// call that offered a tool, which no later call was sent and the conversation never holds, and
-// one that returned nothing at all, which no harness writes as a turn. A run whose calls returned
-// nothing has no turns.
+// Messages API call that offered a tool, which no later call was sent and the conversation never
+// holds, and one that returned nothing at all, which no harness writes as a turn. A run whose
+// calls returned nothing has no turns.
 func exchange(req Request, r route, result agentloop.Result, front *inFront) conversation.Append {
 	a := conversation.Append{
 		QuestionID: req.Question.ID, Question: front.question,

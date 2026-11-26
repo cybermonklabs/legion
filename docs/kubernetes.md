@@ -1758,7 +1758,7 @@ answers:
   That call carries a short message after everything else it is sent: that it is the last call, that it offers no tool, to reply now, in the reply form, from what the agent already knows, and that a `not_answered` or `needs_work` reply must say in `needs` what it needs, since that call's reply is never asked for again.
   The message is the loop's own instruction to that call, as its system prompt is, so the exchange written into the agent's conversation never holds it.
   On Anthropic's Messages API only a call that offers no tool, the last, carries the reply form's schema, though the daemon checks every reply against the form: with the schema on every call, Claude answers that needed no tool still made tool calls to the bound, and the requests of proof run 45683361567, replayed through the model gateway, replied 100 times in 162 without it against 19 times with it.
-  A reply out of form on a call that offers a tool is dropped, never sent back to the model nor written into the agent's conversation, and the next call is the answer's last, with that message and the schema, whatever `model_calls` has left; its tokens and cost count in the answer's.
+  On that API, a reply out of form on a call that offers a tool is dropped, never sent back to the model nor written into the agent's conversation, and the next call is the answer's last, with that message and the schema, whatever `model_calls` has left; its tokens and cost count in the answer's.
 
 - `bounds.output_tokens` (4000): Output tokens per model call.
   A reply the provider cuts there is taken for a model running on inside the reply form, not for a longer answer:
@@ -1939,7 +1939,7 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   The placeholder rule does not read an exchange of its own that the conversation holds, a refused placeholder and the daemon's reason after it, so a placeholder refused once is refused again on a later question.
 
 - **No answer.**
-  A bound passed (`answer_seconds`, `model_calls`, `length` at `output_tokens`), a refusal, a reply not in the form on a call that carries its schema (`malformed`), a provider that failed (`provider_error`), the day's spend over `daily_usd` (`over_limit`), `no_provider`, `no_price`, `unknown_format`, a run the provider metered no call of
+  A bound passed (`answer_seconds`, `model_calls`, `length` at `output_tokens`), a refusal, a reply not in the form that is neither dropped nor asked for again (`malformed`), a provider that failed (`provider_error`), the day's spend over `daily_usd` (`over_limit`), `no_provider`, `no_price`, `unknown_format`, a run the provider metered no call of
   — no counts at all, or zero input, output and cache tokens on every call, which is what a gateway that strips usage leaves (`unmetered`:
   its answer is unpriced, so it would move the day's spend by nothing and `daily_usd` would bound no answer)
   — and a conversation its store no longer holds (`no_conversation`):
@@ -4372,7 +4372,7 @@ An entry's number is 275 plus its place in the order in which `main` merged the 
 `legion version --contracts` prints the numbers of the build it runs from: `contract <n>` first, then `order stamped` for a release's or a worker image's build or `order id` for any other build, whose entries are numbered in the order of their ids, then one line `<id> <number> <slug>` for each entry.
 A section of this guide about a release that adds a contract entry names the entry by its id, never by a number, and the operator reads that entry's number in the build they run with `legion version --contracts`.
 Each claim records the contract its process registered with as `pluginContract`.
-A role's `pi-legion` declares the contract it was built against in the manifest its pack step writes (`packages/pi-legion/AGENTS.md`), and the daemon's boot pass (`refreshStalePlugins` in `packages/daemon/internal/daemon/daemon.go`) and its registration path (`internal/supervise/plugin.go`) agree on one rule:
+A role's `pi-legion` declares the contract it was built against in the manifest its pack step writes (`scripts/e2e/lib/pack-plugin.sh`), and the daemon's boot pass (`refreshStalePlugins` in `packages/daemon/internal/daemon/daemon.go`) and its registration path (`internal/supervise/plugin.go`) agree on one rule:
 a registered claim whose recorded contract differs from the daemon's own, or is unrecorded
 — every claim is unrecorded the first time a daemon boots on a release that records contracts at all
 — runs on this daemon's plugin before it does anything else, and it gets there by being relaunched onto it, asked nothing first.

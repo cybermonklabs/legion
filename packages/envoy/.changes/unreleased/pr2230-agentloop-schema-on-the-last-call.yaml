@@ -13,15 +13,13 @@ body: |-
   requests of proof run 45683361567, replayed through the model gateway against
   `claude-sonnet-5-5`, one model call each, replied on 19 of the 162 samples where a reply was
   possible with the schema and on 100 of them without it, and 120 of the 121 replies made without
-  it were exactly the reply object. The run still reads every reply against `Final`. A reply on a
-  call that offered a tool that is not exactly one object of `Final` no longer ends the run on
-  `FaultMalformed` while the run has time left: its step is marked `Step.Dropped`, none of it goes
-  back to the model, and the run's next call is its last whatever `Bounds.Calls` has left, sent
-  the messages the dropped call was sent, offering no tool and carrying the schema and `LastCall`.
-  That call's reply is final: the object, which no `Check` refusal asks for again, or
-  `FaultMalformed`. `Bounds.Calls` counts the dropped call and `Result.Usage` its usage, a run
-  drops such a reply once at most, and the drop counts against neither `AskAgain` nor
-  `CallAgainWhenCut`.
+  it were exactly the reply object. The run still checks every reply against `Final`. On the
+  Messages API, if a call offered a tool and its reply does not match `Final`, the run drops
+  the reply while there is time left. It marks the step `Step.Dropped`. The next call is the
+  last. It gets the same messages, no tools, the schema and `LastCall`. The dropped reply
+  does not return to the model. The last call returns its value or fault without another
+  attempt. The dropped call counts toward `Bounds.Calls` and `Result.Usage`, but not toward
+  `AskAgain` or `CallAgainWhenCut`.
 time: 2026-11-26T01:24:14.000000000Z
 custom:
     Issue: pr2230

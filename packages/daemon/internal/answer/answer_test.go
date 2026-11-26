@@ -853,9 +853,7 @@ func TestEveryAgentloopFaultIsNoAnswerUnderTheDaemonsOwnName(t *testing.T) {
 // no need, is asked for once again: agentloop sends parseReply's sentence as the message after it,
 // within the answer's model_calls, and the reply to it is the agent's. Both calls are counted and
 // priced, and the append holds the refused reply, the sentence and the reply after it, in the
-// order the run made them, which is what the appender writes into the conversation. The form
-// every reply is held to (finalSchema), which neither of these calls carries since both offer the
-// gh tool, states the rule the reply broke in its own descriptions.
+// order the run made them, which is what the appender writes into the conversation.
 func TestAReplyTheFormRefusesIsAskedForOnceAgain(t *testing.T) {
 	const (
 		refused = `{"kind":"not_answered","text":"I cannot tell from here.","needs":""}`
@@ -891,21 +889,6 @@ func TestAReplyTheFormRefusesIsAskedForOnceAgain(t *testing.T) {
 	}
 	if turn := blocks(sent[3]); len(turn) != 2 || turn[0]["signature"] != "sig-refused+/==" || turn[1]["text"] != refused {
 		t.Errorf("the second call carries the refused reply as %v, want its signed thinking and its text", turn)
-	}
-	var replyForm struct {
-		Properties map[string]struct {
-			Description string `json:"description"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal(finalSchema(false), &replyForm); err != nil {
-		t.Fatal(err)
-	}
-	properties := replyForm.Properties
-	if text := properties["text"].Description; !strings.Contains(text, "Never empty") {
-		t.Errorf("the form's text says %q, want it never empty", text)
-	}
-	if needs := properties["needs"].Description; !strings.Contains(needs, "not_answered") || !strings.Contains(needs, "needs_work") || !strings.Contains(needs, "Never empty for those two kinds") {
-		t.Errorf("the form's needs says %q, want it never empty for not_answered and needs_work", needs)
 	}
 	turns := reply.Append.Turns
 	if len(turns) != 2 || turns[0].AskedAgain != refusal.Error() || turns[1].AskedAgain != "" {

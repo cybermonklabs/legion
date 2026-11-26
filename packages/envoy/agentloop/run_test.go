@@ -599,10 +599,6 @@ var outOfForm = outOfFormSays + " " + finalAnswer
 // only because the first reply was out of form.
 func TestAReplyOutOfFormOnACallWithToolsIsDroppedAndTheNextCallIsTheLast(t *testing.T) {
 	t.Parallel()
-	var final any
-	if err := json.Unmarshal([]byte(finalSchema), &final); err != nil {
-		t.Fatal(err)
-	}
 	for _, kind := range []Kind{AnthropicMessages, AzureAnthropic} {
 		t.Run(string(kind), func(t *testing.T) {
 			t.Parallel()
@@ -727,10 +723,10 @@ func TestAReplyOutOfFormOnACallThatCarriedTheSchemaIsMalformed(t *testing.T) {
 // A dropped reply out of form leaves a cut reply and a refused Value as they were, within
 // Bounds.Calls: a cut call is made again and a reply Request.Check refuses is asked for again
 // before a reply out of form, neither counting it nor counted by it, and the call after the
-// reply out of form is the run's last though the bound and AskAgain would allow more, so a Value
-// Check refuses on it is the run's, with no fault, as a refused Value on a run's last allowed
-// call is. Only the last call carries Request.LastCall, and no call carries the cut reply or the
-// reply out of form.
+// reply out of form is the run's last though the bound, AskAgain and CallAgainWhenCut would
+// allow more, so a Value Check refuses on it is the run's, with no fault, and a reply cut on it
+// is FaultLength, as on a run's last allowed call. Only the last call carries Request.LastCall,
+// and no call carries the cut reply or the reply out of form.
 func TestADroppedReplyOutOfFormLeavesACutAndARefusalAsTheyWere(t *testing.T) {
 	t.Parallel()
 	cut := func() reply {
@@ -744,6 +740,7 @@ func TestADroppedReplyOutOfFormLeavesACutAndARefusalAsTheyWere(t *testing.T) {
 		calls   int
 		check   func(json.RawMessage) error
 		replies []reply
+		fault   Fault
 		value   string
 		// dropped and asked are, for each call the run makes, whether its step is dropped
 		// and whether it was asked again.
@@ -755,6 +752,9 @@ func TestADroppedReplyOutOfFormLeavesACutAndARefusalAsTheyWere(t *testing.T) {
 		{name: "a refusal after the reply out of form", calls: 4, check: refuseEveryAnswer,
 			replies: []reply{text(outOfForm), text(refusedAnswer), text(finalAnswer)}, value: refusedAnswer,
 			dropped: []bool{true, false}, asked: []bool{false, false}},
+		{name: "a cut after the reply out of form", calls: 4,
+			replies: []reply{text(outOfForm), cut(), text(finalAnswer)}, fault: FaultLength,
+			dropped: []bool{true, false}, asked: []bool{false, false}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
@@ -763,8 +763,8 @@ func TestADroppedReplyOutOfFormLeavesACutAndARefusalAsTheyWere(t *testing.T) {
 			f.req.Final, f.req.LastCall = json.RawMessage(finalSchema), lastCallSentence
 			f.req.Check, f.req.AskAgain, f.req.CallAgainWhenCut = c.check, 1, 1
 			result, err := Run(context.Background(), f.req)
-			if err != nil || result.Fault != "" || string(result.Value) != c.value {
-				t.Fatalf("result %+v, %v; want no fault and the value %s", result, err, c.value)
+			if err != nil || result.Fault != c.fault || string(result.Value) != c.value || (c.fault != "" && result.Value != nil) {
+				t.Fatalf("result %+v, %v; want fault %q and the value %s", result, err, c.fault, c.value)
 			}
 			if len(result.Steps) != len(c.dropped) {
 				t.Fatalf("%d steps, want %d: %+v", len(result.Steps), len(c.dropped), result.Steps)
