@@ -387,7 +387,10 @@ Check, in order:
    `active` lists the issues holding a slot, roots and children alike, `waiting` the issues in
    line, `trees` the roots of the trees that run, and `cap` the slots (`admission_cap`, which
    counts the issues the daemon has started, not trees). A parent whose own first phase waits for its open children
-   is in `blocked`, with each child it waits for.
+   is in `blocked`, with each child it waits for. So is a parent in phase `awaiting_children`, whose
+   phases had started: it holds no slot, `held` names it `awaiting_children`, and it goes on by
+   itself once no child under it is open
+   ([Concepts](/legion/legion/concepts/#trees-and-the-architect)).
 
    Each waiting issue's own `waitingLine` says where it stands and why: `priority`, the priority
    that placed it, its own, else its tree root's (0 for P0 to 3 for P3, or null for one that waits
@@ -504,12 +507,23 @@ is recorded as waiting at that daemon's first boot, keeping its slot. The gate s
 spec at its current version; `designGate.approvedVersion` is `null`, or lower than `currentVersion`,
 until someone approves the latest version from the document's header or the Inbox. An approval of an
 earlier version does not count: the spec changed since. The gate holds the tree's start and its
-merger's start. `gatedSteps` carries one entry for each step that holds the tree, each with its own
-`artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`,
-`approved` or `changes_requested`): one per step `gates.design` lists, then `criteria` where the
-deployment's list names `spec` and not `criteria` and the root registered its Verification
-document. The tree waits until every entry reads `approved`, and `designGate` beside it is the
-`spec` step's record alone.
+merger's start, and work already in flight goes on. `gatedSteps` carries one entry for each step
+that holds the tree, each with its own `artifactId`, `currentVersion`, `approvedVersion` and
+`status` (`unregistered`, `waiting`, `approved`, `changes_requested`, `open_on_basis` or
+`pending_on_basis`): one per step `gates.design` lists, then `criteria` where the deployment's list
+names `spec` and not `criteria` and the root registered its Verification document. The tree waits
+until every entry reads `approved` or `open_on_basis`, and `designGate` beside it is the `spec`
+step's record alone.
+
+A root whose architect wrote its spec as a view on an ancestor can register the step on that
+ancestor's approval. Then the step reads `open_on_basis`: it is open, and no person approved the
+root's own version. `basis` names the ancestor `issue`, its `artifactId`, the approved `version`,
+the `approver` and `approvedAt`, and `approvedVersion` is the root's version that its architect
+registered. A step that reads `pending_on_basis` is closed until a person approves the ancestor's
+version that `basis` names; `basis.askId` is the open approval request, so read that request on the
+ancestor, not an approval request on the root. On a root, `treeRuns` says whether its tree runs:
+`false` on a root that lingers, or that waits in the line for its tree to open after a
+re-admission, whatever its architect's claim reads.
 
 ## A parked tree did not come back after a decision
 
@@ -821,7 +835,8 @@ claim's `state` is `failed` with its `failure` beside it. A phase worker held fo
 its architect's to retry or escalate, and `holdReason: "escalated"` means it went to the
 controller. A hold whose `holdReason` is `task-stopped` (its owner stopped its task, or a step
 failed with no earlier step of the type implementation to take its work back, which stops the
-task) or `children` (a parent waits, before its retro, for the issues beneath it) is no failure,
+task) or `children` (a parent waits, before its retro, for the issues beneath it, the roots that
+rest on its approval or its open Dispatch children, and the refusal names which) is no failure,
 and a retry of it is refused with `TASK_STOPPED` or `HELD_FOR_CHILDREN`. A root's
 architect that failed (`architect.state` is `failed` on the root) leaves nobody to act on the
 notices that come to it, and the controller is woken. Unless the root's `phase` is `done`, it

@@ -196,12 +196,29 @@ type idleRig struct {
 
 func newIdleRig(t *testing.T) *idleRig {
 	t.Helper()
+	return newIdleRigIn(t, phase.Implementing)
+}
+
+// newIdleRigIn is newIdleRig with the issue standing in at: implementing, as every other test of
+// the rig has it, or awaiting_children, where the admission pass stopped the implementer's phase
+// because a Dispatch child of the issue is open. The pass retired the task the implementer held
+// for the phase it stopped (supervise.Machine.RetireStoppedTask), so its claim there holds none,
+// and the rest of the pod is the same pod: one live implementer in its own session, idle, on the
+// daemon's plugin contract and the configured image.
+func newIdleRigIn(t *testing.T, at phase.Phase) *idleRig {
+	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Implementing, Generation: 1,
+		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: at, Generation: 1,
 		Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
+	if at == phase.AwaitingChildren {
+		waited := time.Now().UTC().Add(-time.Hour)
+		issue.ChildrenWait = &record.ChildrenWait{Start: phase.Implementing, Task: "implement it",
+			Reason: endedTheImplementersPhase.Reason, Since: waited}
+		issue.ChildrenWaitedAt = &waited
+	}
 	putOutboxIssue(t, pool, records, issue)
 	st := outboxTreeStore(t, pool, issue.Key)
 	// The store of a daemon with a workflow, which an idle release needs: its claim writes queue
@@ -233,7 +250,12 @@ func newIdleRig(t *testing.T) *idleRig {
 		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateIdle, Locator: &locator, Session: "ses-implementer",
 		SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion(), Pending: &pending}
-	if err := st.PutClaimAndDelivery(ctx, stored, pending); err != nil {
+	if at == phase.AwaitingChildren {
+		stored.Pending = nil
+		if err := st.PutClaim(ctx, stored); err != nil {
+			t.Fatalf("seed the idle implementer: %v", err)
+		}
+	} else if err := st.PutClaimAndDelivery(ctx, stored, pending); err != nil {
 		t.Fatalf("seed the idle implementer: %v", err)
 	}
 	if _, err := sup.restore(ctx, []supervise.Claim{stored}); err != nil {
@@ -243,8 +265,8 @@ func newIdleRig(t *testing.T) *idleRig {
 	if !ok {
 		t.Fatalf("no machine for %s", token)
 	}
-	if got := machine.Claim(); got.State != supervise.StateIdle || got.Pending == nil {
-		t.Fatalf("the restored claim = %+v, want it idle holding its phase's task", got)
+	if got := machine.Claim(); got.State != supervise.StateIdle || (got.Pending == nil) != (at == phase.AwaitingChildren) {
+		t.Fatalf("the restored claim = %+v, want it idle, holding its phase's task where its phase runs", got)
 	}
 	// The pod last did something half an hour ago, and its session reported five minutes later
 	// that it runs no background work with no reminder armed.

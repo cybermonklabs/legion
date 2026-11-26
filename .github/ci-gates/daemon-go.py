@@ -59,7 +59,7 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     ], workflow=DAEMON_FILE),
     # The shape gate's second run, stamped with HEAD's merge order: the step's whole script is
     # pinned (ci_job_reads.py's DAEMON_STAMPED_GATE_SCRIPT says why). What it compiles is
-    # internal/api's test build, which plain leg 2's step compiles too; the stamp changes the link
+    # internal/api's test build, which plain leg 3's step compiles too; the stamp changes the link
     # alone.
     pinned_step(DAEMON_PLAIN_LEGS_JOB, DAEMON_STAMPED_GATE_STEP, DAEMON, DAEMON_STAMPED_GATE_SCRIPT, [
         (DAEMON, ["./internal/api/"], "go test of internal/api's two shape tests, linked with HEAD's stamp", {}),

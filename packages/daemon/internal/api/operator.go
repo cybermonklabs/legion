@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -426,7 +427,15 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 // while the fresh session has started the claim before it gets here and answers success with
 // the refusal named in it (freshSession). A restart that leaves the issue held relaunched
 // nothing (a lingering tree's members stay where they stood), so it is refused naming the issue
-// rather than reported as a restart.
+// rather than reported as a restart. So is one that moved the issue to awaiting_children: a
+// Dispatch child of it is open, so the workflow started no phase of it and holds the start
+// instead (workflow's awaitChildren, dispatch://INFRA-3320 R9), and the answer says that the issue
+// waits on its children, naming them through the reason the held start keeps, and where the
+// return takes it: a held testing, reviewing or accepting (record.ReturnsPastImplementing) to the
+// first step of its walk after implementing where that step stands at or before that start,
+// testing on today's line, and to that start where the walk holds no such step or its pull
+// request merged during the wait (record.ReturnStep, R12); a held planning or implementing to
+// that start. The answer says this without reading the walk.
 func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c supervise.Claim, fresh bool) (status int, refusal string, restarted bool) {
 	if !isPhaseWorker(c.Role) || s.pool == nil || s.roleFor == nil {
 		return 0, "", false
@@ -462,6 +471,14 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 	}
 	if after != nil && after.Phase == phase.Held {
 		return http.StatusConflict, fmt.Sprintf("%s is still held after the retry of its phase %s, so nothing relaunched %s: its tree lingers, and a lingering tree's members stay where they stood", c.Issue, working, token), true
+	}
+	if after != nil && after.Phase == phase.AwaitingChildren && after.ChildrenWait != nil {
+		back := "the daemon goes back to that start by itself"
+		if record.ReturnsPastImplementing(after.ChildrenWait.Start) {
+			back = "the daemon takes it back by itself to the first step of its walk after implementing, where that step stands at or before that start (testing on today's line), or to that start where the walk holds none or its pull request merged during the wait,"
+		}
+		return http.StatusConflict, fmt.Sprintf("%s waits on its open children after the retry of its phase %s, so no phase of it was started for %s: the retry moved it to awaiting_children, holding the start of %s (%s), and %s once no Dispatch child of %s is open",
+			c.Issue, working, token, after.ChildrenWait.Start, after.ChildrenWait.Reason, back, c.Issue), true
 	}
 	s.log.Info("api: a retry restarted a phase", "claim", token, "issue", c.Issue, "phase", working)
 	return http.StatusAccepted, "", true

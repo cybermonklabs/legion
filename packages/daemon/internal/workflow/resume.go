@@ -156,8 +156,10 @@ type releaseStopped struct {
 //     The outbox delivers no resume task to a claim that still holds a task of the phase, so a
 //     claim whose turn the release cut is sent its own kept task on the resume and not this one.
 //   - Every other claim — an architect, a sub-architect, a role of an earlier phase, the owner of
-//     a phase its terminating fact has met — gets one start with no task and the ruleResume mark,
-//     enqueued directly as admission's start of a role that does not own its member's phase is
+//     a phase its terminating fact has met, a role of a parent waiting in awaiting_children, a
+//     phase no role works (phase.RoleFor), whose held start alone gives its worker work again
+//     (ReturnFromChildren) — gets one start with no task and the ruleResume mark, enqueued
+//     directly as admission's start of a role that does not own its member's phase is
 //     (startMidPhaseMembers), so it waits for no slot. The outbox's start resumes the claim by
 //     rule, paced as every launch is (supervise's reserveWake), and its pending task, if it holds
 //     one, is sent on that resume, since a project release does not retire it

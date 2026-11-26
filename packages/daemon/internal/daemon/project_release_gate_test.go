@@ -325,11 +325,16 @@ func TestProjectReleaseHoldsThePeriodicWork(t *testing.T) {
 // Every outbox row that would start or prompt a role waits while the release holds, and every other
 // kind runs (record.HeldByProjectRelease). Every kind of every lane is named here, so a kind added
 // to the outbox without a decision for the release fails this test, and so is every supervise op, a
-// project pause's `pause_stop` and a stopped task's `step_stop` (stops, which run), the launch the
-// pause owes a role it stopped and a start queued for news of the approved design alone (two
-// starts, which wait) among them, and the pause's two notices to the controller, which wait as
-// every controller notice does. The reconcile of a tree's news (design_changes) runs: it tells a
-// role only by such a news-only start.
+// project pause's `pause_stop` and a stopped task's `step_stop` (stops, which run), the retirement
+// of a stopped phase's task (`retire_task`, which runs: it writes the claim's record alone, since
+// the machine hands no claim anything while the release holds), the launch the pause owes a role
+// it stopped and a start queued for news of the approved design alone (two starts, which wait)
+// among them, and the pause's two notices to the controller, which wait as every controller notice
+// does. The end of a parent's worker's phase (phase_ended) waits, as a hook's prompt does: it
+// tells a role and wakes a released one. The reconcile of a tree's news (design_changes) and the
+// two reads of Dispatch for a root's design-gate basis and for a re-parented root
+// (pending_basis_seed, reparent_seed) run: each tells a role only through a start or a notice,
+// which waits.
 func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T) {
 	t.Parallel()
 	const ownRound = "release:7"
@@ -349,6 +354,7 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 			{"a tree's close", record.SuperviseRequest{Op: "tree_close"}, false},
 			{"a project pause's role stop", record.SuperviseRequest{Op: "pause_stop", Pause: 3}, false},
 			{"a stopped task's step stop", record.SuperviseRequest{Op: "step_stop"}, false},
+			{"the retirement of a stopped phase's task", record.SuperviseRequest{Op: "retire_task"}, false},
 		},
 		record.OutboxKindUpdateAsk: {
 			{"the release's own ask", record.UpdateAsk{Round: ownRound}, false},
@@ -361,6 +367,7 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 			{"a project-resumed notice", record.ControllerNotice{Kind: record.ProjectResumedNotice}, true},
 		},
 		record.OutboxKindRoleMessage:        {{"a role message", record.RoleMessage{}, true}},
+		record.OutboxKindPhaseEnded:         {{"the end of a parent's worker's phase", record.PhaseEnded{}, true}},
 		record.OutboxKindHookPrompt:         {{"a hook's prompt", record.HookPrompt{}, true}},
 		record.OutboxKindMergeQueueRead:     {{"a merge-queue read", record.MergeQueueRead{}, true}},
 		record.OutboxKindMergeQueueRemoval:  {{"a merge-queue removal", record.MergeQueueRemoval{}, true}},
@@ -383,6 +390,8 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 		record.OutboxKindLingerClose:        {{"a linger's close", record.LingerClose{}, false}},
 		record.OutboxKindWorkspaceRemove:    {{"a workspace's removal", record.WorkspaceRemove{}, false}},
 		record.OutboxKindGateSeed:           {{"a gate's seed", record.GateSeed{}, false}},
+		record.OutboxKindPendingBasisSeed:   {{"a pending basis's seed", record.PendingBasisSeed{}, false}},
+		record.OutboxKindReparentSeed:       {{"a re-parented root's seed", record.ReparentSeed{}, false}},
 		record.OutboxKindIssueBranch:        {{"an issue's branch", record.IssueBranch{}, false}},
 		record.OutboxKindDesignChanges:      {{"a tree's reconcile of its news of the approved design", record.DesignNewsReconcile{}, false}},
 	}

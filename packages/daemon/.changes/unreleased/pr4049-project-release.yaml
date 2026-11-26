@@ -24,8 +24,9 @@ body: |-
   A pod that holds a claim an operator suspended, or whose ask to its roles could not be written
   before the bound or reached no session of them by it, is left with its disk, and the claims that
   ran there stay held for an operator.
-  A notice, role message, hook prompt, merge-queue removal message or merge-forward message held
-  through the release reaches its claim once the next boot's start of it holds its role again.
+  A notice, role message, phase-ended message, hook prompt, merge-queue removal message or
+  merge-forward message held through the release reaches its claim once the next boot's start of it
+  holds its role again.
   While the project is paused, or while a pod that a pause stopped is still held after the resume,
   a daemon process that has run no release answers the release `409 PROJECT_PAUSED`, its dry run
   included, names each held pod with the claims to resume (`legion claims resume --claim

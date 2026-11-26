@@ -36,7 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// releaseDeliveries is the two rows that publish to a role's own topic and that the outbox ends
+// releaseDeliveries is the three rows that publish to a role's own topic and that the outbox ends
 // when nobody holds it: each names its recipient and builds its row for that recipient's claim.
 var releaseDeliveries = []struct {
 	name    string
@@ -45,6 +45,10 @@ var releaseDeliveries = []struct {
 }{
 	{"a role message", claim.RoleImplementer, func(token claim.Token) record.OutboxPayload {
 		return record.RoleMessage{Role: string(token), Body: "CI settled at the head"}
+	}},
+	{"a phase-ended message", claim.RoleImplementer, func(claim.Token) record.OutboxPayload {
+		return record.PhaseEnded{Role: claim.RoleImplementer, From: phase.Implementing, To: phase.AwaitingChildren,
+			Reason: "the admission pass stopped the implementer's implementing phase, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo)"}
 	}},
 	{"a hook prompt", claim.RoleImplementer, func(claim.Token) record.OutboxPayload { return firedHook }},
 }
@@ -192,13 +196,13 @@ func (r *releaseDeliveryRig) endsUndelivered(t *testing.T, when string, attempts
 	}
 }
 
-// A role message and a hook prompt for a claim the boot found stopped by the project release each
-// wait while that claim has not come back: before the boot's start of it has run, and while the
-// start's process is launching, connected and registered, when no session holds the role's topic
-// and a publish would end the row undelivered. Once the claim has stood ready past the first-turn
-// bound its session holds the role, and the row is published to it. The claim is then out of the
-// set, so when its process dies later and it is relaunching, a new row nobody holds ends
-// undelivered, as it does for any other claim.
+// A role message, a phase-ended message and a hook prompt for a claim the boot found stopped by
+// the project release each wait while that claim has not come back: before the boot's start of it
+// has run, and while the start's process is launching, connected and registered, when no session
+// holds the role's topic and a publish would end the row undelivered. Once the claim has stood
+// ready past the first-turn bound its session holds the role, and the row is published to it. The
+// claim is then out of the set, so when its process dies later and it is relaunching, a new row
+// nobody holds ends undelivered, as it does for any other claim.
 func TestADeliveryHeldThroughAProjectReleaseReachesItsClaimAfterItsStart(t *testing.T) {
 	t.Parallel()
 	for _, tc := range releaseDeliveries {
@@ -407,13 +411,14 @@ func TestAMergeForwardMessageHeldThroughAProjectReleaseWaitsForTheBootsStart(t *
 }
 
 // The wake pacing can hold the boot's start of a claim the project release stopped for longer than
-// an hour over a wave, the claim launching with no process all that time. A role message and a
-// hook prompt held for it each wait for that start as a delivery waits for any launch the pacing
-// parked (launchParked): the row runs again at the start's turn or parkedWakeBound on, whichever
-// comes first, on a routine wait, rather than climbing its backoff to 64 s and warning at every
-// attempt from the seventh for as long as the park lasts. The negative control is awaitsBootStart
-// without its read of the park: each delivery, which reads the park of such a claim through
-// awaitsBootStart alone, then waits on its backoff with the start's own sentence.
+// an hour over a wave, the claim launching with no process all that time. A role message, a
+// phase-ended message and a hook prompt held for it each wait for that start as a delivery waits
+// for any launch the pacing parked (launchParked): the row runs again at the start's turn or
+// parkedWakeBound on, whichever comes first, on a routine wait, rather than climbing its backoff
+// to 64 s and warning at every attempt from the seventh for as long as the park lasts. The
+// negative control is awaitsBootStart without its read of the park: each delivery, which reads
+// the park of such a claim through awaitsBootStart alone, then waits on its backoff with the
+// start's own sentence.
 func TestADeliveryHeldThroughAProjectReleaseWaitsOutThePacingOfItsStart(t *testing.T) {
 	t.Parallel()
 	for _, tc := range releaseDeliveries {
