@@ -626,10 +626,10 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 				// ran no turn and names no turn of the agent's own. A failure with no code is
 				// logged as a refusal with none is (logCodeless).
 				event.Outcome = runtime.OutcomeNoTurnRun
-				if frame.Error != nil && frame.Code() == "" {
+				if frame.Error != nil && event.Code == "" {
 					c.logCodeless(event.Error)
 				}
-				if PromptRefusalOutcome(frame.Code()) == runtime.OutcomeAgentBusy {
+				if PromptRefusalOutcome(event.Code) == runtime.OutcomeAgentBusy {
 					event.Outcome = runtime.OutcomeAgentBusy
 				}
 			}

@@ -838,7 +838,7 @@ type PromptResult struct {
 //
 // Message is the reason a failed prompt is recorded with (PromptResult.Reason), for a person to
 // read, and internal/stream carries Retryable, HTTPStatus, Provider, Model and Code onto its own
-// PromptResult event. Code, not Message, is what a failure is told apart by (PromptResult.Code):
+// PromptResult event. The daemon distinguishes failures by Code, not Message:
 // CodeSessionBusy is the agent's busy answer, and supervise's providerErrored decides on
 // HTTPStatus and Code: a `cyber_policy` failure holds the issue whatever its status, and a
 // `cost_cap` one is named as the cause. Every member is modelled, read or not, so the frame
@@ -861,15 +861,6 @@ func (f PromptResult) Reason() string {
 		return ""
 	}
 	return f.Error.Message
-}
-
-// Code is Oh My Pi's machine-readable reason for work that ended in an error, and the empty
-// string for work that did not or for an error that carries none.
-func (f PromptResult) Code() string {
-	if f.Error == nil {
-		return ""
-	}
-	return f.Error.Code
 }
 
 // ToolExecutionStart is Oh My Pi beginning one tool call of a turn, and ToolExecutionEnd that
