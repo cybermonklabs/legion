@@ -37,11 +37,9 @@ the author owns the document.
    words of the owner, a requirement also needs a source: those words or a cited fact. A
    requirement in a version that a person approved has its source.
 
-Read the code and the documentation of the repository before you call something a gap. A gap that
-the issue, the code or the documentation already answers is not a finding. Check a claim about
-live state yourself with a read-only command, for example `kubectl get`, `gh pr view` or
-`dispatch read`. Report a claim as unverified only when nothing that you can read or run decides
-it, and name the command that would decide it.
+Check a claim about live state yourself with a read-only command, for example `kubectl get`,
+`gh pr view` or `dispatch read`. Report a claim as unverified only when nothing that you can read
+or run decides it, and name the command that would decide it.
 
 ## Your report
 
@@ -53,9 +51,8 @@ Each finding gives:
   Verification document must settle. For a requirement that nothing checks, give a check that a
   machine can run. Say if the code settles it, or only the owner of the issue can.
 
-Report the findings that change the work, the finding that changes the most work first. Report
-each finding of kind 4. Style, edge cases that the plan can settle in passing, and the design that
-you prefer are not findings. If nothing changes the work, say so in one line.
+Report the findings that change the work. Report each finding of kind 4. If nothing changes the
+work, say so in one line.
 
 ## Constraints
 

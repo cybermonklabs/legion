@@ -3,13 +3,6 @@
 Write the spec and its Verification document as `skill://dispatch-writing-specs` says.
 A child's architect runs no gate.
 
-## Checks
-
-- Where a real recorded input exists (a stored record, a captured log, a real service's answer), hold at least one read-only check against it.
-  Where none can be written, say why in an ask block.
-- Each clause of a check's `negative_control` names the test row or the run that drives it.
-- A requirement over every member of a class iterates the class's list, never a sample.
-
 ## A check CI proves
 
 1. Name the check run of the job that runs the proof, never a roll-up.
@@ -87,9 +80,3 @@ The `--summary` names what changed.
 
 Every other change goes in the plan, never the spec.
 A plan overturns a settled decision only with evidence the person did not weigh, put to them as an ask block.
-
-## A read no pod can make
-
-When a check needs evidence from a production or outside system, first find whether a credential the pod carries reaches it (`skill://agent-secrets`).
-When none does, write the missing capability as an ask block: which system, which read, and why.
-Never use a read that another session made.

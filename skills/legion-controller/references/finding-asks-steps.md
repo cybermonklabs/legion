@@ -7,7 +7,7 @@ Read this when `skill://legion-controller/references/finding-asks.md` sends you 
 Every reply under the evidence mentions the finder's role, the token after `Clear defect from ` (leave out `--mention` when it is `controller`):
 
 ```bash
-dispatch comment --issue '<the evidence's issue>' --reply-to '<comment id>' --mention 'role:<the finder's token>' --body-file -
+dispatch comment --issue '<evidence issue>' --reply-to '<comment id>' --mention 'role:<finder token>' --body-file -
 ```
 
 1. Check it is clear: the fix needs no choice a person must make, in a repository both role GitHub Apps are installed on. Otherwise reply `Not filed: <the choice, or the repository the Apps miss>` and open nothing: the finder opens its ask.

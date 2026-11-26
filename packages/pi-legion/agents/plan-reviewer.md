@@ -62,15 +62,11 @@ A rejection names at most three blocking issues, the most severe first. Each giv
 - **the evidence**: the file and line that you read, or the words of the plan.
 - **what must change** for the plan to pass.
 
-Read a revised plan again in full, and judge it fresh. Do not raise again an issue that the
-revision resolved. Do not add a request that would not have blocked the first round.
-
 ### Output
 
-1. The first line is the verdict alone: `approved` or `rejected`.
-2. One line on the goal and the requirements (check 6), outside the count of three.
-3. One or two sentences on why.
-4. On `rejected`, the numbered blocking issues.
+Give the verdict alone on a line: `approved` or `rejected`. Give one line on the goal and the
+requirements (check 6), outside the count of three. Give one or two sentences on why. On
+`rejected`, give the numbered blocking issues.
 
 Write nothing else.
 

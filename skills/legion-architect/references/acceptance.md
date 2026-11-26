@@ -63,8 +63,6 @@ When the merger reports:
   Never bypass a rule.
 - a required approving review that no reviewer step gave: open a `dispatch ask` that names the base's rule.
   Do not wait for a reviewer step that the task does not have.
-- a squash into a base other than the default branch: tell the implementer of each open pull request of the tree built on that branch, whose issue is yours and still in `implementing`, to merge that base forward.
-  Past `implementing`, the daemon asks for that merge itself.
 - the issue moved back with `request_backward_move`: start nothing.
 
 ## The close

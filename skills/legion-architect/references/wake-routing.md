@@ -11,10 +11,9 @@ Start nothing for `carried-gate-opened`, `checks-red`, `pr-merged` or `child-sta
 | --- | --- |
 | `design-approved` | One gated step opened; `gatedSteps` in `read_record` says which. Once every step is `approved`, release the children. A task saying "this resume is your design-approved wake" is this wake. On a `handed_over` root, or on a version that a person's answer to an ask block wrote, start nothing. |
 | `design-changes-requested` | Revise the document of the step whose `status` is `changes_requested`, as the reason asks. Then request approval and register again ("The armed gate" in `skill://legion-architect/references/design-gate.md`), and end your turn. A notice for an older version came late: answer its reason only where the latest version does not. |
-| `phase-finished` | Read `dispatch results`, the pull request and its review, and tell the working role of each gap. When the step before `acceptance:owner` finished, the issue is in `accepting`: accept it as `skill://legion-architect` says. A departure that `plan.md` lists under `## Departures from the spec` stays in the plan while the Summary, the requirements, the checks, the scope and the settled decisions hold; else change the spec ("After approval" in `skill://legion-architect/references/design-gate.md`). A worker that reports that no surface reaches the changed path: build that surface in this tree, then tell the worker to continue. |
+| `phase-finished` | Read `dispatch results`, the pull request and its review, and tell the working role of each gap. When the step before `acceptance:owner` finished, the issue is in `accepting`: accept it as `skill://legion-architect` says. A departure that `plan.md` lists under `## Departures from the spec` stays in the plan while the Summary, the requirements, the checks, the scope and the settled decisions hold; else change the spec ("After approval" in `skill://legion-architect/references/design-gate.md`). |
 | `pr-blocked` | Decide in this turn, as "A capped pull request" below says. |
 | `task-stopped` | As "A stopped task" in `skill://legion-architect/references/plan.md` says. |
-| `review-stuck` | Read the issue with `read_record` first: an issue that has left `reviewing` needs nothing. With a `topic`: tell the reviewer on that topic to approve the head or request changes; ask a person when it answers again with no review. With no `topic`: GitHub will not merge the approved head, and the reason names the merge state. |
 | `pr-closed-unmerged` | Decide whether the work reopens, restarts or ends, and give the reason in a `dispatch comment`. A phase worker makes each change to the repository. |
 | `child-closed` | Read the child's handoff, and edit the spec of each open child that it changes. File each new child it calls for, and release it at once. |
 | `children-first` | Release each child that should run. For a child that should not run now, ask the person on the root when it should run, and sign off neither issue until they answer. A `blocked_by` link up the parent chain never ends: ask a person to remove it. |
@@ -22,7 +21,6 @@ Start nothing for `carried-gate-opened`, `checks-red`, `pr-merged` or `child-sta
 | `worker-died` | A phase worker: the issue is held. Use `retry_or_escalate` with `retry` for an agent failure or a transient one, its reason naming what changed; with `escalate` for a failure of the environment or a prompt too large for its pod. A child's own architect: the child is yours until it runs again; read its record and handoffs, and tell the role working its phase to send its questions to you. A finished role: nothing is held; read its handoff. |
 | `worker-stalled` | Judge from the reason whether the work needs a decision of yours. A stop that the runtime did not confirm, or one worker that stalls again and again, is a finding: open its ask yourself. |
 | `worker-silent` | The daemon already sent the work again: start nothing. Where a suspension holds the agent, ask its holder to resume it (`skill://legion-architect/references/operations.md#an-agent-of-your-tree-that-needs-an-action`). |
-| `worker-background-stalled` | Read what the session waits on. A missing surface or a person needs your decision; a long build does not. |
 | `session-lost`, `session-forgotten` | Yours alone: the worker's session is gone, and a fresh agent runs the role. Bring it up to date as `skill://legion-architect/references/wake-routing-steps.md#a-lost-session` says. |
 | `provider-errors` | As `skill://legion-architect/references/operations.md#an-agent-of-your-tree-that-needs-an-action` says. |
 | `merge-holds-changed` | The merge holds changed while an issue of yours is in `accepting`. It wakes you also when the daemon released your pod. Read the holds again as `skill://legion-architect/references/acceptance.md#a-merge-hold` says. |
@@ -35,7 +33,7 @@ Start nothing for `carried-gate-opened`, `checks-red`, `pr-merged` or `child-sta
 ## A capped pull request
 
 A `pr-blocked` reason reads `<n> rounds counted, <m> conflict rounds not counted`: judge the cap by `<n>`.
-Read what each counted round found, and choose one of the three moves below.
+Read what each counted round found, and choose one of the two moves below.
 Post the rounds you read and your choice as a `dispatch comment`.
 
 - **Narrow**: the change is sound, but each round finds more around it.
@@ -45,7 +43,5 @@ Post the rounds you read and your choice as a `dispatch comment`.
   On a child, that part becomes a child of this issue's parent, which the parent's architect files with `--blocked-by <this issue>` and releases at once.
   A child's own architect sends it up with `envoy_publish`.
   On the root, open a `dispatch ask`. The part stays a requirement until the person's answer says otherwise.
-- **Accept the rounds**: each round found less than the one before, and the last found no defect in the change itself.
-  A later notice accepts again only when its round found less.
 
 A finding that changes what the spec requires or what a check proves is also a spec change ("After approval" in `skill://legion-architect/references/design-gate.md`), never in place of the choice.

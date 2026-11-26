@@ -37,4 +37,4 @@ When a fix was applied, run the typecheck, lint or build of the packages it touc
 
 ## Step 5: Summarize
 
-Report applied fixes by reuse, quality and efficiency, the skipped count, each defect reported and not fixed with its file and line, the check outcomes, and the model of each reviewer.
+Report applied fixes by reuse, quality and efficiency, the skipped count, each defect reported and not fixed with its file and line, and the check outcomes.

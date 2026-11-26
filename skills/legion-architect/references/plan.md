@@ -12,9 +12,6 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 
 - `serves` names the spec's `requirement` blocks that the task serves, so that the issue's coverage counts it.
 - A task that names no steps runs the project's default steps: `planner implementer tester reviewer acceptance:owner`, where the project names no other.
-- Name in the task the role that runs the application from the issue's branch and uses it as its user would.
-  A passing check does not show that a person can do their job with it.
-- For a page or a tool that a person uses, offer that person a running build before the reviewer step, or before the last step where there is none.
 
 ## What leaving a step out means
 

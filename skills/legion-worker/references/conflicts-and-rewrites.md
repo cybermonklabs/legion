@@ -13,7 +13,7 @@ After the merge, build the branch, push it, and post one pull request comment th
 
 ## Reading a merge of the base
 
-`git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in. A check those files or the resolution can reach runs again; record each other `before_merge` check at the new head as carried from its earlier pass.
+`git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in. A `before_merge` check those files or the resolution can reach runs again; record each other `before_merge` check at the new head as carried from its earlier pass.
 
 ## The daemon's ask
 

@@ -25,8 +25,6 @@ Answer these four questions in this order, in your own words:
 
 - Answer from the problem statement and the principles. Say what you cannot judge from them, and
   what you need to judge it.
-- If a standard solution to the problem exists, name it. You may search the web for how two or
-  three well-regarded projects solve the same problem.
 - Do not give the design of your caller back to it. Give the reason for each verdict.
 
 ## Your authority

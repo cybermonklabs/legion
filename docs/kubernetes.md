@@ -10507,13 +10507,13 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **Model roles.**
   Legion's shipped agents dispatch by role alias:
-  `oracle`, the planner's `plan-gap-analyst` and the architect's `design-outsider` as `@oracle`;
-  both review agents, the planner's `plan-reviewer` and the architect's `goal-red-team` as `@review`; and `deep-worker`, which writes the implementer's code, as `@deep`.
+  `oracle`, `plan-gap-analyst` and `design-outsider` as `@oracle`;
+  both review agents, `plan-reviewer` and `goal-red-team` as `@review`; and `deep-worker`, which writes the implementer's code, as `@deep`.
   The boot gate refuses, by agent, any whose role the operator's settings (`modelRoles`, or `task.agentModelOverrides`) leave unconfigured, or whose model's key does not work, because Oh My Pi's task tool would quietly run it on the parent session's model.
-  The bundled agents Legion's prompts also dispatch use Oh My Pi's built-in roles: `scout` is `@smol` and `reviewer` is `@slow`.
-  `smol` and `slow`, left unset in every layer, inherit the default role's model, which the gate accepts.
+  The bundled agent Legion's skills also dispatch uses Oh My Pi's built-in role: `reviewer` is `@slow`.
+  `slow`, left unset in every layer, inherits the default role's model, which the gate accepts.
   Settings records merge key by key across layers, though, so a role the operator's overlay does not name can be named by a repository's `.omp/config.yml`.
-  Name each role those agents use (`review`, `oracle`, `deep`, `smol`, `slow`) to keep the choice the operator's.
+  Name each role those agents use (`review`, `oracle`, `deep`, `slow`) to keep the choice the operator's.
 
 - **The repository `.env`.**
   Oh My Pi's runtime loads the working directory's `.env` into its environment at start, filling every variable the pod left unset or empty.

@@ -14,7 +14,7 @@ A `silent` entry is a phase worker that nothing will prompt. The daemon sends it
 
 ## `tree-stalled`
 
-The daemon starts nothing for a stalled tree. Read the tree. Ask a role what it waits on, as a Dispatch comment on its issue that mentions its role (`--mention 'role:legion-<project>-<key, lower case>-<role>'`). For a tree that waits on an event outside Legion, ask whether to park it (`skill://legion-controller/references/park-asks.md`).
+Ask a role what it waits on, as a Dispatch comment on its issue that mentions its role (`--mention 'role:legion-<project>-<key, lower case>-<role>'`). For a tree that waits on an event outside Legion, ask whether to park it (`skill://legion-controller/references/park-asks.md`).
 
 ## `architect-stalled`
 

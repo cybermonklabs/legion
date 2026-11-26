@@ -26,8 +26,7 @@ Retro records what the work taught, between the task's last step and the merge. 
    EOF
    ```
 
-3. Update the pull request body where the repository requires lines for the paths the pull request changes.
-   With no reviewer step, also record step 1's bot threads in `Threads` at the head you found, and bring `Not proven / risk` up to date from the tester's handoff where the task has one, naming each check whose run has not concluded (`skill://legion-worker/references/pr-body.md`).
+3. With no reviewer step, record step 1's bot threads in the pull request body's `Threads` at the head you found, and bring its `Not proven / risk` up to date from the tester's handoff where the task has one, naming each check whose run has not concluded (`skill://legion-worker/references/pr-body.md`).
 4. Post one Dispatch message on the issue, at most 32,000 characters:
 
    ```bash
