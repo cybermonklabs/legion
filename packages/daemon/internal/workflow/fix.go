@@ -1232,6 +1232,18 @@ func (e *Engine) copyMoveAfterFix(ctx context.Context, tx pgx.Tx, issue record.I
 		return moveTo, nil, nil
 	}
 	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+	if err == nil && fix != nil && fix.State == record.FixEnded && fix.EndedAt != nil {
+		for place := range w.Steps {
+			start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: place + 1})
+			if err != nil {
+				return "", nil, err
+			}
+			if start.StartedAt.After(*fix.EndedAt) {
+				return moveTo, nil, nil
+			}
+		}
+		fix.MoveCarried = false
+	}
 	switch {
 	case err != nil || fix == nil || fix.State != record.FixEnded:
 		return moveTo, nil, err
