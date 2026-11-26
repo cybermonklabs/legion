@@ -15,7 +15,7 @@ import type { Issue, Priorities, PriorityRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
-import { IssuePriorityLine } from "./IssuePriorityLine";
+import { IssuePriorityLine, PRIORITY_TRIGGER_AFTER_CHIP } from "./IssuePriorityLine";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -136,6 +136,36 @@ test("the line names the priority an issue advances, by its order and title, and
     ).toHaveAttribute("aria-selected", "true");
   } finally {
     view.unmountAll();
+  }
+});
+
+// On a phone the trigger's square stands 8 px after the last chip. Its classes name the chips'
+// group, since the chips sit inside `CappedGroup`'s element (dispatch://INFRA-5200): the row
+// reads that the trigger carries them, that the element just before it is that group, and that
+// the group's last child is a chip's link - the three things the selector needs to match - and
+// that a "+N" control after ten chips is no chip, so the trigger then keeps the line's gap.
+test("on a phone the trigger follows the chips' group, whose last entry is a chip or a +N", async () => {
+  const one = renderLine([{ id: "rocq-lean", inherited: false }]);
+  try {
+    await one.q.findByRole("link", { name: /#2/ });
+    const trigger = one.trigger();
+    for (const name of PRIORITY_TRIGGER_AFTER_CHIP.split(" ")) {
+      expect(trigger).toHaveClass(name);
+    }
+    const group = trigger.previousElementSibling;
+    expect(group?.getAttribute("data-layout-group")).toBe("advances");
+    expect(group?.lastElementChild?.tagName).toBe("A");
+  } finally {
+    one.unmountAll();
+  }
+  const eleven = renderLine(
+    Array.from({ length: 11 }, (_, index) => ({ id: `priority-${index}`, inherited: false }))
+  );
+  try {
+    const more = await eleven.q.findByRole("button", { name: /^\+1, show all 11 priorities/ });
+    expect(eleven.trigger().previousElementSibling?.lastElementChild).toBe(more);
+  } finally {
+    eleven.unmountAll();
   }
 });
 

@@ -57,8 +57,10 @@ export interface AuthenticatedUser {
  *  older than the field leaves it out for every credential, and refuses a job's token outright.
  *
  *  `scopes` is the OAuth scopes the caller's own credential holds, which decide the routes it may
- *  call: both of them for a person at a browser, the set its row names for a personal token, and
- *  `[]` for the shared token and a verified service token, which act as nobody. A read-only
+ *  call and whether it may make an issue's own priority 0: all three (`person`, `approve`, `p0`)
+ *  for a person at a browser, the set its row names for a personal token, `["person"]` for a
+ *  broker-issued token acting for its person, and `[]` for the shared token, a verified service
+ *  token and every other broker-issued token. A read-only
  *  credential, a broker's or a person's, is answered `read` after the scopes it holds
  *  (`DISPATCH_TOKEN_SCOPES`), and `cut` names the past time it reads at, null for none and for
  *  every credential that writes. A Dispatch older than read-only tokens names neither. A Legion

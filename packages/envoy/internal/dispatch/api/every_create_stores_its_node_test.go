@@ -427,6 +427,7 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/me/inbox/read":                                           noObject,
 	"POST /api/v1/me/inbox/dismiss":                                        noObject,
 	"POST /api/v1/priorities":                                              noObject,
+	"POST /api/v1/deploys":                                                 noObject,
 	"POST /api/v1/delivery/session-groups":                                 noObject,
 	"POST /api/v1/credential-requests/{id}/approve":                        noObject,
 	"POST /api/v1/credential-requests/{id}/deny":                           noObject,

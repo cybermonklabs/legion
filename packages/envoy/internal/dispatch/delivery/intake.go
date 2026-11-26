@@ -227,6 +227,9 @@ func (in *Intake) recordDeployed(ctx context.Context, rule DeliverySettings) {
 	if written > 0 {
 		in.tuning.log.Info("dispatch delivery: recorded issue.deployed", "events", written, "repo", rule.DeployRepo, "by", "intake")
 	}
+	if _, err := RecordProductionDeploys(ctx, in.pool, rule, in.events); err != nil {
+		in.tuning.log.Error("dispatch delivery: record production deploys after an envelope", "repo", rule.DeployRepo, "error", err)
+	}
 }
 
 // routeWorkflowEnvelope hands a workflow run to handleWorkflowEnvelope as the run kind its file is

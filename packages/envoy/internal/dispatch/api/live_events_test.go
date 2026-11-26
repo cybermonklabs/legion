@@ -514,8 +514,9 @@ func TestASinceAboveTheHeadStartsAtTheRelaysPublishedCursor(t *testing.T) {
 }
 
 // TestTheEventFeedResumesAfterTheEventLogIsResetBeneathTheReader: the browser suite empties the event
-// log between its scenarios (`truncate ... restart identity cascade`, e2e/seed.ts), so the next
-// row's id is 1 again. The relay notices, ends every open subscription (ended, behind), and the page
+// log between its scenarios (e2e/seed.ts deletes its rows and restarts its ids; this test truncates
+// it with `restart identity`, which does the same), so the next row's id is 1 again. The relay
+// notices, ends every open subscription (ended, behind), and the page
 // subscribes again -- and a page only ever raises its cursor, never lowers it, so it comes back
 // naming a since above the new log's head. Without the clamp, catch-up (`id > since`) matches
 // nothing and the live loop drops every event of the new log for ever, because they all sit at or
