@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // closeReadBoard is outboxDispatch answering the reads of an issue's close: its results (and its
@@ -62,7 +65,8 @@ func (d *closeReadBoard) PlanDocument(_ context.Context, artifactID string, vers
 // back as one CloseChecksRead fact of the issue: the generation the row was queued for, the
 // moment the row began its first Dispatch call, and the answer in the close's stored layout
 // (record.CheckReadAnswer). A check with a subject at the merge head is read once. A client's
-// error fails the row, so the outbox retries it, and the fact says why the read failed.
+// error fails the row, so the outbox retries it, and the fact says why the read failed. An
+// upstream error page is kept as the daemon stores a far side's error text, cut to its start.
 func TestACloseReadCarriesTheStatesBack(t *testing.T) {
 	t.Parallel()
 	const mergeHead = "1111111111111111111111111111111111111111"
@@ -140,5 +144,21 @@ func TestACloseReadCarriesTheStatesBack(t *testing.T) {
 	failed, ok := facts[len(facts)-1].(intake.CloseChecksRead)
 	if len(facts) != 3 || !ok || failed.Answer != nil || failed.Failure == "" || !failed.ReadAt.Equal(readAt) || failed.Generation != 3 {
 		t.Fatalf("the failed read carried %#v, want a fact naming why it failed and no answer", facts)
+	}
+
+	page := "<html><body>" + strings.Repeat("<p>502 Bad Gateway</p>", 400) + "</body></html>"
+	board.resultsErr = &dispatch.Error{Status: http.StatusBadGateway, Message: page}
+	row = mustOutboxRow(t, "LEGION-208", record.CloseRead{Generation: 3}, time.Now())
+	row.ID = 84
+	if err := runner.execute(context.Background(), row); err == nil {
+		t.Fatal("a read Dispatch answered with an error page succeeded, want a failure the row runs again on")
+	}
+	facts = handler.facts()
+	cut, ok := facts[len(facts)-1].(intake.CloseChecksRead)
+	want = intake.CloseChecksRead{Issue: "LEGION-208", Generation: 3, ReadAt: readAt,
+		Failure: storetext.FarSideError("read the results of LEGION-208: " + page)}
+	if len(facts) != 4 || !ok || !reflect.DeepEqual(cut, want) || utf8.RuneCountInString(cut.Failure) > storetext.FarSideErrorRunes {
+		t.Fatalf("the read answered by an error page of %d bytes carried %d runes of failure, want it cut to its first %d: %#v",
+			len(page), utf8.RuneCountInString(cut.Failure), storetext.FarSideErrorRunes, cut)
 	}
 }
