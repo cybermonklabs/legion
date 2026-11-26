@@ -9,9 +9,9 @@ import (
 
 // claimsIssueVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const claimsIssueVersion = 20261126100000
+const claimsIssueVersion = 20261126035722
 
-// 20261126100000 adds claims_issue and claims_project, btree indexes of claims on issue and on
+// 20261126035722 adds claims_issue and claims_project, btree indexes of claims on issue and on
 // project, the columns the reads of an admission pass's claims go by (record.Store.SessionClaimsOf,
 // ArchitectLaunchesOf, ArchitectServedOf, RoleHoldersAt, LiveRoleHolders, IssuePodUID and
 // ProjectClaims), and leaves every claim the table holds as it stands. It builds over a claim whose
@@ -19,7 +19,7 @@ const claimsIssueVersion = 20261126100000
 // holds session too cannot be built over. The negative control is the store before the migration,
 // whose claims carry neither index, and whose claims_tree (20261125212800) is the only index of the
 // table beside its key and claims_boot_token_hash.
-func TestTheClaimsOfAnIssueAndOfAProjectAreIndexedFrom20261126100000(t *testing.T) {
+func TestTheClaimsOfAnIssueAndOfAProjectAreIndexedFrom20261126035722(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)

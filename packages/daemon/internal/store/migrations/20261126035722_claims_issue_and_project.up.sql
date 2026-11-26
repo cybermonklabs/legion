@@ -1,4 +1,4 @@
--- 20261126100000_claims_issue_and_project.up.sql — the indexes the reads of the claims of an issue and
+-- 20261126035722_claims_issue_and_project.up.sql — the indexes the reads of the claims of an issue and
 -- of a project use.
 --
 -- This release reads a claim by the issue it is on and never by the tree it stores (R22 of

@@ -41,7 +41,7 @@ var readsClaims = regexp.MustCompile(`(?i)\bfrom claims\b`)
 // table of 10,000 rows, 50 projects of 200 claims each and an issue holding at most one claim of
 // each role, PostgreSQL's plan of each statement the method sends, with the arguments it sends,
 // reads the index on the column the statement names and scans no table whole. Without the indexes
-// (20261126100000_claims_issue_and_project) the plan is a sequential scan of claims, as the read by
+// (20261126035722_claims_issue_and_project) the plan is a sequential scan of claims, as the read by
 // tree was before 20261125212800, which one deployment's daemon made 27,862 times in fifteen
 // minutes at 6.4 ms each.
 //

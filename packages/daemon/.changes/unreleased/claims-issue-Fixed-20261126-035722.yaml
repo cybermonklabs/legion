@@ -7,9 +7,9 @@ body: |-
   of the sessions that hold an issue's roles and of the pod an issue's claims run in all ask for
   `issue`, and the stalled-tree notice reads the claims of the project; no index served any of
   them, and the `claims (tree)` index of `20261125212800_claims_tree` serves a read by the stored
-  tree, which none of them is. Migration `20261126100000_claims_issue_and_project` adds an index on
+  tree, which none of them is. Migration `20261126035722_claims_issue_and_project` adds an index on
   `claims (issue)` and one on `claims (project)`; a rollback leaves both in place and needs no SQL
   for them.
-time: 2026-11-26T10:00:00Z
+time: 2026-11-26T03:57:22Z
 custom:
     Issue: claims-issue
