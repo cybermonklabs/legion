@@ -67,6 +67,7 @@ import {
 import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { outOfCounts } from "../tree-fold";
+import { nodesInOrder } from "../tree-keys";
 import { moveToRow } from "../useTreeKeymap";
 import {
   type CheckReading,
@@ -292,11 +293,26 @@ export function VerificationFilterBody({
   const [only, setOnly] = useState<StatementState | undefined>(undefined);
   if (chosen !== only) setChosen(only);
   const counts = useMemo(() => statementCounts(issue.statements), [issue]);
-  // No count reads a proposed statement, or one at or under an overtaken node (R3).
-  const countable = useMemo(
-    () => requirements.filter((row) => row.coverage !== "proposed" && row.coverage !== "closed"),
-    [requirements]
-  );
+  // No count reads a proposed statement, or one at or under an overtaken node (R3): no row the
+  // coverage read marks so, which holds the statements the view has not loaded, and no row whose
+  // statement the issue's view holds at any depth out of the counts (`outOfCounts`). The page
+  // closes a statement under a question its ask's node overtakes (`node-states.ts`' `stateIdOf`),
+  // where the server's walk reaches the question's block alone and leaves the row unclosed. The
+  // body is given no issue to address a node by (`tree-drafts.ts`' `nodeIdOf`), so a row is
+  // paired with its statement by the address the tree gave that statement, which is the row's own
+  // `ref` (`tree-read/tree-nodes.ts`' `keptReference`).
+  const countable = useMemo(() => {
+    const outside = new Set(
+      nodesInOrder(issueView).flatMap((node) =>
+        node.type === "requirement" && node.reference !== undefined && outOfCounts(node)
+          ? [node.reference]
+          : []
+      )
+    );
+    return requirements.filter(
+      (row) => row.coverage !== "proposed" && row.coverage !== "closed" && !outside.has(row.ref)
+    );
+  }, [issueView, requirements]);
   requirements = countable;
   const covered = useMemo(() => issueCovered(requirements), [requirements]);
   // Whether the view read holds nodes no page read yet holds, so each count of the statements

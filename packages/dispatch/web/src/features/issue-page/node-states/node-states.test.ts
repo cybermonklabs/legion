@@ -110,7 +110,7 @@ import {
   statementNode,
 } from "../verification-filter/verification-fixtures";
 import { NodeMarks, NodeStatesProvider } from "./NodeMarks";
-import { marksAt, type NodeStates, stampStates, statesByReference } from "./node-states";
+import { marksAt, type NodeStates, stampStates, stateIdOf, statesByReference } from "./node-states";
 
 /**
  * A node's life and who may read it, put on a tree built by hand: the states arrive by the read's
@@ -702,14 +702,18 @@ function checkThat(blockId: string, passed: boolean): CheckBlock {
 
 /** The coverage read's rows over `root`, as the server builds them (`coverage_tuples.go`'s
  *  `coverTreeRequirements`): one row for each statement, with its own state, its coverage
- *  `closed` where it is at or under an overtaken node and `proposed` where it is proposed, and
- *  the checks that serve it - its count of checks where it carries one (`TreeNode.counts`), else
- *  the checks under it but a proposed or an overtaken one, which serves nothing
- *  (`readServingChecks`). No result is read for a proof here, so a row a check serves is
- *  `unproven`. */
+ *  `closed` where it, or a node above it in its walk, is overtaken by a state of its own
+ *  (`closed`), `proposed` where it is proposed, and the checks that serve it - its count of
+ *  checks where it carries one (`TreeNode.counts`), else the checks under it but a proposed or an
+ *  overtaken one, which serves nothing (`readServingChecks`). A question's row drawn from a block
+ *  takes the state of its ask's node (`stateIdOf`), which stands in no statement's walk, so the
+ *  row of a statement under it is not closed by it, though the page closes that statement. No
+ *  result is read for a proof here, so a row a check serves is `unproven`. */
 function coverageRows(root: TreeNode): RequirementCoverage[] {
   const rows = new Map<string, RequirementCoverage>();
-  const walk = (node: TreeNode): void => {
+  // `above` is whether a node above `node` in its walk is overtaken by a state of its own.
+  const walk = (node: TreeNode, above: boolean): void => {
+    const closed = above || (node.life === "overtaken" && stateIdOf(node) === node.readId);
     const ref = node.reference;
     if (node.statement === true && ref !== undefined && !rows.has(ref)) {
       const checks =
@@ -721,14 +725,13 @@ function coverageRows(root: TreeNode): RequirementCoverage[] {
       rows.set(ref, {
         block_id: ref.slice(ref.lastIndexOf("#b-") + "#b-".length),
         checks,
-        coverage:
-          node.closed === true
-            ? "closed"
-            : node.life === "proposed"
-              ? "proposed"
-              : checks === 0
-                ? "gap"
-                : "unproven",
+        coverage: closed
+          ? "closed"
+          : node.life === "proposed"
+            ? "proposed"
+            : checks === 0
+              ? "gap"
+              : "unproven",
         gaps: [],
         plan_tasks: 0,
         ref,
@@ -736,9 +739,9 @@ function coverageRows(root: TreeNode): RequirementCoverage[] {
         text: node.text,
       });
     }
-    for (const child of node.children) walk(child);
+    for (const child of node.children) walk(child, closed);
   };
-  walk(root);
+  walk(root, false);
   return [...rows.values()];
 }
 
@@ -935,6 +938,44 @@ test("under Verification an overtaken check is a row under its statement, marked
     expect(document.activeElement).toBe(statementRow);
     await user.keyboard("k");
     expect(document.activeElement).toBe(check);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The server closes a statement's coverage row only where the statement, or a node above it in
+// its walk, is overtaken by a state of its own (`coverage_tuples.go`'s `closed`). A question
+// written as an `:::ask` block is overtaken by its ask's node, which stands in no statement's
+// walk, so the row of a statement under that question comes unclosed; the page closes that
+// statement with its question all the same (`stateIdOf`). No count of the summary reads it: not
+// the covered count, and not the "of M" that count is out of. The table still draws it.
+test("the Verification summary leaves out a statement under an overtaken question whose coverage row is not closed", () => {
+  const ask = "ask-q1";
+  const passed = checkThat("c-one", true);
+  const underQuestion = checkThat("c-two", true);
+  const first = statementNode("r1", "The page draws the checks.", [checkNode(passed)]);
+  const asked = statementNode("r2", "A later question took this one's place.", [
+    checkNode(underQuestion),
+  ]);
+  const root = stamped(
+    node(KEY, "issue", [
+      first,
+      node("spec#b-q1", "ask", [asked], { source: { id: ask, issue: KEY, kind: "ask" } }),
+    ]),
+    { [ask]: { life: "overtaken" } }
+  );
+  expect(coverageRows(root).map((row) => [row.ref, row.coverage])).toEqual([
+    [first.reference, "unproven"],
+    [asked.reference, "unproven"],
+  ]);
+  expect(nodesInOrder(root).find((one) => one.id === asked.id)?.closed).toBe(true);
+
+  const view = drawVerification(root, [passed, underQuestion]);
+  try {
+    expect(view.container.querySelectorAll("[data-verification-card]")).toHaveLength(2);
+    expect(textOf(view.container, "[data-verification-covered]")).toBe(
+      `1 ${VERIFICATION_WORDS.of} 1 ${VERIFICATION_WORDS.covered}`
+    );
   } finally {
     view.unmount();
   }
