@@ -198,21 +198,26 @@ s`, so the hosts it left within G are named, and a RUN line that reached a liste
 fault can be found. The criterion counts RUN lines and not calls: a RUN line that makes several
 calls meets a fault when one of them does.
 
-THE HOSTS EACH ARM LISTS. They are the hosts each arm's `--hosts` lists that a RUN line of its
-Dockerfile reaches, from round 61 and 62's table of every host the four builds fetch from, with
-the hosts images job 138228770096 (at f3e50c3f) showed each proxy passing and the two run
-45383555145 showed each proxy faulting besides. They are the evidence of what each arm faults,
-not a price: the budgets count retried calls.
+THE HOSTS EACH ARM CONFIGURES AND WHAT A BUILD REACHES. Each arm's `--hosts` configures the
+faulted host set from round 61 and 62's table of every host the four builds fetch from, with the
+hosts images job 138228770096 (at f3e50c3f) showed each proxy passing and the two run 45383555145
+showed each proxy faulting besides. The configured list is wider than the requests observed at
+the current head in two places, kept in `--hosts` rather than dropped: `jdx.dev` stays in runs 1
+and 2 (`ci-job-download-retry.yaml`), although since round 68's `CI=true` on both `mise --version`
+calls no worker RUN sends a request to `mise.jdx.dev` (zero `mise.jdx.dev` lines in run
+45725459870 at `ebabaaf41cf0`; THE STATED LIMIT below), and `registry.yarnpkg.com` stays in run 1
+by INFRA-1310's architect's ruling at 04:17Z although no run reaches it. They are the evidence of
+what each arm faults, not a price: the budgets count retried calls.
 
-- The worker image, 64 hosts: deb.debian.org; registry.npmjs.org; github.com,
+- The worker image, 62 observed hosts (plus `jdx.dev` and `registry.yarnpkg.com` configured in
+  `--hosts` but not reached at this head): deb.debian.org; registry.npmjs.org; github.com,
   objects.githubusercontent.com, release-assets.githubusercontent.com and
-  raw.githubusercontent.com; mise.jdx.dev (until round 68: THE STATED LIMIT says why no RUN line
-  reaches it now); nodejs.org; awscli.amazonaws.com; go.dev, pkg.go.dev
+  raw.githubusercontent.com; nodejs.org; awscli.amazonaws.com; go.dev, pkg.go.dev
   and dl.google.com; dl.k8s.io and cdn.dl.k8s.io; storage.googleapis.com; releases.astral.sh; pypi.org
   and files.pythonhosted.org; www.postgresql.org and apt.postgresql.org; cdn.playwright.dev and
   playwright.download.prss.microsoft.com; azcliprod.blob.core.windows.net; proxy.golang.org,
   sum.golang.org, golang.org and google.golang.org; go.googlesource.com; cloud.google.com;
-  dl-cdn.alpinelinux.org; registry.yarnpkg.com; the go-get hosts authelia.com and
+  dl-cdn.alpinelinux.org; the go-get hosts authelia.com and
   www.authelia.com, cel.dev, codeberg.org, dario.cat, dmitri.shuralyov.com, filippo.io,
   git.sr.ht, go.etcd.io, go.opencensus.io and contrib.go.opencensus.io, go.opentelemetry.io,
   go.uber.org, go.yaml.in, go4.org, gonum.org and www.gonum.org, gopkg.in, gotest.tools,
