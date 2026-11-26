@@ -43,6 +43,7 @@ import {
 import {
   blocksOfRole,
   holdsPlanTask,
+  mergeCommentPage,
   nextTreeCursor,
   nodesRemaining,
   type TreeDraftMark,
@@ -380,6 +381,25 @@ test("a node stands under its parent, in the read's order", () => {
   expect(nodeOf(root, blockNodeId("spec", "r2"))?.children.map((child) => child.id)).toEqual([
     "c-b",
     "c-a",
+  ]);
+});
+
+// R8: a read with kind answers each ancestor of a node it takes as context, where the read orders
+// it among that ancestor's siblings: a message a statement was written under, of the conversation
+// that stands first under the issue, before the child issue the read orders after it. The page
+// draws the message there, with the statement under it, and not after every other node.
+test("a context node in the issue's tree stands in the read's order", () => {
+  const { root } = drawn(
+    answer([
+      node("m1", "message", KEY, { role: "context" }),
+      block("r1", "requirement", "m1", SPEC, 0),
+      node("CORE-2", "issue", KEY, { text: "A child of the issue" }),
+    ])
+  );
+
+  expect(root.children.map((child) => child.id)).toEqual(["m1", "CORE-2"]);
+  expect(nodeOf(root, "m1")?.children.map((child) => child.id)).toEqual([
+    blockNodeId("spec", "r1"),
   ]);
 });
 
@@ -2038,18 +2058,18 @@ test("a comment on a node's text is no row", () => {
 });
 
 // R15: the older comment page `?comments_before=` answers merges into the outline read's answer
-// where the read's order puts each node: each comment under the issue among the issue's children
-// by when it was made, after the ranked statement, a reply under its comment, and a reply to an
-// ask of the newer page under that ask, which the page alone held as under the issue. The two
-// controls pressed while the page is out read it once, and once no older comment remains a press
-// reads nothing.
+// where the read's order puts each node: each comment under the issue among the issue's
+// conversation by when it was made, before the ranked statement, a reply under its comment, and a
+// reply to an ask of the newer page under that ask, which the page alone held as under the issue.
+// The two controls pressed while the page is out read it once, and once no older comment remains
+// a press reads nothing.
 test("an older comment page merges into the answer in the read's order", async () => {
   const newest = answer(
     [
-      block("r1", "requirement", KEY, SPEC, 0, { rank: "a" }),
       node("q1", "ask", KEY, { made_at: "2026-11-05T12:00:00Z" }),
       personsComment("c-3", KEY, "2026-11-07T00:00:00Z"),
       personsComment("c-4", KEY, "2026-11-08T00:00:00Z"),
+      block("r1", "requirement", KEY, SPEC, 0, { rank: "a" }),
     ],
     [],
     { comments_before: "2026-11-07T00:00:00.000000Z,c-3" }
@@ -2079,7 +2099,6 @@ test("an older comment page merges into the answer in the read's order", async (
     const merged = client.getQueryData<TreeAnswer>(queryKey);
     expect(merged?.nodes?.map((one) => one.id)).toEqual([
       KEY,
-      `${KEY}/spec#r1`,
       "c-1",
       "c-1-reply",
       "q1",
@@ -2087,6 +2106,7 @@ test("an older comment page merges into the answer in the read's order", async (
       "c-2",
       "c-3",
       "c-4",
+      `${KEY}/spec#r1`,
     ]);
     expect(merged?.comments_before).toBeNull();
     await readOlderComments(client, KEY, "conversation");
@@ -2095,7 +2115,6 @@ test("an older comment page merges into the answer in the read's order", async (
     const { root } = drawn(merged ?? newest);
     expect(nodesOf(root).map((one) => one.id)).toEqual([
       KEY,
-      blockNodeId("spec", "r1"),
       "c-1",
       "c-1-reply",
       "q1",
@@ -2103,10 +2122,52 @@ test("an older comment page merges into the answer in the read's order", async (
       "c-2",
       "c-3",
       "c-4",
+      blockNodeId("spec", "r1"),
     ]);
   } finally {
     read.mockRestore();
   }
+});
+
+// R8, R15: the read stands a node's conversation first among its children, before the children
+// that hold a rank, so an older page's comment goes before the issue's ranked statement though no
+// comment of the newer page stands under the issue to place it by - after the memo, which the read
+// stands first, and after an ask made before it - and not after the statement and the child issue
+// made before it. A reply to the ask goes after the ask's own block, which the read stands first
+// under its ask, and before the newer reply.
+test("an older page's comment stands before the issue's ranked children", () => {
+  const newest = answer(
+    [
+      block("memo", "callout", KEY, SPEC, 0, { rank: "0" }),
+      node("q1", "ask", KEY, { made_at: "2026-11-05T12:00:00Z" }),
+      { ...node("q1-b", "block", "q1"), id: "ask/q1#q1-b", kind: "ask_block" },
+      personsComment("c-3", "q1", "2026-11-07T00:00:00Z"),
+      block("r1", "requirement", KEY, SPEC, 1, { rank: "a" }),
+      node("CORE-2", "issue", KEY, { made_at: "2026-11-01T00:00:00Z", text: "A child" }),
+    ],
+    [],
+    { comments_before: "2026-11-07T00:00:00.000000Z,c-3" }
+  );
+  const older = treeAnswer(
+    [
+      personsComment("c-1", KEY, "2026-11-06T00:00:00Z"),
+      personsComment("c-q", "q1", "2026-11-05T13:00:00Z"),
+    ],
+    [],
+    { comments_before: null, converted: true }
+  );
+
+  expect(mergeCommentPage(newest, older).nodes?.map((one) => one.id)).toEqual([
+    KEY,
+    `${KEY}/spec#memo`,
+    "q1",
+    "ask/q1#q1-b",
+    "c-q",
+    "c-3",
+    "c-1",
+    `${KEY}/spec#r1`,
+    "CORE-2",
+  ]);
 });
 
 // R10: Graph draws every node of its read the page draws as a row, and the tree read's prose node

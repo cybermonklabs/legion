@@ -435,8 +435,11 @@ function nodeIdsIn(reads: TreeIdReads): (node: TreeAnswerNode) => string {
  * The answer's nodes in the order they are offered to the steps: the read's own walk, a parent
  * before its children, with the nodes that hang from nothing in this issue's tree after the rest,
  * in the read's order among themselves - a node whose parent is in an issue above, which the
- * answer does not hold, and the context the read carries (`role: "context"`), which stands in no
- * issue's tree. Every node a step is offered then has its ancestors' drafts made before it.
+ * answer does not hold, and the context the read carries with no parent (`role: "context"`), such
+ * as the person a decision's `decided_by` names or a constraint of the catalogue, which stands in
+ * no issue's tree. A context node whose chain of parents reaches the issue - an ancestor of a node
+ * a read with kind takes - keeps its place: the read orders it among its siblings as it orders
+ * every other node. Every node a step is offered then has its ancestors' drafts made before it.
  */
 function walkOf(answer: TreeAnswer, key: string): TreeAnswerNode[] {
   const nodes = firstOfEachId(answer.nodes ?? []);
@@ -448,10 +451,9 @@ function walkOf(answer: TreeAnswer, key: string): TreeAnswerNode[] {
     inTree.set(node, false);
     const parent = node.parent === null ? undefined : nodes.get(node.parent.id);
     const reached =
-      node.role !== "context" &&
-      (node.parent === null ||
-        node.parent.id === key ||
-        (parent !== undefined && reachesIssue(parent)));
+      node.parent === null
+        ? node.role !== "context"
+        : node.parent.id === key || (parent !== undefined && reachesIssue(parent));
     inTree.set(node, reached);
     return reached;
   };
@@ -1582,10 +1584,10 @@ function compareIds(left: string, right: string): number {
  * walk's order across pages: each comment of the page with the nodes under it, under the node its
  * `parent` names where the answer holds that node - an ask, a comment of another page - and else
  * under the issue, as the page places it; among that node's children before the first the read
- * orders after it (ranked siblings by `rank`, ties by id, then the rest by `made_at`, ties by
- * id), else after the last of them and every node under it. A node the answer holds already is
- * not added again. The answer then has the page's `comments_before`, so the next older page is
- * read from there, and none once the page says no older comment remains.
+ * orders after it (`sortsAfter`: the conversation by when each was made, then the ranked children
+ * by `rank`, then the rest), else after the last of them and every node under it. A node the
+ * answer holds already is not added again. The answer then has the page's `comments_before`, so
+ * the next older page is read from there, and none once the page says no older comment remains.
  */
 export function mergeCommentPage(answer: TreeAnswer, page: TreeAnswer): TreeAnswer {
   const nodes = [...(answer.nodes ?? [])];
@@ -1631,8 +1633,10 @@ function commentRuns(nodes: readonly TreeAnswerNode[]): [TreeAnswerNode, ...Tree
  * Where in `nodes` the run of a comment page that `head` starts goes (`mergeCommentPage`): under
  * the node its `parent` names where `nodes` holds it, else under the issue's own node (`issue`),
  * before the first of that node's children the read orders after `head` (`sortsAfter`), else
- * where that node's branch ends. A parent's branch is every node after it whose chain of parents
- * reaches it, which the read's walk keeps together, each node after its parent.
+ * where that node's branch ends. The read stands two children first, ahead of that order, and so
+ * the run after them: an item's own blocks under it, and the issue's memo, the callout the read
+ * stands first under the issue's node. A parent's branch is every node after it whose chain of
+ * parents reaches it, which the read's walk keeps together, each node after its parent.
  */
 function placeOfRun(
   nodes: readonly TreeAnswerNode[],
@@ -1641,14 +1645,12 @@ function placeOfRun(
   parents: ReadonlyMap<string, TreeAnswerNode["parent"]>
 ): number {
   const named = head.parent === null ? -1 : lastPlaceOf(nodes, head.parent.id);
-  const parentAt =
-    named >= 0
-      ? named
-      : nodes.findIndex(
-          (node) => node.supertag === "issue" && (node.id === issue || node.parent === null)
-        );
+  const isIssue = (node: TreeAnswerNode): boolean =>
+    node.supertag === "issue" && (node.id === issue || node.parent === null);
+  const parentAt = named >= 0 ? named : nodes.findIndex(isIssue);
   const parent = nodes[parentAt];
   if (parent === undefined) return nodes.length;
+  const underIssue = isIssue(parent);
   const reaches = (node: TreeAnswerNode): boolean => {
     let above = node.parent;
     for (let steps = 0; above !== null && steps < nodes.length; steps += 1) {
@@ -1660,7 +1662,9 @@ function placeOfRun(
   for (let place = parentAt + 1; place < nodes.length; place += 1) {
     const node = nodes[place];
     if (node === undefined || !reaches(node)) return place;
-    if (node.parent?.id === parent.id && sortsAfter(node, head)) return place;
+    if (node.parent?.id !== parent.id || ITEM_BLOCK_KINDS.includes(node.kind)) continue;
+    const memo = underIssue && place === parentAt + 1 && node.supertag === "callout";
+    if (!memo && sortsAfter(node, head)) return place;
   }
   return nodes.length;
 }
@@ -1673,17 +1677,41 @@ function lastPlaceOf(nodes: readonly TreeAnswerNode[], id: string): number {
   return -1;
 }
 
-/** Whether the read orders `sibling` after `node` under one parent: ranked siblings first, by
- *  `rank` in byte order, ties by id; then the rest by `made_at`, ties by id. */
+/** The kinds of node the read orders as a node's conversation, first among its children: an ask,
+ *  a comment, a message, a lens and a risk, as the server's `refs.OrderedAsConversation` reads a
+ *  node's `kind`. */
+const CONVERSATION_NODE_KINDS: readonly string[] = ["ask", "comment", "lens", "message", "risk"];
+
+/** The kinds of an ask's, a comment's and a message's own blocks, which the read stands first
+ *  under their item, before its replies. */
+const ITEM_BLOCK_KINDS: readonly string[] = ["ask_block", "comment_block", "message_block"];
+
+/** Where a node stands among its parent's children in the read's order of siblings: the
+ *  conversation, then the children that hold a rank, then the rest. */
+function siblingClass(node: TreeAnswerNode): number {
+  if (CONVERSATION_NODE_KINDS.includes(node.kind)) return 0;
+  return node.rank === null ? 2 : 1;
+}
+
+/**
+ * Whether the read orders `sibling` after `node` among one parent's children, by the server's
+ * order of siblings (`refs.CompareSiblings`): the conversation first, by when each was made; then
+ * the children that hold a rank, by `rank`; then the rest, by when each was made. A node the read
+ * names no time for stands first of its class, and a tie goes to the lower address,
+ * `<kind>:<id>`, byte for byte.
+ */
 function sortsAfter(sibling: TreeAnswerNode, node: TreeAnswerNode): boolean {
-  if (node.rank !== null) {
-    if (sibling.rank === null) return true;
-    return (compareIds(sibling.rank, node.rank) || compareIds(sibling.id, node.id)) > 0;
-  }
-  if (sibling.rank !== null) return false;
-  const at =
-    sibling.made_at === null || node.made_at === null
-      ? 0
-      : compareTimes(sibling.made_at, node.made_at);
-  return (at || compareIds(sibling.id, node.id)) > 0;
+  const classes = siblingClass(sibling) - siblingClass(node);
+  if (classes !== 0) return classes > 0;
+  const by =
+    siblingClass(node) === 1
+      ? compareIds(sibling.rank ?? "", node.rank ?? "")
+      : compareMadeAt(sibling.made_at, node.made_at);
+  return (by || compareIds(`${sibling.kind}:${sibling.id}`, `${node.kind}:${node.id}`)) > 0;
+}
+
+/** How two `made_at`s stand, as `compareTimes` reads them, a time the read does not name first. */
+function compareMadeAt(left: string | null, right: string | null): number {
+  if (left === null || right === null) return left === right ? 0 : left === null ? -1 : 1;
+  return compareTimes(left, right);
 }
