@@ -65,10 +65,14 @@ func (rig *recipientRig) unsubscribe(t *testing.T, sessionID string, topics []st
 // reap pass, which would need the registry's own clock moved past that allowance: both go through
 // deleteInterest, so the state they leave - no row in the bucket and none in the cache - is the
 // same, and that state is what the count reads.
+//
+// The delete is a case's setup, so it runs until the test binary's deadline (testwait.Context)
+// and not on a clock of its own: for a record past the NATS max payload it removes every chunk,
+// and beside 48 busy processes on four CPUs a fixed 5 s ran out, failing
+// TestAStoppedSessionPastTheMaxPayloadIsStillSentToAndCounted before it reached what it asks.
 func (rig *recipientRig) reapInterest(t *testing.T, sessionID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if _, err := rig.harness.registry.Remove(ctx, sessionID, nil, store.RoleReleaseAuthority{}); err != nil {
 		t.Fatalf("remove %s's interest row: %v", sessionID, err)
 	}
@@ -107,7 +111,7 @@ func (rig *recipientRig) storeSessionEntryOf(t *testing.T, sessionID, topic stri
 		t.Fatalf("register %s's interest: %v", sessionID, err)
 	}
 	storeSessionHeartbeat(t, rig.harness.client, sessionID, heartbeat)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		if _, state := rig.harness.sessions.Lookup(sessionID); state == want {
 			break
@@ -195,7 +199,7 @@ func (rig *recipientRig) watchCopiesOn(t *testing.T, clock *listenerClock) map[s
 // awaitCopiesServable waits until every one of copies can be served.
 func awaitCopiesServable(t *testing.T, copies map[string]countedCopy, what string) {
 	t.Helper()
-	waitFor(t, 10*time.Second, what, func() bool {
+	waitFor(t, what, func() bool {
 		for _, cache := range copies {
 			if cache.Servable() != nil {
 				return false
