@@ -141,7 +141,7 @@ class RawScanner(Scanner):
             return
         if words[0] in WRAPPERS:
             self.commands.append((True, words[1:]))
-        elif words[0].rsplit("/", 1)[-1] in RUNNERS:
+        elif named_program(words[0], RUNNERS):
             self.commands.append((False, words))
         else:
             for found in command_of(words, self):

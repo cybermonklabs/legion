@@ -32,13 +32,10 @@ func TestAPublishWaitingForAReconnectWakesOnTheReconnect(t *testing.T) {
 	client.mu.Unlock()
 
 	server.Stop(t)
-	deadline := time.Now().Add(5 * time.Second)
-	for client.Connected() {
-		if time.Now().After(deadline) {
-			t.Fatal("the client still reads connected 5s after its server stopped")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Until(t, "the client to read its connection lost once its server stopped (the last read is whether it still read connected)", func() (bool, bool) {
+		connected := client.Connected()
+		return connected, !connected
+	})
 	reconnected := conn.StatusChanged(nats.CONNECTED)
 	waitsBefore := client.reconnectWaits.Load()
 
@@ -97,13 +94,10 @@ func TestAPublishWaitingForAReconnectWhoseEventIsDelayedStillReturns(t *testing.
 	t.Cleanup(func() { close(release) })
 
 	server.Stop(t)
-	deadline := time.Now().Add(5 * time.Second)
-	for client.Connected() {
-		if time.Now().After(deadline) {
-			t.Fatal("the client still reads connected 5s after its server stopped")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Until(t, "the client to read its connection lost once its server stopped (the last read is whether it still read connected)", func() (bool, bool) {
+		connected := client.Connected()
+		return connected, !connected
+	})
 	reconnected := conn.StatusChanged(nats.CONNECTED)
 	published := make(chan error, 1)
 	go func() {

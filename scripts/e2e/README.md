@@ -356,7 +356,7 @@ Each item below names a script, then what it proves.
 
   a turn that ends in a provider error keeps its task, and the operator restarts the claims such turns leave (dispatch://INFRA-956 R2 and R3), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with three real `omp --mode rpc` panes under the real `legion worker-shim`, each carrying this checkout's two plugins and answered by a model stand-in of the driver's own:
   a 529 keeps the task on the claim and the daemon sends it to the same session again after 30 s, 60 s and 120 s;
-  the sixth such turn in a row tells the project's controller, once, and holds nothing;
+  the sixth such turn in a row tells the project's controller once and holds nothing (the daemon tells the issue's architect too, and this script reads the controller's copy alone);
   an OpenAI `finish_reason: content_filter` with no fallback model left carries no HTTP status at all, so the task goes again after 30 s, holding the issue for nobody;
   an HTTP 400, a client error that is none of 401, 403, 408 and 429, fails the claim and holds its issue for its architect;
   and `legion claims stop`, `legion claims retry --fresh-session` and `legion claims list`, the built binary against that daemon, drive and read the claims the first and the fourth leave.
@@ -364,10 +364,10 @@ Each item below names a script, then what it proves.
 
 - `claim-compaction.sh`
 
-  the compaction and the fresh session an operator and a project's controller have over a claim whose provider keeps refusing its session (dispatch://INFRA-956 R3), each driven through both of its doors, over the whole daemon `legion start` boots, a PostgreSQL the caller names and a `nats-server` of the run's own, with four real `omp --mode rpc` panes under the real `legion worker-shim`, each on the overlays a deployment renders — an image-capable model, Oh My Pi's own default compaction method order and a small `compaction.keepRecentTokens`:
-  a compacted worker keeps its session, that session holds a text compaction entry rather than snapcompact's images, and the task it owes goes once and only after the compaction, while a root architect that owes nothing is sent nothing;
-  a compaction whose endpoint holds the summary past `worker_rpc_timeout_seconds` and past 30 s still returns its real answer, and a `fresh_session` asked for while it runs is refused;
-  a refused summary and an already compacted session are reported to the caller, with the owed task sent again all the same;
+  the compaction and the fresh session an operator and a project's controller have over a claim whose provider keeps refusing its session (dispatch://INFRA-956 R3), each driven through both of its doors, over the whole daemon `legion start` boots, a PostgreSQL the caller names and a `nats-server` of the run's own, with four real `omp --mode rpc` panes under the real `legion worker-shim`, each on the overlays a deployment renders — the claim's one model and a small `compaction.keepRecentTokens`:
+  a compacted worker keeps its session, that session holds a compaction entry of method `handoff` with a text document, since the daemon asks Oh My Pi for a handoff and never for a `compact` (dispatch://INFRA-5798), and the task it owes goes once and only after the compaction, while a root architect that owes nothing is sent nothing;
+  a compaction whose endpoint holds the handoff past `worker_rpc_timeout_seconds` and past 30 s still returns its real answer, and a `fresh_session` asked for while it runs is refused;
+  a refused handoff and an already compacted session are reported to the caller, with the owed task sent again all the same;
   a compaction that ran puts the run of provider-error turns back to zero, so six more such turns tell the project's controller a second time;
   a suspended, a stopped, a failed and a Claude Code worker, a worker in a turn and role `controller` are each refused in their own words through both doors;
   a fresh session starts the phase worker on its issue's current phase task and the root architect on its catch-up;
@@ -468,12 +468,13 @@ Each item below names a script, then what it proves.
 
 - `dispatch-broker.sh`
 
-  every Dispatch client a Legion deployment runs writes with a token the secrets broker issued, and only inside its own project (dispatch://INFRA-4425's K2, K3 and K4), driven against the broker's own test rig on a PostgreSQL the caller names, the real Dispatch server this checkout builds on a database of its own behind a recording proxy, and the real clients — the daemon's own Dispatch client, the `dispatch` command, and one process holding the client that command builds and the client the pi-envoy plugin builds:
-  the daemon's client posts an issue message on an issue of its project, accepted under `DPoP`, and on an issue of another, refused 403 `PROJECT_SCOPE`;
+  every Dispatch client a Legion deployment runs writes with a token the secrets broker issued (dispatch://INFRA-4425's K2, K3 and K4), and a tool's reads go through `dispatch proxy` with one trade for each renewal of the role's token (dispatch://INFRA-4799's C2), driven against the broker's own test rig on a PostgreSQL the caller names, the real Dispatch server this checkout builds on a database of its own behind a recording proxy, and the real clients — the daemon's own Dispatch client, the `dispatch` command, and one process holding the client that command builds and the client the pi-envoy plugin builds:
+  the daemon's client writes on an issue of its project and on an issue of another, an issue message on each and on the other a status and its step, rating, plan and role holder records, each accepted under `DPoP`;
   a write of it whose proof names an origin outside `DISPATCH_PROOF_ORIGINS` is refused 401 `BROKER_TOKEN_PROOF_INVALID`;
-  `dispatch whoami`, in a role's environment read from the launch golden `pod-with-dispatch-broker.json`, acts for the role's person and writes its project alone, and without the setting both writes carry `Bearer` and whoami runs under the shared token;
-  with a role's token of its project every kind of write a role makes, through the command and through the plugin's client, and with the daemon's token every method of the daemon's client, is answered 2xx, while with a token of another project each write that names an issue or a document of the first is refused 403 `PROJECT_SCOPE`, and an upload into another session's conversation 403 `SESSION_SCOPE`;
-  and with `LEGION_E2E_TOKEN_RENEWAL=1`, in place of those, the three long-lived clients write over three lifetimes of a 420 s token with no restart, and once their pod's token is one the broker refuses for good they stop with the broker's refusal and send Dispatch nothing, which takes about fifteen minutes.
+  `dispatch whoami`, in a role's environment read from the launch golden `pod-with-dispatch-broker.json`, acts for the role's person and names the project its token names, and without the setting both messages carry `Bearer` and whoami runs under the shared token;
+  with a role's token of its project every kind of write a role makes, through the command and through the plugin's client, three writes of the command on another project's issue, and with the daemon's token every method of the daemon's client, is answered 2xx, while with a token of another project each write on the first project's objects is accepted too, but for the daemon script's step record, its rating and its plan, refused 403 `STEP_WRITER`, and its role holders, refused 403 `ROLE_HOLDER_FORBIDDEN`, since that token's session is no daemon's, and an upload into another session's conversation is refused 403 `SESSION_SCOPE`;
+  with `LEGION_E2E_TOKEN_RENEWAL=1`, in place of those, the three long-lived clients write over three lifetimes of a 420 s token with no restart, and once their pod's token is one the broker refuses for good they stop with the broker's refusal and send Dispatch nothing, which takes about fifteen minutes;
+  and with `LEGION_E2E_PROXY=1`, alone, in place of all of those and of the `LEGION_E2E_TOKEN_RENEWAL=1` run, `TestTheProxyServesAToolRunWithOneTradeForEachRenewal` runs `dispatch proxy` in a role's environment with a Python standard-library client over its unix socket for 480 s, longer than two renewal periods, 420 s, of a 420 s token: a file's version reads back with the bytes uploaded, one comment POST sent twice under one `Idempotency-Key` is answered 201 both times and replayed the second, the client makes at least 2,000 requests and each read is answered 200, and the trades, counted as distinct tokens at the recording proxy, are exactly 3, the second and the third each traded at the half life of the one before, at most 1 + T / (L - 300) and the count the proxy's exit line names, while the same proxy without `DISPATCH_TOKEN_BROKER` exits 2 and runs no command, which takes about nine minutes past the rig's start.
   Each test writes its tables to `TMPDIR` and logs their path.
   The Envoy listener and GitHub are stand-ins that know no session and no installation; no cluster
 
@@ -1674,7 +1675,7 @@ Here:
 
 1. **`begin bridge`**, right after `begin snapshot` (so a leaked bridge object shows up in `namespace-clean`'s before/after diff even if its own teardown fails) and before `begin session-db`:
    the operator context creates one pod and one ClusterIP Service, both named `bridge-<project>` and labelled `legion.dev/project=<project>`, running `mirror.gcr.io/jpillora/chisel` (pinned by digest) as a reverse-tunnel server
-   — non-root, read-only root filesystem, every capability dropped, tolerating the `legion` pool's taint without requiring it, and carrying the same eviction-protection annotation pair every Legion issue pod does (`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, `karpenter.sh/do-not-disrupt: "true"`)
+   — non-root, read-only root filesystem, every capability dropped, and carrying the same eviction-protection annotation pair every Legion issue pod does (`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, `karpenter.sh/do-not-disrupt: "true"`)
    — without them the bridge pod, alone on its own node, is fair game for GKE's node consolidation mid-run.
    Only the chisel server's *data* ports, the ones the caller names, are on the Service, each a Service port named `p<port>` (here the worker stream's and the session database's);
    its control port is never exposed by the Service or the cluster network, reachable only through `kubectl port-forward` under the operator context.
@@ -1866,7 +1867,7 @@ it appends its pod's uid to a marker file on the pod's own disk and sleeps, so t
 That marker proves a role's identity within one pod and nothing across pods
 — the disk dies with the pod, so a replacement starts with an empty one — and continuity across a pod is read from the session table instead.
 The runtime's settings: a 5-minute boot timeout, 3 registration intervals, a 15-second termination grace, a 10-second probe interval, storage class `LEGION_E2E_STORAGE_CLASS` (AWS's `gp2`, GKE's `standard-rwo`), a 20Gi issue volume, the daemon's default reservations with the issue pod's overridden field by field (`liveIssueOverride`:
-2500m CPU and 4 GiB, request equal to limit, and a 10Gi ephemeral-storage limit and request), as a deployment's `runtime.kubernetes.resources.issue` does, the controller's pod at the defaults, and no scheduling beyond the Legion pool the runtime selects:
+2500m CPU and 4 GiB, request equal to limit, and a 10Gi ephemeral-storage limit and request), as a deployment's `runtime.kubernetes.resources.issue` does, the controller's pod at the defaults, and no scheduling, so no pod selects or tolerates anything of a node pool:
 no pod asks for or keeps off another pod's node.
 
 The checks, in order, each printing what it observed and then `CHECK <name>: PASS`:
@@ -2219,9 +2220,9 @@ Nothing outside `legion` is touched.
 What the run had to learn about production (AWS, `LEGION_E2E_RUNTIME_IDENTITY_KIND=aws-iam-role`):
 
 - **Nothing ties a pod to a node.**
-  Every issue pod owns its volume and carries no affinity, so the scheduler bin-packs it wherever the pool has room for its reservation, and Karpenter adds a node under the `legion` NodePool's floor, `karpenter.k8s.aws/instance-cpu` Gt 3 (set in the cluster's own infrastructure code), when none has.
+  Every issue pod owns its volume and carries no affinity, so the scheduler bin-packs it wherever a node of the cluster has room for its reservation, and Karpenter adds a node when none has.
   Under the tree-volume layout before LEGION-632 every pod of a tree had to join the node of the tree's first pod, and a `c7a.medium`'s 8 pod slots, 7 of them daemonsets, left no room for a second:
-  that is what the floor was set for, and it now only decides the smallest node the pool adds.
+  that is what the `legion` NodePool's floor, `karpenter.k8s.aws/instance-cpu` Gt 3 (set in the cluster's own infrastructure code), was set for while Legion's pods ran on that NodePool.
 
 - gVisor on production reports `4.19.0-gvisor` from `uname -r`.
 
@@ -2387,11 +2388,12 @@ Its verdict is one line, just before the evidence line:
 or `stage 4b e2e: BLOCKED (check <check>)` when the checkpoint could not run and the teardown checks (`transcripts`, `namespace-clean`, `production-audit`) passed, which makes the run no verdict on the change while the checkpoints before it stand, and gets no notes.
 Capacity is such a stop.
 No pod asks for or keeps off a node: each issue pod carries its own disk and the issue pod's one cpu and memory reservation, shared by its six roles (docs/kubernetes.md "Issue sizing:
-one reservation per pod"), so `preflight` counts the `legion` pool's room in pods of that reservation under the run's resources (`lib/stage4b-room.jq`) and ends BLOCKED `capacity: …` when it cannot place the run's four pods at once:
+one reservation per pod"), so `preflight` counts the room for the run's four pods at once in pods of that reservation under the run's resources (`lib/stage4b-room.jq`):
 tree 1's root and its two children beside tree 2's root.
-Its room is what each Ready, schedulable pool node, neither tainted `karpenter.sh/disrupted` nor being deleted, has free beside every non-terminal pod placed on it, of any namespace, plus the pods the pool's cpu and memory limits still leave room for beside what it already runs (a pool with no limit bounds nothing).
+It counts on the nodes the run's pods may use: each Ready, schedulable node, neither tainted `karpenter.sh/disrupted` nor being deleted, that carries every label of the run's `runtime.kubernetes.scheduling.node_selector` (every node, as the run sets none) and of RuntimeClass `gvisor`'s `scheduling.nodeSelector`, and whose `NoSchedule` and `NoExecute` taints the run's tolerations or the RuntimeClass's tolerate, with what it has free beside every non-terminal pod placed on it, of any namespace: admission adds the RuntimeClass's scheduling to every pod that runs under it, and refuses the pod where the RuntimeClass's node selector names a label the run's names at another value, so then no node admits the run's pods and the read names each such label with both values.
+No one NodePool's limits bound those pods and the cluster may add nodes, so the room bounds nothing: a cluster with no such node now, one whose matching nodes are at zero among them, is noted and the run goes on, and `preflight` ends BLOCKED `capacity: …` only where admission refuses the run's pods, naming each conflicting label, since no node the cluster has or adds can take a refused pod (`preflight_room`).
 A wait that needs a tree's pods placed names that tree (or the reachability pod) as its subject.
-If it times out while one of its subject's pods is Pending Unschedulable, and Karpenter's newest event of any reason for that pod's uid, no older than its Unschedulable transition, is its FailedScheduling finding every instance type over the pool's limits (a newer Nominated or other Karpenter event supersedes it), it ends BLOCKED `capacity: …`, naming the pod with its evidence:
+If it times out while one of its subject's pods is Pending Unschedulable, and Karpenter's newest event of any reason for that pod's uid, no older than its Unschedulable transition, is its FailedScheduling finding every instance type over the limits of the NodePool it names, whatever its name (a newer Nominated or other Karpenter event supersedes it), it ends BLOCKED `capacity: …`, naming the pod with its evidence:
 the limit event's time and message, the pod's PodScheduled condition, and the default scheduler's newest FailedScheduling message for it.
 A wrong classification can only read BLOCKED, never PASS, and the line shows it.
 A wait with no subject, a starved pod outside the subject, any other timeout, and any check that fails outright stay FAIL.
@@ -2441,7 +2443,7 @@ A pass proves that and no more:
 - Run it from the release tag the deployment pins and with `LEGION_E2E_IMAGE` set to the worker image it pins:
   the daemon's boot probe, its launch and the pod's shape are that release's.
 
-- The rest of `runtime.kubernetes` (namespace, pool, scheduling, the controller and the deployment's other keys) is Stage 4b's own, never the deployment's, so pair the run with `legion config check` on the deployment's whole `legion.yaml` at that release.
+- The rest of `runtime.kubernetes` (namespace, scheduling, the controller and the deployment's other keys) is Stage 4b's own, never the deployment's, so pair the run with `legion config check` on the deployment's whole `legion.yaml` at that release.
 
 - A Secret or ConfigMap volume is compared by its kind and object name, not its `items`.
 
@@ -2508,17 +2510,17 @@ neither protects a lane's own [`lib/built-from.sh`](#libbuilt-fromsh)
 A second lane's pack landing mid-read reads as this lane's own tree having changed, failing `prerequisites` or the build's own revision check for a reason that has nothing to do with the change under test.
 Run concurrent lanes from separate checkouts (`jj workspace add`, or separate clones) of the same commit.
 
-**Two lanes can race the legion pool's own capacity preflight, and that is a finding, not a bug to fix here.**
-`prerequisites` reads the legion NodePool's current room (`pool_pod_room`) before either lane has placed a pod, and refuses, BLOCKED, only if that one read already can't fit `run_pods_at_once` pods (4, the cap:
+**Two lanes can race for the cluster's capacity, and that is a finding, not a bug to fix here.**
+`preflight` reads the room on the nodes the run's pods may use (`run_pod_room`) before either lane has placed a pod, and refuses, BLOCKED, only where admission refuses the run's pods: it counts no NodePool's limits and runs on a cluster with no node for those pods now, so it never refuses for want of room for `run_pods_at_once` pods (4, the cap:
 tree 1's root and its two children beside tree 2's root).
-Two lanes starting close together can each read room enough for itself alone
+Two lanes starting close together both pass it
 — the read is not a reservation — so a true shortfall surfaces only once both are actually scheduling.
-That is never silent: every pod-placement wait is wrapped (`on_tree`/`on_issue`), so a wait stalled on the pool's own limits while its subject pod is still Pending, or after its claim has given up, ends its checkpoint `BLOCKED: capacity: …`, naming the pod the scheduler could not place
-— the same outcome a single lane gets today when the pool is simply full.
+That is never silent: every pod-placement wait is wrapped (`on_tree`/`on_issue`), so a wait stalled on a NodePool's limits while its subject pod is still Pending, or after its claim has given up, ends its checkpoint `BLOCKED: capacity: …`, naming the pod the scheduler could not place
+— the same outcome a single lane gets today when that NodePool is simply full.
 A pod that starves and is placed before its own claim's launch budget runs out, with the wait still timing out for some other reason, reads FAIL:
 neither path has evidence of a starvation that never reached either threshold.
-Running two lanes at once therefore needs either enough spare legion-pool capacity for both (8 pods' worth of reservations between them) or tolerance for the slower lane landing `BLOCKED` on capacity;
-widening the pool is infrastructure, not this change.
+Running two lanes at once therefore needs either enough spare capacity in the NodePool the run's pods use for both (8 pods' worth of reservations between them) or tolerance for the slower lane landing `BLOCKED` on capacity;
+widening that NodePool is infrastructure, not this change.
 
 **What the run touches in production**, all of it removed by the `EXIT`/`INT`/`TERM`/`HUP` trap of the run that owns it.
 A signal to the whole process group does not stop the removal:
@@ -2615,13 +2617,13 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `preflight`
 
   the runtime identity is the daemon's restricted IAM role and cannot list Secrets;
-  the Sandbox CRD and the `legion` NodePool's instance-cpu floor;
-  the pool's room for the run's four pods at once (tree 1's root and its two children, tree 2's root), counted in issue pods of the run's `issue` reservation (`lib/stage4b-room.jq`):
-  what each Ready, schedulable, undisrupted pool node has free beside every non-terminal pod on it, of any namespace, plus the pods the pool's cpu and memory limits still leave room for, below which the run ends BLOCKED `capacity: …`;
-  whether the NodePool's instance-cpu and instance-memory bounds let two of the run's pods share a node, which decides what `issue-independence` asserts of their nodes;
+  the Sandbox CRD;
+  the room for the run's four pods at once (tree 1's root and its two children, tree 2's root) on the nodes the run's pods may use, counted in issue pods of the run's `issue` reservation (`lib/stage4b-room.jq`):
+  what each Ready, schedulable, undisrupted node that both the run's `node_selector` (every node, as the run sets none) and RuntimeClass `gvisor`'s node selector select, and whose `NoSchedule` and `NoExecute` taints the run's tolerations or the RuntimeClass's tolerate, has free beside every non-terminal pod on it, of any namespace, no node being admitted where the two selectors name a label at different values, since admission refuses such a pod; a failed read of the nodes, the pods or the RuntimeClass ends the run BLOCKED; the room bounds nothing, since no one NodePool's limits bound the run's pods and the cluster may add nodes, so a cluster with no such node now is noted and the run goes on, and the run ends BLOCKED `capacity: …` only where admission refuses its pods;
+  whether one of those nodes' allocatable holds two of the run's pods, which `issue-independence` notes beside their nodes;
   the run's Dispatch bearer reads `whoami` as an agent session, and an invalid bearer is refused 401;
   LEGSMOKE has no todo root; the stream carries both halves of intake;
-  a throwaway pod on the Legion pool reaches Dispatch, the listener, the gateway and NATS, each within three tries 5 s apart (a fresh node's first outbound connection can fail while it settles), and a service that never answers fails the check with every try's error
+  a throwaway pod placed as the run's Sandbox pods are reaches Dispatch, the listener, the gateway and NATS, each within three tries 5 s apart (a fresh node's first outbound connection can fail while it settles), and a service that never answers fails the check with every try's error
 
 - `pod-watch`
 
@@ -2686,7 +2688,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   each pod has a disk of its own, `<pod>-issue`, Bound and owned by that pod, and the three are three;
   and no pod can read another issue's workspace, each way between the root's pod and child 1's (`ls` of the other's workspace path answers `No such file or directory`, while the same path exists in its own pod).
   Their nodes are recorded (`issue-independence-pods.txt`);
-  two or more are asserted only when preflight read the NodePool's instance bounds as holding no two of the run's pods, otherwise the count is noted.
+  no count of them is asserted, since preflight's read of whether one of the nodes the run's pods may use holds two of them never says two cannot share a node, and the count is noted.
   Tree 3 is then set todo, and the state reads the cap full of the four issues the daemon has started — tree 1's root, both its children and tree 2's root — with tree 3 alone in `admission.waiting`: a slot is one issue the daemon has started, so one tree's children fill a cap beside another tree's root.
   Tree 1's planner is then told to plan.
   Tree 2's planner has held for the driver: a tree 2 that left planning before the driver sent it anything fails here by name.
@@ -2708,7 +2710,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   The proof human parks child 2 again: within 900 s it has no Sandbox, no pod and no disk, and its planner is suspended by the daemon.
   The control, on the same claim and start path:
   `legion claims suspend` of the parked planner records `suspendedBy: operator`, and child 2 is set `todo` once more;
-  its planning start waits (`outbox row waits` naming the suspension that holds until the operator resumes the claim), the planner stays suspended by the operator at the same generation for 60 s, and no `supervise: resuming by rule` line names it.
+  its planning start waits (`outbox row waits` naming the suspension that holds until the operator resumes the agent), the planner stays suspended by the operator at the same generation for 60 s, and no `supervise: resuming by rule` line names it.
   `legion claims resume` relaunches it and the waiting start gives it the run's planning task, its session's third.
   Child 2 is parked a last time: within 900 s no Sandbox, no pod and no disk, its planner suspended by the daemon
   — what the session keeps is the table's, not the disk's
@@ -3094,7 +3096,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   — each stop deleted the member's Sandbox once its pod was gone, the children's at their parks and the root's at its production check's close;
   then every node any pod of tree 1 ran on (read from the pod watch:
   the root's, the children's, the replacements the fence and the stream move made, the pod the production check's last look brought back) is released
-  — the node is gone after the pool's consolidation, or, when another pod keeps it, Pending or Running, the node stays carrying no pod of tree 1:
+  — the node is gone after its NodePool's consolidation, or, when another pod keeps it, Pending or Running, the node stays carrying no pod of tree 1:
   a pod of another project (a production daemon running beside the run), the run's repository cache (`legion.dev/cache=true`, no tree's, alive as long as the daemon), or a pod of another tree of the run;
   a pod of tree 1, or of the run with no tree label other than the cache, holds the wait, one that has Succeeded or Failed counts for nothing, and a pod with no project label is no Legion pod (`node_pods_judged`, lib's `node-released.test.ts`).
   The note says which it saw where, and a timeout lists what the node still held with each pod's project and tree label.
@@ -3128,7 +3130,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `pod-shape`
 
   every Sandbox pod whose one `roles` container the pod watch saw ready is judged from the spec the watch recorded for it, deleted pods included:
-  gVisor, the operator's ServiceAccount and one projected token, the run's route ConfigMap mounted as every role's profile `models.yml`, the pool, Pod Security restricted, its launcher's `--connect` naming `advertise_host` at the worker-stream port the daemon served when the pod was created (each daemon's from its start, in `worker-streams.jsonl`;
+  gVisor, the operator's ServiceAccount and one projected token, the run's route ConfigMap mounted as every role's profile `models.yml`, no selector or toleration of the retired Legion pool (`legion.dev/pool`), Pod Security restricted, its launcher's `--connect` naming `advertise_host` at the worker-stream port the daemon served when the pod was created (each daemon's from its start, in `worker-streams.jsonl`;
   a move waits out the second the stopped daemon could have created a pod in, since a pod's `creationTimestamp` counts whole seconds;
   the run assumes, without checking, that the devbox's clock, which dates each start, and the API server's agree within that second, and that by then the Agent Sandbox controller, which creates each pod after the daemon writes its Sandbox, has created the pod of every Sandbox the stopped daemon wrote), six role-private Secrets, split provisioning, and the run's reservations:
   every container, the init containers included, carries cpu and memory as both request and limit and ephemeral-storage as a request no greater than its limit (the node-disk bound between pods of unrelated trees), all four the issue pod's one reservation:
@@ -4019,7 +4021,7 @@ The cluster is deleted on any exit.
 
 | check | what it holds |
 | :--- | :--- |
-| `cluster`, `agent-sandbox`, `gvisor` | the lib's: the kind cluster, its one node labelled `legion.dev/pool=legion`, the `legion` namespace and the `standard` storage class; Agent Sandbox v1.0.3's release manifest, pinned by sha256, applied and its controller rolled out; gVisor's dated release, pinned by sha512, installed into the node's containerd as the `runsc` handler with a `gvisor` RuntimeClass, and a `runtimeClassName: gvisor` pod's `dmesg` says `Starting gVisor` |
+| `cluster`, `agent-sandbox`, `gvisor` | the lib's: the kind cluster and its one node, the `legion` namespace and the `standard` storage class; Agent Sandbox v1.0.3's release manifest, pinned by sha256, applied and its controller rolled out; gVisor's dated release, pinned by sha512, installed into the node's containerd as the `runsc` handler with a `gvisor` RuntimeClass, and a `runtimeClassName: gvisor` pod's `dmesg` says `Starting gVisor` |
 | `image` | the worker image, pulled into the node's containerd by digest |
 | `launch` | `TestABurstableIssuePodRendersLive` (`internal/daemon/burstable_live_test.go`, `-tags e2e`), built as a static test binary and run in a container on the kind network, writes two `legion.yaml` files, reads each with the daemon's loader, translates it with `sandboxOptions`, runs the cluster check, and launches one issue's root through the Sandbox runtime's `Spawn` on a worker stream bound to that container's address (pods reach the kind network's containers, while a host firewall can keep them from the host itself); the launch makes the repository's cache first, as every issue pod's does; it holds the `roles` container to the issue pod's request and limit (2 CPU, 8Gi under 32Gi, 6Gi under 80Gi for the first file; 2 CPU, 8Gi, 6Gi under 80Gi for the second) and the pod to its QoS class |
 | `qos-class` | `kubectl get pod <pod> -o jsonpath='{.status.qosClass}'` reads `Burstable` for the file with `issue: {memory: 32Gi, memory_request: 8Gi}` and `Guaranteed` for the file with no `resources` block; each pod has a `roles` container, is `PodScheduled=True` under `runtimeClassName: gvisor`, and its manifest is kept as evidence |
@@ -4883,7 +4885,7 @@ Each pane's Oh My Pi overlay sets `retry.enabled: false`, so the host walks no c
 | step | driven by | read back as |
 | :--- | :--- | :--- |
 | `step1-a-529-keeps-the-task-and-walks-the-30-60-120-ladder` | nothing: the task the planner's claim has held since the daemon booted, whose stand-in answers 529 | the daemon's own first send of it, read off the delivery's read mark, then its five re-sends of that same task to that same session, each at its own armed wait (30 s, 60 s and 120 s of wall clock, then the two driven ones), the claim neither failed nor empty-handed, the issue not held, and the stand-in asked once per send for a request carrying the task itself |
-| `step2-the-sixth-turn-in-a-row-tells-the-controller` | nothing: the sixth turn of that run | exactly one `provider-errors` notice on the project's controller topic, naming the run of six turns, with the issue still in its phase — the notice is the run's one exit, and no attempt limit holds the issue |
+| `step2-the-sixth-turn-in-a-row-tells-the-controller` | nothing: the sixth turn of that run | exactly one `provider-errors` notice on the project's controller topic, naming the run of six turns, with the issue still in its phase — the notice ends no run, and no attempt limit holds the issue |
 | `step3-a-content-filter-carries-no-status-and-the-task-goes-again` | one task delivered to the implementer once it has answered the warm-up task its seed left pending, with its stand-in then armed to end every turn with a content filter | the turn reported with no HTTP status at all, the task sent again after 30 s, the claim still holding it, the issue still `implementing` and its architect told nothing |
 | `step4-an-error-that-cannot-clear-fails-the-claim-and-holds-the-issue` | one task delivered to the tester once it has answered its own warm-up task, with its stand-in then armed to answer 400 | the turn reported with status 400, the claim failed and the issue held for its architect |
 | `step5-the-operator-stops-retries-and-reads-the-claims` | `legion claims stop`, then `legion claims retry --fresh-session`, then `legion claims list`, and the same retry of the claim step 4 failed, each the built `legion` against that daemon | the stopped planner retired, its retry running in a session that is not the one it recorded, the task its ladder kept sent to that fresh session, and the failed tester's claim running again |
@@ -4909,8 +4911,8 @@ It is a script of its own rather than more steps of [`provider-error-retry.sh`](
 the two runs would otherwise share a wall clock, and this one starts four panes and waits out a compaction its endpoint holds.
 It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no Claude Code and no tmux, so a Legion pod and a devbox both run it.
 `LEGION_OMP_PATH` and `LEGION_TEST_PG_DSN` are required and mean what they mean for [`provider-error-retry.sh`](#provider-error-retrysh), the DSN's host must be loopback as it must there, and the broker is the run's own.
-A whole run took 176 s measured in a Legion worker pod (omp/18.16.0) with a warm Go build cache, the driver 152 s of it, and a cold cache adds the driver's own build:
-four panes start Oh My Pi once each and the five fresh sessions of steps 7 and 8 start one more each, each of the three phase workers answers the task its phase's start left pending on its claim, and the one wait is step 5's held summary — Oh My Pi writes a split turn's summary in two passes, the stand-in holds each for 35 s, and that compaction answers after about 70 s.
+Two runs of the proof took 134 s and 135 s on a devbox (Oh My Pi 18.18.6-sami.20261123-024918) with a warm Go build cache, and a cold cache adds the driver's own build:
+four panes start Oh My Pi once each and the five fresh sessions of steps 7 and 8 start one more each, each of the three phase workers answers the task its phase's start left pending on its claim, and the one wait is step 5's held handoff — Oh My Pi writes the handoff document in one request, the stand-in holds it for 35 s, and that compaction answers after about 35 s.
 Nothing else waits on a clock bar step 8, which releases each of its two holds just after a pass of the runtime's own two-second observation sweep: the provider-error ladder's own gaps are the sibling proof's subject, and this one never waits a rung out, since a newer task takes the place of the one a wait stands for.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
 
@@ -4927,25 +4929,25 @@ Both are for the repair admission makes of a slotted worker that holds no task (
 Each worker is a real `omp --mode rpc` under the real `legion worker-shim`, started by the package's own local runtime (`internal/daemon/localruntime_live_test.go`), with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` in an Oh My Pi profile of the run's own.
 The controller is registered as `legion controller start` registers the operator's own, and its registration secret mints the controller grant every call at that door carries, one per operation, as its plugin mints them.
 
-What stands in is the model endpoint and nothing else: four Anthropic Messages stand-ins of the driver's own, one per pane, each answering a turn's request and a compaction's summary request apart — the summary told from the turn by the summarization system prompt Oh My Pi sends it under, which the plugins' own pane harness recognises the same way.
-A step sets each stand-in's two behaviours before it drives the claim: a turn answered, answered 529 with a `retry-after` over Oh My Pi's own cap (so one of the daemon's sends is one request), answered 400, or held open; and a summary answered, held, or answered 400.
-A refused summary is a client error rather than a 5xx because Oh My Pi retries a 5xx summarization until the daemon's own ten-minute bound runs out.
+What stands in is the model endpoint and nothing else: four Anthropic Messages stand-ins of the driver's own, one per pane, each answering a turn's request and a handoff's request apart — the handoff told from the turn by the first line of the handoff prompt Oh My Pi appends as the request's last user message (`packages/agent/src/compaction/prompts/handoff-document.md` at the pinned tag).
+A stand-in answers a `compact`'s summary request, told by the summarization system prompt it goes under, as it answers a handoff, so a daemon that sent `compact` would be caught by the method of the entry the session committed rather than by an endpoint that refused to answer.
+A step sets each stand-in's two behaviours before it drives the claim: a turn answered, answered 529 with a `retry-after` over Oh My Pi's own cap (so one of the daemon's sends is one request), answered 400, or held open; and a handoff answered, held, or answered 400.
+A refused handoff is a client error rather than a 5xx because Oh My Pi retries a 5xx until the daemon's own ten-minute bound runs out.
 
 Every pane runs the overlays a deployment renders, in the order the runtime composes them:
 the operator's own (`runtime.tmux.pi_config_files`, or the pod environment's `PI_CONFIG_FILES`), then the claim's own (`role_config_files`), and nothing of Legion's after them.
-The operator's overlay carries two keys — `retry.enabled: false`, so the host walks no fallback chain and every failed turn reaches the daemon, and `compaction.keepRecentTokens: 1`, because Oh My Pi keeps that many tokens of the newest turns out of every summary and a session of a few turns has nothing left to summarize at the shipped 20,000.
-It names no compaction method, so each pane runs Oh My Pi's own default order, which puts the image-based `snapcompact` above every summary method, and the claim's own overlay names for every model role one model that reads images.
-Step 1 reads all three back out of the pane's own Oh My Pi under the pane's own overlays rather than against a literal of the driver's, so a changed default fails the proof:
-snapcompact is a method these panes could run, and the only thing that keeps a compaction off it is the custom instructions the daemon sends.
+The operator's overlay carries two keys — `retry.enabled: false`, so the host walks no fallback chain and every failed turn reaches the daemon, and `compaction.keepRecentTokens: 1`, because Oh My Pi keeps that many tokens of the newest turns verbatim after the compaction entry, and a session of a few turns has no turn before that cut point at the shipped 20,000.
+The claim's own overlay names for every model role the one model its stand-in serves.
+Step 1 reads both back out of the pane's own Oh My Pi under the pane's own overlays rather than against a literal of the driver's, so a changed default fails the proof.
 
 | step | driven by | read back as |
 | :--- | :--- | :--- |
-| `step1-the-panes-run-the-deployments-overlays-and-a-short-session-can-be-compacted` | `omp config get` and `omp models --json` under a pane's own home, profile and `PI_CONFIG_FILES` | `compaction.methodOrder` the shipped `[remote snapcompact handoff shake soft]`, `compaction.keepRecentTokens` the operator overlay's 1, and the claim's one model taking `[text image]` |
-| `step2-the-operator-compacts-a-phase-worker-the-ladder-holds` | `legion claims compact --claim <token>`, the built binary against that daemon, at an idle planner a 529 left on the ladder's first rung | `compacted; whatever task the claim owed has gone again`; the daemon's own line that the operator asked; the claim in the session and the transcript it had; that transcript's compaction entry a text summary of method `soft` with no snapcompact archive; and the owed task's next turn after the compaction ended, once by the daemon's count of the turns it ran, with the ladder's wait having sent nothing in between |
+| `step1-the-panes-run-the-deployments-overlays-and-a-short-session-can-be-compacted` | `omp config get` and `omp models --json` under a pane's own home, profile and `PI_CONFIG_FILES` | `compaction.keepRecentTokens` the operator overlay's 1, and the claim's one model among the models the pane's Oh My Pi serves |
+| `step2-the-operator-compacts-a-phase-worker-the-ladder-holds` | `legion claims compact --claim <token>`, the built binary against that daemon, at an idle planner a 529 left on the ladder's first rung | `compacted; whatever task the claim owed has gone again`; the daemon's own line that the operator asked; the claim in the session and the transcript it had; that transcript's compaction entry a text document of method `handoff`; and the owed task's next turn after the compaction ended, once by the daemon's count of the turns it ran, with the ladder's wait having sent nothing in between |
 | `step3-the-controller-compacts-and-the-run-of-errors-is-told-a-second-time` | six refused turns at the implementer, then `POST /legion/v1/claims/compact` with a controller grant naming the issue and the role, then six more | one `provider-errors` notice on the project's controller topic, the daemon's own line that the controller asked, the run of provider-error turns back to zero with the owed task sent again, and a second notice after the six that follow — which only a compaction that ran allows |
-| `step4-a-root-architect-that-owes-no-task-is-sent-nothing-and-says-already-compacted` | the operator's compaction of an idle root architect, then the controller's of the same session | the first compacted and the architect still owing nothing and running no turn for three seconds after either; the second answered 200 with `compacted: false` and Oh My Pi's own `Already compacted` |
-| `step5-a-held-summary-outlasts-the-rpc-timeout-and-refuses-a-fresh-session` | `legion claims compact` at a tester whose stand-in holds every summary answer for 35 s | the caller's real answer after about 70 s, past `worker_rpc_timeout_seconds` and past 30 s; a `fresh_session` asked for during it refused `CLAIM_IN_A_TURN` through both doors and a second compaction refused in its own words; the ladder's own 30 s rung come due inside the compaction having sent nothing; and the owed task gone at the compaction's end, once |
-| `step6-every-refusal-gets-its-own-message-through-both-doors` | a summary the endpoint refuses every time, a worker in a turn, a role `worker_backends` runs on Claude Code, role `controller`, and a suspended, a stopped and a failed worker | the refused summary reported 200 `compacted: false` with the owed task sent again and no run reset; and `CLAIM_IN_A_TURN`, `CLAIM_NOT_ON_OMP`, `INVALID_ROLE` and `CLAIM_NOT_RUNNING` each word for word through both doors |
+| `step4-a-root-architect-that-owes-no-task-is-sent-nothing-and-says-already-compacted` | the operator's compaction of an idle root architect, then the controller's of the same session | the first compacted and the architect still owing nothing and running no turn for three seconds after either; the second answered 200 with `compacted: false` and Oh My Pi's own `Nothing to hand off (already compacted)` |
+| `step5-a-held-summary-outlasts-the-rpc-timeout-and-refuses-a-fresh-session` | `legion claims compact` at a tester whose stand-in holds every handoff answer for 35 s | the caller's real answer after about 35 s, past `worker_rpc_timeout_seconds` and past 30 s; a `fresh_session` asked for during it refused `CLAIM_IN_A_TURN` through both doors and a second compaction refused in its own words; the ladder's own 30 s rung come due inside the compaction having sent nothing; and the owed task gone at the compaction's end, once |
+| `step6-every-refusal-gets-its-own-message-through-both-doors` | a handoff the endpoint refuses every time, a worker in a turn, a role `worker_backends` runs on Claude Code, role `controller`, and a suspended, a stopped and a failed worker | the refused handoff reported 200 `compacted: false` with Oh My Pi's own `Handoff generation failed`, the owed task sent again and no run reset; and `CLAIM_IN_A_TURN`, `CLAIM_NOT_ON_OMP`, `INVALID_ROLE` and `CLAIM_NOT_RUNNING` each word for word through both doors |
 | `step7-a-fresh-session-starts-each-worker-anew-with-what-its-issue-owes-it` | `legion claims retry --claim <token> --fresh-session` at the stopped planner, asked again while the daemon refuses it — admission's slot repair passes over a stopped worker, so the retry is what starts it, and the operation reaches no claim whose launch is in flight — then the controller's `fresh_session` at the root architect | each relaunched with no session to resume and running in a session that is not the one it recorded; the planner sent a task of its issue's current phase; the architect's new launch told its tree's catch-up; and the daemon's own line naming which door asked for each |
 | `step8-a-fresh-session-starts-a-worker-whose-process-is-gone` | the planner and the root architect, each in a turn its stand-in holds open, their panes' whole process groups killed with the driver's runtime holding its own reports of the claim back, then `legion claims retry --claim <token> --fresh-session` for the planner and the controller's `fresh_session` for the architect | each refused `CLAIM_IN_A_TURN` through both doors while its process is alive and in that turn; the daemon's read of the killed process answering uncertain, no death of the claim judged, and the claim still stored `working` over it; then 200, a new pane in a session that is not the one it recorded, and the task of the dead turn back marked interrupted — the planner's the task of its issue's current phase, and the architect's new launch told its tree's catch-up |
 
@@ -5375,7 +5377,7 @@ the run fails at step 2, `timed out waiting for a message on <R>'s implementer's
 LEGION_OMP_PATH=/opt/omp/bin/omp ANTHROPIC_BASE_URL=<model gateway> \
   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
   [LEGION_E2E_NATS_BIN=<nats-server>] [APPROVED_VERSION_NEWS_MODEL=<model>] \
-  [APPROVED_VERSION_NEWS_MODEL_KEY_FILE=<file>] [APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE=model-gateway-gce] \
+  [APPROVED_VERSION_NEWS_MODEL_KEY_FILE=<file>] [APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE=<gateway audience>] \
   [APPROVED_VERSION_NEWS_STEP=a4|off|answers] [APPROVED_VERSION_NEWS_ARM=head|base] [APPROVED_VERSION_NEWS_RUNS=<n>] \
   bash scripts/e2e/approved-version-news.sh [--part one|both] [--control | --base-commit <rev>]
 # → "approved version news e2e: PASS in <n>s (assertions: <counted>/<expected>; part two: a4 head 3/3 (head only: the base arm passed 10 of 10 at 578c6abb, main meets R4 since #4203); off head 3/3, base <p>/<n> (…); answers head 3/3 (head only: the base arm passed 10 of 10 at 578c6abb, the daemon's news task states the rule in both arms); model calls: <n>)", exit 0
@@ -5397,8 +5399,8 @@ The server must offer the `pgvector` extension that Dispatch's migrations create
 The `arguments` check refuses a DSN that is unset or whose host is not loopback with exit 2, before anything is built or extracted.
 Part two also needs `LEGION_OMP_PATH` (an executable), `ANTHROPIC_BASE_URL` (the model gateway) and a model key, each refused with exit 2 when it is missing; part one needs none of them.
 The model key is the key in the file `APPROVED_VERSION_NEWS_MODEL_KEY_FILE` names (default `/var/run/model-gateway-key/key`, where a Legion role pod mounts the gateway's key).
-Where that file holds no key, `APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE=model-gateway-gce` runs part two on the pod's own Google identity token for that audience in its place:
-a Kubernetes Job of the cluster's `builds` namespace labelled `builds.theorem.dev/model-gateway: "true"` holds no key, and signs in to the cluster model gateway with that token.
+Where that file holds no key, `APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE` names the audience the cluster model gateway takes a pod's identity token for, and part two runs on the pod's own Google identity token for that audience in its place:
+a Kubernetes Job of the cluster's `builds` namespace that carries the deployment's gateway label (`<deployment domain>/model-gateway: "true"`) holds no key, and signs in to the cluster model gateway with that token.
 The GKE metadata server mints the token, which lasts an hour, and `curl` fetches it.
 The `gateway-token` check mints it into a key file of the run's own scratch, mode 600, before anything is built, and a refresher in the background mints it again whenever the token in that file has 40 minutes left (`gateway_keep_seconds`), until the script ends;
 a mint that fails is said in the transcript and tried again 30 s later.
@@ -6687,7 +6689,7 @@ the caller does, with its work directory, which holds both (the profile holds `p
 
 ### The natives download
 
-OMP's native module (`pi_natives.linux-x64-modern.node` or `…-baseline.node`, the one the CPU selects, 124 MiB at the pin;
+OMP's native module (`pi_natives.linux-x64-modern.node` or `…-baseline.node`, the one the CPU selects, 125 MiB at the pin;
 builds before 18.11.0 wrote every variant they embed, about twice that) lives in `$HOME/.omp/natives/<omp version>-<digest prefix>/` (the version and the first 12 hexadecimal digits of the embedded addons' digest), and every profile under that `HOME` shares it; a profile has no natives of its own.
 `getNativesDir` (`@oh-my-pi/pi-natives/native/natives-dir.js`) takes the first of `PI_NATIVES_DIR`, `$OMP_DOWNLOAD_ROOT/natives`, `$XDG_CACHE_HOME/omp/natives` when `$XDG_CACHE_HOME/omp` exists, and `natives/` under `OMP_CONFIG_ROOT`, else under `$HOME/$PI_CONFIG_DIR` (`$HOME/.omp` when it is unset); the pinned build reads all of them, and none of `PI_NATIVES_DIR`, `OMP_DOWNLOAD_ROOT` and `OMP_CONFIG_ROOT` is set by any Legion process.
 OMP writes it on its first run under a `HOME` that has not run this OMP version, and in this script that run is `omp plugin install`.
@@ -8095,7 +8097,6 @@ Each item below names a function, then what it does.
 - `kind_sandbox_create NAME WORK`
 
   creates the cluster `NAME`, its kubeconfig a file of `WORK` (`kind_kubeconfig`) and its context `kind-NAME` (`kind_context`);
-  labels its one node (`kind_node`) `legion.dev/pool=legion`, the pool the runtime places every pod on;
   creates the `legion` namespace and checks kind's `standard` storage class
 
 - `kind_k ARGS…`

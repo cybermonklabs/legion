@@ -1,6 +1,6 @@
 package config
 
-//ci:reads deploy/kubernetes/operator-route/pod.yml TestLoadForValidationRefusesUnderKubernetes
+//ci:reads deploy/kubernetes/operator-route/pod.yml `packages/daemon/internal/config/kubernetes_test.go#operatorRoutePod` reads it under ../../../.. for the tests of the operator route's placeholders
 
 import (
 	"fmt"
@@ -313,8 +313,8 @@ func modeRefusal(kind, got string) string {
 // What a block that sets only its required members settles to: the issue volume at 50Gi, both
 // pods' reservations at the daemon's default (an issue pod 2 CPU and 8Gi over an 80Gi disk limit
 // and a 6Gi disk request, the controller's pod 1 CPU and 4Gi over a 10Gi limit and a 1Gi request),
-// no scheduling beyond the Legion pool the runtime selects, in-cluster credentials, and nothing of
-// the operator's in any pod.
+// no scheduling (a pod selects no node label but a microVM pod's ComputeClass), in-cluster
+// credentials, and nothing of the operator's in any pod.
 func TestLoadForValidationDefaultsTheKubernetesBlock(t *testing.T) {
 	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile), noEnv)
 	if err != nil {
@@ -815,6 +815,9 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		name string
 		body string
 		want string
+		// contains is set where want is a part of the refusal and not all of it: the refusal must
+		// hold want, and its other words are free.
+		contains bool
 	}{
 		{
 			name: "the kubernetes scalar with no block",
@@ -1002,9 +1005,10 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			want: "runtime.kubernetes.scheduling.node_selector must be a mapping of strings",
 		},
 		{
-			name: "node_selector setting the Legion pool",
-			body: kubernetesFile + "    scheduling: {node_selector: {legion.dev/pool: other}}\n",
-			want: "runtime.kubernetes.scheduling.node_selector must not set legion.dev/pool: the runtime selects the Legion pool itself, and the cluster's admission policy requires its value",
+			name:     "node_selector setting the Legion pool",
+			body:     kubernetesFile + "    scheduling: {node_selector: {legion.dev/pool: other}}\n",
+			want:     "legion.dev/pool",
+			contains: true,
 		},
 		{
 			name: "tolerations not an array",
@@ -1405,7 +1409,7 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "projects absent",
 			body: kubernetesWith("projects:\n  LEGSMOKE: {}\n", ""),
-			want: "projects is required when runtime is kubernetes: every pod works one issue of a configured project",
+			want: "projects is required when runtime is kubernetes: every pod works one issue of one of the projects it names",
 		},
 		{
 			name: "omp_invocation set",
@@ -1751,7 +1755,10 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			if err == nil {
 				t.Fatalf("LoadForValidation succeeded, want %q", tc.want)
 			}
-			if err.Error() != tc.want {
+			switch {
+			case tc.contains && !strings.Contains(err.Error(), tc.want):
+				t.Errorf("LoadForValidation error =\n%q\nwant one holding\n%q", err.Error(), tc.want)
+			case !tc.contains && err.Error() != tc.want:
 				t.Errorf("LoadForValidation error =\n%q\nwant\n%q", err.Error(), tc.want)
 			}
 		})

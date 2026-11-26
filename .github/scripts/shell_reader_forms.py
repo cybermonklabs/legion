@@ -49,7 +49,12 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from shell_commands import INTERPRETERS, RUNNERS
+# INTERPRETERS and RUNNERS name the main process's own reader, for the path family. They are
+# imported only when this is not the --read child: that child must import the BASE tree's
+# shell_commands (read_here inserts its directory first and clears any cached module), so importing
+# shell_commands here would cache this tree's and make --base compare the head with itself.
+if "--read" not in sys.argv:
+    from shell_commands import INTERPRETERS, RUNNERS
 
 HERE = Path(__file__).resolve().parent
 MISSES = HERE.parent / "shell-reader-misses.tsv"
@@ -135,7 +140,7 @@ CONTEXTS["same-line-hash-after-substitution-before-redirect"] = lambda x: x + " 
 # interpreter.  The three system directories are the only paths the reader may unwrap; the other
 # four must remain scripts the release check names.
 PATH_PREFIXES = ("/usr/bin", "/bin", "/usr/local/bin", "scripts", "out", "./scripts", "packages/x/scripts")
-PATH_NAMES = tuple(name for name in sorted(set(INTERPRETERS) | set(RUNNERS)) if name != ".")
+PATH_NAMES = tuple(name for name in sorted(set(INTERPRETERS) | set(RUNNERS)) if name != ".") if "--read" not in sys.argv else ()
 # A `$((` that is not arithmetic still takes quotes, but never comments.  Cross these openers and
 # tails with every context below, so a later scanner change cannot cover only the planted case.
 NONARITH_OPENERS = (": $(( $((echo 1)", "(( $((echo 1)", "x=$(( $((echo 1)")
@@ -314,6 +319,8 @@ def release_finds(found: list[list[str]]) -> bool:
 def read_here(directory: str) -> None:
     """The --read mode: reads {id: {reader: text}} on stdin, prints {id: {reader: found}}."""
     sys.path.insert(0, directory)
+    # Import the reader of `directory`, never a copy this process cached: --base relies on it.
+    sys.modules.pop("shell_commands", None)
     import shell_commands
     guard = None
     script = Path(directory, "check-log-guard.sh")

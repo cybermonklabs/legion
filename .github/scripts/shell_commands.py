@@ -67,9 +67,11 @@ them, and .github/shell-reader-misses.tsv lists the forms it knows it misses.
 
 Each command sheds its leading `VAR=value` and `name[N]=value` assignments and the keywords that
 precede a command (if, then, for, do, `{`, `}`, …), env, exec and time with their options, by name
-or by path (`/usr/bin/env`), and the wrappers that run the words after them (`ci_log_guard` and
+or by a path under a system executable directory (`/usr/bin/env`, `/bin/`, `/usr/local/bin/`;
+named_program), and the wrappers that run the words after them (`ci_log_guard` and
 `ci_log_guard_stderr`, .github/scripts/ci-log-guard.sh's), and the first word left is the command;
-an interpreter there, by name or by path (one of INTERPRETERS: bash, sh, dash, zsh, source, `.`),
+an interpreter there, by name or by such a system path (one of INTERPRETERS: bash, sh, dash, zsh,
+source, `.`),
 is looked through, past its flags and the option name an `-o`, `+o`, `-O` or `+O` takes, to the
 word after it (`bash -o pipefail scripts/x.sh` runs `scripts/x.sh`), and the script string behind
 its `-c`, like the words behind `eval`, is scanned the same way (`sh -c 'bun install'`, `eval "bun
@@ -79,11 +81,16 @@ install"` and `eval bun install` run `bun`).
 import functools
 import itertools
 import re
+from collections.abc import Container
 
 EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=")
-# An element assignment of an indexed array: `name[N]=value`.
+# An element assignment of an indexed array whose index is a plain number: `name[N]=value`.
 ELEMENT_ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\[([0-9]+)\]=(.*)", re.S)
+# Any element assignment, `name[subscript]=value` or `name[subscript]+=value`, with its value: the
+# subscript may be arithmetic (`a[1-1]=`), negative (`a[-2]=`) or a key, which this reader does not
+# evaluate; under every_body the value is read as a command, since bash runs what it names.
+ELEMENT_VALUE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[[^]]*\]\+?=(.*)", re.S)
 # The `[N]=` or `[key]=` before a value of an array written with its index (`a=([0]=cmd)`).
 INDEXED_VALUE = re.compile(r"^\[[^]]*\]=")
 # A program invoked by path is a runner or interpreter only under a system executable directory.
@@ -91,8 +98,10 @@ INDEXED_VALUE = re.compile(r"^\[[^]]*\]=")
 SYSTEM_PROGRAMS = ("/bin/", "/usr/bin/", "/usr/local/bin/")
 
 
-def named_program(word: str, names: frozenset | set) -> bool:
-    """Whether `word` names one of `names`: exactly, or by its last path part under SYSTEM_PROGRAMS."""
+def named_program(word: str, names: Container[str]) -> bool:
+    """Whether `word` names one of `names`: exactly, or, under a system executable directory
+    (SYSTEM_PROGRAMS: /bin/, /usr/bin/, /usr/local/bin/), by its last path part. A repository file
+    named `scripts/env` or `out/sh` is its own command, never env or sh."""
     return word in names or (word.startswith(SYSTEM_PROGRAMS) and word.rsplit("/", 1)[-1] in names)
 
 
@@ -221,6 +230,15 @@ class Scanner:
                             changed = values[:index] + [value] + values[index + 1:]
                             if changed not in lists:
                                 lists.append(changed)
+            if self.every_body and not self.collecting:
+                # `a[N]=cmd`, `a[1-1]+=cmd`, `a[key]=cmd`: bash runs what the value names where the
+                # element is later expanded, so every_body reads each element assignment's value as
+                # a command, whatever the subscript (ELEMENT_ASSIGNMENT collects only plain indexes
+                # into the array; this reaches the rest).
+                for word in self.words[:at]:
+                    value = ELEMENT_VALUE.fullmatch(word)
+                    if value and value.group(1):
+                        self.commands += command_of(value.group(1).split(), self)
             for words in self.expand(self.words):
                 self.line_words.append(list(words))
                 self.line_pipes.append(self.pipe_in)
@@ -484,14 +502,17 @@ class Scanner:
                     open_subs.append(("tick", quote, self.suspend("`")))
                     quote = None
             elif char == "$" and text[i + 1:i + 3] == "((":
-                # `$((…))` always takes quotes but never a shell comment. A non-arithmetic form
-                # holds shell text, so a child reads the commands it runs.
-                end = arithmetic_end(text, i + 1)
+                # `$((…))` always takes quotes but never a shell comment. An arithmetic one is a
+                # value whose substitutions run; a non-arithmetic one is a `$(` command substitution
+                # of a subshell, so the `$` stays in the word and a child reads its inner commands.
                 if is_arithmetic(text, i + 1):
                     self.add(char)
+                    end = arithmetic_end(text, i + 1)
                     self.scan_substitutions(text[i + 3:end - 2])
                 else:
-                    self.commands += self.child().scan(text[i + 3:end - 2])
+                    inner, end = nonarithmetic_substitution(text, i)
+                    self.add(char)
+                    self.commands += self.child().scan(inner)
                 i = end
                 continue
             elif char == "$" and after == "(":
@@ -680,6 +701,17 @@ def is_arithmetic(text: str, i: int) -> bool:
     return text[inner:inner + 1] == ")"
 
 
+def nonarithmetic_substitution(text: str, i: int):
+    """A `$((` at `i` (`text[i]` is `$`) that is not arithmetic is a `$(` command substitution whose
+    content opens with a subshell (`$((cmd) | sort)`, `$((echo 1) # x\\n) …)`). Returns its inner
+    text, between the `$(` and the `)` that closes it, and the index just past that `)`, so a caller
+    reads the inner as the commands it runs; returns None for an arithmetic `$((…))` or other text."""
+    if text[i:i + 3] != "$((" or is_arithmetic(text, i + 1):
+        return None
+    end = arithmetic_end(text, i + 1, commands=True)
+    return text[i + 2:end - 1], end
+
+
 @functools.lru_cache(maxsize=4096)
 def arithmetic_end(text: str, i: int, commands: bool = False) -> int:
     """Just past the `)` that closes the `(` at `i` (for a `((`, past its `))`), counting the
@@ -753,16 +785,26 @@ def double_quote_end(text: str, i: int) -> int:
 
 
 def substitutions(text: str) -> list[str]:
-    """The text inside each outermost `$(…)` (not `$((`) and backtick pair of `text`, which bash
-    expands in an unquoted here-document's body, in arithmetic and in a case pattern. Outside a
-    substitution a quote there is a character, not a quote; inside one, the substitution's own
-    quotes hold its parentheses, as bash's parse of it does (arithmetic_end)."""
+    """The text inside each outermost `$(…)` (a non-arithmetic `$((` among them, which is a `$(`
+    command substitution of a subshell: nonarithmetic_substitution) and backtick pair of `text`,
+    which bash expands in an unquoted here-document's body, in arithmetic and in a case pattern.
+    Outside a substitution a quote there is a character, not a quote; inside one, the substitution's
+    own quotes hold its parentheses, as bash's parse of it does (arithmetic_end)."""
     found, i = [], 0
     while i < len(text):
         if text[i] == "\\":
             i += 2
             continue
-        if text.startswith("$(", i) and not text.startswith("$((", i):
+        if text.startswith("$((", i):
+            sub = nonarithmetic_substitution(text, i)
+            if sub:
+                inner, end = sub
+                found.append(inner)
+                i = end
+            else:  # an arithmetic `$((…))` runs no command of its own; its own substitutions do
+                i += 2
+            continue
+        if text.startswith("$(", i):
             end = arithmetic_end(text, i + 1, commands=True)
             found.append(text[i + 2:end - 1])
             i = end
@@ -857,7 +899,7 @@ def xargs_runs_lines(words: list[str]) -> bool:
             token = "{}"
         elif flag in RUNNERS["xargs"][0] and rest:
             rest.pop(0)
-    if not token or not rest or rest[0].rsplit("/", 1)[-1] not in STDIN_SHELLS:
+    if not token or not rest or not named_program(rest[0], STDIN_SHELLS):
         return False
     for at, word in enumerate(rest[1:], 1):
         if word.startswith("-") and not word.startswith("--") and "c" in word[1:]:
@@ -955,7 +997,8 @@ NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 def shed_prefix(words: list[str], keywords: frozenset | set = frozenset(), runners: tuple = ("env", "exec", "time")) -> None:
     """Takes off `words`, in place, what stands before the command: `VAR=value` assignments, the
     words of `keywords` (SKIP_WORDS when none are given), each of `runners` with its options, by
-    name or by path (strip_runner), `function NAME` (a body on its line follows), and coproc with the NAME a
+    name or by a path under /bin, /usr/bin or /usr/local/bin (named_program, strip_runner), `function
+    NAME` (a body on its line follows), and coproc with the NAME a
     compound command after it takes."""
     keywords = keywords or SKIP_WORDS
     while words:
