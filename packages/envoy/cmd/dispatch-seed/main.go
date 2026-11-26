@@ -1,8 +1,8 @@
 // Command dispatch-seed fills an empty, migrated Dispatch database with the large, deterministic
 // data set INFRA-325's measurements are taken on: ten times production's row counts at --scale 1,
 // and that shape times --scale at any other. Every key, uuid and timestamp comes from one fixed
-// base time and one fixed random seed, and the block ids from a counter the run itself holds
-// (seedRun.blockIDs), so two runs at one scale write the same rows: a measurement taken
+// base time and one fixed random seed, and the block ids from a counter each version's render
+// holds (renderVersion), so two runs at one scale write the same rows: a measurement taken
 // before a change and one taken after it read the same data.
 //
 // It writes the rows and then indexes them with the server's own indexers (refs.PlanBlocks for a

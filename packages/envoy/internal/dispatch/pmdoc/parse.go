@@ -100,17 +100,13 @@ func Parse(markdown string) (*Node, error) {
 }
 
 // ParseWithBlockIDs is Parse with mint, rather than the package-level generator
-// (SetBlockIDGenerator), minting the id of every block the markdown leaves without one. A caller
-// whose block ids come from a counter of its own - cmd/dispatch-seed, whose data set is the same
-// on every run - passes that counter here instead of installing it for the whole process, so two
-// such callers parse at once without rendering each other's documents under the other's counter.
+// (SetBlockIDGenerator), minting the id of every block the markdown leaves without one, so a
+// caller whose ids come from a counter of its own (cmd/dispatch-seed's renderVersion) stamps a
+// parse from it without installing it for the whole process. mint must not be nil, and it must
+// keep returning ids that are new and not empty: the stamp asks it again until it gets one, so a
+// mint that repeats itself never returns.
 func ParseWithBlockIDs(markdown string, mint func() string) (*Node, error) {
-	doc, err := parseUnstamped(markdown, fromStart, true, NewWriteBudget())
-	if err != nil {
-		return nil, err
-	}
-	ensureBlockIDs(doc, mint)
-	return doc, nil
+	return parseStampedAt(markdown, fromStart, NewWriteBudget(), mint)
 }
 
 // ParseRendering is Parse of markdown the renderer wrote, a read-back, whose short rows are the
@@ -138,17 +134,18 @@ func ParseWithSourceStarts(markdown string) (*Node, []int, error) {
 }
 
 func parseStamped(markdown string, budget *WriteBudget) (*Node, error) {
-	return parseStampedAt(markdown, fromStart, budget)
+	return parseStampedAt(markdown, fromStart, budget, mintBlockID)
 }
 
 // parseStampedAt is parseStamped of markdown that stands at at in what the caller wrote, so a
-// refusal names the caller's line and charges nothing for what the server wrote ahead of it.
-func parseStampedAt(markdown string, at origin, budget *WriteBudget) (*Node, error) {
+// refusal names the caller's line and charges nothing for what the server wrote ahead of it, with
+// mint minting the id of every block left without one (ensureBlockIDs).
+func parseStampedAt(markdown string, at origin, budget *WriteBudget, mint func() string) (*Node, error) {
 	doc, err := parseUnstamped(markdown, at, true, budget)
 	if err != nil {
 		return nil, err
 	}
-	EnsureBlockIDs(doc)
+	ensureBlockIDs(doc, mint)
 	return doc, nil
 }
 
@@ -659,7 +656,7 @@ func parseTableRows(markdown string, width int, budget *WriteBudget) ([]*Node, b
 	// element budget nothing, and no refusal of its elements names one.
 	header := syntheticTableHeader(width)
 	firstLine := 1 + strings.Count(markdown[:start], "\n") - strings.Count(header, "\n")
-	parsed, err := parseStampedAt(header+markdown[start:end]+"\n", origin{line: firstLine, server: len(header)}, budget)
+	parsed, err := parseStampedAt(header+markdown[start:end]+"\n", origin{line: firstLine, server: len(header)}, budget, mintBlockID)
 	// The parse opens with the header written above, so the table under it is the one document-level
 	// table with nothing before it; any other is the fragment's own and keeps its own refusal.
 	if wide := (wideRow{}); errors.As(err, &wide) && wide.firstBlock {

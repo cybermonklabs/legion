@@ -31,11 +31,9 @@ type seedRun struct {
 	// bands counts the versions written in each markdown size band, for the report.
 	bands map[string]int
 
-	// blockCounter numbers the blocks of the document being rendered (blockIDs), and tableRow is
-	// the block id of the first table's first body row, which every latest version shares and
-	// which a table-row anchor names (renderVersion).
-	blockCounter int
-	tableRow     string
+	// tableRow is the block id of the first table's first body row, which every latest version
+	// shares and which a table-row anchor names (renderVersion).
+	tableRow string
 
 	// subjects are the named rows the measurements take: filled as the run writes them.
 	subject subjects
@@ -70,12 +68,6 @@ const (
 func (r *seedRun) do(ctx context.Context) error {
 	r.bands = map[string]int{}
 	r.random = rand.New(rand.NewPCG(randomSeed+1, randomSeed^0x5851f42d4c957f2d))
-	// Every block id of every document comes from this run's own counter, reset for each
-	// document (blockIDs, startDocument), so a run writes the same block ids as the run before
-	// it. The counter is passed to the one parse whose ids are stored (renderVersion) rather
-	// than installed in pmdoc for the whole process, so two runs at once - the package's tests
-	// seed in parallel - never draw from each other's counter (dispatch://INFRA-1075). Every
-	// other parse of a run throws its ids away and takes pmdoc's own UUIDs.
 
 	planned := time.Now()
 	r.plan = newPlan(r.sizes)
@@ -112,25 +104,6 @@ func (r *seedRun) do(ctx context.Context) error {
 		fmt.Fprintf(r.out, "%s: done in %s\n", step.name, time.Since(started).Round(time.Millisecond))
 	}
 	return r.report(ctx)
-}
-
-// blockIDs is the block id generator every document render uses: b1, b2, … in document order,
-// restarted for each document (startDocument). pmdoc stamps every block that carries no id
-// (ParseWithBlockIDs), so the ids of one document are the same in every run, and a mention
-// naming `#b-b2` names the same block each time.
-func (r *seedRun) blockIDs() func() string {
-	return func() string {
-		r.blockCounter++
-		return fmt.Sprintf("b%d", r.blockCounter)
-	}
-}
-
-// startDocument restarts the block id counter, so the next document's blocks are numbered from
-// one. Only the render of the document's latest version draws from the counter
-// (renderVersion), and it draws once per block in document order, so the counter is restarted
-// for the document rather than counted on.
-func (r *seedRun) startDocument() {
-	r.blockCounter = 0
 }
 
 // inBatches runs write over [0, total) in transactions of at most size rows, reporting progress

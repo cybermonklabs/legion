@@ -16,8 +16,9 @@ var blockIDGenerator = struct {
 	mint func() string
 }{mint: newBlockID}
 
-// SetBlockIDGenerator replaces the block ID generator. Passing nil restores UUID v4 IDs
-// (newBlockID). Fixture generators and tests use this to make generated documents deterministic.
+// SetBlockIDGenerator replaces the block ID generator for the whole process. Passing nil restores
+// UUID v4 IDs (newBlockID). Tests use it to make the ids of a parse deterministic; a caller that
+// needs its own ids beside other parses passes its generator to ParseWithBlockIDs instead.
 func SetBlockIDGenerator(mint func() string) {
 	blockIDGenerator.Lock()
 	defer blockIDGenerator.Unlock()

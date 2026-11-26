@@ -127,9 +127,7 @@ func TestParseStampsBlocksWithInjectedGenerator(t *testing.T) {
 // ParseWithBlockIDs stamps every block from the generator its caller hands it and from nothing
 // else: two parses running at once, each with a counter of its own, each number their blocks 1,
 // 2, … in document order under their own prefix, and each tree is Parse's apart from its ids.
-// Had the call installed its counter for the whole process (SetBlockIDGenerator), as
-// cmd/dispatch-seed's run did, the two would draw from each other's counter, or from the default
-// UUIDs once the first put the default back (dispatch://INFRA-1075).
+// A generator installed for the whole process (SetBlockIDGenerator) fails this.
 func TestParseWithBlockIDsStampsFromItsCallersGeneratorAlone(t *testing.T) {
 	t.Parallel()
 	var builder strings.Builder

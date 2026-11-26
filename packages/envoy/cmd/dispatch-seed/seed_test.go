@@ -24,11 +24,9 @@ import (
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
-// seedAtOnce seeds each of databases at once, a goroutine each, and answers each run. A run's
-// block ids come from a counter the run itself holds and hands to the one parse that stores them
-// (seedRun.blockIDs, renderVersion), and each database is its test's own (storetest.Open), so
-// runs in one process write nothing of each other's: the seeds of a test run at once, and so do
-// those of the package's parallel tests (dispatch://INFRA-1075).
+// seedAtOnce seeds each of databases at once, a goroutine each, and answers each run. Each
+// database is its test's own (storetest.Open) and each render its own block ids (renderVersion),
+// so the seeds of a test, and those of the package's parallel tests, run at once in one process.
 func seedAtOnce(t *testing.T, databases ...*store.Store) []*seedRun {
 	t.Helper()
 	runs := make([]*seedRun, len(databases))
