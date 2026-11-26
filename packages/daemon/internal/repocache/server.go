@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"maps"
 	"net"
 	"net/http"
@@ -60,8 +61,9 @@ const BucketEnv = "LEGION_REPOSITORY_CACHE_BUCKET"
 // <Root>/<owner>/<repo>.git, workspace.FeedRepository's layout), the provisioning token's file, the
 // file holding the bearer token its clients present (read again for every request, so a token the
 // Secret's projection rewrote is the one taken), where each fetch's one-shot credential goes (the
-// container's TMPDIR), how long between fetches, the address it serves on, its log, and the runner
-// its git runs under.
+// container's TMPDIR), how long between fetches, the address it serves on, its log, the runner
+// its git runs under, and the logger its HTTP server writes the errors of a connection to (nil is
+// Go's standard logger).
 //
 // Bucket is the Cloud Storage bucket the cache keeps each pack it serves in (BucketEnv), or empty
 // for none: a cache with none serves /tar alone and sends Google nothing, and one with a bucket
@@ -79,6 +81,7 @@ type Options struct {
 	Bucket         string
 	Log            func(line string)
 	Run            workspace.Runner
+	ErrorLog       *log.Logger
 }
 
 // Health is what GET /healthz answers: whether the cache has a clone to serve, its repository, the
@@ -229,7 +232,7 @@ func Serve(ctx context.Context, opts Options) error {
 	defer c.closeStore()
 	c.health.Store(&Health{Repo: opts.Repo.String()})
 	c.loadRepackFailure()
-	server := &http.Server{Handler: c.handler(), ReadHeaderTimeout: 10 * time.Second}
+	server := &http.Server{Handler: c.handler(), ReadHeaderTimeout: 10 * time.Second, ErrorLog: opts.ErrorLog}
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()
 	defer func() {

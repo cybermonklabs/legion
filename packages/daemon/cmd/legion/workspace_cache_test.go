@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/repocache/fakegcs"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -44,7 +43,7 @@ func (v *issueVolume) cacheArgs() []string {
 // Every refusal `cache` makes happens before it runs git, listens or writes anything: its root is
 // as it was, and no one-shot credential is left in its TMPDIR.
 func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		args func(v *issueVolume) []string
@@ -68,7 +67,7 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 			// --repo is read first: the root and the token are wrong too.
 			name: "a bad --repo, before every other input",
 			args: func(*issueVolume) []string { return []string{"cache", "--repo", "acme", "--root", "cache"} },
-			env:  func(t *testing.T, _ *issueVolume) { fixtureenv.Unset(t, "LEGION_PROVISION_TOKEN_FILE") },
+			env:  func(t *testing.T, v *issueVolume) { delete(v.env, "LEGION_PROVISION_TOKEN_FILE") },
 			code: 1,
 			says: func(*issueVolume) string { return `--repo must be "owner/name" (got "acme")` },
 		},
@@ -86,27 +85,27 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 		},
 		{
 			name: "LEGION_REPOSITORY_CACHE_TOKEN_FILE unset",
-			env:  func(t *testing.T, _ *issueVolume) { fixtureenv.Unset(t, "LEGION_REPOSITORY_CACHE_TOKEN_FILE") },
+			env:  func(t *testing.T, v *issueVolume) { delete(v.env, "LEGION_REPOSITORY_CACHE_TOKEN_FILE") },
 			code: 1,
 			says: func(*issueVolume) string { return "LEGION_REPOSITORY_CACHE_TOKEN_FILE is not set" },
 		},
 		{
 			name: "a bearer token file that is blank",
-			env: func(t *testing.T, _ *issueVolume) {
-				t.Setenv("LEGION_REPOSITORY_CACHE_TOKEN_FILE", writeCacheToken(t, " \n"))
+			env: func(t *testing.T, v *issueVolume) {
+				v.env["LEGION_REPOSITORY_CACHE_TOKEN_FILE"] = writeCacheToken(t, " \n")
 			},
 			code: 1,
 			says: func(*issueVolume) string { return "LEGION_REPOSITORY_CACHE_TOKEN_FILE names " },
 		},
 		{
 			name: "LEGION_PROVISION_TOKEN_FILE unset",
-			env:  func(t *testing.T, _ *issueVolume) { fixtureenv.Unset(t, "LEGION_PROVISION_TOKEN_FILE") },
+			env:  func(t *testing.T, v *issueVolume) { delete(v.env, "LEGION_PROVISION_TOKEN_FILE") },
 			code: 1,
 			says: func(*issueVolume) string { return "LEGION_PROVISION_TOKEN_FILE is not set" },
 		},
 		{
 			name: "a provisioning token file that is absent",
-			env:  func(t *testing.T, v *issueVolume) { t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token+".absent") },
+			env:  func(t *testing.T, v *issueVolume) { v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token + ".absent" },
 			code: 1,
 			says: func(v *issueVolume) string {
 				return "LEGION_PROVISION_TOKEN_FILE names " + v.token + ".absent, which could not be read"
@@ -126,7 +125,7 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 		},
 		{
 			name: "no git on PATH",
-			env:  func(t *testing.T, _ *issueVolume) { t.Setenv("PATH", t.TempDir()) },
+			env:  func(t *testing.T, v *issueVolume) { v.env["PATH"] = t.TempDir() },
 			code: 1,
 			says: func(*issueVolume) string { return "git is not on PATH" },
 		},
@@ -145,9 +144,8 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := newIssueVolume(t).withRemote(t, "main")
-			v.setenv(t)
-			t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)
-			t.Setenv("LEGION_REPOSITORY_CACHE_TOKEN_FILE", writeCacheToken(t, cmdCacheToken))
+			v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token
+			v.env["LEGION_REPOSITORY_CACHE_TOKEN_FILE"] = writeCacheToken(t, cmdCacheToken)
 			if tc.env != nil {
 				tc.env(t, v)
 			}
@@ -155,7 +153,7 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 			if tc.args != nil {
 				args = tc.args(v)
 			}
-			code, stdout, stderr := runWorkspaceInitHere(args)
+			code, stdout, stderr := v.run(args)
 			if code != tc.code || !strings.Contains(stderr, tc.says(v)) {
 				t.Fatalf("exit %d, stderr %q; want %d naming %q", code, stderr, tc.code, tc.says(v))
 			}
@@ -179,18 +177,17 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 // outside an issue's volume (workspace.InitExitOutsideVolume) is an issue pod's alone. Here GitHub
 // answers the cache's first clone with a 403, and the cache, with no clone to serve, ends.
 func TestWorkspaceInitCacheExitsOneWhenGitHubRefusesItsFirstClone(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
+	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
 	attempts := v.failClones(t, "remote: Write access to repository not granted.\nfatal: unable to access 'https://github.com/acme/widgets/': The requested URL returned error: 403\n")
-	v.setenv(t)
-	t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)
-	t.Setenv("LEGION_REPOSITORY_CACHE_TOKEN_FILE", writeCacheToken(t, cmdCacheToken))
+	v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token
+	v.env["LEGION_REPOSITORY_CACHE_TOKEN_FILE"] = writeCacheToken(t, cmdCacheToken)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var stdout, stderr lockedBuffer
 	exited := make(chan int, 1)
 	go func() {
-		exited <- run(ctx, append([]string{"legion", "workspace-init"}, v.cacheArgs()...), &stdout, &stderr)
+		exited <- v.runContext(ctx, v.cacheArgs(), &stdout, &stderr)
 	}()
 
 	select {
@@ -212,17 +209,16 @@ func TestWorkspaceInitCacheExitsOneWhenGitHubRefusesItsFirstClone(t *testing.T) 
 // holds no token on the volume, and
 // exits 0 once stopped.
 func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
+	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
-	v.setenv(t)
-	t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)
-	t.Setenv("LEGION_REPOSITORY_CACHE_TOKEN_FILE", writeCacheToken(t, cmdCacheToken+"\n"))
+	v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token
+	v.env["LEGION_REPOSITORY_CACHE_TOKEN_FILE"] = writeCacheToken(t, cmdCacheToken+"\n")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var stdout, stderr lockedBuffer
 	exited := make(chan int, 1)
 	go func() {
-		exited <- run(ctx, append([]string{"legion", "workspace-init"}, v.cacheArgs()...), &stdout, &stderr)
+		exited <- v.runContext(ctx, v.cacheArgs(), &stdout, &stderr)
 	}()
 
 	address := ""
@@ -322,7 +318,7 @@ func cacheGet(t *testing.T, ctx context.Context, url, bearer string) (int, http.
 // sends the double nothing and /packs is the mux's 404, naming no repository. Either way no line it
 // prints holds a signed address, a V4 parameter, its bearer or the planted ref's contents.
 func TestWorkspaceInitCacheUsesTheBucketWhenSet(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (STORAGE_EMULATOR_HOST and the bucket's); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
+	// Not parallel: it sets STORAGE_EMULATOR_HOST for the whole process (startPacksCache), which the cache's bucket reads there as Google's clients do.
 	for _, tc := range []struct {
 		name   string
 		bucket bool
