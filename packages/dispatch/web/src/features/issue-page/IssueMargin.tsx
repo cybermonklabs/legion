@@ -9,7 +9,7 @@ import {
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import type { Artifact, IssueDetails, UserState } from "../../api/types";
+import type { Artifact, IssueDetails, ReferenceTarget, UserState } from "../../api/types";
 import {
   pageAvatar,
   pageFailedText,
@@ -34,10 +34,16 @@ import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
 import { listedEdges, ReferencedBy } from "../refs/ReferencedBy";
 import { EVENT_FRESH, referencesQuery, standsFailed } from "../refs/reference-target";
-import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import {
+  buildDispatchReference,
+  buildIssuePath,
+  type DispatchReferenceRoute,
+  parseNodeReference,
+  referenceHref,
+} from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { BlockedByControl } from "./BlockedByControl";
+import { BlockedByControl, IssueLine } from "./BlockedByControl";
 import {
   DetailsErrorLine,
   retryRead,
@@ -74,10 +80,20 @@ import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
 import { IssuePins } from "./IssuePins";
 import { IssueRouteControl } from "./IssueRouteControl";
 import { statusGlyph, statusTone } from "./issue-status";
+import { drawnLine, firstLineOf } from "./issue-tree";
 import { useMarginDrawer, useMarginDrawsSlot } from "./margin-slot";
+import { NodeGlyph } from "./NodeGlyph";
 import { NoTooltips } from "./NoTooltips";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
-import { CONTROL_LABELS, FILE_WORDS, issueStatusWord, PROGRESS_NOUNS } from "./page-words";
+import {
+  CONTROL_LABELS,
+  FILE_WORDS,
+  GLYPH_TOKENS,
+  issueStatusWord,
+  NODE_REFERENCES_WORDS,
+  PROGRESS_NOUNS,
+  STATE_LINES,
+} from "./page-words";
 import { ROW_LINK } from "./row-references";
 import { StatusGlyph } from "./StatusGlyph";
 import { firstUsable } from "./usable-control";
@@ -129,6 +145,69 @@ function issueTitleIn(read: ReferenceTargetsAnswer | undefined, key: string): st
 function keptUntilFailed(queryClient: QueryClient, queryKey: QueryKey) {
   return <T,>(before: T | undefined): T | undefined =>
     (queryClient.getQueryState(queryKey)?.errorUpdateCount ?? 0) > 0 ? undefined : before;
+}
+
+/** The kinds of item an issue can be filed out of (INFRA-1253's `filed_from`). */
+type FiledItemKind = "ask" | "comment" | "message";
+
+/** The kind of item `route` names, where `route` is the address of an issue's `filed_from`: an
+ *  ask, a comment or a message of an issue, or an ask or a comment of a project's document, the
+ *  forms the contract gives that field (`IssueDetails["filed_from"]`); undefined for any other
+ *  address, which names no item an issue is filed out of. */
+function filedItemKind(route: DispatchReferenceRoute | undefined): FiledItemKind | undefined {
+  if (route === undefined) return undefined;
+  if (route.kind === "document") return route.item?.kind;
+  return route.kind === "ask" || route.kind === "comment" || route.kind === "message"
+    ? route.kind
+    : undefined;
+}
+
+/**
+ * The item an issue was filed out of, as Details names it, in the form of Details' list of what
+ * references a row (`NodeReferences.tsx`): the page's word for its kind
+ * (`NODE_REFERENCES_WORDS.kinds`, so an ask is a question), then its first line (`firstLineOf` of
+ * the words its names read answers, an ask's question or a comment's or a message's body) as the
+ * way to it. While that read has not answered, or answers no words for it, the word alone is the
+ * way to it, since an address is no name. An item Dispatch answers gone - deleted, or one the
+ * reader may not see - opens no page, so it is drawn as the page's chip draws one (`NodeRow.tsx`'s
+ * `Chip`): its word, then Deleted, with no link.
+ */
+function FiledItemLine({
+  kind,
+  route,
+  target,
+}: {
+  kind: FiledItemKind;
+  route: DispatchReferenceRoute;
+  target: ReferenceTarget | undefined;
+}): ReactNode {
+  const word = NODE_REFERENCES_WORDS.kinds[kind];
+  const href = referenceHref(route);
+  const gone = target?.gone === true;
+  const line = target === undefined || gone ? "" : drawnLine(firstLineOf(target.name));
+  const named = line !== "";
+  // The way to the item: its first line, which is its author's words, or the page's word alone.
+  const marks = named ? authorText : pageChrome;
+  return (
+    <span className="block w-full min-w-0 [overflow-wrap:anywhere]">
+      {named || gone ? (
+        <>
+          <span className={`text-xs ${pageQuietText}`} {...pageChrome}>
+            {word}
+          </span>{" "}
+        </>
+      ) : null}
+      {gone ? (
+        <span {...pageChrome}>{CONTROL_LABELS.target_gone}</span>
+      ) : href === undefined ? (
+        <span {...marks}>{named ? line : word}</span>
+      ) : (
+        <Link className={`dispatch-inline-link ${ROW_LINK} ${pageInkText}`} to={href} {...marks}>
+          {named ? line : word}
+        </Link>
+      )}
+    </span>
+  );
 }
 
 /**
@@ -209,10 +288,11 @@ export function IssueMarginCards({
  *
  * The details slot draws it once and appends it to the shell's drawer, so nothing in it is
  * thrown away as the reader closes and opens Details. The titles of the issues this one waits
- * on, what waits on it and the titles of those, and its links on GitHub it reads only while
- * Details and its Development are open, and what references the issue only while Details and its
- * References are open with its Referenced by list, so a load that leaves Details shut costs no
- * request for any of them.
+ * on, what waits on it and the titles of those, the names of the issue it repeats and of the
+ * item it was filed out of, and its links on GitHub it reads only while Details and its
+ * Development are open, and what references the issue only while Details and its References are
+ * open with its Referenced by list, so a load that leaves Details shut costs no request for any
+ * of them.
  */
 export function IssueMarginPanel({
   documentArtifact,
@@ -314,8 +394,9 @@ export function IssueMarginPanel({
   );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   // The reads Details makes beyond the issue - the titles of the issues this one waits on, what
-  // waits on it and the titles of those, its links on GitHub, and what references it - are made
-  // only while the drawer is open, so a load that leaves it shut costs no request for them.
+  // waits on it and the titles of those, the names of the issue's two relations, its links on
+  // GitHub, and what references it - are made only while the drawer is open, so a load that
+  // leaves it shut costs no request for them.
   const reading = useMarginDrawer()?.open === true;
   // A closed section keeps its rows, hidden (`PropertySection`), so each of those reads is made
   // only while its own section is open too - all but the last are of rows in Development, where a
@@ -418,6 +499,51 @@ export function IssueMarginPanel({
   const firstWaiting = () => blocksValue.current?.querySelector<HTMLElement>("a[href]");
   const blockingRetry = useRetryHandOff(() => firstWaiting() ?? blocksNone.current);
   const waitingRetry = useTitlesRetry(waitingTitles, waitingRead.queryKey, firstWaiting);
+  // The issue this one repeats (`duplicate_of`) and the item it was filed out of (`filed_from`),
+  // as INFRA-1253's issue read answers them: each has a row only where the issue holds it. The
+  // duplicate's title and the item's words are one names read of the two addresses, made only
+  // while Development is open, as the titles of the issues this one waits on are, and read again
+  // as those are (`EVENT_FRESH`): on an edit or a delete of the item, and on a new title of the
+  // duplicate (`api/event-refresh.ts`'s `namesReadsNaming`). A relation changed in another
+  // session gives the read a new key, and the row of the other relation keeps the name it drew
+  // until that read fails (`keptUntilFailed`).
+  const duplicateOf = issue.duplicate_of ?? "";
+  const filedFrom = issue.filed_from ?? "";
+  const filedRoute = filedFrom === "" ? undefined : parseNodeReference(filedFrom);
+  const filedKind = filedItemKind(filedRoute);
+  const relationRefs = [
+    ...(duplicateOf === "" ? [] : [buildDispatchReference({ key: duplicateOf, kind: "issue" })]),
+    ...(filedKind === undefined ? [] : [filedFrom]),
+  ];
+  const relationRead = referenceTargetsQuery(relationRefs);
+  const relationNames = useQuery({
+    ...relationRead,
+    ...EVENT_FRESH,
+    enabled: readingDevelopment && relationRefs.length > 0,
+    placeholderData: keptUntilFailed(queryClient, relationRead.queryKey),
+  });
+  const filedTarget = relationNames.data?.targets.find((target) => target.ref === filedFrom);
+  // The read's failure is said in each relation row it feeds: the duplicate's in the words of the
+  // titles' reads above, since it is an issue, and the item's in words of its own, since a
+  // question, a comment or a message has no title. Each line goes as theirs does
+  // (`standsFailed`). The Retry pressed hands the focus it held on in its own row once the read it
+  // was pressed for answers (`useTitlesRetry`): to the row's first link, and where the row draws
+  // none - an item Dispatch answers gone - to Development's heading.
+  const relationFailed = standsFailed(relationNames);
+  const duplicateValue = useRef<HTMLDivElement>(null);
+  const filedValue = useRef<HTMLDivElement>(null);
+  const duplicateRetry = useTitlesRetry(relationNames, relationRead.queryKey, () =>
+    firstUsable(
+      duplicateValue.current?.querySelector<HTMLElement>("a[href]"),
+      developmentHeading.current
+    )
+  );
+  const filedRetry = useTitlesRetry(relationNames, relationRead.queryKey, () =>
+    firstUsable(
+      filedValue.current?.querySelector<HTMLElement>("a[href]"),
+      developmentHeading.current
+    )
+  );
   const priority = usePriorityHandOffs(issue, developmentHeading);
   // The Repository row's control draws its own refused write, and hands it to the row to say
   // (`sayFailure`), as Details says its own. A failed read of the project list, which the box's
@@ -694,6 +820,59 @@ export function IssueMarginPanel({
             </>
           )}
         </Row>
+        {/* The issue this one repeats, drawn as Blocked by draws an issue it waits on: its key
+            in bold as the way to it, then its title once the names read has answered. */}
+        {duplicateOf === "" ? null : (
+          <Row
+            glyph={
+              <NodeGlyph
+                className="inline-block size-3 align-[-1px]"
+                token={GLYPH_TOKENS.types.issue}
+              />
+            }
+            label={PROPERTY_LABELS.duplicate_of}
+            valueRef={duplicateValue}
+          >
+            <IssueLine
+              issueKey={duplicateOf}
+              title={issueTitleIn(relationNames.data, duplicateOf)}
+            />
+            {relationFailed ? (
+              <DetailsErrorLine
+                error={relationNames.error}
+                failure={relationNames.errorUpdateCount}
+                message={TITLES_READ_FAILED}
+                {...duplicateRetry}
+                retrying={relationNames.isFetching}
+              />
+            ) : null}
+          </Row>
+        )}
+        {/* The item the issue was filed out of (`FiledItemLine`), with the page's shape for its
+            kind. */}
+        {filedRoute === undefined || filedKind === undefined ? null : (
+          <Row
+            glyph={
+              <NodeGlyph
+                className="inline-block size-3 align-[-1px]"
+                token={GLYPH_TOKENS.types[filedKind]}
+              />
+            }
+            label={PROPERTY_LABELS.filed_from}
+            valueRef={filedValue}
+          >
+            <FiledItemLine kind={filedKind} route={filedRoute} target={filedTarget} />
+            {relationFailed ? (
+              <DetailsErrorLine
+                error={relationNames.error}
+                failure={relationNames.errorUpdateCount}
+                message={STATE_LINES.filed_from_unreadable}
+                {...filedRetry}
+                retrying={relationNames.isFetching}
+              />
+            ) : null}
+          </Row>
+        )}
         <Row glyph={HOUSE} label={PROPERTY_LABELS.repository} valueRef={repoValue}>
           <RepoControl
             disabled={isClosed}

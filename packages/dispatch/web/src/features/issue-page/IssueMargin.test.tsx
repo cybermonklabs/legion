@@ -105,6 +105,7 @@ import {
   BLOCKED_BY_REFUSALS,
   CONTROL_LABELS,
   issueStatusWord,
+  NODE_REFERENCES_WORDS,
   NODE_TYPE_NAMES,
   STATE_LINES,
 } from "./page-words";
@@ -8174,6 +8175,663 @@ test.each(
     unmount();
     priorities.mockRestore();
     getReferences.mockRestore();
+    restore();
+  }
+});
+
+/** The issue CORE-1 repeats in the relation cases below (R4), and its title. */
+const DUPLICATE = "CORE-7";
+const DUPLICATE_TITLE = "Ship the release notes";
+
+/** The duplicate's own address, by which the names read of the relations names it. */
+const DUPLICATE_REFERENCE = buildDispatchReference({ key: DUPLICATE, kind: "issue" });
+
+/** The message of CORE-2 that CORE-1 was filed from in the relation cases below: its canonical
+ *  reference, the page that reference opens, its body, and the first line of that body, which is
+ *  its first sentence. */
+const FILED_ID = "5f0c6a52-6b1e-4c3a-9a51-3b2f0e7d9c11";
+const FILED_MESSAGE = `dispatch://CORE-2/message/${FILED_ID}`;
+const FILED_PATH = `/issues/CORE-2/messages/${FILED_ID}`;
+const FILED_BODY = "Split the notes out of the release. The rest can wait for the review.";
+const FILED_LINE = "Split the notes out of the release.";
+
+/** CORE-1 as INFRA-1253's issue read answers it holding both of its relations: a duplicate of
+ *  CORE-7, filed from a message of CORE-2. */
+const relatedIssue: IssueDetails = { ...issue, duplicate_of: DUPLICATE, filed_from: FILED_MESSAGE };
+
+/** What the names read answers for one target in the relation cases below. */
+interface NamedTarget {
+  readonly gone?: boolean;
+  readonly kind: string;
+  readonly name: string;
+}
+
+/** The two relations of `relatedIssue` by their names: the duplicate by its title, and the
+ *  message by its body. */
+const RELATED_NAMES: Readonly<Record<string, NamedTarget>> = {
+  [DUPLICATE_REFERENCE]: { kind: "issue", name: DUPLICATE_TITLE },
+  [FILED_MESSAGE]: { kind: "message", name: FILED_BODY },
+};
+
+/** The names read's answer (`getReferenceTargets`) for `refs`: each target `named` holds, where
+ *  `refs` names it, and nothing else. A target that is gone carries no name, as Dispatch answers
+ *  it. */
+function namedTargets(
+  refs: readonly string[],
+  named: Readonly<Record<string, NamedTarget>>
+): ReferenceTargets {
+  return {
+    targets: refs.flatMap((ref) => {
+      const target = named[ref];
+      if (target === undefined) return [];
+      const gone = target.gone === true;
+      return [{ gone, kind: target.kind, name: gone ? "" : target.name, ref }];
+    }),
+  };
+}
+
+/** Every names read `titles` made, each by the addresses it named, sorted: in the relation cases
+ *  below, which hold no blocker and nothing that waits on CORE-1, each is a read of the issue's
+ *  relations. */
+function namesReads(titles: Mock<typeof api.getReferenceTargets>): string[][] {
+  return titles.mock.calls.map(([refs]) => [...refs].sort());
+}
+
+/** Details' Duplicate of row, and its Filed from row, by their labels. */
+const duplicateRow = () => within(detailsRow(PROPERTY_LABELS.duplicate_of));
+const filedRow = () => within(detailsRow(PROPERTY_LABELS.filed_from));
+
+/** Stubs the reads the relation cases below make: those of `stubIssueApi`, with CORE-1's own read
+ *  answered with `details`; what waits on CORE-1, the Blocks row's read, answered with nothing;
+ *  and the names reads, answered by `names`. */
+function stubRelations(
+  details: IssueDetails,
+  names: (refs: readonly string[]) => Promise<ReferenceTargets>
+) {
+  const stub = stubIssueApi();
+  stub.getIssue.mockResolvedValue(details);
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
+  const titles = spyOn(api, "getReferenceTargets").mockImplementation(names);
+  return {
+    getIssue: stub.getIssue,
+    restore: () => {
+      titles.mockRestore();
+      getReferences.mockRestore();
+      stub.restore();
+    },
+    titles,
+  };
+}
+
+// The names of the issue's two relations are read as Blocked by's titles are: only while Details
+// and its Development are open, so a load that leaves either shut costs no request for them, and
+// opening Development makes one names read of both (ST-3 R-a).
+test("Details reads the names of the issue's relations only once Development is open, in one read of both", async () => {
+  const user = userEvent.setup();
+  const { restore, titles } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  const kept = userPreferenceStorageKey("alice", "issue.margin-sections");
+  window.localStorage.setItem(kept, "development");
+  const { redraw, unmount } = renderDetails(undefined, SHUT_DRAWER);
+
+  try {
+    const development = await screen.findByRole("button", {
+      name: MARGIN_SECTION_NAMES.development,
+    });
+    await waitFor(() => expect(development).toHaveAttribute("aria-expanded", "false"));
+    expect(
+      detailsRow(PROPERTY_LABELS.duplicate_of),
+      "a shut Details draws no Duplicate of row"
+    ).toHaveTextContent(DUPLICATE);
+    await act(async () => {});
+    expect(namesReads(titles), "a shut Details read the names of the issue's relations").toEqual(
+      []
+    );
+
+    redraw(OPEN_DRAWER);
+    // The open drawer's reads start in the commit that opens it: its effects run here.
+    await act(async () => {});
+    expect(
+      namesReads(titles),
+      "Details read the names of the relations of a closed Development"
+    ).toEqual([]);
+
+    await user.click(development);
+    await waitFor(() =>
+      expect(
+        namesReads(titles),
+        "opening Development did not read the names of both relations in one read"
+      ).toEqual([[FILED_MESSAGE, DUPLICATE_REFERENCE]])
+    );
+  } finally {
+    unmount();
+    restore();
+    window.localStorage.removeItem(kept);
+  }
+});
+
+// While the names read is out, each relation row draws what the issue read holds by itself: the
+// duplicate's key, as Blocked by draws a blocker whose title has not come, and the item by the
+// page's word for its kind as the way to it, since its address is no name (ST-3 R-b).
+test("while the names of the relations are out, Duplicate of draws the key alone and Filed from the kind's word alone", async () => {
+  const held = Promise.withResolvers<ReferenceTargets>();
+  const { restore, titles } = stubRelations(relatedIssue, () => held.promise);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    await waitFor(() => expect(namesReads(titles)).toHaveLength(1));
+    expect(
+      await duplicateRow().findByRole("link", { name: DUPLICATE }),
+      "Duplicate of draws no link to the duplicate"
+    ).toHaveAttribute("href", "/issues/CORE-7");
+    expect(
+      detailsRow(PROPERTY_LABELS.duplicate_of).textContent,
+      "Duplicate of drew more than the key while the names read is out"
+    ).toBe(`${PROPERTY_LABELS.duplicate_of}${DUPLICATE}`);
+    expect(
+      filedRow().getByRole("link", { name: NODE_REFERENCES_WORDS.kinds.message }),
+      "Filed from draws no link to the message by its kind's word"
+    ).toHaveAttribute("href", FILED_PATH);
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from drew more than the kind's word while the names read is out"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message}`);
+    expect(screen.queryByRole("alert"), "a row says a failure while the read is out").toBeNull();
+  } finally {
+    held.resolve({ targets: [] });
+    unmount();
+    restore();
+  }
+});
+
+// Once the read answers, Duplicate of takes the form of Details' other relation rows - the key in
+// bold as the way to the issue, then its title (`IssueLine`) - and Filed from names the message by
+// the page's word for its kind and its first line, the way to it; each row once, after Parent,
+// Blocked by and Blocks (ST-3 R-c).
+test("once the names are read, Duplicate of draws the key in bold as a link with its title, and Filed from the kind's word and the first line as a link", async () => {
+  const { restore } = stubRelations({ ...relatedIssue, parent: "CORE-9" }, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.duplicate_of)).toHaveTextContent(DUPLICATE_TITLE)
+    );
+    const duplicate = duplicateRow().getByRole("link", { name: DUPLICATE });
+    expect(duplicate).toHaveAttribute("href", "/issues/CORE-7");
+    expect(duplicate, "the duplicate's key is not bold").toHaveClass("font-semibold");
+    expect(
+      duplicateRow().getByText(DUPLICATE_TITLE),
+      "the duplicate's title is not drawn as the author's words"
+    ).toHaveAttribute("data-author-text");
+
+    const filed = await filedRow().findByRole("link", { name: FILED_LINE });
+    expect(filed).toHaveAttribute("href", FILED_PATH);
+    expect(filed, "the message's first line is not drawn as the author's words").toHaveAttribute(
+      "data-author-text"
+    );
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from does not name the message by its kind's word and its first line alone"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${FILED_LINE}`);
+
+    // Each relation row once, in the order Details draws them.
+    const labels = [
+      PROPERTY_LABELS.parent,
+      PROPERTY_LABELS.blocked_by,
+      PROPERTY_LABELS.blocks,
+      PROPERTY_LABELS.duplicate_of,
+      PROPERTY_LABELS.filed_from,
+    ];
+    const drawn = labels.map((label) =>
+      screen.getAllByText(label, { exact: true, selector: "[data-page-chrome]" })
+    );
+    expect(
+      drawn.map((each) => each.length),
+      "a relation row is drawn more than once"
+    ).toEqual(labels.map(() => 1));
+    const order = drawn.flat();
+    for (const [index, label] of order.entries()) {
+      const before = order[index - 1];
+      if (before === undefined) continue;
+      expect(
+        before.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING,
+        `${label.textContent} is not drawn after ${before.textContent}`
+      ).toBeTruthy();
+    }
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// A names read of the relations that failed holding no answer draws each relation row as the
+// read out does, and says the failure in each row it feeds, with Retry: the duplicate's in the
+// words of Blocked by's titles read, since it is an issue, and the message's in words of its own,
+// since a message has no title. Every other value Details draws stays as it was drawn: the
+// failure is of the two rows' names alone. The header is no part of Details; the browser row
+// "Details draws every relation of the issue once" reads it (ST-3 R-d).
+test("a names read of the relations that fails says so with Retry in both relation rows, and leaves every other row as it was drawn", async () => {
+  const { restore } = stubRelations(
+    { ...relatedIssue, blocked_by: ["CORE-3"], parent: "CORE-9", priority: 1 },
+    async (refs) => {
+      if (refs.includes(FILED_MESSAGE)) throw readFailure();
+      return issueNames(refs, { "CORE-3": "Fix the build" });
+    }
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    await waitFor(() =>
+      expect(duplicateRow().getByRole("alert")).toHaveTextContent(TITLES_READ_FAILED)
+    );
+    for (const [label, row, words] of [
+      [PROPERTY_LABELS.duplicate_of, duplicateRow(), TITLES_READ_FAILED],
+      [PROPERTY_LABELS.filed_from, filedRow(), STATE_LINES.filed_from_unreadable],
+    ] as const) {
+      expect(row.getByRole("alert"), `${label} does not say the read failed`).toHaveTextContent(
+        words
+      );
+      expect(
+        row.getByRole("button", { name: CONTROL_LABELS.retry }),
+        `${label} offers no Retry`
+      ).toBeInTheDocument();
+    }
+    expect(
+      duplicateRow().getByRole("link", { name: DUPLICATE }),
+      "Duplicate of does not draw the duplicate by its key where its title could not be read"
+    ).toHaveAttribute("href", "/issues/CORE-7");
+    expect(
+      filedRow().getByRole("link", { name: NODE_REFERENCES_WORDS.kinds.message }),
+      "Filed from does not draw the message by its kind's word where its words could not be read"
+    ).toHaveAttribute("href", FILED_PATH);
+
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Fix the build")
+    );
+    expect(
+      within(detailsRow(PROPERTY_LABELS.parent)).getByRole("link", { name: "CORE-9" }),
+      "the Parent row lost its parent"
+    ).toHaveAttribute("href", "/issues/CORE-9");
+    expect(
+      detailsRow(PROPERTY_LABELS.priority),
+      "the Priority row lost its value"
+    ).toHaveTextContent("P1");
+    expect(detailsRow(PROPERTY_LABELS.status), "the Status row lost its value").toHaveTextContent(
+      issueStatusWord("todo")
+    );
+    expect(
+      screen.getAllByRole("alert"),
+      "a row besides the two relation rows says the relations' failure"
+    ).toHaveLength(2);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// A refresh that fails over the answer the relations' names read holds - an event read it again -
+// keeps that answer drawn, and says no failure: the rows are all drawn (ST-3 R-e).
+test("a refresh of the relations' names that fails over the answer they hold keeps that answer drawn and says no failure", async () => {
+  const { restore, titles } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    await waitFor(() => {
+      expect(detailsRow(PROPERTY_LABELS.duplicate_of)).toHaveTextContent(DUPLICATE_TITLE);
+      expect(detailsRow(PROPERTY_LABELS.filed_from)).toHaveTextContent(FILED_LINE);
+    });
+
+    titles.mockRejectedValue(readFailure());
+    await act(() => queryClient.refetchQueries({ queryKey: ["reference-targets"] }));
+    const state = queryClient.getQueryState(
+      referenceTargetsQuery([DUPLICATE_REFERENCE, FILED_MESSAGE]).queryKey
+    );
+    expect(
+      [state?.status, state?.data !== undefined],
+      "the relations' names read was not refreshed with a failure over the answer it holds"
+    ).toEqual(["error", true]);
+
+    for (const [label, row] of [
+      [PROPERTY_LABELS.duplicate_of, duplicateRow()],
+      [PROPERTY_LABELS.filed_from, filedRow()],
+    ] as const) {
+      expect(
+        row.queryByRole("alert"),
+        `${label} says a failure over the answer it holds`
+      ).toBeNull();
+      expect(
+        row.queryByRole("button", { name: CONTROL_LABELS.retry }),
+        `${label} offers a Retry of a read that holds its answer`
+      ).toBeNull();
+    }
+    expect(
+      detailsRow(PROPERTY_LABELS.duplicate_of),
+      "Duplicate of took away the title its failed refresh left it"
+    ).toHaveTextContent(DUPLICATE_TITLE);
+    expect(
+      filedRow().getByRole("link", { name: FILED_LINE }),
+      "Filed from took away the first line its failed refresh left it"
+    ).toHaveAttribute("href", FILED_PATH);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** Each relation row whose Retry the case below presses, by its label, the words its failure
+ *  line says, and the name of the first link that row draws once the read answers. */
+const RETRIED_RELATIONS: readonly (readonly [string, string, string, string])[] = [
+  ["Duplicate of", PROPERTY_LABELS.duplicate_of, TITLES_READ_FAILED, DUPLICATE],
+  ["Filed from", PROPERTY_LABELS.filed_from, STATE_LINES.filed_from_unreadable, FILED_LINE],
+];
+
+// The failed read's Retry stays, busy and holding the focus of a reader who pressed it by
+// keyboard, while the read it sent is out; once that read answers, the row hands the focus to its
+// first link rather than to the page's body (`useTitlesRetry`), as Blocked by's Retry of its
+// titles does (ST-3 R-f).
+test.each(
+  RETRIED_RELATIONS
+)("%s's Retry of the relations' failed names read keeps the focus while the read is out, and hands it to the row's first link once it answers", async (_name, label, failedWords, first) => {
+  const user = userEvent.setup();
+  const { restore, titles } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  titles.mockRejectedValueOnce(readFailure());
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const stopBlurring = emulateChromiumFocusFixup();
+  const row = () => within(detailsRow(label));
+
+  try {
+    const retry = await waitFor(() => row().getByRole("button", { name: CONTROL_LABELS.retry }));
+    const answered = Promise.withResolvers<ReferenceTargets>();
+    titles.mockImplementationOnce(() => answered.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(titles).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(retry, "Retry does not read busy while the read it sent is out").toHaveAttribute(
+        "aria-busy",
+        "true"
+      )
+    );
+    expect(
+      retry,
+      "the line and its Retry went while the read Retry sent is out"
+    ).toBeInTheDocument();
+    expect(row().getByRole("alert")).toHaveTextContent(failedWords);
+    expect(document.activeElement, "Retry lost the focus while the read it sent is out").toBe(
+      retry
+    );
+
+    await act(async () =>
+      answered.resolve(namedTargets([DUPLICATE_REFERENCE, FILED_MESSAGE], RELATED_NAMES))
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("alert"),
+        "the names answered, but a relation row still says they failed"
+      ).toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "the names answered, and the focus fell to the page rather than to the row's first link"
+    ).toBe(row().getByRole("link", { name: first }));
+  } finally {
+    stopBlurring();
+    unmount();
+    restore();
+  }
+});
+
+// A relation changed in another session gives the names read a new set of addresses, and so a new
+// key: while that read is out, the row whose relation did not change keeps the name the last
+// answer gave it, and the changed one draws what the issue read holds by itself, until the new
+// read answers or fails (`keptUntilFailed`), as Blocks keeps its titles (ST-3 R-g).
+test("a relation changed in another session keeps the names drawn while the new read is out, until it answers or fails", async () => {
+  const otherId = "8d2e4b71-0c3f-4e6a-b5d9-7a1c2e3f4b50";
+  const otherMessage = `dispatch://CORE-2/message/${otherId}`;
+  const otherLine = "Keep the notes in the release.";
+  const otherDuplicate = buildDispatchReference({ key: "CORE-8", kind: "issue" });
+  const names: Readonly<Record<string, NamedTarget>> = {
+    ...RELATED_NAMES,
+    [otherMessage]: { kind: "message", name: `${otherLine} Nothing else moves.` },
+    [otherDuplicate]: { kind: "issue", name: "Write the changelog" },
+  };
+  const answered = Promise.withResolvers<ReferenceTargets>();
+  const failed = Promise.withResolvers<ReferenceTargets>();
+  const { getIssue, restore, titles } = stubRelations(relatedIssue, async (refs) =>
+    refs.includes(otherDuplicate)
+      ? failed.promise
+      : refs.includes(otherMessage)
+        ? answered.promise
+        : namedTargets(refs, names)
+  );
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    await waitFor(() => {
+      expect(detailsRow(PROPERTY_LABELS.duplicate_of)).toHaveTextContent(DUPLICATE_TITLE);
+      expect(detailsRow(PROPERTY_LABELS.filed_from)).toHaveTextContent(FILED_LINE);
+    });
+
+    // Another session files CORE-1 from another message of CORE-2, and the new read is held out.
+    drawIssue(getIssue, queryClient, { ...relatedIssue, filed_from: otherMessage });
+    await waitFor(() => expect(titleReads(titles, otherMessage)).toBe(1));
+    expect(
+      await filedRow().findByRole("link", { name: NODE_REFERENCES_WORDS.kinds.message }),
+      "Filed from does not draw the new message by its kind's word while its read is out"
+    ).toHaveAttribute("href", `/issues/CORE-2/messages/${otherId}`);
+    expect(
+      detailsRow(PROPERTY_LABELS.duplicate_of),
+      "Duplicate of drew the duplicate by its key alone while the read of the new set is out"
+    ).toHaveTextContent(DUPLICATE_TITLE);
+    await act(async () =>
+      answered.resolve(namedTargets([DUPLICATE_REFERENCE, otherMessage], names))
+    );
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.filed_from)).toHaveTextContent(otherLine)
+    );
+
+    // Then it marks CORE-1 a duplicate of CORE-8, and the new read fails.
+    drawIssue(getIssue, queryClient, {
+      ...relatedIssue,
+      duplicate_of: "CORE-8",
+      filed_from: otherMessage,
+    });
+    await waitFor(() => expect(titleReads(titles, otherDuplicate)).toBe(1));
+    await duplicateRow().findByRole("link", { name: "CORE-8" });
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from),
+      "Filed from drew the message by its kind's word alone while the read of the new set is out"
+    ).toHaveTextContent(otherLine);
+    await act(async () => failed.reject(readFailure()));
+    await waitFor(() =>
+      expect(filedRow().getByRole("alert")).toHaveTextContent(STATE_LINES.filed_from_unreadable)
+    );
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from),
+      "Filed from drew a first line its failed read holds no answer for"
+    ).not.toHaveTextContent(otherLine);
+    expect(
+      detailsRow(PROPERTY_LABELS.duplicate_of),
+      "Duplicate of drew a title of the set before after the new read failed"
+    ).not.toHaveTextContent(DUPLICATE_TITLE);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// A target Dispatch answers gone - deleted, or one the reader may not see - opens no page, so
+// Filed from draws it as the page's chip draws one: by its kind's word and Deleted, with no link
+// (ST-3 R-h).
+test("Filed from draws a message Dispatch answers gone by its kind's word and Deleted, with no link", async () => {
+  const { restore } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, {
+      ...RELATED_NAMES,
+      [FILED_MESSAGE]: { gone: true, kind: "message", name: "" },
+    })
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.filed_from)).toHaveTextContent(CONTROL_LABELS.target_gone)
+    );
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from does not name the message by its kind's word and Deleted alone"
+    ).toBe(
+      `${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${CONTROL_LABELS.target_gone}`
+    );
+    expect(filedRow().queryByRole("link"), "Filed from links a message that is gone").toBeNull();
+    expect(
+      detailsRow(PROPERTY_LABELS.duplicate_of),
+      "Duplicate of lost its title beside a message that is gone"
+    ).toHaveTextContent(DUPLICATE_TITLE);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** Issues that hold some of the two relations, each with the rows of them it draws and the
+ *  names reads Details makes of them. */
+const HELD_RELATIONS: readonly (readonly [
+  string,
+  IssueDetails,
+  readonly ("duplicate_of" | "filed_from")[],
+  readonly (readonly string[])[],
+])[] = [
+  ["an issue with neither relation", issue, [], []],
+  [
+    "an issue with a duplicate_of alone",
+    { ...issue, duplicate_of: DUPLICATE },
+    ["duplicate_of"],
+    [[DUPLICATE_REFERENCE]],
+  ],
+  [
+    "an issue with a filed_from alone",
+    { ...issue, filed_from: FILED_MESSAGE },
+    ["filed_from"],
+    [[FILED_MESSAGE]],
+  ],
+];
+
+// A row is drawn only where the issue read holds its relation, and the names read names only the
+// relations the issue holds (ST-3 R-i).
+test.each(
+  HELD_RELATIONS
+)("%s draws the relation rows it holds and no other", async (_name, details, held, reads) => {
+  const { restore, titles } = stubRelations(details, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    // Blocks says None once its read has answered, so Development's reads are all made by then.
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent(CONTROL_LABELS.none)
+    );
+    await waitFor(() => expect(namesReads(titles)).toEqual(reads.map((refs) => [...refs])));
+    for (const relation of ["duplicate_of", "filed_from"] as const) {
+      const label = PROPERTY_LABELS[relation];
+      expect(label, `PROPERTY_LABELS names no ${relation}`).toBeString();
+      expect(
+        screen.queryAllByText(label, { exact: true, selector: "[data-page-chrome]" }),
+        `the rows of ${relation}`
+      ).toHaveLength(held.includes(relation) ? 1 : 0);
+    }
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** The id of the item each form of `filed_from` below names. */
+const FORM_ID = "2b9c7e41-5d3a-4f68-8e1b-0c6d4a9f3e27";
+
+/** Each form INFRA-1253's contract gives `filed_from` (`dispatch-api-issues.ts`): what it names,
+ *  the reference, the kind of node the names read answers for it, that node's words, their first
+ *  line, and the page the reference opens. */
+const FILED_FORMS: readonly (readonly [
+  string,
+  string,
+  "ask" | "comment" | "message",
+  string,
+  string,
+  string,
+])[] = [
+  [
+    "a message of an issue",
+    `dispatch://CORE-2/message/${FORM_ID}`,
+    "message",
+    "Split the notes out. Then wait for the review.",
+    "Split the notes out.",
+    `/issues/CORE-2/messages/${FORM_ID}`,
+  ],
+  [
+    "a question of an issue",
+    `dispatch://CORE-2/ask/${FORM_ID}`,
+    "ask",
+    "Can the notes ship apart from the release? Say which.",
+    "Can the notes ship apart from the release?",
+    `/issues/CORE-2/asks/${FORM_ID}`,
+  ],
+  [
+    "a comment of an issue",
+    `dispatch://CORE-2/comment/${FORM_ID}`,
+    "comment",
+    "The notes need a page of their own. The rest is fine.",
+    "The notes need a page of their own.",
+    `/issues/CORE-2/comments/${FORM_ID}`,
+  ],
+  [
+    "a question of a project's document",
+    `dispatch://CORE/artifact/release-notes/ask/${FORM_ID}`,
+    "ask",
+    "Who writes the notes for this release? Name one.",
+    "Who writes the notes for this release?",
+    `/projects/CORE/documents/release-notes?ask=${FORM_ID}`,
+  ],
+  [
+    "a comment of a project's document",
+    `dispatch://CORE/artifact/release-notes/comment/${FORM_ID}`,
+    "comment",
+    "This section repeats the last one. Cut it.",
+    "This section repeats the last one.",
+    `/projects/CORE/documents/release-notes?comment=${FORM_ID}`,
+  ],
+];
+
+// Filed from names each item INFRA-1253 lets an issue be filed out of - an ask, a comment or a
+// message of an issue, and an ask or a comment of a project's document - by the page's word for
+// its kind, so an ask is a question, and its first line, as a link to the page the reference
+// opens (INV-6).
+test.each(
+  FILED_FORMS
+)("Filed from names %s by its kind's word and its first line, as a link to it", async (_name, filed, kind, words, line, path) => {
+  const { restore } = stubRelations({ ...issue, filed_from: filed }, async (refs) =>
+    namedTargets(refs, { [filed]: { kind, name: words } })
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    expect(
+      await waitFor(() => filedRow().getByRole("link", { name: line })),
+      "Filed from does not link the item by its first line"
+    ).toHaveAttribute("href", path);
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from does not name the item by its kind's word and its first line alone"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds[kind]} ${line}`);
+  } finally {
+    unmount();
     restore();
   }
 });

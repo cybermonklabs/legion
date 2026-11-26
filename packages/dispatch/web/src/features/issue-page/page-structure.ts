@@ -73,8 +73,13 @@ export const PROPERTY_LABELS = freeze({
   /** Everyone who worked the issue, running or not, which the panel opens on request. */
   collaborators: "Collaborators",
   components: "Components",
+  /** The issue of the project that this one repeats (`duplicate_of`). */
+  duplicate_of: "Duplicate of",
   /** The issue's links out of Dispatch other than a pull request. */
   external_links: "Links",
+  /** The question, comment or message of the project that the issue was filed out of
+   *  (`filed_from`). */
+  filed_from: "Filed from",
   /** Every document and file of the issue, each opening its own address (R13). */
   files: "Files and documents",
   /** The heading of the panel's facts of the node the reader's focus is on (R12). A node is a

@@ -14,7 +14,14 @@
 import type { PartWords } from "./page-words-parts";
 
 export default {
-  add: {},
+  add: {
+    STATE_LINES: {
+      /** What Details' row of the item an issue was filed out of says where the names read of
+       *  that item could not be read (`IssueMargin.tsx`), with Retry beside it: the item is a
+       *  question, a comment or a message, so it has no title to name. */
+      filed_from_unreadable: "Could not load what this issue was filed from.",
+    },
+  },
   unasked: [],
   answers: [],
 } as const satisfies PartWords;
