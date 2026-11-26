@@ -17,8 +17,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -88,7 +90,7 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		}
 	}
 	for name, script := range map[string]string{"jj": fakeJJ, "git": fakeGit, "codegraph": fakeCodegraph} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -307,6 +309,7 @@ func (v *issueVolume) commitAddingAFile(t *testing.T, gitDir, parent, ref, name,
 // token, which `fetch` alone holds; and the command refuses no subcommand, or another. A refusal
 // of its input exits 3, a cause outside the issue's volume, and a usage error exits 2.
 func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	for _, tc := range []struct {
 		name string
 		args func(v *issueVolume) []string
@@ -488,6 +491,7 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 // container must never call it (#1647) — only a synchronous warm-up regressing back onto the init
 // container's launch path would.
 func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	v.fetch(t)
 
@@ -536,6 +540,7 @@ func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
 // init log names it, the workspace's parent is the remote's head of it, and the issue's bookmark
 // is the fresh working copy's.
 func TestWorkspaceInitProvisionsAtADefaultBranchWithASlash(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "release/v7.1")
 	v.fetch(t)
 
@@ -564,9 +569,11 @@ func TestWorkspaceInitProvisionsAtADefaultBranchWithASlash(t *testing.T) {
 // on a killed checkout and spending one of the claim's launches (INFRA-1265). The case reads the
 // bound each command of the provisioning was given (newProvisionRunner): the checkout's is
 // CheckoutTimeout, and every other command's is the runner's budget or, for a step of the shared
-// clone's own clone, what remains of workspace.CloneTimeout. The budget is what is left of the test
-// binary's deadline less 30 s, so no command a loaded machine makes slow is stopped by it.
+// clone's own clone, what remains of the shared clone's bound (workspace.CloneBound, read through
+// programbound). The budget is what is left of the test binary's deadline less 30 s, so no command
+// a loaded machine makes slow is stopped by it.
 func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it sets the package variable newProvisionRunner; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	// The checkout is what puts the tree in the workspace, so the remote's default branch carries
 	// a file for it to write there.
@@ -586,6 +593,10 @@ func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 	}
 	t.Cleanup(func() { newProvisionRunner = saved })
 
+	// The shared clone's steps share one bound, read through programbound when the clone starts:
+	// in this binary what is left of its deadline, so it is read here first, no less than the
+	// clone's own.
+	cloneBound := programbound.Of(&workspace.CloneBound)
 	started := time.Now()
 	code, stdout, stderr := workspaceInitAnswered(t, "the provisioning of LEGION-42", v.args("LEGION-42"))
 	elapsed := time.Since(started)
@@ -610,8 +621,8 @@ func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 			}
 		case command.Timeout == budget:
 			budgeted++
-		case command.Timeout > workspace.CloneTimeout || command.Timeout < workspace.CloneTimeout-elapsed:
-			t.Errorf("%q ran under %s, want the runner's budget %s or what remains of the shared clone's %s", argv, command.Timeout, budget, workspace.CloneTimeout)
+		case command.Timeout > cloneBound || command.Timeout < cloneBound-elapsed:
+			t.Errorf("%q ran under %s, want the runner's budget %s or what remains of the shared clone's %s", argv, command.Timeout, budget, cloneBound)
 		}
 	}
 	if checkouts != 1 || budgeted == 0 {
@@ -671,6 +682,7 @@ func (v *issueVolume) provisioned(t *testing.T, issue string) string {
 // volume no other pod mounts, so nothing can hold a lock there: it removes the workspace's stale
 // index.lock, logging its path and age, and the update-stale that failed on it succeeds.
 func TestWorkspaceInitRemovesTheWorkspacesStaleIndexLock(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	v.fetch(t)
 	v.provisioned(t, "LEGION-42")
@@ -700,6 +712,7 @@ func TestWorkspaceInitRemovesTheWorkspacesStaleIndexLock(t *testing.T) {
 // the clone — an issue's that shared it, or a worktree an agent added — keeps its lock as it was,
 // however old.
 func TestWorkspaceInitLeavesAnotherWorkspacesLockAlone(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	v.fetch(t)
 	v.provisioned(t, "LEGION-42")
@@ -726,6 +739,7 @@ func TestWorkspaceInitLeavesAnotherWorkspacesLockAlone(t *testing.T) {
 // workspace: one per issue volume, which no other pod mounts. provision removes each stale one,
 // logging it, and provisions.
 func TestWorkspaceInitRemovesTheClonesStaleLocks(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	v.fetch(t)
 	v.provisioned(t, "LEGION-42")
@@ -753,6 +767,7 @@ func TestWorkspaceInitRemovesTheClonesStaleLocks(t *testing.T) {
 // A stale lock provision cannot remove fails it, naming the file, before any git or jj runs on
 // the clone: it would fail the provisioning anyway, on a message that names the lock alone.
 func TestWorkspaceInitFailsOnALockItCannotRemove(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	if os.Geteuid() == 0 {
 		t.Skip("root removes a file from a directory it cannot write")
 	}
@@ -783,6 +798,7 @@ func TestWorkspaceInitFailsOnALockItCannotRemove(t *testing.T) {
 // whose gitdir names the issue's workspace counts as the workspace's own. provision refuses it,
 // naming the symlink, before it removes anything or runs jj.
 func TestWorkspaceInitRefusesASymlinkedGitDirectory(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	for _, linked := range []string{".git", filepath.Join(".git", "worktrees")} {
 		t.Run(linked, func(t *testing.T) {
 			v := newIssueVolume(t).withRemote(t, "main")
@@ -822,13 +838,15 @@ func TestWorkspaceInitRefusesASymlinkedGitDirectory(t *testing.T) {
 }
 
 // A provisioning that fails — here, from a feed `fetch` never filled — is the command's failure,
-// with the failed command named, and exits 1: its cause is on the issue's volume.
+// with the failed command named, the shared clone of the feed, and exits 1: its cause is on the
+// issue's volume.
 func TestWorkspaceInitReportsAFailedProvisioning(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.setenv); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t)
 	v.setenv(t)
 
 	code, stdout, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
-	if code != 1 || !strings.Contains(stderr, "git clone --quiet --no-checkout "+filepath.Join(v.feed, "acme", "widgets.git")) || stdout != "" {
+	if code != 1 || !strings.Contains(stderr, "git clone --quiet --no-checkout --shared "+filepath.Join(v.feed, "acme", "widgets.git")) || stdout != "" {
 		t.Fatalf("exit %d, stdout %q, stderr %q; want 1 naming the failed clone", code, stdout, stderr)
 	}
 }
@@ -849,7 +867,7 @@ type lockedBuffer = testlog.Buffer
 func (v *issueVolume) start(t *testing.T, tag, issue string, env ...string) *initProcess {
 	t.Helper()
 	p := &initProcess{lines: make(chan string, 16)}
-	p.cmd = exec.Command(os.Args[0], append([]string{"workspace-init"}, v.args(issue)...)...)
+	p.cmd = exec.Command(legionCopy(t), append([]string{"workspace-init"}, v.args(issue)...)...)
 	overrides := maps.Clone(v.env)
 	overrides[testMainEnv] = "1"
 	overrides["WINIT_TAG"] = tag
@@ -1001,6 +1019,7 @@ func fifo(t *testing.T, path string, flag int, holder *initProcess) string {
 // volume, never holds it. Held mid-clone, it has written no one-shot credential to its TMPDIR, and
 // no file on the volume holds the token — nor after it was killed there.
 func TestWorkspaceInitProvisionHoldsNoToken(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.holder); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	first := v.holder(t)
 	if entries, err := os.ReadDir(v.tmp); err != nil || len(entries) != 0 {
@@ -1042,6 +1061,7 @@ func holdsNoToken(t *testing.T, dir, when string) {
 // release forever. Each scenario runs as a subtest, and once it has ended no process runs that
 // volume's fake jj.
 func TestWorkspaceInitHoldEndsWithItsTest(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.holder); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	if _, err := os.Stat("/proc/self/cmdline"); err != nil {
 		t.Skipf("no /proc to find a held jj in: %v", err)
 	}
@@ -1104,6 +1124,7 @@ func killProcessesRunning(t *testing.T, path string) []string {
 // neither the user name nor the query reaches the init log. A cache that is never ready is a cause
 // outside the issue's volume, so `fetch` exits workspace.InitExitOutsideVolume.
 func TestWorkspaceInitFetchWritesNoURLCredentials(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable fetchClock (useInstantClock); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t)
 	// A port nothing listens on, so every ask of the cache fails at its dial.
 	const cache = "127.0.0.1:1"

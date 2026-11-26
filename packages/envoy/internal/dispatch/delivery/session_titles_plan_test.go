@@ -223,6 +223,7 @@ func analyzedTitlePlan(
 // deliberately answers something else, and on this fixture the two differ -- the titled
 // session's newest event carries no title at all.
 func TestBothShapesOfTheCorrectedSessionTitlesRuleAnswerTheSameRows(t *testing.T) {
+	t.Parallel()
 	pool, ctx := newSessionTitlesPlanFixture(t)
 	want := sessionTitleRows(t, ctx, pool, correctedDistinctOnTitlesQuery)
 	// fmt.Sprint writes no space between two strings, so a row reads as its id and its title
@@ -254,6 +255,7 @@ func TestBothShapesOfTheCorrectedSessionTitlesRuleAnswerTheSameRows(t *testing.T
 // the early stop), and it says nothing about a session whose every event is untitled, whose
 // whole history this read walks by design.
 func TestTheSessionTitlesReadEventsThroughTheSessionActorIndex(t *testing.T) {
+	t.Parallel()
 	pool, ctx := newSessionTitlesPlanFixture(t)
 	plan, root, raw := analyzedTitlePlan(t, ctx, pool, resolveSessionTitlesQuery, sessionTitlePlanSessions)
 	if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {

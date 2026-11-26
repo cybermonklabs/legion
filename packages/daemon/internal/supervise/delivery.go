@@ -76,12 +76,9 @@ type Delivery struct {
 	// was upgraded to number them. The promotion's resume of a mid-phase worker is no such task:
 	// it carries the entry it raised (workflow.Engine.StartPromotedWorker).
 	Entry int64
-	// CheckLook is the look of a closed issue's production check this task is of, from the start
-	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). It is what says a
-	// turn's completion is a check report rather than a phase completion: the API routes on the
-	// look the claim's worker took (Claim.ServingCheck), and the report is of that look rather
-	// than of whichever look the check has reached (api/handoff.go, checkReport). The zero value
-	// is a task of no look: every phase task, an operator's own, a resume.
+	// CheckLook is the look and check instance this task gives the worker. ServingCheck uses it
+	// to attribute an explicitly named check report to the look the worker took, not to choose
+	// between a report and a phase completion. Phase tasks, operator tasks and resumes carry zero.
 	CheckLook   CheckLook
 	Phase       phase.Phase
 	QueuedAt    time.Time
@@ -1826,21 +1823,21 @@ func interruptedTask(cause string) string {
 }
 
 // abandonedTask begins the first prompt given to the agent that replaced a session the claim
-// abandoned (forgetSession): one the provider refused out of its budget, one an operator retried
+// abandoned (forgetSession): one whose last turns the provider refused, one an operator retried
 // with --fresh-session, or one no session store holds any more. Nothing in a new session says
 // that an older one existed, so a worker reading an empty transcript takes its task for a fresh
 // start and does again what is already pushed (dispatch://INFRA-714, item 4 of the refusal
-// section). It names the session that was left behind and why in the words the claim recorded —
-// for a refused session the provider's own, the size it refused at among them — and then the two
-// things that outlive a session: the issue's branch, and the handoff records its phases wrote on
-// the Dispatch issue. The controller is told neither, since it works no checkout. last is whether
-// this sentence is the last one before the task, and so ends in the task's own instruction: in
-// front of a task with no record's sentence after it. Where the record's sentence follows it
-// (EndedWork.Tells), that sentence is the last and carries the instruction instead
+// section). It names the session that was left behind and why in the words the claim recorded,
+// and then the two things that outlive a session: the issue's branch, and the handoff records its
+// phases wrote on the Dispatch issue. The controller is told neither, since it works no checkout.
+// last is whether this sentence is the last one before the task, and so ends in the task's own
+// instruction: in front of a task with no record's sentence after it. Where the record's sentence
+// follows it (EndedWork.Tells), that sentence is the last and carries the instruction instead
 // (relaunchSentence); in front of the daemon's own delivery of a relaunch's record, which has no
 // task (Delivery.Relaunch), neither carries one (Delivery.message).
 //
-// The reason is the provider's own text read into an agent's prompt, so it is quoted as a Go
+// The reason can be far-side text read into an agent's prompt — a runtime's account of a death,
+// or the provider's own words in a failure an earlier daemon wrote — so it is quoted as a Go
 // string with %q, the way a check run's name is where the daemon reads one into a prompt
 // (workflow's namedConclusions): the quotes bound it, and a newline or a quote inside it is
 // escaped rather than ending the sentence that carries it, so no refusal text can read as an

@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -59,7 +60,7 @@ func TestAProxiedDialEndsAtTheConnectsDeadline(t *testing.T) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	conn, err := connectWithContext(ctx, "deadline-test", []string{"nats://nats.example.test:4222"}, nil, dialer, nil, nil, nil, nil, nil)
+	conn, err := connectWithContext(ctx, slog.Default(), "deadline-test", []string{"nats://nats.example.test:4222"}, nil, dialer, nil, nil, nil, nil, nil)
 	if err == nil {
 		conn.Close()
 		t.Fatal("a connect through a proxy that never answers succeeded")
@@ -80,6 +81,7 @@ func TestAProxiedDialEndsAtTheConnectsDeadline(t *testing.T) {
 // under -race (the envoy-go-race job), a record that is not synchronized fails here. Each connect
 // makes the bus's ten attempts a second apart, so this takes about ten seconds.
 func TestConnectsSharingADialerRecordItsLastError(t *testing.T) {
+	t.Parallel()
 	dialer, err := socks5Proxy(proxiedLookup("127.0.0.1:1"))
 	if err != nil {
 		t.Fatalf("read the proxy setting: %v", err)
@@ -91,7 +93,7 @@ func TestConnectsSharingADialerRecordItsLastError(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			time.Sleep(time.Duration(i) * 500 * time.Millisecond)
-			conn, err := connectWithContext(context.Background(), "shared-dialer-test", []string{"nats://nats.example.test:4222"}, nil, dialer, nil, nil, nil, nil, nil)
+			conn, err := connectWithContext(context.Background(), slog.Default(), "shared-dialer-test", []string{"nats://nats.example.test:4222"}, nil, dialer, nil, nil, nil, nil, nil)
 			if conn != nil {
 				conn.Close()
 			}

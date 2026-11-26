@@ -2,9 +2,15 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
-import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import {
+  DISPATCH_BLOCK_UNITS,
+  DISPATCH_READ_ONLY_TOKEN,
+  IDEMPOTENCY_KEY_HEADER,
+  PROJECT_KEY_RULE,
+} from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { forgetBrokerClients } from "../broker-credential";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetShownPictures } from "../dispatch-picture-tools";
@@ -844,9 +850,9 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
-  // `skill://dispatch` says "Exit 1 is a refusal, 2 a usage error", so a call Dispatch never saw
-  // because an argument is missing exits 2: a script reading the code alone tells it from a write
-  // Dispatch refused (a near copy, an AskGate block), which exits 1.
+  // `skill://dispatch` says "Exit 2 is a usage error" and exit 1 any other failure, so a call
+  // Dispatch never saw because an argument is missing exits 2: a script reading the code alone
+  // tells it from a write Dispatch refused (a near copy, an AskGate block), which exits 1.
   test("a command missing a required argument is a usage error, exit 2", async () => {
     const { code, stdout } = await run(["issue", "--project", "DSP"], omp);
     expect(code).toBe(2);
@@ -1327,6 +1333,10 @@ describe("the dispatch CLI", () => {
           ["--ref", "dispatch://DSP-4/children", "--events", "5"],
           dropped("--events", "the issue's children"),
         ],
+        [
+          ["--ref", "dispatch://DSP-4/comments", "--events", "5"],
+          dropped("--events", "the issue's comments"),
+        ],
         [["--ref", `dispatch://DSP-4/ask/${id}`, "--events", "5"], dropped("--events", "an ask")],
         [
           ["--ref", `dispatch://CORE/artifact/runbook/ask/${id}`, "--events", "5"],
@@ -1656,6 +1666,184 @@ describe("the dispatch CLI", () => {
     expect(stdout).toBe("CORE Core\nSMOKE684 Smoke\n");
     expect(requests).toEqual([{ method: "GET", path: "/api/v1/projects", body: undefined }]);
   });
+
+  // Dispatch refuses a read-only token's write with READ_ONLY_TOKEN before anything runs. The
+  // command prints that refusal as a line of its own, its code first and then Dispatch's message,
+  // and exits 1, as for every write Dispatch refused. The credential is the read trade
+  // DISPATCH_TOKEN_BROKER_READ asks for, over the DISPATCH_TOKEN the shell also holds.
+  test("a write command under a read-only token prints Dispatch's READ_ONLY_TOKEN refusal and exits 1", async () => {
+    const readToken = fixtureSecret("read");
+    const trades: URLSearchParams[] = [];
+    const broker = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: async (request) => {
+        trades.push(new URLSearchParams(await request.text()));
+        return Response.json({
+          access_token: readToken,
+          issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+          token_type: "DPoP",
+          expires_in: 600,
+          scope: "read",
+        });
+      },
+    });
+    const projected = join(stateDir, "projected-token");
+    writeFileSync(projected, `${fixtureSecret("proj")}\n`);
+    const refusal =
+      "this request's credential is a read-only token, which may call only the GET routes Dispatch classes as reads: nothing ran";
+    const sent: { method: string; path: string; authorization: string }[] = [];
+    // The stand-in Dispatch: the test server answers every read, and every write is refused as
+    // Dispatch refuses a read-only token's.
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      sent.push({
+        method: request.method,
+        path: new URL(request.url).pathname,
+        authorization: request.headers.get("Authorization") ?? "",
+      });
+      if (request.method === "GET") return await fetch(request);
+      return Response.json({ code: DISPATCH_READ_ONLY_TOKEN, error: refusal }, { status: 403 });
+    }) as typeof fetch;
+    let ran: { code: number; stdout: string };
+    try {
+      ran = await run(
+        ["message", "--issue", "DSP-1", "--body", "hello"],
+        {
+          ...omp,
+          DISPATCH_TOKEN_BROKER_READ: "1",
+          AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+          AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+          AGENT_SECRETS_MACHINE_TOKEN_FILE: projected,
+        },
+        "",
+        fetchImpl
+      );
+    } finally {
+      forgetBrokerClients();
+      broker.stop(true);
+    }
+
+    expect(ran.stdout.split("\n")).toContain(`${DISPATCH_READ_ONLY_TOKEN}: ${refusal}`);
+    expect(ran.code).toBe(1);
+    expect(trades.map((form) => form.get("scope"))).toEqual(["read"]);
+    expect(sent.filter((one) => one.method !== "GET").map((one) => one.path)).toEqual([
+      "/api/v1/issues/DSP-1/messages",
+    ]);
+    // Every request presented the read-only token, never the bearer the shell holds.
+    expect(sent.map((one) => one.authorization)).toEqual(sent.map(() => `DPoP ${readToken}`));
+  });
+});
+
+// `dispatch api`: one request of a route under /api/v1 (a GET here; its writes, its answers and
+// the rest of its refusals are in dispatch-api.test.ts), with the session's own credential,
+// Dispatch's JSON answer printed as `jq` reads it. Its own Dispatch records the Authorization each
+// request carried, which the server above does not, and a broker of its own answers a pod's trade.
+describe("dispatch api", () => {
+  interface Asked {
+    readonly method: string;
+    readonly path: string;
+    readonly authorization: string;
+  }
+  const asked: Asked[] = [];
+  const dispatch = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch(request) {
+      const { pathname, search } = new URL(request.url);
+      asked.push({
+        method: request.method,
+        path: `${pathname}${search}`,
+        authorization: request.headers.get("Authorization") ?? "",
+      });
+      if (pathname === "/api/v1/issues/DSP-1") {
+        return Response.json({
+          key: "DSP-1",
+          claim: { actor: { kind: "session", id: "ses-architect" }, at: "2026-11-18T05:00:00Z" },
+        });
+      }
+      return Response.json(
+        { code: "NOT_FOUND", error: `issue ${pathname.split("/")[4]} not found` },
+        { status: 404 }
+      );
+    },
+  });
+  /** The session each trade asked the broker to write under, as its `session` form field. */
+  const trades: string[] = [];
+  /** The access token the broker answered each trade with, in the order of `trades`. */
+  const accessTokens: string[] = [];
+  const broker = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    async fetch(request) {
+      trades.push(new URLSearchParams(await request.text()).get("session") ?? "no session");
+      const accessToken = fixtureSecret("access");
+      accessTokens.push(accessToken);
+      return Response.json({
+        access_token: accessToken,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 600,
+        credential_id: "cred-1",
+      });
+    },
+  });
+  afterAll(() => {
+    dispatch.stop(true);
+    broker.stop(true);
+  });
+  beforeEach(() => {
+    asked.length = 0;
+    trades.length = 0;
+    accessTokens.length = 0;
+    forgetBrokerClients();
+  });
+  const session = { ...omp, DISPATCH_URL: `http://127.0.0.1:${dispatch.port}` };
+
+  test("reads a route with the session's bearer and prints Dispatch's JSON", async () => {
+    const { code, stdout } = await run(["api", "--path", "/api/v1/issues/DSP-1?events=0"], session);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout).claim.actor.id).toBe("ses-architect");
+    expect(asked).toEqual([
+      { method: "GET", path: "/api/v1/issues/DSP-1?events=0", authorization: `Bearer ${TOKEN}` },
+    ]);
+  });
+
+  test("under DISPATCH_TOKEN_BROKER=1, reads a route with a broker token traded for this session", async () => {
+    const projected = join(stateDir, "projected-token");
+    writeFileSync(projected, "projected.service.account.token\n");
+    // A pod launched under the setting: the bearer the environment still holds is never read.
+    const { code, stdout } = await run(["api", "--path", "/api/v1/issues/DSP-1"], {
+      ...session,
+      DISPATCH_TOKEN_BROKER: "1",
+      AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: projected,
+    });
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout).key).toBe("DSP-1");
+    expect(trades).toEqual(["ses-1"]);
+    expect(asked).toEqual([
+      {
+        method: "GET",
+        path: "/api/v1/issues/DSP-1",
+        authorization: `DPoP ${accessTokens[0]}`,
+      },
+    ]);
+  });
+
+  // Two paths dispatch-api.test.ts's refusals hold no row of: an encoded dot segment in mixed
+  // case, and a backslash after /api/v1.
+  test("refuses a path outside /api/v1, naming it, exit 2, and sends nothing", async () => {
+    const outside = ["/api/v1/%2E%2e/healthz", "/api/v1/issues\\..\\..\\healthz"];
+    for (const path of outside) {
+      const { code, stdout } = await run(["api", "--path", path], session);
+      expect(code, path).toBe(2);
+      expect(stdout, path).toStartWith("dispatch api was not called: 1 problem\n");
+      expect(stdout, path).toContain(`path ${JSON.stringify(path)} `);
+    }
+    expect(asked).toEqual([]);
+  });
 });
 
 // Two refusals an agent meets as the exit status of a command and the words on its own stdout,
@@ -1696,8 +1884,9 @@ describe("the dispatch entry as its own process", () => {
   }
 
   // Exit 2, not 1: an argument this CLI refuses before it calls Dispatch is a usage error, and 1
-  // is a write Dispatch refused (`skill://dispatch`, "Exit 1 is a refusal, 2 a usage error"). The
-  // browser row this replaced asserted 1 until cybermonklabs/legion#2781 made the codes distinct.
+  // is any other failure, a write Dispatch refused among them (`skill://dispatch`, "Exit 2 is a
+  // usage error"). The browser row this replaced asserted 1 until cybermonklabs/legion#2781 made
+  // the codes distinct.
   //
   // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process, and
   // bun's unwritten 5,000 ms per-test default is a limit on that work rather than on a hang.
@@ -2288,6 +2477,57 @@ describe("the dispatch CLI's subscription note", () => {
         /^POST http:\/\/127\.0\.0\.1:\d+\/api\/v1\/issues\/DSP-1\/messages was made, but its answer was lost on the way back \(KEY_COMMITTED\), so this command cannot print what it made: read it back with `dispatch read`, or with the matching list for something it created\.$/
       ),
     ]);
+  });
+
+  // A replayed 2xx reading ANSWER_NOT_KEPT says Dispatch gives no copy of the first answer. The
+  // issue create wrote, so it is the create's landing, which exits 0 and says to read it back; the
+  // related-item check wrote nothing, so the command asks it under a second key, and when that is
+  // answered the same way it exits 1 saying the call wrote nothing and to run it again.
+  test("an answer Dispatch kept no copy of is a landing for a write, and for a call that writes nothing a line to run it again", async () => {
+    const notKept = (status: number) =>
+      Response.json(
+        { code: "ANSWER_NOT_KEPT", error: "Dispatch kept no copy of this answer" },
+        { status, headers: { "Idempotency-Replayed": "?1" } }
+      );
+    const checkKeys: (string | null)[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const { pathname } = new URL(request.url);
+      if (request.method === "POST" && pathname === "/api/v1/issues") return notKept(201);
+      if (request.method === "POST" && pathname === "/api/v1/projects/DSP/related") {
+        checkKeys.push(request.headers.get(IDEMPOTENCY_KEY_HEADER));
+        return notKept(200);
+      }
+      return fetch(request);
+    }) as typeof fetch;
+
+    const created = await run(
+      ["issue", "--project", "DSP", "--title", "Retry webhook deliveries"],
+      withListener,
+      "",
+      fetchImpl
+    );
+    expect(created.code).toBe(0);
+    expect(created.stdout.trim().split("\n")).toEqual([
+      expect.stringMatching(
+        /^POST http:\/\/127\.0\.0\.1:\d+\/api\/v1\/issues was made, but Dispatch gives no copy of its answer, which was too large to keep or holds a comment or a message that was deleted, or a document version name a delete replaced \(ANSWER_NOT_KEPT\), so this command cannot print what it made: read it back with `dispatch read`, or with the matching list for something it created\.$/
+      ),
+    ]);
+
+    const checked = await run(
+      ["related", "--project", "DSP", "--title", "Retry webhook deliveries"],
+      withListener,
+      "",
+      fetchImpl
+    );
+    expect(checked.code).toBe(1);
+    expect(checked.stdout.trim().split("\n")).toEqual([
+      expect.stringMatching(
+        /^POST http:\/\/127\.0\.0\.1:\d+\/api\/v1\/projects\/DSP\/related wrote nothing, and Dispatch kept no copy of its answer \(ANSWER_NOT_KEPT\), so this command has no answer to print: run it again, which asks under a new key\.$/
+      ),
+    ]);
+    expect(checkKeys).toHaveLength(2);
+    expect(new Set(checkKeys).size).toBe(2);
   });
 
   // `skill://dispatch` promises exit 1 for a refusal, and a create the near-copy gate stops made

@@ -45,10 +45,10 @@
 #        the work directory up for a person to look at a failure with. --help prints this usage.
 #        A usage error exits 2.
 #
-# Needs bash, curl, jq, go, python3, openssl, node and psql; k2, k6 and k7 also need gh (k2's
+# Needs bash, curl, jq, go, python3, openssl, node and psql; k2 and k7 also need gh (k2's
 # own step and the negative controls of k2 and k7 run the agent-secrets of the pinned release
-# before the airlock, OLD_CLI_DEFAULT_TAG below, which AIRLOCK_OLD_CLI_TAG overrides, and k6's
-# and k7's consumers come from sjawhar/dotfiles), k6 and k7 need bun, wget, git, uv and the
+# before the airlock, OLD_CLI_DEFAULT_TAG below, which AIRLOCK_OLD_CLI_TAG overrides, and k7's
+# consumer files come from sjawhar/dotfiles), k6 and k7 need bun, wget, git, uv and the
 # clients scripts/airlock-clients.sh
 # installs (az, gcloud, pulumi and boto3), k9 needs git, and k15 needs lake from the Lean
 # toolchain this environment names. DEV_BROKER_POSTGRES_URL is passed to dev-airlock.sh as it
@@ -57,7 +57,7 @@
 # missing: AIRLOCK_GCLOUD_SECRET, AIRLOCK_GWS_READ_SECRET and AIRLOCK_GWS_ADMIN_SECRET, the
 # broker names of the operator's own gcloud login and Google Workspace read and administrator
 # logins, which the consumers k7 runs read by those names; and AIRLOCK_GWS_TIER_KEY, the account
-# key in gws/accounts.json whose tiers.read.command k7 runs. No broker name or account key is
+# key in gws/accounts.json whose tiers.read.command k7 reports. No broker name or account key is
 # supplied by default.
 #
 # k9 is a long run: ten minutes of connections and two stacks, about twenty-five minutes in all.
@@ -89,7 +89,7 @@ property the check's outcome sentence names, what it expected beside what it got
 
 k7 needs AIRLOCK_GCLOUD_SECRET, AIRLOCK_GWS_READ_SECRET and AIRLOCK_GWS_ADMIN_SECRET (the broker
 names of the operator's gcloud and Google Workspace logins) and AIRLOCK_GWS_TIER_KEY (the account
-key in gws/accounts.json whose read tier it runs) in its environment, and refuses to start
+key in gws/accounts.json whose read tier it reports) in its environment, and refuses to start
 without them.
 
 It exits 0 only when every property passed, 1 when one did not or none was evaluated, and 2 on
@@ -1167,8 +1167,9 @@ check_k5() {
 # k6
 ###############################################################################################
 #
-# k6 drives real clients: the Azure CLI through sjawhar/dotfiles' scripts/az-broker, and the AWS
-# CLI and boto3 against the stack's stand-in AWS service. A Legion issue pod has no boto3, and a
+# k6 drives real clients: the Azure CLI, signed in as an admin az command signs in under its
+# grant (az login --service-principal with the grant's federated token), and the AWS CLI and
+# boto3 against the stack's stand-in AWS service. A Legion issue pod has no boto3, and a
 # pod on an older worker image has no az, so the check installs both with
 # scripts/airlock-clients.sh, which pins a version and checks its SHA-256 before anything of it
 # runs, and reads that script's exports, whose PATH puts its az ahead of any az the image has.
@@ -1199,7 +1200,9 @@ k6_clients() {
 # page sends a browser to the stack's issuer, which signs the approver in with no form to fill,
 # and the decision is posted back with an Origin header, which the page requires. curl's own
 # cookie jar cannot be used - both cookies are Secure and this broker is on http - so each
-# Set-Cookie is read out of the headers and sent back by hand.
+# Set-Cookie is read out of the headers and sent back by hand. The decision carries every
+# profile_digest field the page printed, one per profile the request names: the broker refuses an
+# approval whose form lacks a profile's fingerprint as one whose profile changed since the page.
 approve_record() { # <record id>
 	local rec="$1" d="$WORK_DIR/approve"
 	mkdir -p "$d"
@@ -1214,14 +1217,18 @@ approve_record() { # <record id>
 	session="$(sed -n 's/^Set-Cookie: \(__Host-broker-session=[^;]*\).*/\1/p' "$d/callback" | tr -d '\r')"
 	[ -n "$session" ] || return 1
 	curl -sS -H "Cookie: $session" -o "$d/page.html" "$AGENT_SECRETS_URL/approve/$rec"
-	local field
+	local digest
 	field() { sed -n "s/.*name=\"$1\" value=\"\([^\"]*\)\".*/\1/p" "$d/page.html" | head -n 1; }
+	local -a digests=()
+	while IFS= read -r digest; do
+		digests+=(--data-urlencode "profile_digest=$digest")
+	done < <(grep -o 'name="profile_digest" value="[^"]*"' "$d/page.html" | sed 's/.*value="\([^"]*\)"/\1/')
 	# The page's form token reaches curl on standard input (`--data-urlencode token@-`), in no
 	# command line.
 	printf '%s' "$(field token)" | curl -sS -o "$d/decided.html" -w '%{http_code}' -H "Cookie: $session" -H "Origin: $AGENT_SECRETS_URL" \
 		--data-urlencode "decision=approve" --data-urlencode "record=$(field record)" \
 		--data-urlencode "printed=$(field printed)" --data-urlencode token@- \
-		--data-urlencode "expires=$(field expires)" "$AGENT_SECRETS_URL/approve" >>"$d/decisions"
+		--data-urlencode "expires=$(field expires)" ${digests[@]+"${digests[@]}"} "$AGENT_SECRETS_URL/approve" >>"$d/decisions"
 	echo >>"$d/decisions"
 }
 
@@ -1244,9 +1251,10 @@ approve_watch() { # <the file the CLI's stderr goes to>
 # k6_azure_wrapper writes the `az` this check puts first on PATH. The stand-in Microsoft
 # endpoint and the stand-in Resource Manager are .test names of this stack's own, and az reaches
 # the endpoints of a cloud, so az has to be told a cloud whose endpoints are those two names.
-# az-broker makes its own AZURE_CONFIG_DIR and logs in at once, leaving no moment to register a
-# cloud in it, so the registration is here: this wrapper registers the cloud in whatever
-# directory az-broker made and then runs the real az with the arguments it was given.
+# The login steps (k6_azure) make their own AZURE_CONFIG_DIR and log in at once, as an admin az
+# command's steps do, and they are kept exactly as those run, so the registration is here: this
+# wrapper registers the cloud in whatever directory the login steps made and then runs the real
+# az with the arguments it was given.
 #
 # It also turns MSAL's instance discovery off, which is what an Azure Stack deployment does
 # (az's own core.instance_discovery, as AZURE_CORE_INSTANCE_DISCOVERY): that discovery asks
@@ -1288,16 +1296,30 @@ EOF
 	chmod +x "$WORK_DIR/k6/bin/az"
 }
 
-# k6_azure runs the five az-broker runs and then the exchange and the five Resource Manager
+# k6_azure_login_steps prints the script each k6 run hands `sh -c` under its grant of
+# AIRLOCK_AZURE_LOGIN, an azure-login value ({"tenant_id","client_id","federated_token",
+# "expires_at"}): the steps an admin az command runs under its grant. The federated token goes
+# into a 0600 file in a throwaway directory, beside the AZURE_CONFIG_DIR made in it, and az logs in
+# as the service principal with `--federated-token @FILE`, so the token is in no command line;
+# then the script runs its arguments. The EXIT trap removes the directory and keeps the command's
+# status, and the HUP, INT and TERM traps turn a signal into an exit, so that trap still runs.
+k6_azure_login_steps() {
+	cat <<'EOF'
+d=$(mktemp -d) || exit 1; umask 077
+trap "rm -rf \"\$d\"" EXIT; trap "exit 129" HUP; trap "exit 130" INT; trap "exit 143" TERM
+printf %s "$AIRLOCK_AZURE_LOGIN" | jq -er .federated_token >"$d/token" &&
+tenant=$(printf %s "$AIRLOCK_AZURE_LOGIN" | jq -er .tenant_id) && client=$(printf %s "$AIRLOCK_AZURE_LOGIN" | jq -er .client_id) &&
+mkdir "$d/config" && export AZURE_CONFIG_DIR="$d/config" && unset AIRLOCK_AZURE_LOGIN &&
+az login --service-principal --username "$client" --tenant "$tenant" --federated-token "@$d/token" --allow-no-subscriptions --output none &&
+"$@"
+EOF
+}
+
+# k6_azure runs the five signed-in az runs and then the exchange and the five Resource Manager
 # calls, and leaves what it saw in K6_AZ_*.
 k6_azure() {
 	local d="$WORK_DIR/k6"
 	mkdir -p "$d"
-	gh api repos/sjawhar/dotfiles/contents/scripts/az-broker -H 'Accept: application/vnd.github.raw' >"$d/az-broker" || {
-		echo "airlock-check: sjawhar/dotfiles scripts/az-broker could not be fetched" >&2
-		return 1
-	}
-	chmod +x "$d/az-broker"
 	k6_azure_wrapper
 
 	local microsoft_before
@@ -1307,12 +1329,10 @@ k6_azure() {
 	local watcher=$!
 	HELPER_PIDS+=("$watcher")
 
-	# The five runs. AZ_BROKER_INNER=1 and AZURE_ADMIN are what az-broker's own first hop
-	# produces: that hop is `secret-run AZURE_ADMIN -- az-broker`, and secret-run is check k7's
-	# subject and needs a dotfiles checkout this pod has not got, so the check runs the half of
-	# az-broker that drives az, under the release that hop would have made.
+	# The five runs. Each is one grant of AIRLOCK_AZURE_LOGIN, under which az logs in with
+	# k6_azure_login_steps.
 	#
-	# What each run does once az-broker has logged it in: `az group list`, the admin command,
+	# What each run does once it is logged in: `az group list`, the admin command,
 	# and then `az account get-access-token`, which prints the access token az itself holds -
 	# the one the broker's exchange handed it, which has to be a placeholder and never the real
 	# token the Resource Manager is sent.
@@ -1326,9 +1346,8 @@ EOF
 	for run in 1 2 3 4 5; do
 		echo "=== run $run ===" >>"$d/runs.log"
 		PATH="$d/bin:$K6_AZ_PATH" agent-secrets AIRLOCK_AZURE_LOGIN --ttl 1h --wait 5m \
-			--reason "airlock check k6 run $run: az-broker logs az in and calls the Resource Manager" -- sh -c '
-			export AZURE_ADMIN="$AIRLOCK_AZURE_LOGIN" AZ_BROKER_INNER=1
-			exec bash '"$d"'/az-broker -- bash '"$d"'/az-steps.sh' >>"$d/runs.log" 2>>"$d/cli.err"
+			--reason "airlock check k6 run $run: az logs in and calls the Resource Manager" -- \
+			sh -c "$(k6_azure_login_steps)" sh bash "$d/az-steps.sh" >>"$d/runs.log" 2>>"$d/cli.err"
 		echo "exit $?" >>"$d/runs.log"
 	done
 	kill "$watcher" 2>/dev/null || true
@@ -1407,7 +1426,7 @@ check_k6() {
 	local federated access_shape
 	federated="$(cat "$AIRLOCK_DIR/azure-identity-token")"
 	access_shape="$(shape "$K6_AZ_ACCESS")"
-	observe "the five az-broker runs: $K6_AZ_RUNS runs, $K6_AZ_FAILED of them non-zero ($K6_AZ_ARM_STATUS); what they reached on the Microsoft stand-in was $K6_AZ_REACHED, and the first ERROR line az wrote, if any, was: ${K6_AZ_ERROR:-none}"
+	observe "the five az runs: $K6_AZ_RUNS runs, $K6_AZ_FAILED of them non-zero ($K6_AZ_ARM_STATUS); what they reached on the Microsoft stand-in was $K6_AZ_REACHED, and the first ERROR line az wrote, if any, was: ${K6_AZ_ERROR:-none}"
 	observe "the exchange: the token endpoint was asked $K6_AZ_EXCHANGES times and its client_assertion was $(shape "$K6_AZ_ASSERTION") against the stack's own federated token $(shape "$federated") (compared by SHA-256 and length)"
 	observe "the access token az itself holds after its login (az account get-access-token) is $access_shape, which opens 'agent-secrets-placeholder': $(contains agent-secrets-placeholder "$K6_AZ_ACCESS" && echo yes || echo no)"
 	observe "the Resource Manager calls az made, one per run, and their Authorization headers: $(for h in "${K6_AZ_ARM_HEADERS[@]+"${K6_AZ_ARM_HEADERS[@]}"}"; do printf '%s; ' "$(shape "$h")"; done)"
@@ -1419,7 +1438,7 @@ check_k6() {
 
 	judge "$([ "$K6_AZ_RUNS" = 5 ] && [ "$K6_AZ_FAILED" = 0 ] && contains agent-secrets-placeholder "$K6_AZ_ACCESS" && echo 0 || echo 1)" \
 		"az gets a placeholder access token" \
-		"all five az-broker runs logged in against the stand-in cloud and listed resource groups ($K6_AZ_FAILED of $K6_AZ_RUNS exited non-zero), and the token az holds is $access_shape, which opens 'agent-secrets-placeholder': $(contains agent-secrets-placeholder "$K6_AZ_ACCESS" && echo yes || echo no)"
+		"all five az runs logged in against the stand-in cloud and listed resource groups ($K6_AZ_FAILED of $K6_AZ_RUNS exited non-zero), and the token az holds is $access_shape, which opens 'agent-secrets-placeholder': $(contains agent-secrets-placeholder "$K6_AZ_ACCESS" && echo yes || echo no)"
 
 	local arm_calls=0 arm_real=0 header
 	for header in "${K6_AZ_ARM_HEADERS[@]+"${K6_AZ_ARM_HEADERS[@]}"}"; do
@@ -1482,10 +1501,11 @@ check_k6() {
 ###############################################################################################
 #
 # k7 drives the consumers as they run, against real services, with fake values: the refusal each
-# real service answers is the evidence, not a failure. The consumers come from sjawhar/dotfiles
-# at main and nothing of them is rewritten; what this check adds around them is a DOTFILES_DIR
-# of its own holding the files they read of each other (scripts/secret-run-reason and
-# agent-secrets/broker-url.sh), because secret-run resolves both relative to its own directory.
+# real service answers is the evidence, not a failure. The consumer files come from
+# sjawhar/dotfiles at main and nothing of them is rewritten (k7_dotfiles). The GitHub admin,
+# gcloud and Google Workspace calls are the commands an agent runs for them, written into the
+# steps here: each runs under agent-secrets itself, and gcloud with its login in a throwaway
+# CLOUDSDK_CONFIG, as an admin gcloud command runs under its grant.
 # One consumer speaks gRPC, which offers h2 alone in its TLS handshake: Pulumi's gcpkms secrets
 # manager, whose Cloud KMS call the proxy carries in HTTP/2.
 #
@@ -1504,19 +1524,20 @@ check_k6() {
 # proves. The git credential settings are cleared for the git step alone, which brings its own
 # helper - the one that answers the placeholder - and the proxy in git's own configuration.
 
-# k7_dotfiles fetches the consumers from sjawhar/dotfiles at main and lays them out as a
-# dotfiles checkout, which is how secret-run finds its reason builder and its broker URL file.
+# k7_dotfiles fetches the consumer files from sjawhar/dotfiles at main and lays them out as a
+# dotfiles checkout, which is how shims/gh finds the two scripts it runs (scripts/gh-agent-config
+# and scripts/public-text-gate). gws/accounts.json holds the read tier the Google Workspace step
+# reports.
 k7_dotfiles() {
 	local d="$WORK_DIR/k7/dotfiles" path
-	mkdir -p "$d/scripts" "$d/agent-secrets" "$d/shims" "$d/gws"
-	for path in scripts/secret-run scripts/secret-run-reason scripts/gcloud-broker scripts/gh-agent-config scripts/public-text-gate shims/gh gws/accounts.json agent-secrets/broker-url.sh; do
+	mkdir -p "$d/scripts" "$d/shims" "$d/gws"
+	for path in scripts/gh-agent-config scripts/public-text-gate shims/gh gws/accounts.json; do
 		gh api "repos/sjawhar/dotfiles/contents/$path" -H 'Accept: application/vnd.github.raw' >"$d/$path" || {
 			echo "airlock-check: sjawhar/dotfiles $path could not be fetched" >&2
 			return 1
 		}
 	done
-	chmod +x "$d/scripts/secret-run" "$d/scripts/secret-run-reason" "$d/scripts/gcloud-broker" \
-		"$d/scripts/gh-agent-config" "$d/scripts/public-text-gate" "$d/shims/gh"
+	chmod +x "$d/scripts/gh-agent-config" "$d/scripts/public-text-gate" "$d/shims/gh"
 	K7_DOTFILES="$d"
 	K7_FETCHED="$(cd "$d" && find . -type f | sed 's|^\./||' | sort | tr '\n' ' ')"
 }
@@ -1564,13 +1585,9 @@ say "https_proxy=\$(printf '%s' "\$HTTPS_PROXY" | sed 's/:[^:@]*@/:***@/')"
 # and auth.test.
 say "slack=\$(bun run $SCRIPT_DIR/airlock/slack.ts 2>&1 | tail -n 1 | tr -d '\r')"
 
-# gh api under secret-run for GITHUB_ADMIN_PAT: the admin line of shims/gh itself, with the
-# directory of the real GitHub CLI first on PATH for this one step. That line sets GH_TOKEN,
-# and the only other gh in this pod is Legion's wrapper, which refuses a call whose GH_TOKEN
-# is set and refuses to run at all when another gh is ahead of it on PATH; \$LEGION_GH_PATH is
-# the real CLI the wrapper itself runs. Nothing else of the step changes, so what GitHub is
-# sent is the consumer's own command with the consumer's own fake value.
-say "gh=\$(secret-run --reason 'k7: one gh api call with a fake admin token' GITHUB_ADMIN_PAT -- sh -c 'PATH=$K7_GH_DIR:\$PATH GH_TOKEN=\$GITHUB_ADMIN_PAT GITHUB_TOKEN=\$GITHUB_ADMIN_PAT exec gh api user' 2>&1 | tail -n 1 | tr -d '\r')"
+# gh api under agent-secrets for GITHUB_ADMIN_PAT, with the real GitHub CLI first on PATH for this
+# one step (k7_consumer_github_step, in the callable boundary).
+k7_consumer_github_step
 
 # pulumi preview of a program whose Tailscale provider calls tailscale:getDevices.
 say "pulumi=\$(cd $d/pulumi && export PULUMI_CONFIG_PASSPHRASE= PULUMI_BACKEND_URL=file://$d/pulumi/state TAILSCALE_API_KEY="\$TAILSCALE_API_KEY" TAILSCALE_TAILNET=example.com && pulumi stack init k7 >/dev/null 2>&1; pulumi preview --stack k7 --non-interactive 2>&1 | grep -iE 'error|refus|unauthor|401|403' | head -n 1 | tr -d '\r')"
@@ -1683,10 +1700,10 @@ check_k7() {
 
 	observe "the command's inherited NO_PROXY was ${K7[no_proxy]-} — the pod's own NO_PROXY is '*', which the CLI had to drop — and its proxy was ${K7[https_proxy]-}"
 	observe "slack.com/api/auth.test under bun: ${K7[slack]-}"
-	observe "gh api user under secret-run for GITHUB_ADMIN_PAT: ${K7[gh]-}"
+	observe "gh api user under agent-secrets for GITHUB_ADMIN_PAT: ${K7[gh]-}"
 	observe "pulumi preview with the Tailscale provider calling tailscale:getDevices: ${K7[pulumi]-}"
 	observe "pulumi stack init with a gcpkms secrets provider, Cloud KMS over gRPC: ${K7[kms]-}"
-	observe "gcloud projects list under gcloud-broker: ${K7[gcloud]-}"
+	observe "gcloud projects list with the operator's gcloud login as its access token file, in a throwaway CLOUDSDK_CONFIG: ${K7[gcloud]-}"
 	observe "the gws operator read tier (${K7[gws_tier]-}) answered: ${K7[gws]-}"
 	observe "the google-workspace skill's Bearer call to admin.googleapis.com answered: ${K7[admin]-}"
 	observe "git push --dry-run through a credential helper answering the placeholder: ${K7[git]-}"
@@ -1737,7 +1754,7 @@ check_k7() {
 		"a gRPC client reaches its service through the proxy in HTTP/2, and the service refuses the fake value" \
 		"Pulumi's gcpkms secrets manager said '$(printf '%s' "${K7[kms]-}" | head -c 300)', and the proxy logged $kms_calls calls to cloudkms.googleapis.com"
 	if [ -z "$K7_GH_DIR" ]; then
-		fail "the gh consumer's own call is refused the fake value by GitHub — this step did not run: LEGION_GH_PATH is unset or names no runnable file in this pod, and it names the only real GitHub CLI here. shims/gh's own admin line is \`secret-run … GITHUB_ADMIN_PAT -- sh -c 'GH_TOKEN=\$GITHUB_ADMIN_PAT exec gh …'\`, and the other gh on PATH is Legion's wrapper, which refuses a call whose GH_TOKEN is set and refuses to run at all when another gh is ahead of it, so running the step against the wrapper would prove nothing about the airlock. Set LEGION_GH_PATH to the real CLI and run this check again."
+		fail "the gh consumer's own call is refused the fake value by GitHub — this step did not run: LEGION_GH_PATH is unset or names no runnable file in this pod, and it names the only real GitHub CLI here. The step's command is \`agent-secrets GITHUB_ADMIN_PAT --reason … -- sh -c 'GH_TOKEN=\$GITHUB_ADMIN_PAT exec gh …'\`, and the other gh on PATH is Legion's wrapper, which refuses a call whose GH_TOKEN is set and refuses to run at all when another gh is ahead of it, so running the step against the wrapper would prove nothing about the airlock. Set LEGION_GH_PATH to the real CLI and run this check again."
 	else
 		judge "$(printf '%s' "${K7[gh]-}" | grep -qiE '401|403|Bad credentials|unauthor' && echo 0 || echo 1)" \
 			"the gh consumer's own call is refused the fake value by GitHub" \

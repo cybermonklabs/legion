@@ -294,12 +294,16 @@ Four checks need more than the stack. `k1` scans the command's memory, and
 command may read its `/proc/<pid>/mem`: the scan is a small Python program
 (`scripts/airlock/memscan.py`) that starts `agent-secrets` itself and scans the
 descendant it started. `k6` and `k7` drive real clients and the real consumers:
-`airlock-clients.sh` below installs `az`, `gcloud`, `pulumi` and `boto3`, and the
-consumers (`scripts/az-broker`, `scripts/secret-run`, `shims/gh`,
-`scripts/gcloud-broker` and the tier commands of `gws/accounts.json`) are fetched from
-`sjawhar/dotfiles` at main with `gh api`. `k15` needs no stack: it builds the Lean
-model with `lake`, prints its theorem statements and their axioms, runs the comparison
-fuzz test for ten minutes, and runs the six mutants through `airlock-mutants.sh`.
+`airlock-clients.sh` below installs `az`, `gcloud`, `pulumi` and `boto3`. `k6` signs
+`az` in as an admin `az` command does under its grant (`az login --service-principal`
+with the grant's federated token, in a throwaway `AZURE_CONFIG_DIR`). `k7` runs its
+GitHub admin and Google Workspace calls under `agent-secrets` itself, and `gcloud`
+with the operator's login as its access token file in a throwaway `CLOUDSDK_CONFIG`;
+these are the check's own steps. `k7` fetches `shims/gh`, the two scripts it runs and
+`gws/accounts.json`, whose read tier it reports, from `sjawhar/dotfiles` at main with
+`gh api`. `k15` needs no stack: it builds the Lean model with `lake`, prints its
+theorem statements and their axioms, runs the comparison fuzz test for ten minutes,
+and runs the six mutants through `airlock-mutants.sh`.
 
 Before starting `k7`, set these operator inputs. An absent or empty input is a usage
 error (exit 2), reported before setup starts, and so is a broker name that is not
@@ -307,7 +311,7 @@ uppercase letters, digits and single underscores starting with a letter, the one
 the broker reads:
 
 - `AIRLOCK_GCLOUD_SECRET`: the broker name of the operator's gcloud login, which the
-  consumer's `scripts/gcloud-broker` reads, for example `GCLOUD_OPERATOR`.
+  `gcloud` step reads, for example `GCLOUD_OPERATOR`.
 - `AIRLOCK_GWS_READ_SECRET`: the broker name of the operator's Google Workspace
   read login, for example `GWS_OPERATOR_READ_OAUTH`.
 - `AIRLOCK_GWS_ADMIN_SECRET`: the broker name of the operator's Google Workspace
@@ -319,10 +323,13 @@ The check uses fake login values in its local store, each stored under the name 
 broker reads its input's name by (lower-cased, each underscore a hyphen). These inputs
 identify the consumer's existing broker names and account; they do not rename the
 operator's logins. `bash packages/envoy/scripts/airlock-check.test.sh` calls the k7
-fixture and Google consumer boundary directly under fakes. It checks required inputs,
-fake broker rules, store names and consumer results without starting a stack, k8a's
-broker start on its own, and k6's az wrapper with an az shim first on PATH (a shim that
-looks az up on PATH again must reach the real az, not the wrapper).
+fixture, GitHub admin and Google consumer boundary directly under fakes. It checks
+required inputs, fake broker rules, store names, the name and reason each nested
+`agent-secrets` call asks with, and consumer results without starting a stack, k8a's
+broker start on its own, k6's login steps (the login, the command's exit status and
+the removal of their directory, after a TERM too), and k6's az wrapper with an az shim
+first on PATH (a shim that looks az up on PATH again must reach the real az, not the
+wrapper).
 
 The programs the checks drive are files, not text a run writes out. The three Go
 clients are subcommands of `cmd/dev-proxy-stands`, the binary `dev-broker.sh`
@@ -357,18 +364,20 @@ stack under `--no-kind`, and `k9`'s a second stack under `--idle-seconds 60`.
 `k6` approves its own human-tier grant the way a person does: a pod session has no
 operator, so the run signs in at the stack's issuer, which signs the approver in with
 no page to fill, reads the request's page and posts the decision back with an `Origin`
-header. `k9` runs each broker with `GOMAXPROCS=1` by exporting it into the environment
-it starts the stack with, since `dev-airlock.sh` has no option for it, and reads each
+header and each profile fingerprint the page printed, without which the broker refuses
+the approval as one whose profile changed. `k9` runs each broker with `GOMAXPROCS=1`
+by exporting it into the environment it starts the stack with, since `dev-airlock.sh`
+has no option for it, and reads each
 broker's CPU time from `utime` and `stime` in `/proc/<pid>/stat` and its peak memory
 from `VmHWM` in `/proc/<pid>/status`, which is the quantity `getrusage` reports as
 `ru_maxrss` for a process one can wait on — these two are `dev-airlock.sh`'s children,
 not the check's.
 
-It needs bash, curl, jq, go, python3, openssl, node and psql; `k2`, `k6` and `k7` also
-need `gh` (`k2`'s own step and the negative controls of `k2` and `k7` run the
+It needs bash, curl, jq, go, python3, openssl, node and psql; `k2` and `k7` also need
+`gh` (`k2`'s own step and the negative controls of `k2` and `k7` run the
 `agent-secrets` of the pinned release before the airlock, `OLD_CLI_DEFAULT_TAG` in the
-script, which `AIRLOCK_OLD_CLI_TAG` overrides, and `k6`'s and `k7`'s consumers come
-from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
+script, which `AIRLOCK_OLD_CLI_TAG` overrides, and `k7`'s consumer files come from
+`sjawhar/dotfiles`), `k6` and `k7` need `bun`,
 `wget`, `git`, `uv` and the clients `airlock-clients.sh` installs, `k9` needs `git`,
 and `k15` needs `lake` from the Lean toolchain the environment names. Each bound host
 listens on one loopback address and port 443, so only one stack runs on a machine at a
@@ -660,7 +669,8 @@ packages/envoy/scripts/forced-order.sh -drop write.preIO ./internal/testnats/hoo
 It copies nats-server's module at the version it runs out of the module cache, applies
 `internal/testnats/testdata/hooked/v<version>/server.patch` to the copy, and adds the shared
 `testdata/hooked/zz_measure.go` (the event, the hook and the reporting helpers) and that version's
-`zz_measure_write.go` (its consumer state writer). It then runs
+`zz_measure_write.go` (its consumer state writer, and on 2.15.1 the duplicate-window hooks, which
+read that version's own fields). It then runs
 `go test -tags odatrace -race -v -run '^TestForcedOrder'` with
 nats-server replaced by the copy: for a module of the workspace, in a copy of `go.work` with
 absolute `use` paths, so every other module version is the one CI's own build links; for a module
@@ -669,7 +679,11 @@ or that holds a replace, is refused, and so is a module whose `go.mod` replaces 
 the hooked copy would take the replacement's place. It reads go's JSON with `jq`. Nothing else of nats-server
 changes, the repository's own files are never written, and no other build sees a hook.
 The hold points are `write.preIO`, `write.preRename` (2.15.1 alone: 2.10.29 writes `o.dat` in
-place), `flush.encoded`, `store.create`, `api.worker`, `client.publish`, `meta.apply` and `stream.apply`;
+place), `flush.encoded`, `store.create`, `api.worker`, `client.publish`, `meta.apply`,
+`stream.apply`, and `dedupe.reset` and `dedupe.purged` (2.15.1 alone: a stream update past its
+re-arm of the purge of remembered duplicate ids and before it stores the new window, and a purge
+that has done its work with the dedupe lock held; 2.10.29's purge takes the lock its update holds
+across both steps, so no purge runs between them there);
 `hooks.go` says where each one is. A server's shutdown, and its lame duck, report `server.shutdown`
 before they stop anything and `server.down` once the shutdown has waited for its goroutines: the
 hook releases every hold on that server at the first and parks none of its goroutines until the
@@ -692,8 +706,11 @@ line).
 those refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`,
 an empty `-C`, a module that replaces nats-server), with the fixture package
 `internal/testnats/hooktest/skiponly`.
-`ci.yaml`'s `envoy-go-race` job runs that test, then the script on `./internal/testnats/hooktest/`
-twice: with no `-server`, so on the version the workspace links, and with `-server 2.10.29`. Its
+`ci.yaml`'s `envoy-go-race` job runs that test, then the script twice: with no `-server`, so on
+the version the workspace links, on `./internal/testnats/hooktest/` and `./cmd/listener/` (whose
+forced-order row holds `dedupe.reset`), and with `-server 2.10.29` on `./internal/testnats/hooktest/`
+alone, since the listener row would skip there and leave a package whose every forced-order test
+skipped. Its
 `daemon-go` job runs it with `-C packages/daemon` and no `-server`. So when `go.mod` moves to a
 nats-server with no hooks, both unversioned steps fail until the hooks are ported. Each job counts
 the 10 minutes in its time budget.
@@ -1081,9 +1098,14 @@ and `lib/daemon-release-gate-read-developer-box.sh`, which the gate sources.
 `daemon-release-gate.test.sh` proves every verdict behind a fake `gh`, a fake `docker` that
 answers a single image and an index the way the real one does and runs an image's files, and a
 fake `npm`. Its fakes, fixture builders and assertion helpers are in
-`lib/daemon-release-gate-harness.sh`, and its scenarios of the VM hub, the images' clients, the
-developer box, its versions and a project's fields in `lib/daemon-release-gate-cases-*.sh`, which
-it sources; CI runs it in the `envoy-go-checks` job of `.github/workflows/ci.yaml`. Two controls run
+`lib/daemon-release-gate-harness.sh`, and its scenarios of the daemon leg, the listener pins, the
+VM hub, the images' clients, the developer box, its versions, a project's fields and the reads
+that come back short in `lib/daemon-release-gate-cases-<group>.sh`, one file a group. The test
+runs each group in a process of its own (`lib/daemon-release-gate-group.sh`), up to one group per
+core at a time, and prints the groups in reading order once they have all ended, each with the
+seconds it took; `GATE_TEST_GROUP_SLOTS=1` runs them one at a time, to read a group's output as it
+runs, and `bash lib/daemon-release-gate-group.sh <group> /dev/null` runs one group alone. CI runs
+the test in the `envoy-go-checks` job of `.github/workflows/ci.yaml`. Two controls run
 with it: a copy of the gate whose VM leg reads an absent `listenerImage` as no hub, and one that
 reads pi-envoy alone in an image, must each open on the fixture that exists to catch it.
 
@@ -1553,7 +1575,8 @@ reason names one other issue that covers it: `Duplicate of`, `Duplicate:`, `Fold
 The close reason is the issue's last top-level message posted at or before its close, the message
 `dispatch issue-update --status done --reason` posts just before the close; the `issue.closed`
 event carries no reason. A reason naming only a pull request, several issues or the issue itself
-is not a pair. Two closes naming the same two issues make one pair, by the first close.
+is not a pair. A reason its author deleted since has no words left and is counted as deleted,
+never as no reason. Two closes naming the same two issues make one pair, by the first close.
 
 Each pair's query is its later-filed issue as filed: its first title and first spec version. That
 is the closed issue when the issue its reason names came first (forward), and the named issue
@@ -1561,9 +1584,10 @@ when that came later (reversed). The target, the issue the check should list, is
 its title and spec as of the query's filing. Pairs naming another project's issue, or one that
 does not exist, are counted and left out. It reads with the caller's own token, sends only
 `GET`s, one at a time, and prints counts only: done issues read, close reasons with a wording,
-those that are not a pair by what they name (`no_reference` is a wording followed by no issue or
-pull request), pairs found and kept per wording with forward and reversed, pairs left out by
-reason, chains (a pair's named issue itself closed into another), and issues copied.
+close reasons deleted since, those that are not a pair by what they name (`no_reference` is a
+wording followed by no issue or pull request), pairs found and kept per wording with forward and
+reversed, pairs left out by reason, chains (a pair's named issue itself closed into another), and
+issues copied.
 
 ```bash
 DISPATCH_URL=<server> DISPATCH_TOKEN_FILE=<token file> \
@@ -1621,9 +1645,11 @@ which has no statement pair: it times one whole pass of the release before this 
 pass of this build with no change, and eleven rounds each preceded by a hundred item writes
 outside the timed part, and reports the median of the eleven. It writes 1,100 items to the
 database it measures and leaves them there, so run it after the statement timings.
+Its verdict is the wall time of those passes, which a loaded machine moves as much as the code
+does, so it also needs `DISPATCH_BENCH_TIMING` set, and it skips without it.
 
 ```bash
-cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> \
+cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> DISPATCH_BENCH_TIMING=1 \
   go test -run TestRelatedTermsRefreshTiming -v -count=1 -timeout 90m ./internal/dispatch/api
 ```
 

@@ -141,7 +141,7 @@ async function optionsFrom(argv: readonly string[]): Promise<Options> {
     );
   }
 
-  const authorization =
+  const authorization: Record<string, string> =
     bearerFile !== undefined
       ? { Authorization: `Bearer ${await secretFrom(bearerFile, "--bearer-file", "token")}` }
       : cookieFile !== undefined

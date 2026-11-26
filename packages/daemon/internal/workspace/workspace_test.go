@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -396,7 +397,7 @@ func TestEnsureRepoCloneDoesNotDisarmTheCallersWorkingDirectory(t *testing.T) {
 	}
 	clone := filepath.Join(t.TempDir(), "clone")
 
-	if err := ensureRepoClone(context.Background(), run, WallClock{}, clone, run.remote, "main", remote{}); err != nil {
+	if err := ensureRepoClone(context.Background(), run, clock.Real(), clone, run.remote, "main", remote{}); err != nil {
 		t.Fatalf("ensureRepoClone: %v", err)
 	}
 	if _, err := os.Stat(config); err != nil {
@@ -641,7 +642,7 @@ func fetchRequest(t *testing.T) FetchRequest {
 	t.Helper()
 	return FetchRequest{
 		Repo: ghrepo.MustParse("acme/widgets"), Token: staticToken(testInstallationToken), CredentialDir: t.TempDir(), Feed: filepath.Join(t.TempDir(), "feed"),
-		Log: func(line string) { t.Logf("fetch logged: %s", line) }, Clock: WallClock{},
+		Log: func(line string) { t.Logf("fetch logged: %s", line) }, Clock: clock.Real(),
 	}
 }
 
@@ -728,11 +729,12 @@ func TestFetchClonesBareReadingNoConfigurationButItsOwn(t *testing.T) {
 }
 
 // A pod's second init container provisions from the feed Fetch filled, which is read-only there,
-// and holds no credential. Its local-path clone owns its object-store entries, so removing the feed
-// cannot remove history that the clone's refs need. Its origin names https://github.com/<repo>, and
-// the fetch that follows reaches that remote at the feed. No command is handed a token file, an
-// askpass, or a credential helper. The workspace starts at the default branch, which the clone
-// tracks. The next pod's fetch brings what the remote gained since.
+// and holds no credential. Its clone reads the feed's objects in place, through alternates on the
+// feed's own path (`git clone --shared`), and Fetch never replaces a feed it finds present, so no
+// object the clone borrows goes. Its origin names https://github.com/<repo>, and the fetch that
+// follows reaches that remote at the feed. No command is handed a token file, an askpass, or a
+// credential helper. The workspace starts at the default branch, which the clone tracks. The next
+// pod's fetch brings what the remote gained since.
 func TestProvisionFromAFeedHoldsNoCredential(t *testing.T) {
 	run := newLocalRunner(t)
 	pushRemoteBranch(t, run.remote, "main", "history.txt")
@@ -767,12 +769,12 @@ func TestProvisionFromAFeedHoldsNoCredential(t *testing.T) {
 			t.Errorf("the clone used a credentialed Jujutsu clone: %q", call.Argv)
 		}
 	}
-	if clone := findCall(t, calls, "git", "clone", "--quiet"); len(clone.Argv) != 6 || clone.Argv[3] != "--no-checkout" || clone.Argv[4] != feed {
-		t.Errorf("the clone was made with %q, want a local clone of the feed %s with no working tree", clone.Argv, feed)
+	if clone := findCall(t, calls, "git", "clone", "--quiet"); !slices.Contains(clone.Argv, "--no-checkout") || !slices.Contains(clone.Argv, "--shared") || !slices.Contains(clone.Argv, feed) {
+		t.Errorf("the clone was made with %q, want a shared local clone of the feed %s with no working tree", clone.Argv, feed)
 	}
 	cloneDir := filepath.Join(state, "repos", "github.com", "acme", "widgets")
-	if _, err := os.Stat(filepath.Join(cloneDir, ".git", "objects", "info", "alternates")); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("the clone's alternates = %v, want no borrowed history", err)
+	if alternates, err := os.ReadFile(filepath.Join(cloneDir, ".git", "objects", "info", "alternates")); err != nil || strings.TrimSpace(string(alternates)) != filepath.Join(feed, "objects") {
+		t.Errorf("the clone's alternates = %q, %v; want the feed's objects %s borrowed", alternates, err, filepath.Join(feed, "objects"))
 	}
 	if origin := strings.TrimSpace(runSetup(t, cloneDir, "git", "--git-dir="+filepath.Join(cloneDir, ".git"), "remote", "get-url", "origin")); origin != "https://github.com/acme/widgets" {
 		t.Errorf("the shared clone's origin is %s, want GitHub's", origin)

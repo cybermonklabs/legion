@@ -4,7 +4,8 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // Budgets are a claim's retry counters, each a separate policy with its own reset point.
@@ -45,6 +46,39 @@ type Limits struct {
 	PromptRetires  int
 }
 
+// Spent is whether a failure that left the claim's budgets at b spent any of them: one at or past
+// its limit in l, deaths measured against the launch failure limit as chargeDeath measures them. A
+// failure that spent none, a provider error's run of refused turns (turnOutcome) or a prompt
+// refused at launch (promptRefused), failed the claim on its own account.
+func (b Budgets) Spent(l Limits) bool {
+	return spentAt(b.LaunchFailures, l.LaunchFailures) || spentAt(b.Deaths, l.LaunchFailures) ||
+		spentAt(b.PromptFailures, l.PromptFailures) || spentAt(b.PromptRetires, l.PromptRetires)
+}
+
+// spentAt is whether count has reached limit, a limit of 0 being none.
+func spentAt(count, limit int) bool { return limit > 0 && count >= limit }
+
+// OneAttemptLeft is what b, the budgets a claim failed with, leaves the half-open retry of a
+// production check's look (RequestRetry.OneAttemptLeft): each budget the failure spent (Spent) set
+// one attempt short of its limit in l, and every other count as the failure left it, so one more
+// failure of the same kind fails the claim again. A failure that spent none of them leaves nothing
+// to keep, and the retry starts a fresh run, as every other retry does: the zero Budgets.
+func (b Budgets) OneAttemptLeft(l Limits) Budgets {
+	if !b.Spent(l) {
+		return Budgets{}
+	}
+	short := func(count *int, limit int) {
+		if spentAt(*count, limit) {
+			*count = limit - 1
+		}
+	}
+	short(&b.LaunchFailures, l.LaunchFailures)
+	short(&b.Deaths, l.LaunchFailures)
+	short(&b.PromptFailures, l.PromptFailures)
+	short(&b.PromptRetires, l.PromptRetires)
+	return b
+}
+
 // FailureCause is the one word for what failed a claim, chosen by the site that fails it rather
 // than read back out of the sentence that site writes (Claim.Failure): one sentence covers four
 // different events today, and a reader of it cannot tell a dead process from an agent that never
@@ -69,11 +103,12 @@ const (
 	CauseStalePlugin FailureCause = "stale_plugin"
 	// CausePromptRetiresExhausted: the prompt retirements ran out (chargePrompt).
 	CausePromptRetiresExhausted FailureCause = "prompt_retires_exhausted"
-	// CauseProviderError: a provider error that cannot clear ended the claim's turn
-	// (providerErrored), or the claim's producer reported a run of refused turns that reached the
-	// launch failure limit (turnOutcome). Both are the provider refusing to run this session's
-	// turns, which is the one thing a reader of the word has to act on, and the sentence beside
-	// it says which of the two it was.
+	// CauseProviderError: a provider error that cannot clear ended the claim's turn, as the
+	// result of the prompt that turn ran says (providerErrored), or as the report of a turn that
+	// ran no prompt of the daemon's says (unpromptedTurnEnded), which is the provider refusing to
+	// run this session's turns: the one thing a reader of the word has to act on. A claim an
+	// earlier daemon failed can carry it for a run of refused turns that reached the launch failure
+	// limit, which fails no claim now (turnOutcome); the sentence beside the word says which it was.
 	CauseProviderError FailureCause = "provider_error"
 	// CauseUnrecorded: the claim failed before the daemon recorded a cause. No live path writes
 	// it; the migration that adds the column writes it for every stored failure whose sentence
@@ -106,7 +141,8 @@ var FailureCauses = []FailureCause{
 // passed (backOff) and its turn in the wake pacing has come (reserveWake) — or fails the claim
 // when the budget is spent. A relaunch the tree lifecycle refuses (its cleanup reserved) is
 // checked before the charge, so it costs none; one whose process is already stopped is
-// relaunchRefused's.
+// relaunchRefused's. A death is charged once however often its relaunch is raised
+// (deathLaunchFailureCharged).
 //
 // cause is what failed the process this relaunch replaces, from the caller that saw it, and it is
 // recorded on the claim before the charge: it is what the claim fails under when this budget runs
@@ -117,18 +153,40 @@ var FailureCauses = []FailureCause{
 // ending is why the process the claim still records is let go, in the daemon's words, which the
 // launch records with what that process ended (launch, letGo); noEnd where the caller let it go
 // already (registrationDeadline).
-func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, ending string) error {
+//
+// place is the place the caller already took for this relaunch in the wake pacing, as launchAfter
+// takes it, and nil for every caller but the boot's replay of a recorded death
+// (RecordedDeath.Place). The retry of a refused relaunch passes nil: it is raised anew, so it
+// takes a place afresh.
+func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, ending string, place *wakepace.Place) error {
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, func(ctx context.Context) error {
-			return m.relaunchAfterFailure(ctx, cause, ending)
+			return m.relaunchAfterFailure(ctx, cause, ending, nil)
 		}, err)
 	}
-	m.claim.PendingCause = cause
-	m.claim.Budgets.LaunchFailures++
+	if !m.deathLaunchFailureCharged(cause) {
+		m.claim.PendingCause = cause
+		m.claim.Budgets.LaunchFailures++
+	}
 	if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, true, false, false, time.Time{}, ending)
+	return m.launchAfter(ctx, true, false, false, place, ending)
+}
+
+// deathLaunchFailureCharged is whether cause is a death whose launch failure an earlier raise of
+// the same relaunch has already charged. A death's relaunch is raised as often as that one death
+// is: by the report that decided it (died), by the sweep's next report of the same death, where
+// the lifecycle check refused the relaunch before (relaunchRefused keeps such a claim over its
+// dead process and arms no retry), and by the boot's replay of the death after a restart
+// (relaunchRecordedDeath). The first of them that passes the lifecycle check charges the launch
+// failure, and the others charge none. What says the charge was made is the cause it records
+// (Claim.PendingCause): died clears it in the decision that charges the death (DeathCharged), and
+// the charge sets it to died in the same claim write as the count. So a write the claim makes
+// while the relaunch waits — a task a start queues meanwhile — stores the two together, and a
+// restart reads either both or neither.
+func (m *Machine) deathLaunchFailureCharged(cause FailureCause) bool {
+	return cause == CauseDied && m.claim.DeathCharged && m.claim.PendingCause == CauseDied
 }
 
 // chargeDeath counts a process that died after its agent was ready with work outstanding, and

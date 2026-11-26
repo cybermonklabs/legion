@@ -26,6 +26,7 @@ import (
 // 200 ms. The bucket's maximum age is left at its default, minutes longer than that, so the
 // record is taken away by the pass and never by the bucket's own backstop.
 func TestTheSessionReaperAStartedListenerRunsDeletesTheReapedSessionsConsumer(t *testing.T) {
+	t.Parallel()
 	_, uri := testnats.Start(t)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "session-consumer-reap-wiring",
 		"ENVOY_SESSION_LIVE_WINDOW=1s",
@@ -56,7 +57,7 @@ func TestTheSessionReaperAStartedListenerRunsDeletesTheReapedSessionsConsumer(t 
 	if output := listener.Output.String(); !strings.Contains(output, `"session_id":"`+sessionID+`"`) {
 		t.Fatalf("the pass the listener ran names no record of %s:\n%s", sessionID, output)
 	}
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		info, err := consumers.Info(ctx, sessionID)
 		if errors.Is(err, bus.ErrSessionConsumerNotFound) {

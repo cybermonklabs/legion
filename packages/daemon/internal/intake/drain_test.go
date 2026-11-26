@@ -109,6 +109,7 @@ type warnings = testlog.Buffer
 // LEGION_TEST_DRAIN_MEASURE=1 the drain must also take under a minute from the first publish; the
 // time is logged either way.
 func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// requests bounds the row's own NATS requests (publishes, consumer info) by the row's deadline,
 	// the test binary's deadline less 30 s (testwait.Remaining), in place of the five seconds the
@@ -181,7 +182,7 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	var waiting uint64
 	var unread error
 	if !testwait.Holds(testwait.Remaining(t), 10*time.Millisecond, func() bool {
-		count, err := githubWaiting(requests, github)
+		count, err := intake.ConsumerWaiting(requests, github)
 		if unread = err; err != nil {
 			return false
 		}
@@ -209,7 +210,7 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	// deadline less 30 s (testwait.Remaining) and not by a span the handlers' store work must
 	// finish inside.
 	if !testwait.Holds(testwait.Remaining(t), 20*time.Millisecond, func() bool {
-		count, err := githubWaiting(requests, github)
+		count, err := intake.ConsumerWaiting(requests, github)
 		if unread = err; err != nil {
 			return false
 		}
@@ -425,21 +426,6 @@ func drainJSON(value any) []byte {
 		panic(err)
 	}
 	return data
-}
-
-// githubWaiting is the GitHub consumer's waiting messages, counted as the daemon's state counts
-// them (intake.ConsumerLag's Waiting: JetStream's NumPending plus NumAckPending), from one
-// CONSUMER.INFO the row bounds by its own deadline (requests). The daemon's own read,
-// Consumers.Lag, bounds that request by consumerLagBound, two seconds, and its oldest-message read
-// by consumerOldestBound, one second. Those bounds stay in the daemon: they keep its state route
-// from waiting on a NATS server that does not answer, which is that route's contract and not this
-// row's subject. Read through them, a NATS server the machine held 2.1 s failed this row.
-func githubWaiting(requests context.Context, github jetstream.Consumer) (uint64, error) {
-	info, err := github.Info(requests)
-	if err != nil {
-		return 0, fmt.Errorf("read the GitHub consumer's info: %w", err)
-	}
-	return info.NumPending + uint64(info.NumAckPending), nil
 }
 
 // lastFailure is how a wait's message names the last read that failed, or nothing when the last

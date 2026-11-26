@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/ghrename"
 )
 
@@ -29,6 +30,9 @@ type GitHubWebhook struct {
 	Secret         string
 	MentionTrigger string
 	ReviewerAppID  string
+	// VerdictAppID is ENVOY_VERDICT_APP_ID, trimmed: the App whose own check suites the listener
+	// leaves out of the CI record. It is optional; empty leaves no suite out.
+	VerdictAppID string
 	// RepositoryRenames is each repository GitHub renamed, as ENVOY_GITHUB_REPOSITORY_RENAMES
 	// configures it: the listener publishes a copy of every envelope of the current repository
 	// under the former name, so a session that subscribed before the rename keeps hearing about
@@ -84,10 +88,17 @@ func LoadWebhookConfig() (*WebhookConfig, error) {
 			if reviewerAppID == "" {
 				return nil, fmt.Errorf("ENVOY_REVIEWER_APP_ID required when github enabled")
 			}
+			// A verdict App id that is not a GitHub App's would match no suite and leave the
+			// filter off without a word, so it refuses the start; unset or blank is no verdict App.
+			verdictAppID := strings.TrimSpace(os.Getenv("ENVOY_VERDICT_APP_ID"))
+			if verdictAppID != "" && !contracts.IsGithubAppID(verdictAppID) {
+				return nil, fmt.Errorf("ENVOY_VERDICT_APP_ID %q is not a GitHub App id: a whole number above 0, with no leading zero; leave it unset for no verdict App", verdictAppID)
+			}
 			cfg.GitHub = &GitHubWebhook{
 				Secret:            secret,
 				MentionTrigger:    trigger,
 				ReviewerAppID:     reviewerAppID,
+				VerdictAppID:      verdictAppID,
 				RepositoryRenames: renames,
 			}
 		case "slack":

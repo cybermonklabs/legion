@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -30,7 +29,7 @@ func TestTheSelfHealthProbeReportsALostDurableBeforeARefusedRoleLaneAndStillSend
 	rig := newRoleLaneHealthRig(t, "role-lane-health-order")
 	rig.stop()
 	rig.revoke(t)
-	waitFor(t, 30*time.Second, "the role lane to read the revocation", func() bool { return !rig.lane.CoreSubOK() })
+	waitFor(t, "the role lane to read the revocation", func() bool { return !rig.lane.CoreSubOK() })
 	from := rig.traceFrom()
 	err := checkSelfHealth(rig.caches, rig.lane, func() error { return natsgo.ErrConsumerNotFound })
 	if !errors.Is(err, natsgo.ErrConsumerNotFound) || errors.Is(err, errRoleLaneInactive) {
@@ -53,6 +52,7 @@ func TestTheSelfHealthProbeReportsALostDurableBeforeARefusedRoleLaneAndStillSend
 // rebuild the main bus for a fault of the lane's connection. The same error outside the lane is
 // still one.
 func TestARoleLaneFailureIsNeverOneTheMonitorRebuilds(t *testing.T) {
+	t.Parallel()
 	client := setupTestNATS(t)
 	laneClosed := fmt.Errorf("%w: sending it again failed: %w", errRoleLaneInactive, natsgo.ErrConnectionClosed)
 	if isUnrecoverableSelfHealthFailure(laneClosed, client, nil) {
@@ -71,6 +71,7 @@ func TestARoleLaneFailureIsNeverOneTheMonitorRebuilds(t *testing.T) {
 // the listener, and must not log `self-health recovered`, since the lane never came back. The second
 // row runs the same ticks with a rebuild that repairs nothing, which the monitor must stop for.
 func TestARefusedRoleLaneDoesNotTurnFaultsTheRebuildRepairsIntoARestart(t *testing.T) {
+	t.Parallel()
 	client := setupTestNATS(t)
 	for _, row := range []struct {
 		name        string
@@ -125,7 +126,7 @@ func TestARefusedRoleLaneDoesNotTurnFaultsTheRebuildRepairsIntoARestart(t *testi
 				cancel()
 				<-done
 			}()
-			waitFor(t, 30*time.Second, "twenty probes, or the monitor stopping the listener", func() bool {
+			waitFor(t, "twenty probes, or the monitor stopping the listener", func() bool {
 				return probes.Load() >= 20 || stopped.Load()
 			})
 			if got := stopped.Load(); got != row.wantStopped {

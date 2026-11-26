@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+import { afterEach, beforeAll, expect } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -9,11 +9,12 @@ import {
 } from "node:fs";
 import { endianness } from "node:os";
 import { join } from "node:path";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostGate, hostTool, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "./arg-max-force";
 import { ownGroup, untilRunning } from "./own-group";
 import { procRootOf } from "./proc-root";
+import { libRowBoundMs, rowWaitMarginMs, rowWaits, stateOf, untilGone } from "./row-waits";
 
 // run_processes (lib/rig.sh) names the processes of a run still alive, and stop_marked_processes
 // (lib/process-tree.sh) ends them: each that carries the run's mark, LEGION_E2E_RUN=$work, which the
@@ -26,33 +27,23 @@ const rig = join(import.meta.dir, "rig.sh");
 const force = join(import.meta.dir, "arg-max-force.sh");
 const root = join(import.meta.dir, "..", "..", "..");
 
-// rowBoundMs is the bound of every row of this file (setDefaultTimeout), whatever the runner's
-// command line, and a hang guard that decides no verdict: every wait a row makes on the kernel ends
-// rowTeardownMs before it (rowWaitsEnd), naming what it waited for and what it saw, so the walk and
-// the cleanup after a wait still fit in the row, and a wait that runs out fails by its own message
-// rather than by bun's timeout. No span shorter than the row decides a wait: a forced run on a
-// devbox at a load near 450 (2026-11-21) held an escaped process inside its exec for more than 3 s,
-// and the fixed 3 s wait this replaced failed the row. Bun gives a hook the default bound in force
-// when the hook is registered, so this comes before every hook of the file, temporaryDirectory's
-// afterAll that removes `dir` among them: on that devbox's shared scratch disk that removal ran
-// 14.5 s to 20.6 s in three whole-file runs, past bun's 5 s for a hook, and failed the file as
-// "(unnamed) … a beforeEach/afterEach hook timed out" while every row passed.
-const rowBoundMs = 60_000;
-const rowTeardownMs = 15_000;
-setDefaultTimeout(rowBoundMs);
-let rowStart = 0;
-beforeEach(() => {
-  rowStart = performance.now();
-});
-// rowWaitsEnd is when the running row's waits end, in performance.now() time.
-function rowWaitsEnd(): number {
-  return rowStart + rowBoundMs - rowTeardownMs;
-}
+// The bound of every row of this file (rowWaits sets it with setDefaultTimeout), whatever the
+// runner's command line, is a hang guard that decides no verdict: every wait a row makes on the
+// kernel ends rowWaitMarginMs before it (waits.end()), naming what it waited for and what it saw, so
+// the walk and the cleanup after a wait still fit in the row, and a wait that runs out fails by its
+// own message rather than by bun's timeout. No span shorter than the row decides a wait: a forced
+// run on a devbox at a load near 450 (2026-11-21) held an escaped process inside its exec for more
+// than 3 s, and the fixed 3 s wait this replaced failed the row. Bun gives a hook the default bound
+// in force when the hook is registered, so this comes before every hook of the file,
+// temporaryDirectory's afterAll that removes `dir` among them: on that devbox's shared scratch disk
+// that removal ran 14.5 s to 20.6 s in three whole-file runs, past bun's 5 s for a hook, and failed
+// the file as "(unnamed) … a beforeEach/afterEach hook timed out" while every row passed.
+const waits = rowWaits(libRowBoundMs);
 const dir = temporaryDirectory("run-processes-test");
 // perl: every process a row starts, and every harness, runs through ownGroup (lib/own-group.ts).
-const skip = skipWithout("perl");
-// python3: the newline-name row renames its process through prctl (ctypes).
-const withoutPython = skipWithout("python3");
+const host = hostGate({ programs: ["perl"] });
+// python3: the newline-name row renames its process through prctl (ctypes), and fails by name
+// without it rather than skipping (requireHostTools).
 const bin = join(dir, "bin");
 const calls = join(dir, "calls");
 beforeAll(() => {
@@ -116,24 +107,6 @@ function spawn(argv: string[], options: { cwd: string; env?: Record<string, stri
   started.push(child.pid);
   return child.pid;
 }
-// state is PID's state letter (stat field 3), or "gone".
-function state(pid: number): string {
-  try {
-    return readFileSync(`/proc/${pid}/stat`, "utf8")
-      .replace(/^[\s\S]*\) /, "")
-      .slice(0, 1);
-  } catch {
-    return "gone";
-  }
-}
-// gone says whether PID has ended, a zombie counting as ended, within five seconds.
-async function gone(pid: number): Promise<boolean> {
-  for (let i = 0; i < 100; i++) {
-    if (["gone", "Z", "X"].includes(state(pid))) return true;
-    await Bun.sleep(50);
-  }
-  return false;
-}
 // untilExecDone resolves once PID has finished its exec of PROGRAM as far as a walk of the marks
 // reads it: its exe link (/proc/<pid>/exe) names PROGRAM and its /proc/<pid>/environ reads
 // non-empty. Inside an exec Linux gives the process its new memory, and the exe link with it,
@@ -143,12 +116,12 @@ async function gone(pid: number): Promise<boolean> {
 // and only after it has counted each variable the environment's real end. Until then environ reads
 // empty and a walk of the marks names nothing, so a wait on the exe link or on the command line can
 // end inside the exec. Nothing signals the end of another process's exec, so it reads both every
-// 50 ms, as gone and untilRunning (lib/own-group.ts) do, until the row's waits end (rowWaitsEnd),
-// and reads once more then; past that it rejects naming the pid, what its exe link read and how many
-// bytes its environ held.
+// 50 ms, as untilGone and untilRunning do, until the row's waits end (waits.end()), and reads once
+// more then; past that it rejects naming the pid, what its exe link read and how many bytes its
+// environ held.
 async function untilExecDone(pid: number, program: string): Promise<void> {
   const want = realpathSync(hostTool(program) ?? program);
-  const end = rowWaitsEnd();
+  const end = waits.end();
   let exe = "";
   let environ = 0;
   for (;;) {
@@ -165,7 +138,7 @@ async function untilExecDone(pid: number, program: string): Promise<void> {
     await Bun.sleep(Math.min(50, end - now));
   }
   throw new Error(
-    `pid ${pid} did not finish its exec of ${want} by the end of the row's waits (${(rowBoundMs - rowTeardownMs) / 1000} s after the row began): its exe link read ${exe || "nothing"} and its environ ${environ} bytes`
+    `pid ${pid} did not finish its exec of ${want} by the end of the row's waits (${(libRowBoundMs - rowWaitMarginMs) / 1000} s after the row began): its exe link read ${exe || "nothing"} and its environ ${environ} bytes`
   );
 }
 
@@ -209,7 +182,7 @@ function rowRoot(): string {
 }
 const pids = (out: string) => out.split("\n").filter(Boolean);
 
-test.skipIf(skip)(
+host.test(
   "names each process that carries the run's mark and none that only works under the run's directory or names it, running no command for each /proc entry",
   () => {
     const work = join(dir, "work");
@@ -260,7 +233,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "names a marked process of the run that left every tree the run started, double-forked to pid 1 or a subreaper",
   async () => {
     // run_processes is the run's search for its leftovers: a daemon that forked twice and whose
@@ -302,8 +275,15 @@ test.skipIf(skip)(
 );
 
 // The force cannot hold under gVisor (a Legion pod's kernel), which starts a program past ARG_MAX:
-// there these two rows are skipped, by this name (argMaxForceHolds), rather than failed or passed.
-test.skipIf(skip || !argMaxForceHolds())(
+// there these two rows are skipped outside CI, naming why, and failed by name under GITHUB_ACTIONS,
+// whose runner holds it (hostGate).
+const argMax = hostGate({
+  programs: ["perl"],
+  reason: argMaxForceHolds()
+    ? ""
+    : "This kernel starts a program past ARG_MAX under a 512 KiB stack (gVisor does), so the force lib/arg-max-force.sh puts these rows under cannot be put in force.",
+});
+argMax.test(
   "names every marked process of the run where argv and the environment past ARG_MAX would stop a program handed every /proc entry",
   () => {
     // The force (lib/arg-max-force.sh): an exec handed every <pid> entry of the row's proc root as an
@@ -325,7 +305,7 @@ run_processes`
   }
 );
 
-test.skipIf(skip || !argMaxForceHolds())(
+argMax.test(
   "listening_holders names the holder of a listening socket where a program handed every /proc/<pid>/fd would not start",
   () => {
     // listening_holders (lib/rig.sh) walks every process for the one holding a socket, held_only_by's
@@ -352,7 +332,8 @@ listening_holders ${listener.port}`
 
 // otherLoopback says whether this host lets a socket listen on 127.0.0.2, an address of the
 // loopback network other than 127.0.0.1. Linux routes all of 127.0.0.0/8 to lo; a host that does
-// not skips the row that needs it, by this name.
+// not skips the row that needs it outside CI, naming why, and under GITHUB_ACTIONS fails it by its
+// own name (hostGate's reason).
 const otherLoopback = (() => {
   try {
     Bun.listen({ hostname: "127.0.0.2", port: 0, socket: { data() {} } }).stop(true);
@@ -361,11 +342,10 @@ const otherLoopback = (() => {
     return false;
   }
 })();
-if (!otherLoopback) {
-  console.warn(
-    `Skipped the same-port row of ${import.meta.path}: this host lets no socket listen on 127.0.0.2.`
-  );
-}
+const sameAddress = hostGate({
+  programs: ["perl"],
+  reason: otherLoopback ? "" : "This host lets no socket listen on 127.0.0.2.",
+});
 // A python3 that listens on 1.0.0.127 at a port the kernel chooses, prints the port, and stays: an
 // address no interface holds, which IP_FREEBIND (15 on Linux) lets a socket bind.
 const freeBound = `import socket, time
@@ -375,19 +355,20 @@ s.bind(("1.0.0.127", 0))
 s.listen()
 print(s.getsockname()[1], flush=True)
 time.sleep(60)`;
-// freeBind says whether this host lets that socket listen; a host that does not (no python3, or a
-// kernel that refuses IP_FREEBIND) skips the row that needs it, by this name.
+// freeBind says whether this host lets that socket listen; a kernel that refuses IP_FREEBIND skips
+// the row that needs it outside CI, naming why, and under GITHUB_ACTIONS fails it by its own name
+// (hostGate's reason). A host without python3 is not read as such a kernel: the row needs python3
+// and fails by name without it on any host (requireHostTools).
 const freeBind =
-  !withoutPython &&
+  hostTool("python3") === null ||
   Bun.spawnSync(["python3", "-c", freeBound.replace("time.sleep(60)", "")], {
     stdout: "ignore",
     stderr: "ignore",
   }).exitCode === 0;
-if (!freeBind) {
-  console.warn(
-    `Skipped the byte-order row of ${import.meta.path}: this host lets no python3 socket listen on 1.0.0.127 (IP_FREEBIND).`
-  );
-}
+const byteOrder = hostGate({
+  programs: ["perl"],
+  reason: freeBind ? "" : "This host lets no python3 socket listen on 1.0.0.127 (IP_FREEBIND).",
+});
 // spelled is how /proc/net/tcp writes the IPv4 address ADDRESS: the hexadecimal of its 32 bits in
 // this host's byte order, so 127.0.0.1 is 0100007F on a little-endian host.
 function spelled(address: string): string {
@@ -403,7 +384,7 @@ function spelled(address: string): string {
 // process already held OTHER at the port the kernel then gave 127.0.0.1. No order removes the
 // reverse, a port the kernel gives OTHER that some process already listens on at 127.0.0.1 (or on
 // every address), since the box's processes share one network namespace: that refuses this listen,
-// and the row takes a fresh port from a new process until the row's waits end (rowWaitsEnd), then
+// and the row takes a fresh port from a new process until the row's waits end (waits.end()), then
 // fails naming every port 127.0.0.1 refused, a failure of its setup and not of listening_holders.
 // Both LISTEN rows are read from /proc/net/tcp before the walk, which must name this test process
 // alone.
@@ -412,12 +393,12 @@ async function onlyTheLoopbackHolder(name: string, program: string[], other: str
   mkdirSync(work);
   let listener: { port: number; stop(closeActiveConnections?: boolean): void } | undefined;
   const refused: string[] = [];
-  const deadline = rowWaitsEnd();
+  const deadline = waits.end();
   try {
     while (listener === undefined) {
       if (performance.now() >= deadline) {
         throw new Error(
-          `no port free on both ${other} and 127.0.0.1 by the end of the row's waits (${(rowBoundMs - rowTeardownMs) / 1000} s after the row began): ${refused.length} ports tried, each refused on 127.0.0.1, so listening_holders was not run (${refused.join("; ")})`
+          `no port free on both ${other} and 127.0.0.1 by the end of the row's waits (${(libRowBoundMs - rowWaitMarginMs) / 1000} s after the row began): ${refused.length} ports tried, each refused on 127.0.0.1, so listening_holders was not run (${refused.join("; ")})`
         );
       }
       const holder = Bun.spawn(ownGroup(program), {
@@ -463,7 +444,7 @@ async function onlyTheLoopbackHolder(name: string, program: string[], other: str
   }
 }
 
-test.skipIf(skip || !otherLoopback)(
+sameAddress.test(
   "listening_holders counts only the socket on 127.0.0.1:PORT: one another process listens with on the same port of another loopback address is none of it",
   async () => {
     // The kernel's bind of port 0 on 127.0.0.1 can hand out a port another process already listens
@@ -483,9 +464,10 @@ test.skipIf(skip || !otherLoopback)(
   }
 );
 
-test.skipIf(skip || !freeBind)(
+byteOrder.test(
   "listening_holders reads 127.0.0.1 in this host's byte order: a socket on 1.0.0.127, the other order's spelling of it, is none of it",
   async () => {
+    requireHostTools("python3");
     // /proc/net/tcp writes 127.0.0.1 as 0100007F on a little-endian host, and 7F000001 there is
     // 1.0.0.127; a read that took both spellings counted a socket on 1.0.0.127:PORT beside the one
     // on 127.0.0.1:PORT and read "2 sockets listen".
@@ -493,7 +475,7 @@ test.skipIf(skip || !freeBind)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "a walk whose reader a signal ended after part of its output is no answer: listening_holders and run_processes exit 2",
   () => {
     // A find that writes 2000 bytes and is then SIGKILLed prints no complaint of its own; neither does
@@ -540,7 +522,7 @@ st=0; run_processes >/dev/null 2>"$work/rp.err" || st=$?; echo "run_processes $s
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "a run that has not marked itself has no processes to read: run_processes and stop_marked_processes exit 2",
   () => {
     const work = join(dir, "unmarked");
@@ -557,7 +539,7 @@ st=0; stop_marked_processes "$work" 2>"$work/stop.err" || st=$?; echo "stop_mark
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "an empty run directory names no process: marked_processes, procs_naming and names_dir refuse it with 2",
   () => {
     // With DIR empty and the mark unset, `LEGION_E2E_RUN=` and `XDG_CONFIG_HOME=` followed by any
@@ -585,14 +567,14 @@ st=0; names_dir "" XDG_CONFIG_HOME ${bystander} 2>"$work/nd.err" || st=$?; echo 
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes ends every marked process of the run, an escaped one too, and leaves a person's shell and tail -f under the run's directory running",
   async () => {
     const work = join(dir, "sweep");
     mkdirSync(work);
     writeFileSync(join(work, "transcript.log"), "");
     const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
-    await untilRunning(marked, "sleep");
+    await untilRunning(marked, "sleep", waits.end());
     const pidFile = join(dir, "sweep-escaped.pid");
     Bun.spawnSync(
       ownGroup([
@@ -614,14 +596,14 @@ test.skipIf(skip)(
     const r = harness(work, `stop_marked_processes "$work"; echo "status $?"`);
     expect(r.err).toBe("");
     expect(r.out).toBe("status 0\n");
-    expect(await gone(marked)).toBe(true);
-    expect(await gone(escaped)).toBe(true);
+    await untilGone(marked, "the marked process", waits.end());
+    await untilGone(escaped, "the escaped marked process", waits.end());
     // Running, and not left stopped either.
-    expect({ shell: state(shell), tail: state(tail) }).toEqual({ shell: "S", tail: "S" });
+    expect({ shell: stateOf(shell), tail: stateOf(tail) }).toEqual({ shell: "S", tail: "S" });
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace gives each marked process SIGTERM and the grace to exit, then SIGKILLs only the survivors",
   async () => {
     const work = join(dir, "grace");
@@ -662,7 +644,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes signals no pid whose start time is not the one its walk read, and leaves it running",
   async () => {
     // The walk's pairs stand in for a pid that ended and passed to another marked process between the
@@ -670,20 +652,31 @@ test.skipIf(skip)(
     const work = join(dir, "reused");
     mkdirSync(work);
     const pid = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
-    await untilRunning(pid, "sleep");
+    await untilRunning(pid, "sleep", waits.end());
+    // Every signal the sweep sends goes through `kill`, here a function that records it and sends
+    // it, so what reached the pid is read from the record rather than from a state that a signal
+    // still in flight has not changed yet. A sweep given the pid's own start must then fill the
+    // record, so an empty one before it is a record that could see a signal.
     const r = harness(
       work,
-      `marked_processes() { printf '%s %s\\n' ${pid} 1; }
-stop_marked_processes "$work"; echo "status $?"`
+      `kill() { printf '%s\\n' "$*" >>"$work/kills"; builtin kill "$@"; }
+marked_processes() { printf '%s %s\\n' ${pid} 1; }
+stop_marked_processes "$work"; echo "status $?"
+sent=$(grep -cw -- ${pid} "$work/kills" 2>/dev/null || :)
+echo "sent to the pid: \${sent:-0}"
+read -r s </proc/${pid}/stat; s=\${s##*) }; echo "state \${s%% *}"
+marked_processes() { printf '%s %s\\n' ${pid} "$(proc_start ${pid})"; }
+stop_marked_processes "$work" >/dev/null 2>&1 || :
+grep -qw -- ${pid} "$work/kills" && echo "its own start: the record holds its stop" || echo "its own start: nothing in the record"`
     );
     expect(r.err).toBe("");
-    expect(r.out).toBe("status 0\n");
-    await Bun.sleep(200);
-    expect(state(pid)).toBe("S");
+    expect(r.out).toBe(
+      "status 0\nsent to the pid: 0\nstate S\nits own start: the record holds its stop\n"
+    );
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes ends a child that cleared its environment with the marked process that started it",
   async () => {
     // A marked bash starts a child under `env -i`, which carries no mark and no other variable of the
@@ -712,12 +705,12 @@ test.skipIf(skip)(
     const r = harness(work, `stop_marked_processes "$work"; echo "status $?"`);
     expect(r.err).toBe("");
     expect(r.out).toBe("status 0\n");
-    expect(await gone(parent.pid)).toBe(true);
-    expect(await gone(child)).toBe(true);
+    await untilGone(parent.pid, "the marked process", waits.end());
+    await untilGone(child, "the child it started under env -i", waits.end());
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace ends a child that cleared its environment when the marked process that started it exits on its SIGTERM",
   async () => {
     // The marked process exits on the TERM and leaves its child behind; its children were read while
@@ -743,11 +736,11 @@ test.skipIf(skip)(
     expect(r.err).toBe("");
     expect(r.out).toBe("status 0\n");
     expect(await parent.exited).toBe(0);
-    expect(await gone(child)).toBe(true);
+    await untilGone(child, "the child the marked process started under env -i", waits.end());
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes ends a marked process it froze even where its parent reads otherwise the second time, as when the parent exits after the freeze",
   async () => {
     // proc_parent answers the real parent on its first read of the process and pid 1 on every read
@@ -756,7 +749,7 @@ test.skipIf(skip)(
     const work = join(dir, "reparented");
     mkdirSync(work);
     const pid = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
-    await untilRunning(pid, "sleep");
+    await untilRunning(pid, "sleep", waits.end());
     const r = harness(
       work,
       `eval "real_$(declare -f proc_parent)"
@@ -767,11 +760,11 @@ stop_marked_processes "$work"; echo "status $?"`
     );
     expect(r.err).toBe("");
     expect(r.out).toBe("status 0\n");
-    expect(await gone(pid)).toBe(true);
+    await untilGone(pid, "the marked process the sweep froze", waits.end());
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace leaves running a pid below a marked process whose parent is not the process it was read under, as a pid a stranger took",
   async () => {
     // proc_children answers, for the marked bash's child, the pid of a stranger: an unmarked process
@@ -780,7 +773,7 @@ test.skipIf(skip)(
     const work = join(dir, "reused-below");
     mkdirSync(work);
     const stranger = spawn(["sleep", "60"], { cwd: dir });
-    await untilRunning(stranger, "sleep");
+    await untilRunning(stranger, "sleep", waits.end());
     const parent = Bun.spawn(
       ownGroup(["bash", "-c", "sleep 300 </dev/null >/dev/null 2>&1 & echo $!; wait"]),
       { cwd: dir, env: { PATH: process.env.PATH ?? "", LEGION_E2E_RUN: work }, stdout: "pipe" }
@@ -797,13 +790,13 @@ stop_marked_processes "$work" 1; echo "status $?"`
     );
     expect(r.err).toBe("");
     expect(r.out).toBe("status 0\n");
-    expect(await gone(parent.pid)).toBe(true);
-    expect(await gone(child)).toBe(true);
-    expect(state(stranger)).toBe("S");
+    await untilGone(parent.pid, "the marked process", waits.end());
+    await untilGone(child, "its child", waits.end());
+    expect(stateOf(stranger)).toBe("S");
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace leaves running the children of a stranger that took the pid of a process below a marked one",
   async () => {
     // The marked bash's child, which carries no mark, is read and printed; then its pid passes to
@@ -814,7 +807,7 @@ test.skipIf(skip)(
     const work = join(dir, "reused-parent");
     mkdirSync(work);
     const strangers = spawn(["sleep", "60"], { cwd: dir });
-    await untilRunning(strangers, "sleep");
+    await untilRunning(strangers, "sleep", waits.end());
     const marked = Bun.spawn(
       ownGroup([
         "bash",
@@ -839,14 +832,15 @@ stop_marked_processes "$work" 1; echo "status $?"`
     );
     expect(r.err).toBe("");
     expect(r.out).toBe("status 0\n");
-    expect(await gone(marked.pid)).toBe(true);
-    expect(state(strangers)).toBe("S");
+    await untilGone(marked.pid, "the marked process", waits.end());
+    expect(stateOf(strangers)).toBe("S");
   }
 );
 
-test.skipIf(skip || withoutPython)(
+host.test(
   "names and ends a marked process whose name holds a newline and a `) `, which a read of the stat's first line took for another parent and no start",
   async () => {
+    requireHostTools("python3");
     // The process renames itself to `) S 1` and a newline (prctl PR_SET_NAME, through python3's
     // ctypes: perl's $0 would write over the environment the walk reads the mark from): the first
     // line of its /proc/<pid>/stat then reads as a process whose parent is pid 1, with nothing
@@ -875,6 +869,6 @@ test.skipIf(skip || withoutPython)(
     const r = harness(work, `stop_marked_processes "$work"; echo "status $?"`);
     expect(r.err).toBe("");
     expect(r.out).toBe("status 0\n");
-    expect(await gone(pid)).toBe(true);
+    await untilGone(pid, "the renamed marked process", waits.end());
   }
 );

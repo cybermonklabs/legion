@@ -29,6 +29,7 @@ import {
   noteAskRoot,
   noteIssueParent,
   pickedRoot,
+  REGISTRATION,
   RESERVE_LIST_CUT,
   RESERVE_TREE_CUT,
   RESERVE_VARIABLE,
@@ -54,6 +55,13 @@ const NOT_PICKED = "INFRA-2523";
 
 /** A time after the cut. */
 const LATER = "2026-11-16T01:00:00Z";
+
+/**
+ * The registration while the reserve held, with no record that ended it. `claim.ts` records the
+ * owner's written release, so every test here of the rule, of a build or of a read while the
+ * reserve held names this registration, and the tests of the release name `REGISTRATION`.
+ */
+const HOLDING: Registration = { reads: [], ended: null };
 
 /**
  * One case, with only the fields the reserve reads given values that matter: its ask opened when
@@ -124,35 +132,39 @@ describe("the registered rule", () => {
   });
 
   test("holds an ask opened at the cut under a picked root, and keeps one opened just before", () => {
-    expect(reserveOf(treeCase("at-cut", RESERVE_TREE_CUT, PICKED))).toBe("held");
+    expect(reserveOf(treeCase("at-cut", RESERVE_TREE_CUT, PICKED), HOLDING.ended)).toBe("held");
     const before = new Date(Date.parse(RESERVE_TREE_CUT) - 1).toISOString();
-    expect(reserveOf(treeCase("before-cut", before, PICKED))).toBe("kept");
+    expect(reserveOf(treeCase("before-cut", before, PICKED), HOLDING.ended)).toBe("kept");
   });
 
   test("keeps an ask under a root it does not pick, one with no root, and one on no issue", () => {
-    expect(reserveOf(treeCase("not-picked", LATER, NOT_PICKED))).toBe("kept");
-    expect(reserveOf(treeCase("no-root", LATER, null))).toBe("kept");
-    expect(reserveOf(caseRow("no-issue", null, LATER))).toBe("kept");
+    expect(reserveOf(treeCase("not-picked", LATER, NOT_PICKED), HOLDING.ended)).toBe("kept");
+    expect(reserveOf(treeCase("no-root", LATER, null), HOLDING.ended)).toBe("kept");
+    expect(reserveOf(caseRow("no-issue", null, LATER), HOLDING.ended)).toBe("kept");
   });
 
   test("holds an ask whose issue moved, when the rule picks its root at the opening or the build", () => {
-    expect(reserveOf(treeCase("moved-out", LATER, PICKED, NOT_PICKED))).toBe("held");
-    expect(reserveOf(treeCase("moved-in", LATER, NOT_PICKED, PICKED))).toBe("held");
-    expect(reserveOf(treeCase("lost", LATER, null, PICKED))).toBe("held");
+    expect(reserveOf(treeCase("moved-out", LATER, PICKED, NOT_PICKED), HOLDING.ended)).toBe("held");
+    expect(reserveOf(treeCase("moved-in", LATER, NOT_PICKED, PICKED), HOLDING.ended)).toBe("held");
+    expect(reserveOf(treeCase("lost", LATER, null, PICKED), HOLDING.ended)).toBe("held");
   });
 
   test("places an ask with no opening time by its answer", () => {
-    expect(reserveOf({ ...treeCase("late", LATER, PICKED), askCreatedAt: null })).toBe("held");
+    expect(
+      reserveOf({ ...treeCase("late", LATER, PICKED), askCreatedAt: null }, HOLDING.ended)
+    ).toBe("held");
     const early = { ...treeCase("early", "2026-11-15T01:00:00Z", PICKED), askCreatedAt: null };
-    expect(reserveOf(early)).toBe("kept");
+    expect(reserveOf(early, HOLDING.ended)).toBe("kept");
   });
 
   test("cannot say for a corpus built before trees, unless the ask opened before the cut", () => {
-    expect(reserveOf(olderBuild(treeCase("old-build", LATER, PICKED)))).toBe("unknown");
+    expect(reserveOf(olderBuild(treeCase("old-build", LATER, PICKED)), HOLDING.ended)).toBe(
+      "unknown"
+    );
     const justBefore = new Date(Date.parse(RESERVE_TREE_CUT) - 60_000).toISOString();
     const oldAsk = olderBuild(treeCase("old-ask", justBefore, PICKED));
     expect(Date.parse(oldAsk.answeredAt)).toBeGreaterThan(Date.parse(RESERVE_TREE_CUT));
-    expect(reserveOf(oldAsk)).toBe("kept");
+    expect(reserveOf(oldAsk, HOLDING.ended)).toBe("kept");
   });
 
   test("keeps what the released version 1 held: a picked issue key in a tree the rule does not pick", () => {
@@ -163,18 +175,34 @@ describe("the registered rule", () => {
       askTreeRoot: NOT_PICKED,
       issueTreeRoot: NOT_PICKED,
     };
-    expect(reserveOf(row)).toBe("kept");
+    expect(reserveOf(row, HOLDING.ended)).toBe("kept");
     const before = caseRow("version-1-before", "INFRA-3601", "2026-11-15T01:00:00Z");
-    expect(reserveOf(before)).toBe("kept");
+    expect(reserveOf(before, HOLDING.ended)).toBe("kept");
   });
 
   test("keeps every ask of a tree a read spent, by its root at the opening or at the build", () => {
     // A read by mistake spent the tree under INFRA-228, a root the rule picks.
     const spent = "INFRA-228";
     expect(pickedRoot(spent)).toBe(true);
-    expect(reserveOf(treeCase("spent", LATER, spent))).toBe("kept");
-    expect(reserveOf(treeCase("spent-at-opening", LATER, spent, PICKED))).toBe("kept");
-    expect(reserveOf(treeCase("spent-at-build", LATER, PICKED, spent))).toBe("kept");
+    expect(reserveOf(treeCase("spent", LATER, spent), HOLDING.ended)).toBe("kept");
+    expect(reserveOf(treeCase("spent-at-opening", LATER, spent, PICKED), HOLDING.ended)).toBe(
+      "kept"
+    );
+    expect(reserveOf(treeCase("spent-at-build", LATER, PICKED, spent), HOLDING.ended)).toBe("kept");
+  });
+});
+
+describe("the owner's release", () => {
+  test("the checkout's registration ends the reserve: the rule holds nothing, and a read takes every case", async () => {
+    const atCut = treeCase("at-cut", RESERVE_TREE_CUT, PICKED);
+    expect(reserveOf(atCut, HOLDING.ended)).toBe("held");
+    expect(reserveOf(atCut)).toBe("kept");
+    expect(countsOf([atCut])).toMatchObject({ reserved: 0, total: 1 });
+    delete process.env[RESERVE_VARIABLE];
+    const reserved = caseRow("reserved", PICKED, LATER);
+    const { corpus } = await read(await corpusOnDisk([reserved]), REGISTRATION);
+    expect(corpus.rows.map((row) => row.caseId)).toEqual(["reserved"]);
+    expect(corpus.reserve).toEqual({ cases: 0, issues: 0, readUnder: null });
   });
 });
 
@@ -196,35 +224,49 @@ describe("version 3: the list of trees the final test cannot take", () => {
   const beforeCut = new Date(Date.parse(RESERVE_LIST_CUT) - 1).toISOString();
 
   test("from its cut, holds an ask unless both its roots are in the list, whatever version 2 picks", () => {
-    expect(reserveOf(listedCase("both-out", atCut, false))).toBe("held");
-    expect(reserveOf(listedCase("both-in", atCut, true))).toBe("kept");
-    expect(reserveOf(listedCase("moved-out", atCut, true, false))).toBe("held");
-    expect(reserveOf(listedCase("moved-in", atCut, false, true))).toBe("held");
-    expect(reserveOf(listedCase("picked-in", atCut, true, true, PICKED))).toBe("kept");
+    expect(reserveOf(listedCase("both-out", atCut, false), HOLDING.ended)).toBe("held");
+    expect(reserveOf(listedCase("both-in", atCut, true), HOLDING.ended)).toBe("kept");
+    expect(reserveOf(listedCase("moved-out", atCut, true, false), HOLDING.ended)).toBe("held");
+    expect(reserveOf(listedCase("moved-in", atCut, false, true), HOLDING.ended)).toBe("held");
+    expect(reserveOf(listedCase("picked-in", atCut, true, true, PICKED), HOLDING.ended)).toBe(
+      "kept"
+    );
   });
 
   test("from its cut, holds an ask whose root is unknown, or that a build never looked up", () => {
-    expect(reserveOf({ ...listedCase("lost", atCut, null), askTreeRoot: null })).toBe("held");
-    expect(reserveOf(listedCase("older-build", atCut, undefined))).toBe("held");
+    expect(
+      reserveOf({ ...listedCase("lost", atCut, null), askTreeRoot: null }, HOLDING.ended)
+    ).toBe("held");
+    expect(reserveOf(listedCase("older-build", atCut, undefined), HOLDING.ended)).toBe("held");
   });
 
   test("before its cut, version 2 holds as registered, less what opened on a tree in the list", () => {
-    expect(reserveOf(listedCase("picked", beforeCut, false, false, PICKED))).toBe("held");
-    expect(reserveOf(listedCase("not-picked", beforeCut, false))).toBe("kept");
-    expect(reserveOf(listedCase("released", beforeCut, true, false, PICKED))).toBe("kept");
+    expect(reserveOf(listedCase("picked", beforeCut, false, false, PICKED), HOLDING.ended)).toBe(
+      "held"
+    );
+    expect(reserveOf(listedCase("not-picked", beforeCut, false), HOLDING.ended)).toBe("kept");
+    expect(reserveOf(listedCase("released", beforeCut, true, false, PICKED), HOLDING.ended)).toBe(
+      "kept"
+    );
     // A move under a listed issue before a build releases nothing: it could move back after.
-    expect(reserveOf(listedCase("moved-under-list", beforeCut, false, true, PICKED))).toBe("held");
+    expect(
+      reserveOf(listedCase("moved-under-list", beforeCut, false, true, PICKED), HOLDING.ended)
+    ).toBe("held");
   });
 
   test("a build that never looked roots up in the list releases nothing", () => {
-    expect(reserveOf(listedCase("older-build", beforeCut, undefined, undefined, PICKED))).toBe(
+    expect(
+      reserveOf(listedCase("older-build", beforeCut, undefined, undefined, PICKED), HOLDING.ended)
+    ).toBe("held");
+    expect(reserveOf(listedCase("before-list", beforeCut, null, null, PICKED), HOLDING.ended)).toBe(
       "held"
     );
-    expect(reserveOf(listedCase("before-list", beforeCut, null, null, PICKED))).toBe("held");
   });
 
   test("keeps an ask of a tree a read spent, from its cut too", () => {
-    expect(reserveOf(listedCase("spent", atCut, false, false, "INFRA-228"))).toBe("kept");
+    expect(reserveOf(listedCase("spent", atCut, false, false, "INFRA-228"), HOLDING.ended)).toBe(
+      "kept"
+    );
   });
 
   test("a build takes the list only at its registered sha256, and refuses any other", () => {
@@ -386,7 +428,7 @@ async function bundleRoot(): Promise<string> {
 /** `readCorpus` under a registration and a bundle root, with what it printed to stderr. */
 async function read(
   directory: string,
-  registration: Registration = { reads: [], ended: null },
+  registration: Registration = HOLDING,
   root?: string
 ): Promise<{ corpus: Corpus; printed: string }> {
   const lines: string[] = [];
@@ -538,7 +580,7 @@ describe("readCorpus and the reserve", () => {
     delete process.env[RESERVE_VARIABLE];
     for (const held of [reserved, sameIssueQuestion, child]) {
       const directory = await corpusOnDisk([open, held]);
-      await expect(readCorpus(directory)).rejects.toThrow(
+      await expect(readCorpus(directory, { registration: HOLDING })).rejects.toThrow(
         `case ${held.caseId} is one the reserve holds, and while the reserve holds a read takes ` +
           "only a corpus whose build left every such case out"
       );
@@ -604,7 +646,9 @@ describe("readCorpus and the reserve", () => {
 
   test("refuses a value of the variable that names no reference", async () => {
     process.env[RESERVE_VARIABLE] = "read";
-    await expect(readCorpus(await corpusOnDisk([open]))).rejects.toThrow(CorpusError);
+    await expect(readCorpus(await corpusOnDisk([open]), { registration: HOLDING })).rejects.toThrow(
+      CorpusError
+    );
   });
 
   test("holds nothing once the reserve ended, an older build included", async () => {
@@ -620,9 +664,9 @@ describe("readCorpus and the reserve", () => {
   test("refuses a corpus built before trees that holds an ask opened after the cut", async () => {
     delete process.env[RESERVE_VARIABLE];
     const oldBuild = olderBuild(caseRow("old-build", NOT_PICKED, LATER));
-    await expect(readCorpus(await corpusOnDisk([oldBuild, open]))).rejects.toThrow(
-      /build it again/
-    );
+    await expect(
+      readCorpus(await corpusOnDisk([oldBuild, open]), { registration: HOLDING })
+    ).rejects.toThrow(/build it again/);
   });
 
   test("reads a corpus built before the cut as it always did", async () => {
@@ -721,6 +765,40 @@ describe("the one claim run", () => {
     const refused = await claimRunOf(claim, "start-1", repliesOf(first, edited));
     expect(refused.kind).toBe("refused");
     if (refused.kind === "refused") expect(refused.reason).toContain("reply question");
+  });
+
+  test("counts a deleted reply as the start it may have been, so deleting the first start opens no second run", async () => {
+    // The first start, deleted since: Dispatch serves it in its place with its mark and no body.
+    const gone = { ...first, body: "", deleted_at: "2026-11-22T11:00:00Z" };
+    for (const named of ["start-2", "start-1", undefined]) {
+      const refused = await claimRunOf(claim, named, repliesOf(gone, question, second));
+      expect(refused).toEqual({
+        kind: "refused",
+        reason:
+          `reply start-1 to ${claim}, written at 2026-11-22T10:00:00.000001Z, before any start ` +
+          "reply that is not deleted, was deleted at 2026-11-22T11:00:00Z: its words are gone, so " +
+          "it may have started the claim run, whose read spent the final test, and no run reads " +
+          "the reserve under this registration: claim.ts registers the read anew",
+      });
+    }
+    // With no start standing, no claim run can start under the registration either.
+    expect((await claimRunOf(claim, "start-2", repliesOf(gone))).kind).toBe("refused");
+    // A reply deleted after the first start cannot be the first: the first start is the claim run.
+    const later = {
+      ...question,
+      created_at: "2026-11-22T11:30:00Z",
+      body: "",
+      deleted_at: "2026-11-22T11:40:00Z",
+    };
+    const replies = repliesOf(first, later, second);
+    expect(await claimRunOf(claim, "start-1", replies)).toEqual({ kind: "claim", id: "start-1" });
+    const refused = await claimRunOf(claim, "question", replies);
+    expect(refused.kind).toBe("refused");
+    if (refused.kind === "refused") {
+      expect(refused.reason).toContain(
+        "names question, a later reply deleted at 2026-11-22T11:40:00Z"
+      );
+    }
   });
 
   test("refuses a reference that names no comment, and a thread Dispatch does not serve", async () => {
@@ -871,7 +949,7 @@ describe("what a build writes of the reserve", () => {
       readUnder: claim,
       claimRun: "start-1",
     });
-    await expect(readCorpus(directory)).rejects.toThrow(
+    await expect(readCorpus(directory, { registration: HOLDING })).rejects.toThrow(
       "case reserved is one the reserve holds, and while the reserve holds a read takes only a " +
         "corpus whose build left every such case out"
     );
@@ -913,7 +991,9 @@ describe("what a build writes of the reserve", () => {
       `${JSON.stringify(reserved)}\n${JSON.stringify(open)}\n`,
       "utf8"
     );
-    await expect(readCorpus(directory)).rejects.toThrow(/left every such case out of the file/);
+    await expect(readCorpus(directory, { registration: HOLDING })).rejects.toThrow(
+      /left every such case out of the file/
+    );
   });
 
   test("refuses a snapshot that records the reserve in a shape no build writes", async () => {
@@ -933,7 +1013,9 @@ describe("what a build writes of the reserve", () => {
         `${JSON.stringify({ ...walked, reserve })}\n`,
         "utf8"
       );
-      await expect(readCorpus(directory)).rejects.toThrow(/shape no build writes/);
+      await expect(readCorpus(directory, { registration: HOLDING })).rejects.toThrow(
+        /shape no build writes/
+      );
     }
   });
 });
@@ -941,7 +1023,7 @@ describe("what a build writes of the reserve", () => {
 describe("what a command prints from a file an earlier run wrote", () => {
   test("a build's counts leave a reserved case's verdict out", () => {
     const reserved: CaseRow = { ...caseRow("reserved", PICKED, LATER), verdict: "request_changes" };
-    const counts = countsOf([reserved, caseRow("open", NOT_PICKED, LATER)]);
+    const counts = countsOf([reserved, caseRow("open", NOT_PICKED, LATER)], HOLDING.ended);
     expect(counts.reserved).toBe(1);
     expect(counts.total).toBe(1);
     expect(counts.approvalByVerdict).toEqual({ approve: 1, request_changes: 0, other: 0 });
