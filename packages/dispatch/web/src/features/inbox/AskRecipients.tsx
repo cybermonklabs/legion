@@ -13,10 +13,11 @@ import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
 import type { EventFreshness } from "../../hooks/useIsHuman";
 import { useIsHuman } from "../../hooks/useIsHuman";
-import { pageMutedText, pageQuietText, textMutedOnSurface } from "../../theme/classes";
+import { textMutedOnSurface } from "../../theme/classes";
 import type { AskPalette } from "../ask-body/ask-text";
 import { RouteReachUnknownMarker, UnreachableRouteMarker } from "../issue/RouteReach";
 import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
+import { PAGE_REACHES } from "../issue-page/reaches-palette";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
@@ -360,8 +361,8 @@ export function AskRecipients({
         expanded={open}
         label={counted ? reachLabel({ count, unknownRoute }) : "Recipients"}
         onToggle={() => setOpen((shown) => !shown)}
-        textClassName={palette === "page" ? pageMutedText : textMutedOnSurface}
-        {...(palette === "page" ? { chevronClassName: pageQuietText } : {})}
+        textClassName={palette === "page" ? PAGE_REACHES.text : textMutedOnSurface}
+        {...(palette === "page" ? { chevronClassName: PAGE_REACHES.chevron } : {})}
       />
       {!open ? null : (
         <>
