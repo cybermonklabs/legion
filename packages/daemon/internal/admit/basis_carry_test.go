@@ -156,7 +156,7 @@ func childCatchUp(t *testing.T, pool *pgxpool.Pool, steps []record.DesignStep) m
 		if err != nil || child == nil {
 			t.Fatalf("read the child: %#v, %v", child, err)
 		}
-		if err := workflow.QueueCatchUp(ctx, tx, records, steps, *child, 1, "", fixedNow, time.Time{}); err != nil {
+		if err := workflow.QueueCatchUp(ctx, tx, records, steps, *child, 1, "", fixedNow); err != nil {
 			t.Fatalf("queue the child's catch-up: %v", err)
 		}
 	})

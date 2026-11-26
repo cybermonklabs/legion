@@ -102,7 +102,7 @@ func (r *personHandoverRig) composeCatchUp(key string) composedCatchUp {
 			notice := payload.(record.Notice)
 			composed.queued = append(composed.queued, queuedCatchUp{id: row.ID, telling: cmp.Or(notice.ResendOf, row.ID), reason: notice.Reason})
 		}
-		if err := workflow.QueueCatchUp(t.Context(), tx, record.NewStore(), r.cfg.Gates.Steps(), root, launch, "", time.Now().UTC(), time.Time{}); err != nil {
+		if err := workflow.QueueCatchUp(t.Context(), tx, record.NewStore(), r.cfg.Gates.Steps(), root, launch, "", time.Now().UTC()); err != nil {
 			return err
 		}
 		var payload []byte
