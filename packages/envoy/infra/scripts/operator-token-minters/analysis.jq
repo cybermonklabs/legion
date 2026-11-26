@@ -35,7 +35,7 @@ include "rec";
             | ([$r.accessControlLists[]?.accesses[]?.permission // empty] | unique | join(",")) as $perms
             | $r.identityList.identities[]?.name as $id
             | (["row", $id, ($r.iamBinding.role // ""), ($r.attachedResourceFullName // ""), $perms,
-                (if any($expanded[]; . == $id) then "expanded" else "" end)] | rec),
+                (if any($expanded[]; . == $id) then "expanded" else "" end), ($r.iamBinding.condition.expression // "")] | rec),
               (($id | sa_email) as $email | chains($email; [$id]) as $c | ($c | last) as $o
                | ["chain", $o.id, $o.role, $o.attached, $perms, (if $o.expanded then "expanded" else "" end),
                   (if designed($o) then "designed" else "" end), ($r.iamBinding.role // ""), ($r.attachedResourceFullName // ""), $id,

@@ -41,8 +41,9 @@ fi
 # permissions on the resource, with service account impersonation: a principal that can mint a
 # holder's token, sign as it, or act as it holds what the holder holds. Written as records to
 # $WORK/analysis.rec: a `row` per binding and identity (identity, role, the resource the binding is
-# made on, the permissions it grants, comma-separated, and `expanded` for a group whose members the
-# analysis lists), and a `chain` per impersonator of a service account holder, through any number
+# made on, the permissions it grants, comma-separated, `expanded` for a group whose members the
+# analysis lists, and the binding's condition expression), and a `chain` per impersonator of a
+# service account holder, through any number
 # of service accounts (the outermost impersonator, its role and where that is granted, the holder's
 # permissions, `expanded`, `designed` for a link the design makes, the holder's role and where it
 # is granted, the holder, and the chain written out). Returns 1 with ANALYZE_ERROR, also for an
@@ -112,7 +113,8 @@ live_iam() {
     unknown "$step" "the analysis does not list $witness_member, which holds a permission on it by design, so it cannot be read as complete"
   fi
   holders="$(awk -F"$US" '$1 == "row" { print $2 }' "$WORK/analysis.rec" | sort -u | wc -l | tr -d ' ')"
-  # A chain record's holder role and holder are in its written-out chain, the sentence's part.
+  # A chain record's holder role and holder are in its written-out chain, the sentence's part; a row
+  # record's seventh field, read here as designed, is its binding's condition.
   while IFS="$US" read -r -u 3 what identity role attached perms how designed _ hattached _ text; do
     if [ "$what" = chain ]; then
       # The outermost impersonator, judged as a holder of what the holder holds; a designed link's
@@ -125,7 +127,7 @@ live_iam() {
           "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"
       continue
     fi
-    iam_verdict "$check" "$identity" "$role" "$attached" "$how"
+    iam_verdict "$check" "$identity" "$role" "$attached" "$how" "$designed"
     [ "$VERDICT" != finding ] ||
       iam_holder "$check" "$identity" "$(held_text "$check" "$perms") on $resource through $role, granted at $attached$NOTE" \
         "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"

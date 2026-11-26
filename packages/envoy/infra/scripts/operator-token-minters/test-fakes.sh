@@ -134,6 +134,9 @@ case "${words[*]}" in
       [ -z "${flag[$kind]:-}" ] || scope="$kind/${flag[$kind]}"
     done
     [ ! -e "$world/refuse-analyze" ] || refuse asset.analyze-iam-policy "Permission 'cloudasset.assets.analyzeIamPolicy' denied on resource '//cloudresourcemanager.googleapis.com/${scope/\//s/}' (or it may not exist)."
+    # refuse-analyze-of and empty-analysis-of name one resource whose analysis alone is refused or empty.
+    ! grep -qxF -- "${flag[full-resource-name]:-}" "$world/refuse-analyze-of" 2>/dev/null ||
+      refuse asset.analyze-iam-policy "Permission 'cloudasset.assets.analyzeIamPolicy' denied on resource '${flag[full-resource-name]}'."
     # A binding on the resource, on the project that holds it (a bucket's `_` and the project
     # number are this world's project), or, from the organization's scope, on the organization.
     # With --analyze-service-account-impersonation, each service account among the holders gets an
@@ -146,7 +149,7 @@ case "${words[*]}" in
       --arg group_stub "${OPERATOR_MINTERS_GROUP_STUB:-}" \
       --arg impersonation "${flag[analyze-service-account-impersonation]:-}" \
       --arg explored "$([ -e "$world/not-explored" ] && echo false || echo true)" \
-      --arg empty "$([ -e "$world/empty-analysis" ] && echo true || echo false)" \
+      --arg empty "$({ [ -e "$world/empty-analysis" ] || grep -qxF -- "${flag[full-resource-name]:-}" "$world/empty-analysis-of" 2>/dev/null; } && echo true || echo false)" \
       --slurpfile iam "$world/iam.json" --slurpfile roles "$world/roles.json" --slurpfile groups "$world/groups.json" '
       def results($res; $asked):
         ((([$res | capture("/projects/(?<p>[^/]+)") | .p] | first) // "") as $p
@@ -160,7 +163,7 @@ case "${words[*]}" in
             | ([$b.members[] | select(startswith("group:")) | . as $g | ($groups[0][$g] // [])[] | {sourceNode: $g, targetNode: .}]) as $edges
             | {
                 attachedResourceFullName: $b.attached,
-                iamBinding: {role: $b.role, members: $b.members},
+                iamBinding: ({role: $b.role, members: $b.members} + (if $b.condition then {condition: $b.condition} else {} end)),
                 accessControlLists: [{
                   resources: [{fullResourceName: $res}],
                   accesses: (if $expand_roles == "true" then [$held[] | {permission: .}] else [{role: $b.role}] end)
@@ -652,6 +655,17 @@ if [ "$url" = "https://gkehub.googleapis.com/v1/projects/$fleet_project/location
   { if [ -e "$world/scopes.json" ]; then cat "$world/scopes.json"; else echo '[]'; fi; } |
     jq --argjson at "${token:-0}" '. as $s | {scopes: [$s[$at] // empty]} + (if $at + 1 < ($s | length) then {nextPageToken: "p\\\"\($at + 1)"} else {} end)'
   exit 0
+fi
+disabled() {
+  jq -nc --arg project "$1" --arg service "$2" '{error: {code: 403, status: "PERMISSION_DENIED",
+    details: [{reason: "SERVICE_DISABLED", metadata: {consumer: ("projects/" + $project), service: $service}}]}}'
+  echo "curl: (22) The requested URL returned error: 403" >&2
+  exit 22
+}
+if [ "$url" = "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/memberships" ]; then
+  [ ! -e "$world/fleet-service-disabled" ] || disabled "$fleet_project" gkehub.googleapis.com
+  [ ! -e "$world/fleet-service-disabled-other-service" ] || disabled "$fleet_project" other.googleapis.com
+  [ ! -e "$world/fleet-service-disabled-other-project" ] || disabled other-project gkehub.googleapis.com
 fi
 if [ "$url" != "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/memberships" ] || [ -e "$world/refuse-fleet" ]; then
   deny gkehub.memberships.list "projects/${project_of%%/*}/locations/-/memberships"

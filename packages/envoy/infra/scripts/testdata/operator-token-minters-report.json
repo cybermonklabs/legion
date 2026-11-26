@@ -2197,5 +2197,26 @@
       "reason": "agent-secrets secret show ENVOY_OPERATOR --json was refused: agent-secrets secret show: Secret Manager GetSecret answered PermissionDenied (missing permission: secretmanager.secrets.get; its message is not printed); looked in GCP Secret Manager project 123456789012"
     }
   ],
-  "allowances": []
+  "allowances": [
+    {
+      "flag": "--renders-admin",
+      "value": "renders-admin@example-project.iam.gserviceaccount.com"
+    },
+    {
+      "flag": "--render-writer",
+      "value": "writer-a@example-project.iam.gserviceaccount.com=program-a/object"
+    },
+    {
+      "flag": "--render-writer",
+      "value": "writer-b@example-project.iam.gserviceaccount.com=program-b/object"
+    },
+    {
+      "flag": "--render-writer",
+      "value": "writer-c@example-project.iam.gserviceaccount.com=program-c/object"
+    },
+    {
+      "flag": "--render-writer",
+      "value": "writer-d@example-project.iam.gserviceaccount.com=program-d/object"
+    }
+  ]
 }

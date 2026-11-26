@@ -93,6 +93,9 @@ jobs:
       - name: Verdict test for infra/scripts/operator-token-minters.sh (fakes kubectl, gcloud and agent-secrets; no cluster or cloud)
         run: ../../.github/scripts/harness-pool.sh start infra/scripts/operator-token-minters.test.sh bash infra/scripts/operator-token-minters.test.sh
         working-directory: packages/envoy
+      - name: Validation test for the minter-auditor image entrypoint (fakes gcloud; no cluster or cloud)
+        run: ../../.github/scripts/harness-pool.sh start infra/scripts/operator-token-minters-entrypoint.test.sh bash infra/scripts/operator-token-minters-entrypoint.test.sh
+        working-directory: packages/envoy
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
         run: ../../.github/scripts/harness-pool.sh start loadtest/cluster/cluster.test.sh bash loadtest/cluster/cluster.test.sh
         working-directory: packages/envoy

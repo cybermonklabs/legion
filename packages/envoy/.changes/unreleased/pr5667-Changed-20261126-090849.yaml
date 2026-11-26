@@ -1,10 +1,12 @@
 kind: Changed
 body: |-
   `infra/scripts/operator-token-minters.sh` reads guarded token-Secret declarations from rendered
-  Kubernetes objects instead of listing Kubernetes Secrets. The check accepts a List, an array or a
-  stream of objects, reads only Secret metadata, type and service-account annotation, and treats an
-  invalid render as UNKNOWN. Its Kubernetes-read manifest is held to every fake call in the script
-  tests, including a control that removes the namespaces read.
+  Kubernetes objects instead of listing Kubernetes Secrets. A new step lists who can write the
+  renders bucket (`--renders-bucket`, `--renders-admin`, `--render-writer`): anyone but people, the
+  bucket's applier and each writer under its own object's condition is a finding. A structured
+  disabled GKE Hub API reads as an empty fleet, and the Kubernetes reads each live step makes are
+  listed in `reads.json`. The minter auditor image runs the check from a no-argument entrypoint
+  with Job-pinned `MINTERS_AUDITOR_*` environment variables.
 time: 2026-11-26T09:08:49Z
 custom:
     Issue: pr5667

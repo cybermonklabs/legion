@@ -17,11 +17,9 @@
 #
 # It runs with the gcloud, kubectl and agent-secrets sign-ins of the shell it runs in: an identity
 # already held, never a person's administrator credential. It requests no credential, impersonates
-# no one, and writes nothing but its own work directory and --report. It lists a guarded namespace's
-# token Secrets asking the API server for the Table form first, whose rows carry no Secret's data,
-# only each Secret's name, type, number of data keys and age beside its metadata, and keeps the
-# names; a list kubectl prints without the Table's columns is UNKNOWN. The two cases that still bring
-# a token into kubectl's memory are in operator-token-minters/step-rbac.sh.
+# no one, and writes nothing but its own work directory and --report. It never reads a Kubernetes
+# Secret. Its --secret-render inputs supply only the declared namespace, name, type and
+# service-account-name annotation of each Secret; an invalid render is UNKNOWN.
 #
 # The steps, in order; each prints PASS, a FINDING per principal and right, or UNKNOWN naming why;
 # the RBAC steps print a CREDIT per grant whose use on the broker's pods its pod fence refuses, or
@@ -71,6 +69,11 @@
 #                     UNKNOWN: a cluster there is neither read nor counted. With --pool-project
 #                     naming another project, that project's own clusters are listed too, and read
 #                     as other clusters of the pool; a refused or incomplete list is UNKNOWN.
+#   live: audited     With --audited-cluster, the clusters the auditor was given credentials for,
+#     clusters        each PROJECT/LOCATION/NAME: each GKE cluster of the pool (the project's list,
+#                     the pool project's, and each GKE member of the fleet) none names is a finding
+#                     naming it; a named cluster the pool does not hold, and a pool list not read
+#                     whole, are UNKNOWN. Without the flag the step does not run.
 #   live: GKE IAM     GKE authorizes a Google identity's Kubernetes call through IAM beside RBAC, so
 #                     Policy Analyzer's holders of the container.* permission of each right, on the
 #                     project, and of resourcemanager.projects.setIamPolicy and iam.roles.update
@@ -247,6 +250,13 @@
 #                     bucket of --broker-state, and of secretmanager.versions.access or setIamPolicy
 #                     on --signing-secret, which the operator's Google service account alone may read
 #                     and must be listed on.
+#   live: render      Who could have written the renders and previews the code steps read: the
+#     writers         holders of storage.objects.create, delete or update, or storage.buckets
+#                     setIamPolicy or update, on --renders-bucket. --renders-admin is allowed and must
+#                     be listed; each --render-writer EMAIL=OBJECT is allowed only under the condition
+#                     resource.name == "projects/_/buckets/<bucket>/objects/<OBJECT>". Any other
+#                     holder is a finding. Renders given without the bucket or the admin are UNKNOWN;
+#                     with no render given the step does not run.
 #   admin tag         `agent-secrets secret show <--secret> --json`, under the running session, must
 #                     show "admin": "true" and "tier": "human": the operator's credential is an
 #                     administrator's, released only when a person approves and never decided by a
@@ -455,7 +465,9 @@
 #     --gsa <email> --agent-namespace <ns|glob>... --broker-account <email> \
 #     --broker-workload <ns>/<sa> --sql-instance <name> --db-secret <ns>/<name> \
 #     --broker-state gs://<bucket>[/<path>] --signing-secret <name> \
-#     --rbac-render <file>... --iam-preview <file>... [--guarded <ns>/<sa>]... [--report <file>]
+#     --rbac-render <file>... --secret-render <file>... --iam-preview <file>... \
+#     --renders-bucket gs://<bucket> --renders-admin <email> --render-writer <email>=<object>... \
+#     [--guarded <ns>/<sa>]... [--report <file>]
 #
 # The controls run against scratch targets: --namespace envoy-operator-control --gsa
 # envoy-operator-control@<project>.iam.gserviceaccount.com --secret ENVOY_OPERATOR_CONTROL.
@@ -508,12 +520,19 @@ usage: operator-token-minters.sh [flags]
   --secret NAME              the broker secret of the operator's credential (default ENVOY_OPERATOR)
   --rbac-render FILE         a JSON render of the cluster's RBAC program; repeatable
   --secret-render FILE       a Kubernetes-object JSON render of a Secret program; repeatable
+  --renders-bucket URL       the renders bucket, gs://BUCKET; its writers are read when renders are given
+  --renders-admin EMAIL      the Google service account that applies the bucket: allowed every
+                             permission the writers step asks, and its witness
+  --render-writer EMAIL=OBJECT  a writer allowed to write OBJECT alone, under the condition
+                             resource.name == "projects/_/buckets/BUCKET/objects/OBJECT"; repeatable
   --iam-preview FILE         `pulumi preview --json --show-sames` of an IAM program; repeatable
   --analysis-scope organizations/N|folders/N|projects/ID
                              Policy Analyzer's scope (default: the project's top ancestor)
   --credentials-arg ARG      one gcloud flag, --name or --name=value, passed to each
                              `gcloud container clusters get-credentials`; repeatable
   --report FILE              also write the result as JSON
+  --audited-cluster PROJECT/LOCATION/NAME
+                             a cluster the auditor reads; each GKE cluster of the pool must be one
 USAGE
 }
 usage_error() {
@@ -538,8 +557,9 @@ for ((arg = 1; arg <= $#; arg++)); do
   esac
 done
 PROJECT="" CLUSTER="" LOCATION="" POOL_PROJECT="" NAMESPACE=envoy-operator KSA=envoy-operator GSA="" BROKER="" BROKER_WORKLOAD=""
-SQL_INSTANCE="" DB_SECRET="" BROKER_STATE="" SIGNING_SECRET="" SECRET=ENVOY_OPERATOR ANALYSIS_SCOPE="" REPORT="" FLEET=""
-AGENT_NAMESPACES=() RBAC_RENDERS=() SECRET_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_FLAGS=() RBAC_ONLY_MEMBERS=() SERVICE_AGENTS=()
+SQL_INSTANCE="" DB_SECRET="" BROKER_STATE="" SIGNING_SECRET="" SECRET=ENVOY_OPERATOR ANALYSIS_SCOPE="" REPORT="" FLEET="" RENDERS_BUCKET="" RENDERS_ADMIN=""
+AGENT_NAMESPACES=() RBAC_RENDERS=() SECRET_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_FLAGS=() RBAC_ONLY_MEMBERS=() SERVICE_AGENTS=() RENDER_WRITERS=()
+AUDITED_CLUSTERS=()
 # A usage error names the flag, or an argument's place, and never the text given: a value pasted in
 # the wrong place may be a credential. Each flag that names a thing is held to that thing's form
 # below, before any step runs, and refuses a value shaped as a credential its issuer marks
@@ -557,9 +577,9 @@ while [ "$#" -gt 0 ]; do
   esac
   case "$flag" in
     --project | --cluster | --location | --pool-project | --namespace | --service-account | --gsa | --agent-namespace | --broker-account | \
-      --broker-workload | --sql-instance | --db-secret | --broker-state | --signing-secret | --secret | \
+      --broker-workload | --sql-instance | --db-secret | --broker-state | --signing-secret | --secret | --renders-bucket | --renders-admin | \
       --rbac-render | --secret-render | --iam-preview | --analysis-scope | --credentials-arg | --report | --guarded | --fleet | --rbac-only-member | \
-      --service-agent)
+      --service-agent | --render-writer | --audited-cluster)
       [ "$#" -gt 0 ] || usage_error "$flag needs a value"
       value="$1"
       shift
@@ -587,6 +607,8 @@ while [ "$#" -gt 0 ]; do
     --broker-state) BROKER_STATE="$value" ;;
     --signing-secret) SIGNING_SECRET="$value" ;;
     --secret) SECRET="$value" ;;
+    --renders-bucket) RENDERS_BUCKET="$value" ;;
+    --renders-admin) RENDERS_ADMIN="$value" ;;
     --rbac-render) RBAC_RENDERS+=("$value") ;;
     --secret-render) SECRET_RENDERS+=("$value") ;;
     --iam-preview) IAM_PREVIEWS+=("$value") ;;
@@ -597,6 +619,8 @@ while [ "$#" -gt 0 ]; do
     --fleet) FLEET="$value" ;;
     --rbac-only-member) RBAC_ONLY_MEMBERS+=("$value") ;;
     --service-agent) SERVICE_AGENTS+=("$value") ;;
+    --render-writer) RENDER_WRITERS+=("$value") ;;
+    --audited-cluster) AUDITED_CLUSTERS+=("$value") ;;
   esac
 done
 # credential_prefix: the shape of a credential whose issuer marks it, its prefix and the characters
@@ -655,13 +679,17 @@ for agent in ${SERVICE_AGENTS[@]+"${SERVICE_AGENTS[@]}"}; do
 done
 # allowances_json: the JSON array of each allowance the run was given, {flag, value}: each
 # --service-agent, each --rbac-only-member and --fleet none, which let a principal or a reading pass,
-# and each --credentials-arg, which chooses how each cluster is reached, so a reader of --report can
-# hold each one to what was accepted.
+# a GKE Hub API the run read as disabled, --renders-admin and each --render-writer, which let an
+# account write the renders, and each --credentials-arg, which chooses how each cluster is reached,
+# so a reader of --report can hold each one to what was accepted.
 allowances_json() {
   {
     for value in ${SERVICE_AGENTS[@]+"${SERVICE_AGENTS[@]}"}; do printf -- '--service-agent\t%s\n' "$value"; done
     for value in ${RBAC_ONLY_MEMBERS[@]+"${RBAC_ONLY_MEMBERS[@]}"}; do printf -- '--rbac-only-member\t%s\n' "$value"; done
     [ -z "${FLEET:-}" ] || printf -- '--fleet\t%s\n' "$FLEET"
+    [ "${FLEET_SERVICE_DISABLED:-}" != true ] || printf -- 'gkehub-service-disabled\t%s\n' "$POOL_PROJECT"
+    [ -z "${RENDERS_ADMIN:-}" ] || printf -- '--renders-admin\t%s\n' "$RENDERS_ADMIN"
+    for value in ${RENDER_WRITERS[@]+"${RENDER_WRITERS[@]}"}; do printf -- '--render-writer\t%s\n' "$value"; done
     for value in ${CREDENTIALS_ARGS[@]+"${CREDENTIALS_ARGS[@]}"}; do printf -- '--credentials-arg\t%s\n' "$value"; done
   } | jq -R -s -c '[split("\n")[] | select(length > 0) | split("\t") | {flag: .[0], value: .[1]}]'
 }
@@ -677,6 +705,24 @@ for pair in ${GUARDED_FLAGS[@]+"${GUARDED_FLAGS[@]}"}; do
 done
 refuse_form --db-secret "$pair_name" "<namespace>/<name>, each a Kubernetes name" "$DB_SECRET"
 refuse_form --broker-state '^gs://[a-z0-9][-_.a-z0-9]{1,220}[a-z0-9](/.*)?$' "gs://<bucket>[/<path>]" "$BROKER_STATE"
+refuse_form --renders-bucket '^gs://[a-z0-9][-_.a-z0-9]{1,220}[a-z0-9]$' "gs://BUCKET" "$RENDERS_BUCKET"
+refuse_form --renders-admin '^[a-z0-9][-a-z0-9]*@[a-z0-9][-.:a-z0-9]*\.gserviceaccount\.com$' "a Google service account email" "$RENDERS_ADMIN"
+declare -A render_seen=()
+for writer in ${RENDER_WRITERS[@]+"${RENDER_WRITERS[@]}"}; do
+  [[ "$writer" =~ ^[a-z0-9][-a-z0-9]*@[a-z0-9][-.:a-z0-9]*\.gserviceaccount\.com=[a-z][-a-z0-9]*/[a-z][-a-z0-9]*$ ]] ||
+    usage_error "--render-writer takes a Google service account email and one object, EMAIL=program/name"
+  [ -z "${render_seen[${writer%%=*}]:-}" ] && [ -z "${render_seen[=${writer#*=}]:-}" ] ||
+    usage_error "--render-writer names each writer and each object once"
+  [ "${writer%%=*}" != "$RENDERS_ADMIN" ] || usage_error "--render-writer names the --renders-admin account"
+  render_seen[${writer%%=*}]=1 render_seen[=${writer#*=}]=1
+done
+declare -A audited_seen=()
+for audited in ${AUDITED_CLUSTERS[@]+"${AUDITED_CLUSTERS[@]}"}; do
+  [[ "$audited" =~ ^[a-z][-a-z0-9]{4,28}[a-z0-9]/[a-z][-a-z0-9]*[a-z0-9]/[a-z]([-a-z0-9]{0,38}[a-z0-9])?$ ]] ||
+    usage_error "--audited-cluster takes PROJECT/LOCATION/NAME, a GKE cluster's project ID, location and name"
+  [ -z "${audited_seen[$audited]:-}" ] || usage_error "--audited-cluster names each cluster once"
+  audited_seen[$audited]=1
+done
 command -v jq >/dev/null || usage_error "jq is not on PATH"
 
 RUN_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -707,7 +753,7 @@ LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/operator-token-minters"
 missing=""
 for part in output.sh rights.sh principals.sh checks.sh step-permission-names.sh step-code-secrets.sh step-code-rbac.sh step-code-iam.sh \
   step-clusters.sh reviews.sh admission-backends.sh broker-fence.sh step-rbac.sh iam-analysis.sh step-gke-iam.sh \
-  step-workload-identity.sh step-live-iam.sh step-admin-tag.sh analysis.jq become-rights.jq broker-fence.jq broker-fence.json \
+  step-workload-identity.sh step-audited-clusters.sh step-live-iam.sh step-admin-tag.sh analysis.jq become-rights.jq broker-fence.jq broker-fence.json \
   code-iam.jq code-rbac.jq custom.jq custom-rights.jq fleet.jq guard-rights.jq binding-rights.jq rec.jq review-answer.jq \
   review-request.jq webhook-backends.jq; do
   [ -r "$LIB/$part" ] || missing="${missing:+$missing, }$part"
@@ -755,6 +801,8 @@ fi
 . "$LIB/step-rbac.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-workload-identity.sh
 . "$LIB/step-workload-identity.sh"
+# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-audited-clusters.sh
+. "$LIB/step-audited-clusters.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-live-iam.sh
 . "$LIB/step-live-iam.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-admin-tag.sh

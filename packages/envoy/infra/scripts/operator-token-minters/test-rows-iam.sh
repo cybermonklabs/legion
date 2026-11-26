@@ -59,6 +59,12 @@
 #        (example-grade, 222222222222) holding it there exits 0;
 #   (gp) a Policy Analyzer group path expanded to a service account is still a finding naming that
 #        account; a stub that drops expanded members misses it.
+#   (rw) the renders bucket's writers: people, a group of people, the applier and the four writers
+#        each under its own object's condition pass; another account with storage.admin there, a
+#        writer without its condition or with another object's, an expanded group holding a service
+#        account, and a writer the preview declares without its condition are each a finding naming
+#        it; an answer without the applier, an empty answer and a refused one read UNKNOWN, and so do
+#        renders given without --renders-bucket or without --renders-admin; no render, no step.
 #   (dm) Deployment Manager acts as the project's Google APIs service agent, which holds roles/editor:
 #        an agent's Google service account holding roles/deploymentmanager.editor on the project
 #        exits 1 naming it and the route, and a copy of the check without the step exits 0 in that
@@ -516,4 +522,113 @@ if row gp; then
   ! has_prefix "FINDING serviceAccount:$worker_gsa:" ||
     fail "the group-members stub still named the expanded service account"
   passed "(gp) a service account expanded from a group is a finding, which the stub control misses"
+fi
+
+# --- (rw) The renders bucket's writers. ---
+readonly writer_a="${render_writers[0]%%=*}" object_a="${render_writers[0]#*=}" object_b="${render_writers[1]#*=}"
+readonly renders_step="live: render writers of gs://$renders_bucket"
+render_writer_row() {
+  base_world
+  case "$1" in
+    clean)
+      edit "$world/groups.json" '. + {"group:render-admins@example.com": ["user:admin@example.com"]}'
+      iam "$renders_res" roles/storage.admin user:owner@example.com group:render-admins@example.com
+      run
+      want_status 0 "people, a group of people, the applier and the four conditioned writers"
+      want_text "PASS $renders_step: " "people, a group of people, the applier and the four conditioned writers"
+      ;;
+    stranger)
+      iam "$renders_res" roles/storage.admin "serviceAccount:$applier"
+      run
+      want_status 1 "another account with roles/storage.admin on the bucket"
+      want_text "FINDING serviceAccount:$applier: storage.objects.create, storage.objects.delete, storage.objects.update, storage.buckets.setIamPolicy, storage.buckets.update on $renders_res through roles/storage.admin" \
+        "another account with roles/storage.admin on the bucket"
+      ;;
+    group)
+      edit "$world/groups.json" '. + {"group:render-admins@example.com": ["user:admin@example.com", $m]}' --arg m "serviceAccount:$applier"
+      iam "$renders_res" roles/storage.admin group:render-admins@example.com
+      run
+      want_status 1 "a group holding a service account"
+      want_text "FINDING serviceAccount:$applier: storage.objects.create, storage.objects.delete, storage.objects.update, storage.buckets.setIamPolicy, storage.buckets.update on $renders_res" \
+        "a group holding a service account"
+      ;;
+    unconditioned)
+      iam "$renders_res" roles/example.renderWrite "serviceAccount:$writer_a"
+      run
+      want_status 1 "a writer's binding without its condition"
+      want_text "FINDING serviceAccount:$writer_a: storage.objects.create, storage.objects.delete on $renders_res through roles/example.renderWrite, granted at $renders_res, a render writer whose binding is not held to writes $object_a only" \
+        "a writer's binding without its condition"
+      ;;
+    other-object)
+      edit "$world/iam.json" 'map(if .members == [$m] then .condition.expression = $c else . end)' \
+        --arg m "serviceAccount:$writer_a" --arg c "$(render_condition "$object_b")"
+      run
+      want_status 1 "a writer held to another writer's object"
+      want_text "FINDING serviceAccount:$writer_a: " "a writer held to another writer's object"
+      want_text "(its condition: $(render_condition "$object_b"))" "a writer held to another writer's object"
+      ;;
+    single-quoted)
+      edit "$world/iam.json" 'map(if .members == [$m] then .condition.expression = $c else . end)' \
+        --arg m "serviceAccount:$writer_a" --arg c "resource.name == 'projects/_/buckets/$renders_bucket/objects/$object_a'"
+      run
+      want_status 0 "a writer's condition in single quotes"
+      ;;
+    code)
+      edit "$world/preview.json" '.steps += [
+        {op: "same", urn: "urn:pulumi:example::iam::gcp:storage/bucketIAMMember:BucketIAMMember::writer-a", provider: "example-provider",
+         newState: {type: "gcp:storage/bucketIAMMember:BucketIAMMember",
+                    inputs: {bucket: $b, role: "roles/example.renderWrite", member: $m, condition: {expression: $c, title: "writes"}}}},
+        {op: "same", urn: "urn:pulumi:example::iam::gcp:storage/bucketIAMMember:BucketIAMMember::stranger", provider: "example-provider",
+         newState: {type: "gcp:storage/bucketIAMMember:BucketIAMMember",
+                    inputs: {bucket: $b, role: "roles/example.renderWrite", member: $s}}}]' \
+        --arg b "$renders_bucket" --arg m "serviceAccount:$writer_a" --arg c "$(render_condition "$object_a")" --arg s "serviceAccount:$applier"
+      run
+      want_status 1 "a preview declaring a writer the flags do not name"
+      want_text "FINDING serviceAccount:$applier: storage.objects.create, storage.objects.delete on $renders_res through roles/example.renderWrite, declared by urn:pulumi:example::iam::gcp:storage/bucketIAMMember:BucketIAMMember::stranger" \
+        "a preview declaring a writer the flags do not name"
+      ! has_prefix "FINDING serviceAccount:$writer_a:" || fail "the declared writer under its own condition was a finding"
+      ;;
+    no-witness)
+      unbind "$renders_res" roles/storage.admin
+      run
+      want_status 2 "an answer that does not list the applier"
+      want_text "UNKNOWN $renders_step: the analysis does not list serviceAccount:$renders_admin" "an answer that does not list the applier"
+      ;;
+    empty)
+      printf '%s\n' "$renders_res" >"$world/empty-analysis-of"
+      run
+      want_status 2 "an empty answer"
+      want_text "UNKNOWN $renders_step: the analysis lists no holder of storage.objects.create" "an empty answer"
+      ;;
+    refused)
+      printf '%s\n' "$renders_res" >"$world/refuse-analyze-of"
+      run
+      want_status 2 "a refused answer"
+      want_text "UNKNOWN $renders_step: Policy Analyzer refused the analysis" "a refused answer"
+      ;;
+    no-bucket)
+      local args
+      mapfile -t args < <(args_without --renders-bucket)
+      run_only "${args[@]}"
+      want_status 2 "renders given without --renders-bucket"
+      want_text "UNKNOWN live: render writers of the renders bucket: no --renders-bucket" "renders given without --renders-bucket"
+      ;;
+    no-admin)
+      local args
+      mapfile -t args < <(args_without --renders-admin)
+      run_only "${args[@]}"
+      want_status 2 "renders given without --renders-admin"
+      want_text "UNKNOWN $renders_step: no --renders-admin" "renders given without --renders-admin"
+      ;;
+    no-renders)
+      local args
+      mapfile -t args < <(args_without --rbac-render --secret-render --iam-preview)
+      run_only "${args[@]}"
+      ! has_prefix "$renders_step" || fail "the renders step ran with no render given"
+      ;;
+  esac
+}
+if row rw; then
+  each render_writer_row clean stranger group unconditioned other-object single-quoted code no-witness empty refused no-bucket no-admin no-renders
+  passed "(rw) the renders bucket's writers are people, the applier and the four conditioned writers; any other holder, a writer off its condition and a declared stranger are findings; no applier, an empty or refused answer and a missing flag read UNKNOWN"
 fi

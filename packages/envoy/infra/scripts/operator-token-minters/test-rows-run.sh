@@ -208,10 +208,10 @@ if row m; then
     fail "the report's findings do not name serviceAccount:$ci_gsa: $(jq -c .findings "$report")"
   jq -e 'any(.unknown[]?; .step == "admin tag of ENVOY_OPERATOR" and (.reason | contains("PermissionDenied")))' "$report" >/dev/null ||
     fail "the report's unknown does not list the step 'admin tag of ENVOY_OPERATOR': $(jq -c '.unknown // "absent"' "$report")"
-  jq -e 'keys == ["allowances", "credited", "findings", "residuals", "run_at", "unknown"] and .allowances == [] and .credited == []
+  jq -e --argjson ra "$(renders_allowances)" 'keys == ["allowances", "credited", "findings", "residuals", "run_at", "unknown"] and .allowances == $ra and .credited == []
     and .residuals == [] and all(.findings[]; keys == ["granted_at", "permissions", "principal", "resource", "right", "role"])
     and all(.unknown[]; keys == ["reason", "step"])' "$report" >/dev/null ||
-    fail "the report holds other fields than run_at, findings (principal, right, role, resource, permissions, granted_at), an empty credited and residuals, unknown and an empty allowances: $(jq -c . "$report")"
+    fail "the report holds other fields than run_at, findings (principal, right, role, resource, permissions, granted_at), an empty credited and residuals, unknown and the renders' allowances alone: $(jq -c . "$report")"
   passed "(m) --report writes run_at, findings, credited, residuals, unknown and allowances, with the stubbed UNKNOWN step under unknown"
 fi
 
@@ -339,9 +339,9 @@ if row bc; then
 fi
 
 # --- (cj) The allowances: --service-agent names a Google service agent alone, and every allowance a
-# run is given (--service-agent, --rbac-only-member, --fleet none, --credentials-arg, which chooses
-# how each cluster is reached) is written into --report, so a reader can hold each to what was
-# accepted. ---
+# run is given (--service-agent, --rbac-only-member, --fleet none, --renders-admin and each
+# --render-writer, --credentials-arg, which chooses how each cluster is reached) is written into
+# --report, so a reader can hold each to what was accepted. ---
 allowance_row() {
   local report="$temporary_dir/allowances.json"
   base_world
@@ -358,10 +358,10 @@ allowance_row() {
       edit "$world/fleet.json" '.memberships = [.memberships[] | select(.id == "edge")]'
       run --report "$report" --service-agent "service-$number@gcp-sa-cloudbuild.iam.gserviceaccount.com" --rbac-only-member edge --fleet none \
         --credentials-arg=--internal-ip
-      jq -e --arg agent "service-$number@gcp-sa-cloudbuild.iam.gserviceaccount.com" '.allowances == [
-          {flag: "--service-agent", value: $agent}, {flag: "--rbac-only-member", value: "edge"}, {flag: "--fleet", value: "none"},
-          {flag: "--credentials-arg", value: "--internal-ip"}]' "$report" >/dev/null ||
-        fail "the report does not hold the four allowances the run was given: $(jq -c '.allowances // "absent"' "$report")"
+      jq -e --arg agent "service-$number@gcp-sa-cloudbuild.iam.gserviceaccount.com" --argjson ra "$(renders_allowances)" '.allowances == [
+          {flag: "--service-agent", value: $agent}, {flag: "--rbac-only-member", value: "edge"}, {flag: "--fleet", value: "none"}]
+          + $ra + [{flag: "--credentials-arg", value: "--internal-ip"}]' "$report" >/dev/null ||
+        fail "the report does not hold the allowances the run was given: $(jq -c '.allowances // "absent"' "$report")"
       ;;
   esac
 }

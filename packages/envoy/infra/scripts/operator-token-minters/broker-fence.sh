@@ -196,9 +196,9 @@ fence_live() {
     return 0
   fi
   # The Secrets of the broker's beside those its witness pods take: --db-secret when it is in the
-  # fence's namespace, and each token Secret listed there.
+  # fence's namespace, and each token Secret the renders declare there.
   held="$({ [ "${DB_SECRET%%/*}" != "$FENCE_NS" ] || printf '%s\n' "${DB_SECRET#*/}"
-    awk -F'\t' -v ns="$FENCE_NS" '$1 == ns { print $2 }' "$WORK/token-secrets.tsv"; } | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+    jq -r --arg ns "$FENCE_NS" '.[] | select(.ns == $ns) | .name' <<<"$SECRET_RIGHTS"; } | jq -R -s -c 'split("\n") | map(select(length > 0))')"
   # The pod record read as a part of the guard: an answer jq reads as nothing writes no record, and
   # an unguarded read of none would end the run, losing why.
   if ! is_list "$WORK/fence-pods.json" "$WORK/fence-pods.err" ||

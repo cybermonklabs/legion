@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for `check-release-credentials.sh`: a job of the four workflows it reads (the three release
+# Tests for `check-release-credentials.sh`: a job of the five workflows it reads (the four release
 # workflows and the reusable notes names workflow) that holds a credential runs no dependency
 # code, uses only allow-listed actions, restores no cache and holds the deploy key only in the env
 # of a step that runs the one push command (a release's push-tag);
@@ -12,7 +12,7 @@
 # code runs, and these cases exercise those patterns, on each side of each line.
 #
 # Each case builds a miniature repository under a temporary directory, with the real script and
-# the shell_commands.py module it imports symlinked into it and the four workflows written green,
+# the shell_commands.py module it imports symlinked into it and the five workflows written green,
 # and mutates one file.
 #
 # Run from anywhere: .github/scripts/check-release-credentials.test.sh
@@ -83,7 +83,7 @@ LISTENER=.github/workflows/release-envoy-listener.yaml
 INFRA=.github/workflows/release-envoy-infra.yaml
 NOTES_NAMES=.github/workflows/release-notes-names.yaml
 
-# write_green <workflows dir>: the four workflows in a shape every rule passes, not a copy of the
+# write_green <workflows dir>: the five workflows in a shape every rule passes, not a copy of the
 # real files. release.yaml: a build job (install, setup-bun, a `go build` behind `&&`,
 # install-changie, `release-push.sh fold-notes`, upload, tripwire) with an `if:` of its own, two
 # credentialed publish jobs (setup-node, `npm publish` of the handed tarball, the tag push and a
@@ -369,6 +369,25 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release "$TAG" "envoy-infra v1" assets/*.tar.gz
 YAML
+  cat > "$dir/release-minters-auditor.yaml" <<'YAML'
+name: Release Minter Auditor
+on:
+  push:
+    branches: [main]
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - run: docker build -f packages/envoy/infra/scripts/operator-token-minters/Dockerfile .
+      - run: .github/scripts/release-push.sh no-credential
+YAML
   cat > "$dir/release-notes-names.yaml" <<'YAML'
 name: Release Notes Names
 on:
@@ -416,12 +435,12 @@ add_push_tag_step() {
   add_publish_step "$1" "      - name: $2"$'\n        env:\n          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n          TAG: ${{ steps.handed.outputs.tag }}\n        run: |\n'"$3"$'          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"\n'
 }
 
-echo "case: the four workflows in a shape every rule passes"
+echo "case: the five workflows in a shape every rule passes"
 root=$(fixture green)
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "says what it covered" \
-  "$(contains "$out" 'check-release-credentials: 4 credentialed job(s) and 3 build job(s) across 4 workflows keep credentials out of jobs that run dependency code')"
+  "$(contains "$out" 'check-release-credentials: 4 credentialed job(s) and 4 build job(s) across 5 workflows keep credentials out of jobs that run dependency code')"
 
 echo "case: the notes names workflow's job, which holds the term list, runs bun"
 # The control that this check reads the reusable workflow at all: the release workflows' names

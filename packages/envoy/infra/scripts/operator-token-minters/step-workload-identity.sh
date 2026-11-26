@@ -151,8 +151,12 @@ done 5<"$WORK/pool-clusters.tsv"
 # memberships list`: that command's list drops the answer's `unreachable` field, so a listing
 # that missed a location would read as complete.
 fleet_memberships() {
-  FLEET_ERROR=""
+  FLEET_ERROR="" FLEET_SERVICE_DISABLED=false
   hub_list memberships gkehub.memberships.list "$WORK/fleet-pages.json" || { FLEET_ERROR="$HUB_ERROR"; return 1; }
+  FLEET_SERVICE_DISABLED="$HUB_SERVICE_DISABLED"
+  if [ "$FLEET_SERVICE_DISABLED" = true ]; then
+    printf '%s\n' '{"resources":[]}' >"$WORK/fleet-pages.json"
+  fi
   if ! jq -r -s -L "$LIB" -f "$LIB/fleet.jq" "$WORK/fleet-pages.json" >"$WORK/fleet.rec" 2>"$WORK/fleet.err"; then
     FLEET_ERROR="the GKE Hub API's answer holds no list of memberships: $(first_line "$WORK/fleet.err")"
     return 1
@@ -164,7 +168,7 @@ fleet_memberships() {
 # HUB_ERROR, naming PERMISSION, when the listing was refused or a page is not JSON.
 hub_list() {
   local token page="" quoted_page pages=0 status why
-  HUB_ERROR=""
+  HUB_ERROR="" HUB_SERVICE_DISABLED=false
   if ! have curl; then
     HUB_ERROR="curl is not on PATH"
     return 1
@@ -196,6 +200,17 @@ hub_list() {
     } | curl -sS --fail-with-body --max-time 60 -G -K - --data-urlencode pageSize=100 \
       "https://gkehub.googleapis.com/v1/projects/$POOL_PROJECT/locations/-/$1" >"$WORK/hub-page.json" 2>"$WORK/hub.err" || status=$?
     if [ "$status" -ne 0 ]; then
+      if [ "$1" = memberships ] && jq -e --arg project "$POOL_PROJECT" '
+        .error.code == 403
+        and any(.error.details[]?;
+          .reason == "SERVICE_DISABLED"
+          and .metadata.service == "gkehub.googleapis.com"
+          and ((.metadata.consumer // "") == ("projects/" + $project) or (.metadata.project // "") == $project)
+        )
+      ' "$WORK/hub-page.json" >/dev/null 2>&1; then
+        HUB_SERVICE_DISABLED=true
+        return 0
+      fi
       why="$(jq -r '[.error.code, .error.status, .error.message] | map(select(. != null) | tostring) | join(" ")' "$WORK/hub-page.json" 2>/dev/null |
         sed -n '1{s/[[:cntrl:]]/ /g;p;}')" || true
       [ -n "$why" ] || why="$(last_line "$WORK/hub.err")"
@@ -249,6 +264,9 @@ rbac_only() {
 # be told from one that saw nothing, so it is UNKNOWN, unless --fleet none says the pool has no
 # fleet; with it, each membership listed is a finding. The fleet's scopes are read beside it.
 step="live: Workload Identity: the fleet of $pool_name"
+# FLEET_LISTED: whether $WORK/fleet.rec holds every membership of the fleet, which the audited
+# clusters step reads (step-audited-clusters.sh).
+FLEET_LISTED=false
 if [ -z "$POOL_PROJECT" ]; then
   unknown "$step" "no --project or --pool-project: the workload pool's project is not named"
 elif ! have gcloud; then
@@ -258,9 +276,11 @@ else
   if ! fleet_memberships; then
     unknown "$step" "$FLEET_ERROR"
   else
+    FLEET_LISTED=true
     # A GKE member read here in a project other than --project adds to OTHER_PROJECTS.
     while IFS="$US" read -r -u 6 what id location gke_project gke_location gke_cluster; do
       if [ "$what" = unreachable ]; then
+        FLEET_LISTED=false
         unknown "$step" "the listing could not reach the locations $id, so a membership registered there is not listed"
         continue
       fi
@@ -317,15 +337,21 @@ else
         read_other_cluster "$cstep" "membership:$label" " on fleet member $label" own
       fi
     done 6<"$WORK/fleet.rec"
-    [ "$members" -gt 0 ] || [ "$FLEET" = none ] ||
-      unknown "$step" "the GKE Hub API lists no membership in the fleet, so an answer that saw nothing cannot be told from a fleet that holds none (--fleet none says it has none)"
-  fi
-  fleet_scopes
-  if [ "${#FINDINGS[@]}" -eq "$fleet_f" ] && [ "${#UNKNOWNS[@]}" -eq "$fleet_u" ]; then
-    if [ "$members" -eq 0 ]; then
-      pass "$step" "the GKE Hub API lists no membership in the fleet, as --fleet none says, and the fleet holds no scope"
+    if [ "$FLEET_SERVICE_DISABLED" = true ]; then
+      echo "PASS $step: GKE Hub is disabled for project $POOL_PROJECT, so it has no memberships"
     else
-      pass "$step" "$members membership(s) listed, every location reached: $own the operator's cluster, $above read above as clusters of the project, $here read here, and the fleet holds no scope"
+      if [ "$members" -eq 0 ] && [ "$FLEET" != none ]; then
+        FLEET_LISTED=false
+        unknown "$step" "the GKE Hub API lists no membership in the fleet, so an answer that saw nothing cannot be told from a fleet that holds none (--fleet none says it has none)"
+      fi
+      fleet_scopes
+      if [ "${#FINDINGS[@]}" -eq "$fleet_f" ] && [ "${#UNKNOWNS[@]}" -eq "$fleet_u" ]; then
+        if [ "$members" -eq 0 ]; then
+          pass "$step" "the GKE Hub API lists no membership in the fleet, as --fleet none says, and the fleet holds no scope"
+        else
+          pass "$step" "$members membership(s) listed, every location reached: $own the operator's cluster, $above read above as clusters of the project, $here read here, and the fleet holds no scope"
+        fi
+      fi
     fi
   fi
 fi

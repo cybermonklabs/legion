@@ -1,0 +1,55 @@
+name: Release Minter Auditor
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/scripts/repo-paths.sh"
+      - ".github/workflows/release-minters-auditor.yaml"
+      - "packages/envoy/infra/scripts/operator-token-minters.sh"
+      - "packages/envoy/infra/scripts/operator-token-minters/**"
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      ref: ${{ steps.record.outputs.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: image
+        run: |
+          image=$(.github/scripts/repo-paths.sh minters_auditor_image)
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: packages/envoy/infra/scripts/operator-token-minters/Dockerfile
+          platforms: linux/amd64
+          provenance: false
+          push: true
+          tags: ${{ steps.image.outputs.image }}:sha-${{ github.sha }}
+      - id: record
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          test -n "$DIGEST"
+          echo "ref=$IMAGE@$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Published \`$IMAGE@$DIGEST\` from \`$GITHUB_SHA\`; pin the Job to this digest." >> "$GITHUB_STEP_SUMMARY"
+      - name: Check this job holds no credential (tripwire)
+        run: .github/scripts/release-push.sh no-credential

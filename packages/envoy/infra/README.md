@@ -4752,17 +4752,13 @@ with the new key (`hold release`, or `hold abort` once a command stopped), and o
 reads in step 3 with the leaked key's id and follow step 4 as written.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
-precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
-shell it runs in and requests no credential. It lists a guarded namespace's token Secrets asking the
-API server for the Table form first, whose rows carry no Secret's data, only each Secret's name, type,
-number of data keys and age beside its metadata, and keeps the names. Two cases still bring a token
-into `kubectl`'s memory, though nothing prints or writes it: a token Secret made by `kubectl apply`
-from a manifest that held its token carries the token in its
-`kubectl.kubernetes.io/last-applied-configuration` annotation, which is metadata; and a server or
-proxy that cannot make the Table answers with the Secrets whole, data included, which the check
-reads as UNKNOWN, since `kubectl` then prints no `TYPE` and `DATA` columns. It lists each
-principal that is not a person and can mint the token of a guarded ServiceAccount (the operator's,
-the secrets broker's, and each
+precondition for the `operator` entry, run again before go-live.
+It runs with the sign-ins of the shell it runs in and requests no credential.
+It never reads a Kubernetes Secret.
+Instead, its `--secret-render` inputs provide the declared names and types of guarded token Secrets,
+without making a live Secret API request or using a Secret value.
+It lists each principal that is not a person and can mint the token of a guarded ServiceAccount (the
+operator's, the secrets broker's, and each
 `--guarded` pair), run or enter a pod as one, create or change a custom resource in a guarded
 namespace, write a binding or a webhook or admission policy, have the cluster sign it a client
 certificate for any user, mint the operator's Google service account's token, make a guarded
@@ -4863,13 +4859,94 @@ Each is UTF-8 JSON and is passed unmodified to the named flag.
   The object must have the `steps` and `changeSummary` fields that command writes.
   The auditor passes each file with `--iam-preview`.
 
+**Who could have written them.** The step `live: render writers of gs://<bucket>` asks Policy
+Analyzer, in one query on the bucket, for every holder of `storage.objects.create`,
+`storage.objects.delete`, `storage.objects.update`, `storage.buckets.setIamPolicy` and
+`storage.buckets.update`: each writes a render, rewrites the `commit` and `run_id` metadata the
+report quotes, or changes the bucket's policy or access model (with uniform access off, an ACL could
+grant a write Policy Analyzer does not list). It accepts:
+
+- people, a group judged by its expanded members, and Google's service agents, as every IAM step;
+- `--renders-admin EMAIL`, the account that applies the bucket, for any of the five; the answer
+  must list it, or the step is `UNKNOWN`;
+- each `--render-writer EMAIL=program/object`, only through a binding whose condition is exactly
+  `resource.name == "projects/_/buckets/<bucket>/objects/<program/object>"` (single quotes also
+  match). The title is not read: only the expression limits the grant.
+
+Any other holder, a writer's binding without its own object's condition, and a writer under
+another object's condition are each a finding naming it. An empty or refused answer is `UNKNOWN`.
+The step does not ask `resourcemanager.projects.setIamPolicy`. The code step `code: IAM` reads, by
+the same rule, every binding a preview declares on the bucket or on an organization or folder.
+A grant on the bucket's project is read by the live step alone: no flag names that project.
+Renders or previews given without `--renders-bucket` or `--renders-admin` make the step
+`UNKNOWN`; with none given, the step does not run.
+
+The entrypoint does not check at run time that an object's `commit` is on a branch. The writers
+step is the provenance: each accepted writer applies its program from that program's main only.
+The entrypoint reads each object's description with `gcloud storage objects describe --raw` (the
+API's `metadata` and `generation`; gcloud's default format renames them), fetches the object at
+that generation, and adds `{object, commit, run_id, generation}` for each of the five to the
+report's `renders`.
+
 The image entrypoint takes no argument.
-It fetches these five render objects before running the check.
 It builds an authenticated gcloud context for each audited cluster with
 `gcloud container clusters get-credentials` and the gke-gcloud-auth-plugin.
-It uses the pod's Workload Identity credential for all four contexts, including the local cluster,
+It uses the pod's Workload Identity credential for every context, including the local cluster,
 because the read ClusterRoles bind the auditor's Google service account rather than the pod token.
-If it cannot build a context, the report is `UNKNOWN` and names that cluster.
+If it cannot build a context, it prints `UNKNOWN` naming that cluster, exits 2, and runs no check.
+It passes each cluster as `--audited-cluster PROJECT/LOCATION/NAME`. Workload Identity maps a
+namespace and ServiceAccount to one identity on every cluster of the pool, so the step
+`live: audited clusters` compares that list with the pool's GKE clusters (the project's and the pool
+project's `gcloud container clusters list`, and each GKE member of the fleet): a pool cluster the
+list leaves out is a finding naming it, and a listed cluster the pool lacks, or a cluster or fleet
+list not read whole, is `UNKNOWN`.
+A non-GKE fleet member remains UNKNOWN: the auditor has no Connect gateway permission, so it cannot
+mistake a member whose cloud authorizers it did not read for an RBAC-only member.
+If the GKE Hub membership listing returns HTTP 403 with structured `SERVICE_DISABLED` details for
+`gkehub.googleapis.com` in the pool project, the check reads that fleet as empty, prints that the
+service is disabled, and records `gkehub-service-disabled` in the report's allowances.
+Any other Hub error, including `PERMISSION_DENIED` or `SERVICE_DISABLED` for another service or
+project, is UNKNOWN.
+
+The Job supplies every deployment-specific value as a pinned environment variable.
+The required scalar variables are `MINTERS_AUDITOR_RENDERS_BUCKET`, `MINTERS_AUDITOR_RENDERS_ADMIN`,
+`MINTERS_AUDITOR_PROJECT`, `MINTERS_AUDITOR_ANALYSIS_SCOPE`,
+`MINTERS_AUDITOR_NAMESPACE`, `MINTERS_AUDITOR_SERVICE_ACCOUNT`,
+`MINTERS_AUDITOR_GSA`, `MINTERS_AUDITOR_BROKER_ACCOUNT`,
+`MINTERS_AUDITOR_BROKER_WORKLOAD`, `MINTERS_AUDITOR_SQL_INSTANCE`,
+`MINTERS_AUDITOR_DB_SECRET`, `MINTERS_AUDITOR_BROKER_STATE`,
+`MINTERS_AUDITOR_SIGNING_SECRET`, `MINTERS_AUDITOR_SECRET`,
+`MINTERS_AUDITOR_POOL_PROJECT`, `MINTERS_AUDITOR_FLEET`,
+`MINTERS_AUDITOR_OPERATOR_CLUSTER`, `MINTERS_AUDITOR_OPERATOR_LOCATION`, and
+`MINTERS_AUDITOR_REPORT`.
+The required array variables are `MINTERS_AUDITOR_CLUSTERS`,
+`MINTERS_AUDITOR_AGENT_NAMESPACES`, `MINTERS_AUDITOR_GUARDED_PAIRS`,
+`MINTERS_AUDITOR_RBAC_ONLY_MEMBERS`, `MINTERS_AUDITOR_SERVICE_AGENTS`, and
+`MINTERS_AUDITOR_RENDER_WRITERS`.
+`MINTERS_AUDITOR_CLUSTERS` holds one or more unique JSON objects, one for each GKE cluster of the
+pool, each with only `project`, `location` and `name`; the other array variables hold nonempty JSON
+strings.
+`MINTERS_AUDITOR_RENDER_WRITERS` has exactly four `EMAIL=program/object` entries; the fifth object
+is written by `MINTERS_AUDITOR_RENDERS_ADMIN`.
+`MINTERS_AUDITOR_ANALYSIS_SCOPE` must contain the bucket's project as well as `MINTERS_AUDITOR_PROJECT`.
+The entrypoint refuses an unset or empty scalar, malformed array, malformed or duplicate cluster,
+or invalid array member before making a cloud or cluster call.
+
+For example, a non-production Job uses values shaped like:
+
+```text
+MINTERS_AUDITOR_RENDERS_BUCKET=gs://example-renders
+MINTERS_AUDITOR_RENDERS_ADMIN=renders-admin@example-project.iam.gserviceaccount.com
+MINTERS_AUDITOR_PROJECT=example-project
+MINTERS_AUDITOR_OPERATOR_CLUSTER=example-cluster-a
+MINTERS_AUDITOR_OPERATOR_LOCATION=example-region1
+MINTERS_AUDITOR_CLUSTERS=[{"project":"example-project","location":"example-region1","name":"example-cluster-a"},{"project":"example-project","location":"example-region1","name":"example-cluster-b"},{"project":"example-project","location":"example-region1","name":"example-cluster-c"},{"project":"example-project","location":"example-region1","name":"example-cluster-d"}]
+MINTERS_AUDITOR_AGENT_NAMESPACES=["example-agents"]
+MINTERS_AUDITOR_GUARDED_PAIRS=["example-auditor/example-service-account"]
+MINTERS_AUDITOR_RBAC_ONLY_MEMBERS=[]
+MINTERS_AUDITOR_SERVICE_AGENTS=[]
+MINTERS_AUDITOR_RENDER_WRITERS=["writer-a@example-project.iam.gserviceaccount.com=rbac/cluster-grants","writer-b@example-project.iam.gserviceaccount.com=secrets/dispatch","writer-c@example-project.iam.gserviceaccount.com=secrets/broker","writer-d@example-project.iam.gserviceaccount.com=iam/bootstrap"]
+```
 
 A plugin release builds the sets from Envoy's names at its own commit, so a listener built from a
 later commit that publishes or subscribes to a subject those names lacked needs a hub rendered by

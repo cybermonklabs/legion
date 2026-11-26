@@ -183,6 +183,10 @@ FLEET_PERMISSIONS=(gkehub.memberships.create gkehub.memberships.update gkehub.na
   gkehub.rbacrolebindings.create gkehub.rbacrolebindings.update gkehub.membershipbindings.create
   gkehub.membershipbindings.update gkehub.scopes.create gkehub.scopes.update gkehub.scopes.setIamPolicy
   gkehub.features.create gkehub.features.update)
+# Who could have written a render: write or delete an object, rewrite its metadata (the commit and
+# run id the report quotes), or change the bucket's policy or access model.
+RENDER_PERMISSIONS=(storage.objects.create storage.objects.delete storage.objects.update storage.buckets.setIamPolicy
+  storage.buckets.update)
 # granting_role sets GRANTING_ROLE to the predefined role whose includedPermissions must hold a
 # checked permission.
 granting_role() {
@@ -199,7 +203,8 @@ granting_role() {
     iam.serviceAccounts.*) GRANTING_ROLE=roles/iam.serviceAccountTokenCreator ;;
     cloudsql.*) GRANTING_ROLE=roles/cloudsql.admin ;;
     secretmanager.*) GRANTING_ROLE=roles/secretmanager.secretAccessor ;;
-    storage.*) GRANTING_ROLE=roles/storage.objectViewer ;;
+    storage.objects.get) GRANTING_ROLE=roles/storage.objectViewer ;;
+    storage.*) GRANTING_ROLE=roles/storage.admin ;;
     gkehub.*) GRANTING_ROLE=roles/gkehub.admin ;;
     deploymentmanager.*) GRANTING_ROLE=roles/deploymentmanager.editor ;;
   esac

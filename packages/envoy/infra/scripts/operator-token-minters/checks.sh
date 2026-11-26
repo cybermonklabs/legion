@@ -8,7 +8,7 @@
 # the broker's pod fence's residual (step-live-iam.sh): the account and that grant, which each
 # holder's ALLOWANCE names in place of a finding (live_iam).
 declare -A CHECK_STEP=() CHECK_RESOURCE=() CHECK_PERMS=() CHECK_WITNESS=() CHECK_MISSING=() CHECK_RESIDUAL=()
-CHECKS=(gke dm gsa broker sql dbsecret state signing fleet)
+CHECKS=(gke dm gsa broker sql dbsecret state signing fleet renders)
 PROJECT_RES="//cloudresourcemanager.googleapis.com/projects/$PROJECT"
 BUCKET=""
 if [ -n "$BROKER_STATE" ]; then
@@ -70,17 +70,38 @@ CHECK_RESOURCE[fleet]="//cloudresourcemanager.googleapis.com/projects/$POOL_PROJ
 CHECK_PERMS[fleet]="${FLEET_PERMISSIONS[*]}"
 # The pool project's own IAM writers, when it is not --project's, whose are the GKE IAM step's.
 [ -z "$POOL_PROJECT" ] || [ "$POOL_PROJECT" = "$PROJECT" ] || CHECK_PERMS[fleet]+=" resourcemanager.projects.setIamPolicy"
+# Who could have written the renders the code steps read: a holder of a permission that writes an
+# object, rewrites its metadata, or changes the bucket's policy or access model (uniform access off
+# lets an ACL grant a write Policy Analyzer does not list). --renders-admin holds them all by design
+# and is the witness; each --render-writer is allowed only under its own object's condition.
+RENDERS_BUCKET_NAME="${RENDERS_BUCKET#gs://}"
+declare -A RENDER_OBJECT=()
+for writer in ${RENDER_WRITERS[@]+"${RENDER_WRITERS[@]}"}; do RENDER_OBJECT["serviceAccount:${writer%%=*}"]="${writer#*=}"; done
+CHECK_STEP[renders]="live: render writers of ${RENDERS_BUCKET:-the renders bucket}"
+CHECK_RESOURCE[renders]="//storage.googleapis.com/projects/_/buckets/$RENDERS_BUCKET_NAME"
+CHECK_PERMS[renders]="${RENDER_PERMISSIONS[*]}"
+CHECK_WITNESS[renders]="serviceAccount:$RENDERS_ADMIN"
+if [ -z "$RENDERS_BUCKET" ]; then
+  CHECK_MISSING[renders]="no --renders-bucket: who could have written the renders and previews the code steps read is not read"
+elif [ -z "$RENDERS_ADMIN" ]; then
+  CHECK_MISSING[renders]="no --renders-admin: the bucket's applier, which the analysis must list, is not named"
+elif [ "${#RENDER_WRITERS[@]}" -eq 0 ]; then
+  CHECK_MISSING[renders]="no --render-writer: the renders' writers are not named"
+fi
 if [ -z "$PROJECT" ]; then
   for check in "${CHECKS[@]}"; do CHECK_MISSING[$check]="no --project: the project that runs the operator's cluster is not named"; done
 fi
 [ -n "$BROKER" ] || CHECK_MISSING[broker]=skip
+# With no render or preview given there is nothing whose writers to read.
+[ "$((${#RBAC_RENDERS[@]} + ${#SECRET_RENDERS[@]} + ${#IAM_PREVIEWS[@]}))" -gt 0 ] || CHECK_MISSING[renders]=skip
 
-# iam_verdict CHECK MEMBER ROLE ATTACHED HOW: sets VERDICT to ok (allowed), skip (a group judged by
-# its members) or finding, with NOTE beside a finding. ATTACHED is the resource the binding is
-# made on; HOW is `expanded` for a group the analysis lists the members of, `code` for a member a
-# preview declares (its group, if any, is the live steps' to expand) or empty.
+# iam_verdict CHECK MEMBER ROLE ATTACHED HOW [CONDITION]: sets VERDICT to ok (allowed), skip (a group
+# judged by its members) or finding, with NOTE beside a finding. ATTACHED is the resource the binding
+# is made on; HOW is `expanded` for a group the analysis lists the members of, `code` for a member a
+# preview declares (its group, if any, is the live steps' to expand) or empty; CONDITION is the
+# binding's condition expression, empty for none.
 iam_verdict() {
-  local check="$1" member="$2" role="$3" attached="$4" how="$5"
+  local check="$1" member="$2" role="$3" attached="$4" how="$5" condition="${6:-}" object
   VERDICT=finding NOTE=""
   case "$member" in
     user:*) VERDICT=ok; return ;;
@@ -102,6 +123,18 @@ iam_verdict() {
     broker) if [ -n "$BROKER_WI_MEMBER" ] && [ "$member" = "$BROKER_WI_MEMBER" ]; then VERDICT=ok; fi ;;
     signing) if [ "$member" = "serviceAccount:$GSA" ]; then VERDICT=ok; fi ;;
     dm) NOTE="$NOTE, by which Deployment Manager creates a deployment's resources as the project's Google APIs service agent, which holds roles/editor there" ;;
+    renders)
+      if [ "$member" = "serviceAccount:$RENDERS_ADMIN" ]; then
+        VERDICT=ok
+      elif [ -n "${RENDER_OBJECT[$member]:-}" ]; then
+        object="projects/_/buckets/$RENDERS_BUCKET_NAME/objects/${RENDER_OBJECT[$member]}"
+        if [ "$condition" = "resource.name == \"$object\"" ] || [ "$condition" = "resource.name == '$object'" ]; then
+          VERDICT=ok
+        else
+          NOTE="$NOTE, a render writer whose binding is not held to writes ${RENDER_OBJECT[$member]} only by the condition resource.name == \"$object\"${condition:+ (its condition: $condition)}"
+        fi
+      fi
+      ;;
   esac
 }
 # held_text CHECK PERMISSIONS_CSV: the check's permissions among PERMISSIONS, in the check's order.

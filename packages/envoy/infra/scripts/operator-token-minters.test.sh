@@ -103,6 +103,21 @@ readonly broker_res="//iam.googleapis.com/projects/$project/serviceAccounts/$bro
 readonly sql_res="//sqladmin.googleapis.com/projects/$project/instances/example-instance"
 readonly signing_res="//secretmanager.googleapis.com/projects/$number/secrets/hold-signing-example"
 readonly bucket_res="//storage.googleapis.com/projects/_/buckets/example-state"
+# The renders bucket: its applier (--renders-admin, the witness) and the four writers, each held by
+# its binding's condition to its own object.
+readonly renders_bucket=example-renders
+readonly renders_res="//storage.googleapis.com/projects/_/buckets/$renders_bucket"
+readonly renders_admin=renders-admin@example-project.iam.gserviceaccount.com
+readonly render_writers=(writer-a@example-project.iam.gserviceaccount.com=program-a/object
+  writer-b@example-project.iam.gserviceaccount.com=program-b/object writer-c@example-project.iam.gserviceaccount.com=program-c/object
+  writer-d@example-project.iam.gserviceaccount.com=program-d/object)
+# render_condition OBJECT: the condition that holds a writer's binding to OBJECT alone.
+render_condition() { printf 'resource.name == "projects/_/buckets/%s/objects/%s"' "$renders_bucket" "$1"; }
+# renders_allowances: the allowances --report lists for the renders flags every run passes.
+renders_allowances() {
+  jq -nc --arg admin "$renders_admin" '[{flag: "--renders-admin", value: $admin}] + [$ARGS.positional[] | {flag: "--render-writer", value: .}]' \
+    --args "${render_writers[@]}"
+}
 
 # The fakes, written into $fake_bin.
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-fakes.sh
@@ -138,6 +153,13 @@ iam() {
   local attached="$1" role="$2"
   shift 2
   edit "$world/iam.json" '. + [{attached: $a, role: $r, members: $ARGS.positional}]' --arg a "$attached" --arg r "$role" --args "$@"
+}
+# iam_if ATTACHED ROLE CONDITION MEMBER...: one IAM binding under a condition expression.
+iam_if() {
+  local attached="$1" role="$2" condition="$3"
+  shift 3
+  edit "$world/iam.json" '. + [{attached: $a, role: $r, condition: {expression: $c}, members: $ARGS.positional}]' \
+    --arg a "$attached" --arg r "$role" --arg c "$condition" --args "$@"
 }
 # unbind ATTACHED ROLE: removes the world's bindings of that role on that resource.
 unbind() { edit "$world/iam.json" 'map(select((.attached == $a and .role == $r) | not))' --arg a "$1" --arg r "$2"; }
@@ -387,6 +409,11 @@ build_world() {
   role roles/secretmanager.admin secretmanager.secrets.get secretmanager.secrets.getIamPolicy secretmanager.secrets.setIamPolicy \
     secretmanager.versions.access
   role roles/iam.roleAdmin iam.roles.create iam.roles.get iam.roles.list iam.roles.update
+  # Its storage names read with `gcloud iam roles describe roles/storage.admin` on 2026-11-26, cut to
+  # the names the renders step asks and a few beside them.
+  role roles/storage.admin storage.buckets.get storage.buckets.getIamPolicy storage.buckets.setIamPolicy storage.buckets.update \
+    storage.objects.create storage.objects.delete storage.objects.get storage.objects.list storage.objects.update
+  role roles/example.renderWrite storage.objects.create storage.objects.delete
 
   echo '[]' >"$world/iam.json"
   jq -n '{"group:cluster-admins@example.com": ["user:admin@example.com"]}' >"$world/groups.json"
@@ -401,6 +428,11 @@ build_world() {
   iam "$broker_res" roles/iam.workloadIdentityUser "$broker_wi_member"
   iam "$signing_res" roles/secretmanager.secretAccessor "serviceAccount:$gsa"
   iam "$bucket_res" roles/storage.objectViewer user:admin@example.com
+  iam "$renders_res" roles/storage.admin "serviceAccount:$renders_admin"
+  local writer
+  for writer in "${render_writers[@]}"; do
+    iam_if "$renders_res" roles/example.renderWrite "$(render_condition "${writer#*=}")" "serviceAccount:${writer%%=*}"
+  done
 
   local name admin
   for name in ENVOY_OPERATOR ENVOY_OPERATOR_CONTROL; do
@@ -466,7 +498,10 @@ full_args() {
     --broker-account "$broker" --broker-workload secrets-broker/secrets-broker \
     --sql-instance example-instance --db-secret example-db/broker-db-login --broker-state gs://example-state/broker \
     --signing-secret hold-signing-example \
-    --rbac-render "$world/render.json" --secret-render "$world/secret-render.json" --iam-preview "$world/preview.json"
+    --rbac-render "$world/render.json" --secret-render "$world/secret-render.json" --iam-preview "$world/preview.json" \
+    --renders-bucket "gs://$renders_bucket" --renders-admin "$renders_admin"
+  local writer
+  for writer in "${render_writers[@]}"; do printf '%s\n' --render-writer "$writer"; done
 }
 output=""
 status=0

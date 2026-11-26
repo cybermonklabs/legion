@@ -6,7 +6,8 @@
 # --- code: IAM ---
 
 # covers CHECK KIND ID PROJECT: whether a binding the code declares on KIND ID (with the project its
-# resource names, for a secret) reaches the check's resource.
+# resource names, for a secret) reaches the check's resource. The renders bucket's project is no
+# flag, so a grant on that project is the live step's alone; one on the bucket is read here.
 covers() {
   local check="$1" kind="$2" id="$3" in_project="$4"
   case "$kind" in organization | folder) return 0 ;; esac
@@ -23,6 +24,7 @@ covers() {
       [ -z "$in_project" ] || [ "$in_project" = "$PROJECT" ] || [ "$in_project" = "${PROJECT_NUMBER:-}" ]
       ;;
     state:bucket) [ "${id#b/}" = "$BUCKET" ] ;;
+    renders:bucket) [ "${id#b/}" = "$RENDERS_BUCKET_NAME" ] ;;
     *) return 1 ;;
   esac
 }
@@ -68,14 +70,14 @@ else
     printf '%s\n' "${permissions//,/$'\n'}" | sed '/^$/d' | sort -u >"$role_perms_file"
   done 3<"$WORK/preview.rec"
   judged=0
-  while IFS="$US" read -r -u 3 what a b c d e f; do
+  while IFS="$US" read -r -u 3 what a b c d e f g; do
     case "$what" in
       empty) unknown "$step" "$a lists no resource, so it shows nothing" ;;
       nosames) unknown "$step" "$a was made without --show-sames, so it leaves out every binding it does not change" ;;
       unknown) unknown "$step" "$a: the preview does not know its $b (it is computed when the program applies), so what it grants is unknown" ;;
       unread) unknown "$step" "$a: the check does not read $b, which can grant on the resources these checks are about" ;;
       binding)
-        # a: kind, b: id, c: the secret's project, d: role, e: member, f: urn
+        # a: kind, b: id, c: the secret's project, d: role, e: member, f: urn, g: condition
         for check in "${CHECKS[@]}"; do
           [ -z "${CHECK_MISSING[$check]:-}" ] || continue
           covers "$check" "$a" "$b" "$c" || continue
@@ -88,7 +90,7 @@ else
           judged=$((judged + 1))
           attached="$a:$b"
           [ "$a" != serviceaccount ] || attached="//iam.googleapis.com/projects/-/serviceAccounts/${b##*/}"
-          iam_verdict "$check" "$e" "$d" "$attached" code
+          iam_verdict "$check" "$e" "$d" "$attached" code "$g"
           [ "$VERDICT" != finding ] ||
             finding "$e" "$(held_text "$check" "$granted") on $(resource_of "$check") through $d, declared by $f$NOTE" \
               "$d" "$(resource_of "$check")" "$(held_list "$check" "$granted")" "$attached"

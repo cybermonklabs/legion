@@ -971,29 +971,31 @@ if row bv; then
   passed "(bv) a refused list of roles, on the operator's cluster or another, reads UNKNOWN naming the permission"
 fi
 
-# --- (cc) A token Secret of a guarded namespace no ServiceAccount lists, from the namespace's list of
-# that type, by name; a refused list reads UNKNOWN. ---
-listed_secret_row() {
+# --- (cc) A declared token Secret of a guarded namespace is asked by name; an invalid Secret render
+# reads UNKNOWN. ---
+declared_secret_row() {
   base_world
   case "$1" in
-    unlisted)
-      jq -n '[{namespace: "envoy-operator", name: "envoy-operator-token-legacy"}]' >"$world/clusters/operator-cluster/token-secrets.json"
+    declared)
+      jq -n '{apiVersion: "v1", kind: "List", items: [{apiVersion: "v1", kind: "Secret",
+        metadata: {namespace: "envoy-operator", name: "envoy-operator-token-legacy",
+                   annotations: {"kubernetes.io/service-account.name": "envoy-operator"}},
+        type: "kubernetes.io/service-account-token"}]}' >"$world/secret-render.json"
       subject_grant operator-cluster "$(sa_subject legion worker)" get "" secrets "" envoy-operator envoy-operator-token-legacy
       run
-      want_status 1 "legion/worker may get a token Secret no ServiceAccount lists, by name"
+      want_status 1 "legion/worker may get a declared token Secret by name"
       want_line "FINDING system:serviceaccount:legion:worker: get secrets envoy-operator-token-legacy in envoy-operator" \
-        "legion/worker may get a token Secret no ServiceAccount lists, by name"
+        "legion/worker may get a declared token Secret by name"
       ;;
-    refused)
-      : >"$world/clusters/operator-cluster/refuse-token-secrets"
+    invalid)
+      printf 'not JSON\n' >"$world/secret-render.json"
       run
-      want_status 2 "a refused list of token Secrets"
-      want_text "UNKNOWN live: RBAC on operator-cluster: the API server refused the list of token Secrets in envoy-operator (it needs list on secrets there, container.secrets.list on GKE)" \
-        "a refused list of token Secrets"
+      want_status 2 "an invalid Secret render"
+      want_text "UNKNOWN code: Secrets: --secret-render entry 1 is not a Kubernetes-object JSON render" "an invalid Secret render"
       ;;
   esac
 }
 if row cc; then
-  each listed_secret_row unlisted refused
-  passed "(cc) a guarded namespace's token Secret no ServiceAccount lists is asked by name, and a refused list of them reads UNKNOWN"
+  each declared_secret_row declared invalid
+  passed "(cc) a declared guarded token Secret is asked by name, and an invalid Secret render reads UNKNOWN"
 fi

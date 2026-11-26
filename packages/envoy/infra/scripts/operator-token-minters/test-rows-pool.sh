@@ -49,7 +49,14 @@
 #   (bx) with --fleet none, an empty membership listing passes and a listed membership is a finding
 #        naming it; --fleet takes none alone;
 #   (by) a fleet member that is no GKE cluster reads UNKNOWN unless --rbac-only-member names it;
-#   (bz) the operator's cluster on GKE Standard reads UNKNOWN naming the node escape.
+#   (hd) a structured SERVICE_DISABLED answer for GKE Hub in the pool project is an empty fleet;
+#        PERMISSION_DENIED and SERVICE_DISABLED for another service or project stay UNKNOWN;
+#   (bz) the operator's cluster on GKE Standard reads UNKNOWN naming the node escape;
+#   (cw) --audited-cluster: the pool's GKE clusters all named pass; a cluster of the project, and a
+#        GKE member of the fleet in another project, that none names are each a finding naming it,
+#        which a copy of the check without the step misses; a named cluster the pool lacks, a refused
+#        or incomplete cluster list and a refused fleet listing read UNKNOWN; a cluster named twice
+#        is a usage error; without the flag the step does not run.
 
 # --- (g) A second cluster of the project. ---
 if row g; then
@@ -489,6 +496,43 @@ if row by; then
   passed "(by) a fleet member that is no GKE cluster reads UNKNOWN unless --rbac-only-member names it"
 fi
 
+# --- (hd) A disabled GKE Hub API holds no fleet memberships. ---
+hub_disabled_row() {
+  base_world
+  case "$1" in
+    disabled)
+      : >"$world/fleet-service-disabled"
+      run --report "$temporary_dir/hub-disabled-report.json"
+      want_status 0 "a disabled GKE Hub API"
+      want_line "PASS $fleet_step: GKE Hub is disabled for project $project, so it has no memberships" "a disabled GKE Hub API"
+      jq -e --arg project "$project" 'any(.allowances[]; .flag == "gkehub-service-disabled" and .value == $project)' \
+        "$temporary_dir/hub-disabled-report.json" >/dev/null || fail "the disabled GKE Hub reading is not in --report"
+      ;;
+    denied)
+      : >"$world/refuse-fleet"
+      run
+      want_status 2 "a GKE Hub permission denial"
+      want_text "UNKNOWN $fleet_step: the GKE Hub API refused the listing" "a GKE Hub permission denial"
+      ;;
+    other-service)
+      : >"$world/fleet-service-disabled-other-service"
+      run
+      want_status 2 "another disabled service"
+      want_text "UNKNOWN $fleet_step: the GKE Hub API refused the listing" "another disabled service"
+      ;;
+    other-project)
+      : >"$world/fleet-service-disabled-other-project"
+      run
+      want_status 2 "GKE Hub disabled in another project"
+      want_text "UNKNOWN $fleet_step: the GKE Hub API refused the listing" "GKE Hub disabled in another project"
+      ;;
+  esac
+}
+if row hd; then
+  each hub_disabled_row disabled denied other-service other-project
+  passed "(hd) only structured GKE Hub SERVICE_DISABLED in the pool project reads as an empty fleet"
+fi
+
 # --- (bp) Cluster settings that authorize or authenticate outside RBAC and Google: legacy ABAC
 # authorizes requests by its own policies, and the identity service for GKE takes users and groups
 # from an outside provider, so neither is seen by a review. ---
@@ -545,4 +589,80 @@ if row bz; then
   want_line "UNKNOWN live: RBAC on operator-cluster: the cluster is GKE Standard, not Autopilot, so a privileged or hostPath pod on the operator's node can read the kubelet's credentials and the operator's ServiceAccount token there, a node escape no RBAC review here sees" \
     "the operator's cluster on GKE Standard"
   passed "(bz) the operator's cluster on GKE Standard reads UNKNOWN naming the node escape"
+fi
+
+# --- (cw) The clusters the auditor was given are the pool's GKE clusters. ---
+readonly own_cluster="$project/us-central1/operator-cluster"
+audited_row() {
+  base_world
+  local copy
+  case "$1" in
+    match)
+      run --audited-cluster "$own_cluster"
+      want_status 0 "the pool's one cluster, named"
+      want_line "PASS live: audited clusters: the 1 cluster(s) given are the pool's GKE clusters: $own_cluster" "the pool's one cluster, named"
+      ;;
+    missing)
+      add_cluster other-cluster us-east1
+      run --audited-cluster "$own_cluster"
+      want_text "FINDING cluster:$project/us-east1/other-cluster: is a GKE cluster of the pool that no --audited-cluster names" \
+        "a cluster of the project no --audited-cluster names"
+      run --audited-cluster "$own_cluster" --audited-cluster "$project/us-east1/other-cluster"
+      ! has_prefix "FINDING cluster:" || fail "a cluster of the project named by --audited-cluster is still a finding"
+      want_text "PASS live: audited clusters: the 2 cluster(s) given" "both clusters named"
+      ;;
+    fleet)
+      grade_member
+      run --audited-cluster "$own_cluster"
+      want_text "FINDING cluster:example-grade/us-east1/grade-cluster: is a GKE cluster of the pool that no --audited-cluster names" \
+        "a GKE member of the fleet no --audited-cluster names"
+      run --audited-cluster "$own_cluster" --audited-cluster example-grade/us-east1/grade-cluster
+      ! has_prefix "FINDING cluster:" || fail "a fleet member named by --audited-cluster is still a finding"
+      ;;
+    control)
+      add_cluster other-cluster us-east1
+      copy="$(script_copy audited-clusters-control)"
+      sed -i '\#^\. "\$LIB/step-audited-clusters.sh"$#d' "$copy"
+      ! grep -qF 'step-audited-clusters.sh"' "$copy" || fail "the test could not take the step out of its copy"
+      run_script="$copy" run --audited-cluster "$own_cluster"
+      ! has_prefix "FINDING cluster:" || fail "a copy without the step still named the cluster"
+      ;;
+    extra)
+      run --audited-cluster "$own_cluster" --audited-cluster "$project/us-west1/gone-cluster"
+      want_status 2 "a named cluster the pool lacks"
+      want_text "UNKNOWN live: audited clusters: --audited-cluster $project/us-west1/gone-cluster is not among the pool's GKE clusters" \
+        "a named cluster the pool lacks"
+      ;;
+    refused)
+      : >"$world/refuse-clusters"
+      run --audited-cluster "$own_cluster"
+      want_status 2 "a refused cluster list"
+      want_text "UNKNOWN live: audited clusters: the project's cluster list was not read whole" "a refused cluster list"
+      ;;
+    incomplete)
+      : >"$world/missing-zones"
+      run --audited-cluster "$own_cluster"
+      want_status 2 "an incomplete cluster list"
+      want_text "UNKNOWN live: audited clusters: the project's cluster list was not read whole" "an incomplete cluster list"
+      ;;
+    fleet-refused)
+      : >"$world/refuse-fleet"
+      run --audited-cluster "$own_cluster"
+      want_status 2 "a refused fleet listing"
+      want_text "UNKNOWN live: audited clusters: the fleet's memberships were not read whole" "a refused fleet listing"
+      ;;
+    twice)
+      run --audited-cluster "$own_cluster" --audited-cluster "$own_cluster"
+      want_status 2 "a cluster named twice"
+      want_text "--audited-cluster names each cluster once" "a cluster named twice"
+      ;;
+    absent)
+      run
+      ! has_prefix "live: audited clusters" || fail "the step ran with no --audited-cluster"
+      ;;
+  esac
+}
+if row cw; then
+  each audited_row match missing fleet control extra refused incomplete fleet-refused twice absent
+  passed "(cw) each GKE cluster of the pool must be an --audited-cluster: one left out is a finding, which a copy without the step misses; a named cluster the pool lacks, and a pool list not read whole, read UNKNOWN"
 fi
