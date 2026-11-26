@@ -13,17 +13,15 @@ The rules behind them: [Admission and the `legion` label](https://cybermonklabs.
   one in `awaiting_person`, one at `admitted` whose gate has never opened, and one carried from another tree.
 
 - `admission.p0Holders` and `admission.p0Bound`: how many holders in `admission.active` are P0, and the P0 bound in force (`bound`, null for none) with `legion.yaml`'s `configured` value and any `live` value.
-  An issue is P0 when its `resolvedPriority` is 0, or, where Dispatch sent no `resolvedPriority`, its own `priority` is 0.
-  `waitingLine.priority` alone does not say it: with an older Dispatch, the line places an issue with no priority of its own at its tree root's, and that makes no issue P0.
+  An issue is P0 when its `resolvedPriority` is 0.
   A P0 issue starts outside the cap while fewer than `bound` P0 issues hold a slot, or always when `bound` is null.
 
 - `admission.trees`: the roots of the live trees, whether or not any issue of them holds a slot.
   Use it, not `admission.active`, for which trees run.
 
 - `admission.waiting`: the line, in order.
-  It is ordered by the priority Dispatch resolves first: P0, P1, P2, P3, then the issues with no priority (with an older Dispatch release, each issue at its own priority else its tree root's, for line order alone).
+  It is ordered by the priority Dispatch resolves first: P0, P1, P2, P3, then the issues with no priority.
   Within one priority, first the issues whose work came back, oldest first; then the issues whose first phase can start, by their root's Dispatch rank and then their own.
-  A P0 waiter takes no regular slot: once no other hold stands, it starts outside the regular cap unless the P0 bound holds it.
   A priority changed in Dispatch moves the issue at the next admission pass; priority takes no slot back from work that runs.
   `issues.<KEY>.priority` is the issue's own priority (0 for P0 to 3 for P3, null for none), `resolvedPriority` is what Dispatch resolves (with `priorityFrom` naming the ancestor when inherited), and `waitingLine.priority` is the one it waits at (null for one that waits after P3).
   `issues.<KEY>.waitingLine` says where one stands (`priority`, `part`, `kind`, `holdsSlot`, `reason`): quote its `reason` before you call an order wrong.
