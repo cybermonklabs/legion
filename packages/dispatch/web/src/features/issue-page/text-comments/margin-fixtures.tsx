@@ -92,6 +92,12 @@ export const OTHER_WORDS = "A note beside the spec.";
 export const OTHER_SECOND = "Its second block.";
 export const RESULT_WORDS = "The result words.";
 
+/** A risk of the issue, which the tree read holds where a case asks for it (`SeededReads.risk`):
+ *  a node read-only in the room (R6), which Conversation draws as a row under the issue, and whose
+ *  words take a comment on the node itself (G2). The read answers a risk's heading as its text. */
+export const RISK = "risk-1";
+export const RISK_WORDS = "A slow read hides the page from its reader.";
+
 /** A comment of the issue's reader, alice, that is on the words `quote` of `block` of `document`:
  *  anchored at that block, as the comments read answers it. */
 export interface TextThreadSeed {
@@ -175,11 +181,11 @@ function blocksOf(...paragraphs: string[]): DisplayTree {
 
 /** The tree read's nodes for the issue: each block (but those of `without`, a read that has paged
  *  them away), then the comment on its words as a node under it with the `anchor` the read answers
- *  it (B0: `model/issue_tree.go`), then the issue's own posts. `threads` names the comments on text
- *  the answer holds. */
+ *  it (B0: `model/issue_tree.go`), then the issue's own posts, and its risk where `risk` asks for
+ *  it. `threads` names the comments on text the answer holds. */
 export function seededNodes(
   threads: readonly TextThreadSeed[],
-  { posts = [], without = [] }: Pick<SeededReads, "posts" | "without"> = {}
+  { posts = [], risk = false, without = [] }: Pick<SeededReads, "posts" | "risk" | "without"> = {}
 ): TreeAnswerNode[] {
   const blocks = [
     treeNode(STATEMENT, "requirement", KEY, {
@@ -216,6 +222,9 @@ export function seededNodes(
       })
     ),
     ...posts.map((post) => commentNode(post)),
+    ...(risk
+      ? [treeNode(RISK, "risk", KEY, { attributes: { heading: RISK_WORDS }, text: RISK_WORDS })]
+      : []),
   ];
 }
 
@@ -238,6 +247,8 @@ export const SERVES = [
 export interface SeededReads {
   /** The comments of the issue that are no thread on text: posts under the issue. */
   posts?: readonly Comment[];
+  /** Whether the tree read holds the issue's risk (`RISK`). */
+  risk?: boolean;
   threads: readonly TextThreadSeed[];
   /** The block ids the tree read leaves out, as a read that pages their nodes away does. */
   without?: readonly string[];

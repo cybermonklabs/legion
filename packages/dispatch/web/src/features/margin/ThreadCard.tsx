@@ -1,5 +1,6 @@
 import { hashKey, type MutationKey } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Suggestion } from "../../api/types";
@@ -39,6 +40,7 @@ import type { SaveCommentEdit } from "../conversation/send-request";
 import { useUnsentDrafts } from "../conversation/unsent-drafts";
 import { composerNameOf } from "../conversation/useKeptDrafts";
 import { AgentName } from "../refs/AgentName";
+import { EMPTY_AGENTS } from "../refs/agent-registry";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { PostBody, PostPreview } from "../refs/PostBody";
@@ -487,6 +489,17 @@ export function ThreadCard({
           replyTo: { actor: root.author, excerpt: "", id: root.id, parentKind: "message" as const },
         }
       : {};
+  // A fixed-open card's reply composer stands open from the load (INFRA-5706, R4), so it is handed
+  // no agents, and reads no list of them for its mention picker, until the reader uses it: the
+  // focus in a composer of the card, or a reply of theirs that the held-send store or the kept
+  // drafts hold under the thread's reply send name. So a page of such cards sends no read that the
+  // page without them does not (R9). Every other card's reply composer reads the list as it mounts.
+  const [replyActive, setReplyActive] = useState(false);
+  const replyHeld = useHeldSend(replyMutationKey) !== undefined;
+  const replyKept = useUnsentDrafts().useKept(
+    replyMutationKey === undefined ? "" : hashKey(replyMutationKey)
+  );
+  const hasReplyDraft = replyHeld || replyKept;
   /* Mounted while the card is expanded, under the thread's reply send name, so a reply still
      out or refused - which the held-send store keeps for the thread - is there each time the
      card expands. A closed issue takes a reply as it takes any comment, so the composer shows
@@ -505,6 +518,7 @@ export function ThreadCard({
     expanded && rootDeleted === null ? (
       <div className="contents" hidden={hideReplyComposer}>
         <MentionComposer
+          agents={!fixedOpen || replyActive || hasReplyDraft ? undefined : EMPTY_AGENTS}
           box="margin-thread-reply"
           closed={isClosed}
           finishing={terminalSuggestion}
@@ -575,6 +589,17 @@ export function ThreadCard({
             typeof thread.anchor.block_id === "string"
           ) {
             focusBlock(thread.anchor.block_id);
+          }
+        }}
+        // The focus entering a composer of a fixed-open card - its reply, or an editor the reader
+        // opened - is the reader using it, from which its reply composer reads the agents' list.
+        onFocusCapture={(event) => {
+          if (
+            fixedOpen &&
+            event.target instanceof Element &&
+            event.target.closest("form") !== null
+          ) {
+            setReplyActive(true);
           }
         }}
         onKeyDown={(event) => {

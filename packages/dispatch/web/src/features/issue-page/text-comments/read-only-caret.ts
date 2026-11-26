@@ -1,4 +1,5 @@
-import { rowTextOf } from "./row-text-runs";
+import type { NodeType } from "../page-words";
+import { rowTextOf, type TextRuns, textRuns } from "./row-text-runs";
 
 /**
  * The caret of a read-only row (R6, decision 11): puts `contenteditable="true"`,
@@ -7,11 +8,27 @@ import { rowTextOf } from "./row-text-runs";
  * and `compositionstart`, lets a press on a link in the text follow the link, and removes all of
  * it on Escape (the focus goes back to the row), on blur, and when a re-read replaces or removes
  * the element. Answers the function that takes it away, or null where the row has no words
- * element.
+ * element or draws none of its node's text.
  *
- * No key calls this before G5: Enter on a read-only row keeps B0's "This row has no text to
- * put the caret in." until part I's browser row moves at G5.
+ * Enter on the focused row of a read-only node puts it in (`caretOnEnter`, which the tree's
+ * `useNodeEditing` calls before it reports that a row has no text to put the caret in). A press
+ * puts none in (decision 420 (1)): it moves the focus to the row, as on any row that takes no
+ * editor.
  */
+
+/** The kinds of node that are read-only in the room (R6, root R30): an ask, a comment, a message,
+ *  a lens, a finding, a risk, a constraint and a result. Enter on such a row puts this caret in
+ *  its text, where a block of a document takes its editor's caret instead. */
+const READ_ONLY_KINDS: Readonly<Partial<Record<NodeType, true>>> = {
+  ask: true,
+  comment: true,
+  constraint: true,
+  finding: true,
+  lens: true,
+  message: true,
+  result: true,
+  risk: true,
+};
 
 /** The input events that would change the text or start a composition, each cancelled while the
  *  caret is in the words element. */
@@ -28,33 +45,49 @@ function firstTextNode(root: Node): Text | null {
   return next instanceof Text ? next : null;
 }
 
-/** Places a collapsed selection at the start of `words`' text (its first text node at 0, else the
- *  element itself at 0). */
-function putCaretAtStart(words: HTMLElement): void {
+/** Places a collapsed selection at the start of `words`' text: where the node's first character
+ *  is drawn (`runs`), so what the row draws before it - an ask's card, a typed block's head - holds
+ *  no caret; else, where a reference's name is drawn in place of that character, at the first
+ *  text node at 0. */
+function putCaretAtStart(words: HTMLElement, runs: TextRuns): void {
   const doc = words.ownerDocument;
   const selection = doc.defaultView?.getSelection() ?? doc.getSelection();
   if (selection === null) return;
   const range = doc.createRange();
-  const first = firstTextNode(words);
-  if (first !== null) range.setStart(first, 0);
-  else range.setStart(words, 0);
+  const start = runs.pointOf(0);
+  if (start !== null) range.setStart(start.node, start.offset);
+  else range.setStart(firstTextNode(words) ?? words, 0);
   range.collapse(true);
   selection.removeAllRanges();
   selection.addRange(range);
 }
 
+/**
+ * Enter on `row`, the focused row of a node of `kind` (R6): where the node is read-only in the
+ * room (`READ_ONLY_KINDS`) and its row draws its text, puts the caret at the start of that text
+ * (`caretIn`) and answers true. Answers false for any other row - a block of a document, whose
+ * editor takes the caret, and a row that draws none of its node's text: a lens with no verdict,
+ * a deleted post, an empty text, a row drawn on one line - which Enter reports as it always has.
+ */
+export function caretOnEnter(row: Element | null, kind: NodeType): boolean {
+  return row !== null && READ_ONLY_KINDS[kind] === true && caretIn(row) !== null;
+}
+
 /** Puts a read-only caret in `row`'s words element (`rowTextOf(row)`). Answers the function that
- *  takes the caret and its listeners away, or null where `row` has no words element. */
+ *  takes the caret and its listeners away, or null where `row` has no words element or the
+ *  element draws none of its node's text. */
 export function caretIn(row: Element): (() => void) | null {
   const words = rowTextOf(row);
   if (words === null) return null;
+  const runs = textRuns(words);
+  if (runs.text === "") return null;
   active.get(words)?.();
 
   words.setAttribute("contenteditable", "true");
   words.setAttribute("inputmode", "none");
   words.setAttribute("aria-readonly", "true");
   words.focus({ preventScroll: true });
-  putCaretAtStart(words);
+  putCaretAtStart(words, runs);
 
   const listening = new AbortController();
   let removed = false;

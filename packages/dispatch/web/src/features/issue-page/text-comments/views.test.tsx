@@ -184,32 +184,19 @@ async function bothLoads(): Promise<{ readonly with: string[]; readonly without:
 const PER_ITEM =
   /^getComment$|\/api\/v1\/comments\/[^/]+(\/blocks)?$|\/api\/v1\/messages\/[^/]+\/blocks$/;
 
-/** The read of the agents' list, which the mention picker of a composer reads. */
-const AGENTS = "GET /api/v1/agents";
-
-/** Whether `ThreadCard` hands its reply composer the agents the page holds, so that composer
- *  reads no list of its own: no line of `margin/ThreadCard.tsx` does on this base, which holds
- *  pull request 3125 (G5). */
-const CARD_TAKES_PAGE_AGENTS = false;
-
 // R9, c-reads: the column draws its threads from the reads the page sends with no thread, and
-// sends no read for a node or a thread. The one read it adds is the agents' list, once in a load:
-// each card's reply composer is open, since the card is always expanded (R4), and that composer
-// reads the list for its mention picker as it mounts (`MentionComposer`'s `useAgents`), under one
-// key for the whole page. Once `ThreadCard` hands its composer the agents the page holds
-// (`CARD_TAKES_PAGE_AGENTS`), the case under this one asks for the loads to be the same.
+// sends no read for a node or a thread. Each card's reply composer is open, since the card is
+// always expanded (R4), and reads no agents' list for its mention picker until the reader uses it
+// (`ThreadCard`'s `fixedOpen`), so the load with threads reads no route the load without them does
+// not, and the case under this one asks for the very same requests.
 test("the margin adds no read for each node or each thread", async () => {
   const loads = await bothLoads();
   const only = (routes: readonly string[], others: readonly string[]) =>
     [...new Set(routes)].filter((route) => !others.includes(route));
   expect(
     { with: only(loads.with, loads.without), without: only(loads.without, loads.with) },
-    "the loads differ by a route other than the agents' list"
-  ).toEqual({ with: [AGENTS], without: [] });
-  expect(
-    loads.with.filter((route) => route === AGENTS).length,
-    "the agents' list is read more than once"
-  ).toBeLessThanOrEqual(1);
+    "the loads differ by a route"
+  ).toEqual({ with: [], without: [] });
   for (const [load, routes] of Object.entries(loads)) {
     expect(
       routes.filter((route) => PER_ITEM.test(route)),
@@ -222,11 +209,9 @@ test("the margin adds no read for each node or each thread", async () => {
   }
 });
 
-// R9 whole: owed until `ThreadCard`'s reply composer takes the page's agents and reads none.
-test.skipIf(!CARD_TAKES_PAGE_AGENTS)(
-  "the load with threads sends exactly the requests of the load without them",
-  async () => {
-    const loads = await bothLoads();
-    expect(loads.with, "the load with threads sends other requests").toEqual(loads.without);
-  }
-);
+// R9 whole: the load with threads sends each request of the load without them, as many times, and
+// no other.
+test("the load with threads sends exactly the requests of the load without them", async () => {
+  const loads = await bothLoads();
+  expect(loads.with, "the load with threads sends other requests").toEqual(loads.without);
+});

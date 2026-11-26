@@ -1,10 +1,12 @@
 import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import type { QueryClient } from "@tanstack/react-query";
-import { type RenderResult, render, waitFor, within } from "@testing-library/react";
+import { act, type RenderResult, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { answerRequests } from "../../../__tests__/network";
 import { api } from "../../../api/client";
 import type { Anchor, Comment } from "../../../api/types";
 import type { Thread, ThreadComment } from "../../margin/useMarginItems";
@@ -286,6 +288,47 @@ test("the card's reply composer takes no focus as its card mounts or is drawn ag
     expect(document.activeElement, "the focus moved as the thread loaded").toBe(before);
   } finally {
     document.removeEventListener("focusin", noteFocus);
+    view.finish();
+    client.clear();
+  }
+});
+
+/** The read of the agents' list, which the mention picker of a composer reads. */
+const AGENTS = "GET /api/v1/agents";
+
+// R9: a card that stands open from the load reads no agents' list for its reply's mention picker,
+// which a page without the thread does not read; the focus in the reply's field is the reader
+// using it, and the list is read then, before any `@` or Send.
+test("a fixed-open card's reply composer reads the agents list once its field takes the focus, and none before", async () => {
+  const user = userEvent.setup();
+  const requests: string[] = [];
+  answerRequests(
+    http.all("*", ({ request }) => {
+      requests.push(`${request.method} ${new URL(request.url).pathname}`);
+    })
+  );
+  const { client, column, view } = await drawnColumn({ threads: [ON_STATEMENT] });
+  try {
+    const card = await cardIn(column, ON_STATEMENT.comment.id);
+    const field = await within(card).findByRole("textbox", { name: "Reply" });
+    // The card marks its thread read once its newest reply is on screen, after its composer has
+    // mounted, so the load has settled once that mark is out.
+    await waitFor(() =>
+      expect(requests, "the load never marked the thread read").toContain("GET /api/v1/me/replies")
+    );
+    await act(async () => {});
+    expect(
+      requests.filter((route) => route === AGENTS),
+      "the card's reply composer read the agents' list before the reader used it"
+    ).toEqual([]);
+    await user.click(field);
+    await waitFor(() =>
+      expect(
+        requests.filter((route) => route === AGENTS),
+        "the focus in the reply's field read no agents' list, or read it more than once"
+      ).toEqual([AGENTS])
+    );
+  } finally {
     view.finish();
     client.clear();
   }

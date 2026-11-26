@@ -6,26 +6,24 @@ import userEvent from "@testing-library/user-event";
 import type { DisplayTree } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { node, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
+import { KEY_REPORTS } from "../page-structure";
 import type { NodeType } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
 import { GATES } from "./gates";
 import {
   answerSeededReads,
   clearSelection,
-  drawFrame,
   drawPage,
   drawTree,
   located,
   newClient,
+  RISK,
   readAgain,
   rowOf,
   STATEMENT,
   selectWords,
-  setSelection,
   TEXT_THREADS,
 } from "./margin-fixtures";
-import { caretIn } from "./read-only-caret";
-import { SelectionComment } from "./SelectionComment";
 import { TEXT_COMPOSER_ATTRIBUTE } from "./TextMargin";
 
 beforeAll(async () => {
@@ -34,14 +32,14 @@ beforeAll(async () => {
 
 /**
  * R6: Enter on the row of a read-only node puts a caret in its words, where a person reads,
- * selects and moves, and where nothing can be typed. The caret is `caretIn(row)`: `contenteditable`,
- * `inputmode="none"` and `aria-readonly="true"` on the row's words element, taken away again on
- * Escape, on blur and by the function it answers.
+ * selects and moves, and where nothing can be typed: `contenteditable`, `inputmode="none"` and
+ * `aria-readonly="true"` on the row's words element (`read-only-caret.ts`), taken away again on
+ * Escape and on blur.
  *
- * Each case drives `caretIn` on a row it draws, as Enter will (the key is wired at G5: until then
- * Enter keeps the page's "no text to put the caret in" report, a row of part I's browser file
- * reads). A case that asserts something is not there first sets the caret, so the case fails
- * where `caretIn` sets none.
+ * Each case puts the caret in as a reader does, by Enter on the focused row through the page's
+ * keymap (`useTreeKeymap`'s `tree-edit`, then `useNodeEditing`'s `edit`), and calls nothing of
+ * the caret itself. A case that asserts something is not there either sets the caret first or
+ * sets it after, so the case fails where Enter sets none.
  */
 
 /** The margin's name for its column (`page-words-margin.ts`, R11). */
@@ -110,45 +108,76 @@ function lacksCaret(words: HTMLElement): boolean {
   );
 }
 
-/** Puts the caret in `row` and says it did, so a case that asserts what the caret does not do
- *  fails where it is not set. Answers what takes it away. */
-function setCaret(row: HTMLElement, words: HTMLElement): () => void {
-  const holder: { away: (() => void) | null } = { away: null };
-  act(() => {
-    holder.away = caretIn(row);
-  });
-  expect(holder.away, "caretIn answers no function that takes the caret away").not.toBeNull();
-  expect(hasCaret(words), "caretIn sets no contenteditable, inputmode and aria-readonly").toBe(
-    true
-  );
-  return holder.away as () => void;
+/** What the row says a key could not do, where it says anything (`[data-row-report]`). */
+function reportOf(row: HTMLElement): string | undefined {
+  return row.querySelector("[data-row-report]")?.textContent ?? undefined;
 }
 
-test("row focused, Enter on an ask, comment, message, lens, finding, risk, constraint or result: the caret is at the start of the text, with its three attributes", () => {
+/** Focuses `row` and presses Enter on it, as a reader on the keyboard does. */
+async function enterOn(row: HTMLElement): Promise<void> {
+  act(() => row.focus());
+  await userEvent.setup().keyboard("{Enter}");
+}
+
+/** Enter on `row`, and says the caret went into `words` with the focus, so a case that asserts
+ *  what the caret does or does not do fails where Enter sets none. */
+async function enterTheCaret(row: HTMLElement, words: HTMLElement): Promise<void> {
+  await enterOn(row);
+  expect(
+    hasCaret(words),
+    "Enter on the row set no contenteditable, inputmode and aria-readonly on its words"
+  ).toBe(true);
+  expect(document.activeElement, "Enter left the focus off the row's words").toBe(words);
+}
+
+test("row focused, Enter on an ask, comment, message, lens, finding, risk, constraint or result: the caret is at the start of the text, with its three attributes", async () => {
   const view = drawTree(
     READ_ONLY_KINDS.map((kind) =>
       node({ id: `${kind}-row`, text: `Words of the ${kind}.`, type: kind })
     )
   );
-  const failed: string[] = [];
-  for (const kind of READ_ONLY_KINDS) {
-    const { row, words } = located(view, `${kind}-row`);
-    act(() => row.focus());
-    const holder: { away: (() => void) | null } = { away: null };
-    act(() => {
-      holder.away = caretIn(row);
-    });
-    const selection = window.getSelection();
-    const atStart =
-      selection?.isCollapsed === true &&
-      selection.anchorOffset === 0 &&
-      selection.anchorNode !== null &&
-      words.contains(selection.anchorNode);
-    if (!hasCaret(words) || !atStart) failed.push(kind);
-    holder.away?.();
-    clearSelection();
+  try {
+    const failed: string[] = [];
+    const reported: string[] = [];
+    for (const kind of READ_ONLY_KINDS) {
+      const { row, words } = located(view, `${kind}-row`);
+      await enterOn(row);
+      const selection = window.getSelection();
+      const atStart =
+        selection?.isCollapsed === true &&
+        selection.anchorOffset === 0 &&
+        selection.anchorNode !== null &&
+        words.contains(selection.anchorNode) &&
+        (words.textContent ?? "").startsWith(selection.anchorNode.textContent ?? "\u0000");
+      if (!hasCaret(words) || !atStart || document.activeElement !== words) failed.push(kind);
+      const report = reportOf(row);
+      if (report !== undefined) reported.push(`${kind}: ${report}`);
+    }
+    expect(failed, "the kinds whose row has no caret at the start of its text").toEqual([]);
+    expect(reported, "the rows that said something of Enter").toEqual([]);
+  } finally {
+    view.unmount();
   }
-  expect(failed, "the kinds whose row has no caret at the start of its text").toEqual([]);
+});
+
+test("row focused, Enter on a row that draws none of its node's text: the row says it has no text to put the caret in, and no caret is set", async () => {
+  const view = drawTree([
+    node({ id: "empty-comment", text: "", type: "comment" }),
+    node({ id: "unjudged-lens", text: "", type: "lens" }),
+  ]);
+  try {
+    const wrong: string[] = [];
+    for (const id of ["empty-comment", "unjudged-lens"]) {
+      const { row, words } = located(view, id);
+      await enterOn(row);
+      if (reportOf(row) !== KEY_REPORTS.no_text || !lacksCaret(words)) {
+        wrong.push(`${id}: ${reportOf(row) ?? "no report"}`);
+      }
+    }
+    expect(wrong, "the rows with no text that did not say so, or took a caret").toEqual([]);
+  } finally {
+    view.unmount();
+  }
 });
 
 // Part Y's block editor takes the caret of a block node (a statement, a check, a plan task, a
@@ -182,58 +211,65 @@ test.skipIf(!GATES.PART_Y)(
 
 test("row focused, a press on the text: the focus moves to the row and no caret is set", async () => {
   const { row, view, words } = drawComment();
-  // The caret `caretIn` sets, taken away again, so the case fails where there is none to take.
-  setCaret(row, words)();
-  expect(lacksCaret(words), "the function caretIn answers left the caret's attributes").toBe(true);
-  await userEvent.setup().click(words);
-  expect(
-    document.activeElement?.closest("[data-node-row]"),
-    "the press left the focus off the row"
-  ).toBe(row);
-  expect(lacksCaret(words), "a press on the text set the caret").toBe(true);
-  view.unmount();
+  try {
+    await userEvent.setup().click(words);
+    expect(document.activeElement, "the press left the focus off the row").toBe(row);
+    expect(lacksCaret(words), "a press on the text set the caret").toBe(true);
+    // Enter from where the press left the focus puts the caret in, so the row is one that takes it.
+    await enterTheCaret(row, words);
+  } finally {
+    view.unmount();
+  }
 });
 
 test("any, a drag over the text: the text is selected and no caret attribute is set", async () => {
   const { row, view, words } = drawComment();
-  setCaret(row, words)();
-  // The press lands on the first letter of "the comment", and the release just past its last.
-  const from = (words.textContent ?? "").indexOf("the comment");
-  await userEvent
-    .setup()
-    .pointer([
-      { keys: "[MouseLeft>]", offset: from, target: words },
-      { offset: from + "the comment".length },
-      { keys: "[/MouseLeft]" },
-    ]);
-  expect(window.getSelection()?.toString(), "the drag selected no text").toBe("the comment");
-  expect(lacksCaret(words), "a drag over the text set the caret").toBe(true);
-  view.unmount();
+  try {
+    // The press lands on the first letter of "the comment", and the release just past its last.
+    const from = (words.textContent ?? "").indexOf("the comment");
+    await userEvent
+      .setup()
+      .pointer([
+        { keys: "[MouseLeft>]", offset: from, target: words },
+        { offset: from + "the comment".length },
+        { keys: "[/MouseLeft]" },
+      ]);
+    expect(window.getSelection()?.toString(), "the drag selected no text").toBe("the comment");
+    expect(lacksCaret(words), "a drag over the text set the caret").toBe(true);
+    // Enter after the drag puts the caret in, so the row is one that takes it.
+    await enterTheCaret(row, words);
+  } finally {
+    view.unmount();
+  }
 });
 
-test("caret, Left, Right, Up, Down, Home and End: the caret moves and the text does not change", () => {
+test("caret, Left, Right, Up, Down, Home and End: the caret moves and the text does not change", async () => {
   const { row, view, words } = drawComment();
-  setCaret(row, words);
-  const before = words.textContent;
-  const cancelled: string[] = [];
-  for (const key of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"]) {
-    // user-event does not answer whether the page cancelled the key, which this case reads.
-    const accepted = fireEvent.keyDown(words, { cancelable: true, key });
-    if (!accepted) cancelled.push(key);
+  try {
+    await enterTheCaret(row, words);
+    const before = words.textContent;
+    const cancelled: string[] = [];
+    for (const key of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"]) {
+      // user-event does not answer whether the page cancelled the key, which this case reads.
+      const accepted = fireEvent.keyDown(words, { cancelable: true, key });
+      if (!accepted) cancelled.push(key);
+    }
+    expect(cancelled, "keys the page cancelled, which the browser moves the caret by").toEqual([]);
+    expect(words.textContent, "a movement key changed the text").toBe(before);
+    expect(hasCaret(words), "a movement key took the caret away").toBe(true);
+    expect(document.activeElement, "a movement key moved the focus off the words").toBe(words);
+  } finally {
+    view.unmount();
   }
-  expect(cancelled, "keys the page cancelled, which the browser moves the caret by").toEqual([]);
-  expect(words.textContent, "a movement key changed the text").toBe(before);
-  view.unmount();
 });
 
 test("caret, Shift with an arrow: the selection grows and the control of the selection table shows", async () => {
-  stubs = answerSeededReads({ threads: [] });
+  stubs = answerSeededReads({ risk: true, threads: [] });
   const client = newClient();
-  const view = drawFrame(client, "conversation", <SelectionComment />);
+  const view = drawPage(client, "conversation");
   try {
-    const id = blockNodeId(SPEC_DOCUMENT.slug, STATEMENT);
-    const { row, words } = await waitFor(() => located(view, id));
-    setCaret(row, words);
+    const { row, words } = await waitFor(() => located(view, RISK));
+    await enterTheCaret(row, words);
     // user-event does not answer whether the page cancelled the key, which this case reads.
     const accepted = fireEvent.keyDown(words, {
       cancelable: true,
@@ -241,8 +277,9 @@ test("caret, Shift with an arrow: the selection grows and the control of the sel
       shiftKey: true,
     });
     expect(accepted, "Shift with an arrow was cancelled").toBe(true);
-    // The browser grows the selection by a character; happy-dom moves none.
-    selectWords(row, "The");
+    // The browser grows the selection from the caret, at the start of the words; happy-dom moves
+    // none.
+    selectWords(row, "A slow");
     await waitFor(() =>
       expect(
         view.queryByRole("button", { name: "Comment" }),
@@ -250,49 +287,57 @@ test("caret, Shift with an arrow: the selection grows and the control of the sel
       ).not.toBeNull()
     );
   } finally {
+    await client.cancelQueries();
     view.finish();
     client.clear();
   }
 });
 
-test("caret, a printable key, Backspace, Delete, Enter, a paste, a drop or an IME composition: nothing changes in the text or in the stored text", () => {
+test("caret, a printable key, Backspace, Delete, Enter, a paste, a drop or an IME composition: nothing changes in the text or in the stored text", async () => {
   const { row, view, words } = drawComment();
-  setCaret(row, words);
-  const before = words.textContent;
-  const typed: string[] = [];
-  for (const inputType of [
-    "insertText",
-    "deleteContentBackward",
-    "deleteContentForward",
-    "insertParagraph",
-    "insertFromPaste",
-    "insertFromDrop",
-    "insertCompositionText",
-  ]) {
-    const accepted = words.dispatchEvent(
-      new InputEvent("beforeinput", { bubbles: true, cancelable: true, data: "x", inputType })
-    );
-    if (accepted) typed.push(inputType);
+  try {
+    await enterTheCaret(row, words);
+    const before = words.textContent;
+    const typed: string[] = [];
+    for (const inputType of [
+      "insertText",
+      "deleteContentBackward",
+      "deleteContentForward",
+      "insertParagraph",
+      "insertFromPaste",
+      "insertFromDrop",
+      "insertCompositionText",
+    ]) {
+      const accepted = words.dispatchEvent(
+        new InputEvent("beforeinput", { bubbles: true, cancelable: true, data: "x", inputType })
+      );
+      if (accepted) typed.push(inputType);
+    }
+    for (const type of ["paste", "drop", "cut", "compositionstart"]) {
+      const accepted = words.dispatchEvent(new Event(type, { bubbles: true, cancelable: true }));
+      if (accepted) typed.push(type);
+    }
+    expect(typed, "inputs the caret's text let through").toEqual([]);
+    // The keys themselves, pressed in the caret: none of them types, and Enter puts no second
+    // caret in and reports nothing.
+    await userEvent.setup().keyboard("x{Backspace}{Delete}{Enter}");
+    expect(words.textContent, "an input changed the text").toBe(before);
+    expect(hasCaret(words), "a key took the caret away").toBe(true);
+    expect(reportOf(row), "a key in the caret said something at the row").toBeUndefined();
+  } finally {
+    view.unmount();
   }
-  for (const type of ["paste", "drop", "cut", "compositionstart"]) {
-    const accepted = words.dispatchEvent(new Event(type, { bubbles: true, cancelable: true }));
-    if (accepted) typed.push(type);
-  }
-  expect(typed, "inputs the caret's text let through").toEqual([]);
-  expect(words.textContent, "an input changed the text").toBe(before);
-  view.unmount();
 });
 
 test("caret, $mod+Alt+m with a selection: the composer of the selection table opens", async () => {
-  stubs = answerSeededReads({ threads: [] });
+  stubs = answerSeededReads({ risk: true, threads: [] });
   const client = newClient();
-  const view = drawFrame(client, "conversation", <SelectionComment />);
+  const view = drawPage(client, "conversation");
   try {
-    const id = blockNodeId(SPEC_DOCUMENT.slug, STATEMENT);
-    const { row, words } = await waitFor(() => located(view, id));
-    setCaret(row, words);
+    const { row, words } = await waitFor(() => located(view, RISK));
+    await enterTheCaret(row, words);
     selectWords(row, "page");
-    expect(document.activeElement, "the caret left the focus off the row's words").toBe(words);
+    expect(document.activeElement, "the selection left the focus off the row's words").toBe(words);
     await userEvent
       .setup({ keyboardMap: CHORD_KEYS })
       .keyboard("{Control>}{Alt>}[KeyM]{/Alt}{/Control}");
@@ -310,7 +355,7 @@ test("caret, $mod+Alt+m with a selection: the composer of the selection table op
   }
 });
 
-test("caret, a press on a link in the text: the link is followed", () => {
+test("caret, a press on a link in the text: the link is followed", async () => {
   const linkTree: DisplayTree = {
     content: [
       {
@@ -332,64 +377,72 @@ test("caret, a press on a link in the text: the link is followed", () => {
     "See [the docs](https://docs.example.test/page).",
     linkTree
   );
-  setCaret(row, words);
-  const link = words.querySelector<HTMLAnchorElement>("a[href]");
-  expect(link, "the row's words draw no link").not.toBeNull();
-  // Catch the click after the row's handlers ran: we read whether `caretIn` left it uncanceled,
-  // then cancel happy-dom's own navigation so `window.location` stays on the test origin for the
-  // tests after this one.
-  let canceledByCaret: boolean | undefined;
-  const catchNavigation = (event: MouseEvent) => {
-    canceledByCaret = event.defaultPrevented;
-    event.preventDefault();
-  };
-  document.addEventListener("click", catchNavigation);
   try {
-    (link as HTMLAnchorElement).dispatchEvent(
-      new MouseEvent("click", { bubbles: true, cancelable: true })
-    );
+    await enterTheCaret(row, words);
+    const link = words.querySelector<HTMLAnchorElement>("a[href]");
+    expect(link, "the row's words draw no link").not.toBeNull();
+    // Catch the click after the row's handlers ran: we read whether the caret left it uncanceled,
+    // then cancel happy-dom's own navigation so `window.location` stays on the test origin for
+    // the tests after this one.
+    let canceledByCaret: boolean | undefined;
+    const catchNavigation = (event: MouseEvent) => {
+      canceledByCaret = event.defaultPrevented;
+      event.preventDefault();
+    };
+    document.addEventListener("click", catchNavigation);
+    try {
+      (link as HTMLAnchorElement).dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true })
+      );
+    } finally {
+      document.removeEventListener("click", catchNavigation);
+    }
+    expect(
+      canceledByCaret,
+      "the press on the link was cancelled, so the browser follows nothing"
+    ).toBe(false);
+    expect(words.textContent, "the press changed the text").toContain("the docs");
   } finally {
-    document.removeEventListener("click", catchNavigation);
+    view.unmount();
   }
-  expect(
-    canceledByCaret,
-    "the press on the link was cancelled, so the browser follows nothing"
-  ).toBe(false);
-  expect(words.textContent, "the press changed the text").toContain("the docs");
-  view.unmount();
 });
 
 test("caret, Escape: the attribute goes and the focus is on the row", async () => {
   const { row, view, words } = drawComment();
-  setCaret(row, words);
-  await userEvent.setup().keyboard("{Escape}");
-  expect(lacksCaret(words), "Escape left the caret's attributes").toBe(true);
-  expect(document.activeElement, "Escape left the focus off the row").toBe(row);
-  view.unmount();
+  try {
+    await enterTheCaret(row, words);
+    await userEvent.setup().keyboard("{Escape}");
+    expect(lacksCaret(words), "Escape left the caret's attributes").toBe(true);
+    expect(document.activeElement, "Escape left the focus off the row").toBe(row);
+  } finally {
+    view.unmount();
+  }
 });
 
 test("caret, blur: the attribute goes", async () => {
   const { row, view, words } = drawComment();
-  setCaret(row, words);
-  // A press on the page where nothing takes the focus, so the focus leaves the words for none.
-  await userEvent.setup().click(document.body);
-  expect(lacksCaret(words), "blur left the caret's attributes").toBe(true);
-  view.unmount();
+  try {
+    await enterTheCaret(row, words);
+    // A press on the page where nothing takes the focus, so the focus leaves the words for none.
+    await userEvent.setup().click(document.body);
+    expect(lacksCaret(words), "blur left the caret's attributes").toBe(true);
+  } finally {
+    view.unmount();
+  }
 });
 
 test("caret, the tree read is read again: the caret stays in the same node's text", async () => {
-  stubs = answerSeededReads({ threads: TEXT_THREADS });
+  stubs = answerSeededReads({ risk: true, threads: TEXT_THREADS });
   const client = newClient();
   const view = drawPage(client, "conversation");
   try {
-    const id = blockNodeId(SPEC_DOCUMENT.slug, STATEMENT);
-    const { row, words } = await waitFor(() => located(view, id));
-    setCaret(row, words);
-    setSelection(document.createRange());
+    const { row, words } = await waitFor(() => located(view, RISK));
+    await enterTheCaret(row, words);
     await readAgain(client);
-    const again = located(view, id);
+    const again = located(view, RISK);
     expect(again.words, "the re-read replaced the node's words element").toBe(words);
     expect(hasCaret(again.words), "the re-read took the caret's attributes away").toBe(true);
+    expect(document.activeElement, "the re-read took the focus out of the words").toBe(words);
   } finally {
     await client.cancelQueries();
     view.finish();
