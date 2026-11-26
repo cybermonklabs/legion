@@ -7,7 +7,7 @@
 
 import { IDEMPOTENCY_KEY_COMMITTED, ISSUE_STATUSES } from "@legion/contracts";
 import type { APIResponse, Locator, Request, Route } from "@playwright/test";
-import { REQUEST_DEADLINE_MS } from "../web/src/api/client";
+import { AGENT_LIST_REFILLING, REQUEST_DEADLINE_MS } from "../web/src/api/client";
 import { CONTROL } from "../web/src/components/control-names";
 import * as theme from "../web/src/theme/classes";
 import {
@@ -12637,4 +12637,98 @@ test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's 
       Math.abs(scrolled) <= cut + 1,
     text
   ).toBe(true);
+});
+
+// INFRA-3135, round 29 (the tester's), by the agent-registry commit's own words (07c9100e,
+// features/refs/agent-registry.ts:202-204: "a view that says what it could not check names the
+// same reason throughout, and never Envoy as unreachable while it is the agent list refilling"),
+// F5 of the architect's ruling of 2026-11-26 04:4xZ (the failure's reason is kept per query client)
+// and 13:01Z (a notice that comes and goes per poll is a defect). Measured at b04db619 in builds
+// Job infra-3135-rg-h-4c9dg, in Chromium, Firefox and WebKit at 1440x900 with the shell's own 15 s
+// poll: with the agent list answering 503 ENVOY_REFILLING from the start and Nobody or lapsed
+// picked, the List says the agent list is refilling, and about five minutes in, for the length of
+// one poll's read, says "Envoy listener unreachable." instead (Chromium at 311.6 s to 314.7 s,
+// Firefox 313.4 s to 315.7 s, WebKit 313.9 s to 316.6 s). The reason is kept as the data of the
+// query `["agents", "failure"]` (agent-registry.ts:180, written at :207-209), which no view
+// observes, so the query client removes it at its garbage-collection time, five minutes after it
+// was made, and `setQueryData` does not move that time; while the next poll is out the list's
+// query has cleared its own error, so `refilling` (:210-212) reads nothing and the page names the
+// listener as unreachable. The row drives the same five minutes on the page's clock, and reads the
+// notice while a poll is held, in the first minute and five minutes on. The control: in the first
+// minute the notice names the agent list refilling.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-29 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): one project on the List, its clock moved five minutes, and two polls held.
+test("with the agent list refilling from the start, the project List still says the list is refilling while a poll is out five minutes on, as it does in the first minute @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  const alice = await createIssue({ project: "CORE", title: "Harbour crane" });
+  await patchIssue(alice.key, { assignee: "alice" });
+  const bob = await createIssue({ project: "CORE", title: "Signal tower" });
+  await patchIssue(bob.key, { assignee: "bob" });
+  // The page's clock is the row's: the shell's 15 s poll and the query client's five-minute
+  // collection both run on it, so the row moves it rather than waiting the minutes out.
+  await page.clock.install();
+  // The agent list answers that it is refilling while `holding` is false, and is held, unanswered,
+  // while it is true.
+  let holding = false;
+  const held: Route[] = [];
+  const refilling = {
+    body: JSON.stringify({ code: "ENVOY_REFILLING", error: "The agent list is refilling." }),
+    contentType: "application/json",
+    headers: { "Retry-After": "1" },
+    status: 503,
+  };
+  await page.route(
+    (url) => url.pathname === "/api/v1/agents",
+    async (route) => {
+      if (holding) {
+        held.push(route);
+        return;
+      }
+      await route.fulfill(refilling);
+    }
+  );
+  const notice = page.getByTestId("unclaimed-unchecked");
+  const assignee = page.getByRole("button", { name: /^Filter Assignee(?:: \d+ picked)?$/u });
+  /** Moves the page's clock by `ms` with the next poll of the agent list held, has the reader open
+   *  and close the Assignee filter while that poll is out, and answers what the notice then says. */
+  const noticeWhilePollHeld = async (ms: number, where: string): Promise<string> => {
+    holding = true;
+    await page.clock.fastForward(ms);
+    // TanStack's notifyManager batches its delivery on a zero-delay page timer.
+    await page.clock.runFor(1);
+    await expect
+      .poll(() => held.length, { message: `${where}: a poll of the agent list` })
+      .toBeGreaterThan(0);
+    await assignee.click();
+    await expect(listOf(assignee).getByRole("option")).toHaveCount(2);
+    await page.keyboard.press("Escape");
+    await expect(assignee).toHaveAttribute("aria-expanded", "false");
+    await page.clock.runFor(1);
+    // Read once the reader's open and close have rendered, with the poll still held, so the
+    // notice is what the page says while that poll is out.
+    const said = (await notice.count()) === 0 ? "no notice" : ((await notice.textContent()) ?? "");
+    holding = false;
+    for (const route of held.splice(0)) await route.fulfill(refilling).catch(() => undefined);
+    return said;
+  };
+  await page.goto("/projects/CORE/issues?unclaimed=1");
+  for (const key of [alice.key, bob.key])
+    await expect(page.locator(`[data-issue-row="${key}"]`)).toBeVisible();
+  await expect(notice).toContainText(AGENT_LIST_REFILLING);
+  // The control: in the first minute, with a poll out, the page still says the list is refilling.
+  const first = await noticeWhilePollHeld(15_000, "in the first minute");
+  expect(first, `in the first minute, with a poll out, the notice reads: ${first}`).toContain(
+    AGENT_LIST_REFILLING
+  );
+  await expect(notice).toContainText(AGENT_LIST_REFILLING);
+  // Five minutes on, past the query client's collection of an entry no view observes.
+  const later = await noticeWhilePollHeld(300_000, "five minutes on");
+  expect(later, `five minutes on, with a poll out, the notice reads: ${later}`).toContain(
+    AGENT_LIST_REFILLING
+  );
 });
