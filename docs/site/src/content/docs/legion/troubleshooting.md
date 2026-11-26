@@ -384,12 +384,16 @@ Check, in order:
    legion state --config legion.yaml --json | jq .admission
    ```
 
-   `active` lists the issues holding a slot, roots and children alike, `waiting` the issues in
-   line, `trees` the roots in Legion's work, and `cap` the slots (`admission_cap`, which
-   counts the issues the daemon has started, not trees). A parent whose own first phase waits for its open children
-   is in `blocked`, with each child it waits for. So is a parent in phase `awaiting_children`, whose
-   phases had started: it holds no slot, `held` names it `awaiting_children`, and it goes on by
-   itself once no child under it is open
+   `active` lists the issues holding a slot, roots and children alike.
+   `waiting` lists the issues in line, `trees` lists the roots in Legion's work, `cap` is
+   `admission_cap` (which counts only holders that are not P0, the issues the daemon has started,
+   not trees), `p0Holders` counts the holders that are P0 outside `cap`, and `p0Bound` gives the
+   P0 bound in force.
+   A P0 issue needs no free regular slot and starts outside `cap` while below any P0 bound.
+   A parent whose own first phase waits for its open children is in `blocked`, with each child it
+   waits for.
+   So is a parent in phase `awaiting_children`, whose phases had started: it holds no slot, `held`
+   names it `awaiting_children`, and it goes on by itself once no child under it is open
    ([Concepts](/legion/legion/concepts/#trees-and-the-architect)). `held` names every other issue
    the record holds in the workflow outside those lists with its one word, such as `chain_unknown`
    for an issue whose Dispatch parent chain the daemon cannot read to its top yet, or
@@ -397,23 +401,25 @@ Check, in order:
    ([Observe](/legion/legion/running-legion/#observe) gives every word).
 
    Each waiting issue's own `waitingLine` says where it stands and why: `priority`, the priority
-   that placed it, its own, else its top issue's (0 for P0 to 3 for P3, or null for one that waits
-   after P3); `part`, `returned` for
-   an issue whose work came back or `starting` for one that has not started; `kind`;
-   `partPlace` and `partLength` within its priority and part; `holdsSlot`, true where it holds its
-   admission slot already and so waits for no free one; `since`, or the `rootRank`, `ownRank`
-   and `rootKey` that placed it; and `reason`, the daemon's own sentence. Plain `legion state`
-   prints that sentence for the first ten waiting issues under the `admission:` counts, each
-   line reading `<KEY> <place> of <N>, <part>: <reason>`, and then `and <N> more`. It prints
-   `waiting line: none` while nothing waits, and
-   `waiting line: the daemon sent no reasons at this caller's contract` where the daemon served
-   this caller no sentence. The line is ordered by Dispatch priority first, P0 to P3 and then the
-   issues with no priority; within one priority, an issue that has not started stands behind every
-   issue whose work came back, whatever its board rank, so that order is no fault to chase. An
-   issue waits behind every issue of a higher priority, whatever its part: `waitingLine.priority`
-   is the priority it waits at, and `issues.<KEY>.priority` is its own, so a child whose own is
-   null waits at its top issue's priority, if that issue has one. A change in Dispatch moves it at the next
-   admission pass, and priority takes no slot back from work that runs.
+   that placed it (the priority Dispatch resolves for it, 0 for P0 to 3 for P3, or null for one
+   that waits after P3); `part`, `returned` for an issue whose work came back or `starting` for
+   one that has not started; `kind`; `partPlace` and `partLength` within its priority and part;
+   `holdsSlot`, true where it holds its admission slot already and so waits for no free one;
+   `since`, or the `rootRank`, `ownRank` and `rootKey` that placed it; and `reason`, the daemon's
+   own sentence. Plain `legion state` prints that sentence for the first ten waiting issues under
+   the `admission:` counts, each line reading `<KEY> <place> of <N>, <part>: <reason>`, and then
+   `and <N> more`. It prints `waiting line: none` while nothing waits, and `waiting line: the
+   daemon sent no reasons at this caller's contract` where the daemon served this caller no
+   sentence. The line is ordered by the priority Dispatch resolves first, P0 to P3 and then issues
+   with no priority. Within one priority, an issue that has not started stands behind every issue
+   whose work came back, whatever its board rank, so that order is no fault to chase. An issue
+   waits behind every issue of a higher priority, whatever its part. `waitingLine.priority` is the
+   priority it waits at, `issues.<KEY>.priority` is its own, and `issues.<KEY>.resolvedPriority`
+   is what Dispatch resolved (with `priorityFrom` naming the ancestor when inherited). With an
+   older Dispatch release that sends no `resolved_priority`, an issue waits at its own priority,
+   else its top issue's, if that issue has one, for the line alone, and that fallback never makes
+   an issue P0. A priority change in Dispatch moves the issue at the next admission pass, and
+   priority takes no slot back from work that runs.
 
 5. **GitHub refuses its branch.** Before the architect starts, the daemon creates the issue's
    branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
@@ -981,8 +987,10 @@ nobody read whether a turn of it runs. A claim stored working that no process st
 refused
 `CLAIM_NOT_RUNNING`, naming `--fresh-session` as what starts it again, because this command has
 no agent to ask; for the project's own controller claim, which `--fresh-session` refuses and
-whose keeper does nothing while it is stored working, it names
-`legion claims suspend --claim <token>` and then `legion claims resume --claim <token>`.
+whose keeper ends its turn only once that turn has stayed open longer than
+`controller_turn_bound_minutes` (90 by default, `0` off), it names
+`legion claims suspend --claim <token>` and then `legion claims resume --claim <token>`, which
+wait for no bound.
 A handoff Oh My Pi refused — one asked for in a turn, a session with nothing to hand off — or
 answered with no document, or with a result that is not an object (`Oh My Pi gave a handoff
 result that is not an object. The daemon cannot say if the session changed.`), is printed with

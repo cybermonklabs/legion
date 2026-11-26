@@ -465,6 +465,11 @@ const mainsAppliedSequence = 20261121170714
 // as the last word on that database, names. Its upgrade takes both merge_holds_changed and
 // retention_end after it; with merge_holds_changed out of 20261122154645's list, the Migrate fails
 // on the pending row instead.
+// The merge of main ca20a512 brought #5487's claim session run (20261125021636) and #5488's P0
+// bound (20261125181828), both below 20261126110259: one that main at a2ac5fd7 migrated lacks
+// both, below its newest, and one that main at ca20a512 migrated holds them, an issue's resolved
+// priority among their columns, and lacks INFRA-4730's three as main at a2ac5fd7 does. Neither
+// adds an outbox kind, so 20261122154645's list stands as the last word on that database too.
 // Store.Migrate asks each embedded migration whether its own version is recorded (apply) and
 // never compares it with the newest, so each upgrade applies the versions that database lacks,
 // below its newest and above it alike, and leaves every embedded version recorded once.
@@ -700,13 +705,37 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "main at a2ac5fd7",
 			newest: mergeHoldsChangedVersion,
-			lacks:  []int{holdsGateVersion, issueFactsVersion, claimsIssueVersion},
+			lacks:  []int{holdsGateVersion, issueFactsVersion, claimsIssueVersion, sessionRunVersion, p0StartVersion},
 			seed:   queueMainsKinds,
 			check: func(t *testing.T, store *Store) {
 				for _, kind := range []string{"merge_holds_changed", "retention_end"} {
 					if err := queueRowOfKind(store, kind); err != nil {
 						t.Errorf("queue a %s row after the upgrade: %v", kind, err)
 					}
+				}
+			},
+		},
+		{
+			name:   "main at ca20a512",
+			newest: mergeHoldsChangedVersion,
+			lacks:  []int{holdsGateVersion, issueFactsVersion, claimsIssueVersion},
+			seed: func(t *testing.T, store *Store) {
+				queueMainsKinds(t, store)
+				if _, err := store.pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq,
+					resolved_known, resolved_priority, priority_from)
+					values ('LEGION-703', 'LEGION-703', 'LEGION', 'inherited P0', 'admitted', 1, 'todo', 'A', 7, true, 0, 'OTHER-7')`); err != nil {
+					t.Fatalf("write an issue at an inherited P0 as main's daemon did: %v", err)
+				}
+			},
+			check: func(t *testing.T, store *Store) {
+				for _, kind := range []string{"merge_holds_changed", "retention_end"} {
+					if err := queueRowOfKind(store, kind); err != nil {
+						t.Errorf("queue a %s row after the upgrade: %v", kind, err)
+					}
+				}
+				const resolved = `select row(resolved_known, resolved_priority, priority_from)::text from issues where key = 'LEGION-703'`
+				if got, want := rowsAsText(t, store, resolved), []string{"(t,0,OTHER-7)"}; !slices.Equal(got, want) {
+					t.Errorf("the resolved priority after the upgrade = %v, want %v, as main's daemon wrote it", got, want)
 				}
 			},
 		},

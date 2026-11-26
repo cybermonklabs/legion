@@ -490,6 +490,18 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			file:    "dispatch/issue-released.json",
 			want:    DispatchClaim{Key: "CAPTURE-4", Seq: 12},
 		},
+		// The update Dispatch appends on an issue whose resolved priority a write to an issue
+		// above it changed, which wakes no session (J3 of dispatch://INFRA-5793): built by hand in
+		// the shape testdata/dispatch-resolved/README quotes, since no Dispatch release sends it
+		// yet. The consumer reads it as an update of the resolved priority alone.
+		{
+			name:    "Dispatch issue updated in its resolved priority alone (hand-built)",
+			subject: "notifications.dispatch.issue.CAPTURE-12.issue.updated",
+			file:    "dispatch/issue-updated-resolved-only.json",
+			want: DispatchIssue{Key: "CAPTURE-12", Seq: 3, Type: "issue.updated", Status: "todo", Title: "Captured child issue", Parent: "CAPTURE-7", Rank: "UUUk",
+				Resolved: record.Resolved{Priority: record.P0, From: "OTHER-5", Known: true}, ResolvedOnly: true, Labels: []string{}, ResolvedRepo: "sjawhar/legion",
+				Blockers: []string{}, ClaimKnown: true, At: mark(3, "2026-09-23T00:46:40Z").At},
+		},
 		{
 			name:    "pull request opened",
 			subject: "notifications.github.sjawhar.legion.pr.42",

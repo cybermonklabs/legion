@@ -508,7 +508,10 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// cutover's repair and the silence repair send a claim level with its entry. The
 	// movement is the fact that raised the entry, which the transition's phase write and its
 	// start mark below (Engine.transition, StartOrOwe), and not each delivery of it.
-	if !fact.DaemonActor {
+	// An event that changed nothing of the issue but the priority Dispatch resolves it to — an
+	// ancestor's priority or parent moved (intake.DispatchIssue.ResolvedOnly) — is no work of the
+	// issue's own, so it marks no movement either, while the record still takes its priority.
+	if !fact.DaemonActor && !fact.ResolvedOnly {
 		if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 			return intake.Result{}, err
 		}
@@ -899,7 +902,7 @@ func (e *Engine) architectAbovesMove(ctx context.Context, tx pgx.Tx, chains *rec
 // kept. It writes nothing, so a caller can persist the observation and a new phase in one row.
 func observedIssue(issue record.Issue, fact intake.DispatchIssue) record.Issue {
 	if fact.Seq != 0 || issue.LastDispatchSeq == 0 {
-		issue.Priority = fact.Priority
+		issue.Priority, issue.Resolved = fact.Priority, fact.Resolved
 	}
 	issue.Title, issue.Rank, issue.Parent, issue.LastDispatchSeq = fact.Title, fact.Rank, record.ParentOf(fact.Parent), max(fact.Seq, issue.LastDispatchSeq)
 	issue.HandedOver, issue.DispatchStatus = fact.HandedOver, fact.Status
@@ -1015,7 +1018,7 @@ func (e *Engine) HearRepository(ctx context.Context, repo string) {
 func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, chains *record.Chains, root record.Issue, fact intake.DispatchIssue, at Resolution) error {
 	parentKey := fact.Parent
 	child := record.Issue{Key: fact.Key, Tree: root.Key, Project: root.Project, Title: fact.Title, Parent: &parentKey, Phase: phase.Admitted,
-		Generation: 1, Status: fact.Status, Rank: fact.Rank, Priority: fact.Priority, HandedOver: fact.HandedOver, LastDispatchSeq: fact.Seq, DispatchStatus: fact.Status,
+		Generation: 1, Status: fact.Status, Rank: fact.Rank, Priority: fact.Priority, Resolved: fact.Resolved, HandedOver: fact.HandedOver, LastDispatchSeq: fact.Seq, DispatchStatus: fact.Status,
 		Repo: at.Repo, DefaultBranch: at.DefaultBranch, GitHubRepo: at.GitHubRepo}
 	if err := e.WriteIssue(ctx, tx, child); err != nil {
 		return err

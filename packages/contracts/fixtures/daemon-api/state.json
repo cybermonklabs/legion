@@ -9,6 +9,20 @@
   },
   "admission": {
     "cap": 5,
+    "p0Holders": 1,
+    "p0Bound": {
+      "bound": 3,
+      "configured": 4,
+      "live": {
+        "bound": 3,
+        "setBy": {
+          "kind": "controller",
+          "session": "ses_controller"
+        },
+        "setAt": "2026-09-22T09:10:00Z",
+        "reason": "the P0 issues outran the gateway"
+      }
+    },
     "active": [
       "LEGION-208",
       "LEGION-210",
@@ -70,6 +84,8 @@
       "defaultBranch": "main",
       "lingerUntil": "2026-09-22T10:10:12Z",
       "priority": null,
+      "resolvedPriority": 2,
+      "priorityFrom": "OTHER-5",
       "workers": {
         "implementer": {
           "claim": {
@@ -428,6 +444,7 @@
         "LEGION-208"
       ],
       "priority": 1,
+      "resolvedPriority": 1,
       "workers": {
         "implementer": {
           "claim": {
@@ -539,6 +556,7 @@
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "priority": null,
+      "resolvedPriority": null,
       "workers": {},
       "gatedSteps": [
         {
@@ -1087,6 +1105,7 @@
       }
     },
     "admission_cap": 4,
+    "admission_p0_bound": 4,
     "daemon_url": "http://legion-daemon.internal.example:13370",
     "worker_stream_port": 13371,
     "omp_launch_prefix": [],
@@ -1179,6 +1198,8 @@
     "pod_update_rounds_per_minute": 2,
     "review_round_cap": 4,
     "controller": "daemon",
+    "controller_turn_bound_minutes": 90,
+    "controller_session_max_age_hours": 72,
     "capabilities": {
       "decided": {
         "pool-capacity": "the pool is sized by hand for the admission cap"

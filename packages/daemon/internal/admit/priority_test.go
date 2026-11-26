@@ -47,7 +47,9 @@ func TestTheRootAndTheChildRecordTheirOwnPriorityFromTheirFirstEvent(t *testing.
 // A person who changes a waiting issue's priority in Dispatch makes one issue.updated at the
 // status, title and rank the record already holds, and the record takes the new priority from it
 // at once, as it takes a re-rank (TestRankOnlyEventTakesTheFreeSlot), with no boot and no
-// Reconcile: the next pass reads it. A priority taken off reads as none.
+// Reconcile: the next pass reads it. A priority taken off reads as none. The priority set is P1,
+// so the issue keeps waiting at the full cap: a P0 would start outside it at that pass
+// (TestAnIssueRaisedToP0WhileItWaitsStartsAtTheNextPass).
 func TestAPriorityOnlyEventIsRecordedAtTheSameStatus(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -55,10 +57,10 @@ func TestAPriorityOnlyEventIsRecordedAtTheSameStatus(t *testing.T) {
 	seedSlotted(t, pool, "LEGION-1", "A")
 	seedWaiting(t, pool, "LEGION-2", "B")
 
-	apply(t, pool, admission, "set-p0", intake.DispatchIssue{Key: "LEGION-2", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo",
-		Title: "LEGION-2", Rank: "B", Priority: record.P0, HandedOver: handed}, engine)
-	if got := issue(t, pool, "LEGION-2"); got.Priority != record.P0 || got.Status != "todo" || got.Rank != "B" || got.LastDispatchSeq != 2 {
-		t.Fatalf("the record after the priority event = %#v, want P0 at todo, rank B, sequence 2", got)
+	apply(t, pool, admission, "set-p1", intake.DispatchIssue{Key: "LEGION-2", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo",
+		Title: "LEGION-2", Rank: "B", Priority: record.P1, HandedOver: handed}, engine)
+	if got := issue(t, pool, "LEGION-2"); got.Priority != record.P1 || got.Status != "todo" || got.Rank != "B" || got.LastDispatchSeq != 2 {
+		t.Fatalf("the record after the priority event = %#v, want P1 at todo, rank B, sequence 2", got)
 	}
 	apply(t, pool, admission, "take-off", intake.DispatchIssue{Key: "LEGION-2", ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo",
 		Title: "LEGION-2", Rank: "B", HandedOver: handed}, engine)
@@ -112,10 +114,11 @@ func TestANewRunTakesThePriorityItsTodoShows(t *testing.T) {
 }
 
 // A priority change in Dispatch moves the issue in the waiting line at the daemon's next read of
-// it, with no other action. Two roots wait under a full cap in board order; a P0 set on the one
+// it, with no other action. Two roots wait under a full cap in board order; a P1 set on the one
 // ranked lower puts it first at the pass the event runs, and taking the priority off puts it back
 // behind its neighbour. Every entry here is a root that never ran, so the move is read inside one
-// part of the line.
+// part of the line. The priority is P1 and not P0, which starts outside the cap rather than
+// waiting first in the line (TestAnIssueRaisedToP0WhileItWaitsStartsAtTheNextPass).
 func TestAPriorityChangeMovesTheIssueInTheWaitingLineAtTheNextRead(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -127,8 +130,8 @@ func TestAPriorityChangeMovesTheIssueInTheWaitingLineAtTheNextRead(t *testing.T)
 		t.Fatalf("the line before the priority event = %#v, want %#v", got, want)
 	}
 
-	apply(t, pool, admission, "set-p0", intake.DispatchIssue{Key: "LEGION-3", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo",
-		Title: "LEGION-3", Rank: "C", Priority: record.P0, HandedOver: handed}, engine)
+	apply(t, pool, admission, "set-p1", intake.DispatchIssue{Key: "LEGION-3", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo",
+		Title: "LEGION-3", Rank: "C", Priority: record.P1, HandedOver: handed}, engine)
 	assertWaiting(t, pool, []string{"LEGION-3", "LEGION-2"})
 
 	apply(t, pool, admission, "take-off", intake.DispatchIssue{Key: "LEGION-3", ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo",

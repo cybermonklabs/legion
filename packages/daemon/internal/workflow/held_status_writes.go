@@ -134,6 +134,6 @@ func heldWriteFact(issue record.Issue, write record.HeldSessionWrite) intake.Dis
 		parent = *issue.Parent
 	}
 	return intake.DispatchIssue{Key: issue.Key, ResolvedRepo: issue.Repo, Seq: issue.LastDispatchSeq, Type: "issue.updated",
-		Status: write.Status, Title: issue.Title, Rank: issue.Rank, Priority: issue.Priority, Parent: parent, HandedOver: issue.HandedOver,
+		Status: write.Status, Title: issue.Title, Rank: issue.Rank, Priority: issue.Priority, Resolved: issue.Resolved, Parent: parent, HandedOver: issue.HandedOver,
 		ActorSession: write.Session}
 }

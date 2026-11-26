@@ -274,6 +274,14 @@ in the daemon's configuration, four by default; an issue that finds no free slot
 a labelled `todo` root takes its place in that line by its Dispatch priority and then in the
 project board's order.
 
+A P0 issue, one Dispatch resolves to P0 (its own priority, else the priority of the nearest issue
+above it on its Dispatch parent chain that has one), needs no free slot: it starts at the next
+admission pass outside the cap, and the cap counts only the issues holding a slot that are not P0.
+Every other hold on a start still holds it. `admission_p0_bound` can limit how many P0 issues hold a
+slot at once to a whole number from 1 to 2147483647; it has no value unless the configuration gives
+one, and a person can set or clear it while the daemon runs with `legion project set-p0-bound` and
+`clear-p0-bound`. At the bound, a P0 issue waits first in the line.
+
 An issue takes a slot when the daemon starts it — a root at its admission, which starts its
 architect, a child at the start of its first phase. An issue holds one of the cap's slots while it
 stands in a phase that keeps one, from the moment the daemon starts it until it is done or Dispatch
@@ -326,17 +334,25 @@ never under `admission.active`, which is how you tell it from an issue a person 
 in none of the three.
 
 The line starts with Dispatch priority: P0, P1, P2, P3, then issues without a priority.
-An issue uses its own priority first. Otherwise it uses the priority of its top issue: the
-highest issue in Legion's work on its Dispatch chain, or the issue itself.
-An unknown chain supplies no inherited priority and holds work that cannot start.
+An issue waits at the priority Dispatch resolves for it: its own, or the nearest ancestor's on its
+Dispatch parent chain that has one, and after P3 when Dispatch resolves none.
+With an older Dispatch release that sends no `resolved_priority`, an issue uses its own priority
+first. Otherwise it uses the priority of its top issue: the highest issue in Legion's work on its
+Dispatch chain, or the issue itself. That fallback orders the line alone and never makes an issue
+P0, and an unknown chain supplies it no inherited priority. An unknown chain holds work that cannot
+start.
 
 Within each priority, work that came back goes first, oldest first. Work that has not started
 follows, by the board rank of its top issue and then its own rank. A priority change affects
-the next admission pass. It does not take a slot away. The daemon still skips issues waiting
-on other issues. An issue that already holds a slot resumes without taking another.
+the next admission pass. A P0 start needs no free regular slot. A priority change does not take
+a slot away. The daemon still skips issues waiting on other issues. An issue that already holds
+a slot resumes without taking another.
 
 In `legion state --json`, each recorded issue has its own `priority`: 0 for P0 through 3 for P3,
-or null. Each waiting issue also has `waitingLine.priority`, the priority that placed it.
+or null. It also has `resolvedPriority`, the priority Dispatch resolves for it (0 to 3 or null,
+absent when Dispatch sent none), and `priorityFrom`, the issue key it inherits from (absent when
+the priority is its own or none). Each waiting issue also has `waitingLine.priority`, the
+priority that placed it.
 `place` and `length` refer to the full line. `partPlace` and `partLength` count only within the
 issue's priority and `part` (`returned` or `starting`). `holdsSlot` says whether it already
 has a slot. `since` gives the time work came back. `rootKey`, `rootRank` and `ownRank` give

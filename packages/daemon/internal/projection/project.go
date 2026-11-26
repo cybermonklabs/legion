@@ -234,6 +234,14 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			Priority:      &priority,
 			Workers:       map[claim.Role]api.PhaseView{},
 		}
+		// The priority Dispatch resolves the issue to, absent where Dispatch sent none
+		// (api.Issue.ResolvedPriority), and the issue it resolves it from, empty where it is the
+		// issue's own or none (api.Issue.PriorityFrom): an issue Dispatch resolved no priority
+		// for has no issue it comes from.
+		if issue.Resolved.Known {
+			resolved := api.PriorityView(issue.Resolved.Priority)
+			view.ResolvedPriority, view.PriorityFrom = &resolved, issue.Resolved.From
+		}
 		// Every experiment answer the issue runs under, a done issue's included: it is what its
 		// roles ran with, and nothing redraws it. The three memory fields are the answer of the
 		// experiment named `memory` spelled out for the readers that knew it before any
@@ -426,6 +434,11 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		return api.State{}, err
 	}
 	projected.Admission.Active = active
+	// The holders the cap does not count (R10 of dispatch://INFRA-3199): the project's own holders
+	// that admission treats as P0 (record.Issue.StartsNow), counted by the one count admission's
+	// cap readers make (record.HoldersOf), so the number the state gives is the number the pass
+	// admitted under.
+	projected.Admission.P0Holders = new(record.HoldersOf(own, slots).P0)
 	// The roots in Legion's work (R22 of dispatch://INFRA-3320): each issue of the project in
 	// Legion's work with no issue above it in work on a known chain (record.Chains.IsRoot), read
 	// from the pass's chains at no further read. No slot says it: a slot counts one issue the

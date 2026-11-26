@@ -73,7 +73,7 @@ func (p Priority) String() string {
 	return ""
 }
 
-// band is where p sorts: P0 to P3 in order, then NoPriority.
+// band is where p sorts: P0 to P3 in order, then NoPriority (PriorityOf).
 func (p Priority) band() uint8 {
 	if p == NoPriority {
 		return uint8(P3) + 1
@@ -81,12 +81,95 @@ func (p Priority) band() uint8 {
 	return uint8(p)
 }
 
-// PriorityOf uses the issue's own priority, then its top issue's, then NoPriority.
-// The caller reads top from the same Dispatch chain as its rank. Priority never
-// copies from the top issue onto a member's record.
+// Resolved is the priority Dispatch resolves an issue to (`resolved_priority`, J1 of
+// dispatch://INFRA-5793): the issue's own where it has one, else that of the nearest issue above it
+// on its Dispatch parent chain that has one, in any project. It is the priority admission reads (C1
+// and C2 of dispatch://INFRA-5636). Known says Dispatch sent `resolved_priority` at all: a Dispatch
+// release before INFRA-5793 sends none, and the zero Resolved, a record stored before the daemon read
+// it, is that too. Priority is what Dispatch sent, NoPriority for a present null, which is no
+// priority and replaces any resolved priority before it. From is `priority_from`, the key of the
+// issue the priority comes from, empty where the priority is the issue's own or none.
+//
+// Every path that carries the issue's own priority carries this beside it: an issue event, the
+// boot listing, a detail read and the issue an accepted status write answers, and every fact the
+// daemon builds from its own record, which keeps both as they stand.
+type Resolved struct {
+	Priority Priority
+	From     string
+	Known    bool
+}
+
+// AdmissionPriority is the priority admission reads for issue: the one Dispatch resolves it to
+// where Dispatch sent one (Resolved.Known), else its own. So with a Dispatch release that resolves
+// no priority only an issue's own P0 makes it P0, and no top issue's priority ever does.
+func (i Issue) AdmissionPriority() Priority {
+	if i.Resolved.Known {
+		return i.Resolved.Priority
+	}
+	return i.Priority
+}
+
+// PriorityOf is the priority that places issue in the waiting line: the one Dispatch resolves it
+// to where Dispatch sent one (Issue.AdmissionPriority), else, for a Dispatch release that resolves
+// none, its own, then its top issue's, then NoPriority. The caller reads top from the same
+// Dispatch chain as its rank. Priority never copies from the top issue onto a member's record.
+// The top issue's stands for an older Dispatch's order of the line alone: it never makes an issue
+// P0 for a start (Issue.StartsNow).
 func PriorityOf(issue, top Issue) Priority {
-	if issue.Priority != NoPriority {
-		return issue.Priority
+	if issue.Resolved.Known || issue.Priority != NoPriority {
+		return issue.AdmissionPriority()
 	}
 	return top.Priority
 }
+
+// StartsNow says whether issue starts outside the admission cap (R10 of dispatch://INFRA-3199, C2
+// of dispatch://INFRA-5636): whether admission reads it as P0 (Issue.AdmissionPriority), directly
+// or by Dispatch's inheritance. It never reads PriorityOf's top issue: a P0 top issue makes none
+// of the issues under it P0 unless Dispatch resolves them to P0.
+func (i Issue) StartsNow() bool { return i.AdmissionPriority() == P0 }
+
+// SlotHolders is a project's holders of an admission slot as the cap and the P0 bound count them:
+// P0, the holders that admission treats as P0 (Issue.StartsNow: Dispatch's resolved P0, or own P0
+// with an older Dispatch release), which the cap does not count and the P0 bound does, and Capped,
+// every other holder, which the cap counts. A holder is counted by the priority its record carries
+// at the read, so one raised to P0 leaves the cap's count at the next read and one lowered below
+// P0 counts against the cap from then on, while its slot stays.
+type SlotHolders struct {
+	Capped int
+	P0     int
+}
+
+// HoldersOf counts the slots of slots whose issue is one of issues, by whether that issue starts
+// outside the cap. issues is one project's records and slots may be every project's: a slot of an
+// issue not among issues is counted nowhere. Every reader of the cap counts through it — the
+// promotion, its free-slot reading, the stall measure and the state — so all of them count the same
+// holders of one record.
+func HoldersOf(issues []Issue, slots []Slot) SlotHolders {
+	startsNow := make(map[string]bool, len(issues))
+	for i := range issues {
+		startsNow[issues[i].Key] = issues[i].StartsNow()
+	}
+	var held SlotHolders
+	for _, slot := range slots {
+		if p0, known := startsNow[slot.Issue]; known {
+			if p0 {
+				held.P0++
+			} else {
+				held.Capped++
+			}
+		}
+	}
+	return held
+}
+
+// Add counts issue as one more holder.
+func (h *SlotHolders) Add(issue Issue) {
+	if issue.StartsNow() {
+		h.P0++
+		return
+	}
+	h.Capped++
+}
+
+// Total is every holder, P0 and capped together: the slots in use.
+func (h SlotHolders) Total() int { return h.Capped + h.P0 }

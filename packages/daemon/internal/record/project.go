@@ -453,9 +453,12 @@ type LineEntry struct {
 	Issue Issue
 	Kind  LineKind
 	// Priority is the priority that placed the entry, the first key of the whole line:
-	// PriorityOf, the issue's own, else its top issue's, else NoPriority, whose band stands after
-	// P3. The issue's own priority is Issue.Priority, which this does not change: the inherited
-	// priority orders the line and nothing else.
+	// PriorityOf, the priority Dispatch resolves the issue to where Dispatch sent one, else, with
+	// an older Dispatch that resolves none, the issue's own, else its top issue's, else
+	// NoPriority, whose band stands after P3. The issue's own priority is Issue.Priority, which
+	// this does not change. A P0 that Dispatch passes down starts outside the cap
+	// (Issue.StartsNow); only the top issue's priority, the fallback of an older Dispatch, orders
+	// the line and nothing else.
 	Priority Priority
 	// Part is the part of the line the entry stands in within its priority's band, and PartPlace
 	// its place within that band and part alone, counted from 1. Waiting sets both in its last
@@ -1490,8 +1493,9 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		return RankLess(left, right)
 	})
 
-	// Join the sorted parts in order and sort stably by band. Each band retains its returning
-	// work by age, then its first starts by top and own rank.
+	// Join the sorted parts in order and sort stably by band (PriorityOf: the one Dispatch
+	// resolves, else, with an older Dispatch, the issue's own, else its top issue's). Each band
+	// retains its returning work by age, then its first starts by top and own rank.
 	line := make([]LineEntry, 0, len(returned)+len(starting))
 	for _, waiting := range returned {
 		entry := waiting.entry
