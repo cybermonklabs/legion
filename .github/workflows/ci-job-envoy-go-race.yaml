@@ -63,8 +63,13 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -95,14 +100,14 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
-      # why: .github/ci-notes/ci.md#why-a-lanes-sizing-step-comes-after-its-retried-module-download
-      - name: Size the service for this lane's Dispatch processes
-        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
-      # No commit, checkpoint or database copy here waits for the runner's disk: why every
-      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
-      - name: Turn crash safety off on the service
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
         timeout-minutes: 2
-        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      # why: .github/ci-notes/ci.md#why-a-lanes-sizing-step-comes-after-its-retried-module-download
+      - name: Check the service allows this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The store package's tests run eight at once (storeTestParallelism, store_test.go), each with
       # a database and pools of its own, beside the step's other packages, so this samples the
       # service's client connections every 2 s while the next step runs and the step after it prints
@@ -142,14 +147,15 @@ jobs:
       # with a package whose every forced-order test skipped. No
       # step sets an environment variable: check-ci-filters.sh reduces no go command of a job one
       # of whose steps sets a GO* name.
-      # forced-order.sh downloads the nats-server it hooks with `go mod download -json`, from a
-      # directory with no go.mod, so go asks sum.golang.org for the module even when the step
-      # above cached its zip, and v2.10.29 is in no module's graph here. So this step runs that
-      # read first, under the one retry (ci-budgets.md's Retries note): the script's own
-      # -download, with the test steps' arguments, which makes every check before the download,
-      # and the download, and builds and tests nothing. The module cache then holds each zip and its
-      # checksum lookup, and the test steps read no host. Measured in an issue pod with
-      # GOPROXY=off and an unreachable checksum database: without this step every forced-order
+      # forced-order.sh reads the nats-server it hooks from the module cache with `go list -m
+      # -json`, and downloads it with `go mod download -json` only where no cache holds that
+      # version's tree: v2.10.29 is in no module's graph here, so the step above never fetches it.
+      # The download runs from a directory with no go.mod, so go also asks sum.golang.org for the
+      # module. So this step runs that read first, under the one retry (ci-budgets.md's Retries
+      # note): the script's own -download, with the test steps' arguments, which makes every check
+      # before the read, and the read, and builds and tests nothing. The module cache then holds
+      # each zip and its checksum lookup, and the test steps read no host. Measured in an issue pod
+      # with GOPROXY=off and an unreachable checksum database: without this step every forced-order
       # download of this job and daemon-go's fails, and after it the script's go list of the
       # test's packages loads every module from the cache (dispatch://INFRA-1545, round 57).
       - name: Download the nats-server versions forced-order.sh hooks

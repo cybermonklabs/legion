@@ -17,7 +17,7 @@
 # replaces nats-server, whose hooked copy would take the replacement's place. A module with no
 # workspace builds on a copy of its go.mod with the replace added (go test -modfile, which go
 # refuses in a workspace).
-# The script reads go's JSON (go work edit -json, go mod download -json) with jq. Nothing else of
+# The script reads go's JSON (go work edit -json, go list -m -json, go mod download -json) with jq. Nothing else of
 # nats-server changes, and no
 # build without this script sees a hook.
 #
@@ -33,14 +33,14 @@
 #                    holding there fails without it. A name no hook call of that version's hooks
 #                    passes is refused before the build, so a mistyped point cannot "fail" a test
 #                    on a compile error instead. Repeatable.
-#   -download        runs every check above and the download of nats-server at that version into
-#                    the module cache, then exits 0, building and testing nothing. A CI step runs
-#                    it under .github/scripts/ci-retry.sh's retry_fetch before the step that tests,
-#                    so the one network read this script makes, the download below, retries, and
-#                    the test step reads the module cache alone (dispatch://INFRA-1545, round 57).
-#                    The download runs from a directory with no go.mod, where go asks the checksum
-#                    database for the module even when its zip is cached, so a module download of
-#                    the build alone does not cover it.
+#   -download        runs every check above and the read of nats-server's tree at that version
+#                    below, with its download into the module cache where no cache holds it, then
+#                    exits 0, building and testing nothing. A CI step runs it under
+#                    .github/scripts/ci-retry.sh's retry_fetch before the step that tests, so the
+#                    network reads of that read retry, and the test step reads the module cache
+#                    alone (dispatch://INFRA-1545, round 57). The download runs from a directory
+#                    with no go.mod, where go asks the checksum database for the module even when
+#                    its zip is cached, so a module download of the build alone does not cover it.
 #
 # It fails, naming the package, when a package it is given declares no TestForcedOrder test, or
 # runs none (every one it declares skipped), so a step that names a package whose tests were
@@ -180,12 +180,19 @@ for point in ${drops[@]+"${drops[@]}"}; do
     die "-drop $point: no hook of nats-server $server reports \"$point\"; its points are $(paste -sd ' ' <<<"$points")"
 done
 
-# Downloaded from the work directory, where no go.mod is, so the module's own go.sum is not
-# touched.
-(cd "$work" && GOWORK=off go mod download -json "$nats_server@v$server") >"$work/download.json" ||
-  die "go mod download could not fetch $nats_server@v$server"
-source_dir="$(jq -r '.Dir // empty' "$work/download.json")" || die "jq could not read go mod download's answer"
-[ -n "$source_dir" ] && [ -d "$source_dir" ] || die "go mod download found no source for $nats_server@v$server"
+# nats-server's tree, read where the module cache extracted it: `go list -m -json` names that
+# directory and fetches nothing. `go mod download` is the fallback, for a version no cache holds
+# (-server 2.10.29, which no build links): it fetches the module's zip whenever the cache holds
+# none (cmd/go/internal/modcmd/download.go calls DownloadZip). Both run from the work directory,
+# where no go.mod is, so the module's own go.sum is not touched.
+source_dir="$(cd "$work" && GOWORK=off go list -m -json "$nats_server@v$server" 2>/dev/null | jq -r '.Dir // empty')" ||
+  source_dir=""
+if [ -z "$source_dir" ] || [ ! -d "$source_dir" ]; then
+  (cd "$work" && GOWORK=off go mod download -json "$nats_server@v$server") >"$work/download.json" ||
+    die "go mod download could not fetch $nats_server@v$server"
+  source_dir="$(jq -r '.Dir // empty' "$work/download.json")" || die "jq could not read go mod download's answer"
+fi
+[ -n "$source_dir" ] && [ -d "$source_dir" ] || die "neither go list -m nor go mod download found a source for $nats_server@v$server"
 if [ -n "$download_only" ]; then
   echo "forced-order.sh: -download: nats-server v$server is in the module cache at $source_dir; nothing is built or tested" >&2
   exit 0

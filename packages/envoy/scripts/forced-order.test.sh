@@ -88,23 +88,24 @@ GOWORK=off refused replaced 'replaces github.com/nats-io/nats-server/v2 with ./f
   '^forced-order.sh: nats-server v[0-9]' -C "$out/replacing-module" .
 
 # -download, which a CI step runs under retry_fetch before the step that tests: it reaches the
-# download and stops there, and a failed download fails it. A stand-in go first on PATH writes
-# each go subcommand it is asked for to a log and runs the real go, except two: `go test`, which
-# no -download run may reach, is refused, and `go mod download` fails when the case asks, as a
-# proxy answering 504 makes it. So a run that falls through into the build, one that stops
-# before the download, and one that passes over a failed download each fail a case.
+# read of nats-server's tree and stops there, and a failed read fails it. A stand-in go first on
+# PATH writes the first three words of each go command it is asked for to a log and runs the real
+# go, except in two cases: `go test`, which no -download run may reach, is refused, and the tree's
+# two reads, `go list -m -json` and `go mod download`, fail when the case asks, as a proxy
+# answering 504 makes them for a module no cache holds. So a run that falls through into the
+# build, one that stops before the read, and one that passes over a failed read each fail a case.
 realgo="$(command -v go)"
 mkdir -p "$out/go-stand-in"
 cat >"$out/go-stand-in/go" <<EOF
 #!/usr/bin/env bash
 args=("\$@")
 [ "\${args[0]:-}" != -C ] || args=("\${args[@]:2}")
-printf '%s\n' "\${args[*]:0:2}" >>"\$GO_STAND_IN_LOG"
+printf '%s\n' "\${args[*]:0:3}" >>"\$GO_STAND_IN_LOG"
 if [ "\${args[0]:-}" = test ]; then
   echo "go stand-in: no -download run may reach go test" >&2
   exit 1
 fi
-if [ -n "\${GO_STAND_IN_FAIL_DOWNLOAD:-}" ] && [ "\${args[0]:-}" = mod ] && [ "\${args[1]:-}" = download ]; then
+if [ -n "\${GO_STAND_IN_FAIL_DOWNLOAD:-}" ] && { [ "\${args[*]:0:3}" = 'list -m -json' ] || [ "\${args[*]:0:2}" = 'mod download' ]; }; then
   echo "go: the module proxy answered 504 Gateway Timeout (the go stand-in)" >&2
   exit 1
 fi
@@ -122,13 +123,14 @@ download() {
   echo "$code"
 }
 
-# -download stops after the download: it exits 0, asked go for the download and for no go test,
-# and says the server is in the module cache.
+# -download stops after the read of nats-server's tree: it exits 0, asked go for that read (`go
+# list -m -json`, then `go mod download` where no cache holds the tree) and for no go test, and
+# says the server is in the module cache.
 code="$(download download-only '')"
 if [ "$code" -ne 0 ]; then
   why="exit $code, want 0; its last line: $(tail -n 1 "$out/download-only")"
-elif ! grep -qx 'mod download' "$out/download-only.go"; then
-  why="exit 0, but it asked go for no download (it asked: $(paste -sd , "$out/download-only.go"))"
+elif ! grep -qx 'list -m -json' "$out/download-only.go"; then
+  why="exit 0, but it asked go for no read of the tree (it asked: $(paste -sd , "$out/download-only.go"))"
 elif grep -q '^test' "$out/download-only.go"; then
   why="exit 0, but it asked go for a test"
 elif ! grep -qF 'forced-order.sh: -download: nats-server v' "$out/download-only"; then
@@ -143,13 +145,13 @@ else
   failed=$((failed + 1))
 fi
 
-# A download that fails fails -download, with the script's own line naming it: retry_fetch reads
-# the exit status, so a -download that passed over the failure would leave the test step to make
-# the read again, with no retry.
+# A read that fails fails -download, with the script's own line naming it: retry_fetch reads the
+# exit status, so a -download that passed over the failure would leave the test step to make the
+# read again, with no retry.
 code="$(download download-failed 1)"
 if [ "$code" -eq 0 ]; then
   why="exit 0, want a refusal; its last line: $(tail -n 1 "$out/download-failed")"
-elif ! grep -qx 'mod download' "$out/download-failed.go"; then
+elif ! grep -q '^mod download' "$out/download-failed.go"; then
   why="exit $code before the download (it asked go: $(paste -sd , "$out/download-failed.go"))"
 elif ! grep -qF 'forced-order.sh: go mod download could not fetch github.com/nats-io/nats-server/v2@v' "$out/download-failed"; then
   why="exit $code without the script's own line; its last line: $(tail -n 1 "$out/download-failed")"

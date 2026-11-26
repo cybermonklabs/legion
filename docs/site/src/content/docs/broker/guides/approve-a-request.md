@@ -34,9 +34,9 @@ end it, however old that read is. A member may approve a request their own sessi
 one owner of a person's secret may: a group owner is not a second person.
 
 Some requests never reach you. Where the deployment configures a model judge, a request for keys
-whose profile's `proxy` block in the profiles file (`BROKER_PROFILES_FILE`) gives the judge seconds,
-none of them an administrator's or an Anthropic federation key, is the judge's to decide: it grants
-or refuses it, each key against the guidance its owner gave in that block, and while it decides the
+whose `judge` tag gives the judge seconds of them, none of them an administrator's or an Anthropic
+federation key, is the judge's to decide: it grants or refuses it, each key against the guidance
+its owner wrote in its `guidance` tag, and while it decides the
 request is on no list. A request the judge cannot decide comes to you once,
 as an ordinary card. If you open such a request's page while the judge holds it, the page is
 read-only and says the judge is deciding it. A judged grant's **State** line reads
@@ -88,8 +88,10 @@ along:
 - **Projects the session names**: the projects the session or pod that asked names, shown when it
   names any. A person's session names the projects it started with (`AGENT_SECRETS_PROJECTS`). A
   person's pod names the projects it enrolled with, as its person's session does; any other pod
-  names the one its operator's `BROKER_EXCHANGE_ACCOUNTS` entry maps its service account to, and a
-  machine's own session the one `BROKER_VM_EXCHANGE_ACCOUNTS` maps its fleet's Google account to.
+  names the one its operator's `BROKER_EXCHANGE_ACCOUNTS` entry maps its service account to, or the
+  list of its `BROKER_EXCHANGE_JOB_ACCOUNTS` entry, and a machine's own session the one
+  `BROKER_VM_EXCHANGE_ACCOUNTS` maps its fleet's Google account to, or the list of its
+  `BROKER_VM_EXCHANGE_JOB_ACCOUNTS` entry.
   A session that moved to another box since it asked shows the projects named on either box,
   and the request is hidden from, and refused to, anyone either list would hide it from.
 - **Requested by (verified by the broker)**: the enrollment asking, as kind, operator and runtime

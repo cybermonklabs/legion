@@ -12,6 +12,13 @@ paths:
       # `queue` is a GitHub Actions concurrency key (docs.github.com, "Control the concurrency of
       # workflows and jobs"). actionlint does not know it yet: rhysd/actionlint#654 adds it.
       - 'unexpected key "queue" for "concurrency" section'
+      # `command` is a GitHub Actions service-container key: it overrides the image's CMD, and the
+      # runner passes it to `docker create` as the arguments after the image (docs.github.com,
+      # "Communicating with Docker service containers", "Customizing service container entrypoints
+      # and commands"; shipped 2026-04-02). Every Postgres service starts its server's settings so
+      # (.github/scripts/postgres-service-settings.sh). actionlint merged the key after 1.7.12, in
+      # rhysd/actionlint#645.
+      - 'unexpected key "command" for "services" section'
   .github/workflows/dequeued.yaml:
     ignore:
       # `dequeued` is a pull_request_target activity type GitHub sends when the merge queue

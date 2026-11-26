@@ -18,6 +18,8 @@ GATE = gate("ci_filters", "ci-filters", runs=[
     (".github/scripts/ci_filter_sources.py", "ci_job_reads.py reads the gate files and the //ci: lines through it"),
     (".github/scripts/check-workflow-files.sh",
      at("ci-filters", "Check every workflow file GitHub can read and its size")),
+    (".github/scripts/postgres-service-settings.sh", "check-workflow-files.sh runs its --command for rule 7, "
+                                                     "the command line every Postgres service must carry"),
     (".github/actionlint.yaml", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads its configuration "
                                 "from the project it runs in"),
     (".github/actions/**", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads the action.yml of every "

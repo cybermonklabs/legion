@@ -33,7 +33,7 @@ the binaries, multiprocess and visual jobs of .github/workflows/dispatch-browser
 ci.yaml's dispatch-browser and dispatch-browser-pr jobs call: those three build the Dispatch
 server and the real broker's commands, whose packages the go-envoy entry's build of the listener
 and natsd alone does not hold, and the two jobs of
-.github/workflows/ci-job-dispatch-two-builds.yaml, whose sizing step and twobuild test step
+.github/workflows/ci-job-dispatch-two-builds.yaml, whose ceiling step and twobuild test step
 build out of that same set), go-envoy-darwin-vet (envoy-go-build's darwin vet, whose build cache
 is a directory of its own, the GOCACHE of that step's env) and go-envoy-infra (envoy-infra-build
 and envoy-infra-go, and the build job of release-envoy-infra.yaml).
@@ -156,7 +156,7 @@ whole jobs 4.5 and 4.2 min), against 274 s and 214 s for the `-c` fill (jobs 139
 139585275017). On main's entry this fill's jobs took 2.9 and 2.7 min, an 8 s save included (jobs
 139585272770 and 139585272357).
 
-## Why the go-envoy-test fill keeps the module zips
+## Why the fills keep the module zips
 
 Main's #5600 deleted `~/go/pkg/mod/cache/download/**/*.zip` before saving `go-envoy-test`, on the
 premise that no job restoring this entry runs `go mod download` or `go mod verify`. On this
@@ -176,6 +176,21 @@ This branch removes #5600's zip-deletion step. The retained zip files total 272 
 Across those fills, the saved entries fell from 939 to 708 MB on arm64 and from 859 to 690 MB
 on x64. The `envoy-go` restore fell from 20 to 16 s. These comparisons do not isolate the
 effect of removing the zips: #5600's fill also keeps about 330 more build-cache entries.
+
+This branch's reviewed head, 9d30c11dc2, deleted no other zip: every other fill saved its module
+cache as its build left it. Main's #5621 then added the deletion to four more families that save
+a module cache: the end command of .github/scripts/go-cache-working-set.sh deleted the zips of
+go-daemon, go-notices and go-envoy, and took over #5600's step for go-envoy-test, and a zips
+command of the script did it alone for go-envoy-infra, which builds from nothing and runs no
+begin. Each of those fills runs a retried `go mod download` before its build too, as most jobs
+that restore its entry do, so the premise fails for them as it does for go-envoy-test. This
+branch's merge of main removes that deletion and keeps main's build-cache trimming: the script
+trims GOCACHE alone, and every fill that saves `~/go/pkg/mod` saves its zips. #5621's scratch
+run 45743937976 counted the zips those four fills deleted, which their entries keep again: 202
+(275 MB) in go-daemon's on each runner, 306 (485 MB) in go-notices' on arm64, 32 (65 MB) on x64
+and 39 (77 MB) on arm64 in go-envoy's, and 202 (310 MB) in go-envoy-infra's on each runner.
+go-envoy-darwin-vet saves only its own darwin build cache directory, so its entry holds no
+module cache.
 
 ## Why a lookup's save takes the lookup's key
 
@@ -385,7 +400,7 @@ and keyed both from measurements. The envoy job: warm, on its newest entry, 37 s
 a save of about 0.5 GB (probe run 45375660275, jobs 138381154486 and 138381153841). Main gave it
 10 minutes, about nine times the cold. The envoy-test job took 2.9 and 2.7 min warm, including
 the save. It took 4.5 and 4.2 min cold before an 8 s save in #5600's scratch run 45722872215.
-That fill omitted the module zips. See [why this fill keeps them](#why-the-go-envoy-test-fill-keeps-the-module-zips).
+That fill omitted the module zips. See [why the fills keep them](#why-the-fills-keep-the-module-zips).
 Main gave it 30 minutes, about six times the measured cold job.
 
 Each job's first term is main's figure, and the Budgets note of `.github/ci-budgets.md` adds its

@@ -78,11 +78,11 @@ func (s *shim) identity() (*shimwire.AgentSecretsHello, error) {
 	if thumbprint == "" {
 		ctx, cancel := context.WithTimeout(s.loop, keygenTimeout)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, a.Binary, "keygen", "--out", a.KeyDir)
+		cmd := exec.CommandContext(ctx, a.Binary, shimwire.AgentSecretsKeygen, "--out", a.KeyDir)
 		cmd.Env = s.cfg.Env
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
-		if err := cmd.Run(); err != nil {
+		if err := procgroup.Run(cmd, s.children.Starter()); err != nil {
 			return nil, fmt.Errorf("agent-secrets keygen --out %s: %w: %s", a.KeyDir, err, strings.TrimSpace(stderr.String()))
 		}
 		thumbprint = strings.TrimSpace(stdout.String())
@@ -208,16 +208,18 @@ func (s *shim) startRenewer(enrollmentID string) {
 	go func() {
 		defer s.renewers.Done()
 		for s.loop.Err() == nil {
-			cmd := exec.CommandContext(s.loop, a.Binary, "renew", "--pod-token-file", a.TokenFile)
+			cmd := exec.CommandContext(s.loop, a.Binary, shimwire.AgentSecretsRenew, "--pod-token-file", a.TokenFile)
 			tail := &lastLineWriter{}
 			cmd.Env = s.cfg.Env
 			cmd.Stdout = os.Stderr
 			cmd.Stderr = io.MultiWriter(os.Stderr, tail)
-			if err := cmd.Start(); err != nil {
+			pid, err := s.children.Start(cmd)
+			if err != nil {
 				s.log.Printf("[worker-shim] agent-secrets: renewer could not start: %v; retrying in %s", err, renewRestartDelay)
 			} else {
-				s.log.Printf("[worker-shim] agent-secrets: renewer started (pid %d)", cmd.Process.Pid)
+				s.log.Printf("[worker-shim] agent-secrets: renewer started (pid %d)", pid)
 				err := cmd.Wait()
+				s.children.Done(pid)
 				if s.loop.Err() != nil {
 					return
 				}

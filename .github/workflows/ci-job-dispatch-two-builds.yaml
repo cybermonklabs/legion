@@ -61,8 +61,13 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -265,13 +270,13 @@ jobs:
         env:
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
         run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
-      - name: Size the service for this lane's Dispatch processes
-        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
-      # No commit, checkpoint or database copy here waits for the runner's disk: why every
-      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
-      - name: Turn crash safety off on the service
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
         timeout-minutes: 2
-        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Check the service allows this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # Only what the twobuild tag adds: envoy-go's unit step runs ./cmd/dispatch's untagged tests,
       # so the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
       # source at run time. The assignment is a line of its own: under bash -e it carries the
@@ -419,8 +424,13 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -517,13 +527,13 @@ jobs:
         env:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-same
         run: packages/envoy/scripts/build-dispatch-build.sh --commit HEAD --out "$DISPATCH_PREVIOUS_BUILD"
-      - name: Size the service for this lane's Dispatch processes
-        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
-      # No commit, checkpoint or database copy here waits for the runner's disk: why every
-      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
-      - name: Turn crash safety off on the service
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
         timeout-minutes: 2
-        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Check the service allows this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The job above's Go step, its -run read the same way, against this tree's own build.
       - name: Two-build tests of the Dispatch server against its own build
         env:

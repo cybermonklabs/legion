@@ -8,7 +8,9 @@
 # Run `begin` after the restore and before the build, `end` after the build and before the save,
 # each with the GOCACHE the build uses (the script asks `go env GOCACHE`). <state-dir> is the
 # script's own scratch directory for that pair; it must not exist before `begin`. A relative
-# <state-dir> is taken from the current directory.
+# <state-dir> is taken from the current directory. Neither touches the module cache: a fill that
+# saves one saves its module zips with it (.github/ci-notes/ci-caches.md, "Why the fills keep the
+# module zips").
 #
 # Why: a fill restores the newest entry of its family, builds on it and saves the result. Each
 # build adds the objects of every package whose inputs changed since that entry, and nothing

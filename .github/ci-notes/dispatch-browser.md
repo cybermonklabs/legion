@@ -979,8 +979,8 @@ harness starts its servers with crash safety off, so no commit waits for the run
 With it on, merge-group run 44456291758 (job 135332117623) failed here: the disk stopped
 answering for about 5 s, the read mark a closed page left in flight could neither commit nor
 be cancelled, and the next row's reset could not lock `user_document_reads` within its 5 s. A
-service can be given those three settings too, with `alter system` and a reload, as
-docs-site.yaml's is; this job takes the harness's server rather than a second copy of its
+service can be given those three settings too, on its `command:` line, as docs-site.yaml's is
+(.github/scripts/postgres-service-settings.sh); this job takes the harness's server rather than a second copy of its
 settings, and that server loads the stall library below as it starts, which a service,
 started before any step has built the library, could do only after a restart. The suite's
 row e2e/read-marker-disk-stall.multiprocess.e2e.ts stalls the disk on purpose, through the

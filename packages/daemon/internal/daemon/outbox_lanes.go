@@ -482,16 +482,17 @@ func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *l
 }
 
 // finishesItsOwnRow is whether row's own effect finishes the row inside its run: a left pod's close
-// check (record.IssueWorkspaceCheck with CloseRoles), which finishes its row in the transaction that
-// records what it decided (checkLeftPodWorkspace). The idle release's check is the same kind and
-// never does.
+// check (record.IssueWorkspaceCheck.LeftPodClose: CloseRoles, or the launcher's check with Close
+// where no role runs in the pod), which finishes its row in the transaction that records what it
+// decided (checkLeftPodWorkspace). The idle release's check, and the launcher's check of a pod no
+// claim owns, are the same kind and never do.
 func finishesItsOwnRow(row record.OutboxRow) bool {
 	if row.Kind != record.OutboxKindIssueBundle {
 		return false
 	}
 	payload, err := record.DecodeOutboxPayload(row)
 	check, ok := payload.(record.IssueWorkspaceCheck)
-	return err == nil && ok && len(check.CloseRoles) > 0
+	return err == nil && ok && check.LeftPodClose()
 }
 
 // warnHeld is one tick's look at the lifecycle rows of the row's issue held behind it

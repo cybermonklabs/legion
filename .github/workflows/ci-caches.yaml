@@ -8,6 +8,10 @@ name: CI caches
 # Each fill keeps in the build cache only what its own build used
 # (.github/scripts/go-cache-working-set.sh).
 # why: .github/ci-notes/ci-caches.md#why-each-fill-keeps-only-what-its-own-build-used
+# Each fill that saves ~/go/pkg/mod saves its module zips with it: a job that restores the entry
+# and runs a retried `go mod download` before it builds, as the fills and most readers do, needs
+# both the .zip and its .ziphash for a cache hit (Go 1.27.3's DownloadZip).
+# why: .github/ci-notes/ci-caches.md#why-the-fills-keep-the-module-zips
 
 # A push to main, and a dispatch: by hand, or from release-envoy-listener.yaml's release_publish
 # with `only: dispatch-builds` once a release is tagged, which runs the dispatch-builds jobs alone.
@@ -87,9 +91,8 @@ jobs:
           cache: false
 
       # The newest entry of the family, which the builds below compile on: the readers' key,
-      # which no entry carries any more, and that key and a `-`. The key's own prefix match can
-      # still reach an entry of a Go whose version starts with this one's (go1.27.30 for go1.27.3);
-      # Go keys each object on the toolchain that built it, so that entry costs only its download.
+      # which no entry carries any more, and that key and a `-`.
+      # why: .github/ci-notes/ci-caches.md#what-this-workflow-fills-and-why-it-runs-on-a-push-to-main
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-daemon
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -423,10 +426,6 @@ jobs:
       - name: Delete the build cache's entries neither envoy build used
         run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-envoy-test-working-set"
 
-      # This fill keeps the module zips under ~/go/pkg/mod/cache/download: every reader on this
-      # branch runs a retried `go mod download` before it builds, and Go 1.27.3's DownloadModule
-      # requires both .zip and .ziphash for a cache hit.
-      # why: .github/ci-notes/ci-caches.md#why-the-go-envoy-test-fill-keeps-the-module-zips
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |

@@ -274,6 +274,10 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_workflow_files_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-workflow-files.test.sh .github/scripts/check-workflow-files.test.sh
 
+      - name: Test the Postgres service settings and their read-back
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"postgres_service_settings_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/postgres-service-settings.test.sh .github/scripts/postgres-service-settings.test.sh
+
       - name: Test the private-name check
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_private_names_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-private-names.test.sh .github/scripts/check-private-names.test.sh

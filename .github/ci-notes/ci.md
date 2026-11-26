@@ -682,6 +682,21 @@ Those three are named rather than cited by line: a citation into this file moves
 with every comment added above it, and one entry's line number took four values in
 two rounds that way.
 
+## dispatch_browser: The list of the texts an upload refuses for the text alone,
+
+The list of the texts an upload refuses for the text alone, which
+`packages/dispatch/e2e/artifact-dry-run.e2e.ts#rows` reads, from the new URL
+`packages/dispatch/e2e/artifact-dry-run.e2e.ts#textRefusalsFile` holds: that
+spec runs each row of the list in each combination it runs, so a change to the
+list changes the spec's rows. This entry alone selects the list for this job:
+the `*dispatch_server` anchor this filter takes holds
+'packages/envoy/internal/dispatch/api/*', which matches the files of that
+directory and none of its testdata/ directory, and no other pattern of this
+filter matches the list. Measured with ci_filter_coverage.changes_filters and
+workflow_paths.PathsFilter under some-with-excludes, the quantifier the changes
+job reads this file under: this filter covers the list with the entry and not
+without it.
+
 ## dispatch_browser: What stood here was the file store's own image declaration
 
 What stood here was the file store's own image declaration and the
@@ -1293,7 +1308,7 @@ builds the test binary of every package of the envoy module, envoy-go-claim-mode
 the API's of that set, the binaries, multiprocess
 and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
 broker's commands out of that same set, and the two jobs of ci-job-dispatch-two-builds.yaml,
-whose sizing step and twobuild test step build out of it too), go-envoy-darwin-vet
+whose ceiling step and twobuild test step build out of it too), go-envoy-darwin-vet
 (envoy-go-build's darwin vet, whose step's env gives it a build cache directory of its own,
 so the standard library and the envoy module's dependencies compiled for darwin ride in
 neither the go-envoy nor the
@@ -1314,7 +1329,8 @@ restores the newest entry
 of the family, runs on it the build the job runs, which compiles only what changed since, deletes
 from the build cache every entry that build did not use (.github/scripts/go-cache-working-set.sh;
 without it an entry grew with each fill, go-envoy-test from 690 MB to 2,039 MB in a day, and every
-job that restores it downloaded the growth), and saves the result under the job's key followed by
+job that restores it downloaded the growth), keeps the zips of any module cache it saves
+(.github/ci-notes/ci-caches.md#why-the-fills-keep-the-module-zips), and saves the result under the job's key followed by
 the commit (`-${{ github.sha }}`). No entry
 carries the job's key itself, so GitHub's matching gives each job the newest entry whose key
 starts with it, the last fill's, and ci-caches.yaml's refill-superseded job then deletes every
@@ -2813,14 +2829,15 @@ build, beside this job and not after it (that job's comment says why).
 Both jobs of ci-job-dispatch-two-builds.yaml restore go-envoy-test and save nothing, as
 envoy-go-claim-model and dispatch-browser.yaml's binaries job do. setup-go's own cache is off,
 so without a restore their Go steps start on an empty module cache and an empty build cache.
-When the two earlier builds come out of their own cache entries, the sizing step's
+When the two earlier builds come out of their own cache entries, the ceiling step's
 `go run ./internal/dispatch/store/cmd/connections` and the twobuild test step are the first
 go commands of the job to compile, and they compile the set from nothing; without a restore,
 the job's retried `go mod download` before them (dispatch://INFRA-1545) fetches every module
-of it as well. In the 10 green merge groups after 2026-11-24T08:40Z, the sizing step took
-27 s, against 2 s before, when the previous build's compile had filled the caches first. In
-the dispatch-two-builds job of run 45360231949, a run before that download step, the two steps
-printed 16 and 67 `go: downloading` lines. Each push to main fills
+of it as well. In the 10 green merge groups after 2026-11-24T08:40Z, the ceiling step (then
+called the sizing step, which also restarted the service) took 27 s, against 2 s before, when
+the previous build's compile had filled the caches first. In the dispatch-two-builds job of run
+45360231949, a run before that download step, the two steps printed 16 and 67 `go: downloading`
+lines. Each push to main fills
 go-envoy-test with `go test -count=1 -run '^$' ./...` over the envoy module, which builds the
 test binary of every package and runs no test, so it holds what both steps build. Measured with
 `go list -deps -test -tags twobuild ./cmd/dispatch ./internal/dispatch/store/cmd/connections`
@@ -3451,8 +3468,10 @@ why one job).
 
 ## Why a lane's sizing step comes after its retried module download
 
-Each job that sizes its PostgreSQL service for the Dispatch processes it starts does so in a step
-named "Size the service for this lane's Dispatch processes". At c7939327bc14 ten such steps stand
+Each job that checks its PostgreSQL service's connection limit for the Dispatch processes it
+starts does so in a step named "Check the service allows this lane's Dispatch processes", which
+was "Size the service for this lane's Dispatch processes" until main's #5605 put max_connections
+on the service's command line. At c7939327bc14 ten such steps stand
 in ten jobs: dispatch-memory, dispatch-multiprocess, envoy-go, envoy-go-race, envoy-go-race-api,
 envoy-go-race-docs, envoy-session-stall, daemon-go-race, dispatch-two-builds and
 dispatch-two-builds-same. That step runs .github/scripts/pg-connection-ceiling.sh, whose `go run`

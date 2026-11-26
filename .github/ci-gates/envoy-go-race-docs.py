@@ -5,7 +5,7 @@ GATE = gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy
     ]),
 ], reads=reads(
     (".github/scripts/race_memory.py", f"{at('envoy-go-race-docs', RACE_DOCS_STEP)} runs the package under it"),
-) + ceiling_reads("envoy-go-race-docs") + crash_safety_reads("envoy-go-race-docs") + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod")
+) + ceiling_reads("envoy-go-race-docs") + service_settings_reads("envoy-go-race-docs") + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod")
   + go_modules("envoy-go-race-docs"))
 GATE = with_reads(GATE, [
     Read('packages/envoy/internal/dispatch/pmdoc/schema/**', "filter envoy_go_race_docs held packages/envoy/internal/dispatch/pmdoc/schema/** by hand before the filters were computed: it selected 1 file(s) no other read of this gate declares"),

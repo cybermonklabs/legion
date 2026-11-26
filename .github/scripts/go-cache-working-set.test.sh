@@ -6,9 +6,10 @@
 # check that the Go this repository pins still marks the cache entries a build uses
 # (cmd/go/internal/cache/cache.go's markUsed), which is what the script reads; a Go that stopped
 # would fail them. The later cases run the script against a stand-in `go` that only answers
-# `go env GOCACHE`, over cache files written here, for what no small real build reaches: an
-# output another action wrote before, the second family of a job, the files that are not
-# entries, a build that reads none of the restored entries, and relative state directories.
+# `go env GOCACHE` and `go env GOMODCACHE`, over cache files written here, for what no small real
+# build reaches: an output another action wrote before, the second family of a job, the files that
+# are not entries, a build that reads none of the restored entries, relative state directories,
+# and a module cache, zips included, that `begin` and `end` leave as they found it.
 #
 # Run from anywhere: .github/scripts/go-cache-working-set.test.sh
 # CI runs it in ci.yaml's test job, after its setup-go.
@@ -129,11 +130,12 @@ unset GOCACHE GOFLAGS GOENV GOTOOLCHAIN GOPATH
 
 # --- a stand-in go over cache files written here -------------------------------------------------
 # fake_cache <dir>: a cache directory with a stand-in `go` beside it on PATH, which answers
-# `go env GOCACHE` with <dir> and nothing else.
+# `go env GOCACHE` with <dir>/cache, `go env GOMODCACHE` with <dir>/mod and nothing else.
 fake_cache() {
   local dir=$1
   mkdir -p "$dir/cache/00" "$dir/cache/ab" "$dir/cache/cd" "$dir/cache/fuzz/x" "$dir/bin"
-  printf '#!/usr/bin/env bash\n[ "$*" = "env GOCACHE" ] && echo %q && exit 0\nexit 2\n' "$dir/cache" >"$dir/bin/go"
+  printf '#!/usr/bin/env bash\n[ "$*" = "env GOCACHE" ] && echo %q && exit 0\n[ "$*" = "env GOMODCACHE" ] && echo %q && exit 0\nexit 2\n' \
+    "$dir/cache" "$dir/mod" >"$dir/bin/go"
   chmod +x "$dir/bin/go"
 }
 hexid() { printf '%064d' "$1"; }
@@ -205,6 +207,26 @@ touch "$c/ab/ab$(hexid 10 | cut -c3-)-d"
 check "end with it exits 0" "$(is "$(in_fake end first)" 0)"
 check "and keeps the entry the build used" "$( [ -e "$c/ab/ab$(hexid 10 | cut -c3-)-d" ] && echo true || echo false)"
 
+echo "case: begin and end leave the module cache as they found it, zips included, and still prune the build cache"
+fake=$work/fake8
+fake_cache "$fake"
+c=$fake/cache
+v=$fake/mod/cache/download/example.com/x/@v
+mkdir -p "$v" "$fake/mod/example.com/x@v1.0.0"
+for f in v1.0.0.zip v1.0.0.ziphash v1.0.0.mod v1.0.0.info list; do printf '%s\n' "$f" >"$v/$f"; done
+printf 'package x\n' >"$fake/mod/example.com/x@v1.0.0/x.go"
+printf 'old' >"$c/cd/cd$(hexid 11 | cut -c3-)-d"
+# modcache_files: every file and directory of the stand-in module cache, with its size and time.
+modcache_files() { (cd "$fake/mod" && find . -printf '%P %y %s %T@\n' | LC_ALL=C sort); }
+modcache_before=$(modcache_files)
+PATH=$fake/bin:$PATH run begin "$fake/state"
+PATH=$fake/bin:$PATH run end "$fake/state"
+check "end exits 0" "$(is "$status" 0)"
+check "and deletes the entry the build did not use" "$( [ -e "$c/cd/cd$(hexid 11 | cut -c3-)-d" ] && echo false || echo true)"
+check "and the zip and its .ziphash stay, which go mod download needs for a cache hit" \
+  "$( [ -f "$v/v1.0.0.zip" ] && [ -f "$v/v1.0.0.ziphash" ] && echo true || echo false)"
+check "and no file of the module cache is gone, added or touched" "$(is "$(modcache_files)" "$modcache_before")"
+
 echo "case: the script refuses what would prune the wrong cache or a cache it never marked"
 fake=$work/fake3
 fake_cache "$fake"
@@ -222,5 +244,7 @@ check "an end under another GOCACHE fails" "$(is "$status" 1)"
 check "and names both caches" "$(contains "$out" "go env GOCACHE is $other/cache, but begin marked $fake/cache")"
 PATH=$fake/bin:$PATH run begin "$fake/later" "$fake/state"
 check "a begin given a second state directory is a usage error" "$(is "$status" 2)"
+PATH=$fake/bin:$PATH run end "$fake/state" "$fake/later"
+check "an end given a second state directory is a usage error" "$(is "$status" 2)"
 
 summary "go-cache-working-set.sh"

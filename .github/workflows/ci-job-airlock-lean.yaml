@@ -96,8 +96,8 @@ jobs:
         run: bash packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/cipher/proxyrules/lean
       # The committed seed corpus (testdata/fuzz/FuzzAirlock): every seed through both sides; the
       # host shapes a rules file may hold, which no seed decodes to, through both validations; and
-      # a host-less entry carrying guidance, a field the generator never writes, which both
-      # validations refuse.
+      # a host-less entry, which both validations refuse and a proxy request for which both
+      # refuse as a secret not behind the airlock.
       - name: Compare the Go airlock with the model over the seed corpus
         run: go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelRefusesAHostlessEntry)$' ./internal/cipher/proxyrules/
         working-directory: packages/envoy
