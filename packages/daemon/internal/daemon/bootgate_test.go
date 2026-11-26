@@ -1094,14 +1094,17 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 			if err == nil {
 				t.Fatal("the gate passed a launch that failed")
 			}
-			// The launch text is written out, not rendered with shellprefix.Command, the gate's own
-			// rendering, so a rendering that drops the prefix fails here. The prefix's path, under
-			// TMPDIR, holds only characters the rendering leaves bare: one it quoted would fail the
-			// row, never pass it. The invocation is already one shell word (fakeOmp.invocation).
-			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", strconv.Quote(f.prefix + " " + f.invocation), "secrets: ANTHROPIC_API_KEY was denied"} {
+			// The launch text renders the prefix as one shell word and the invocation as its own
+			// already-rendered shell word. It does not call shellprefix.Command, the gate's
+			// renderer, so a renderer that drops the prefix fails here. Word is necessary: a
+			// temporary prefix path can hold a space or an apostrophe.
+			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", strconv.Quote(shellprefix.Word(f.prefix) + " " + f.invocation), "secrets: ANTHROPIC_API_KEY was denied"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the refusal does not say %q: %v", want, err)
 				}
+			}
+			if got := strings.TrimSpace(f.read(t, "prefixed")); got != "prefixed" {
+				t.Errorf("the launch prefix wrote %q, want %q", got, "prefixed")
 			}
 			if n := f.attempts(t); n != 1 {
 				t.Errorf("Oh My Pi ran %d times for a definitive failure, want once", n)
