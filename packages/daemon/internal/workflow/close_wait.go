@@ -457,17 +457,25 @@ func (e *Engine) openCheckAtRead(ctx context.Context, tx pgx.Tx, issue record.Is
 
 // resultChanged is a change of what Dispatch computes for an issue's checks
 // (intake.DispatchResultChanged): a result recorded or retracted, a pull request's move, or a
-// deploy. None decides a check, so an issue in verifying has its checks read again. A result
-// recorded after the production check closed as not run opens one more look (lookAfterNotRun).
+// deploy. It reads the issue once and takes one path. An issue in verifying has its checks read
+// again, since none of these decides a check, and a result recorded after the production check
+// closed as not run opens one more look (lookAfterNotRun). A done issue that this release closed
+// on its checks tells the controller of a fail (tellClosedCheckFailed).
 func (e *Engine) resultChanged(ctx context.Context, tx pgx.Tx, fact intake.DispatchResultChanged) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Key)
-	if err != nil || issue == nil || issue.Phase != phase.Verifying {
+	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	if err := e.lookAfterNotRun(ctx, tx, *issue, fact); err != nil {
-		return intake.Result{}, err
+	switch issue.Phase {
+	case phase.Done:
+		return intake.Result{}, e.tellClosedCheckFailed(ctx, tx, *issue, fact)
+	case phase.Verifying:
+		if err := e.lookAfterNotRun(ctx, tx, *issue, fact); err != nil {
+			return intake.Result{}, err
+		}
+		return intake.Result{}, e.askCloseRead(ctx, tx, *issue)
 	}
-	return intake.Result{}, e.askCloseRead(ctx, tx, *issue)
+	return intake.Result{}, nil
 }
 
 // lookAfterNotRun opens one more look of issue's production check where a result is recorded
