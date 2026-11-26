@@ -194,10 +194,12 @@ this order, and needs no registered agent session:
    other refusal stops the command.
 4. `machine`: the machine's own cloud identity, found with no setting from the Google exchange
    audience the broker answers in `GET /v1/settings`: an `external_account` file
-   `GOOGLE_APPLICATION_CREDENTIALS` names, or the Compute Engine metadata server
-   (`AGENT_SECRETS_MACHINE_IDENTITY` forces `metadata` or `pool` instead; `kubernetes` is refused,
-   exit 2, since the broker mints no launcher credential for a Kubernetes identity, and a pod
-   enrolls through its launcher or `enroll --pod`). The settings are read only from an `https`
+   `GOOGLE_APPLICATION_CREDENTIALS` names, of any `credential_source` (an X.509 certificate's
+   among them, whose configuration must name a workload certificate and key), or the Compute
+   Engine metadata server (`AGENT_SECRETS_MACHINE_IDENTITY` forces `metadata` or `pool` instead;
+   `kubernetes` and `github-actions` are refused, exit 2, since the broker mints no launcher
+   credential for a Kubernetes identity or a GitHub Actions run, and a pod enrolls through its
+   launcher or `enroll --pod`). The settings are read only from an `https`
    broker, or an `http` one on loopback. Once an identity is found, and before a token is minted
    for it, the audience is kept in the cache's `google-exchange-audience` (a machine with no
    identity keeps none): a broker that later names another is refused before any token is minted

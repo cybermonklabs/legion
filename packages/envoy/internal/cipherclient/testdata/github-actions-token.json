@@ -1,0 +1,82 @@
+{
+  "about": [
+    "What GitHub answers a GitHub Actions job that asks for its OIDC token, as captured from a real run (source). Both clients' tests answer from it through a stub GitHub: packages/envoy/internal/cipherclient/githubactions_test.go and packages/cipher-client/src/__tests__/github-actions-identity.test.ts.",
+    "request_url is what the run printed of ACTIONS_ID_TOKEN_REQUEST_URL: its scheme and its query's keys. request_token_bytes is the length of ACTIONS_ID_TOKEN_REQUEST_TOKEN.",
+    "answer is GitHub's answer to the job's own request token, asked for audience. Its body's value is the placeholder ${jwt}: each suite signs jwt.header and jwt.claims with a key of its own and answers that token in its place, with a jti of its own in each token, as GitHub mints one per request.",
+    "Values that name the account are example values of the same form, and the branch the run was on is refs/heads/main here. A value of the form <name> is one the run printed and this file does not keep.",
+    "refused is GitHub's answer to the wrong request token refused.request_token. no_audience is the aud of a token asked for with no audience parameter."
+  ],
+  "source": {
+    "captured": "2026-11-23",
+    "run": "https://github.com/cybermonklabs/legion/actions/runs/45247120378",
+    "workflow": "capture-oidc-shape, a one-off workflow on a scratch branch that was deleted after the run",
+    "commands": [
+      "python3 -c 'import os,urllib.parse as p; u=p.urlsplit(os.environ[\"ACTIONS_ID_TOKEN_REQUEST_URL\"]); print(u.scheme, bool(u.query), sorted(p.parse_qs(u.query)))'",
+      "a curl GET of $ACTIONS_ID_TOKEN_REQUEST_URL with &audience=https://cipher.example added, the job's own ACTIONS_ID_TOKEN_REQUEST_TOKEN as its bearer, writing the body to answer.json and printing the status and the content type",
+      "a python step printed the answer's keys, the JWT header and the JWT claims without jti",
+      "the same curl GET with the bearer wrong in place of the request token (WRONG_REQUEST_TOKEN=wrong in the step's env), printing the body, the status and the content type"
+    ]
+  },
+  "request_url": {
+    "scheme": "https",
+    "query_keys": ["api-version"]
+  },
+  "request_token_bytes": 4300,
+  "audience": "https://cipher.example",
+  "answer": {
+    "status": 200,
+    "content_type": "application/json",
+    "body": { "value": "${jwt}" }
+  },
+  "jwt": {
+    "header": { "alg": "RS256", "kid": "<kid>", "typ": "JWT", "x5t": "<x5t>" },
+    "claims": {
+      "actor": "example-bot[bot]",
+      "actor_id": "1",
+      "aud": "https://cipher.example",
+      "base_ref": "",
+      "check_run_id": "2",
+      "enterprise": "example-org",
+      "enterprise_id": "3",
+      "event_name": "push",
+      "exp": 1795461665,
+      "head_ref": "",
+      "iat": 1795461365,
+      "iss": "https://token.actions.githubusercontent.com",
+      "job_workflow_ref": "example-org/example-repo/.github/workflows/capture-oidc-shape.yaml@refs/heads/main",
+      "job_workflow_sha": "<sha>",
+      "jti": "<uuid>",
+      "nbf": 1795461065,
+      "ref": "refs/heads/main",
+      "ref_protected": "false",
+      "ref_type": "branch",
+      "repository": "example-org/example-repo",
+      "repository_id": "4",
+      "repository_owner": "example-org",
+      "repository_owner_id": "5",
+      "repository_visibility": "public",
+      "run_attempt": "1",
+      "run_id": "6",
+      "run_number": "1",
+      "runner_environment": "github-hosted",
+      "sha": "<sha>",
+      "sub": "repo:example-org@5/example-repo@4:ref:refs/heads/main",
+      "workflow": "capture-oidc-shape",
+      "workflow_ref": "example-org/example-repo/.github/workflows/capture-oidc-shape.yaml@refs/heads/main",
+      "workflow_sha": "<sha>"
+    }
+  },
+  "refused": {
+    "request_token": "wrong",
+    "status": 401,
+    "content_type": "application/json",
+    "body": {
+      "source": "actions-run-service",
+      "statusCode": 401,
+      "errorMessage": "token is malformed: token contains an invalid number of segments"
+    }
+  },
+  "no_audience": {
+    "aud": "https://github.com/<owner>"
+  }
+}
