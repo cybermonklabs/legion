@@ -79,7 +79,8 @@ var thisBranchsMigrationsAtOrBelowMainsNewest = []int{
 // mainsNewestMigration is the newest version main carried at the forward merge of 2026-11-12
 // that brought it into dispatch://INFRA-714's branch: the claim's failure cause. Every embedded
 // version above it is this branch's (thisBranchsMigrations). The fixtures of the two later tests
-// start from later mains (claimSessionsFixtureNewestMigration and todaysMainsNewestMigration).
+// start from later, pinned mains (claimSessionsFixtureNewestMigration and
+// answerMigrationsFixtureNewestMigration).
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
@@ -280,15 +281,22 @@ func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest
 	}
 }
 
-// todaysMainsNewestMigration is #5385's production check failed looks, the newest migration on
-// main at d41b74eb. Main already includes issue priority, claim sessions, the experiment
-// assignment plan, the claim cause times, #5372's release teardown and #4392's issue pod disks.
-const todaysMainsNewestMigration = 20261125000600
+// answerMigrationsFixtureNewestMigration is the pinned newest version of the answer-migration
+// fixture: #5385's production check failed looks, the newest migration on main at d41b74eb, when
+// this fixture was recorded. It is a pin, not live main's newest: main numbers later migrations
+// above it (#5575's claims tree, 20261125212800, among them), and the test counts each such
+// embedded migration as pending rather than seeding it. The seed already includes issue priority,
+// claim sessions, the experiment assignment plan, the claim cause times, #5372's release teardown
+// and #4392's issue pod disks.
+const answerMigrationsFixtureNewestMigration = 20261125000600
 
-// A database today's main migrated records every embedded migration but the six answer-loop
-// ones: the three tables, thread replies, call tools and released-agent messages. All six stand
-// below main's newest, so the upgrade applies each once though the database already records a
-// higher version, and the store's highest version stays main's newest.
+// A database migrated to the pinned fixture records every embedded migration up to
+// answerMigrationsFixtureNewestMigration but the six answer-loop ones: the three tables, thread
+// replies, call tools and released-agent messages. All six stand below the pin, so the upgrade
+// applies each once though the database already records a higher version. Every embedded migration
+// numbered above the pin is pending as well, so the upgrade applies it after the six, and the
+// store's highest version becomes the newest embedded one: the pin itself when nothing newer is
+// embedded.
 func TestADatabaseCurrentMainMigratedAppliesAnswerMigrationsBelowItsNewest(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -297,35 +305,45 @@ func TestADatabaseCurrentMainMigratedAppliesAnswerMigrationsBelowItsNewest(t *te
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	missing := map[int]bool{
+	answers := map[int]bool{
 		20261106214000: true, 20261106214001: true, 20261106214002: true,
 		20261124021727: true, 20261124072849: true, 20261124114223: true,
 	}
-	var base []migrations.Migration
+	var seed []migrations.Migration
+	found, later, newest := map[int]bool{}, 0, 0
 	for _, migration := range all {
-		if migration.Version > todaysMainsNewestMigration {
-			t.Fatalf("%s stands above main's %d: classify it before building the current-main fixture", migration.Name, todaysMainsNewestMigration)
+		switch {
+		case answers[migration.Version]:
+			found[migration.Version] = true
+		case migration.Version <= answerMigrationsFixtureNewestMigration:
+			seed = append(seed, migration)
+		default:
+			later++
 		}
-		if !missing[migration.Version] {
-			base = append(base, migration)
+		newest = max(newest, migration.Version)
+	}
+	for version := range answers {
+		if !found[version] {
+			t.Fatalf("the embedded set has no answer migration %d, so this test cannot hold that the upgrade applies it", version)
 		}
 	}
-	if _, err := store.migrate(ctx, base); err != nil {
-		t.Fatalf("migrate as current main did: %v", err)
+	if _, err := store.migrate(ctx, seed); err != nil {
+		t.Fatalf("migrate the database to the pinned fixture: %v", err)
 	}
-	if got, err := store.SchemaVersion(ctx); err != nil || got != todaysMainsNewestMigration {
-		t.Fatalf("current-main schema version = %d (%v), want %d", got, err, todaysMainsNewestMigration)
+	if got, err := store.SchemaVersion(ctx); err != nil || got != answerMigrationsFixtureNewestMigration {
+		t.Fatalf("the pinned fixture reports version %d (%v), want its pin, %d", got, err, answerMigrationsFixtureNewestMigration)
 	}
-	if applied, err := store.Migrate(ctx); err != nil || applied != len(missing) {
-		t.Fatalf("upgrade from current main applied %d (%v), want %d", applied, err, len(missing))
+	if applied, err := store.Migrate(ctx); err != nil || applied != len(answers)+later {
+		t.Fatalf("the upgrade from the pinned fixture applied %d (%v), want %d: the %d answer migrations and the %d numbered after the pin",
+			applied, err, len(answers)+later, len(answers), later)
 	}
-	for version := range missing {
+	for version := range answers {
 		var count int
 		if err := store.pool.QueryRow(ctx, `select count(*) from schema_version where version = $1::bigint`, version).Scan(&count); err != nil || count != 1 {
 			t.Errorf("migration %d recorded %d times after the upgrade (%v), want once", version, count, err)
 		}
 	}
-	if got, err := store.SchemaVersion(ctx); err != nil || got != todaysMainsNewestMigration {
-		t.Errorf("upgraded schema version = %d (%v), want main's newest, %d, unchanged", got, err, todaysMainsNewestMigration)
+	if got, err := store.SchemaVersion(ctx); err != nil || got != newest {
+		t.Errorf("after the upgrade the store reports version %d (%v), want the newest embedded, %d", got, err, newest)
 	}
 }
