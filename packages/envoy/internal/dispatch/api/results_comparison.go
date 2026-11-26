@@ -147,7 +147,7 @@ type comparisonReader struct {
 	server *server
 	// readOnly is whether the request the reader reads for was made with a read-only credential
 	// (model.Credential.ReadOnly), read once when the reader is made from the caller the read-only
-	// gate put on the request's context (refuseReadOnlyToken): the gate puts every caller that can
+	// gate put on the request's context (refuseLimitedToken): the gate puts every caller that can
 	// be read-only there, a broker-issued token and a personal token alike, and a cookie, the
 	// shared token and a service-account token never are. optionalActor answers the handler the
 	// same caller, and it cannot change within one read.
@@ -323,9 +323,13 @@ const noDefaultBranchNamed = ""
 //
 // The two facts a result states are kept apart and read apart. Where its commit stands is one
 // question, answered against the bases, and whether the check's words moved is another,
-// answered by the digest the result recorded beside the digest the check carries now. A result
-// at the compared commit under an older wording is both, and one word for both would hide
-// which of the two a reader is looking at.
+// answered by the digest and the changed version the result recorded beside those the check
+// carries now: the words moved when the digests differ and the versions differ too. A check's
+// changed version moves with every change of its words. The one case where its digest moves
+// while its changed version stays is refs.BlockIndexing.KeepRespelled keeping a block whose text
+// recorded at that version another renderer version spelled and which reads as its text now, the
+// same words in a new spelling. A result at the compared commit under an older wording is both,
+// and one word for both would hide which of the two a reader is looking at.
 func (c *comparisonReader) answer(ctx context.Context, check *model.CheckBlock) {
 	compared := c.comparedWith(ctx, *check)
 	compared.ci = c.headCI[check.BlockID]
@@ -333,7 +337,7 @@ func (c *comparisonReader) answer(ctx context.Context, check *model.CheckBlock) 
 	check.ComparedNothing = compared.reason
 	for index := range check.Results {
 		result := &check.Results[index]
-		moved := check.SHA256 != result.CheckSHA256
+		moved := check.SHA256 != result.CheckSHA256 && check.Version != result.CheckVersion
 		result.CheckWordsMoved = &moved
 		stands := c.commitStands(ctx, *check, compared, *result)
 		result.CommitStands = &stands

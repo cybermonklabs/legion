@@ -64,6 +64,16 @@
 # with another exit code stays a failure, and a called workflow whose one job failed of itself
 # beside another the platform killed stays a failure.
 #
+# A check run whose failure annotations hold RUNNER_SHUTDOWN_RESTATED is passed over, as one with
+# no failure annotation is. Such a check run is a job that only restates other jobs' result: the
+# daemon-go and daemon-go-race jobs of .github/workflows/ci-job-daemon-go.yaml wait for their
+# legs and fail, writing that phrase in their error, when a leg did not pass. Their failure
+# follows the leg's, so the leg's own check run is what says whether the platform killed it; read
+# as a fault of its own, the restating job's `exit code 1` would turn every leg's shutdown into a
+# failure of the change. A job whose every failing check run restates carries no failure of its
+# own and is read as no kill, so a restating job whose legs failed some other way, or ended with
+# no annotation, stays a failure.
+#
 # The limit of reading the exit codes rather than the steps: an annotation naming another exit
 # code is usually a step that broke the job, but a step allowed to fail leaves the same one on a
 # job that succeeds. So a job whose `continue-on-error` steps fail on purpose is not read as
@@ -106,6 +116,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 # This run's check runs, read on the first question and kept for the rest of the shell that
 # asks: a caller's `$(…)` is a subshell of its own, so what it keeps dies with that call.
 _runner_shutdown_check_runs=
+
+# The words a job that only restates other jobs' result writes in its error, which marks its check
+# run as no failure of its own (the header says why). The jobs that write it, and ci-ok.test.sh's
+# case that holds their text to it, spell it exactly so.
+RUNNER_SHUTDOWN_RESTATED="this job restates its legs' result"
 
 # _runner_shutdown_other_exit_code <annotations>: returns 0 when these failure annotations of one
 # check run name an exit code that is not 143. That is usually the job's own `Process completed
@@ -171,10 +186,12 @@ runner_shutdown_kills() {
         echo "::warning::GitHub refused the annotations of $job at every attempt gh-read.sh made, so its failure cannot be read as a runner shutdown; it stands as a failure" >&2
         return 1
       fi
-      # A check run with no failure annotation is a part of the job that did not fail; one that
-      # has them carried the kill only when it holds both facts and no annotation of it names
-      # another exit code, or the job failed of itself.
+      # A check run with no failure annotation is a part of the job that did not fail, and one
+      # that restates its legs' result carries no failure of its own; one that has them carried
+      # the kill only when it holds both facts and no annotation of it names another exit code,
+      # or the job failed of itself.
       [ -n "$annotations" ] || continue
+      [[ $annotations != *"$RUNNER_SHUTDOWN_RESTATED"* ]] || continue
       if [[ $annotations == *"has received a shutdown signal"* && $annotations == *"exit code 143"* ]] \
         && ! _runner_shutdown_other_exit_code "$annotations"; then
         shutdown=true

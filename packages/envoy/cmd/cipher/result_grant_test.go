@@ -85,11 +85,13 @@ func placeholderGrant(t *testing.T, hosts ...string) map[string]any {
 }
 
 // runnerTokenEndpoint is the stand-in for the runner's OIDC token endpoint, which answers the
-// bearer it gave the job with a run token.
+// bearer it gave the job with a run token. The scheme is read in any letter case, as HTTP reads
+// it: GitHub's own example spells it `bearer`, as the client sends it.
 func runnerTokenEndpoint(t *testing.T) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer "+runnerRequestToken {
+		scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
+		if !ok || !strings.EqualFold(scheme, "Bearer") || token != runnerRequestToken {
 			http.Error(w, "no bearer", http.StatusUnauthorized)
 			return
 		}
@@ -109,7 +111,7 @@ func runResultGrant(t *testing.T, broker *resultBroker, extra ...string) (string
 		"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(), "XDG_RUNTIME_DIR=" + t.TempDir(),
 		"AGENT_SECRETS_URL=" + broker.URL, "AGENT_SECRETS_MACHINE_IDENTITY=github-actions",
 		"AGENT_SECRETS_MACHINE_AUDIENCE=example-broker", "ACTIONS_ID_TOKEN_REQUEST_URL=" + runner.URL,
-		cipherclient.ActionsTokenVar + "=" + runnerRequestToken, "DISPATCH_URL=https://" + resultHost,
+		cipherclient.ActionsIDTokenRequestTokenVar + "=" + runnerRequestToken, "DISPATCH_URL=https://" + resultHost,
 	}, extra...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr

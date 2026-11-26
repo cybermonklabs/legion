@@ -179,9 +179,11 @@ func (r *liveRig) cacheRepository(repo ghrepo.Repository) {
 // `runtime.kubernetes.resources.issue` does, field by field: its cpu and memory, which the stub
 // agents need little of, and its ephemeral-storage limit and request, both explicitly configured
 // and equal at the GKE Autopilot cap; the controller's pod keeps config.DefaultResources(). The
-// stub agent sleeps, so the override sizes the issue pod down from the default 3 CPU and 19 GiB to
-// 2 CPU and 4 GiB, which nproc and MemTotal in the pod are then checked against.
-var liveIssueOverride = config.Reservation{CPU: "2", Memory: "4Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "10Gi"}
+// stub agent sleeps, so the override sizes the issue pod's memory down from the default 8 GiB to
+// 4 GiB. Its cpu, 2500m, sits above the default's 2, so nproc in the pod, 3, and the pod's cgroup
+// cpu quota, 2.5, read the override and not the default; nproc or the quota, and MemTotal, are
+// what the pod is then checked against.
+var liveIssueOverride = config.Reservation{CPU: "2500m", Memory: "4Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "10Gi"}
 
 // liveResources are the reservations the rig hands the runtime (Options.Resources): the daemon's
 // defaults as it translates them (reservations, manifest_test.go) with liveIssueOverride applied
@@ -755,6 +757,7 @@ type liveRig struct {
 }
 
 func TestStage4aSandboxRuntimeLive(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (fixtureenv.Live).
 	fixtureenv.Live(t)
 	env := readLiveEnv(t)
 	r := newLiveRig(t, env)

@@ -63,7 +63,7 @@ const docsCompactionNote = "Writes nothing itself. A cold read of a document who
 // Every other GET row is a GET that writes (readWritesState), which no read-only token may call.
 //
 // routes() stamps each entry onto its row (apiRoute.Read), which is what the read-only gate reads
-// (refuseReadOnlyToken), and register refuses to mount a table with a GET row this map does not
+// (refuseLimitedToken), and register refuses to mount a table with a GET row this map does not
 // class, or with an entry that names no GET row it mounts (readClassRefusals), so a GET row added
 // later is served to no read-only token until someone has read its handler and classed it here.
 //
@@ -156,8 +156,10 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/near-copy-checks/{id}":                                  {Writes: readWritesNothing},
 	"GET /api/v1/going/capability":                                       {Writes: readWritesNothing},
 	"GET /api/v1/agents":                                                 {Writes: readWritesNothing},
+	"GET /api/v1/agents/known":                                           {Writes: readWritesNothing},
 	"GET /api/v1/agents/{session_id}/answers":                            {Writes: readWritesNothing},
 	"GET /api/v1/agents/{session_id}/messages":                           {Writes: readWritesNothing},
+	"GET /api/v1/agents/{session_id}/artifacts":                          {Writes: readWritesNothing},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}":                   {Writes: readWritesNothing},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}": {Writes: readWritesNothing},
 	"GET /api/v1/broadcasts":                                             {Writes: readWritesNothing},

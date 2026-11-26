@@ -787,15 +787,14 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
   }
 })
 
-// A report Dispatch made and gave no copy of its answer for (`409 KEY_COMMITTED`) answered the
-// attempt: its line says it landed, never that it could not be reported.
+// A report Dispatch made and gave no copy of its answer for (`409 KEY_COMMITTED`, behind the keyed
+// layer, which names the report's key back on it) answered the attempt: its line says it landed,
+// never that it could not be reported.
 test("a rejected frame's report that landed with no answer back is not said to be unreported", async () => {
   let server: Server<undefined> | undefined
   const written = spyOn(process.stderr, "write").mockImplementation(() => true)
   try {
     const replies: string[] = []
-    // Behind Dispatch's keyed layer, whose own refusal of a repeat that already ran names the
-    // report's key back.
     server = Bun.serve({
       port: 0,
       fetch: keyedLayer(
@@ -1048,6 +1047,7 @@ test("the user-turn router's Dispatch client trades under the session's id", asy
 })
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
+
 // The rows below run the channel server as a child process of its own, with Bun's transpiler cache
 // off (`./transpiler-cache.ts`), and wait for what it answers or does: one that ends first is
 // named with its exit, and an answer or an exit that never comes fails the row by name before the
@@ -1199,7 +1199,7 @@ test("the channel server leaves no Bun cache in its HOME", async () => {
     CLAUDE_PLUGIN_DATA: home,
   })
   expect({ exitCode, cache: existsSync(join(home, ".bun")) }).toEqual({ exitCode: 0, cache: false })
-}, 20_000)
+})
 
 test("an envoy.json that turns Envoy off opens no NATS connection and calls no listener, whatever the variables name", async () => {
   let stopBroker: (() => Promise<void>) | undefined

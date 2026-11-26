@@ -967,7 +967,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	// The merge, as an envelope a publisher older than head_repo made. Its author is outside the
 	// delivery population, so the envelope writes the head row and nothing else.
 	intake := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed())
-	wrote, err := intake.handlePullRequestEnvelope(ctx, settings, map[string]string{
+	wrote, err := intake.handlePullRequestEnvelope(ctx, &settings, map[string]string{
 		"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets", "number": "61",
 		"title": "HEAD-7 the work", "body": "", "head_ref": "legion/HEAD-7", "head_sha": mergedHead,
 		"base_ref": "main", "author": "stranger", "updated_at": "2026-02-06T00:00:00Z",

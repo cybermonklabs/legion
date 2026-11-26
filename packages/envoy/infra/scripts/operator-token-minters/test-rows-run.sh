@@ -17,14 +17,17 @@
 #   (l)  the admin tag: ENVOY_OPERATOR shown without "admin": "true", no such secret, and the scratch
 #        secret ENVOY_OPERATOR_CONTROL at human tier without --admin each exit 1 naming the field;
 #        a session that cannot show it reads UNKNOWN;
-#   (m)  --report writes run_at, findings, unknown and allowances ([] for a run given none), with a
-#        stubbed UNKNOWN step listed under unknown;
+#   (m)  --report writes run_at, findings, credited and residuals ([] each for a run that credits
+#        nothing; row fa holds their entries), unknown and allowances ([] for a run given none), with
+#        a stubbed UNKNOWN step listed under unknown;
 #   (v)  the report's findings carry role, resource, permissions and granted_at beside principal
 #        and right, on an IAM finding and on an RBAC finding;
-#   (z)  the fixture testdata/operator-token-minters-report.json is this script's --report from a
-#        world with an IAM finding, grade-ci's RBAC findings and an UNKNOWN, run_at fixed; the row
-#        fails when the committed file differs (OPERATOR_MINTERS_WRITE_FIXTURE=1 rewrites it, and
-#        OPERATOR_MINTERS_FIXTURE names another file to compare, as the row's control does);
+#   (z)  the fixture testdata/operator-token-minters-report.json is the --report of fence_check (the
+#        script whose contract holds the test's example workload policies) in the broker's pod
+#        fence's world (fence_world) with an IAM finding, grade-ci's RBAC findings, the fence's
+#        credits and residuals and an UNKNOWN, run_at fixed; the row fails when the committed file
+#        differs (OPERATOR_MINTERS_WRITE_FIXTURE=1 rewrites it, and OPERATOR_MINTERS_FIXTURE names
+#        another file to compare, as the row's control does);
 #   (al) a run that stops mid-way leaves an UNKNOWN report, never the old one, and a usage error
 #        leaves none;
 #   (ba) a get-ancestors answer of [] reads UNKNOWN, and so does another cluster that lists no
@@ -53,7 +56,9 @@
 #   (cv) a part that builds the custom resources' rights or the binding namespaces' rights and
 #        fails or prints nothing reads UNKNOWN naming those rights, and the RBAC step does not
 #        pass;
-#   (cx) with_rights handed an empty rights value refuses it and stops the run, UNKNOWN, exit 2.
+#   (cx) with_rights handed an empty rights value refuses it and stops the run, UNKNOWN, exit 2;
+#   (da) no line of the check, its parts or this test's own files reads a status from a pipe into
+#        a grep that stops early (-q or -m), which pipefail and SIGPIPE can read as no match.
 
 # --- (a) People, the system namespaces and the Workload Identity member alone. ---
 if row a; then
@@ -207,11 +212,11 @@ if row m; then
     fail "the report's findings do not name serviceAccount:$ci_gsa: $(jq -c .findings "$report")"
   jq -e 'any(.unknown[]?; .step == "admin tag of ENVOY_OPERATOR" and (.reason | contains("PermissionDenied")))' "$report" >/dev/null ||
     fail "the report's unknown does not list the step 'admin tag of ENVOY_OPERATOR': $(jq -c '.unknown // "absent"' "$report")"
-  jq -e 'keys == ["allowances", "findings", "run_at", "unknown"] and .allowances == []
-    and all(.findings[]; keys == ["granted_at", "permissions", "principal", "resource", "right", "role"])
+  jq -e 'keys == ["allowances", "credited", "findings", "residuals", "run_at", "unknown"] and .allowances == [] and .credited == []
+    and .residuals == [] and all(.findings[]; keys == ["granted_at", "permissions", "principal", "resource", "right", "role"])
     and all(.unknown[]; keys == ["reason", "step"])' "$report" >/dev/null ||
-    fail "the report holds other fields than run_at, findings (principal, right, role, resource, permissions, granted_at), unknown and an empty allowances: $(jq -c . "$report")"
-  passed "(m) --report writes run_at, findings, unknown and allowances, with the stubbed UNKNOWN step under unknown"
+    fail "the report holds other fields than run_at, findings (principal, right, role, resource, permissions, granted_at), an empty credited and residuals, unknown and an empty allowances: $(jq -c . "$report")"
+  passed "(m) --report writes run_at, findings, credited, residuals, unknown and allowances, with the stubbed UNKNOWN step under unknown"
 fi
 
 # --- (v) The report's parts of each finding, for a reader matching principal and role. ---
@@ -240,19 +245,20 @@ fi
 
 # --- (z) The report fixture: a fresh --report, run_at fixed, must equal the committed file. ---
 if row z; then
-  base_world
+  fence_world
   iam "$project_res" roles/container.admin "serviceAccount:$ci_gsa"
   grade_member
   cluster_admin grade-cluster "$(user_subject "$grade_ci")"
   : >"$world/refuse-secret-show"
-  run --guarded "$route_pair" --report "$temporary_dir/fixture-run.json"
+  fence_run --guarded "$route_pair" --report "$temporary_dir/fixture-run.json"
   want_status 1 "the fixture's world"
   # run_at is the one field a run's clock sets; the fixture fixes it at the epoch, so no reader
   # takes it for a time something happened.
   jq '.run_at = "1970-01-01T00:00:00Z"' "$temporary_dir/fixture-run.json" >"$temporary_dir/fixture-fresh.json"
   jq -e 'any(.findings[]; .role | startswith("roles/")) and any(.findings[]; (.principal | startswith("serviceAccount:grade-ci@")) and (.granted_at | startswith("RBAC: ")))
+      and any(.credited[]; .policy == "broker-pod-connect") and any(.residuals[]; .tracked_by == "INFRA-4604")
       and (.unknown | length) > 0' "$temporary_dir/fixture-fresh.json" >/dev/null ||
-    fail "the fixture's world gave no IAM finding, no RBAC finding of grade-ci, or no UNKNOWN: $(jq -c . "$temporary_dir/fixture-fresh.json")"
+    fail "the fixture's world gave no IAM finding, no RBAC finding of grade-ci, no credit, no residual or no UNKNOWN: $(jq -c . "$temporary_dir/fixture-fresh.json")"
   # An RBAC finding's permissions are its one label, whole, though a guarded label holds a comma.
   split="$(jq -r '.findings[] | select(.granted_at | startswith("RBAC: ")) | select(.permissions != [.role]) | "\(.role): \(.permissions)"' "$temporary_dir/fixture-fresh.json")"
   [ -z "$split" ] || fail "an RBAC finding's permissions are not its label, whole: $split"
@@ -594,4 +600,56 @@ if row cx; then
   want_text "UNKNOWN run: the run stopped before its end" "with_rights handed an empty webhook list"
   ! has_prefix "PASS live: RBAC on operator-cluster: " || fail "with_rights handed an empty webhook list: the RBAC step passed"
   passed "(cx) with_rights handed an empty rights value (a webhook list built as nothing) refuses it and stops the run, UNKNOWN, exit 2"
+fi
+
+# --- (da) No status read from a pipe into a grep that stops early. Under pipefail, `cut FILE |
+# grep -q TEXT` can fail although TEXT is there: grep stops at its first match, and the writer's
+# next write then fails the pipeline with SIGPIPE, more often the earlier the match and the busier
+# the box. Row cz's later-refused item failed so twice in the merge queue on 2026-11-26 (the fake
+# kubectl's holding read a batch's first subject that way). quiet_pipes finds such a line in the
+# check, its parts and this test's own files, the fakes among them: a `|` before a grep given -q,
+# --quiet, --silent, -m or --max-count, on one line or after a line that ends in `|`. The control is
+# its own other half: a file holding the two forms and the two forms it allows (a process
+# substitution, and `||`), where it finds the two and no other. ---
+# quiet_pipes FILE...: each such line, as FILE:LINE: TEXT; comment lines are not read.
+quiet_pipes() {
+  awk '
+    function stops(text, words, n, i) {
+      n = split(text, words, /[[:space:]]+/)
+      for (i = 1; i <= n; i++) {
+        if (words[i] == "--") return 0
+        if (words[i] ~ /^--(quiet|silent|max-count)/) return 1
+        if (words[i] ~ /^-[[:alnum:]]*[qm]/) return 1
+      }
+      return 0
+    }
+    FNR == 1 { follows = 0 }
+    /^[[:space:]]*#/ { follows = 0; next }
+    {
+      text = $0
+      found = follows && match(text, /^[[:space:]]*grep[[:space:]][^|;&)]*/) && stops(substr(text, RSTART, RLENGTH))
+      rest = text
+      while (!found && match(rest, /(^|[^|])\|[[:space:]]*grep[[:space:]][^|;&)]*/)) {
+        found = stops(substr(rest, RSTART, RLENGTH))
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+      if (found) print FILENAME ":" FNR ": " text
+      follows = text ~ /[^|]\|[[:space:]]*$/
+    }' "$@"
+}
+if row da; then
+  mapfile -t sources < <(printf '%s\n' "$check" "$(dirname "$check")"/operator-token-minters/*.sh \
+    "$script_dir/operator-token-minters.test.sh" "$script_dir"/operator-token-minters/test-*.sh | sort -u)
+  found="$(quiet_pipes "${sources[@]}")"
+  [ -z "$found" ] || fail "a status is read from a pipe into a grep that stops early, which pipefail and SIGPIPE can turn into no match; read its input through a process substitution or a here-string: $found"
+  # The control's pipes are written as $p, so that this row's own lines hold none of the forms.
+  control=quiet-pipes-control.sh p='|'
+  printf '%s\n' "cut -f7 \"\$file\" $p grep -qxF -- \"\$subject\" || echo none" \
+    "awk '{ print }' \"\$file\" $p" "  grep -m 1 -F -- \"\$subject\"" \
+    "grep -qxF -- \"\$subject\" < <(cut -f7 \"\$file\")" \
+    "[ -n \"\$subject\" ] || grep -q x \"\$file\"" >"$temporary_dir/$control"
+  found="$(cd "$temporary_dir" && quiet_pipes "$control" | cut -d: -f1,2 | tr '\n' ' ')"
+  [ "$found" = "$control:1 $control:3 " ] ||
+    fail "quiet_pipes found ${found:-nothing} in its control, where lines 1 and 3 alone pipe into a grep that stops early"
+  passed "(da) no line of the check, its parts or this test pipes into a grep that stops early (-q or -m) for its status; the control finds both forms and neither allowed one"
 fi

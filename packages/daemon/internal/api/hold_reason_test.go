@@ -16,13 +16,16 @@ import (
 // parent whose plan has no acceptance step waiting before its retro for the issues beneath it,
 // and an escalated hold, the one reason a caller below OwnerPlanContract knows. stoppedInMerge is
 // a task stopped where it keeps no slot, and beneath an issue beneath childrenIssue, which the
-// held rows of heldWordIssues name.
+// held rows of heldWordIssues name. waitingParent is a started parent waiting on its open child
+// openChildOfParent, the row heldWordAndWaitIssues names.
 const (
-	taskStoppedIssue = "LEGION-230"
-	childrenIssue    = "LEGION-231"
-	escalatedIssue   = "LEGION-232"
-	stoppedInMerge   = "LEGION-233"
-	beneath          = "LEGION-235"
+	taskStoppedIssue  = "LEGION-230"
+	childrenIssue     = "LEGION-231"
+	escalatedIssue    = "LEGION-232"
+	stoppedInMerge    = "LEGION-233"
+	beneath           = "LEGION-235"
+	waitingParent     = "LEGION-236"
+	openChildOfParent = "LEGION-237"
 )
 
 // heldFor is key held from from, for reason.
@@ -53,6 +56,19 @@ func heldWordIssues(t *testing.T) State {
 	state.Admission.Held = append(slices.Clone(state.Admission.Held),
 		HeldIssue{Issue: childrenIssue, Reason: record.HeldChildrenBeforeRetro, HeldBy: []string{beneath}},
 		HeldIssue{Issue: stoppedInMerge, Reason: record.HeldTaskStopped})
+	return state
+}
+
+// heldWordAndWaitIssues is heldWordIssues with a row of the word gateBasisContract added after
+// those: waitingParent under awaiting_children, held by its open child. It is the body the one
+// strip of `admission.held[].reason` is read on (shaping.go's withoutUnadmittedHeldWords), which
+// serves a word an older word stands in for as that word and every other word it takes as
+// unclassified, so the body carries one of each.
+func heldWordAndWaitIssues(t *testing.T) State {
+	t.Helper()
+	state := heldWordIssues(t)
+	state.Admission.Held = append(slices.Clone(state.Admission.Held),
+		HeldIssue{Issue: waitingParent, Reason: record.HeldAwaitingChildren, HeldBy: []string{openChildOfParent}})
 	return state
 }
 

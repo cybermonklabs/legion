@@ -1,11 +1,18 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { DOMSerializer, Schema } from "prosemirror-model";
 
 import type { BlockTypeSchema } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { askBlockEditingPlugin, editingAskBlockPos } from "./ask-block";
 import { renderTypedBlock } from "./typed-block-drawing";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const schema = new Schema({
   nodes: {

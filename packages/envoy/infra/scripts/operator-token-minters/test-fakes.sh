@@ -270,8 +270,13 @@ case "${args[*]}" in
     mark() { [ -e "$dir/$1" ] && echo on || echo off; }
     # A world marked review-refuse-holding or review-short-holding (a subject, as the record's
     # last field writes it) refuses, or answers one review short, the one call that asks about
-    # that subject, whichever batch that is (row cz's later-batch items).
-    holding() { [ -s "$dir/$1" ] && cut -f7 "$dir/review-requests-$calls.tsv" | grep -qxF -- "$(cat "$dir/$1")"; }
+    # that subject, whichever batch that is (row cz's later-batch items). The subjects reach grep
+    # through a process substitution, never `cut | grep -q`: this fake runs under pipefail, grep
+    # stops at its first match (the marked subject is its batch's first line), and cut's next write
+    # then fails the pipeline with SIGPIPE, so the call that holds the subject read as one that does
+    # not and answered in full (row cz's later-refused item's run so passed its step under load
+    # on 2026-11-26).
+    holding() { [ -s "$dir/$1" ] && grep -qxF -- "$(cat "$dir/$1")" < <(cut -f7 "$dir/review-requests-$calls.tsv"); }
     ! holding review-refuse-holding ||
       forbidden subjectaccessreviews.authorization.k8s.io 'create resource "subjectaccessreviews" in API group "authorization.k8s.io"' container.subjectAccessReviews.create
     short=off
@@ -425,7 +430,15 @@ case "${args[*]}" in
   "get "*admissionpolic*" -o json")
     # The cluster's admission policies and their bindings: the world's admission-policies.json, or none.
     shaped_answer policies
+    [ ! -e "$dir/refuse-policies" ] || forbidden validatingadmissionpolicies.admissionregistration.k8s.io 'list resource "validatingadmissionpolicies" in API group "admissionregistration.k8s.io"' container.thirdPartyObjects.list
     { if [ -e "$dir/admission-policies.json" ]; then cat "$dir/admission-policies.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
+    ;;
+  "get pods -n "*" -o json")
+    # A namespace's pods: the world's pods.json entries (each a Pod) there, or none.
+    shaped_answer pods
+    [ ! -e "$dir/refuse-pods" ] || forbidden pods 'list resource "pods" in API group ""' container.pods.list
+    { if [ -e "$dir/pods.json" ]; then cat "$dir/pods.json"; else echo '[]'; fi; } |
+      jq --arg ns "${args[3]}" '{apiVersion: "v1", kind: "List", items: [.[] | select(.metadata.namespace == $ns)]}'
     ;;
   "get --raw /metrics")
     # The API server's metrics, the seats of global-default among them: 40, as on the operator's

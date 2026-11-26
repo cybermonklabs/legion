@@ -1548,17 +1548,19 @@ func (r *dispatchBrokerRig) pluginScript(clients *rigClients, role *rigRole, run
 
 // daemonRefs are the objects the daemon's script reads that its run with a token of P made, or
 // that the role's did: the document it uploads, read back as an approval, the role's handoff
-// record, and the role's document that its plugin's doc-edit gave a second version, whose two
-// versions the script reads the changes between.
+// record, the role's document that its plugin's doc-edit gave a second version, whose two
+// versions the script reads the changes between, and the ask the role's plugin opened, which the
+// script reads by its id.
 type daemonRefs struct {
-	document, handoff, edited string
+	document, handoff, edited, ask string
 }
 
 // daemonScript is K4's script through the daemon's client: one call of each method of
-// internal/dispatch's HTTPClient, its twelve writes and every read, Whoami among them, on the
+// internal/dispatch's HTTPClient, its thirteen writes and every read, Whoami among them, on the
 // daemon's issue of P. The step record PutStep writes is a fresh one at each run of the script,
 // the first write of its run, so it names the run's whole identity; PutStepRating rates that same
-// record, a retro's, and PutPlan writes a fresh default plan of the run.
+// record, a retro's, PutStepExperiment writes on it the experiment and the variant of its issue,
+// and PutPlan writes a fresh default plan of the run.
 func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daemonRefs, since time.Time) []rigWrite {
 	r.t.Helper()
 	ctx := context.Background()
@@ -1610,12 +1612,19 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
 		return client.PutStepRating(ctx, issueKey, stepID, step,
 			dispatch.PlanRating{Rating: 4, Reason: "The rig's retro rates the plan its issue ran."})
 	})
+	call("PutStepExperiment", false, func() error {
+		return client.PutStepExperiment(ctx, issueKey, stepID, step,
+			dispatch.StepExperiment{Experiment: "planning", Variant: "b"})
+	})
 	call("PutPlan", false, func() error {
 		return client.PutPlan(ctx, issueKey, uuid.NewString(), dispatch.PlanWrite{Generation: 1, Source: "default",
 			Tasks: []dispatch.PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}})
 	})
 	call("ReleaseClaim", false, func() error { return client.ReleaseClaim(ctx, issueKey) })
-	call("ArtifactSlugs", true, func() error { _, err := client.ArtifactSlugs(ctx, issueKey); return err })
+	call("Artifacts", true, func() error { _, err := client.Artifacts(ctx, issueKey); return err })
+	call("Ask", true, func() error { _, err := client.Ask(ctx, refs.ask); return err })
+	call("Reviews", true, func() error { _, err := client.Reviews(ctx, refs.document); return err })
+	call("DocumentVersion", true, func() error { _, err := client.DocumentVersion(ctx, refs.edited, 2); return err })
 	call("EventsAfter", true, func() error { _, err := client.EventsAfter(ctx, issueKey, 0); return err })
 	call("MessageBodiesSince", true, func() error { _, err := client.MessageBodiesSince(ctx, issueKey, since); return err })
 	call("Approval", true, func() error { _, err := client.Approval(ctx, refs.document); return err })
@@ -1655,7 +1664,7 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 	var withP []rigWrite
 	withP = append(withP, r.commandScript(role, env, "P", refs, r.directMessage(role.session))...)
 	withP = append(withP, r.pluginScript(clients, role, "P", refs, role.session)...)
-	daemon := &daemonRefs{handoff: refs.handoff, edited: refs.documents["plugin"]}
+	daemon := &daemonRefs{handoff: refs.handoff, edited: refs.documents["plugin"], ask: refs.asks["plugin"]}
 	withP = append(withP, r.daemonScript(daemonClient, daemon, since)...)
 	// K4's words: with the daemon's token for P the script makes one of each kind of write the
 	// daemon's Dispatch client has a method for. A method the client gains and the script does not

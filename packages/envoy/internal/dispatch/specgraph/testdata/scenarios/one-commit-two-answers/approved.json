@@ -1,0 +1,112 @@
+{
+  "nodes": [
+    {
+      "id": "relay-answers-requests",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::requirement{#relay-answers-requests kind=\"behavior\"}\nThe relay answers each request that it receives.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "relay-answers-in-time",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::requirement{#relay-answers-in-time kind=\"behavior\" parent=\"relay-answers-requests\"}\nThe relay answers a request within the time that the request names.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "relay-answers-within-the-limit",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::check{#relay-answers-within-the-limit serves=\"relay-answers-in-time\" subject=\"code\" procedure=\"program\" runner=\"go\" selector=\"github.com/sjawhar/envoy/cmd/listener TestTheRelayAnswersWithinTheLimit\" job=\"go-checks\" time_limit=\"24h0m0s\"}\nClaim: The relay answers a request that names one second within one second.\nProcedure: The program sends one request that names one second.\nIt must get the answer within one second.\nFailing example: A relay that waits two seconds before each answer.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "relay-answers-on-each-platform",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::requirement{#relay-answers-on-each-platform kind=\"behavior\" parent=\"relay-answers-requests\"}\nThe relay answers each request on Linux machines and on Arm machines.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "relay-answers-on-linux-and-arm",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::check{#relay-answers-on-linux-and-arm serves=\"relay-answers-on-each-platform\" subject=\"code\" procedure=\"program\" runner=\"go\" selector=\"github.com/sjawhar/envoy/cmd/listener TestTheRelayAnswersOnEachPlatform\" job=\"go-checks-platforms\"}\nClaim: The relay answers one request on each machine of the job.\nProcedure: The program sends one request to the relay and reads the answer.\nIt must get one answer.\nFailing example: A relay that stops before it answers.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "relay-answers-once",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::requirement{#relay-answers-once kind=\"behavior\" parent=\"relay-answers-requests\"}\nThe relay sends one answer for each request.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "relay-answers-once-per-request",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::check{#relay-answers-once-per-request serves=\"relay-answers-once\" subject=\"code\" procedure=\"program\" runner=\"go\" selector=\"github.com/sjawhar/envoy/cmd/listener TestTheRelayAnswersOnce\" job=\"go-checks\"}\nClaim: The relay sends one answer to a request that it receives two times.\nProcedure: The program sends one request two times and counts the answers.\nIt must count one answer.\nFailing example: A relay that answers each copy of a request.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "relay-refuses-a-bad-request",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::requirement{#relay-refuses-a-bad-request kind=\"behavior\" parent=\"relay-answers-requests\"}\nThe relay refuses a request that it cannot read.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "relay-refuses-a-malformed-request",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::check{#relay-refuses-a-malformed-request serves=\"relay-refuses-a-bad-request\" subject=\"code\" procedure=\"program\" runner=\"go\" selector=\"github.com/sjawhar/envoy/cmd/listener TestTheRelayRefusesAMalformedRequest\" job=\"go-checks\"}\nClaim: The relay refuses a request whose body is not valid.\nProcedure: The program sends one request with a body that is not valid.\nIt must get a refusal.\nFailing example: A relay that answers a request with a body that is not valid.\n:::\n"
+        }
+      ]
+    }
+  ]
+}

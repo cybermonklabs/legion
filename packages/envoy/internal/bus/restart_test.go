@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The listener opens its interest registry, session registry and CI store from client.Conn once,
@@ -89,6 +90,8 @@ func TestAPublishThatFailedWhileReconnectingIsNeverSent(t *testing.T) {
 		t.Fatalf("flush subscription: %v", err)
 	}
 	waitFor(t, "the client to reconnect", client.Connected)
+	// A window, not a wait: the publish that failed must never be sent, and two seconds after the
+	// reconnect is how long the test watches for it.
 	select {
 	case message := <-received:
 		t.Fatalf("the publish that failed was sent after the reconnect: %s", message.Data)
@@ -141,7 +144,8 @@ func TestAPublishWhileReconnectingWaitsForTheReconnect(t *testing.T) {
 // down: the reconnect closes it, quietly, instead of re-subscribing or logging a failure.
 func TestAReconnectDuringDrainClosesQuietly(t *testing.T) {
 	srv, uri := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{uri})
+	clientLogs := captureBusLogs()
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithLogger(clientLogs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -156,22 +160,19 @@ func TestAReconnectDuringDrainClosesQuietly(t *testing.T) {
 	if err := client.Conn.Publish("notifications.role.reconnect-during-drain", nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the delivery never reached its handler")
-	}
+	testwait.Receive(t, "the delivery to reach its handler", started)
 
-	logs := captureBusLogs(t)
+	logs := clientLogs.fromHere()
 	drained := make(chan error, 1)
 	go func() { drained <- client.Drain(15 * time.Second) }()
 	time.Sleep(200 * time.Millisecond)
 	srv.Stop(t)
 	srv.Start(t)
-	select {
-	case <-drained:
-	case <-time.After(14 * time.Second):
-		t.Fatal("the reconnect during the drain did not end it before its deadline")
+	// Drain returns context.DeadlineExceeded once its deliveries' share of the 15 s runs out, at
+	// 12 s (the 3 s drainHookReserve kept for the hooks), or its own deadline passes, so its own
+	// answer says whether the reconnect ended it first.
+	if err := testwait.Receive(t, "the drain to end", drained); errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the reconnect during the drain did not end it before its deadline: %v", err)
 	}
 	if !client.Conn.IsClosed() {
 		t.Fatal("the drain ended with the reconnected connection still open")
@@ -181,9 +182,27 @@ func TestAReconnectDuringDrainClosesQuietly(t *testing.T) {
 	}
 }
 
-// busLogs collects the default slog logger's JSON records for one test.
+// busLogs reads the JSON records a logger of one test's own writes (captureBusLogs): every record
+// since the logger was made, or, for a reader fromHere returned, since that call.
 type busLogs struct {
-	logtest.Buffer
+	written *logtest.Buffer
+	from    int
+	// logger writes the records. The test gives it to each client whose lines it reads
+	// (bus.WithLogger), so it reads its own clients' lines alone and can run in parallel with the
+	// package's other tests.
+	logger *slog.Logger
+}
+
+// String is every record logged since the reader's start, one per line.
+func (l *busLogs) String() string {
+	return l.written.String()[l.from:]
+}
+
+// fromHere is a reader of the records l's logger writes from now on, for a test that reads what
+// its clients log after a step it takes once they are connected. slog's JSON handler writes each
+// record in one Write, so the reader starts at the start of a record.
+func (l *busLogs) fromHere() *busLogs {
+	return &busLogs{written: l.written, from: l.written.Len(), logger: l.logger}
 }
 
 func (l *busLogs) errorLine() string {
@@ -250,11 +269,11 @@ func (l *busLogs) count(name, msg string) int {
 	return found
 }
 
-func captureBusLogs(t *testing.T) *busLogs {
-	t.Helper()
-	logs := &busLogs{}
-	logtest.SetDefault(t, slog.NewJSONHandler(logs, nil))
-	return logs
+// captureBusLogs is a logger of the test's own, writing JSON records, and the reader of what it
+// writes.
+func captureBusLogs() *busLogs {
+	written := &logtest.Buffer{}
+	return &busLogs{written: written, logger: slog.New(slog.NewJSONHandler(written, nil))}
 }
 
 // A reconnect in place keeps every subscription nats.go restored. After a server restart, nats.go
@@ -264,8 +283,10 @@ func captureBusLogs(t *testing.T) *busLogs {
 // push binding, which refuses the new bind with "consumer is already bound to a subscription" and
 // logs a resubscribe failure at ERROR (LEGION-278).
 func TestAReconnectInPlaceKeepsTheSubscriptionsNATSRestored(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{uri})
+	clientLogs := captureBusLogs()
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithLogger(clientLogs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -289,14 +310,10 @@ func TestAReconnectInPlaceKeepsTheSubscriptionsNATSRestored(t *testing.T) {
 		return nil
 	})
 
-	logs := captureBusLogs(t)
+	logs := clientLogs.fromHere()
 	srv.Stop(t)
 	srv.Start(t)
-	select {
-	case <-reconnected:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the reconnect never finished restoring the subscriptions")
-	}
+	testwait.Receive(t, "the reconnect to finish restoring the subscriptions", reconnected)
 	if !durable.IsValid() || !role.IsValid() {
 		t.Fatalf("a reconnect in place tore down the subscriptions Subscribe returned (durable valid %t, role valid %t)", durable.IsValid(), role.IsValid())
 	}
@@ -352,7 +369,8 @@ func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *test
 			// The stall is measured on this clock, so the test moves the grace itself rather than
 			// waiting out a minute of it.
 			clock := &reconnectErrClock{now: time.Now()}
-			client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReconnectErrClock(clock.Now))
+			clientLogs := captureBusLogs()
+			client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReconnectErrClock(clock.Now), bus.WithLogger(clientLogs.logger))
 			if err != nil {
 				t.Fatalf("connect: %v", err)
 			}
@@ -374,14 +392,10 @@ func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *test
 				return errors.New("rewatch interest cache: nats: connection closed")
 			})
 
-			logs := captureBusLogs(t)
+			logs := clientLogs.fromHere()
 			srv.Stop(t)
 			srv.Start(t)
-			select {
-			case <-hooked:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the reconnect never ran its hook")
-			}
+			testwait.Receive(t, "the reconnect to run its hook", hooked)
 			if !tc.stop {
 				const retried = "envoy nats reconnect hook failed; it is retried"
 				const uncovered = "envoy nats reconnect hooks have not succeeded"

@@ -98,16 +98,11 @@ func TestPublishBoundsReconnectWhenNATSUnavailable(t *testing.T) {
 				})
 			}()
 
-			select {
-			case err := <-result:
-				if err == nil {
-					t.Fatal("publish unexpectedly succeeded without NATS")
-				}
-				if elapsed := time.Since(started); elapsed > 6*time.Second {
-					t.Fatalf("publish returned after %s, want a bounded reconnect within 6s", elapsed)
-				}
-			case <-time.After(6 * time.Second):
-				t.Fatal("publish remained blocked after the reconnect deadline")
+			if err := testwait.Receive(t, "the publish without NATS to return", result); err == nil {
+				t.Fatal("publish unexpectedly succeeded without NATS")
+			}
+			if elapsed := time.Since(started); elapsed > 6*time.Second {
+				t.Fatalf("publish returned after %s, want a bounded reconnect within 6s", elapsed)
 			}
 		})
 	}
@@ -235,6 +230,7 @@ func TestACoreSubscriptionRecoversWhileTheJetStreamOneCannotBind(t *testing.T) {
 // Recovery keeps retrying the durable's restore, and does not run the hooks again for a connection
 // they already moved to. The refused restore is a failure, so it stays an ERROR.
 func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		reconnect func(*bus.Client) error
@@ -246,8 +242,10 @@ func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, uri := startNATS(t)
-			client, err := bus.ConnectOwningStream([]string{uri})
+			clientLogs := captureBusLogs()
+			client, err := bus.ConnectOwningStream([]string{uri}, bus.WithLogger(clientLogs.logger))
 			if err != nil {
 				t.Fatalf("connect: %v", err)
 			}
@@ -258,17 +256,12 @@ func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
 				hooked <- conn
 				return nil
 			})
-			logs := captureBusLogs(t)
+			logs := clientLogs.fromHere()
 			if err := tc.reconnect(client); err != nil {
 				t.Fatalf("reconnect: %v", err)
 			}
-			select {
-			case conn := <-hooked:
-				if conn != client.Conn {
-					t.Fatal("the reconnect hook ran on a connection the client no longer has")
-				}
-			case <-time.After(15 * time.Second):
-				t.Fatal("the reconnect hook never ran while the durable refuses the bind")
+			if conn := testwait.Receive(t, "the reconnect hook to run while the durable refuses the bind", hooked); conn != client.Conn {
+				t.Fatal("the reconnect hook ran on a connection the client no longer has")
 			}
 			if client.SubOK() {
 				t.Fatal("SubOK reports the durable bound while another connection holds it")
@@ -299,8 +292,10 @@ func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
 // reconnect's run. Two events between runs, two runs, never two at once: a recovery that read the
 // hooks as due while the reconnect's run was still in progress started a third, alongside it.
 func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
-	client, err := bus.ConnectOwningStream([]string{uri})
+	clientLogs := captureBusLogs()
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithLogger(clientLogs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -326,25 +321,17 @@ func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
 	})
 
 	client.Conn.Close()
-	select {
-	case <-ended:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the hooks never ran on the connection the recovery dialed")
-	}
+	testwait.Receive(t, "the hooks to run on the connection the recovery dialed", ended)
 	if err := client.Conn.ForceReconnect(); err != nil {
 		t.Fatalf("reconnect the replacement in place: %v", err)
 	}
-	select {
-	case <-ended:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the hooks never ran for the in-place reconnect")
-	}
+	testwait.Receive(t, "the hooks to run for the in-place reconnect", ended)
 	// The recovery keeps retrying the refused restore, one attempt at a time, and each attempt asks
 	// rewatch for a run before it logs its failure. An attempt that begins after the reconnect's run
 	// has ended finds what every later attempt finds, both events covered and no event since, and the
 	// attempt that came during the run has logged before it began. So once an attempt begun from here
 	// has logged, every chance to run the hooks again has passed.
-	afterRun := captureBusLogs(t)
+	afterRun := clientLogs.fromHere()
 	waitFor(t, "a recovery attempt begun after the reconnect's run to log its refused restore", func() bool {
 		begun := afterRun.attempts("INFO", "envoy nats recovery attempt")
 		return len(begun) > 0 && slices.Contains(afterRun.attempts("ERROR", "envoy nats recovery resubscribe failed"), begun[0])
@@ -389,16 +376,12 @@ func TestAFailedRunOfTheReconnectHooksRunsAgainWithoutAnotherConnectionEvent(t *
 	}
 	var recoveryGoroutine uint64
 	for run := 1; run <= 2; run++ {
-		select {
-		case got := <-ran:
-			if got.conn != client.Conn {
-				t.Fatalf("run %d of the reconnect hooks was on a connection the client no longer has", run)
-			}
-			if run == 2 {
-				recoveryGoroutine = got.goroutine
-			}
-		case <-time.After(15 * time.Second):
-			t.Fatalf("the reconnect hooks ran %d time(s) after an in-place reconnect whose first run failed; want them run again", run-1)
+		got := testwait.Receive(t, fmt.Sprintf("run %d of the reconnect hooks after an in-place reconnect whose first run failed", run), ran)
+		if got.conn != client.Conn {
+			t.Fatalf("run %d of the reconnect hooks was on a connection the client no longer has", run)
+		}
+		if run == 2 {
+			recoveryGoroutine = got.goroutine
 		}
 	}
 	if reconnects := client.Conn.Stats().Reconnects; reconnects != 1 {
@@ -440,12 +423,7 @@ func TestAConnectionThatClosesAsARecoveryEndsIsRecovered(t *testing.T) {
 	})
 
 	client.Conn.Close()
-	var dialed *natsgo.Conn
-	select {
-	case dialed = <-running:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the recovery never ran the hooks on the connection it dialed")
-	}
+	dialed := testwait.Receive(t, "the recovery to run the hooks on the connection it dialed", running)
 	dialed.Close()
 	// The closed callback runs on the connection's callback goroutine and starts its recovery at
 	// once; a second is ample for that recovery to find the first still running.
@@ -466,9 +444,11 @@ func TestAConnectionThatClosesAsARecoveryEndsIsRecovered(t *testing.T) {
 // registration left to its bind in flight is the design working, not a failure, so nothing on the
 // way logs an ERROR.
 func TestAnInPlaceReconnectDoesNotWaitForABindInFlight(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	proxy := startRelayProxy(t, uri)
-	client, err := bus.ConnectOwningStream([]string{proxy.url()})
+	clientLogs := captureBusLogs()
+	client, err := bus.ConnectOwningStream([]string{proxy.url()}, bus.WithLogger(clientLogs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -494,7 +474,7 @@ func TestAnInPlaceReconnectDoesNotWaitForABindInFlight(t *testing.T) {
 	}
 	bound := make(chan bindResult, 1)
 
-	logs := captureBusLogs(t)
+	logs := clientLogs.fromHere()
 	proxy.arm("$JS.API.CONSUMER.INFO.")
 	go func() {
 		_, err := client.Subscribe("", func(msg *natsgo.Msg) {
@@ -503,26 +483,12 @@ func TestAnInPlaceReconnectDoesNotWaitForABindInFlight(t *testing.T) {
 		}, natsgo.Bind(bus.Stream, consumer), natsgo.ManualAck())
 		bound <- bindResult{err: err, at: time.Now()}
 	}()
-	select {
-	case <-proxy.swallowed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the bind's consumer lookup never reached the link")
-	}
+	testwait.Receive(t, "the bind's consumer lookup to reach the link", proxy.swallowed)
 	dropped := time.Now()
 	proxy.drop()
 
-	var hookedAt time.Time
-	select {
-	case hookedAt = <-hooked:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the reconnect hooks never ran")
-	}
-	var bind bindResult
-	select {
-	case bind = <-bound:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the bind whose lookup was lost never returned")
-	}
+	hookedAt := testwait.Receive(t, "the reconnect hooks to run", hooked)
+	bind := testwait.Receive(t, "the bind whose lookup was lost to return", bound)
 	if bind.err == nil {
 		t.Fatal("the bind whose lookup the link lost succeeded, so nothing was in flight across the reconnect")
 	}
@@ -847,13 +813,8 @@ func TestReconnectHookRunsAfterReconnect(t *testing.T) {
 	if err := client.Conn.ForceReconnect(); err != nil {
 		t.Fatalf("force reconnect: %v", err)
 	}
-	select {
-	case conn := <-hookRan:
-		if conn != client.Conn {
-			t.Fatal("reconnect hook received a stale connection")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("reconnect hook did not run")
+	if conn := testwait.Receive(t, "the reconnect hook to run", hookRan); conn != client.Conn {
+		t.Fatal("reconnect hook received a stale connection")
 	}
 }
 
@@ -879,13 +840,8 @@ func TestDisconnectHookRunsBeforeTheReconnectHook(t *testing.T) {
 		t.Fatalf("force reconnect: %v", err)
 	}
 	for _, want := range []string{"disconnected", "reconnected"} {
-		select {
-		case got := <-events:
-			if got != want {
-				t.Fatalf("hook ran %q, want %q next", got, want)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("the %s hook did not run", want)
+		if got := testwait.Receive(t, "the "+want+" hook to run", events); got != want {
+			t.Fatalf("hook ran %q, want %q next", got, want)
 		}
 	}
 }
@@ -1027,8 +983,8 @@ func closedConnectionIsReplacedOnce(t *testing.T, through func(uri string) []bus
 		})
 	}
 
-	logs := captureBusLogs(t)
-	options := []bus.ConnectOption{bus.WithReplicas(1), bus.WithName(name)}
+	logs := captureBusLogs()
+	options := []bus.ConnectOption{bus.WithReplicas(1), bus.WithName(name), bus.WithLogger(logs.logger)}
 	if through != nil {
 		options = append(options, through(uri)...)
 	}
@@ -1113,11 +1069,12 @@ func closedConnectionIsReplacedOnce(t *testing.T, through func(uri string) []bus
 // sees the close, so the test polls its connection list rather than reading it once: on main the
 // replacement stays listed for good, and the poll runs out.
 func TestARefusedStartLeavesNoConnectionOpen(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	connections := serverConnections(t, srv)
-	logs := captureBusLogs(t)
+	logs := captureBusLogs()
 	const name = "refused-start"
-	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(3), bus.WithName(name))
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(3), bus.WithName(name), bus.WithLogger(logs.logger))
 	if err == nil {
 		client.Close()
 		t.Fatal("a single server took the stream at three copies")

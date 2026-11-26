@@ -3,14 +3,15 @@
 // scope results, a person, one project and the run - reaches the routes resultsScopeRoutes names
 // and nothing else. Every other row of the table and GET /ws/live answer it 403
 // RESULTS_ONLY_TOKEN before the route's handler, before the sign-in check and before its
-// Idempotency-Key is read (refuseResultsToken). The walks are built as the read-only token's walks
-// are (read_only_token_test.go), with this token and this list (limitedToken).
+// Idempotency-Key is read (refuseLimitedToken). The walks send the read-only walks' probes
+// (readOnlyWalkToken.probe) with this token and this list (limitedToken), each under a key of its
+// row's own (limitedProbe); the read-only token is held to the read class instead
+// (read_only_token_test.go).
 package api
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -57,8 +58,7 @@ type limitedAnswer struct {
 
 // limitedToken is a broker token Dispatch serves on a list of its own beside the route table and
 // answers 403 on every other row and on GET /ws/live, before the row's handler: a results token
-// (resultsScopeRoutes), which refuseResultsToken holds to its list. The read-only token is held to
-// the read class instead (TestEveryRowAnswersEachReadOnlyTokenByItsClass).
+// (resultsScopeRoutes), which refuseLimitedToken holds to its list. The two walks below take one.
 type limitedToken struct {
 	// kind names the token in a failure: "a results token".
 	kind string
@@ -117,21 +117,6 @@ func resultsLimitedToken() limitedToken {
 	}
 }
 
-// notTheLimitedRefusal says how response differs from a limited token's refusal, and is empty
-// when it is that refusal: 403 with the code given and no WWW-Authenticate challenge, since no
-// scope makes the route the token's to call.
-func notTheLimitedRefusal(response *httptest.ResponseRecorder, code string) string {
-	var refusal refusalAnswer
-	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
-	switch {
-	case response.Code != http.StatusForbidden || refusal.Code != code:
-		return "answered " + http.StatusText(response.Code) + " " + strings.TrimSpace(response.Body.String())
-	case response.Header().Get("WWW-Authenticate") != "":
-		return "carries the challenge " + response.Header().Get("WWW-Authenticate")
-	}
-	return ""
-}
-
 // walkEveryChainWith builds every row's own chain as register does (routeHandler), with the row's
 // handler replaced by a recorder, and sends each the token with a body and a valid
 // Idempotency-Key. Every row the token's list does not name answers 403 with its refusal and
@@ -179,7 +164,7 @@ func walkEveryChainWith(t *testing.T, token limitedToken) {
 			if ran != 0 {
 				t.Errorf("%s ran its handler %d times for %s, want none", name, ran, token.kind)
 			}
-			if why := notTheLimitedRefusal(response, token.refusal); why != "" {
+			if why := notTheGatesRefusal(response, token.refusal, ""); why != "" {
 				t.Errorf("%s %s for %s, want 403 %s", name, why, token.kind, token.refusal)
 			}
 		}
@@ -193,7 +178,7 @@ func walkEveryChainWith(t *testing.T, token limitedToken) {
 	if socketOpened != 0 {
 		t.Errorf("GET %s opened the socket %d times for %s, want none", liveSocketPattern, socketOpened, token.kind)
 	}
-	if why := notTheLimitedRefusal(response, token.refusal); why != "" {
+	if why := notTheGatesRefusal(response, token.refusal, ""); why != "" {
 		t.Errorf("GET %s %s for %s, want 403 %s", liveSocketPattern, why, token.kind, token.refusal)
 	}
 
@@ -227,7 +212,7 @@ func walkTheMountedServerWith(t *testing.T, token limitedToken) {
 		name := route.Method + " " + route.Pattern
 		response := rig.serve(limitedProbe(t, caller, route, presented))
 		if !token.listed(route) {
-			if why := notTheLimitedRefusal(response, token.refusal); why != "" {
+			if why := notTheGatesRefusal(response, token.refusal, ""); why != "" {
 				t.Errorf("%s %s for %s, want 403 %s", name, why, token.kind, token.refusal)
 			}
 		} else if want, known := token.listAnswers[name]; !known {
@@ -239,7 +224,7 @@ func walkTheMountedServerWith(t *testing.T, token limitedToken) {
 	}
 
 	live := rig.serve(caller.presenting(t, http.MethodGet, liveSocketPattern, presented, nil))
-	if why := notTheLimitedRefusal(live, token.refusal); why != "" {
+	if why := notTheGatesRefusal(live, token.refusal, ""); why != "" {
 		t.Errorf("GET %s %s for %s, want 403 %s", liveSocketPattern, why, token.kind, token.refusal)
 	}
 	room := "/ws/doc/00000000-0000-0000-0000-000000000001"

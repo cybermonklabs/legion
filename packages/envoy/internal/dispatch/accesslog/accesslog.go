@@ -38,8 +38,10 @@ const (
 	// KindService is a verified Kubernetes service-account token, by its subject.
 	KindService = "service"
 	// KindBrokerToken is an access token the secrets broker issued, presented under the DPoP
-	// scheme and proved against the key it is bound to, by the person its session acts for, or,
-	// for a results token, by the session of the CI run it was minted for.
+	// scheme and proved against the key it is bound to, by the person its session acts for, by
+	// `service:<service>` for a token that names no person (a machine's, or a job's, whose
+	// service is its entry's identity), or, for a results token, by the session of the CI run
+	// it was minted for.
 	KindBrokerToken = "broker-token"
 	// KindSharedToken is the deployment's shared agent token with no session named: it proves
 	// no owner, so the line names none.
@@ -181,7 +183,8 @@ func HandlerFuncOn(route string, next http.HandlerFunc, clk clock.Clock) http.Ha
 // wherever it resolves a caller, and the last resolution wins: a bearer is noted by what its
 // token proved and then by the session it named, which is the caller a reader wants. A session
 // named after a credential of its own keeps that credential as the line's `credential`:
-// `token:<owner>`, `service:<subject>`, `broker-token:<person>` or `shared-token`. For the first
+// `token:<owner>`, `service:<subject>`, `broker-token:<person>` (`broker-token:service:<service>`
+// for a broker token that names no person) or `shared-token`. For the first
 // three that session is text the caller wrote, except under a broker-issued token, where the
 // token itself names it.
 func Note(ctx context.Context, kind, id string) {

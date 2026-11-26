@@ -8,6 +8,7 @@ import type {
   IssueComponentsInput,
   IssueDetails,
   IssueRouteStatus,
+  SearchResultKind,
   SpecCheckResult,
 } from "@legion/contracts";
 import { DEFAULT_ISSUE_PAGE_LIMIT, issueStatusOptionsOf } from "@legion/contracts";
@@ -73,10 +74,10 @@ const architectureComponentsAction =
   'Review the `dispatch` skill, "Architecture components", to attach it to the parts it changes or mark it as non-architectural with a reason.';
 
 /** What both claim results say when the server answers `legion_managed_status`: on an issue
- *  Legion runs, only its daemon writes the status. One copy, since the claim and the release
+ *  Legion runs, its daemon owns the status. One copy, since the claim and the release
  *  must say the same thing. */
 const LEGION_OWNS_STATUS =
-  "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — a status written here is undone.";
+  "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — where Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status written here from a credential without the person or legion-status scope (403 LEGION_STATUS_SCOPE_REQUIRED), but for done, backlog, icebox or triage from an architect of an issue above with its own broker token, and otherwise the daemon undoes it.";
 
 /**
  * Guidance only: creation already succeeded, so an unavailable source lookup must not turn this
@@ -520,8 +521,8 @@ export async function claimCommand(context: CommandContext): Promise<DispatchToo
     throw refusalWithCode(error);
   }
   const held = after.claim;
-  // On an issue Legion runs, only its daemon writes the status: a status this session sets
-  // is undone, so the result says who owns it rather than asking for a move.
+  // On an issue Legion runs, the result says who owns the status (LEGION_OWNS_STATUS) rather
+  // than asking for a move.
   // An absent field (an older Dispatch, or a failed label walk) reads as not managed.
   const legionManaged = after.legion_managed_status === true;
   // A release answers with the claim cleared or it does not answer at all: the server
@@ -562,10 +563,14 @@ export async function searchCommand(context: CommandContext): Promise<DispatchTo
   const project = optionalString(args, "project");
   const limit = optionalNumber(args, "limit");
   const offset = optionalNumber(args, "offset");
+  // The schema holds the vocabulary (`SEARCH_KINDS`), and Dispatch refuses a kind outside it,
+  // so the values are passed on as they were written rather than checked twice.
+  const kind = optionalStringArray(args, "kind") as SearchResultKind[] | undefined;
   const search = await client.search(query, {
     ...(project === undefined ? {} : { project }),
     ...(limit === undefined ? {} : { limit }),
     ...(offset === undefined ? {} : { offset }),
+    ...(kind === undefined ? {} : { kind }),
   });
   return searchAnswer(search, query, offset, linkBase);
 }
@@ -701,7 +706,11 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
  *  `dispatch result` record of an issue's check, whose dry run prints the pull-request body line
  *  the record would print, since that line is Dispatch's to write and a copy written here would
  *  be a second grammar. Every other dry run, a retraction's and a CI job's record of a check of
- *  the spec files (`project`) included, prints the arguments and sends nothing. */
+ *  the spec files (`project`) included, prints the arguments and writes nothing. A command whose
+ *  call asks Dispatch something before it writes asks that too, through its step in the command
+ *  table (`DispatchCommand.dryRun`): `dispatch artifact` asks how Dispatch would store its text.
+ *  A dry run with no such question sends nothing.
+ */
 export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, unknown>>): boolean {
   return (
     tool === "dispatch_result" && args["retract"] === undefined && args["project"] === undefined

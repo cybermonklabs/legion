@@ -433,14 +433,15 @@ Its inputs are the harness's own. `DATABASE_URL`, when set, is used as given: it
 every start. Unset, the command runs `packages/envoy/scripts/dev-postgres.sh`, which creates,
 starts or reuses the `dispatch-pg` container, and creates database `dispatch_local` in it once.
 That script runs the container from its pinned image, pgvector on PostgreSQL 18, the version
-Dispatch's tests and dev databases run; Dispatch's migrations need its `vector` extension. It
-refuses a `dispatch-pg` on any other image or major and prints the commands that dump its
-databases and restore them into a new container on the pinned image, quoted so they paste as they
-read. The harness ports (`DISPATCH_E2E_PORT`, `FAKE_ENVOY_PORT`, `PLAIN_HTTP_PORT`,
-`FAKE_GITHUB_PORT`, `FAKE_BROKER_PORT`) are unset unless you need a fixed one: unset, the OS
-chooses each, so two instances never collide; set, the port is used as given, and an occupied one
-fails with `address already in use`. psql runs without `PGHOSTADDR` (`e2e/psql.ts`), and a Ctrl-C
-ends a psql in flight too.
+Dispatch's tests and dev databases run; Dispatch's migrations need its `vector` extension. They
+also need `btree_gin`, a contrib extension that PostgreSQL includes, and a migration creates each
+of the two extensions. The script refuses a `dispatch-pg` on any other image or major and prints the
+commands that dump its databases and restore them into a new container on the pinned image,
+quoted so they paste as they read. The harness ports (`DISPATCH_E2E_PORT`, `FAKE_ENVOY_PORT`,
+`PLAIN_HTTP_PORT`, `FAKE_GITHUB_PORT`, `FAKE_BROKER_PORT`) are unset unless you need a fixed one:
+unset, the OS chooses each, so two instances never collide; set, the port is used as given, and
+an occupied one fails with `address already in use`. psql runs without `PGHOSTADDR`
+(`e2e/psql.ts`), and a Ctrl-C ends a psql in flight too.
 
 A spec runs against the instance with the printed command, which sets
 `DISPATCH_E2E_REUSE_SERVERS=1`, the five ports and the same `DATABASE_URL`; each spec empties the
@@ -1153,6 +1154,49 @@ of `e2e/visual.e2e.ts`, whose baselines are committed as
 claims. A baseline comes only from the pinned container, through
 `e2e/visual-run.sh --update-snapshots`; the script's header says how to take one from CI on a
 machine with no container.
+
+A third layer holds every page to the layout rule of `AGENTS.md` ("Layout"), and
+`bun run e2e:layout` runs all of it. It reads the routes of `e2e/layout-routes.ts` - every
+reviewed route, the excluded ones whose reason argues only against a shot or a scan, two pages a
+reader's choice in this browser draws another way (the new issue page, the project's board), and
+the project page and its Architecture tab, which a project with an architecture source draws -
+over the review corpus and a stress layer that writes
+production's lengths (`e2e/layout-seed.ts`), at 360, 900, 1280, 1440 and 1920 px, and again in
+each state a route names (the Peek drawer open, rows or agents selected). At each width
+`e2e/layout-check.ts` loads the page fresh, waits for `waitForRouteSettled`, and runs
+`measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls sideways, a box that
+does for anything but a code block, one picture wider than the box, a data table or a board's
+lanes, something cut off at a side with no ellipsis (a code block's text, a picture and a fixed
+layer's own text among them), a closed `data-layout-group` showing more entries than its cap, a
+group that declares a cap other than a whole number from 1 to 10 or marks more than one "+N"
+control, and a group the route must mark (`requiredGroups`) of which no shown entry is marked.
+Each direct child of a `data-layout-group` element is one entry, except the one "+N" control,
+which is marked `data-layout-more`; so each child must be one chip, since a child that draws
+several chips still counts as one and its group can show more chips than its cap and pass. The
+rows are
+`e2e/layout-rule.stub.e2e.ts`, in the stubbed layer on every pull request: their HTTP answers are
+recorded as every stubbed row's are, and the document and live sockets beside the HAR
+(`e2e/layout-sockets.ts`); `bun run e2e:stub:record -- layout-rule.stub` records them again after
+a change to the stress layer. The rows draw the app's font stacks in faces committed under
+`e2e/fonts/` (each directory holds its licence), the faces CI resolves for them: the root's
+`Inter` in DejaVu Sans, Tailwind's `--font-mono` and `--font-sans` (opened with them for the rows)
+in Liberation Mono and Liberation Sans, and the editor's `SF Mono` and the diagrams'
+`JetBrains Mono` in DejaVu Sans Mono. A reading fails if any of them does not load. The rows run
+in `en-US` and UTC, so a run on any machine measures the text CI measures.
+`e2e/layout-measure.stub.e2e.ts` draws each defect and each allowed
+case, and holds the instrument to reporting the one and not the other. A row fails on each breach
+no entry of `e2e/layout-breaches.ts` accepts - an entry names the locator the row prints for its
+breach (for a page that scrolls sideways, that of the deepest element past the viewport), matches
+only a breach of that locator, and accepts exactly its `count` of them, so the count is the bound
+of what it lets through - on a page whose own region drew fewer than 100 elements (or the route's
+own `minElements`), and on an entry whose route, state and width it measured and which its
+reading did not match exactly; and
+`e2e/__tests__/layout-routes.test.ts` refuses an entry that names a route or a state the rows
+never read; the type `LayoutWidth` holds its width to the five the rows read. That list holds the
+breaches main still has, in one array per INFRA-5200 fix pull request (the issue page's, the
+Inbox's and the other pages'); each fix pull request deletes every entry of its own array and
+leaves it empty, so the three merge in any order, and the list and its use go once all three are
+empty.
 
 ## Phone check
 

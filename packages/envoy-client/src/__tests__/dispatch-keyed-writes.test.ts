@@ -968,11 +968,11 @@ describe("DispatchClient's writes", () => {
     }
   });
 
-  // A call that writes nothing (the markdown round trip, the related-item check, a result's dry
-  // run) made nothing, so a replay of an answer Dispatch kept no copy of is no landing and names
-  // nothing to read back: the call is asked once more under a new key, which runs it afresh, and
-  // that ask's answer is the call's. A second such replay is thrown as an answer not kept, never
-  // asked a third time.
+  // A call that writes nothing (the round trips of a text and of a file, the related-item check, a
+  // result's dry run) made nothing, so a replay of an answer Dispatch kept no copy of is no landing
+  // and names nothing to read back: the call is asked once more under a new key, which runs it
+  // afresh, and that ask's answer is the call's. A second such replay is thrown as an answer not
+  // kept, never asked a third time.
   test("a call that writes nothing whose answer Dispatch did not keep is asked once more under a new key", async () => {
     const notKept = () =>
       json({ code: IDEMPOTENCY_ANSWER_NOT_KEPT, error: "not kept" }, 200, {
@@ -983,8 +983,15 @@ describe("DispatchClient's writes", () => {
     const dryRun = { line: "- [x] k1 (implementer): pass at 1111111" };
     for (const [call, url, answer, result] of [
       [
-        (dispatch: DispatchClient) => dispatch.markdownRoundTrip("# Notes\n"),
+        (dispatch: DispatchClient) => dispatch.markdownRoundTrip("# Notes\n", false),
         "http://dispatch.test/api/v1/markdown/round-trip",
+        { markdown: "# Notes\n" },
+        "# Notes\n",
+      ],
+      [
+        (dispatch: DispatchClient) =>
+          dispatch.fileRoundTrip(new TextEncoder().encode("# Notes\n"), false),
+        "http://dispatch.test/api/v1/markdown/file-round-trip",
         { markdown: "# Notes\n" },
         "# Notes\n",
       ],
