@@ -18,6 +18,7 @@ const podDisksVersion = 20261124182040
 // refuses a row with no pod, with no kept volume or with no mark, which no write makes. The
 // negative control is the table itself, which is not there before the migration.
 func TestTheDisksOfAnIssuesPodsArriveWith20261124182040(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, podDisksVersion-1)

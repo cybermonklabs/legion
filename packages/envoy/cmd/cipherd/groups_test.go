@@ -14,7 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -91,7 +90,7 @@ func TestEveryDecisionSiteAdmitsAMember(t *testing.T) {
 		}
 	}
 	approver := record.GroupPrefix + wiredGroup
-	machine := newRequestMachine(cfg, nil, current, nil, nil, proxyrules.Rules{}, "", nil, nil, reader)
+	machine := newRequestMachine(cfg, nil, current, nil, nil, "", nil, nil, reader)
 	for _, c := range []struct {
 		login string
 		want  bool

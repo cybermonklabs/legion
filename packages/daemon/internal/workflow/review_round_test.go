@@ -137,7 +137,8 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				carried.Generation++
 				seedIssue(t, pool, *carried)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.StartPromotedWorker(ctx, tx, *carried, claim.RoleReviewer)
+					_, err := engine.StartPromotedWorker(ctx, tx, *carried, claim.RoleReviewer, false)
+					return err
 				})
 				return pool, resume
 			},

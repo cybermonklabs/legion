@@ -155,10 +155,8 @@ func TestAProberAndABootingDaemonEachKeepTheirOwnProbeSandbox(t *testing.T) {
 		name := map[bool]string{true: "the daemon's probe in flight", false: "the prober's probe in flight"}[daemonFirst]
 		t.Run(name, func(t *testing.T) {
 			g := newProbeRig(t, nil).succeeds(okLine(3))
-			prober, err := newProber(g.ctx, g.clients, g.opts)
-			if err != nil {
-				t.Fatal(err)
-			}
+			var prober *Prober
+			g.startWatched(func() (err error) { prober, err = newProber(g.ctx, g.clients, g.opts); return err })
 			proberName := probeName(testProject, testDigestHex, prober.r.probeRun)
 			daemon := func() error { _, err := g.r.ProbeImage(g.ctx, probeOptions(t)); return err }
 			probe := func() error { _, err := prober.ProbeImage(g.ctx, probeOptions(t)); return err }
@@ -218,10 +216,8 @@ func TestAProberRunsNoRefresherPastARefreshTick(t *testing.T) {
 	tick := 5 * time.Millisecond
 	defer func(was time.Duration) { gitHubRefreshInterval = was }(gitHubRefreshInterval)
 	gitHubRefreshInterval = tick
-	prober, err := newProber(g.ctx, g.clients, g.opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	var prober *Prober
+	g.startWatched(func() (err error) { prober, err = newProber(g.ctx, g.clients, g.opts); return err })
 	proberName := probeName(testProject, testDigestHex, prober.r.probeRun)
 	g.clearActions()
 	g.with(func() { g.held = func(name string) bool { return name == proberName } })
@@ -241,9 +237,7 @@ func TestAProberRunsNoRefresherPastARefreshTick(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := control.start(g.ctx, g.clients); err != nil {
-		t.Fatal(err)
-	}
+	g.startWatched(func() error { return control.start(g.ctx, g.clients) })
 	g.eventually("the control's refresher to read the issue pod's role Secrets", func() bool { return secretReads(g.rig) > 0 })
 }
 
