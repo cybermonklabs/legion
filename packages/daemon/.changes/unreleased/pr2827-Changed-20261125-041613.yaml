@@ -6,7 +6,9 @@ body: |-
     last chance, in no phase: it accepts the commit, or it corrects the text in one commit that
     changes only text. The reviewer resolves the threads it opened and approves the head that the
     answer leaves, and the architect holds its sign-off until then. No role records a pass at a
-    commit it made. The pod-update message now tells the reviewer to push its commits, as it tells
+    commit it made: at its last chance, the implementer names another agent's earlier result as
+    the pass that holds, never its own, and runs a check only in a detached worktree of the
+    reviewer's commit. The pod-update message now tells the reviewer to push its commits, as it tells
     every other role.
 time: 2026-11-25T04:16:13Z
 custom:
