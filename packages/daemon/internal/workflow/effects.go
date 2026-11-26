@@ -514,7 +514,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if err != nil {
 		return err
 	}
-	if carried != nil {
+	if carried != nil && issue.Phase != phase.Retro {
 		carried.MoveCarried = true
 		if err := e.store.UpdateFix(ctx, tx, *carried); err != nil {
 			return err
