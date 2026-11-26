@@ -259,13 +259,16 @@ func namedOnce(versions []record.PlanVersion) string {
 		if slices.ContainsFunc(versions[:i], func(earlier record.PlanVersion) bool { return sameDocumentVersion(earlier, version) }) {
 			continue
 		}
-		// The copies of one version come in the order the store gave them: one PlansInForce read
-		// orders by given_at, then generation. tellNotTaken's list joins two such reads, the earlier
-		// owners' and then its owner's, and the join keeps that order for the copies of one version.
-		// A carry copies every giver, and a give adds a giver to its own generation's copy alone, so
-		// a copy that no owner gave is of an earlier generation, and given no later, than every copy
-		// an owner gave. Read backward, the copies name the giver the store added last first, as one
-		// copy's givers do.
+		// Within one PlansInForce read the copies of one version come in the order the store gave
+		// them (given_at, then generation), so read backward they name the giver the store added
+		// last first, as one copy's givers do. tellPassedOver passes part of one read, in its order.
+		// tellNotTaken joins two, the earlier owners' and then its owner's, which need not keep that
+		// order, but its issue's group takes no plan. That group is drawn in the transaction that
+		// records the issue (drawExperiments), and from then on every give is refused PLAN_NOT_TAKEN
+		// (versionRefusal) and every stop_task too (taskStopped). So an owner's plan of such an issue
+		// was given before the record, at generation 0, and nothing carries it: its first step passes
+		// it over before it carries anything (planFirstStep). The joined list holds at most one copy
+		// of one version.
 		var givers []claim.Token
 		for _, copied := range slices.Backward(versions) {
 			if !sameDocumentVersion(copied, version) {
