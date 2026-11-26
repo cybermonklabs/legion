@@ -597,6 +597,116 @@ export const CellLine = z
   });
 export type CellLine = z.infer<typeof CellLine>;
 
+// C8. The label's whole daemon in the rig, and the readings of a forward-only run.
+
+/** The request of `label-texts.sh daemon`. `issue` is the world's issue key, `steps` the task's
+ * Steps line as `plan.Step` strings, `world` the world's directory, `ghLog` the gh stand-in's log
+ * (read for a merge it answered as merged), `omp` the pinned Oh My Pi, `home` the run's own HOME
+ * copied from the label's profile, `profile` the label's Oh My Pi profile with its model route,
+ * and `paneLogs` the directory each pane's own output is written under. `paneDaemon` is `label`
+ * for every scored run; `intercept-report` serves the path check's one control. */
+export const RigDaemonRequest = z.strictObject({
+  moment: z.enum(["retro", "merging", "notice"]),
+  role: z.enum(["implementer", "merger", "architect"]),
+  issue: z.string(),
+  steps: z.array(z.string()),
+  world: z.string(),
+  dispatchUrl: z.string(),
+  dispatchTokenFile: z.string(),
+  envoyUrl: z.string(),
+  natsUrl: z.string(),
+  postgresUrl: z.string(),
+  ghLog: z.string(),
+  omp: z.string(),
+  home: z.string(),
+  profile: z.string(),
+  paneLogs: z.string(),
+  paneDaemon: z.enum(["label", "intercept-report"]),
+});
+export type RigDaemonRequest = z.infer<typeof RigDaemonRequest>;
+
+/** The `<ready>` file of `label-texts.sh daemon`, written once the daemon took the real pane's
+ * `claims/ready`. `session` is the real pane's session, `replaced` the fake claimant's session it
+ * replaced (null at a first launch), `systemPrompt` the prompt file the local runtime wrote for the
+ * pane, and `sessionDir` where Oh My Pi writes the pane's session under the run's HOME. */
+export const RigDaemonReady = z.strictObject({
+  daemonUrl: z.string(),
+  claim: z.string(),
+  session: z.string(),
+  replaced: z.string().nullable(),
+  generation: z.number(),
+  head: commitId,
+  systemPrompt: z.string(),
+  sessionDir: z.string(),
+});
+export type RigDaemonReady = z.infer<typeof RigDaemonReady>;
+
+/** The `<status>` file, written every 10 seconds. `activity` is the newest `claims/activity` body
+ * after the last turn's end, null before a turn ended. */
+export const RigDaemonStatus = z.strictObject({
+  at: z.string(),
+  paneAlive: z.boolean(),
+  turn: z.enum(["running", "idle"]),
+  activity: z.unknown().nullable(),
+});
+export type RigDaemonStatus = z.infer<typeof RigDaemonStatus>;
+
+/** The `<record>` file, written at SIGTERM. `calls` is every request to the daemon's HTTP API in
+ * the run, whatever its status. `defects` is each open, carried and withdrawn defect of the issue.
+ * `steps` is the issue's step records as the run's Dispatch serves them. */
+export const RigDaemonRecord = z.strictObject({
+  issue: z.string(),
+  phase: z.string(),
+  generation: z.number(),
+  calls: z.array(
+    z.strictObject({
+      at: z.string(),
+      method: z.string(),
+      path: z.string(),
+      status: z.number(),
+      body: z.unknown(),
+      answer: z.unknown(),
+    })
+  ),
+  defects: z.array(
+    z.strictObject({
+      id: z.string(),
+      text: z.string(),
+      role: z.string(),
+      head: z.string(),
+      generation: z.number(),
+      carriedBy: z.number().nullable(),
+      withdrawn: z.string().nullable(),
+    })
+  ),
+  steps: z.array(
+    z.strictObject({
+      task: z.string(),
+      step: z.number(),
+      kind: z.string(),
+      role: z.string(),
+      attempt: z.number(),
+      result: z.string(),
+    })
+  ),
+});
+export type RigDaemonRecord = z.infer<typeof RigDaemonRecord>;
+
+/** `readings.json` of a forward-only or forward-owner run: each flagged message's reading, by its
+ * index, the rubric's item, the verdict, the reader and its model. */
+export const ForwardReadings = z.strictObject({
+  messages: z.array(
+    z.strictObject({
+      index: z.number(),
+      item: z.union([z.literal(1), z.literal(2)]),
+      verdict: z.enum(["yes", "no"]),
+      reader: z.string(),
+      model: z.string(),
+    })
+  ),
+});
+export type ForwardReadings = z.infer<typeof ForwardReadings>;
+
 // The recorded plans answer.
 
 /** `plans-answer.source`, beside a recorded plans answer: the label commit the capture ran at,
