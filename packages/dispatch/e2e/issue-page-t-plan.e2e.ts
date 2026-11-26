@@ -32,7 +32,8 @@ import { expect, test } from "./test";
  * issue's `/plan` (`seedPlanSizes`), each step draws its size in words and its bar as long as its
  * size on one scale, a task with no size draws one line of the axis long, dashed, and says "No
  * size", and the plan holds the tasks of the issue under it after the issue's own, each in the
- * page's own walk (`plan-filter/plan-order.ts`) and marked with that issue's key, a link to it.
+ * order the Plan view's read answers (`plan.position`), which the page draws
+ * (`plan-filter/plan-order.ts`), and marked with that issue's key, a link to it.
  * On the issue under it, its own `/plan` draws its tasks in the same order and with no mark. The
  * chart and the steps are read through the marks `plan-filter/PlanFilterBody.tsx` carries, as
  * `e2e/issue-page-k.ts` names them.
@@ -156,7 +157,7 @@ const PX = 2;
 
 // SLOW(>=2s): two issues and their plans seeded, each issue's Plan view loaded at two widths and
 // read under both drawings, with the names read waited out on each.
-test("Plan draws each task's size, and a parent's plan holds the steps of the issue under it in the page's own order @phone", async ({
+test("Plan draws each task's size, and a parent's plan holds the steps of the issue under it in the order its read answers @phone", async ({
   browser,
 }) => {
   test.setTimeout(ROW_MS);
@@ -184,8 +185,8 @@ test("Plan draws each task's size, and a parent's plan holds the steps of the is
       const planRead = viewAnswerOf(page, "plan");
       await gotoIssue(page, presetPath(seeded.key, "plan"));
 
-      // The chart, which the view opens on: the steps in the walk's order, b before a since c
-      // keeps the chain a, c together, then the child's two in its plan's order.
+      // The chart, which the view opens on: the steps in the order the Plan read answers, b before
+      // a since the read keeps the chain a, c together, then the child's two in its plan's order.
       await expect(
         planView(page, "chart"),
         `Plan does not open on the chart ${where}`

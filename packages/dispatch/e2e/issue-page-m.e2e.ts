@@ -1,6 +1,6 @@
 /** the history reads the issue's event log and its live stream, the people rows read the fake
  *  listener's subscriptions and Legion's record, and every row signs in for real with the new
- *  page turned on by that login's stored preference */
+ *  page turned on, by that login's stored preference or by the issue's own address */
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -58,6 +58,8 @@ import {
   requestApproval,
   resolveAsk,
   resolveComment,
+  reviewArtifact,
+  setGatedSteps,
   syncArchitectureSource,
   uploadIssueFile,
   withOpenedAsk,
@@ -82,6 +84,8 @@ import { requirementText } from "./issue-layout-seed-text";
 import {
   closeDetails,
   gotoIssue,
+  iconRail,
+  issuePage,
   issueRead,
   marginShell,
   openDetails,
@@ -137,8 +141,9 @@ import { withIssuePage } from "./issue-page-option";
 import { viewportAt } from "./issue-page-p";
 import { tabWalk } from "./issue-page-v";
 import { withoutScrollAnchoring } from "./mermaid-helpers";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { setCreatedAt, setEventCreatedAt } from "./seed";
-import { navigateInApp, ONE_PIXEL_PNG } from "./sends";
+import { navigateInApp } from "./sends";
 import {
   type Browser,
   type BrowserContext,
@@ -1872,6 +1877,30 @@ async function seedEarlierDayUnderLastPage(): Promise<{ earlierAt: string; key: 
   return { earlierAt, key: issue.key };
 }
 
+/**
+ * The reader's own scroll of Details' box that puts `more`, Show more holding the focus, at the
+ * foot of Details' view, where a Tab can leave it, so the first entry a press draws stands below
+ * the view. Waits for the box to stand still, then fails the row where the scroll took the focus
+ * off Show more or left it anywhere but at the view's foot, since the row proves nothing then.
+ * `size` is the window's, whose width the message names.
+ */
+async function showMoreAtViewFoot(
+  page: Page,
+  more: Locator,
+  size: { readonly width: number }
+): Promise<void> {
+  const view = await historyViewport(page);
+  const reached = await boxOf(more, CONTROL_LABELS.show_more);
+  await scrollHistoryBy(page, reached.y + reached.height - view.bottom);
+  await detailsStandStill(page, "the reader's scroll");
+  await expect(more, "the reader's scroll took the focus off Show more").toBeFocused();
+  const pressedAt = await boxOf(more, CONTROL_LABELS.show_more);
+  expect(
+    Math.abs(pressedAt.y + pressedAt.height - view.bottom) <= 1,
+    `at ${size.width} px Show more stands at ${Math.round(pressedAt.y)} to ${Math.round(pressedAt.y + pressedAt.height)} px, not at the foot of Details' view at ${Math.round(view.bottom)}, so the row proves nothing`
+  ).toBe(true);
+}
+
 // Show more pressed by keyboard hands the focus to the first entry it drew, and brings that entry
 // into Details' view by the least scroll, a scroll of Details' box alone that leaves the page
 // where it was (`IssueHistory.tsx`). The last press of this history draws the entries of an
@@ -1935,16 +1964,7 @@ test("a keyboard press of the history's last Show more leaves the focus in view"
       await expect(more, "the next press does not draw the earlier day's entries").toHaveText(
         showMoreName(EARLIER_DAY_ENTRIES)
       );
-      const view = await historyViewport(page);
-      const reached = await boxOf(more, CONTROL_LABELS.show_more);
-      await scrollHistoryBy(page, reached.y + reached.height - view.bottom);
-      await detailsStandStill(page, "the reader's scroll");
-      await expect(more, "the reader's scroll took the focus off Show more").toBeFocused();
-      const pressedAt = await boxOf(more, CONTROL_LABELS.show_more);
-      expect(
-        Math.abs(pressedAt.y + pressedAt.height - view.bottom) <= 1,
-        `at ${size.width} px Show more stands at ${Math.round(pressedAt.y)} to ${Math.round(pressedAt.y + pressedAt.height)} px, not at the foot of Details' view at ${Math.round(view.bottom)}, so the row proves nothing`
-      ).toBe(true);
+      await showMoreAtViewFoot(page, more, size);
       const daysBefore = await historyPanel(page)
         .locator("[data-history-day]")
         .evaluateAll((days) => days.map((day) => day.getAttribute("data-history-day")));
@@ -2012,6 +2032,148 @@ test("a keyboard press of the history's last Show more leaves the focus in view"
     }
   }
   expect(failures, failures.join("; ")).toEqual([]);
+});
+
+/** The start of the title of the issue `seedApprovalUnderFirstPage` cites, which the link to it
+ *  reads once the names of the references are read. */
+const CITED_TITLE = "Cited:";
+
+/**
+ * Asks, as `actor`, for the approval of `issue`'s spec, the request's summary citing the issue
+ * `cited` by its address. Answers the `ask.opened` event the request recorded.
+ */
+async function approvalCiting(
+  issue: { readonly key: string; readonly primary_artifact_id: string },
+  cited: string,
+  actor: Parameters<typeof requestApproval>[2]
+): Promise<DispatchEvent> {
+  const requested = withOpenedAsk(
+    await requestApproval(
+      issue.primary_artifact_id,
+      { summary: `Follows dispatch://${cited} closely.` },
+      actor
+    )
+  );
+  const opened = (await getIssueEvents(issue.key, { limit: 100 })).find(
+    (event) => event.type === "ask.opened" && event.payload.id === requested.ask.id
+  );
+  if (opened === undefined) throw new Error(`the seed recorded no ask.opened for ${issue.key}`);
+  return opened;
+}
+
+/**
+ * An issue whose history's first Show more draws, as its first entry, the line of a person's
+ * approval request whose question cites another issue by its address: that issue's title is long
+ * enough to wrap over several lines of Details, and the person's name is no control, so the link
+ * to it is the line's first control. `PAGE_SIZE` notes of the Legion daemon's, each a thread of
+ * its own, are newer than the request. Answers the issue's key, the cited issue's key, and the
+ * sequence of the request's `ask.opened`.
+ */
+async function seedApprovalUnderFirstPage(): Promise<{ cited: string; key: string; seq: number }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const cited = await createIssue({
+    project: "CORE",
+    title: `${CITED_TITLE} ${"a title long enough to wrap over several lines of Details ".repeat(3)}`,
+  });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: "The plan.",
+    title: "An approval request under Show more",
+  });
+  const opened = await approvalCiting(issue, cited.key, { login: "bob" });
+  for (let index = 0; index < PAGE_SIZE; index += 1) {
+    await createMessage(issue.key, { body: `The daemon's note ${index}.` }, asDaemon);
+  }
+  return { cited: cited.key, key: issue.key, seq: opened.seq };
+}
+
+// A keyboard press of Show more hands the focus to the first control of the first entry it drew,
+// brought into Details' view by the least scroll (`IssueHistory.tsx`'s `handTo`). That control
+// can be a reference in the entry's line, drawn by its address until the names of the references
+// are read, then by its target's name, which can wrap over several lines and so grow the link
+// after the hand-on. Found by the tester on a running build of 9bcd9f18 with a copy of a large
+// real issue: about 120 ms after the press the focused link grew from 15 px to 51 px, and its
+// foot stood 35 px below Details' view at 1440 px, 9 px at 390. Here the names are read late, as
+// a slow answer is: the batched read of the references' names, and the cited issue's summary,
+// which names a reference to an issue, are held back until the press has landed and the focus is
+// read. The reader's own scroll puts Show more at the foot of Details' view before the press, so
+// the hand-on brings the link in by its foot.
+// SLOW(>=2s): two issues, an approval request and 20 notes written, and at each of two widths a
+// sign-in and one load of the history.
+test("a keyboard press of the history's Show more keeps the reference link it focused wholly in Details' view as the link's target's long name lands and wraps it", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seeded = await seedApprovalUnderFirstPage();
+  for (const size of [DESKTOP, PHONE]) {
+    const context = await reader(browser, "alice");
+    const names = Promise.withResolvers<void>();
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize(size);
+      for (const read of [
+        "**/api/v1/reference-targets?**",
+        `**/api/v1/issues/${seeded.cited}/summary`,
+      ]) {
+        await page.route(read, async (route) => {
+          await names.promise;
+          await route.continue();
+        });
+      }
+      await gotoIssue(page, `/issues/${seeded.key}/activity`);
+      await expect(marginShell(page), "/activity did not open Details").toBeVisible();
+      await newestHistoryEntry(page);
+      const more = historyShowMore(page);
+      await more.focus();
+      await showMoreAtViewFoot(page, more, size);
+
+      await page.keyboard.press("Enter");
+      const first = historyEntries(page).nth(PAGE_SIZE);
+      await expect(
+        first,
+        "the press did not draw the approval request's line first, so the row proves nothing"
+      ).toHaveAttribute("data-event-seq", String(seeded.seq));
+      const link = first.locator(`.dispatch-markdown a[href="/issues/${seeded.cited}"]`);
+      await expect(
+        link,
+        `at ${size.width} px the press did not hand the focus to the reference in the line it drew first`
+      ).toBeFocused();
+      await detailsStandStill(page, `the press of ${CONTROL_LABELS.show_more}`);
+      await expect(
+        link,
+        "the cited issue's name landed before the press, so the row proves nothing"
+      ).not.toContainText(CITED_TITLE);
+      // Read once Details' box has stood still after the press: where the hand-on left the link.
+      const handed = (await boxOf(link, "the focused link")).y;
+
+      names.resolve();
+      await expect(link, "the cited issue's name never landed").toContainText(CITED_TITLE);
+      await detailsStandStill(page, "the cited issue's name landing");
+      // Two reads once Details' box has stood still for two frames: the link, and the view.
+      const landed = await link.evaluate((element) => {
+        const at = element.getBoundingClientRect();
+        return {
+          bottom: at.bottom,
+          focused: element === document.activeElement,
+          height: at.height,
+          top: at.top,
+        };
+      });
+      const shown = await historyViewport(page);
+      expect(
+        handed + landed.height > shown.bottom + 1,
+        `at ${size.width} px the link, ${Math.round(landed.height)} px tall once its target's name landed, fits under the top the hand-on left it at (${Math.round(handed)} px, the view ending at ${Math.round(shown.bottom)}), so the row proves nothing`
+      ).toBe(true);
+      expect(landed.focused, `at ${size.width} px the focus left the link`).toBe(true);
+      expect(
+        landed.top >= shown.top - 1 && landed.bottom <= shown.bottom + 1,
+        `at ${size.width} px once the cited issue's name landed, the focused link stood at ${Math.round(landed.top)} to ${Math.round(landed.bottom)} px, out of Details' view (${Math.round(shown.top)} to ${Math.round(shown.bottom)})`
+      ).toBe(true);
+    } finally {
+      names.resolve();
+      await context.close();
+    }
+  }
 });
 
 /** The words of a long agents' turn: `parts` paragraphs, each `TURN_PARAGRAPH`. */
@@ -3548,7 +3710,7 @@ test("a pin's link to an agents' turn lands the outline on its nearest drawn anc
 // with a copy of a large real issue whose Blocked by names five issues: `t o` and three loads of
 // `/collaborators` each left the focused Collaborators control at 1,135 px, under Details' view
 // (53 to 900 px) at 1440 px, once the five titles landed and the row grew from 181 px to 481 px.
-// Here the titles' read is held back 1.5 s, as a slow answer is, so it lands after the focus.
+// Here the titles' read is held back until the focus has landed, as a slow answer is, so it lands after the focus.
 test("t o and a load of /collaborators keep the focused Collaborators control in Details' view when a row above it grows", async ({
   browser,
 }) => {
@@ -3567,11 +3729,12 @@ test("t o and a load of /collaborators keep the focused Collaborators control in
   }
   await patchIssue(issue.key, { blocked_by: blockers });
   const context = await reader(browser, "alice");
+  let titles = Promise.withResolvers<void>();
   try {
     const page = await context.newPage();
     await page.setViewportSize(DESKTOP);
     await page.route("**/api/v1/reference-targets?**", async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      await titles.promise;
       await route.continue();
     });
     const collaborators = marginShell(page)
@@ -3582,6 +3745,7 @@ test("t o and a load of /collaborators keep the focused Collaborators control in
     const focusedPlace = async (how: string) => {
       await expect(collaborators, `${how} did not focus the Collaborators control`).toBeFocused();
       const before = (await blockedBy.boundingBox())?.height ?? 0;
+      titles.resolve();
       await expect(blockedBy, "the blockers' titles never landed").toContainText("Blocker 4:");
       // Half a second for whatever the page does about the taller row to finish: a landing that
       // scrolls again, or a keeper that puts the control back, has done so well within it.
@@ -3630,9 +3794,11 @@ test("t o and a load of /collaborators keep the focused Collaborators control in
     await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/collaborators$`));
     await focusedPlace("t o");
 
+    titles = Promise.withResolvers<void>();
     await gotoIssue(page, `/issues/${issue.key}/collaborators`);
     await focusedPlace("a load of /collaborators");
   } finally {
+    titles.resolve();
     await context.close();
   }
 });
@@ -6183,6 +6349,68 @@ async function openReferencedBy(page: Page): Promise<{ control: Locator; panel: 
   return { control, panel: page.locator(`[id="${await control.getAttribute("aria-controls")}"]`) };
 }
 
+/** An issue a comment of another issue cites, as bob, so Details' Referenced by draws that
+ *  comment's excerpt whole through the renderer, with a link to the issue in it; the issue's key.
+ *  The project is `CORE`. */
+async function seedCitedIssue(): Promise<string> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Cited by another issue" });
+  const other = await createIssue({ project: "CORE", title: "Citing issue" });
+  await createComment(
+    other.key,
+    { body: `This comment cites dispatch://${issue.key} in its excerpt.` },
+    { login: "bob" }
+  );
+  return issue.key;
+}
+
+/** The link to the issue `key` in an excerpt Details' Referenced by draws, in `panel`. */
+function excerptLinkTo(panel: Locator, key: string): Locator {
+  return panel.locator(`[data-reference-rows] .dispatch-markdown a[href="/issues/${key}"]`);
+}
+
+// At 767 px and below Details covers the page, and a link pressed inside it closes Details in the
+// capture phase (`Margin.tsx`'s `closeOnLink`), before the press reaches the document. A reference
+// to a known issue is drawn as its key in a span, then its title, so a press on the key lands on
+// that span; Details' unmount takes the span out of the link before the document's listener reads
+// the press, and that listener (`new-page-parameter.tsx`) then finds no link around it and leaves
+// the press to the browser, which loads the bare address and today's page. Found by the tester on
+// a running build of the redesign issue at 390 px. SLOW(>=2s): two issues and a citing comment
+// written, a sign-in, and one load of the issue with Referenced by opened.
+test("at 390 px a press on the key of a link in Details' Referenced by to the issue itself keeps ?issue_page=new and loads no document", async ({
+  browser,
+}) => {
+  const key = await seedCitedIssue();
+  const opened = `/issues/${key}?issue_page=new`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize(viewportAt(390));
+    await gotoIssue(page, opened);
+    await openDetails(page);
+    const { panel } = await openReferencedBy(page);
+    const link = excerptLinkTo(panel, key);
+    await expect(link, "Referenced by draws no link to the issue in its excerpt").toHaveCount(1);
+    const keyPart = link.locator("span").filter({ hasText: key });
+    await expect(keyPart, "the link draws no key of its own").toHaveCount(1);
+    await page.evaluate(() => {
+      window.__stayed = true;
+    });
+    await keyPart.click();
+    await expect(
+      page,
+      "the press on the key loaded the issue's address without the parameter"
+    ).toHaveURL(opened);
+    await expectIssuePageDrawn(page);
+    expect(
+      await page.evaluate(() => window.__stayed === true),
+      "the press on the key loaded the document again"
+    ).toBe(true);
+  } finally {
+    await alice.close();
+  }
+});
+
 // A comment of another issue cites the issue, so Details' Referenced by draws its whole excerpt
 // through the renderer. The excerpt's wrapper carries `data-node-words`, so the link the renderer
 // draws for that reference takes the words' own ink rather than the old application's link blue.
@@ -6193,25 +6421,12 @@ test("a reference in an excerpt of Details' Referenced by is drawn in the words'
 }) => {
   await phase(
     browser,
-    async () => {
-      await createProject({ key: "CORE", name: "Core" });
-      const issue = await createIssue({ project: "CORE", title: "Cited by another issue" });
-      const other = await createIssue({ project: "CORE", title: "Citing issue" });
-      await createComment(
-        other.key,
-        { body: `This comment cites dispatch://${issue.key} in its excerpt.` },
-        { login: "bob" }
-      );
-      return { key: issue.key };
-    },
+    async () => ({ key: await seedCitedIssue() }),
     async (page, seeded) => {
       await gotoIssue(page, `/issues/${seeded.key}`);
       await openDetails(page);
       const { panel } = await openReferencedBy(page);
-      await expectLinkInWordsInk(
-        panel.locator(`[data-reference-rows] .dispatch-markdown a[href="/issues/${seeded.key}"]`),
-        "Referenced by"
-      );
+      await expectLinkInWordsInk(excerptLinkTo(panel, seeded.key), "Referenced by");
     }
   );
 });
@@ -6233,18 +6448,7 @@ test("a reference in a question the history quotes is drawn in the words' ink, n
         spec: "The plan.",
         title: "Approval quoting a reference",
       });
-      const requested = withOpenedAsk(
-        await requestApproval(
-          issue.primary_artifact_id,
-          { summary: `Follows dispatch://${cited.key} closely.` },
-          activityAgent
-        )
-      );
-      const events = await getIssueEvents(issue.key, { limit: 100 });
-      const opened = events.find(
-        (event) => event.type === "ask.opened" && event.payload.id === requested.ask.id
-      );
-      if (opened === undefined) throw new Error(`the seed recorded no ask.opened for ${issue.key}`);
+      const opened = await approvalCiting(issue, cited.key, activityAgent);
       return { at: opened.created_at, cited: cited.key, key: issue.key, seq: opened.seq };
     },
     async (page, seeded) => {
@@ -6267,4 +6471,205 @@ test("a reference in a question the history quotes is drawn in the words' ink, n
       );
     }
   );
+});
+
+// The issue touches no component, for a reason that cites another issue: Details' Components row
+// draws that reason through the renderer (`IssueComponentsLine`), inside the words' mark, so the
+// link the renderer draws for the reference takes the words' own ink rather than the old
+// application's link blue.
+// SLOW(>=2s): two issues written and one of them patched, a sign-in, and one load of the issue
+// with Details opened.
+test("a reference in the reason for no components in Details is drawn in the words' ink, not the old application's blue", async ({
+  browser,
+}) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      const cited = await createIssue({ project: "CORE", title: "The staffing plan" });
+      const issue = await createIssue({ project: "CORE", title: "Hire someone" });
+      await patchIssue(issue.key, {
+        components: { mode: "none", reason: `See dispatch://${cited.key}` },
+      });
+      return { cited: cited.key, key: issue.key };
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await openDetails(page);
+      await expectLinkInWordsInk(
+        detailsRow(page, PROPERTY_LABELS.components).locator(
+          `[data-testid="issue-components"] .dispatch-markdown a[href="/issues/${seeded.cited}"]`
+        ),
+        "the reason for no components"
+      );
+    }
+  );
+});
+
+// bob sends the spec of a root issue under the design gate back, for a reason that cites another
+// issue: Details' Approval row draws that reason under the spec's step through the renderer
+// (`ApprovalSteps`), inside the words' mark, so the link the renderer draws for the reference
+// takes the words' own ink rather than the old application's link blue.
+// SLOW(>=2s): two issues, the project's gated steps and a review written, a sign-in, and one load
+// of the issue with Details opened.
+test("a reference in a reviewer's reason for changes requested in Details is drawn in the words' ink, not the old application's blue", async ({
+  browser,
+}) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      await setGatedSteps("CORE", ["spec"]);
+      const cited = await createIssue({ project: "CORE", title: "The rollback plan" });
+      const issue = await createIssue({
+        project: "CORE",
+        spec: "The plan.",
+        title: "A spec sent back",
+      });
+      await reviewArtifact(
+        issue.primary_artifact_id,
+        {
+          reason: `Name the rollback path: see dispatch://${cited.key}`,
+          state: "changes_requested",
+        },
+        { login: "bob" }
+      );
+      return { cited: cited.key, key: issue.key };
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await openDetails(page);
+      await expectLinkInWordsInk(
+        detailsRow(page, PROPERTY_LABELS.approval).locator(
+          `[data-approval-step-reason="spec"] .dispatch-markdown a[href="/issues/${seeded.cited}"]`
+        ),
+        "a reviewer's reason"
+      );
+    }
+  );
+});
+
+// ---------------------------------------------------------------------------------------------
+// The address that opens the new page for one issue, with the reader's setting off.
+// ---------------------------------------------------------------------------------------------
+
+// alice has never turned the new page on, and opens an issue's address that carries
+// `?issue_page=new`: the shell draws the new page's frame, its icon rail, and the new page in it.
+// A view's control moves through the router, so the view's address keeps the parameter, and a
+// reload and Back open the new page again. The same issue's address without the parameter is
+// today's page, with its tabs, and Settings' control is still off: the address stored nothing.
+// SLOW(>=2s): an issue written, a sign-in, two loads of the issue, a reload, a move back and a load
+// of Settings.
+test("an issue address with ?issue_page=new opens the new page with the setting off, keeps it through a view, a reload and Back, and stores nothing", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Opened by its address" });
+  const opened = `/issues/${issue.key}?issue_page=new`;
+  const view = `/issues/${issue.key}/spec?issue_page=new`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize(DESKTOP);
+    await page.goto(opened);
+    await expectIssuePageDrawn(page);
+    await expect(iconRail(page), "the new page's frame draws no icon rail").toHaveCount(1);
+    await issueRead(page);
+
+    await presetToggle(page, "spec").click();
+    await expect(page).toHaveURL(view);
+    await expect(presetToggle(page, "spec")).toHaveAttribute("aria-pressed", "true");
+    await expect(issuePage(page), "the view's address drew today's page").toHaveCount(1);
+    await expect(iconRail(page)).toHaveCount(1);
+
+    await page.reload();
+    await expect(page).toHaveURL(view);
+    await expect(issuePage(page), "a reload of the view's address drew today's page").toHaveCount(
+      1
+    );
+    await expect(presetToggle(page, "spec")).toHaveAttribute("aria-pressed", "true");
+    await expect(iconRail(page)).toHaveCount(1);
+
+    await page.goBack();
+    await expect(page).toHaveURL(opened);
+    await expectIssuePageDrawn(page);
+    await expect(iconRail(page)).toHaveCount(1);
+
+    await page.goto(`/issues/${issue.key}`);
+    await expect(
+      page.getByRole("tab", { exact: true, name: "Spec" }),
+      "the address without the parameter drew no tab of today's page"
+    ).toBeVisible();
+    await expect(
+      issuePage(page),
+      "the address without the parameter drew the new page"
+    ).toHaveCount(0);
+    await expect(iconRail(page)).toHaveCount(0);
+
+    await page.goto("/settings");
+    await expect(
+      page
+        .getByRole("region", { name: "Preview" })
+        .getByRole("checkbox", { exact: true, name: "New issue page" })
+    ).not.toBeChecked();
+    expect(
+      await page.evaluate(() => window.localStorage.getItem("dispatch.issue.page:alice")),
+      "the address stored a choice"
+    ).toBeNull();
+  } finally {
+    await alice.close();
+  }
+});
+
+// What the row below keeps on the page's window.
+declare global {
+  interface Window {
+    /** Set by the row before its press; a load of a document drops it, a move of the router
+     *  keeps it. */
+    __stayed?: true;
+  }
+}
+
+// alice has never turned the new page on, and opens the issue's address with `?issue_page=new`.
+// Details' Referenced by draws a comment's excerpt through the renderer, whose link to the issue
+// itself is a plain `<a href>` the router never drew, to the address without the parameter. A
+// press on it is followed in place by the router, which keeps the parameter: no document is
+// loaded, and the new page stays where a load of that address would draw today's page.
+// SLOW(>=2s): two issues and a citing comment written, a sign-in, one load of the issue with
+// Referenced by opened, and a press on its link.
+test("a link in Details' Referenced by to the issue itself, pressed at ?issue_page=new with the setting off, keeps the new page and loads no document", async ({
+  browser,
+}) => {
+  const key = await seedCitedIssue();
+  const opened = `/issues/${key}?issue_page=new`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize(DESKTOP);
+    await gotoIssue(page, opened);
+    await openDetails(page);
+    const { panel } = await openReferencedBy(page);
+    const link = excerptLinkTo(panel, key);
+    await expect(link, "Referenced by draws no link to the issue in its excerpt").toHaveCount(1);
+    await page.evaluate(() => {
+      window.__stayed = true;
+    });
+    await link.click();
+    await expect(page, "the press loaded the issue's address without the parameter").toHaveURL(
+      opened
+    );
+    await expectIssuePageDrawn(page);
+    // A press that starts a load returns once that load has committed (Playwright's click waits
+    // for the navigation it began), so this read is of the document the press left the reader in.
+    expect(
+      await page.evaluate(() => window.__stayed === true),
+      "the press loaded the document again"
+    ).toBe(true);
+    await expect(
+      page.getByRole("tab", { exact: true, name: "Spec" }),
+      "the press drew today's page"
+    ).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
 });

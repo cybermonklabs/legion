@@ -1,5 +1,5 @@
 import { isIdPrefix } from "@legion/contracts";
-import type { Locator, Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
 
 import { IDENTITY_HEIGHT_PROPERTY } from "../web/src/features/issue-page/identity-block";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
@@ -14,7 +14,7 @@ import { nextFrames } from "./frames";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";
 import { decisionNodesOf } from "./issue-layout-seed-support";
 import { ANSWERED_QUESTION_BLOCK_ID, OPEN_QUESTION_BLOCK_ID } from "./issue-layout-seed-text";
-import { gotoIssue, issuePage, phase } from "./issue-page";
+import { gotoIssue, phase } from "./issue-page";
 import {
   DESKTOP,
   drawnRows,
@@ -33,8 +33,11 @@ import {
   unfoldEveryBranch,
 } from "./issue-page-g";
 import {
+  expectFallbackLine,
+  FALLBACK_LINES,
   focusedNodeId,
   focusInside,
+  GONE_COMMENT,
   onScreen,
   openPreset,
   outlineRows,
@@ -870,31 +873,12 @@ test("under Decisions a row draws the outline's layout and short names @phone", 
   });
 });
 
-/** A comment id of the right shape, a whole uuid, that no comment of the seeded issue has: the
- *  comment's own read answers 404 for it. */
-const GONE_COMMENT = "5f0c2a9e-7d41-4b8a-9c3e-2e6d1b7a4c90";
-
 /** The same id written short, its first eight hex digits, which name no comment either: the
  *  graph read that resolves an id written short finds nothing for it. */
 const SHORT_GONE_COMMENT = GONE_COMMENT.slice(0, 8);
 
 /** A block id no node of the seeded issue carries. */
 const NO_BLOCK = "no-such-block";
-
-/** The heading and the line part I's outline draws in its own place for an address that names
- *  nothing the issue holds (`slots/body.tsx`'s `ItemFallback` and `ABSENT_LINES`), for the
- *  issue `key`. That file keeps these words to itself, so they are written out here, as
- *  `deep-links.e2e.ts` writes the heading of a comment that is not found. */
-const FALLBACK_LINES = {
-  block: (key: string) => ({
-    heading: "No row for this block",
-    line: `That link names no row of ${key}'s outline.`,
-  }),
-  comment: (key: string) => ({
-    heading: "Comment not found",
-    line: `That link doesn't name a comment on ${key} — it may have been deleted.`,
-  }),
-} as const;
 
 // An address on a view that names a node beside it: the view tells the stage whether it draws a
 // row of the node, and where it draws none the stage draws part I's outline in the view's place,
@@ -1098,30 +1082,3 @@ test("an address the view draws no row for draws the outline's line for it in th
     ).toHaveCount(0);
   });
 });
-
-/** The page draws part I's line `words` in the place of the view whose body is `view` for the
- *  address it has just loaded, `what`: its heading and its line, with the focus on the heading,
- *  and none of the view beside it. */
-async function expectFallbackLine(
-  page: Page,
-  words: { readonly heading: string; readonly line: string },
-  view: Locator,
-  what: string
-): Promise<void> {
-  const named = { exact: true, name: words.heading } as const;
-  const heading = issuePage(page).getByRole("heading", named);
-  await expect(heading, `${what} draws no "${words.heading}" in the view's place`).toBeVisible();
-  // The inner locator of `has` is read inside each section, so it names no root of its own.
-  await expect(
-    issuePage(page)
-      .locator("section")
-      .filter({ has: page.getByRole("heading", named) })
-      .locator("p"),
-    `${what} draws another line under "${words.heading}"`
-  ).toHaveText(words.line);
-  await expect(
-    heading,
-    `${what} leaves the focus off "${words.heading}", on the page's body or elsewhere`
-  ).toBeFocused();
-  await expect(view, `${what} draws the view beside the line`).toHaveCount(0);
-}

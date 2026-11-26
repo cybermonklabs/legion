@@ -2567,7 +2567,8 @@ function addressUnder(address: string, owner: string, next: string): boolean {
 }
 
 /** The slug of the project document `event` is on, where its payload carries it: a created,
- *  renamed or removed document's own, an edited or a deleted comment's document's
+ *  renamed or removed document's own, a retired document's (its `ref_key` after the owner's
+ *  `/`), an edited or a deleted comment's document's
  *  (`artifact_slug`, which the read of a deleted comment's event keeps beside its delete marks),
  *  and an edited ask's document's, the one its anchor quotes (`anchor_artifact`), for an edit
  *  through the ask's own route the one that holds its typed block (`block_artifact`), or for an

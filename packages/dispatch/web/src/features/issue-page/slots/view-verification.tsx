@@ -4,7 +4,7 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import type { CheckBlock, RequirementCoverage } from "../../../api/types";
+import type { CheckBlock, IssueCoverage } from "../../../api/types";
 import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
@@ -25,7 +25,12 @@ import type { ViewSlotProps } from "./stage";
 import { usePublishViewReadings } from "./view-readings";
 
 /** Filled by INFRA-1196 part V, "The Verification view". */
-export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotProps): ReactNode {
+export function ViewVerificationSlot({
+  acts,
+  issue,
+  onAddressDrawn,
+  route,
+}: ViewSlotProps): ReactNode {
   // The Verification view: the issue's one tree as the Verification view leaves it, each statement
   // with the checks that serve it and each check beside its newest result.
   const { hash, search } = useLocation();
@@ -41,7 +46,7 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
   // Whether the read that holds the Verification document's blocks runs, from an observer of its
   // own (`useBlocksRunning`): under this filter its own view read.
   const running = useBlocksRunning(issue.key, "verification");
-  const { checks, reads, requirements } = useVerificationReads(issue.key, {
+  const { checks, coverage, reads } = useVerificationReads(issue.key, {
     ...blocksOf("verification"),
     isFetching: running,
   });
@@ -49,6 +54,11 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
   // address that names a node the view holds no row for still draws it, as the outline resolves
   // it (`useAddressTarget`).
   const { named } = useAddressTarget(root, address);
+  // The id of the node the address names, which `named` holds: the body puts the focus on its row
+  // once every read the tree is built from has settled (`readsSettled`), for the reason
+  // `SpecFilterBody` gives, and makes that row its tab stop.
+  // It is the last node of the hook's `reveal`, read from `named`: the slot takes only `named`.
+  const revealed = [...named].at(0);
   const view = useMemo(
     () => presetView(root, "verification", address.filter, named),
     [address.filter, named, root]
@@ -86,13 +96,18 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
       {/* The stage's column, which the body draws its own measure in. */}
       <div className="flex w-full min-w-0 flex-col">
         <VerificationFilterBody
+          // The reader's acts since the address was followed, which the stage watches and the
+          // body's landing reads: a reader who acted keeps the page as they left it.
+          {...(acts === undefined ? {} : { addressActs: acts })}
           {...(tells ? { addressed } : {})}
           checks={checks}
           context={view.context}
+          coverage={coverage}
           namesLine={names}
           published={published}
           reads={reads}
-          requirements={requirements}
+          readsSettled={readsSettled}
+          {...(revealed === undefined ? {} : { reveal: revealed })}
           view={view.root}
           whole={whole}
         />
@@ -103,24 +118,20 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
   );
 }
 
-/** The coverage read's rows while it holds none: the same value on every render. */
-const NO_REQUIREMENTS: readonly RequirementCoverage[] = [];
-
 /**
- * The reads the Verification view is drawn from, as its body takes them (the `checks`, `reads`
- * and `requirements` of `VerificationFilterBody`): the coverage read with its rows, every
- * statement of the issue's spec, the results read with the issue's checks, the Verification
- * document's blocks it is handed, and how the three stand. Both reads are the slot's own
- * observers, apart from `useIssueTree`'s of the same keys, so what they fetch is read by their
- * own options alone.
+ * The reads the Verification view is drawn from, as its body takes them (the `checks`, `coverage`
+ * and `reads` of `VerificationFilterBody`): the coverage read, the results read with the issue's
+ * checks, the Verification document's blocks it is handed, and how the three stand. Both reads
+ * are the slot's own observers, apart from `useIssueTree`'s of the same keys, so what they fetch
+ * is read by their own options alone.
  */
 export function useVerificationReads(
   issueKey: string,
   blocks: TreeBlocksRead & { readonly isFetching: boolean }
 ): {
   checks: readonly CheckBlock[];
+  coverage: IssueCoverage | undefined;
   reads: VerificationReads;
-  requirements: readonly RequirementCoverage[];
 } {
   // The coverage read, and the issue's checks with the results recorded against them, under the
   // keys `useIssueTree.ts` already reads them with, so the view sends no request of its own. The
@@ -132,9 +143,6 @@ export function useVerificationReads(
   const coverage = useQuery({ ...issueCoverageQuery(issueKey), ...EVENT_FRESH });
   const results = useQuery({ ...issueResultsQuery(issueKey), ...EVENT_FRESH });
   const checks = useMemo(() => results.data?.checks ?? [], [results.data]);
-  // The coverage read's rows, which the summary's covered count is read from alone: that read
-  // answers every statement of the issue's spec, where the view read answers a page at a time.
-  const requirements = coverage.data?.requirements ?? NO_REQUIREMENTS;
   // The blocks read of the Verification document too: a check learns the statements it serves
   // from its block's `serves` pointer, which only that read carries (`tree-nodes.ts`). Drawn
   // before it answers, every check would stand at the table's foot as one that serves no
@@ -175,7 +183,7 @@ export function useVerificationReads(
       : answered
         ? { state: "answered" }
         : { state: "waiting" };
-  return { checks, reads, requirements };
+  return { checks, coverage: coverage.data, reads };
 }
 
 /** What the line of a read that failed is given: which refusal it says, the read's own count of

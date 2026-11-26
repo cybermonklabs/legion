@@ -665,14 +665,28 @@ with q as (select
 // candidates before ranking and counting. Meaning arms retain their own tests before their
 // candidate limits, and the page retains its tests of individual covers.
 //
-// The arms are a union whose first select names every column, so the derived table the filter
-// reads carries those names on to ranked below unchanged.
+// The arms are a materialized CTE of their own, and the visibility join reads that CTE rather
+// than the union itself. A CTE's scan costs only the rows it hands on, while a union in a FROM
+// clause costs everything its arms cost, so this keeps the arms' estimate out of the join's
+// choice. The document arm's estimate is far off: its ask_nodes walk starts from a guess of
+// 39,886 ask fences on the scale-0.1 seed, where it finds none, so the planner prices the arm at
+// 22.6 million. Postgres treats two paths whose total costs are within 1% as equal and keeps the
+// one that starts sooner. Over the union, that kept a nested loop that compared every candidate
+// with every artifact (4,031,675 rows removed by its join filter) and a scan of all of
+// graph_nodes, 593 of a 632 ms meaning search. Over the CTE, the join probes artifacts_id_text
+// and graph_nodes_pkey once a candidate, as it did under the arms of the release before, whose
+// estimate is small. Materializing changes no row: the CTE holds what the union answered.
+//
+// The arms are a union whose first select names every column, so the CTE and kinds after it
+// carry those names on to ranked below unchanged.
 func searchKindsCTE(arms, exclude string, seen int) string {
-	source := "(" + arms + "\n)"
+	source := arms
 	if exclude != "" {
-		source = "(select * from " + source + " candidates where not (" + exclude + "))"
+		source = "select * from (" + arms + "\n) candidates where not (" + exclude + ")"
 	}
-	return `kinds as (select arms.* from ` + source + ` arms` +
+	return `arms as materialized (` + source + `
+),
+kinds as (select arms.* from arms` +
 		refs.SearchVisibilityJoin("arms.kind", "arms.id", searchParam(seen)) + ` where hidden.id is null
 ),
 `

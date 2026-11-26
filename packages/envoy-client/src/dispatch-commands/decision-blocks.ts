@@ -27,6 +27,30 @@ async function blockAsks(
   );
 }
 
+/** The words a refusal over open ask blocks says around the blocks it names: `call`, the call it
+ * refused (`dispatch request-approval`, `legion register_gate`); `effect`, the sentence on why an
+ * open block refuses that call; `remedy`, what to do instead; `block`, what the refusal calls a
+ * block, `decision block` where it names none. */
+export interface OpenDecisionBlockRefusal {
+  readonly call: string;
+  readonly effect: string;
+  readonly remedy: string;
+  readonly block?: string;
+}
+
+/** The two sentences the `legion` tool's register_gate remedy over open decision blocks gives
+ * first, word for word: ask the human to answer or waive the block, and how an answered one
+ * settles into a version, about two seconds later, as `refuseOpenDecisionBlocks` names an answered
+ * block still open. `dispatch request-approval`'s remedy gives the first, then says where the
+ * answer is held. */
+export const OPEN_BLOCK_ASK_THE_HUMAN =
+  "Tell the human which block is open and ask them to answer it or to waive it. Once it is answered, it settles into a version on its own in about two seconds.";
+
+/** How every `remedy` over open decision blocks closes a block the human waives, which each one
+ * continues with its own next step. */
+export const OPEN_BLOCK_WAIVED =
+  "If they waive it, close the block with dispatch resolve-ask (--kind resolved, their words as the --reason)";
+
 /**
  * Refuses an approval request while the document holds an open ask block. A request asks
  * the human to agree to every point of the latest version, and an open block is a question they
@@ -36,7 +60,7 @@ async function blockAsks(
  *
  * A Dispatch of this release answers each ask's state from the ask itself - a block's own ask from
  * the asks list, a copy's source from the live text's `asks` (`GET /artifacts/{id}/text`) - and
- * this command needs nothing more: wherever the live text answers `asks`, which only such a
+ * this test needs nothing more: wherever the live text answers `asks`, which only such a
  * Dispatch does, each block is judged by the server's ask, whatever state a stored version records
  * on its opening line, which this release keeps there only for the readers of the release before.
  * A Dispatch of the release before sends no `asks`, writes each answer into the block, and is read
@@ -57,11 +81,15 @@ async function blockAsks(
  * A block removed from the document is not judged here; `refuseRemovingOpenDecisionBlocks` keeps
  * one whose ask is open in it. A document already approved at its latest version is left to the
  * server, which answers with that approval.
+ *
+ * The `legion` tool makes the same test before `register_gate` opens a root's design-gate step on
+ * an ancestor's approval without a person's review of the root's document. `refusal` supplies the
+ * caller's words around the blocks named.
  */
 export async function refuseOpenDecisionBlocks(
   client: DispatchClient,
-  tool: string,
-  resolved: ResolvedArtifact
+  resolved: ResolvedArtifact,
+  refusal: OpenDecisionBlockRefusal
 ): Promise<void> {
   const artifact = resolved.artifact;
   const latest = artifact.approval?.latest_version;
@@ -168,12 +196,13 @@ export async function refuseOpenDecisionBlocks(
     if (line !== undefined) open.push(line);
   }
   if (open.length === 0) return;
-  const count = open.length === 1 ? "1 open ask block" : `${open.length} open ask blocks`;
+  const noun = refusal.block ?? "decision block";
+  const count = open.length === 1 ? `1 open ${noun}` : `${open.length} open ${noun}s`;
   throw new Error(
     [
-      `dispatch ${commandName(tool)} was not called: ${artifact.name} (version ${latest}) has ${count}. Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.`,
+      `${refusal.call} was not called: ${artifact.name} (version ${latest}) has ${count}. ${refusal.effect}`,
       ...open.map((line) => `- ${line}`),
-      "Do not request approval over an open block, even when a human asked for it. Tell the human which block is open and ask them to answer it or to waive it. Their answer is held on the ask, not in the text: Dispatch records its state, and who answered and when, on the block's opening line, which settles into a version on its own about two seconds later and changes no word of the text, so once every block is answered, request approval of the latest version, after any version a line above says to wait for. When the answer changes design text outside the block, rewrite that text (never to restate the answer), then request approval once the human has agreed to every point in the new version, with a one-sentence --summary naming what changed since any earlier approval. If they waive it, close the block with dispatch resolve-ask (--kind resolved, their words as the --reason), write their decision into the text with dispatch doc-edit, then request approval again once the human has agreed to every point in the new version. The call opens the request, or hands an open one back to the human.",
+      refusal.remedy,
     ].join("\n")
   );
 }

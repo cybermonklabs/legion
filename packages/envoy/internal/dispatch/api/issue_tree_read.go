@@ -1705,10 +1705,10 @@ func (b *issueTreeBuilder) readMembers() error {
 // the cut whose seq bound $2 is, as the coverage read counts them (readServingChecks): each node
 // whose current serves names it - of each relation the newest tuple at or below the bound, read
 // into the requirement through graph_tuples_as_of_in, kept while it asserts - that is a block node
-// of one of the issues $4, whose document_blocks row types it a check, at any state but gone,
-// proposed and overtaken, that the reader whose credential $3 binds may see (the block loader's
-// predicate). It is built at each read, as the block loader's is: the registry the predicate
-// reads is filled by refs' init.
+// of one of the issues $4, whose document_blocks row types it a check, at any state of its own but
+// gone, proposed and overtaken, whatever state a node above it holds, that the reader whose
+// credential $3 binds may see (the block loader's predicate). It is built at each read, as the
+// block loader's is: the registry the predicate reads is filled by refs' init.
 func requirementChecksStatement() string {
 	return `
 	select served.to_id, count(*)
@@ -1924,45 +1924,54 @@ func (b *issueTreeBuilder) verificationRequirements() map[refs.Target]bool {
 	return carried
 }
 
-// siblingClass is where a child stands among its siblings in the walk's order: a conversation
-// item's own blocks first, then the children that hold a rank, then the rest.
-func (b *issueTreeBuilder) siblingClass(target refs.Target) int {
-	entry := b.entries[target]
+// The classes of leadClass, in the order they stand.
+const (
+	leadItemBlock = iota
+	leadMemo
+	leadNone
+)
+
+// leadClass is where a child stands among its siblings ahead of the tree's order of siblings
+// (refs.CompareSiblings), as the walk orders them: a conversation item's own blocks first, then the
+// issue's memo (docs' treeWalk.memoFirst), and every other child after them.
+func (b *issueTreeBuilder) leadClass(target refs.Target) int {
 	switch {
 	case isItemBlockKind(target.Kind):
-		return 0
-	case entry.ranked:
-		return 1
+		return leadItemBlock
+	case b.tree.Memo >= 0 && b.entries[target].walk == b.tree.Memo:
+		return leadMemo
 	}
-	return 2
+	return leadNone
 }
 
 // compareSiblings orders two children of one parent as the walk does (docs' treeWalk.ordered): a
-// ranked child by rank, an unranked one by when it was made, each tie by the lower address, every
-// comparison byte for byte. Two blocks of one item keep the order the walk gave them.
+// conversation item's own blocks and the issue's memo first, in the order the walk gave them
+// (leadClass), then the rest in the tree's order of siblings (refs.CompareSiblings): the
+// conversation nodes by when each was made, the ranked ones by rank, the others by when each was
+// made, each tie by the lower address, every comparison byte for byte.
 func (b *issueTreeBuilder) compareSiblings(left, right refs.Target) int {
-	leftClass, rightClass := b.siblingClass(left), b.siblingClass(right)
-	if leftClass != rightClass {
-		return leftClass - rightClass
+	leftLead, rightLead := b.leadClass(left), b.leadClass(right)
+	if leftLead != rightLead {
+		return leftLead - rightLead
 	}
 	l, r := b.entries[left], b.entries[right]
-	switch leftClass {
-	case 0:
+	if leftLead != leadNone {
 		return l.walk - r.walk
-	case 1:
-		return cmp.Or(strings.Compare(l.rank, r.rank), refs.CompareAddresses(left, right))
 	}
-	return cmp.Or(l.madeAt.Compare(r.madeAt), refs.CompareAddresses(left, right))
+	return refs.CompareSiblings(
+		refs.TreeChild{Node: left, Rank: l.rank, Ranked: l.ranked, MadeAt: l.madeAt},
+		refs.TreeChild{Node: right, Rank: r.rank, Ranked: r.ranked, MadeAt: r.madeAt})
 }
 
 // arrange is the nodes members holds but the context in the tree's order: the issue's node, each
 // node before its children, a node's own children in the walk's order and after them each node
-// lifted to it from under a node the answer leaves out, by its rank and then its id; then each
-// node whose parent is a node members does not hold - the walk's second part, under a node of an
-// issue above, and a node reached through serves whose issue's node the answer does not hold -
-// each with its subtree, in the walk's order and then the order the others were read in. Where
-// members holds no issue's node, as a comments_before read, each node whose parent it does not
-// hold stands at the top, by when each was made and then by its address, each with its subtree.
+// lifted to it from under a node the answer leaves out, in the tree's order of siblings
+// (compareSiblings); then each node whose parent is a node members does not hold - the walk's
+// second part, under a node of an issue above, and a node reached through serves whose issue's
+// node the answer does not hold - each with its subtree, in the walk's order and then the order
+// the others were read in. Where members holds no issue's node, as a comments_before read, each
+// node whose parent it does not hold stands at the top, by when each was made and then by its
+// address, each with its subtree.
 func (b *issueTreeBuilder) arrange(members map[refs.Target]bool) []refs.Target {
 	direct := map[refs.Target][]refs.Target{}
 	lifted := map[refs.Target][]refs.Target{}
@@ -1991,16 +2000,7 @@ func (b *issueTreeBuilder) arrange(members map[refs.Target]bool) []refs.Target {
 		})
 	}
 	for parent := range lifted {
-		slices.SortStableFunc(lifted[parent], func(left, right refs.Target) int {
-			l, r := b.entries[left], b.entries[right]
-			if l.ranked != r.ranked {
-				if l.ranked {
-					return -1
-				}
-				return 1
-			}
-			return cmp.Or(strings.Compare(l.rank, r.rank), refs.CompareAddresses(left, right))
-		})
+		slices.SortStableFunc(lifted[parent], b.compareSiblings)
 	}
 	var order []refs.Target
 	taken := map[refs.Target]bool{}

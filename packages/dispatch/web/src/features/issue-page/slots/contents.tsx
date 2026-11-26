@@ -4,11 +4,13 @@ import { useLocation } from "react-router-dom";
 import { primarySpec } from "../../../api/issue-cache";
 import { focusVisibleRing, pageLineBorder, pageQuietText } from "../../../theme/classes";
 import { useContentsChosen } from "../contents-chosen";
+import { producingMessages } from "../contents-entries";
 import { ContentsList } from "../IssueContents";
-import { IssueThreeThings } from "../IssueThreeThings";
+import { briefCounts, IssueThreeThings } from "../IssueThreeThings";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
 import { useIssueNames } from "../one-line";
+import { useOutlineReads } from "../outline-reads";
 import { useAskOutline, useFocusBranch } from "../outline-request";
 import { pageChrome } from "../page-structure";
 import { CONTROL_LABELS } from "../page-words";
@@ -16,18 +18,17 @@ import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
 import { useOlderComments } from "../tree-read/tree-read";
-import { useIssueTree } from "../useIssueTree";
 
 /**
  * The contents slot, which the Spec view's work fills: what the page's Contents pane holds from
  * 1024 px up, and its Outline sheet below that (`contents-frame.tsx`), with no view on (R1, R2).
  * R13 adds each filter and Graph: the pane and the sheet stand beside them too, and draw this
  * slot.
- * From the top: the issue's three sentences under "In short" (`IssueThreeThings`), then the
- * Contents list of each question and each thread the reader began (`ContentsList`). Under a view
- * it draws the same list as beside Conversation, and the three sentences in the pane alone. Below
- * 1024 px the Outline sheet leaves them out (`ContentsSentences`), since above its first row each
- * view draws them.
+ * From the top: the issue's three sentences under "In short" and the two rows under them
+ * (`IssueThreeThings`), then the Contents list of each question and each thread the reader began
+ * (`ContentsList`). Under a view it draws the same list as beside Conversation, and the three
+ * sentences and their two rows in the pane alone. Below 1024 px the Outline sheet leaves them out
+ * (`ContentsSentences`), since above its first row each view draws them.
  *
  * The list reads the tree the outline draws (`useIssueTree`), as the Conversation view leaves it
  * with the words filter's `?q=`. An entry chosen sends the outline to its node through the
@@ -42,23 +43,28 @@ import { useIssueTree } from "../useIssueTree";
  */
 export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
-  const spec = primarySpec(issue);
-  const specSlug = spec?.slug ?? "";
+  const specSlug = primarySpec(issue)?.slug ?? "";
   const address = issueAddress(route, search, hash, specSlug);
-  const { blocksOf, root } = useIssueTree(issue);
-  // The head says the spec holds no summary only once the spec's blocks are held, which is when
-  // the tree holds its summary node where it has one. The sentences are drawn from that node's
-  // reading (`TreeNode.tree`), which the tree read carries with the spec's blocks (`blocksOf`).
-  const specBlocks = blocksOf("spec");
-  const specHeld = spec !== undefined && specBlocks.data !== undefined;
+  const { namesHeld, readsHeld, root } = useOutlineReads(issue);
+  // The sentences are drawn from the summary node's reading (`TreeNode.tree`), which the tree
+  // read carries with the spec's blocks, so until it answers "In short" draws its heading and the
+  // labels of its two rows, with nothing under them. The rows count over the same tree and the
+  // same words filter as the view row does, once it may be counted (`briefCounts`).
   const memo = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
+  const counts = useMemo(
+    () => briefCounts({ namesHeld, readsHeld, root }, address.filter),
+    [address.filter, namesHeld, readsHeld, root]
+  );
   const view = useMemo(
     () => presetView(root, "conversation", address.filter, undefined, memo?.id),
     [address.filter, memo, root]
   );
-  // How a reference the sentences and the entries cite is named, read once over the whole tree
-  // (`referenceStandIns`).
-  const { nameOf } = useIssueNames(issue, root);
+  // Whether a message produced a node is read over the whole tree: the words filter's view drops
+  // the node a matching message produced (`isContentsEntry`).
+  const producing = useMemo(() => producingMessages(root), [root]);
+  // What a reference the sentences and the entries cite is named by: the names the page
+  // published, as the node's row in the outline names it (`referenceStandIns`).
+  const lineNames = useIssueNames(issue.key);
   const ask = useAskOutline();
   const [focusBranch, setFocusBranch] = useFocusBranch();
   const chosen = useContentsChosen();
@@ -70,11 +76,17 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   return (
     <NoTooltips>
       {sentences ? (
-        <IssueThreeThings look="contents" nameOf={nameOf} specHeld={specHeld} summary={memo} />
+        <IssueThreeThings
+          counts={counts}
+          issueKey={issue.key}
+          lineNames={lineNames}
+          look="contents"
+          summary={memo}
+        />
       ) : null}
       <ContentsList
         focusBranch={focusBranch}
-        nameOf={nameOf}
+        lineNames={lineNames}
         onFocusBranch={(current) => {
           setFocusBranch(!focusBranch);
           ask(current, !focusBranch);
@@ -83,6 +95,7 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
           ask(id, focusBranch);
           chosen();
         }}
+        producing={producing}
         root={view.root}
       />
       {older.remain ? (

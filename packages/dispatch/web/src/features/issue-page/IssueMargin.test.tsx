@@ -86,6 +86,7 @@ import {
   detailsOpener,
 } from "./details-rows";
 import { Opener } from "./details-rows-fixture";
+import { FIRST_LINE_LIMIT } from "./first-line";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel, PARENT_ERROR_ID, TITLES_READ_FAILED } from "./IssueMargin";
 import {
@@ -95,7 +96,6 @@ import {
   sessionClaim,
   settleFocus,
 } from "./issue-fixtures";
-import { FIRST_LINE_LIMIT } from "./issue-tree";
 import {
   DETAILS_ATTRIBUTE,
   FilledMarginSlot,

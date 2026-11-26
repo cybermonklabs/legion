@@ -775,6 +775,77 @@ test("a kept decision names who kept it, and one changed since waits again", () 
   });
 });
 
+// R2, R4: a `decision` block whose `decided_by` names a person is that person's decision, and
+// stands as an answered ask stands by its answerer: in the decider's part, the reader's own or
+// what others decided, by the time its words last changed, tied to a statement or not and
+// replaced or not. It is never in the review list and never at the foot, which holds the agents'
+// decisions; the read's `kind` is the node's shape, `agent` for every block, and never says who
+// decided: its `decided_by` tuple does.
+test("a decision block a person decided stands in the decider's part, tied or not", () => {
+  const bob = "bob";
+  const made = [
+    decision("mine-tied", {
+      decision: {
+        changed_at: "2026-11-14T09:00:00Z",
+        links: [shaped(specRef("s1"))],
+        waiting_review: false,
+      },
+    }),
+    decision("mine-loose", {
+      decision: { changed_at: "2026-11-13T09:00:00Z", waiting_review: false },
+    }),
+    decision("bobs-tied", {
+      decision: {
+        changed_at: "2026-11-12T09:00:00Z",
+        links: [shaped(specRef("s1"))],
+        waiting_review: false,
+      },
+    }),
+    decision("bobs-replaced", {
+      decision: { changed_at: "2026-11-11T09:00:00Z", replaced: true, waiting_review: false },
+    }),
+    // The agent's own, tied and waiting: the one decision the review list holds.
+    decision("agents", { decision: { links: [shaped(specRef("s1"))] } }),
+    treeNode(READER, "person", null, { role: "context", text: READER }),
+    treeNode(bob, "person", null, { role: "context", text: bob }),
+  ];
+  const answer = treeAnswer(made, [
+    ...shapedTuples(made),
+    treeTuple("decided_by", "mine-tied", READER),
+    treeTuple("decided_by", "mine-loose", READER),
+    treeTuple("decided_by", "bobs-tied", bob),
+    treeTuple("decided_by", "bobs-replaced", bob),
+  ]);
+  const decisions = decisionNodes(answer, { asks: undefined, issue: { key: KEY } });
+  const parts = decisionsParts({
+    asks: [],
+    changes: changesOf(answer, decisions),
+    decisions,
+    issueKey: KEY,
+    nodeIdOf,
+    reader: READER,
+    root: issueTree([
+      statement("s1"),
+      decisionNode("mine-tied"),
+      decisionNode("mine-loose"),
+      decisionNode("bobs-tied"),
+      decisionNode("bobs-replaced"),
+      decisionNode("agents"),
+    ]),
+  });
+
+  expect(idsOf(parts)).toEqual({
+    agents: [],
+    named: [],
+    open_questions: [],
+    others: [D("bobs-tied"), D("bobs-replaced")],
+    review: [D("agents")],
+    yours: [D("mine-tied"), D("mine-loose")],
+  });
+  expect(parts.yours[0]).toMatchObject({ at: "2026-11-14T09:00:00Z", kind: "decision" });
+  expect(parts.others[1]).toMatchObject({ standing: "replaced" });
+});
+
 // c-decisions: "The decision that shaped three requirements is one entry with one node id, and
 // it reaches all three."
 test("a decision that shaped three statements is one entry that reaches all three", () => {

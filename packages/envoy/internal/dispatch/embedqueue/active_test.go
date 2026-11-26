@@ -35,6 +35,14 @@ func expireProcess(t *testing.T, database *store.Store, id string) {
 		id, (processes.LiveWindow + 5*time.Second).Seconds())
 }
 
+// beat writes a heartbeat now for each process id, as its registration's heartbeat does, so a
+// row the test means to be live stays inside processes.LiveWindow however long the steps between
+// take on a loaded machine.
+func beat(t *testing.T, database *store.Store, ids ...string) {
+	t.Helper()
+	mustExec(t, database.Pool, `update server_processes set heartbeat_at = now() where instance = any($1::uuid[])`, ids)
+}
+
 // activeIdentityRow is the identity embedder_active records.
 func activeIdentityRow(t *testing.T, database *store.Store) string {
 	t.Helper()
@@ -74,11 +82,12 @@ func vectorsByModel(t *testing.T, database *store.Store) map[string]int {
 // and its pass drops the first identity's vectors and its queue embeds them again. When the first
 // process is live again, its identity stays inactive: the active one is still carried.
 func TestOnlyTheActiveEmbedderIdentityDropsAndEmbeds(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	seeded := seedEveryKind(t, database.Pool, "ACTV")
 	first := liveProcess(t, database, configuredIdentity, 2*time.Minute)
-	liveProcess(t, database, foreignIdentity, time.Minute)
+	other := liveProcess(t, database, foreignIdentity, time.Minute)
 
 	firstEmbedder := newPlaceEmbedder(configuredIdentity)
 	firstDeps := Deps{Store: database, Embedder: firstEmbedder}
@@ -93,6 +102,7 @@ func TestOnlyTheActiveEmbedderIdentityDropsAndEmbeds(t *testing.T) {
 	secondEmbedder := newPlaceEmbedder(foreignIdentity)
 	secondDeps := Deps{Store: second, Embedder: secondEmbedder}
 	before := snapshotRows(t, database)
+	beat(t, database, first, other)
 	cover(t, secondDeps)
 	drain(t, secondDeps)
 	if len(secondEmbedder.calls) != 0 {
@@ -112,6 +122,7 @@ func TestOnlyTheActiveEmbedderIdentityDropsAndEmbeds(t *testing.T) {
 		t.Fatalf("active identity after the first process looked = %q, want its own %q", got, configuredIdentity)
 	}
 
+	beat(t, database, other)
 	expireProcess(t, database, first)
 	cover(t, secondDeps)
 	drain(t, secondDeps)
@@ -123,7 +134,7 @@ func TestOnlyTheActiveEmbedderIdentityDropsAndEmbeds(t *testing.T) {
 	}
 
 	// The first process serves again: the second identity is still carried, so it stays active.
-	mustExec(t, database.Pool, `update server_processes set heartbeat_at = now() where instance = $1::uuid`, first)
+	beat(t, database, first, other)
 	firstEmbedder.calls = nil
 	before = snapshotRows(t, database)
 	cover(t, firstDeps)
@@ -140,11 +151,12 @@ func TestOnlyTheActiveEmbedderIdentityDropsAndEmbeds(t *testing.T) {
 // process of another identity. The active identity is carried throughout, so it stays active: the
 // other process drops nothing, and the restarted process embeds.
 func TestARestartKeepsItsIdentityActive(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	seedIssue(t, database, "RSTR", "RSTR-1", "Embedded before the restart")
 	first := liveProcess(t, database, configuredIdentity, 2*time.Minute)
-	liveProcess(t, database, foreignIdentity, time.Minute)
+	other := liveProcess(t, database, foreignIdentity, time.Minute)
 	drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)})
 
 	// The restart: the new process's row is written before the old one's is deleted, in one
@@ -153,6 +165,7 @@ func TestARestartKeepsItsIdentityActive(t *testing.T) {
 		with gone as (delete from server_processes where instance = $1::uuid)
 		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol)
 		values (gen_random_uuid(), '{fingerprint}', 1, 1, $2, false, $3)`, first, configuredIdentity, store.OwnerLockProtocol)
+	beat(t, database, other)
 
 	secondEmbedder := newPlaceEmbedder(foreignIdentity)
 	cover(t, Deps{Store: second, Embedder: secondEmbedder})
@@ -165,6 +178,7 @@ func TestARestartKeepsItsIdentityActive(t *testing.T) {
 	}
 
 	seedIssue(t, database, "RSTR", "RSTR-2", "Written after the restart")
+	mustExec(t, database.Pool, `update server_processes set heartbeat_at = now()`)
 	restarted := newPlaceEmbedder(configuredIdentity)
 	drain(t, Deps{Store: database, Embedder: restarted})
 	if len(restarted.calls) != 1 || len(restarted.calls[0]) != 1 {
@@ -180,6 +194,9 @@ func TestARestartKeepsItsIdentityActive(t *testing.T) {
 // its debt at its own, so together they never take more than the larger ceiling per minute, and
 // neither stops the other. The ceilings are small, so a "minute" of tokens passes in seconds.
 func TestTwoCeilingsTogetherNeverPassTheLargerOne(t *testing.T) {
+	// Not parallel: it counts what the two processes reserve in a 3 s window of real time: a
+	// reservation held past the window by load takes nothing, and fewer reservations in it would
+	// let a refill faster than the larger ceiling pass under the bound.
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	ctx := context.Background()

@@ -33,7 +33,7 @@ import {
 } from "./api";
 import { withIssuePage } from "./issue-page-option";
 import type { Box } from "./layout";
-import { ONE_PIXEL_PNG } from "./sends";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { asUser } from "./users";
 
 /**

@@ -20,8 +20,9 @@ import {
 } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import type { TreeNode } from "../issue-tree";
-import { readComment, TWO_THREADS } from "../outline-fixtures";
+import { TWO_THREADS } from "../outline-fixtures";
 import { FILTER_SIGNAL_WORDS, PRESET_NAMES, PRESET_ORDER, type Preset } from "../page-words";
+import type { Filter } from "../presets";
 import { commentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import {
   issueTreeQuery,
@@ -81,13 +82,10 @@ function treeOf(comments: readonly Comment[], blocks: readonly TreeAnswerNode[])
   ]);
 }
 
-/** What the row draws once every read has answered: the spec's two statements, and the two
- *  threads the reader began, which are Conversation's entries. */
-const ANSWERED_COUNTS: Readonly<Record<Preset, string>> = {
-  conversation: "2",
+/** The counts once every read has answered: two statements and no decisions, steps or checks.
+ *  Conversation and Graph draw no count. */
+const ANSWERED_COUNTS: Readonly<Record<Filter, string>> = {
   decisions: "0",
-  // Graph draws no count (R10), which `toEqual` reads as a member that holds none.
-  graph: undefined as never,
   plan: "0",
   spec: "2",
   verification: "0",
@@ -218,8 +216,8 @@ test("the view row draws no count while a read of the tree stands failed", async
   }
 });
 
-// Conversation counts the threads the reader began, so until the reader's login has answered it
-// counts none of them: every read of the tree holding its answer is not enough on its own.
+// Decisions' flag counts decisions marked `waiting`, which the tree does not mark until the
+// reader's login has answered. The tree's other reads holding their answers is not enough.
 test("the view row draws no count while the reader's login is out, and the real counts once it has answered", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
@@ -302,7 +300,7 @@ test("under a words filter the view row draws no count while the names read is o
 // The names read is read under the set of addresses the tree holds, so a read that brings a node
 // whose words cite a new address reads the names again, of a new set. The names in hand stand
 // while that read is out, as the last answer the names read gave, so under a words filter the
-// row keeps drawing its counts meanwhile, the new node counted among them.
+// row keeps drawing its counts meanwhile, and counts the node that read brought.
 test("under a words filter the view row keeps drawing its counts while the names read of a new set of addresses is out", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
@@ -310,7 +308,7 @@ test("under a words filter the view row keeps drawing its counts while the names
   reads.tree.mockResolvedValue(treeOf(TWO_THREADS, [...STATEMENTS, STEP_NODE]));
   const cited = "dispatch://CORE-7";
   // The names read of the first set answers with the step's words; the one of a set that holds
-  // the address a new comment cites is held out for the rest of the case.
+  // the address a new decision cites is held out for the rest of the case.
   const held = Promise.withResolvers<never>();
   reads.names.mockImplementation((refs: readonly string[]) =>
     refs.includes(cited)
@@ -325,36 +323,31 @@ test("under a words filter the view row keeps drawing its counts while the names
       expect(
         drawnCounts(view.container),
         "the row did not draw its counts once the names read of the first set had answered"
-      ).toEqual({ conversation: "0", decisions: "0", plan: "1", spec: "0", verification: "0" })
+      ).toEqual({ decisions: "0", plan: "1", spec: "0", verification: "0" })
     );
 
-    // The comments are read again, and answer a new thread too, by the reader, whose words hold
-    // the filter's word and cite an issue no other node names.
-    // The tree read, which the row's turns come from, is read again with them and answers the
-    // thread as a node, as the comment's event reads both.
-    const comments = [
-      ...TWO_THREADS,
-      { ...readComment("head-c", 5), body: `Hang the lanterns as ${cited} asks.` },
-    ];
-    reads.comments.mockResolvedValue(comments as never);
-    reads.tree.mockResolvedValue(treeOf(comments, [...STATEMENTS, STEP_NODE]));
-    await act(async () => {
-      await Promise.all([
-        client.invalidateQueries({ queryKey: ["comments", KEY] }),
-        client.invalidateQueries({ queryKey: issueTreeQuery(KEY).queryKey }),
-      ]);
-    });
+    // The tree read is read again, and answers a decision of the spec too, whose words hold the
+    // filter's word and cite an issue no other node names: Decisions counts it, as every decision
+    // is a node of the tree read.
+    reads.tree.mockResolvedValue(
+      treeOf(TWO_THREADS, [
+        ...STATEMENTS,
+        STEP_NODE,
+        specBlock("d1", "decision", 3, `Hang the lanterns as ${cited} asks.`),
+      ])
+    );
+    await act(async () => client.invalidateQueries({ queryKey: issueTreeQuery(KEY).queryKey }));
     await waitFor(() =>
       expect(
         reads.names.mock.calls.some(([refs]) => refs.includes(cited)),
-        "the names were never read for the set that holds the new comment's address"
+        "the names were never read for the set that holds the new decision's address"
       ).toBe(true)
     );
     expect(client.isFetching(), "a read other than the names' is still out").toBe(1);
     expect(
       drawnCounts(view.container),
       "the row did not draw its counts with the names read of the new set out"
-    ).toEqual({ conversation: "1", decisions: "0", plan: "1", spec: "0", verification: "0" });
+    ).toEqual({ decisions: "1", plan: "1", spec: "0", verification: "0" });
   } finally {
     view.unmount();
     restoreMatchMedia();
@@ -394,7 +387,7 @@ test("under a words filter the view row of an issue that holds no node draws no 
       expect(
         drawnCounts(view.container),
         "the row did not draw its counts once the names read of the issue's own key had answered"
-      ).toEqual({ conversation: "0", decisions: "0", plan: "0", spec: "0", verification: "0" })
+      ).toEqual({ decisions: "0", plan: "0", spec: "0", verification: "0" })
     );
   } finally {
     view.unmount();
@@ -562,6 +555,65 @@ test("the Decisions control's to-review flag carries + while the decisions view 
   }
 });
 
+// R3 (dispatch://INFRA-4097/spec#b-r-change), R35: the to-review flag counts the review list
+// alone, and a decision a person asked to change waits on its agent, not on the reader.
+// Conversation's read is paged, and its first page here ends before `d2`, which the decisions
+// view read holds with alice's Change under it, a comment on its text that the view carries as
+// context. The flag is counted over the tree that read builds (`useDecisionsTree`), which finds
+// the Change by the one rule every reader of a Change reads, so `d2` counts among the decisions
+// and not to review, though no page of Conversation's read the page holds carries it.
+test("a decision past Conversation's first page with a Change in the decisions view read does not count to review", async () => {
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const client = newClient();
+  const { reads, waiting } = reviewReads();
+  reads.tree.mockResolvedValue(
+    treeAnswer(
+      [treeNode(KEY, "issue", null), specBlock("r1", "requirement", 0), waiting("d1", 1)],
+      [],
+      { cursor: "page-2" }
+    )
+  );
+  // Alice's Change of `d2`, under it, as the decisions view read carries it.
+  const asked = {
+    ...commentNode(
+      {
+        author: { id: "alice", kind: "user" },
+        body: "Name the read.",
+        created_at: "2026-11-06T09:00:00Z",
+        id: "c-d2",
+        reply_to: null,
+      },
+      "d2"
+    ),
+    role: "context" as const,
+  };
+  const view = renderViewRow(client, presetPath(KEY, "decisions"));
+  try {
+    await waitFor(() =>
+      expect(decisionsSignal(view.container), "the count over Conversation's first page").toEqual({
+        count: "1+",
+        flag: ` · 1+ ${FILTER_SIGNAL_WORDS.to_review}`,
+      })
+    );
+    await act(async () => {
+      client.setQueryData(
+        viewKey(KEY, "decisions"),
+        treeAnswer([treeNode(KEY, "issue", null), waiting("d1", 1), waiting("d2", 2), asked])
+      );
+    });
+    await waitFor(() =>
+      expect(
+        decisionsSignal(view.container),
+        "the flag counts a decision whose Change the decisions view read hangs under it"
+      ).toEqual({ count: "2", flag: ` · 1 ${FILTER_SIGNAL_WORDS.to_review}` })
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+    for (const spy of Object.values(reads)) spy.mockRestore();
+  }
+});
+
 /** The Outline control the row draws below 1024 px: the one control of the row that opens a
  *  dialog, the Outline sheet (`contents-frame.tsx`). */
 const OUTLINE_CONTROL = 'button[aria-haspopup="dialog"]';
@@ -672,9 +724,7 @@ test("a filter loaded cold with no outline read draws its own count from its vie
     viewRowSignals({ ...cold, preset: "spec", root: coldRoot(spec) }),
     "Spec loaded cold does not count its view answer's statements"
   ).toEqual({
-    conversation: undefined,
     decisions: undefined,
-    graph: undefined,
     plan: undefined,
     spec: { count: 2 },
     verification: undefined,

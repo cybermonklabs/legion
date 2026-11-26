@@ -29,13 +29,18 @@ type keptDecision struct {
 // keepKeeper is who keeps every decision the Keep pass's tests seed.
 var keepKeeper = model.Actor{Kind: "user", ID: "alice"}
 
-// seedShapedDecisions writes version 1 of the issue document artifactID, as its version write
-// writes it: requirement r1, and for each of words a decision d<n> saying it whose shaped names
-// pointer, r1's address, indexed as the write indexes it (refs.DecisionFacts and refs.IndexBlocks,
-// at the sentinel). It answers each decision with its sums: without shaped, as refs.DecisionWords
-// renders its words, and with it, rendered as a release before this one rendered a decision's
-// words, the decision alone through pmdoc.Render with the readings it closes with left out and its
-// shaped attribute kept.
+// keepDecider is the agent's session that writes every decision the Keep pass's tests seed, so
+// that each decision's decided_by names a session and a decision whose Keep no longer matches
+// waits for review, as a decision a person decided never does (bbafafe421e).
+var keepDecider = model.Actor{Kind: "session", ID: "ses_keep_decider"}
+
+// seedShapedDecisions writes version 1 of the issue document artifactID as keepDecider, as its
+// version write writes it: requirement r1, and for each of words a decision d<n> saying it whose
+// shaped names pointer, r1's address, indexed as the write indexes it (refs.DecisionFacts and
+// refs.IndexBlocks, at the sentinel). It answers each decision with its sums: without shaped, as
+// refs.DecisionWords renders its words, and with it, rendered as a release before this one
+// rendered a decision's words, the decision alone through pmdoc.Render with the readings it
+// closes with left out and its shaped attribute kept.
 func seedShapedDecisions(t *testing.T, database *store.Store, artifactID, pointer string, words ...string) []keptDecision {
 	t.Helper()
 	ctx := context.Background()
@@ -61,15 +66,15 @@ func seedShapedDecisions(t *testing.T, database *store.Store, artifactID, pointe
 	if err := database.Pool.QueryRow(ctx, `
 		with version as (
 			insert into artifact_versions (artifact_id, number, markdown, authors)
-			values ($1::uuid, 1, $2, '[{"kind":"user","id":"alice"}]') returning created_at)
+			values ($1::uuid, 1, $2, $3::jsonb) returning created_at)
 		select (select ref_key from artifacts where id = $1::uuid), created_at from version
-	`, artifactID, rendered).Scan(&refKey, &at); err != nil {
+	`, artifactID, rendered, fmt.Sprintf(`[{"kind":%q,"id":%q}]`, keepDecider.Kind, keepDecider.ID)).Scan(&refKey, &at); err != nil {
 		t.Fatalf("write version 1 of the decisions' document: %v", err)
 	}
 	sources := refs.TypedSources{Authors: func(ids []string) (map[string]model.Actor, error) {
 		authors := make(map[string]model.Actor, len(ids))
 		for _, id := range ids {
-			authors[id] = keepKeeper
+			authors[id] = keepDecider
 		}
 		return authors, nil
 	}}

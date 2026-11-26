@@ -106,7 +106,7 @@ approver signed in to the broker as; [approving a request](/legion/broker/guides
 covers the page in full.
 
 Some requests never reach that page. Where the deployment configures a model judge, a request for
-keys whose profiles' `proxy` blocks in the profiles file let the judge decide goes to a model in the background instead, and
+keys whose own `judge` tag lets the judge decide goes to a model in the background instead, and
 nobody sees it while the judge decides. The judge grants it or refuses it for good, each key against
 its owner's guidance; a request it cannot decide comes to this page once, as any other does. A
 judged grant's **State** line names `judge:<model id>` as the decider, as
