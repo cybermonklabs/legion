@@ -210,11 +210,14 @@ if row ab; then
   base_world
   add_cluster other-cluster us-east1
   echo secrets-broker >>"$world/clusters/other-cluster/namespaces"
+  subject_grant other-cluster "$(sa_subject apps deployer)" create "" serviceaccounts token secrets-broker secrets-broker
   run
-  want_status 1 "another cluster of the pool holding secrets-broker"
-  want_line "FINDING cluster:$project/us-east1/other-cluster: namespace secrets-broker exists there, so its ServiceAccount secrets-broker/secrets-broker acts as the broker account $broker through the workload pool $project.svc.id.goog" \
+  want_status 1 "another cluster of the pool holding secrets-broker, with a holder of its token"
+  want_line "REVIEWED cluster:$project/us-east1/other-cluster: namespace secrets-broker exists there, so its ServiceAccount secrets-broker/secrets-broker acts as the broker account $broker through the workload pool $project.svc.id.goog; the cluster is reviewed with the operator's cluster's rights" \
     "another cluster of the pool holding secrets-broker"
-  passed "(ab) another cluster of the pool holding the broker's namespace exits 1"
+  want_line "FINDING system:serviceaccount:apps:deployer: create serviceaccounts/token secrets-broker in secrets-broker on cluster $project/us-east1/other-cluster" \
+    "another cluster of the pool holding secrets-broker, with a holder of its token"
+  passed "(ab) another cluster of the pool holding the broker's namespace is reviewed with the operator's rights, naming the holder of its token"
 
   base_world
   subject_grant operator-cluster "$(sa_subject legion worker)" create "" serviceaccounts token secrets-broker secrets-broker

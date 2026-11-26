@@ -183,8 +183,13 @@
 #                     role in each namespace that holds a RoleBinding; nor write a webhook or
 #                     admission policy (the RBAC step's admission rights, from each cluster's own
 #                     discovery). Each finding's right names the pairs it guards. On
-#                     every cluster but the operator's, a guarded pair's namespace must not exist
-#                     either, and the principals are that cluster's ServiceAccounts outside its
+#                     every cluster but the operator's, a guarded pair's namespace that exists is
+#                     no finding by itself: it brings the operator's cluster's rights to that
+#                     cluster's review too (RIGHTS_TABLE and the declared token Secrets), each holder
+#                     a finding naming it with the cluster's label, and a REVIEWED line says so; on
+#                     a cluster that is not GKE Autopilot it is UNKNOWN, for a privileged pod on a
+#                     node reads its token there, a node escape no review sees. The principals are
+#                     that cluster's ServiceAccounts outside its
 #                     system namespaces (kube-system, gke-*, gmp-*), with their groups, and its
 #                     binding subjects (below); on the operator's cluster they are the RBAC step's.
 #                     A project with the operator's cluster alone says so. The fleet's memberships

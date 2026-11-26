@@ -4860,7 +4860,14 @@ only the full set: each allowed review is judged alone (`operator-token-minters/
   escalation rights (impersonate, escalate or bind roles, write bindings and roles, `nodes/proxy`);
   and, in each guarded namespace, create or patch of ServiceAccounts, create or patch of pods (each
   a right of its own), and the writes of roles and RoleBindings. The cluster's custom resources'
-  and admission objects' writes are added. A guarded namespace that exists there is a finding too.
+  and admission objects' writes are added.
+- On another cluster of the pool where a guarded namespace exists, the operator's table is added
+  to the guard rights, as on the operator's cluster. The namespace is no finding by itself: the
+  run prints `REVIEWED cluster:<label>: namespace <ns> exists there, …`, and each principal holding
+  one of the rights there is a finding naming it with that cluster's label. The one case the
+  table cannot cover is a node escape. On a cluster that is not GKE Autopilot, a privileged or
+  hostPath pod on a node can read that namespace's ServiceAccount token, and no RBAC review sees
+  it, so that cluster's step is `UNKNOWN`.
 - `serviceaccounts/token` alone is a finding on the operator's cluster only, except under the node
   escape below.
 - A principal that may create pods in a guarded namespace, and no ServiceAccounts, is a finding on
@@ -4870,13 +4877,20 @@ only the full set: each allowed review is judged alone (`operator-token-minters/
 
 Who is reviewed: each ServiceAccount outside the system namespaces (`kube-system`, `gke-*` and
 `gmp-*`), Kubernetes' own groups, anyone unauthenticated, and each binding subject the check does
-not allow. A `system:*` User is an allowed Kubernetes component, never reviewed. A person's email
+not allow. A `system:*` User is an allowed Kubernetes component, never reviewed. A User with no
+`system:` prefix, such as `kube-apiserver` in GKE's own `kubelet-api-admin` binding, is reviewed
+and printed on every cluster that binds it, and the check accepts no subject by its name.
+A username is only a name: whoever can have a certificate or token issued with it, through a
+certificate signer and approver or by impersonation, presents it. Accepting it by name would hide
+that holder on every pool cluster. A per-cluster entry in the accepted list also shows a new
+cluster's binding the first time it appears. A person's email
 is allowed. A ServiceAccount of a system namespace is reviewed only under the node escape: a
 non-operator cluster that `gcloud container clusters describe` reads as GKE Standard, where that
 account has a running pod on a node. A User named by a number is judged as the Google service account whose uniqueId it is. The number is resolved first from the IAM previews' service accounts, then from each named project's service-account list, then by `gcloud iam service-accounts describe`. A number no source resolves is a finding naming the number.
 
 **Labels.** A finding's `resource` names its cluster as `cluster:<project>/<location>/<name>` on
-every cluster, the operator's included.
+every cluster, the operator's included. A project can run two clusters of one name in two
+locations, and a bare name would give both the same label.
 
 - On the operator's cluster, the name is `--cluster`. The location is `--location`, which must be
   that name's location in the project's cluster list.
@@ -4887,6 +4901,12 @@ every cluster, the operator's included.
   link.
 - The check compares no label with any list of its own. `live: audited clusters` compares each
   `--audited-cluster` with those labels' `<project>/<location>/<name>`, exactly.
+
+**The operator's namespace on other clusters.** On every cluster of the pool but `--cluster`, a
+guarded namespace that exists brings the operator's table to that cluster's review, as above. So
+moving the operator's Job to another cluster and leaving `envoy-operator` on the old one keeps
+the old cluster reviewed with the operator's rights on every run. If the old cluster is not GKE
+Autopilot, its step stays `UNKNOWN` until the namespace goes.
 
 ### Minter-auditor render inputs
 

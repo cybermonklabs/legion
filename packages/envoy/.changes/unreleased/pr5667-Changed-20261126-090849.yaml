@@ -9,7 +9,9 @@ body: |-
   bucket project's own Google service agents is a finding. Another step makes a finding of each GKE
   cluster of the pool that no `--audited-cluster` names. On another GKE Standard cluster of the
   pool, a system ServiceAccount with a pod on a node and a right over the guarded namespaces is a
-  finding. The broker's Workload Identity principal is accepted as the operator's token minter, a
+  finding. A guarded namespace on another cluster of the pool now brings the operator's cluster's
+  rights to that cluster's review, each holder named, instead of being a finding of its own. The
+  broker's Workload Identity principal is accepted as the operator's token minter, a
   User named by a Google service account's uniqueId is judged as that account, and the operator's
   cluster is labelled `cluster:<project>/<location>/<name>` as every other cluster is. A structured
   disabled GKE Hub API reads as an empty fleet, and the Kubernetes reads each live step makes are

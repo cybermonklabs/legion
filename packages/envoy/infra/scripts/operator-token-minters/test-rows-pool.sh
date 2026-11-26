@@ -60,7 +60,13 @@
 #   (ne) another cluster of the pool on GKE Standard: a system ServiceAccount with a running pod on
 #        a node, allowed create namespaces, is a finding naming it; the same account on Autopilot,
 #        with no pod, or with a pod bound to no node, is no finding (its controls); a refused
-#        describe, and a refused pods' list there, read UNKNOWN.
+#        describe, and a refused pods' list there, read UNKNOWN;
+#   (lb) the operator's cluster's findings carry cluster:<project>/<location>/<name>, apart from a
+#        cluster of its name in another location; a copy using the bare name fails the row;
+#   (gn) a guarded namespace on another cluster: the cluster is reviewed with the operator's
+#        cluster's rights, a holder named with the cluster's label (a right the guard rights lack,
+#        the operator's token); with no guarded namespace the guard rights' review stands; a copy
+#        without the operator's rights misses the holder.
 
 # --- (g) A second cluster of the project. ---
 if row g; then
@@ -71,22 +77,31 @@ if row g; then
   want_text "PASS live: Workload Identity on example-project/us-east1/other-cluster: " "a clean second cluster"
   passed "(g) a second cluster whose system namespaces alone may make namespaces and ServiceAccounts exits 0"
 
+  # A guarded namespace there names no principal: the cluster is reviewed with the operator's
+  # cluster's rights, and the namespace reported as reviewed, never as a finding of its own.
   base_world
   add_cluster other-cluster us-east1
+  edit "$world/clusters.json" 'map(if .name == "other-cluster" then . + {autopilot: {enabled: true}} else . end)'
   echo envoy-operator >>"$world/clusters/other-cluster/namespaces"
   run
-  want_status 1 "the namespace envoy-operator on a second cluster"
-  want_text "FINDING cluster:example-project/us-east1/other-cluster: namespace envoy-operator exists there, so its ServiceAccount envoy-operator/envoy-operator acts as $gsa" \
+  want_status 0 "the namespace envoy-operator on a second Autopilot cluster with no holder"
+  want_line "REVIEWED cluster:example-project/us-east1/other-cluster: namespace envoy-operator exists there, so its ServiceAccount envoy-operator/envoy-operator acts as $gsa through the workload pool $project.svc.id.goog; the cluster is reviewed with the operator's cluster's rights" \
     "the namespace envoy-operator on a second cluster"
-  passed "(g) the namespace envoy-operator on a second cluster exits 1 naming the cluster"
+  ! has_prefix "FINDING cluster:example-project/us-east1/other-cluster: namespace envoy-operator exists there" ||
+    fail "the namespace envoy-operator on a second cluster is still a finding that names no principal"
+  passed "(g) the namespace envoy-operator on a second cluster makes it reviewed with the operator's rights, reported as reviewed, no finding of its own"
 
   base_world
   add_cluster other-cluster us-east1
   echo envoy-operator-control >>"$world/clusters/other-cluster/namespaces"
   run --namespace envoy-operator-control --gsa "$control_gsa"
-  want_status 1 "the scratch namespace on a second cluster"
-  want_text "FINDING cluster:example-project/us-east1/other-cluster: namespace envoy-operator-control exists there" "the scratch namespace on a second cluster"
-  passed "(g) the scratch namespace envoy-operator-control made on a second cluster exits 1 naming the cluster (the plan's control)"
+  # Not 2: with --gsa naming the scratch account, the world's signing-key grants to the real
+  # operator account are findings of their own, so the run exits 1 beside the UNKNOWN.
+  [ "$status" -ne 0 ] || fail "the scratch namespace on a second Standard cluster: exit 0"
+  want_text "REVIEWED cluster:example-project/us-east1/other-cluster: namespace envoy-operator-control exists there" "the scratch namespace on a second cluster"
+  want_text "UNKNOWN live: Workload Identity on example-project/us-east1/other-cluster: the cluster is not GKE Autopilot and holds the guarded namespace envoy-operator-control" \
+    "the scratch namespace on a second Standard cluster"
+  passed "(g) the scratch namespace envoy-operator-control on a second Standard cluster is reviewed, and its node escape reads UNKNOWN (the plan's control)"
 
   base_world
   add_cluster other-cluster us-east1
@@ -119,10 +134,10 @@ if row r; then
   echo envoy-operator >>"$world/clusters/shared-cluster/namespaces"
   add_member '{"id": "shared", "location": "global", "gke": {"project": "other-project", "location": "us-east1", "cluster": "shared-cluster"}}'
   run
-  want_status 1 "a GKE fleet member in another project holding the namespace envoy-operator"
-  want_line "FINDING cluster:other-project/us-east1/shared-cluster: namespace envoy-operator exists there, so its ServiceAccount envoy-operator/envoy-operator acts as $gsa through the workload pool $project.svc.id.goog" \
+  want_status 2 "a GKE fleet member in another project holding the namespace envoy-operator"
+  want_line "REVIEWED cluster:other-project/us-east1/shared-cluster: namespace envoy-operator exists there, so its ServiceAccount envoy-operator/envoy-operator acts as $gsa through the workload pool $project.svc.id.goog; the cluster is reviewed with the operator's cluster's rights" \
     "a GKE fleet member in another project holding the namespace envoy-operator"
-  passed "(r) a GKE fleet member in another project holding the namespace envoy-operator exits 1 naming the cluster"
+  passed "(r) a GKE fleet member in another project holding the namespace envoy-operator is reviewed with the operator's rights"
 
   # A member that is one of the project's own clusters, read once, by the project's step.
   base_world
@@ -292,11 +307,11 @@ if row aa; then
   add_cluster_at operator-cluster us-east1
   echo envoy-operator >>"$world/clusters/operator-cluster@us-east1/namespaces"
   run --location us-central1
-  want_status 1 "a second operator-cluster holding envoy-operator, --location us-central1"
-  want_line "FINDING cluster:$project/us-east1/operator-cluster: namespace envoy-operator exists there, so its ServiceAccount envoy-operator/envoy-operator acts as $gsa through the workload pool $project.svc.id.goog" \
+  want_line "REVIEWED cluster:$project/us-east1/operator-cluster: namespace envoy-operator exists there, so its ServiceAccount envoy-operator/envoy-operator acts as $gsa through the workload pool $project.svc.id.goog; the cluster is reviewed with the operator's cluster's rights" \
     "a second operator-cluster holding envoy-operator, --location us-central1"
-  [ "$(count_prefix 'FINDING ')" -eq 1 ] || fail "a second operator-cluster holding envoy-operator: want that one finding, the operator's own cluster not read as another"
-  passed "(aa) a second cluster named operator-cluster elsewhere, holding envoy-operator, is a finding with --location"
+  ! has_prefix "REVIEWED cluster:$project/us-central1/operator-cluster" || fail "the operator's own cluster was read as another"
+  [ "$(count_prefix 'FINDING ')" -eq 0 ] || fail "a second operator-cluster holding envoy-operator, with no holder: want no finding"
+  passed "(aa) a second cluster named operator-cluster elsewhere, holding envoy-operator, is reviewed as another cluster with --location"
 
   base_world
   add_cluster_at operator-cluster us-east1
@@ -308,6 +323,90 @@ if row aa; then
   want_text "UNKNOWN live: Workload Identity on $project/us-east1/operator-cluster: it has --cluster's name" "a second operator-cluster, no --location"
   [ "$(count_prefix 'FINDING ')" -eq 0 ] || fail "a second operator-cluster, no --location: a finding"
   passed "(aa) two clusters named operator-cluster and no --location read UNKNOWN, and neither as the operator's"
+fi
+
+# --- (lb) The operator's cluster's label is <project>/<location>/<name>, as every other cluster's:
+# with two clusters named operator-cluster in two locations, each finding names its own, and a copy
+# labelling the operator's cluster by its bare name is caught. ---
+label_row() {
+  local script
+  base_world
+  add_cluster_at operator-cluster us-east1
+  echo envoy-operator >>"$world/clusters/operator-cluster@us-east1/namespaces"
+  subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods exec envoy-operator ""
+  subject_grant operator-cluster@us-east1 "$(sa_subject apps deployer)" create "" pods exec envoy-operator ""
+  case "$1" in
+    full) script="$check" ;;
+    bare)
+      script="$(script_copy bare-label)"
+      sed -i 's|^  op_res="cluster:\$PROJECT/\$OPERATOR_LOCATION/\$CLUSTER"$|  op_res="cluster:$CLUSTER"|' "$(dirname "$script")/operator-token-minters/step-rbac.sh"
+      grep -qxF '  op_res="cluster:$CLUSTER"' "$(dirname "$script")/operator-token-minters/step-rbac.sh" ||
+        fail "the test could not give its copy the bare label"
+      ;;
+  esac
+  run_script="$script" run --location us-central1 --report "$temporary_dir/label.json"
+  jq -e --arg op "cluster:$project/us-central1/operator-cluster" --arg other "cluster:$project/us-east1/operator-cluster" '
+    any(.findings[]; .principal == "system:serviceaccount:legion:worker" and .resource == $op)
+    and any(.findings[]; .principal == "system:serviceaccount:apps:deployer" and .resource == $other)' "$temporary_dir/label.json" >/dev/null
+}
+if row lb; then
+  label_row full || fail "the operator's cluster's finding is not labelled cluster:$project/us-central1/operator-cluster beside the other cluster's cluster:$project/us-east1/operator-cluster"
+  ! label_row bare || fail "a copy labelling the operator's cluster by its bare name still passed the label check"
+  passed "(lb) the operator's cluster is labelled cluster:<project>/<location>/<name>, apart from a cluster of its name elsewhere; a bare-name copy is caught"
+fi
+
+# --- (gn) A guarded namespace on another cluster of the pool makes that cluster reviewed with the
+# operator's cluster's rights, each holder named with the cluster's label; without one, the cluster
+# keeps the guard rights' review; a copy that leaves the operator's rights out misses the holder,
+# and a copy that still reports the namespace as a finding naming no principal is caught. ---
+guarded_ns_row() {
+  local script="$check" want="FINDING system:serviceaccount:apps:deployer: create serviceaccounts/token envoy-operator in envoy-operator on cluster $project/us-east1/other-cluster"
+  local bare="FINDING cluster:$project/us-east1/other-cluster: namespace envoy-operator exists there"
+  base_world
+  add_cluster other-cluster us-east1
+  edit "$world/clusters.json" 'map(if .name == "other-cluster" then . + {autopilot: {enabled: true}} else . end)'
+  subject_grant other-cluster "$(sa_subject apps deployer)" create "" serviceaccounts token envoy-operator envoy-operator
+  case "$1" in
+    present | copy | old-finding) echo envoy-operator >>"$world/clusters/other-cluster/namespaces" ;;
+  esac
+  case "$1" in
+    copy)
+      script="$(script_copy no-operator-rights)"
+      sed -i '/^  \[ "\${#present\[@\]}" -eq 0 \] || guard_rights=/d' "$(dirname "$script")/operator-token-minters/step-workload-identity.sh"
+      ! grep -qF '[ "${#present[@]}" -eq 0 ] || guard_rights=' "$(dirname "$script")/operator-token-minters/step-workload-identity.sh" ||
+        fail "the test could not take the operator's rights out of its copy"
+      ;;
+    old-finding)
+      # The rule before this change: the namespace itself a finding, its principal the cluster.
+      script="$(script_copy namespace-finding)"
+      sed -i '/^    echo "REVIEWED \$principal: namespace /a\    finding "$principal" "namespace ${pair%%/*} exists there" namespace "$principal" "" ""' \
+        "$(dirname "$script")/operator-token-minters/step-workload-identity.sh"
+      grep -qF 'finding "$principal" "namespace ${pair%%/*} exists there"' "$(dirname "$script")/operator-token-minters/step-workload-identity.sh" ||
+        fail "the test could not put the old finding into its copy"
+      ;;
+  esac
+  run_script="$script" run --report "$temporary_dir/guarded-ns.json"
+  case "$1" in
+    present)
+      want_status 1 "a holder of the operator's token in envoy-operator on another cluster"
+      want_line "$want" "a holder of the operator's token in envoy-operator on another cluster"
+      ! has_prefix "$bare" || fail "the namespace on another cluster is still a finding that names no principal"
+      jq -e --arg res "cluster:$project/us-east1/other-cluster" \
+        'any(.findings[]; .principal == "system:serviceaccount:apps:deployer" and .resource == $res)' "$temporary_dir/guarded-ns.json" >/dev/null ||
+        fail "the holder's finding does not carry the cluster's label cluster:$project/us-east1/other-cluster"
+      ;;
+    absent)
+      want_status 0 "the same grant on a cluster with no guarded namespace"
+      ! has_prefix "$want" || fail "the operator's rights were asked on a cluster with no guarded namespace"
+      want_text "PASS live: Workload Identity on $project/us-east1/other-cluster: no guarded namespace" "the same grant on a cluster with no guarded namespace"
+      ;;
+    copy) ! has_prefix "$want" || fail "a copy without the operator's rights still named the holder" ;;
+    old-finding) has_prefix "$bare" || fail "a copy reporting the namespace as a finding was not caught by the principal-less check" ;;
+  esac
+}
+if row gn; then
+  each guarded_ns_row present absent copy old-finding
+  passed "(gn) a guarded namespace on another cluster brings the operator's rights there, naming each holder with the cluster's label and no principal-less finding; without one the guard rights' review stands; copies without the operator's rights, or with the old namespace finding, are caught"
 fi
 
 # --- (an) The escalation rights on another cluster of the pool, each alone. Each entry is the grant
@@ -388,8 +487,8 @@ pool_row() {
       make_cluster pool-cluster
       echo envoy-operator >>"$world/clusters/pool-cluster/namespaces"
       run --pool-project example-pool
-      want_status 1 "the pool project's cluster holding envoy-operator"
-      want_line "FINDING cluster:example-pool/us-west1/pool-cluster: namespace envoy-operator exists there, so its ServiceAccount envoy-operator/envoy-operator acts as $gsa through the workload pool example-pool.svc.id.goog" \
+      [ "$status" -ne 0 ] || fail "the pool project's cluster holding envoy-operator: exit 0"
+      want_line "REVIEWED cluster:example-pool/us-west1/pool-cluster: namespace envoy-operator exists there, so its ServiceAccount envoy-operator/envoy-operator acts as $gsa through the workload pool example-pool.svc.id.goog; the cluster is reviewed with the operator's cluster's rights" \
         "the pool project's cluster holding envoy-operator"
       ;;
     refused)
