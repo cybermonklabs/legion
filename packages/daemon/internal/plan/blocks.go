@@ -143,7 +143,9 @@ func elementOf(block Block, task Task, place Place, under string) Element {
 // names a block of the plan's document whose id is an element's (idInDocument). A reference to a
 // block of another document or another issue names none, whatever its id. Every other word stays
 // whole in Task.Needs, in its order. Validate refuses each word it moves, since Legion does not
-// carry out an element, and Supported refuses each word it keeps.
+// carry out an element, and Supported refuses each word it keeps. Each word moved is looked up in
+// a set of the words moved already, so the read takes time linear in the words of a block, where a
+// scan of the moved list for each word would be quadratic.
 func elementNeeds(p Plan, document string) Plan {
 	if len(p.Elements) == 0 {
 		return p
@@ -156,11 +158,13 @@ func elementNeeds(p Plan, document string) Plan {
 	for i, task := range p.Tasks {
 		words := task.Needs
 		task.Needs = nil
+		moved := map[string]bool{}
 		for _, word := range words {
 			switch {
 			case !elements[idInDocument(word, document)]:
 				task.Needs = append(task.Needs, word)
-			case !slices.Contains(task.ElementNeeds, word):
+			case !moved[word]:
+				moved[word] = true
 				task.ElementNeeds = append(task.ElementNeeds, word)
 			}
 		}
