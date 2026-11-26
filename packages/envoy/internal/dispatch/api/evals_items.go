@@ -148,6 +148,7 @@ type evalItemsRead struct {
 	project  string
 	entry    evals.Entry
 	request  evalItemsRequest
+	repos    []string // stored spellings for filters; request.repos is the spelling the caller named
 	rng      evalItemsRange
 	settings *delivery.DeliverySettings
 	shared   *evalRangeReads
@@ -286,6 +287,10 @@ func (s *server) readEvalItems(ctx context.Context, project, slug string, reques
 // kind the eval's source answers (evalComputedItems), its readings and its day rows, each kept
 // where row_kind names it or names none. A request naming sort reads pr-ci's job rows alone.
 func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string, entry evals.Entry, request evalItemsRequest) ([]evalItemSource, error) {
+	repos, err := evals.StoredRepos(ctx, tx, []string{project}, request.repos)
+	if err != nil {
+		return nil, err
+	}
 	ranges := []evalItemsRange{{days: request.ranges.window, start: request.ranges.from, end: request.ranges.to, label: evals.RangeWindow}}
 	if request.ranges.compare != nil {
 		ranges = append(ranges, evalItemsRange{
@@ -305,7 +310,7 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 	definition := entry.Definition
 	var sources []evalItemSource
 	for _, rng := range ranges {
-		read := evalItemsRead{project: project, entry: entry, request: request, rng: rng, settings: settings, shared: &evalRangeReads{}, tx: tx}
+		read := evalItemsRead{project: project, entry: entry, request: request, repos: repos, rng: rng, settings: settings, shared: &evalRangeReads{}, tx: tx}
 		if definition.Computed() {
 			for _, kind := range evalComputedItems[definition.Source] {
 				if !kept(kind.kind) {
@@ -335,7 +340,7 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 		// A reading's row kind is the one its writer gave it, so row_kind keeps the readings of that
 		// kind, as the store reads them.
 		sources = append(sources, func(ctx context.Context, skip, want int) ([]evalItemRow, int, error) {
-			page, err := evals.ItemsIn(ctx, tx, definition.EvalID, request.series, request.rowKind, request.row, request.repos, rng.days, max(want, 1), skip)
+			page, err := evals.ItemsIn(ctx, tx, definition.EvalID, request.series, request.rowKind, request.row, repos, rng.days, max(want, 1), skip)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -368,7 +373,7 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 // read once a range (evalRangeReads): the day-row source and pr-ci's job rows both read them.
 func (s *server) evalDaysOf(ctx context.Context, read evalItemsRead) ([]evals.DayRow, error) {
 	if !read.shared.read {
-		days, err := evals.EvalDaysIn(ctx, read.tx, read.entry.Definition, read.deployRepo(), read.request.series, read.request.repos, read.rng.days)
+		days, err := evals.EvalDaysIn(ctx, read.tx, read.entry.Definition, read.deployRepo(), read.request.series, read.repos, read.rng.days)
 		if err != nil {
 			return nil, err
 		}
@@ -537,14 +542,14 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 		return keys
 	}
 	var repos map[string]string
-	if len(read.request.repos) > 0 {
+	if len(read.repos) > 0 {
 		resolved, err := issueReposIn(ctx, read.tx, read.project, keysOf(filings, closed))
 		if err != nil {
 			return nil, err
 		}
 		repos = resolved
-		filings = slices.DeleteFunc(filings, func(filing legionfacts.Filing) bool { return !slices.Contains(read.request.repos, repos[filing.Key]) })
-		closed = slices.DeleteFunc(closed, func(row legionfacts.Row) bool { return !slices.Contains(read.request.repos, repos[row.Issue]) })
+		filings = slices.DeleteFunc(filings, func(filing legionfacts.Filing) bool { return !slices.Contains(read.repos, repos[filing.Key]) })
+		closed = slices.DeleteFunc(closed, func(row legionfacts.Row) bool { return !slices.Contains(read.repos, repos[row.Issue]) })
 	}
 	total := len(filings) + len(closed)
 	return func(ctx context.Context, skip, want int) ([]evalItemRow, int, error) {
@@ -617,7 +622,7 @@ func (s *server) unownedItemRows(ctx context.Context, read evalItemsRead) ([]eva
 	if err != nil {
 		return nil, err
 	}
-	if len(read.request.repos) > 0 {
+	if len(read.repos) > 0 {
 		keys := make([]string, len(issues))
 		for index, issue := range issues {
 			keys[index] = issue.Key
@@ -626,7 +631,7 @@ func (s *server) unownedItemRows(ctx context.Context, read evalItemsRead) ([]eva
 		if err != nil {
 			return nil, err
 		}
-		issues = slices.DeleteFunc(issues, func(issue delivery.UnownedIssue) bool { return !slices.Contains(read.request.repos, repos[issue.Key]) })
+		issues = slices.DeleteFunc(issues, func(issue delivery.UnownedIssue) bool { return !slices.Contains(read.repos, repos[issue.Key]) })
 	}
 	now := time.Now().UTC()
 	rows := make([]evalItemRow, len(issues))
@@ -649,7 +654,7 @@ func (s *server) counted(ctx context.Context, read evalItemsRead, family string,
 	if keys, held := read.shared.counted[family]; ranged && held {
 		return keys, nil
 	}
-	items, err := evals.CountedIn(ctx, read.tx, read.project, family, evals.DeployRepoOf(read.entry.Definition, read.deployRepo()), read.request.repos, days)
+	items, err := evals.CountedIn(ctx, read.tx, read.project, family, evals.DeployRepoOf(read.entry.Definition, read.deployRepo()), read.repos, days)
 	if err != nil {
 		return nil, err
 	}

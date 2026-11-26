@@ -21,8 +21,9 @@ import (
 //   - a logged eval through each series' own fold, its agg (aggStatistics), since no function
 //     computes it.
 //
-// computedSources is the one table keyed by a computed source: its fold and its headline. Every
-// eval of the seeded catalogue names a source it holds, with both, which init checks when the
+// computedSources is keyed by computed source and holds the fold and headline.
+// The items route has its own source table for the rows it lists (api.evalComputedItems).
+// Every seeded eval names a source with both, which init checks when the
 // package starts, so a computed eval whose fold or headline is missing fails every binary and
 // every test that links this package rather than reading "no data" on a page.
 
@@ -494,8 +495,8 @@ func changeFailureRateStatistics(parts []measures.DayPart, _ Range, names []stri
 }
 
 // changeFailureRateOf is change-fail-rate's three shares' statistics of a folded failure rate, by
-// series, every figure nil where folded is the zero ChangeFailureRate (no part was folded: no
-// failure source), whose counts of 0 counted nothing.
+// series. If no part measured anything, the fold is the zero ChangeFailureRate, even when it
+// read zero parts from stored days: every figure is nil, including the counts.
 func changeFailureRateOf(folded measures.ChangeFailureRate) map[string]Statistics {
 	perDeploy := blank("rate", "confirmed", "pending", "rejected", "total")
 	perPR := blank("rate", "confirmed", "pending", "rejected", "reverts", "total")

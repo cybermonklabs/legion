@@ -939,6 +939,8 @@ func (d DeliveryDay) Rows(project string) ProjectDay {
 // (ProjectDay.WithZeros). Those of the evals no deploy repository moves are one row each, and
 // those of the evals that read it one row for each of repos, keyed by it (deploy_repos.go).
 // pr-ci's job series have none: a job with no result that day has no part.
+// These are project totals even when keyed by deploy repository. A repository cut gets no
+// placeholder row; a day without a row in that cut has no data.
 func ZeroDeliveryDay(settings delivery.DeliverySettings, project string, day time.Time, repos []string) ProjectDay {
 	zero := ProjectDay{Project: project, Day: measures.Midnight(day)}
 	cards := measures.DeployCards(settings)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"time"
@@ -68,12 +69,9 @@ func (s *Store) Current(ctx context.Context, projects []string, kind string, lim
 // page of it are the same whatever collation the database was made with (en_US or ICU puts
 // production-deploy before pr-open-to-merge), with each eval's current series: every eval of those
 // projects, or those of one kind where kind is not "". The page runs across the projects: Total is
-// every project's count, and offset counts from the first project's first eval. Its three
-// statements (the count, the page and the page's series) read tx's one snapshot (BeginSnapshot): a
-// write that commits between two of them, such as a reading that registers its eval, would
-// otherwise answer a page holding the new eval under the total counted before it, which a live
-// view's delta would send as it stands. Each statement reads every project at once, so a read of
-// many projects costs what a read of one does.
+// every project's count, and offset counts from the first project's first eval. The count,
+// page and series all read tx's one snapshot (BeginSnapshot). A concurrent registration could
+// otherwise return a new eval under the total counted before it.
 func CurrentIn(ctx context.Context, tx pgx.Tx, projects []string, kind string, limit, offset int) (Page[Entry], error) {
 	if err := checkPage(limit, offset); err != nil {
 		return Page[Entry]{}, err
@@ -107,6 +105,7 @@ func CurrentIn(ctx context.Context, tx pgx.Tx, projects []string, kind string, l
 // entriesOf is definitions, each as an entry with the newest version of each of its series, the
 // primary series first and then by name, read in q (eval_series_current): the part of a read of
 // evals that Current and readEntries share. what names the evals in an error.
+// The series read sends eval IDs in chunks at the statement byte bound.
 func entriesOf(ctx context.Context, q delivery.Querier, definitions []Definition, what string) ([]Entry, error) {
 	entries := make([]Entry, len(definitions))
 	ids := make([]string, len(definitions))
@@ -116,23 +115,22 @@ func entriesOf(ctx context.Context, q delivery.Querier, definitions []Definition
 		ids[index] = definition.EvalID
 		position[definition.EvalID] = index
 	}
-	if len(ids) == 0 {
-		return entries, nil
-	}
-	rows, err := q.Query(ctx, `
-		select `+seriesColumns+` from eval_series_current where eval_id = any($1)
-		order by eval_id, is_primary desc, series
-	`, ids)
-	if err != nil {
-		return nil, fmt.Errorf("read the series of the evals of %s: %w", what, err)
-	}
-	series, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Series, error) { return scanSeries(row) })
-	if err != nil {
-		return nil, fmt.Errorf("read the series of the evals of %s: %w", what, err)
-	}
-	for _, one := range series {
-		entry := &entries[position[one.EvalID]]
-		entry.Series = append(entry.Series, one)
+	for chunk := range statementChunks(ids, paramBytes(1), textBytes) {
+		rows, err := q.Query(ctx, `
+			select `+seriesColumns+` from eval_series_current where eval_id = any($1)
+			order by eval_id, is_primary desc, series
+		`, chunk)
+		if err != nil {
+			return nil, fmt.Errorf("read the series of the evals of %s: %w", what, err)
+		}
+		series, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Series, error) { return scanSeries(row) })
+		if err != nil {
+			return nil, fmt.Errorf("read the series of the evals of %s: %w", what, err)
+		}
+		for _, one := range series {
+			entry := &entries[position[one.EvalID]]
+			entry.Series = append(entry.Series, one)
+		}
 	}
 	return entries, nil
 }
@@ -218,6 +216,8 @@ func EvalIn(ctx context.Context, tx pgx.Tx, evalID string) (Entry, bool, error) 
 // recorded under deployRepo ("" where none is set; DeployRepoIn, DeployRepoOf), so the evals of
 // many projects are one read, a row the other writer made moves no eval's first day, and an eval
 // that reads the deploy repository begins on that repository's own first day.
+// A repository filter still names the project's first day. A repository day without a row
+// reads no data, not zero.
 func FirstDaysIn(ctx context.Context, q delivery.Querier, entries []Entry, deployRepo string) (map[string]map[string]time.Time, error) {
 	firsts := map[string]map[string]time.Time{}
 	if len(entries) == 0 {
@@ -285,8 +285,8 @@ type Built struct {
 // walk's for a computed Legion eval (legionDaySlugs), and false for every other eval. No walk
 // builds the rows of those: a logged eval's readings write writes its rows, and the zero rows they
 // leave owed through today, in its own transaction (writeLoggedZeros), and the daily fill writes
-// each new day's zero row in the pass the UTC midnight starts; unowned-p0's one row of a day is
-// written on that day alone (WriteUnownedP0Day); change-fail-rate and failed-deploy-recovery get
+// each new day's zero row in the pass the UTC midnight starts; unowned-p0's rows are written for
+// that day alone (WriteUnownedP0Day); change-fail-rate and failed-deploy-recovery get
 // no rows at all. So no day of theirs waits for a later write to build it from input it holds.
 func builtWalk(definition Definition) (walkKey, bool) {
 	switch {
@@ -351,6 +351,71 @@ func (b Built) unbuilt(key walkKey, of Range) bool {
 	return from.Before(to)
 }
 
+// StoredRepos resolves each requested repository, without case, to the distinct spellings in
+// listed day rows of the projects' owners or among the projects' published defaults. A name with
+// no match stays as given. It returns a sorted list, without duplicates. Call it once in the read's
+// snapshot before selecting the cut: the figure, day and item reads can then compare keys exactly.
+// With no repository filter there is nothing to resolve.
+func StoredRepos(ctx context.Context, q delivery.Querier, projects, repos []string) ([]string, error) {
+	if len(repos) == 0 {
+		return nil, nil
+	}
+	base, widest := paramBytes(2), 0
+	for i := range repos {
+		widest = max(widest, textBytes(&repos[i]))
+	}
+	matched, stored := make(map[string]bool, len(repos)), make(map[string]bool, len(repos))
+	for keys := range statementChunks(projects, base+widest, textBytes) {
+		bytes := base
+		for i := range keys {
+			bytes += textBytes(&keys[i])
+		}
+		for named := range statementChunks(repos, bytes, textBytes) {
+			rows, err := q.Query(ctx, storedReposQuery, keys, named)
+			if err != nil {
+				return nil, fmt.Errorf("resolve repository spellings: %w", err)
+			}
+			var request, spelling string
+			if _, err := pgx.ForEachRow(rows, []any{&request, &spelling}, func() error {
+				matched[request], stored[spelling] = true, true
+				return nil
+			}); err != nil {
+				return nil, fmt.Errorf("resolve repository spellings: %w", err)
+			}
+		}
+	}
+	for _, repo := range repos {
+		if !matched[repo] {
+			stored[repo] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(stored)), nil
+}
+
+// storedReposQuery walks the distinct repository keys of each owner through eval_days_window.
+// Each probe stops at the first entry for the next key; no probe enumerates a repository's days.
+// Comparing case only after that walk preserves the index bounds on every later read of the cut.
+const storedReposQuery = `
+	with owners as (
+		select distinct owner from eval_project_owners where project_key = any($1::text[])
+	), spellings as (
+		select held.repo from owners o
+		cross join lateral (
+			with recursive held(repo) as (
+				(select d.repo from eval_days d where d.project_key = o.owner and d.listed and d.repo > '' order by d.repo limit 1)
+				union all
+				select (select d.repo from eval_days d where d.project_key = o.owner and d.listed and d.repo > held.repo order by d.repo limit 1)
+				from held where held.repo is not null
+			)
+			select held.repo from held where held.repo is not null
+		) held
+		union
+		select repo from eval_project_repos where project_key = any($1)
+	)
+	select named.repo, spellings.repo
+	from unnest($2::text[]) named(repo) join spellings on lower(spellings.repo) = lower(named.repo)
+`
+
 // EvalDaysIn reads in q every day row of definition's eval on the days of window, listed or not
 // (pr-ci's per-job series are not), among its own writer's rows (Definition.writer) of the deploy
 // repository its read reads where the rows are recorded under deployRepo ("" where none is set;
@@ -358,15 +423,21 @@ func (b Built) unbuilt(key walkKey, of Range) bool {
 // where repos names any, and of one series where series is not ""; newest day first, then by
 // series and repository. A project's rows are its own and those of the owner keys it reads under
 // the published defaults (eval_project_owners, owners.go), each read under the project's key and
-// its eval id of the row's slug, and the rows several owners hold of one series, repository and
-// day added into one (addOwnedRows). It is the items route's read of an eval's day rows: one range
-// of eval_days' primary key for each owner, bounded by the owner keys (ownedKeys).
+// its eval id of the row's slug. Rows of one series, day and cut are added into one (addOwnedRows),
+// including a Legion row read through the published default. Only the computed pr-ci job rows
+// send samples, which the items route folds into job timings; day items do not display samples.
+// Each owner's read is a range of eval_days' primary key, bounded by the owner keys (ownedKeys).
 func EvalDaysIn(ctx context.Context, q delivery.Querier, definition Definition, deployRepo, series string, repos []string, window Range) ([]DayRow, error) {
 	cut := `d.repo = any($5)`
+	repo, samples := `d.repo`, `null::double precision[]`
 	if len(repos) == 0 {
 		repos = []string{""}
 	} else {
 		cut = repoCut("d", "$5", "$1")
+		repo = cutOf("d", "$1")
+	}
+	if definition.Computed() && definition.Slug == SlugPRCI {
+		samples = `case when starts_with(d.series, '` + measures.JobSeriesPrefix + `') then d.samples end`
 	}
 	filter := `o.project_key = $1 and ` + ownedKeys("d", "= $1") + ` and d.eval_id = o.owner || substr($2, length($1) + 1)
 		and d.writer = $3 and d.deploy_repo = $4 and ` + cut + ` and d.day >= $6::date and d.day < $7::date`
@@ -376,8 +447,8 @@ func EvalDaysIn(ctx context.Context, q delivery.Querier, definition Definition, 
 		filter += ` and d.series = $8`
 	}
 	rows, err := q.Query(ctx, `
-		select `+ownedDayColumns+` from eval_project_owners o join eval_days d on d.project_key = o.owner
-		where `+filter+` order by d.day desc, d.series, d.repo
+		select `+ownedDayColumns(repo, samples)+` from eval_project_owners o join eval_days d on d.project_key = o.owner
+		where `+filter+` order by d.day desc, d.series, cut_repo
 	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read the day rows of %s: %w", definition.EvalID, err)
@@ -489,10 +560,10 @@ func CountedIn(ctx context.Context, q delivery.Querier, project, family, deployR
 // one answer of the eval list reads in (BeginSnapshot). The read names each eval and, for each
 // series whose samples or last write it reads, the pair (eval, series), which at MaxEvalSeries
 // series of the largest names is about 244 KB of one eval: so entries go in runs whose parameters
-// take at most statementBytes as statementChunks cuts them (the statement's own estimated by
-// paramBytes and each eval's by windowEntryBytes), a statement each, every one sent on q, and the
-// rows they answer are their rows together; an eval's rows all come from its own run's statement,
-// which names it alone of the runs. A read that fits sends the one statement it always did. Each
+// aim for statementBytes (statementChunks, paramBytes and windowEntryBytes). An eval's rows all
+// come from one run: when that eval alone plus the shared parameters exceeds the budget, it is
+// sent whole in its own statement. For example, a maximal eval and 100 maximal repository names
+// can take about 296 KB together. A read that fits sends one statement. Each
 // statement reads q's snapshot: in the list read's snapshot, as in any transaction at repeatable
 // read, every run reads the one moment the answer's other reads read, as one statement would; on
 // the pool, or in a transaction at read committed, each reads the rows that stand when it runs.

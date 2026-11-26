@@ -899,6 +899,11 @@ func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deplo
 	if len(entries) == 0 {
 		return read, nil
 	}
+	projects := evalProjects(entries)
+	repos, err = evals.StoredRepos(ctx, tx, projects, repos)
+	if err != nil {
+		return evalValues{}, err
+	}
 	if read.firsts, err = evals.FirstDaysIn(ctx, tx, entries, deployRepo); err != nil {
 		return evalValues{}, err
 	}
@@ -906,7 +911,7 @@ func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deplo
 		return evalValues{}, err
 	}
 	if evals.FiguresOffered(repos, ranges.window, ranges.compare) {
-		stored, err := evals.ReadStoredFiguresIn(ctx, tx, evalProjects(entries), entries, deployRepo, repos, ranges.window, ranges.compare)
+		stored, err := evals.ReadStoredFiguresIn(ctx, tx, projects, entries, deployRepo, repos, ranges.window, ranges.compare)
 		if err != nil {
 			return evalValues{}, err
 		}

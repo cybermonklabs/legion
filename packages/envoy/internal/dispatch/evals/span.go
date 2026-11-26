@@ -876,9 +876,9 @@ func (r *refresh) trackKept(tracked map[string]map[evalKey]*trackedKey, covered 
 // transaction, and records in b what moved: each built row of a span day whose stored row holds
 // other values or is missing, each stored row of a span day of its key that the day no longer
 // builds, and the stored members of the days whose members the span built (covered). It
-// widens b's figure spans and its report by the days whose rows moved. Only the refresher writes
-// the computation's rows and members, one pass at a time (RefresherLease), so what it reads here
-// is what its transaction then writes over.
+// widens b's figure spans and its report by the days whose rows moved. The refresher lease allows
+// one refresher pass at a time, but the boot's repository rename pass also rewrites rows and
+// members and can commit between this read and the span write.
 func (r *refresh) compareSpan(ctx context.Context, b *spanWrite, built spanBuilt, covered map[string]daySpan) error {
 	type scope struct {
 		evals, repos map[string]bool

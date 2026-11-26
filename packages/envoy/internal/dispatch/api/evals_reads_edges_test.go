@@ -205,6 +205,63 @@ func TestAnItemsLinkKeepsItsRepositoryAndItsRange(t *testing.T) {
 	}
 }
 
+func TestEvalReadsResolveRepositorySpellingsBeforeReadingTheirRows(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	ctx, pool := t.Context(), database.Pool
+	day := measures.Midnight(time.Now())
+	if _, err := pool.Exec(ctx, `insert into eval_days_defaults (project_key, repo) values ('EVL', 'acme/web')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, samples, built_by)
+		values ('EVL', 'EVL/legion-work-time', 'hours', '', $1, true, 2, 12, '{4,8}', 'test'),
+		       ('EVL', 'EVL/legion-work-time', 'hours', 'Acme/Web', $1, true, 1, 4, '{4}', 'test'),
+		       ('EVL', 'EVL/legion-work-time', 'hours', ':default', $1, true, 1, 8, '{8}', 'test'),
+		       ('EVL', 'EVL/pr-ci', 'job:unit', 'Acme/Web', $1, false, 2, 8, '{3,5}', 'test')`, day); err != nil {
+		t.Fatal(err)
+	}
+	const path = "/api/v1/projects/EVL/evals/legion-work-time"
+	query := url.Values{"from": {day.Format(time.RFC3339)}, "to": {day.AddDate(0, 0, 1).Format(time.RFC3339)}, "repo": {"ACME/WEB"}}
+	detail := evalGet[evalDetailResponse](t, handler, path+"?"+query.Encode())
+	got := seriesValues(t, detail.Items[0], "hours").Window["median"]
+	if got == nil {
+		t.Error("detail median has no value, want 6 from both stored spellings")
+	} else if *got != 6 {
+		t.Errorf("detail median = %g, want 6 from both stored spellings", *got)
+	}
+	query.Set("row_kind", "day")
+	query.Set("series", "hours")
+	items := evalGet[evalItemsResponse](t, handler, path+"/items?"+query.Encode())
+	var repos []string
+	for _, row := range items.Items {
+		repo, _ := row.Cols["repo"].(string)
+		repos = append(repos, repo)
+	}
+	slices.Sort(repos)
+	if want := []string{"Acme/Web", "acme/web"}; !slices.Equal(repos, want) {
+		t.Errorf("items repositories = %v, want %v (the row's storage or published spelling)", repos, want)
+	}
+	query.Set("row_kind", "job")
+	query.Del("series")
+	jobs := evalGet[evalItemsResponse](t, handler, "/api/v1/projects/EVL/evals/pr-ci/items?"+query.Encode())
+	if len(jobs.Items) != 1 {
+		t.Fatalf("job items = %v, want the unit job", jobs.Items)
+	}
+	link, err := url.Parse(jobs.Items[0].Href)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := link.Query()["repo"]; !slices.Equal(got, []string{"ACME/WEB"}) {
+		t.Errorf("job link echoes %v, want the requested spelling", got)
+	}
+	behind := evalGet[evalItemsResponse](t, handler, link.String())
+	if len(behind.Items) != 1 || behind.Items[0].Cols["repo"] != "Acme/Web" {
+		t.Errorf("job link answers %v, want the day row's stored spelling Acme/Web", behind.Items)
+	}
+}
+
 // TestALegionItemShowsTheRepositoryItIsFilteredBy: a Legion eval's issue row shows the repository
 // its repo filter keeps it by, the one the day rows cut it by. An issue that owns no repository
 // (its own, or an ancestor's) is stored and cut under legionfacts.DefaultRepo, which stands for
