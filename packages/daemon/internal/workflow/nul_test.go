@@ -21,6 +21,7 @@ import (
 // never move past it. Each applies instead, and the pull request's row holds U+FFFD where each NUL
 // was: in its check runs, its failing checks and its snapshot, and in the push it holds.
 func TestAPullRequestsChecksAndPushHoldingNULAreStoredWithReplacementCharacters(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
@@ -91,6 +92,7 @@ func TestAPullRequestsChecksAndPushHoldingNULAreStoredWithReplacementCharacters(
 // architect asked would never hear it. The decline applies instead, and the ask's mirror row holds
 // U+FFFD where each NUL was, in the note and in the words.
 func TestAPersonsDeclineHoldingNULIsMirroredWithReplacementCharacters(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	seedIssue(t, pool, askRoot())

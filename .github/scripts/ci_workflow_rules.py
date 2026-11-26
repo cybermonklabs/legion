@@ -482,7 +482,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
 # DAEMON_RACE_FILL_JOB names). Spelled as the engine's tag-run triggers are, so `-racy` is not the
 # flag and a go vet or go build line is no such command, and read through script_lines, so a
 # comment is no trigger. The packages are the words beginning `./`, which is how a go command
-# names one and how ci_job_reads.py's DAEMON_RACE_PKGS spells that same list; the `-o /dev/null`
+# names one and how go_legs.py prints that same list for the race legs; the `-o /dev/null`
 # of the build is no package. TABLE, the file the list is in, is the workspaces section's constant
 # below: both rules name that one file, so there is one spelling of it here. A race build of
 # another job fills another family's cache, for another lane, and is not this rule's: the
