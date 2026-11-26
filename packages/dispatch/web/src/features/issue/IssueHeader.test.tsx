@@ -1,4 +1,4 @@
-import { beforeAll, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { hashKey, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: user-event has no form for a key pressed during an IME composition or, as Safari sends it, just after one.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -8,6 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { COMPOSITION_MARKS } from "../../__tests__/composition-marks";
 import { settle } from "../../__tests__/fake-clock";
+import { ALICE_DETAILS_KEY, openIssueDetails } from "../../__tests__/issue-details";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
@@ -256,13 +257,18 @@ test("a read of the state asked while the header's pin is out waits for its answ
   }
 });
 
-/** Opens the header's route or parent editor, as the reader does, and hands back its field. */
+afterEach(() => window.localStorage.removeItem(ALICE_DETAILS_KEY));
+
+/** Opens the header's route or parent editor, as the reader does, from its row of Details, and
+ *  hands back its field. */
 const editors: Record<"parent" | "route", (user: UserEvent) => Promise<HTMLElement>> = {
   parent: async (user) => {
+    await openIssueDetails(user);
     await user.click(screen.getByRole("button", { name: "None, set parent issue" }));
     return screen.getByRole("textbox", { name: "Parent" });
   },
   route: async (user) => {
+    await openIssueDetails(user);
     await user.click(screen.getByRole("button", { name: "Messages default to no route" }));
     return screen.getByRole("textbox", { name: "Message route" });
   },

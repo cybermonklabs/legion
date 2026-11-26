@@ -1313,15 +1313,15 @@ test("on a phone, the newest conversation's read mark moves nothing under a pres
  *  / Open / Closed filter - and inside the turns the two that decide a suggestion, Accept and
  *  Reject, which are what the pill took while it sat at the head of the list. `end` is the
  *  bottom of the newest card, so that card is the one card the band carries, and it is swept
- *  from where it lands under the controls up off the top of the screen: no card crosses the
- *  foot band here, where the pill does cover a card's Accept and Reject for as long as the
- *  card is passing. The pill floats at the foot now, where the list scrolls behind it as it
- *  does behind any floating control, so a turn's quiet actions - Copy reference, Reply, Pin -
- *  pass under it and are not tapped.
- *  Controls whose centre is off screen, or clipped out of view by a scrolling ancestor (the
- *  issue tablist scrolls sideways at this width, so a tab past its edge is not on screen to tap
- *  at all), are not tapped either. A step away from where the page settled that draws no pill is
- *  recorded too. */
+ *  from where it lands under the controls up off the top of the screen. The pill floats at the
+ *  foot, where the list scrolls behind it as it does behind any floating control, so an older
+ *  turn's quiet actions - Copy reference, Reply, Pin - pass under it and are not tapped. The
+ *  newest card never does: the pill is drawn exactly where the reader is away from the place
+ *  the page settled AND that card's head is off the screen (`belongs`, the rule
+ *  `use-follow-latest.ts` carries), so a step that draws no pill where it belongs, and a step
+ *  that draws one over the card it points at, are both recorded.
+ *  Controls whose centre is off screen, or clipped out of view by a scrolling ancestor, are not
+ *  tapped either. */
 async function tapsLostAcrossBand(
   page: Page,
   band: { end: number; settled: number }
@@ -1335,17 +1335,45 @@ async function tapsLostAcrossBand(
       });
     const pillBox = () =>
       document.querySelector('[data-testid="jump-to-latest"]')?.getBoundingClientRect();
+    // The pill is drawn where the reader is away from the place the page settled and no part of
+    // the newest card is on the screen, the band the docked composer covers being no part of it;
+    // while any of that card is on the screen there is nothing to jump to, and the pill would
+    // cover the card it points at (dispatch://INFRA-5200). `undefined` while an edge of the card
+    // is within 8 px of an edge of that screen: there the page's own reading - an
+    // IntersectionObserver on the card, reported a frame after the scroll - and this one can
+    // disagree by a pixel and a frame, so either answer is taken there. Whether the pill covers
+    // anything is read at every step, that one included.
+    const belongs = (top: number): boolean | undefined => {
+      const card = document.querySelector("[data-turn]")?.getBoundingClientRect();
+      if (card === undefined || Math.abs(top - settled) <= 1) return false;
+      const composer = document.querySelector<HTMLElement>('[aria-label="Comment composer"]');
+      const docked = composer === null ? "" : getComputedStyle(composer).position;
+      const screenTop =
+        composer !== null && docked === "sticky" ? composer.getBoundingClientRect().bottom : 0;
+      const screenBottom =
+        composer !== null && docked === "fixed"
+          ? composer.getBoundingClientRect().top
+          : window.innerHeight;
+      if (Math.abs(card.bottom - screenTop) <= 8 || Math.abs(card.top - screenBottom) <= 8) {
+        return undefined;
+      }
+      return !(card.bottom > screenTop && card.top < screenBottom);
+    };
     const lost: string[] = [];
     for (let top = 1; top <= end; top += 4) {
       window.scrollTo(0, top);
       // One frame carries the scroll into layout and runs the pill's listener; a step that
       // changes whether the pill shows takes one more for the render React queued for it.
       await frame();
-      const shows = Math.abs(top - settled) > 1;
+      const shows = belongs(top);
       if (shows !== (pillBox()?.height ?? 0) > 0) await frame();
       const pill = document.querySelector('[data-testid="jump-to-latest"]');
-      if (shows && (pill?.getBoundingClientRect().height ?? 0) === 0) {
+      if (shows === true && (pill?.getBoundingClientRect().height ?? 0) === 0) {
         lost.push(`scrolled to ${top}: no Jump to latest`);
+        continue;
+      }
+      if (shows === false && (pill?.getBoundingClientRect().height ?? 0) > 0) {
+        lost.push(`scrolled to ${top}: Jump to latest over the card it points at`);
         continue;
       }
       const turnsTopNow = turns.getBoundingClientRect().top;
@@ -1391,16 +1419,47 @@ async function tapsLostAcrossBand(
   }, band);
 }
 
+/** The pill where the page stands now: drawn where the reader is away from the place the page
+ *  settled and no part of the newest card is on the screen less the docked composer's band,
+ *  absent everywhere else. A card whose edge is within 8 px of an edge of that screen is read
+ *  either way, as in the sweep. */
+async function expectPill(page: Page, pill: Locator, settled: number): Promise<void> {
+  // The page settled at this scroll before the call, so one reading of the card decides it here.
+  const belongs = await page.evaluate((restingY) => {
+    const card = document.querySelector("[data-turn]")?.getBoundingClientRect();
+    if (card === undefined || Math.abs(window.scrollY - restingY) <= 1) return false;
+    const composer = document.querySelector<HTMLElement>('[aria-label="Comment composer"]');
+    const docked = composer === null ? "" : getComputedStyle(composer).position;
+    const screenTop =
+      composer !== null && docked === "sticky" ? composer.getBoundingClientRect().bottom : 0;
+    const screenBottom =
+      composer !== null && docked === "fixed"
+        ? composer.getBoundingClientRect().top
+        : window.innerHeight;
+    if (Math.abs(card.bottom - screenTop) <= 8 || Math.abs(card.top - screenBottom) <= 8) {
+      return undefined;
+    }
+    return !(card.bottom > screenTop && card.top < screenBottom);
+  }, settled);
+  if (belongs === undefined) return;
+  if (belongs) {
+    await expect(pill).toBeVisible();
+  } else {
+    await expect(pill).toHaveCount(0);
+  }
+}
+
 // On a phone the issue's header, its tabs and the filters sit above the turns, the newest turn
 // just under them, so a reader scrolling back up passes a band where they are on screen while
 // `Jump to latest` shows. The pill is fixed at the foot there, above the docked composer, so
 // every control above the turns keeps its own tap through that band, and so does the newest
 // card's Accept and Reject, the pair the pill took for itself while it sat at the head of the
-// list. The band ends at that card's bottom, so the decisions this row checks are the newest
-// card's above the foot band, never a card's crossing it: a card scrolled through the foot
-// passes under the pill and loses those two taps for as long as it is there, which is accepted
-// - scrolling the card on, or the pill's own tap, which hides the pill, clears it, as it does
-// for that card's Reply and Pin.
+// list. The pill is gone while that card's head is on the screen, which is where today's issue
+// header - tall at a phone's width, since its tabs wrap rather than scroll sideways - holds the
+// card at the top of the page: a reader who sees the card the pill carries them to has nothing
+// to jump to (dispatch://INFRA-5200). An older card scrolled through the foot still passes
+// under the pill and loses its quiet taps - Copy reference, Reply, Pin - for as long as it is
+// there, which is accepted.
 // SLOW(>=2s): the band is swept 4 px at a time, a frame per step, and every control above the
 // turns, with the suggestion's decisions under it, is hit-tested at each one.
 test("on a phone, Jump to latest covers none of the issue's tabs, the controls above the turns, or the newest card's Accept and Reject above the foot band @phone", async ({
@@ -1452,13 +1511,15 @@ test("on a phone, Jump to latest covers none of the issue's tabs, the controls a
       const box = first.getBoundingClientRect();
       return box.bottom + window.scrollY;
     });
-    // Both ends of the band keep Playwright's own visibility check; the sweep between them runs
-    // in the page, one round trip rather than three per step.
+    // Both ends of the band keep Playwright's own check; the sweep between them runs in the
+    // page, one round trip rather than three per step. The pill is drawn exactly where the
+    // reader is away from where the page settled and the newest card's head is off the screen,
+    // so each end is read against that rule, not against the scroll alone.
     await page.evaluate(() => window.scrollTo(0, 1));
-    if (Math.abs(1 - settled) > 1) await expect(jump).toBeVisible();
+    await expectPill(page, jump, settled);
     const lost = await tapsLostAcrossBand(page, { end, settled });
     await page.evaluate((y) => window.scrollTo(0, y), end);
-    if (Math.abs(end - settled) > 1) await expect(jump).toBeVisible();
+    await expectPill(page, jump, settled);
     expect(lost).toEqual([]);
   } finally {
     await alice.close();

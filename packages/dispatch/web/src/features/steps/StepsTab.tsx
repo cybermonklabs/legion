@@ -158,11 +158,11 @@ function TaskTable({ rows, task }: { rows: readonly StepRow[]; task: string }): 
     <section className="min-w-0 space-y-2">
       <h2 className={`text-sm font-semibold ${textSecondaryOnCanvas}`}>Task {task}</h2>
       {/* The table scrolls sideways inside the card where the page is narrower than its columns
-          (a phone), and while columns lie past the card's edge it wears the trailing fade the
-          tablist and the details rail wear, so the cut column reads as more to scroll rather than
-          as clipped text. The scroll box sits inside the card so the fade masks the table and not
-          the card's border; `overflow-hidden` keeps the scrolled rows inside the card's rounded
-          corners. */}
+          (a phone): a data table is the layout rule's exception. While columns lie past the
+          card's edge it wears a trailing fade, so the cut column reads as more to scroll rather
+          than as clipped text. The scroll box sits inside the card so the fade masks the table
+          and not the card's border; `overflow-hidden` keeps the scrolled rows inside the card's
+          rounded corners. */}
       <div className={`overflow-hidden rounded-xl border ${card}`}>
         <div className={`overflow-x-auto ${tableFade.fade}`} ref={tableFade.ref}>
           <table aria-label={`Steps of task ${task}`} className="w-full text-left text-xs">

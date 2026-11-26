@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { IssueClaim } from "../../api/types";
 import { pillClassName, usePillWrapped } from "../../components/Pill";
+import { TruncatedText } from "../../components/TruncatedText";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import { pageInkText } from "../../theme/shell-classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
@@ -118,12 +119,13 @@ export function claimIsTakeable(
  * server uses. The judgement is remade on each render, so it follows the registry poll and the
  * issue read rather than a timer of the chip's own.
  *
- * A session title can be any length, and no name may widen the page (the rule
- * `IssueHeader.tsx` cites for the metadata rail). `pillClassName` sets `shrink-0`, and no class
- * reliably beats it: `shrink` is in the same Tailwind group, and `[flex-shrink:1]` measured a
- * computed `flex-shrink` of 0 on the built page, so the shrink is an inline style, which
- * cannot lose whatever the stylesheet order. The chip also caps itself at the row's width.
- * Only the holder's name ellipsizes:
+ * The chip is one group: "Claimed by", the holder, the age, then what the liveness adds (lapsed,
+ * not running). A session title can be any length, and no name may widen the page.
+ * `pillClassName` sets `shrink-0`, and no class reliably beats it: `shrink` is in the same
+ * Tailwind group, and `[flex-shrink:1]` measured a computed `flex-shrink` of 0 on the built page,
+ * so the shrink is an inline style, which cannot lose whatever the stylesheet order. The chip also
+ * caps itself at the row's width. Only the holder's name ellipsizes, inside `TruncatedText`; the
+ * chip's own `title`, which opens with "Claimed by" and the whole name, shows over it too.
  * "Claimed by", the age and "not running" stay whole, because a chip reading "Claimed…" would
  * say nothing. The name is an inline link, so it keeps the chip's line box at a phone width.
  *
@@ -248,12 +250,13 @@ export function ClaimChip({
           {page?.PROPERTY_LABELS.claim ?? "Claimed by"}
         </span>
       )}
-      <AgentName
-        actor={claim.actor}
-        author={author}
-        className={wrapping ? undefined : "min-w-0 truncate"}
-        inline
-      />
+      {wrapping ? (
+        <AgentName actor={claim.actor} author={author} inline />
+      ) : (
+        <TruncatedText>
+          <AgentName actor={claim.actor} author={author} className="min-w-0 truncate" inline />
+        </TruncatedText>
+      )}
       {space}
       <span aria-hidden="true" className={part} {...page?.pageChrome}>
         ·

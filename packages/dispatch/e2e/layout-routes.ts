@@ -15,6 +15,8 @@
  *  table, and `./issue-page-option`, which imports a type alone. */
 import type { BrowserContext, Locator, Page } from "@playwright/test";
 
+import { userPreferenceStorageKey } from "../web/src/features/shell/userPreference";
+import { openIssueDetails } from "./issue-details";
 import { withIssuePage } from "./issue-page-option";
 import { hasReadingPane } from "./reading-pane";
 import { type ReviewedRoute, type ReviewSeed, reviewRoutes } from "./review-routes";
@@ -215,8 +217,48 @@ const inboxBackToList: LayoutState = {
 
 /** The lists of chips today's issue page draws from the stress issue's data: its 13 labels, its
  *  13 components, its 15 pull requests, and its links that are no pull request. Each is a list of
- *  R3, which `components/CappedGroup.tsx` marks with these names. */
-const ISSUE_GROUPS = ["labels", "components", "pull-requests", "links"];
+ *  R3, which `components/CappedGroup.tsx` marks with these names. The header draws the labels as
+ *  the page loads; the components, the pull requests and the links are rows of its Details, which
+ *  the reader opens (`issueDetailsOpen`). */
+const ISSUE_HEADER_GROUPS = ["labels"];
+const ISSUE_DETAILS_GROUPS = [...ISSUE_HEADER_GROUPS, "components", "pull-requests", "links"];
+
+/** Opens today's issue header's Details as a reader does. Whether it is open is the reader's
+ *  choice, kept in this browser (`issue.details`), so once Details is drawn the choice is
+ *  forgotten again: the row's next fresh load reads the page as it loads for a reader who never
+ *  opened it. */
+async function openIssueHeaderDetails(page: Page): Promise<void> {
+  await openIssueDetails(page);
+  // Every login's choice: the key is the preference's and then the login
+  // (`userPreferenceStorageKey`).
+  const prefix = userPreferenceStorageKey("", "issue.details");
+  await page.evaluate((keyPrefix) => {
+    for (const key of Object.keys(window.localStorage)) {
+      if (key.startsWith(keyPrefix)) window.localStorage.removeItem(key);
+    }
+  }, prefix);
+}
+
+/** Today's issue header with its Details open. */
+const issueDetailsOpen: LayoutState = {
+  act: openIssueHeaderDetails,
+  name: "details-open",
+  requiredGroups: ISSUE_DETAILS_GROUPS,
+};
+
+/** Details open, and every capped group on the page opened by its "+N", each then showing every
+ *  entry by the reader's own choice (`data-layout-open`). */
+const issueGroupsExpanded: LayoutState = {
+  act: async (page) => {
+    await openIssueHeaderDetails(page);
+    await openCappedGroups(page);
+  },
+  name: "groups-expanded",
+  requiredGroups: ISSUE_DETAILS_GROUPS,
+};
+
+/** The states every route of today's issue page is read in, after its plain load. */
+const ISSUE_STATES = [issueDetailsOpen, issueGroupsExpanded];
 
 /** A short page's floor: four fifths of what its own region drew at its narrowest width on the
  *  stress seed, so a page that drew a heading and nothing else still fails. */
@@ -230,7 +272,8 @@ function shortPage(measured: number): NonNullable<LayoutRoute["minElements"]> {
 /** What a reviewed route adds here: its states, the groups it must mark, its floor, and whether
  *  its widest widths resize the page (`reuseWide`). A reviewed route that is not marked loads
  *  fresh at every width, each for its reason:
- *  - `agents` and `project-issues`: each state leaves a drawer or a selection open.
+ *  - `agents`, `project-issues` and every `issue-` route: each state leaves a drawer, a selection
+ *    or the issue header's Details open (`ISSUE_STATES`).
  *  - `priorities`, `priorities-in-flight`, `priorities-backlog` and `priority`: their tables
  *    (`useTableLayout`, `web/src/features/project/issues-table-layout.ts`) keep the measurements
  *    of rows they do not draw when the window's width changes.
@@ -239,8 +282,9 @@ function shortPage(measured: number): NonNullable<LayoutRoute["minElements"]> {
  *    keeps the place the width before chose, and its ready locator, "Skip to the answer", would
  *    prove that placement rather than one at the new width.
  *  - `issue-conversation`: it places the reader at the newest turn once
- *    (`web/src/features/conversation/use-follow-latest.ts`, which observes no size), and a scroll
- *    it did not make after that is read as the reader's own, which draws "Jump to latest". */
+ *    (`web/src/features/conversation/use-follow-latest.ts`, whose placement follows no resize),
+ *    and a scroll it did not make after that is read as the reader's own, which draws "Jump to
+ *    latest". */
 const additions: Readonly<
   Record<string, Pick<LayoutRoute, "minElements" | "requiredGroups" | "reuseWide" | "states">>
 > = {
@@ -251,14 +295,15 @@ const additions: Readonly<
   "credentials-machine": { minElements: shortPage(24), reuseWide: true },
   delivery: { reuseWide: true },
   inbox: { states: [inboxItemOpened, inboxBackToList] },
-  "issue-activity": { reuseWide: true },
-  "issue-artifact": { reuseWide: true },
-  "issue-artifacts": { reuseWide: true },
-  "issue-children": { requiredGroups: [...ISSUE_GROUPS, "child-links"], reuseWide: true },
-  "issue-decisions": { reuseWide: true },
-  "issue-plan": { reuseWide: true },
-  "issue-spec": { reuseWide: true },
-  "issue-verification": { reuseWide: true },
+  // Each child's links are a capped group of their own, in every state: a state's groups replace
+  // the route's.
+  "issue-children": {
+    requiredGroups: [...ISSUE_HEADER_GROUPS, "child-links"],
+    states: ISSUE_STATES.map((state) => ({
+      ...state,
+      requiredGroups: [...(state.requiredGroups ?? []), "child-links"],
+    })),
+  },
   machine: { minElements: shortPage(46), reuseWide: true },
   machines: { minElements: shortPage(15), reuseWide: true },
   "not-found": { minElements: shortPage(4), reuseWide: true },
@@ -280,8 +325,11 @@ const reviewed: readonly LayoutRoute[] = reviewRoutes
     path,
     pattern,
     ready,
-    // Today's issue page, whichever tab: the header draws the three lists on every one.
-    ...(name.startsWith("issue-") ? { requiredGroups: ISSUE_GROUPS } : {}),
+    // Today's issue page, whichever tab: the header draws the labels as it loads, and its Details
+    // the components and the pull requests.
+    ...(name.startsWith("issue-")
+      ? { requiredGroups: ISSUE_HEADER_GROUPS, states: ISSUE_STATES }
+      : {}),
     ...additions[name],
   }));
 

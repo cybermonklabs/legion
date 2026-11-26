@@ -45,6 +45,10 @@ function sourceName(source: SourceKey): string {
   return `the architecture source ${source.repo} for ${source.project}`;
 }
 
+/** The id of the section's heading, which an address names to open Settings at this section
+ *  (`SettingsPage`): an issue's Components line links there while its project has no source. */
+export const ARCHITECTURE_SOURCES_HEADING_ID = "architecture-sources-heading";
+
 /** A project's architecture sources, one row per repository: the branch its architecture
  * documents are imported from, the commit imported and how many components it supplies. Saving
  * runs the server's GitHub App access check, so a listed row has proven access — it shows
@@ -117,10 +121,10 @@ export function ArchitectureSourcesSection(): ReactNode {
     : undefined;
 
   return (
-    <section aria-labelledby="architecture-sources-heading">
+    <section aria-labelledby={ARCHITECTURE_SOURCES_HEADING_ID}>
       <h2
         className={`text-xl font-semibold ${textPrimaryOnCanvas}`}
-        id="architecture-sources-heading"
+        id={ARCHITECTURE_SOURCES_HEADING_ID}
       >
         Architecture sources
       </h2>
