@@ -858,11 +858,10 @@ func (r *durableReceiver) receive(ctx, termCtx context.Context) bool {
 		case <-termCtx.Done():
 			return finish(r.end)
 		case <-joined:
-			// A shutdown that came as the lease joined leaves both cases ready, and select
-			// picks either: the term's end wins, so the term drains its subscription and NAKs
-			// what it holds, as the stop of a pod without a lease does (end), and the stop
-			// releases the lease that joined (Stop). The shutdown came no later than the join,
-			// so the term is not handed to the lease (joinTerm) only for run to end it at once.
+			// A stop that comes as the lease joins leaves both cases ready, and select picks
+			// either. The stop has begun, so the term ends here, as the stop of a pod without a
+			// lease ends it: it drains its subscription and NAKs what it holds (end). Stop then
+			// releases the lease that joined.
 			if termCtx.Err() != nil {
 				return finish(r.end)
 			}

@@ -3000,14 +3000,11 @@ func runListener(credentialWait time.Duration) {
 	}
 	openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 
-	// The lease runs until the shutdown releases it (durableReceiver.Stop). leaseCtx is not
-	// cancelled before the process exits: the shutdown ends in os.Exit (shutdownListener), which
-	// runs no deferred call, so a lease the release did not stop renews until the exit, and a
-	// standby takes its record once it expires.
-	leaseCtx, leaseCancel := context.WithCancel(context.Background())
-	defer leaseCancel()
+	// The lease runs until the shutdown releases it (durableReceiver.Stop). Its loop runs under a
+	// context nothing cancels: the shutdown ends in os.Exit (shutdownListener), so a lease the
+	// release did not stop renews until the exit, and a standby takes its record once it expires.
 	if deliveryLease != nil {
-		deliveryLease.Start(leaseCtx)
+		deliveryLease.Start(context.Background())
 	}
 	receiver.Start()
 	// A pod whose grant refused the listener state bucket at its start delivers without a lease,
@@ -3024,7 +3021,8 @@ func runListener(credentialWait time.Duration) {
 	// the receiver's own, which the shutdown ends and waits out before it stops receiving
 	// (durableReceiver.startJoin, durableReceiver.Stop), so a join that completes as the pod stops
 	// is handed over or released by that stop rather than left renewing until the exit; the
-	// joined lease's own loop runs under leaseCtx, as a lease opened at the start does.
+	// joined lease's own loop runs under a context nothing cancels, as a lease opened at the start
+	// does.
 	if deliveryLease == nil && leaseConn != nil {
 		receiver.startJoin(func(ctx context.Context) *lease {
 			joined := joinDeliveryLease(ctx, leaseConn, cfg.NATSReplicas, cfg.MachineID, instance, logger)
@@ -3037,7 +3035,7 @@ func runListener(credentialWait time.Duration) {
 			sessions.SetLastSeenBucket(joined.kv)
 			joined.SetReceiveSignal(receiver.receiveUp)
 			joined.Contend(ctx)
-			joined.Start(leaseCtx)
+			joined.Start(context.Background())
 			return joined
 		})
 	}

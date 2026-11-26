@@ -253,10 +253,12 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //     publishes; that answer, a stream info answer and a stored publish's acknowledgement, aimed the
 //     same way, take no action there in the same row.
 //
-// Its start reads the stream and ends, naming it, when the server holds none, and finds each
-// bucket it opens (bus.EnsureKeyValue): when the server lacks the interest, role, session or
-// spent-proof bucket, or holds it at fewer copies than the deployment's count, the start tries the
-// open again by the listener's start rule (cmd/listener/README.md, "Start"), logging at each try
+// Its start reads the stream and, when the server holds none, waits for it: the start tries the
+// read again by the listener's start rule (cmd/listener/README.md, "Start"), logging at each try
+// an error that names the stream (cmd/listener's edgeStreamMissingLine), until a shared listener
+// or Dispatch creates it. It finds each bucket it opens (bus.EnsureKeyValue): when the server
+// lacks the interest, role, session or spent-proof bucket, or holds it at fewer copies than the
+// deployment's count, the start tries the open again by that rule, logging at each try
 // an error that names the create or raise the server refused, and so waits for the bucket; the
 // Legion agent bucket's open logs one error and is retried in the background, and so is the
 // known-session bucket's, which raises no bucket it finds. Every other listener of this build
