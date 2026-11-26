@@ -248,6 +248,22 @@ func (ChildAdoption) namedIssue() (string, bool) { return "", false }
 
 func (f DispatchIssue) namedIssue() (string, bool) { return f.Key, true }
 
+// MergeHoldsChanged is an event that changes the daemon's own project's merge holds document
+// (record.MergeHoldsDocument), which Dispatch publishes on
+// notifications.dispatch.document.<Project>.merge-holds-md.<type>: its creation, a new version,
+// its rename or its removal (the decoder's mergeHoldsChangeTypes), as when the controller created
+// it, added a hold, changed one or lifted one. Event is the Dispatch event's id, which ApplyFact
+// records the fact under, so a delivery of the same event again applies nothing. The workflow
+// tells the architect of each issue in accepting and the merger of each issue in merging
+// (workflow's mergeHoldsChanged): a role that a hold stops waits on nothing else, since a
+// Dispatch document event does not wake a released pod.
+type MergeHoldsChanged struct {
+	Project string
+	Event   string
+}
+
+func (MergeHoldsChanged) namedIssue() (string, bool) { return "", false }
+
 // DispatchArtifactKind identifies the three Dispatch artifact observations that affect a gate.
 type DispatchArtifactKind string
 
@@ -1636,8 +1652,8 @@ func ClaimFailedOf(c supervise.Claim, limits supervise.Limits) ClaimFailed {
 // SessionLost is a claim that forgot its recorded session: its worker now runs a fresh agent that
 // has read none of its own earlier work (supervise's startFresh). Claim is that claim, whose name
 // is its agent's, and Role the role of the step it runs. Detail is why, as the supervisor said it.
-// It is told on the issue, to its architect and to the controller, because a worker that silently
-// lost its memory looks like one that is merely slow.
+// It is told on the issue and to its architect, because a worker that silently lost its memory
+// looks like one that is merely slow; the controller gets no copy (#4065).
 //
 // Cause is why the claim forgot the session; empty reads as gone (supervise.SessionLossGone).
 // Session is the session the claim forgot (supervise.AbandonedSession.Session), which the
@@ -1923,11 +1939,13 @@ func CheckWakeOf(issue string, wake record.CheckWakeDue) CheckWakeDue {
 }
 
 // CheckLookEnded is a look of issue Issue's production check ending with no report: Cause is
-// `look bound` (the check_look row due at the look's bound), `operator hold` (a check start the
-// outbox met an operator's suspension on) or `claim failed` (the implementer's claim failed in
-// the look). Look names the look, so a row of a look already ended changes nothing, and OpenedAt
-// the check instance (its OpenedAt), so a row of a check a later merge of the same issue replaced
-// — whose looks count from one again — changes nothing either; a zero OpenedAt names none.
+// `look bound` (the check_look row due at the look's bound), `operator hold` or `controller hold`
+// (a check start the outbox met a suspension of the check's role on, which holds against every
+// rule, named by whose it is) or `claim failed` (the implementer's claim
+// failed in the look). Look names the look, so a row of a look already ended changes nothing,
+// and OpenedAt the check instance (its OpenedAt), so a row of a check a later merge of the same
+// issue replaced — whose looks count from one again — changes nothing either; a zero OpenedAt
+// names none.
 type CheckLookEnded struct {
 	Issue    string
 	Look     int

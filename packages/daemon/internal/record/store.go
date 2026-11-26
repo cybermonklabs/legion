@@ -3745,18 +3745,20 @@ var (
 // and entries the phases rows of the held rows' issues. A start, a phase-ended message, a hook's
 // words, an update ask and a merge forward's message are for the claim they name, which their
 // producer read as the worker of the role's step, a keyed agent's among them. One the release
-// before wrote names none, and the merge-queue message names none and goes to the issue's merger:
-// each is for the claim its executor reaches, the worker on its role's step (WorkerClaimOf over
-// entries, as the outbox's workerToken reads it), which is the claim the role's phases row names
-// while that row runs a step of the plan, and otherwise the role's own claim. A role message names
-// the claim's token itself (record.RoleMessage.Role).
+// before wrote names none, and the merge-queue message and the message that the project's merge
+// holds changed name none and go to the issue's merger, whose token their executors build (the
+// daemon's mergeQueueRemoval and mergeHoldsChanged): each is for the claim its executor reaches,
+// the worker on its role's step (WorkerClaimOf over entries, as the outbox's workerToken reads
+// it), which is the claim the role's phases row names while that row runs a step of the plan, and
+// otherwise the role's own claim. A role message names the claim's token itself
+// (record.RoleMessage.Role).
 func pauseHeldClaim(project string, row OutboxRow, role string, named claim.Token, entries map[PhaseRole]PhaseEntry) claim.Token {
 	switch row.Kind {
 	case OutboxKindSupervise, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeForward:
 		if named != "" {
 			return named
 		}
-	case OutboxKindMergeQueueRemoval:
+	case OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged:
 		role = string(claim.RoleMerger)
 	case OutboxKindRoleMessage:
 		if _, _, ok := claim.Token(role).Cut(); ok {

@@ -145,7 +145,7 @@ func TestALaunchItsPodRefusedQueuesAStartWhereNoQueuedStartBringsTheClaimBack(t 
 			if posted := messageBodies(t, pool); len(posted) != 2 || !strings.Contains(posted[0], "pod-1") {
 				t.Fatalf("the issue was told %v, want one message per report, naming the pod", posted)
 			}
-			if kinds := controllerNoticeKinds(t, pool); len(kinds) != 2 || kinds[0] != string(record.PodWaitHeldNotice) || kinds[1] != string(record.PodWaitHeldNotice) {
+			if kinds := controllerNoticesOn(t, pool, "LEGION-209"); len(kinds) != 2 || kinds[0] != string(record.PodWaitHeldNotice) || kinds[1] != string(record.PodWaitHeldNotice) {
 				t.Fatalf("the controller was told %v, want one %s notice per report", kinds, record.PodWaitHeldNotice)
 			}
 		})
@@ -200,7 +200,7 @@ func TestARefusedLaunchInTheSlotOfARoleTheDeploymentLostQueuesNoStart(t *testing
 			if got := queuedStarts(t, pool); len(got) != 0 {
 				t.Fatalf("the report queued %+v, want no start", got)
 			}
-			if kinds := controllerNoticeKinds(t, pool); len(kinds) != 1 || kinds[0] != string(record.PodWaitHeldNotice) {
+			if kinds := controllerNoticesOn(t, pool, "LEGION-209"); len(kinds) != 1 || kinds[0] != string(record.PodWaitHeldNotice) {
 				t.Fatalf("the controller was told %v, want one %s notice", kinds, record.PodWaitHeldNotice)
 			}
 		})
@@ -273,7 +273,7 @@ func TestARefusedLaunchIsQueuedNoStartTheOutboxWouldFinishWithoutActing(t *testi
 			} else {
 				tc.want(t, got)
 			}
-			if kinds := controllerNoticeKinds(t, pool); len(kinds) != 1 || kinds[0] != string(record.PodWaitHeldNotice) {
+			if kinds := controllerNoticesOn(t, pool, "LEGION-209"); len(kinds) != 1 || kinds[0] != string(record.PodWaitHeldNotice) {
 				t.Fatalf("the controller was told %v, want one %s notice", kinds, record.PodWaitHeldNotice)
 			}
 		})
@@ -301,7 +301,7 @@ func TestAStartTheEndOfARowQueuesIsMarkedWithThePodThatRefusesTheClaim(t *testin
 		t.Fatalf("the end of the start row queued %+v, want one start", got)
 	}
 	wantOwedEntryStart(t, got[0], "pod-2")
-	if posted, kinds := messageBodies(t, pool), controllerNoticeKinds(t, pool); len(posted) != 0 || len(kinds) != 0 {
+	if posted, kinds := messageBodies(t, pool), controllerNoticesOn(t, pool, "LEGION-209"); len(posted) != 0 || len(kinds) != 0 {
 		t.Fatalf("the end of the start row told the issue %v and the controller %v, want nobody told", posted, kinds)
 	}
 }
@@ -357,7 +357,7 @@ func TestAFactOfARefusedLaunchAfterItsClaimLaunchedTellsNothingAndQueuesNothing(
 			if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "refusal:1", fact, engine, admissionStub{}); err != nil {
 				t.Fatalf("apply the fact: %v", err)
 			}
-			starts, kinds, posted := queuedStarts(t, pool), controllerNoticeKinds(t, pool), messageBodies(t, pool)
+			starts, kinds, posted := queuedStarts(t, pool), controllerNoticesOn(t, pool, "LEGION-209"), messageBodies(t, pool)
 			if !tc.acts {
 				if len(starts) != 0 || len(kinds) != 0 || len(posted) != 0 {
 					t.Fatalf("the fact applied after the claim launched queued %+v, told the controller %v and the issue %v, want nothing", starts, kinds, posted)

@@ -456,7 +456,9 @@ func TestARepairedEndIsPublishedWhenItsWriteLands(t *testing.T) {
 		state supervise.ClaimState
 		event func(claim.Token) supervise.Event
 	}{
-		{supervise.StateRetired, func(token claim.Token) supervise.Event { return supervise.RequestStop{Claim: token} }},
+		{supervise.StateRetired, func(token claim.Token) supervise.Event {
+			return supervise.RequestStop{Claim: token, By: supervise.SuspendedByOperator}
+		}},
 		{supervise.StateSuspended, func(token claim.Token) supervise.Event {
 			return supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByOperator}
 		}},

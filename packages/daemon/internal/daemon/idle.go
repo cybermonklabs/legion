@@ -335,8 +335,8 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 		// An operator's suspension keeps a pod a role's start waits for, a wait nothing ends
 		// until the operator acts: the controller is told once for each streak of the hold, at
 		// the pass that opens it (HeldFor names no streak of it yet), before it is recorded.
-		if decision.Hold == workflow.IdleHoldUnownedOperatorSuspended && quiet && len(waiting) > 0 &&
-			heldFor != workflow.IdleHoldUnownedOperatorSuspended.String() {
+		if decision.Hold == workflow.IdleHoldUnownedSuspensionHolds && quiet && len(waiting) > 0 &&
+			heldFor != workflow.IdleHoldUnownedSuspensionHolds.String() {
 			notice := record.ControllerNotice{Kind: record.PodWaitHeldNotice, Role: waiting[0],
 				Reason: podWaitHeldWords(issue, waiting, suspended, w.idlePeriod)}
 			if _, err := w.enqueueOutbox(ctx, issue, notice); err != nil {
@@ -537,7 +537,7 @@ func (w *workflowRuntime) runningPod(issue string) string {
 // deployment that sees it every tick past a linger's end or a look's bound is seeing a close that
 // is stuck.
 //
-// The second rule's other three — IdleHoldUnownedClaimProcess, IdleHoldUnownedOperatorSuspended
+// The second rule's other three — IdleHoldUnownedClaimProcess, IdleHoldUnownedSuspensionHolds
 // and IdleHoldUnownedDelivery — are recorded for the same reason, and it is the sharpest one
 // here: each names a pod that stands, past the quiet period, with no live claim in it, and such
 // a pod holds its reservation (2 CPU and 8 GiB at the defaults) for as long as it stands. A

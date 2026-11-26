@@ -23,12 +23,14 @@ package api
 // either (withoutClaimTokens). A row a pause holds (api.PauseHeldView) that names no claim, a
 // merge-queue message or a row the release before wrote, names in `claim` the worker on its role's
 // step, the claim its executor reaches, where it named the role's own token; the key and its shape
-// are unchanged, so every contract is served it. The controller's
-// `POST /legion/v1/claims/fresh-session` and `POST /legion/v1/claims/compact` take a claim's token
-// in a new member, `claim` (api.ClaimRequest), a claim of the issue that holds the role the body
-// names: the issue and the role reach the claim that works the role's step, and the other claim of
-// that role a notice can name was out of the controller's reach. A plugin sends it only when it
-// names one, since a daemon below the entry's number refuses an unknown member.
+// are unchanged, so every contract is served it. Every action of the controller's agent door —
+// `POST /legion/v1/claims/fresh-session`, `POST /legion/v1/claims/compact`, and `POST
+// /legion/v1/agents/stop`, `retry`, `suspend` and `resume` — takes a claim's token in a new
+// member, `claim` (api.ClaimRequest, the one type the six share), a claim of the issue that holds
+// the role the body names: the issue and the role reach the claim that works the role's step, and
+// the other claim of that role a notice can name was out of the controller's reach. A plugin
+// sends it only when it names one, since a daemon below the entry's number refuses an unknown
+// member.
 // `POST /legion/v1/handoff/complete` refuses, at every contract, a completion from a claim of the
 // role that does not work the role's step the record names, `HANDOFF_NOT_THE_STEPS_WORKER`, and
 // the same report from two claims of one role is two completions, so neither is answered

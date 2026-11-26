@@ -54,6 +54,7 @@ const liveUser = `{"kind":"user","id":"alice"}`
 // EventCursorCheck reads the newest event's id and the time of the event at the cursor; once the
 // cursor's row is gone (a reset of the log), cursorAt is nil.
 func TestEventCursorCheckReadsTheNewestEventAndTheCursorsRow(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 
@@ -167,6 +168,7 @@ func (r scanThen) Scan(dest ...any) error {
 // there, and the new log's lower ids would then read as a second reset that closed the
 // subscription opened after the first (api's TestEventStreamRelayRecoversWhenTheEventLogIsReset).
 func TestEventCursorCheckReadsOneLogWhenTheLogIsResetMidCheck(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	base := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)

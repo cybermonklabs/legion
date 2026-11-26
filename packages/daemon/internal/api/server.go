@@ -81,6 +81,12 @@ type Options struct {
 	// record, which says the daemon has not swept yet: a deployment that serves the route with no
 	// sweep behind it says so rather than read as a sweep that held no issue back.
 	PodUpdateRounds func() PodUpdateRounds
+	// RequestPodUpdate opens the update round over one issue's pod on the project's controller's
+	// request (POST /legion/v1/issues/pod-update; the daemon's requestPodUpdate), through the
+	// opening the sweep makes of a drift's round and under the same project limits. It answers the
+	// round, a *PodUpdateRefused for a request it refused, or another error for a read that failed.
+	// Nil refuses every such request: a deployment with no sweep replaces no pod.
+	RequestPodUpdate func(ctx context.Context, issue string) (PodUpdateResponse, error)
 	// BootTokens resolves a registration's boot token.
 	BootTokens *BootTokens
 	// Project and DispatchProject are the two names this one project answers to, and the daemon
@@ -333,7 +339,9 @@ type server struct {
 	awaitStream func(ctx context.Context, token claim.Token)
 	// podUpdateRounds is Options.PodUpdateRounds.
 	podUpdateRounds func() PodUpdateRounds
-	bootTokens      *BootTokens
+	// requestPodUpdate is Options.RequestPodUpdate.
+	requestPodUpdate func(ctx context.Context, issue string) (PodUpdateResponse, error)
+	bootTokens       *BootTokens
 	// project and dispatchProject are Options.Project and Options.DispatchProject.
 	project         string
 	dispatchProject string
@@ -407,8 +415,15 @@ type server struct {
 	drained   context.Context
 	decisions *RouteDecisions
 	log       *slog.Logger
-	// beforeForgetSessionHandle pauses the route's preflight in its concurrency regression test.
+	// beforeForgetSessionHandle is a seam a test runs code in just before a forget's decision of
+	// the machine — the concurrency regression tests post a suspension there — on the operator's
+	// forget-session route (after its preflight) and in the fresh session's forget
+	// (forgetRecordedSession, after the suspension it ran). Nil outside those tests.
 	beforeForgetSessionHandle func()
+	// beforeFreshSessionResume pauses a fresh session after its forget dropped the recorded
+	// session and before its resume, in the regression test of a suspension above the caller
+	// that takes the agent over in that window (freshSession, sessionLeftBehind).
+	beforeFreshSessionResume func()
 }
 
 // NewServer builds the daemon's HTTP server on bind:port, the configured address: every interface
@@ -441,6 +456,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		supervisor:         opts.Supervisor,
 		awaitStream:        opts.AwaitStream,
 		podUpdateRounds:    opts.PodUpdateRounds,
+		requestPodUpdate:   opts.RequestPodUpdate,
 		bootTokens:         opts.BootTokens,
 		project:            opts.Project,
 		dispatchProject:    opts.DispatchProject,
@@ -576,8 +592,13 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/controller/github-credential", s.controllerGitHubCredential},
 		{"POST /legion/v1/handoff/complete", s.handoffComplete},
 		{"POST /legion/v1/issues/status", s.issueStatus},
+		{"POST /legion/v1/issues/pod-update", s.issuePodUpdate},
 		{"POST /legion/v1/claims/fresh-session", s.claimFreshSession},
 		{"POST /legion/v1/claims/compact", s.claimCompact},
+		{"POST /legion/v1/agents/stop", s.stopAgent},
+		{"POST /legion/v1/agents/retry", s.retryAgent},
+		{"POST /legion/v1/agents/suspend", s.suspendAgent},
+		{"POST /legion/v1/agents/resume", s.resumeAgent},
 		{"POST /legion/v1/gates/register", s.gateRegister},
 		{"POST /legion/v1/plans/register", s.registerPlan},
 		{"POST /legion/v1/tasks/stop", s.stopTask},
@@ -777,17 +798,34 @@ func (s *server) stopRefusal(request string) string {
 	return request + " refused: the daemon is stopping; ask again once it is back"
 }
 
-// refusedWhilePaused refuses request of c, answering PROJECT_PAUSED, while the project is paused
-// and c is not the controller's claim (decision 20): a turn a paused project's role would start —
-// a compaction or a fresh session the controller asks for, the operator's resume, retry,
-// compaction, spawn or delivery — waits for the resume, and nothing of the claim changes. The
-// pause flag decides (pause.Service.Paused), as it decides every launch the machines hold; the
-// refusal names the standing pause when the store's read finds it. A stop, a suspension, an
-// issue's status and the daemon's own status are not turns, and no caller of this asks of them.
-// A claim of another project's issue, which the operator's spawn makes under the daemon's own
-// project token, is refused as every other claim is, its spawn included: the daemon runs it.
+// refusedWhilePaused refuses request for c's agent, answering PROJECT_PAUSED, while the project is
+// paused and c is not the controller's claim (decision 20): a turn a paused project's role would
+// start — a compaction, a fresh session, a resume or a retry the controller asks for, the
+// operator's resume, retry, compaction, spawn or delivery — waits for the resume, and nothing of
+// the claim changes. The pause flag decides (pause.Service.Paused), as it decides every launch the
+// machines hold; the refusal names the standing pause when the store's read finds it. A stop, a
+// suspension, an issue's status and the daemon's own status are not turns, and no caller of this
+// asks of them. A claim of another project's issue, which the operator's spawn makes under the
+// daemon's own project token, is refused as every other claim is, its spawn included: the daemon
+// runs it.
 func (s *server) refusedWhilePaused(w http.ResponseWriter, r *http.Request, request string, c supervise.Claim) bool {
-	if s.pause == nil || claim.IsController(c.Role, c.Issue, c.Tree) {
+	if claim.IsController(c.Role, c.Issue, c.Tree) {
+		return false
+	}
+	return s.refusedForPause(w, r, request, string(c.Token), "a paused project starts no turn of a role but the controller's", "claim", c.Token)
+}
+
+// refusedForPause answers request with 409 PROJECT_PAUSED while the project is paused, why
+// saying what of the request the pause holds, and reports whether it answered. It is the one
+// writer of that refusal: refusedWhilePaused's for a claim, and the controller's request for an
+// issue's pod update round (issuePodUpdate), whose round would ask each role of the pod for a turn
+// and replace the pod under them. The sentence says the project is paused and what lifts the
+// refusal: the project's resume, named as the controller's `resume` operation of its `legion`
+// tool and the operator's `legion project resume` (pauseLifts), so a caller that asked for an
+// agent's resume or retry meaning the project's learns which operation that is. logArgs name what
+// the request was about in the log line.
+func (s *server) refusedForPause(w http.ResponseWriter, r *http.Request, request, of, why string, logArgs ...any) bool {
+	if s.pause == nil {
 		return false
 	}
 	id, paused := s.pause.Paused()
@@ -804,12 +842,17 @@ func (s *server) refusedWhilePaused(w http.ResponseWriter, r *http.Request, requ
 		view := pauseViewOf(standing)
 		body.Pause, named = &view, describePause(standing)
 	}
-	body.Error = fmt.Sprintf("%s of %s refused: the project is paused (%s), and a paused project starts no turn of a role but the controller's; nothing of %s changed. Resume the project first",
-		request, c.Token, named, c.Token)
-	s.log.Info("api: refused a request: the project is paused", "request", request, "claim", c.Token, "pause", id)
+	body.Error = fmt.Sprintf("%s of %s refused: the project is paused (%s), and %s; nothing of %s changed. %s",
+		request, of, named, why, of, pauseLifts)
+	s.log.Info("api: refused a request: the project is paused", append([]any{"request", request, "pause", id}, logArgs...)...)
 	s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, body)
 	return true
 }
+
+// pauseLifts is the sentence every PROJECT_PAUSED refusal ends with (refusedForPause): what lifts
+// the pause, which is the project's resume and no action on one agent, named as each
+// caller asks for it.
+const pauseLifts = "The pause lifts only at the project's resume: the controller's resume operation of its legion tool, which names no issue, or the operator's legion project resume. Ask again once the project runs"
 
 // projectState is the project's own value, as every route that reads it reads it: one
 // repeatable-read read-only snapshot, one read of the source, and the consumers' lag read after
