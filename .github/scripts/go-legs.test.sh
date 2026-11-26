@@ -160,7 +160,8 @@ envoy_shaped='mod:
   twice:
     a: the plain leg counts its skips, the race leg runs it under the detector
   elsewhere:
-    testonly: another-job'
+    testonly: another-job
+  unlisted: job'
 root=$(tree envoy-added "$envoy_shaped")
 mkdir -p "$root/mod/fresh"
 printf 'package fresh\n\nimport "testing"\n\nfunc TestFresh(t *testing.T) {}\n' > "$root/mod/fresh/fresh_test.go"
