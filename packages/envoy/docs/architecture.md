@@ -154,7 +154,7 @@ that states no process renews the claims of its own session that name none, adop
 notes on the claim that it renewed it (`renewed_without_process`), so no claim of a client that
 states no process ages out while it runs; a registration that states a process adopts a claim
 that names none only while that note is absent, at the first heartbeat after the claim was
-written. The reaper runs on a period of its own,
+written. The role claim reaper runs on a period of its own,
 `ENVOY_ROLE_CLAIM_REAP_INTERVAL` (a Go duration, default 5m), and not on the session reaper's:
 while the session bucket's maximum age is below the gone horizon, as the 5m it ships with is, a
 record the bucket expires reads `gone` too, so a period shorter than that age takes a merely

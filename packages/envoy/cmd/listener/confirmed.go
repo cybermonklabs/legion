@@ -142,7 +142,8 @@ func forwardRequest(item contracts.Envelope) string {
 // stream stored that forward for the holder's session consumer, or with the failure once
 // publishDeliveryWindow from arrived has passed, so its sender learns whether the message was kept
 // for its holder. No holder answers a receipt (startRoleForward), so the 200 is the stream's word
-// rather than the holder's. It publishes no delivery exception: the sender has the answer. Every
+// rather than the holder's. It publishes a delivery exception only behind its 404
+// (publishRefusalException). The sender has every other answer. Every
 // answer goes through record, the route's one line per request (request_record.go), and is then
 // settled: counted, and logged on the send's own delivery line.
 //

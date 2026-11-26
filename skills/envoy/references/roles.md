@@ -5,7 +5,7 @@ Read this when a role you held is gone after a resume, fork or restart, or when 
 - A claim belongs to the session, not the process. `omp --resume` claims again the role its transcript records, also after the reaper removed the old session's row.
 - `/fork`, `/branch`, `/handoff` and any other switch that carries the transcript move the previous session's role to the new id. `/new` and `/resume` install an unrelated transcript and carry no role.
 - A holder past the live window reads `unresponsive` and keeps its role. It is not dead: start no replacement for that session and take nothing from it.
-  Only the role-claim reaper releases a claim, once the holder is `gone`.
+  The role-claim reaper releases a claim once the holder is `gone`.
 - An automatic reclaim is a soft claim and never steals. The listener grants it when the role is unheld, when its holder is not `live`, or when the holder is the session this one continues (a fork's parent) and either no other client instance runs it live or one of the two carries no client instance id.
   Any other `live` holder keeps the role: the listener refuses, names that holder, and the resumed session logs a warning and holds nothing.
 - A refused session keeps running and stays registered, without the role, and does not claim again at each heartbeat.

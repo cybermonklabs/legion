@@ -374,12 +374,13 @@ Dispatch read them, delete the files, then install every App from
   disk is the pod's own: Kubernetes creates its claim with the pod, names it `<pod>-issue`, and
   deletes it when the pod goes, so an issue's clone, workspace and caches live as long as its pod
   and no longer. What outlives a pod is what was pushed to the issue's branch and each agent's
-  conversation, which the session database holds. The daemon releases no idle pod whose workspace
-  holds work that origin does not hold. The daemon-launched controller's pod has a
-  volume of its own, which its Sandbox owns and which does outlive its pods. A microVM issue pod
-  under `runtime.kubernetes.sandbox.microvm.keep_volume: true` is the exception: its volume is a
-  claim that the issue's Sandbox owns, so it outlives the pod, and it goes when the issue leaves
-  the workflow or when the daemon resets it after a failed init container (`docs/kubernetes.md`
+  conversation, which the session database holds. The daemon keeps an idle pod while a working
+  copy or bookmark holds an unpushed commit, or a working copy holds a change.
+  The daemon-launched controller's pod has a volume of its own, which its Sandbox owns and which
+  does outlive its pods. A microVM issue pod under
+  `runtime.kubernetes.sandbox.microvm.keep_volume: true` is the exception: its volume is a claim
+  that the issue's Sandbox owns, so it outlives the pod, and it goes when the issue leaves the
+  workflow or when the daemon resets it after a failed init container (`docs/kubernetes.md`
   in the repository, "A kept volume on a microVM pod").
 - **Pod Security.** Pods run under the `restricted` profile: user 1000, no privilege escalation, all
   capabilities dropped, the `RuntimeDefault` seccomp profile, and no automounted API token.
@@ -1199,9 +1200,9 @@ with Go.
 
 ## Start the controller
 
-The controller runs in one of two places, as `controller` in `legion.yaml` says: on your own
-machine, in your terminal, which is the default (`controller: operator`), or in the cluster, as a
-pod the daemon launches and keeps running (`controller: daemon`).
+The controller runs in one of two places, as `controller` in `legion.yaml` says. By default
+(`controller: operator`), it runs in your terminal on your own machine. Under `controller: daemon`,
+it runs in a pod under Kubernetes or a pane in its own tmux window.
 
 ### In the cluster
 
@@ -1224,7 +1225,8 @@ and restart the daemon: at boot it stops its own controller's claim and releases
 the volume its Sandbox owned, and retires the claim with the session it recorded; you then start
 the controller on your machine as below.
 When you switch to `controller: daemon` again, the daemon relaunches the retired claim about a
-minute later, on the session it recorded.
+minute later. It resumes the recorded session, or starts a new one when another claim holds that
+name.
 
 A daemon built before LEGION-592 cannot run against a database a `controller: daemon` daemon used:
 it lists the controller's claim as an issue keyed `""`, which every agent's plugin refuses. So to
@@ -1337,15 +1339,16 @@ Closing the terminal leaves the project without one, and the daemon logs
    at no counts: the migration fills none in from the past. An issue already in flight therefore
    reads counts that add up to less than its `rounds`, and a hook of `hooks:` counts from the
    first move back after the upgrade.
-4. **Running agents carry on.** The restarted daemon re-adopts every running pod and its session. A
-   pod keeps the image it started with; every pod the daemon starts afterwards, for the next phase
-   or a resumed worker, runs the new one. At a release that moves the daemon API contract, the
+4. **Running agents carry on.** The restarted daemon re-adopts every running issue pod and its
+   session. A resumed agent keeps the pod and its image. It installs the release's plugins in that
+   live pod. The issue pod's update round replaces the pod, and its new pod runs the new image.
+   Where the pod is gone, a new pod provisions the workspace afresh from the issue's branch, and
+   what the old pod held unpushed is gone. At a release that moves the daemon API contract, the
    daemon moves its own controller (`controller: daemon`) for you where it knows a plugin pair to
    install: it relaunches the controller at once onto the release's plugins, and that relaunch
    replaces the controller's pod when the pod runs another image. `legion config check` prints the
-   gap that leaves it relaunching none. To move a long-running agent over now, suspend and resume
-   its claim:
-
+   gap that leaves it relaunching none. To install the release's plugins in a long-running agent,
+   suspend and resume its claim:
    ```sh
    legion claims list    --config legion.yaml --operator-token-file operator-token
    legion claims suspend --config legion.yaml --operator-token-file operator-token --claim <token>
@@ -1370,10 +1373,10 @@ Closing the terminal leaves the project without one, and the daemon logs
    that left the workflow and is set back to `todo` gets its own architect and the agent of its
    first step back, on their kept sessions, at its next first phase start, and each other role at
    the start of its phase. A claim whose session supervise's `forgetSession` has dropped comes back
-   in a new session instead. The daemon suspends or ends claims when an issue leaves the workflow,
-   when a claim moves to another tree, or for a production check after the issue is done. It also
-   suspends claims for a project pause, the stop of a task, a root agent's exit and the release of
-   an idle pod.
+   in a new session instead. Claims end or suspend when issues leave the workflow, claims move to
+   another tree, or production checks run after issue completion. Project pauses, task stops, root
+   agent exits and idle releases also suspend claims. Boot session-name conflicts and
+   `fresh_session` also suspend claims.
    A phase start gives its task to that live claim. At boot the daemon
    resumes by rule a suspended worker that still owns its issue's phase, but never a claim an
    operator suspended; a start for an operator-suspended claim waits instead. A notice for a root's

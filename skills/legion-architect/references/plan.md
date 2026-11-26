@@ -22,7 +22,7 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 - Give the block `serves` naming the spec's `requirement` blocks, as a planner's task does, so the issue's coverage counts it.
   A change of `serves` alone changes no task.
 
-- This release gives each role one agent for each issue, the session that role keeps until the issue leaves the workflow.
+- This release gives each role one agent for each issue, the session that role keeps after the issue leaves the workflow too.
   It cannot carry out your choice of a fresh or an earlier agent yet; write the choice all the same, because retro rates the plan's steps and the agent that worked each against it.
 
 ## The roles and their order

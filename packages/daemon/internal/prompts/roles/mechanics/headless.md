@@ -25,16 +25,21 @@ starts `Your issue's repository is` (`Your issue's repository is <owner>/<name> 
 reaches every repository of those owners.`); that sentence is missing only when your issue
 carries no repository at all.
 Use plain `gh` for GitHub operations.
-`LEGION_GH_OWNERS_DIR` holds a directory for your issue's own owner, and at most one for each other GitHub owner your role's App is installed on. It also holds one for each owner a configured rename moved a repository away from, while the project serves the name it moved to.
+`LEGION_GH_OWNERS_DIR` holds a directory for your issue's own owner.
+It holds at most one for each other GitHub owner your role's App is installed on.
+It also holds at most one for each owner a configured rename moved a repository away from.
+That holds while the project serves the name it moved to.
 Each directory holds one token of your role's own App, the implement App for the implementer and the merger and the review App for every other role, minted on that owner's installation.
 A token reaches every repository that installation holds, and the daemon makes it reach no less.
 The account that installs the App decides that set.
-The daemon asks for every directory's token with your role's own permissions, and no directory holds a read-only token. Your token writes in every repository your role's App reaches under an owner you hold a directory for, as it writes in your issue's own.
+The daemon asks for every directory's token with your role's own permissions.
+No directory holds a read-only token.
+Your token writes in every repository your role's App reaches under an owner you hold a directory for.
 One directory can hold another owner's token: where your role's App is not installed on an owner a rename moved a repository away from, that owner's directory holds the token of the owner the repository moved to.
 `GH_CONFIG_DIR` names the directory your issue's repository is answered from: its owner's, or, where a configured rename moved it, the directory of the owner it moved to.
 `gh` and `git` pick the directory of the owner of the repository a command acts on — for `gh`, `repos/owner/repo` in `gh api`, a pull request or issue URL, `-R owner/repo`, or `gh repo <command> owner/repo`, and otherwise the repository of the directory you run it in, as gh itself picks it; for `git`, the remote URL's owner — so name the repository whenever it is not your workspace's.
 `gh` runs a read it knows (`pr list`, a `gh api` GET, a `gh api graphql -f query=…` holding neither `mutation` nor `subscription`), by its full name, each value its own word, naming only owners your role's App is not installed on, none through your remotes, with your issue's token; it refuses, with exit 2 and no request, any other naming such an owner, one routed to two directories, and one it cannot read, an alias or extension included; name the repository with `-R owner/repo` (for `gh api`, the endpoint).
-The daemon refreshes every directory in place while your role's App stays installed on its owner, so no such token expires under you.
+The daemon refreshes every directory in place while GitHub grants your role's App a lease on its owner, so no such token expires under you.
 Never obtain, export, or expose a token, never set `GH_TOKEN`, and never run `gh auth login`, `gh auth switch` or `gh auth setup-git`: there is no login state to create.
 Legion's issues live on Dispatch, never on GitHub issues: no `gh issue` write; a `dispatch message` or `dispatch comment` instead.
 

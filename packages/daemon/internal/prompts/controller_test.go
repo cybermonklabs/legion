@@ -9,9 +9,10 @@ import (
 
 // The controller's prompt is its shared role part, which holds wherever it runs, then the daemon's
 // part for how this controller was launched: in the operator's terminal by `legion controller
-// start`, or headless in a pod the daemon launched (`controller: daemon`). The shared part never
-// says which, so neither launch is told it runs the other way. The daemon's launch is told that a
-// person writes to it from Dispatch's Agents page, and never that nobody reads its session.
+// start`, or headless in a pod or tmux pane the daemon launched (`controller: daemon`). The
+// shared part never says which, so neither launch is told it runs the other way. The daemon's
+// launch is told that a person writes to it from Dispatch's Agents page, and never that nobody
+// reads its session.
 func TestTheControllersPromptIsItsRolePartThenItsLaunchsPart(t *testing.T) {
 	stateDir := t.TempDir()
 	composer, err := New(stateDir)

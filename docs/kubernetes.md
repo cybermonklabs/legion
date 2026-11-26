@@ -8979,12 +8979,14 @@ The daemon probes a pod by reading it and consulting the worker stream's live re
 - the API read failed → **alive** if the pod's stream is registered (live proof), else **unknown**.
 
 `unknown` never marks anything dead by itself.
-A graceful stop sends the RPC `shutdown` frame over the registered stream, waits up to the stop timeout, then deletes the pod with that many seconds of grace (0 when the caller skips the graceful step) and the recorded uid as precondition, then deletes the per-pod Secret.
-Before a replacement generation is created, the previous generation's pod is deleted the same way and awaited until it is gone (force-deleted at grace 0 if it outlives the stop timeout):
-two generations never share a working copy.
+A graceful stop sends the RPC `shutdown` frame over the registered stream and waits up to the stop timeout.
+It ends only that role's process through its launcher.
+That role's next generation runs in the same issue pod and shares its working copy with the other roles.
+Its Secret is `<sandbox>-<role>-boot`, holding its launcher token and gh bundle.
+The issue's release, close or pod replacement deletes the issue pod.
 
-A phase worker or architect that dies mid-task
-— its container crashed, or the pod was deleted
+A phase worker or architect whose process dies mid-task
+— its process crashed, or the issue pod was deleted
 — is relaunched by the daemon itself, as the same agent one generation later (its command carrying `--resume=<the recorded session>`): a phase worker is sent the task its dead turn held again, behind the sentence that says what the relaunch ended, or its phase's task when it held none, and an architect, a root's or a child's, is sent its catch-up at its ready (LEGION-179).
 The death is seen twice over: at once, when the pod's worker stream closes and the daemon's one reconnect (`connect` awaiting a fresh registration for `worker_rpc_timeout_seconds`) finds none;
 and, for a death the stream never reported, on the next resync tick, which probes every located, ready-confirmed worker claim with the rules above.

@@ -523,21 +523,23 @@ Legion uses GitHub's own review mechanisms rather than labels:
   merger is asked: the merge is its own, and it resolves the conflict itself. The architect is told
   once with a `checks-red` notice naming the phase the issue stays in and the role asked. In
   `implementing` only the implementer is told.
-  When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
-  completion of the phase the issue stands in that names the replaced head, or that names no head,
-  is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a
-  phase the issue has already left is recorded as before. Where the task's reviewer step already
+  When the merge lands, the phase's worker is told both heads and goes on at the new one. A
+  completion of the issue's current phase must name the new head. One that names the replaced head
+  or no head is refused (`HANDOFF_HEAD_MERGED_FORWARD`). A completion of a phase the issue has left
+  is recorded only while another role works the issue's phase, as below. Where the task's reviewer
+  step already
   ran, the daemon asks the reviewer to read the merge (`git show --remerge-diff`) and approve the
   new head by its SHA, or request changes. A reviewer step still to come reviews the new head when
   it runs. A merger that enters `merging` while that approval is owed, or that made the merge,
   merges the new head only once the approval is on the pull request. A task with no reviewer step
   has no review to ask, and its merger goes on at the new head.
-- **A completion behind its phase entry.** A move the role's completion did not make — a
-  reviewer's own request for changes, which ends the round before the reviewer completes — keeps that role's
-  turn, its background jobs, its process and its session. Only the entry of the phase the issue
-  moves to is raised. So the role's completion for the phase it lost still names that phase's
-  entry. The daemon records the first such completion, which moves nothing, and refuses a later one
-  with `HANDOFF_NOT_CURRENT_PHASE`.
+- **A completion behind its phase entry.** While another role works the issue's phase, a move can
+  end a role's run before it completes. An example is a reviewer's request for changes, which ends
+  the round before the reviewer completes. That move keeps the role's turn, background jobs,
+  process and session. Only the entry of the phase the issue moves to is raised. So the role's
+  completion for the phase it lost still names that phase's entry. The daemon records the first
+  such completion, which moves nothing, and refuses a later one with `HANDOFF_NOT_CURRENT_PHASE`. A
+  held, parked, closed, admitted or stopped issue refuses even the first.
   `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again, and only
   while the issue stands in that phase. A completion of another entry than the role's phases row
   names, from a role whose phase the issue is no longer in, is answered

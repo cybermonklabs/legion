@@ -52,7 +52,7 @@ Read a session's `state` and `last_seen` from `envoy_sessions`, `envoy_role_get`
   Start no replacement for it and take no role claim from it.
 - `gone`: it last registered before the gone horizon, or the registry holds no record of it.
 - Take an issue claim from a session only when it is `gone` or its `last_seen` is more than 20 minutes old.
-  Only the role-claim reaper releases a role claim, once its holder is `gone`: no lookup, publish or delivery failure releases one.
+  No lookup, publish or delivery failure releases a role claim. The role-claim reaper releases one once its holder is `gone`.
 
 ## Subscribe to a topic
 
