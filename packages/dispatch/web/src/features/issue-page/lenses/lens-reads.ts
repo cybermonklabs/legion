@@ -179,6 +179,16 @@ function invocationKey(issueKey: string, on: string): readonly string[] {
   return [INVOCATIONS, issueKey, on];
 }
 
+/** The issue and the node of the invocation key `key`, as `invocationKey` builds it: undefined
+ *  for any key that is not `INVOCATIONS`, then an issue, then a node. */
+function invocationOf(
+  key: readonly unknown[] | undefined
+): { readonly issueKey: string; readonly on: string } | undefined {
+  if (key?.length !== 3 || key[0] !== INVOCATIONS) return undefined;
+  const [, issueKey, on] = key;
+  return typeof issueKey === "string" && typeof on === "string" ? { issueKey, on } : undefined;
+}
+
 /** What the lenses invoked on one node say, as its row's act reads them. */
 export interface NodeInvocations {
   /** Whether an invocation on the node is out, whichever menu made it: from the pick until its
@@ -193,7 +203,7 @@ export interface NodeInvocations {
 /**
  * What has been invoked on each node of the issue `issueKey`, by the node's address, read once for
  * every row of the outline (`useLensAct`): the act stands on every row, whatever the focus, and a
- * focus move draws every row again, so no row reads the query client itself. A node with no
+ * focus move draws every row again, so no row reads the mutation state itself. A node with no
  * invocation is not in it. One value while no invocation of a lens changes.
  *
  * The node's invocations are kept in the query client under a key of the node's own
@@ -215,8 +225,7 @@ export function useLensInvocations(
   const invocations = useMutationState({
     filters: { mutationKey: [INVOCATIONS] },
     select: ({ options, state }) => ({
-      issue: options.mutationKey?.[1],
-      on: options.mutationKey?.[2],
+      key: invocationOf(options.mutationKey),
       pending: state.status === "pending",
       refusal: state.status === "error" ? state.error : null,
     }),
@@ -225,8 +234,9 @@ export function useLensInvocations(
     const byNode = new Map<string, NodeInvocations>();
     // The cache lists the invocations in the order they were made, so the last is the newest.
     for (const invocation of invocations) {
-      const { on } = invocation;
-      if (invocation.issue !== issueKey || typeof on !== "string") continue;
+      const { key } = invocation;
+      if (key === undefined || key.issueKey !== issueKey) continue;
+      const { on } = key;
       byNode.set(on, {
         pending: invocation.pending || byNode.get(on)?.pending === true,
         refusal: invocation.refusal ?? undefined,
