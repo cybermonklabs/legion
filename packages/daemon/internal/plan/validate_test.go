@@ -491,6 +491,13 @@ func quoteBoundaryCases() []quoteBoundaryCase {
 	cases := []quoteBoundaryCase{}
 	for total := MostQuotedBytes - boundarySpan; total <= MostQuotedBytes+boundarySpan; total++ {
 		for _, char := range []string{"x", "é", "€", "𝄞"} {
+			if total < MostQuotedBytes && total >= len(char) {
+				start := total - len(char)
+				cases = append(cases, quoteBoundaryCase{
+					name: fmt.Sprintf("%d bytes, a %d-byte character ending at byte %d", total, len(char), total),
+					word: strings.Repeat("a", start) + char,
+				})
+			}
 			for start := max(0, MostQuotedBytes-len(char)); start <= MostQuotedBytes; start++ {
 				suffix := total - start - len(char)
 				if suffix < 0 {

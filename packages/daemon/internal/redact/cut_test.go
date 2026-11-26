@@ -205,6 +205,13 @@ func bytesBoundaryCases(bound, span int) []bytesBoundaryCase {
 	cases := []bytesBoundaryCase{}
 	for total := bound - span; total <= bound+span; total++ {
 		for _, char := range []string{"x", "é", "€", "𝄞"} {
+			if total < bound && total >= len(char) {
+				start := total - len(char)
+				cases = append(cases, bytesBoundaryCase{
+					name: fmt.Sprintf("%d bytes, a %d-byte character ending at byte %d", total, len(char), total),
+					text: strings.Repeat("a", start) + char,
+				})
+			}
 			for start := max(0, bound-len(char)); start <= bound; start++ {
 				suffix := total - start - len(char)
 				if suffix < 0 {
