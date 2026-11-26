@@ -3,8 +3,10 @@ package duty_test
 import (
 	"bytes"
 	"context"
+	"flag"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +19,21 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// dutyTestParallelism is how many of this package's tests run at once when the command line names
+// no -parallel: four, the parallelism its build-cluster measurement ran at and go test's default on
+// CI's 4-CPU runner. Each parallel test holds a database of its own, so a large machine's default
+// would open more of the test server's connections at once than the suite is sized for
+// (docs/testing.md). go test parses its flags inside m.Run, so a -parallel on the command line
+// still wins.
+const dutyTestParallelism = 4
+
+// TestMain sets the package's default -parallel, then runs the tests under storetest.Main.
+func TestMain(m *testing.M) {
+	if err := flag.Set("test.parallel", strconv.Itoa(dutyTestParallelism)); err != nil {
+		panic("set this package's default -parallel: " + err.Error())
+	}
+	os.Exit(storetest.Main(m))
+}
 
 // leasesOf is the pool Exclusive takes its lease connections from, the one the server gives it.
 func leasesOf(t *testing.T, database *store.Store) *pgxpool.Pool {

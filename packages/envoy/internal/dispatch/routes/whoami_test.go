@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -29,9 +30,24 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
+// routesTestParallelism is how many of this package's tests run at once when the command line names
+// no -parallel: four, the parallelism its build-cluster measurement ran at and go test's default on
+// CI's 4-CPU runner. Each parallel test holds a database of its own, so a large machine's default
+// would open more of the test server's connections at once than the suite is sized for
+// (docs/testing.md). go test parses its flags inside m.Run, so a -parallel on the command line
+// still wins.
+const routesTestParallelism = 4
+
+// TestMain sets the package's default -parallel (routesTestParallelism).
+//
 // The tests that read GET /auth/whoami's event_head off a real event log open a database of their
 // own (storetest.Open); the rest of this package's tests hold none.
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) {
+	if err := flag.Set("test.parallel", strconv.Itoa(routesTestParallelism)); err != nil {
+		panic("set this package's default -parallel: " + err.Error())
+	}
+	os.Exit(storetest.Main(m))
+}
 
 // standInEventLog gives a router built with no Store an event log whose newest event is head, so
 // GET /auth/whoami answers it: the sign-in tests read whoami for the person it names, and their

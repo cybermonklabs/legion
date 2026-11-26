@@ -2,7 +2,9 @@ package events
 
 import (
 	"context"
+	"flag"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -469,7 +471,21 @@ func appendEvent(t *testing.T, database *store.Store, broker *Broker, event mode
 	return event
 }
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// eventsTestParallelism is how many of this package's tests run at once when the command line names
+// no -parallel: four, the parallelism its build-cluster measurement ran at and go test's default on
+// CI's 4-CPU runner. Each parallel test holds a database of its own, so a large machine's default
+// would open more of the test server's connections at once than the suite is sized for
+// (docs/testing.md). go test parses its flags inside m.Run, so a -parallel on the command line
+// still wins.
+const eventsTestParallelism = 4
+
+// TestMain sets the package's default -parallel, then runs the tests under storetest.Main.
+func TestMain(m *testing.M) {
+	if err := flag.Set("test.parallel", strconv.Itoa(eventsTestParallelism)); err != nil {
+		panic("set this package's default -parallel: " + err.Error())
+	}
+	os.Exit(storetest.Main(m))
+}
 
 // statementLog records the text of every statement a pool's connections send, a pipeline's one by
 // one (pgx.QueryTracer and pgx.BatchTracer).

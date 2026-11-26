@@ -11,8 +11,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"os"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -25,7 +27,21 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// startupTestParallelism is how many of this package's tests run at once when the command line
+// names no -parallel: four, the parallelism its build-cluster measurement ran at and go test's
+// default on CI's 4-CPU runner. Each parallel test holds a database of its own, so a large
+// machine's default would open more of the test server's connections at once than the suite is
+// sized for (docs/testing.md). go test parses its flags inside m.Run, so a -parallel on the command
+// line still wins.
+const startupTestParallelism = 4
+
+// TestMain sets the package's default -parallel, then runs the tests under storetest.Main.
+func TestMain(m *testing.M) {
+	if err := flag.Set("test.parallel", strconv.Itoa(startupTestParallelism)); err != nil {
+		panic("set this package's default -parallel: " + err.Error())
+	}
+	os.Exit(storetest.Main(m))
+}
 
 // The two builds the fleet rolls between, and the relation kinds each writes as tuples: the two
 // lists differ, so an announcement naming one build with the other's kinds is told apart.
