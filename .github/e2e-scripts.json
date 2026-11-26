@@ -136,6 +136,16 @@
       "jj": true
     },
     {
+      "script": "retro-after-close.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": false,
+      "evidence_variable": "RETRO_AFTER_CLOSE_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/retro-after-close.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install and building the Envoy listener with the Go toolchain it already has",
+      "jj": true
+    },
+    {
       "script": "review-range.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],

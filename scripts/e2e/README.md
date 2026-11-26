@@ -298,6 +298,15 @@ Each item below names a script, then what it proves.
   when its claim fails because its launches ran out, the root's architect is told in a `worker-died` and hears the child's next notice too, and the child's next phase start relaunches the claim in the same session with fresh budgets;
   and a child's architect is suspended with the child when the root's architect writes `backlog` on it, and the child's rerun resumes that session
 
+- `retro-after-close.sh`
+
+  when an issue Legion started closes and its last run had no retro, Legion runs that retro after the close, in the way it runs a production check after a merge (dispatch://INFRA-5602), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with the real Envoy listener beside the Dispatch and GitHub stand-ins and each claim the proof needs played over the daemon's own HTTP routes and worker stream:
+  each retro's agent gets one task after the close, which says the issue is closed, that the retro moves it nowhere and the retro skill's steps that move work back do not apply, that a finding goes to the tree's root architect and not to the issue's own architect, and that a requirement another open child of the same parent carries is pending and goes to no one;
+  it completes with a plan rating, which the daemon takes (200) and records beside the retro's row in `dispatch steps`, whose start and end the proof reads, and the issue's status stays as the close left it, a backward move of it refused;
+  a child closed by its architect or by a person, one moved to backlog before its close, a root a person closes after its first phase, one parked in icebox and closed inside its linger and one parked in triage whose linger ended before its close, and a parent whose child started before its own first phase each get the one task, the agent resumed in its kept session, relaunched in a reopened lifecycle or launched for it;
+  a retro running at the close keeps its turn and its completion is taken, an issue whose last run had its retro gets no other (its merge, a retro that moved the work back), one Legion never started gets none, and a retro left open when the issue returns to todo ends stopped with no rating;
+  the root's retro agent publishes one finding to the root architect's role topic through the real listener, which keeps it and reports the wake that resumes the architect's claim in its kept session, and the resumed session is delivered the finding
+
 - `conflict-no-takeover.sh`
 
   a head that starts conflicting with its base keeps the issue in its phase and takes no role's turn over (dispatch://INFRA-4374), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with the push onto the base, the implementer's push and its synchronize as GitHub envelopes and each role's registration, turns and completions over the daemon's own HTTP routes and worker stream:
@@ -4546,6 +4555,75 @@ The configuration load, the store and its migrations, the HTTP API, the claim su
 The same driver against main's code at `a45e5b588d0e`, with only this script and its driver copied in, builds and fails at `release`:
 C plans on its slot with its planner's claim and no `architect` entry, and the step's wait ends ``timed out waiting for <C> planning on a slot of its own with its own architect's claim``.
 `SUB_ARCHITECT_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's output.
+
+## retro-after-close.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/retro-after-close.sh     # → "retro after close e2e: PASS in <n>s", exit 0
+```
+
+dispatch://INFRA-5602's live proof (A1 and A2) that an issue Legion started, closed with no retro in its last run, gets that retro after the close, as a merged issue gets its production check after its merge.
+Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
+The Go toolchain also builds the Envoy listener (`packages/envoy/cmd/listener`), which the driver runs beside the stand-ins.
+`LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
+the script starts none.
+The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
+The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `child-adoption.sh` makes too.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestTheRetroRunsAfterTheCloseLive` (`internal/daemon/retro_after_close_live_test.go`, `-tags e2e`) |
+| `proof` | the fifteen steps below, each printing what it drove and what it read back between its own `== <step>` and `ok <step>` or `FAIL <step> at <assertion>` |
+
+The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, with an admission cap of 12, and seeds three roots at `admitted` with their design gates approved, so that the boot starts each one's first phase:
+T, the test root whose children the steps close, and R2 and R3, which the last two steps park and close.
+Every child is recorded by the daemon from its own Dispatch envelopes on the `ENVOY_NOTIFICATIONS` stream, as a person's move to `todo` under T or as an architect's release.
+Each claim a step plays is registered, readied and answered over the daemon's own routes and worker stream, as a pane's shim and its agent do:
+it takes the tasks the daemon sends it, writes its handoff record to the Dispatch stand-in under its own session, completes with a grant its registered session bought, and ends its turn.
+A step reads `GET /legion/v1/state` for each issue's phase and status, the operator's claim listing for a claim's state, session and session file, the prompts each claim's process was given, the launches the fake runtime was asked for (a `Spawn`, or a `Resume` with the kept session file), and, from the Dispatch stand-in, the retro rows the daemon wrote (their start, end, result and agent) with the plan rating recorded beside each, and every status the daemon set.
+Each step runs on its own, so a step that fails does not stop the next, and the run exits non-zero if any step failed.
+What a step waits for is bounded at 20 s, and a step that must see nothing happen (no retro task after a retro, or after a move to backlog) watches `liveSettle` (3 s) for it.
+A retro's task is read for its prose: the clause that the issue is closed, that the retro moves it nowhere and the retro skill's steps that move work back do not apply, that a requirement the retro finds unmet goes to the tree's root architect, naming that architect's role topic, and that a requirement another open child of the same parent carries is pending and goes to no one.
+"The retro completes" in a step is: the retro's agent completes with `plan_rating` and `plan_reason`, the step reads which claim got the task (the implementer's, the role that works the retro phase), the 200 answer, the rating Dispatch's stand-in records with the retro row, and that row's start and its end `passed`.
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `grandchild-closed` (A1) | T's architect releases child C, whose own architect then files and releases grandchild G; C's planner and implementer run C to `testing`, the implementer pushing a head on C's pull request; C's architect's own write of `done` on G | G's retro agent, a process the daemon launched for it (no implementer of G ever ran), gets one task after the close, holding each clause of R2 and naming T's architect's role topic and not C's; the retro completes; G stays `done` in the state and on the board |
+| `child-closed` (A1) | T's architect's own write of `done` on C, whose implementer is live | the same: one task to C's implementer, the clauses, a backward move of C with that agent's grant refused `BACKWARD_REFUSED` while the retro runs, the retro completes, C stays `done` |
+| `person-closed` | a person's `done` on a second started child (C2) | one task to its retro agent, its retro row started and not ended; the retro is left unreported until `member-open-at-root-close` |
+| `backlog-then-closed` | a third child run into `implementing`, so its implementer has launched and holds a session, a person's move to `backlog`, then a person's `done` | no task, launch or retro row while it sits in `backlog`, its implementer suspended by the daemon with its session file kept; after the `done`, one task to that implementer, launched by a `Resume` of the kept session file; the retro completes |
+| `retro-had` | a fourth child run through its plan, its retro completing, and then closed by its merge (GitHub's merge of its pull request) | one retro row, `passed`, and over `liveSettle` no task, launch or other row after the close |
+| `never-started` | a fifth child, held at `admitted` by a `blocked_by` link to an open issue, closed by a person | no task, launch or row |
+| `parent-closed` | a test parent P on the default steps, held at `admitted` by a `blocked_by` link to an open issue of the test while its child PC's first phase starts (a person's `todo` of PC under P); a person's `done` on P while PC runs | one task, to P's implementer, which the fake runtime recorded as a `Spawn`; the retro completes |
+| `closed-in-retro` | a sixth child run to its retro, and a person's `done` while that turn runs: the retro's completion is sent, with the grant its agent bought before the close, and its answer recorded first, whatever its code | answered 200 with the rating; from the close to that answer the runtime was asked for no suspend, release, resume or spawn of the claim and its session is the one it had; no second retro task; the row ends `passed` with the rating |
+| `merged-early` | a seventh child run to `accepting`, its pull request merged there (GitHub's merge event), then T's architect's sign-off | its retro task, while the issue is open, names T's architect as where an unmet requirement goes and says one another open child carries is pending, and does not say the issue is closed; the retro completes; the merge closes the child at `merging`, and no retro task follows |
+| `sent-back-then-closed` (17) | an eleventh child run to its retro, whose implementer moves the work back to `implementing` (`request_backward_move`), then a person's `done` | the retro's row ends `failed` with no rating; after the close no task, launch or row |
+| `todo-ends-retro` | an eighth child closed (one task, its row started), the retro left open, the child set back to `todo` under T blocked by an open issue (so it stands at `admitted`), then closed again | the row ends `stopped` with no rating; after the second close no task, launch or row |
+| `root-closed` (A2) | a person's `done` on T after its first phase, with T's architect live and the Envoy listener on the proof's broker; T's retro agent publishes one finding to T's architect's role topic through the listener (`POST /v1/messages/publish`) | one task to T's retro agent holding the clauses; T's architect suspended by the close with its session file kept; the listener answers 202 kept, reports the `role_message` wake on `notifications.legion.wake`, and the daemon resumes T's architect's claim with that session file (`Resume`); the driver, which plays the resumed session, registers with the listener as the holder of that role (`/v1/interests/subscribe`, `/v1/roles/set`) and is delivered the kept finding once; T's retro completes |
+| `member-open-at-root-close` | step 3's retro, still unreported after T's close | its agent's claim stands (T's close spared it), and its completion is taken and rated though T's tree lingers |
+| `root-closed-in-linger` | R2 run into `implementing`, a person's move of R2 to `icebox`, then its `done` inside its linger | no task while parked; after the `done` one task to R2's implementer, launched by a `Resume` of its kept session file; the retro completes |
+| `expired-root-closed` | R3 run into `implementing`, a person's move of R3 to `triage`, R3's linger end brought forward (its `issues.linger_until` and its `linger_close` outbox row's `next_at`, through SQL, so T's and R2's lingers keep the default), which retires R3's claims, then a person's `done` | no task while parked; after the `done` one task to R3's implementer, launched by a `Resume` of its kept session file, its tree's lifecycle reopened (its `epoch` raised); the retro completes |
+
+Steps 15 and 16 (the plan's, after sjawhar/legion#5162's agent rule is merged into this branch, when the agent that does the retro is the one `record.PlaceWorker` names) are not here yet.
+The steps run in this order: 1 to 9, 17, 14, then `root-closed` (11) and `member-open-at-root-close` (10), since the close of T is what step 10 completes the retro after, then 12 and 13.
+Steps 4, 12 and 13 each park the issue in one of the three statuses a person may park it in, and a person's `done` closes it from there: `backlog` for step 4's child, `icebox` for R2 and `triage` for R3.
+Step 7's parent is held short of its first phase by a `blocked_by` link to an open issue the driver files for it, and the same link holds step 6's child and step 14's re-entered child at `admitted`.
+
+What the proof stands in for lies outside the change:
+the broker is a native `nats-server`;
+Dispatch is the board the whole-daemon drivers share (`liveDispatch`, in `internal/daemon/dispatch_board_test.go`), fronted by `linkedDispatch`, which adds the `blocked_by` links of an issue to the reads of it;
+GitHub's REST API is `stepRecordsGitHub`, which holds each pull request the driver opens and merges, and every review of a pull request is the envelope a person with write access makes;
+the daemon's notices go to the package's `noticeListener`, and the one real Envoy is the listener built from `packages/envoy/cmd/listener`, which owns the notification stream and which the root's retro agent publishes its finding through;
+and no agent runs: each claim is launched by the package's fake runtime, which provisions each claim's workspace in its own pod, so no host clone is made, and the daemon's timers never fire, so a claim the driver does not play stays launching.
+The three roots, their gates, their lifecycles and their architects' unfinished launches are seeded through the store, as every daemon test seeds its fixture.
+The configuration load, the store and its migrations, the HTTP API, the claim supervision, `openWorkflow`, the JetStream consumers and the outbox lanes are the real ones.
+The driver names no Go symbol of this change and reads its state through the Dispatch stand-in, the daemon's routes and PostgreSQL, so the same file builds on `main`.
+Against `main`'s code, with only this script, its driver, its `.github/e2e-scripts.json` row and this text copied in, the proof builds and fails at steps 1, 2, 3, 4, 7, 11, 12 and 13 at the assertion that a retro task came after the close, at step 8 at the answer to the retro's completion (`main` answers it `403 GRANT_REVOKED`: the close retired the claim the grant belonged to), at step 9 at the root architect's role topic in the task, and at steps 10 and 14, which need a retro after a close; steps 5, 6 and 17 pass.
+`RETRO_AFTER_CLOSE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's output.
 
 ## conflict-no-takeover.sh
 
