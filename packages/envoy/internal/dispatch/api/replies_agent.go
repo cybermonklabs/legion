@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -128,6 +129,21 @@ func myAgentRootFilter(row string) string {
 			select 1 from message_deliveries delivered
 			where delivered.message_id = ` + row + `.id and delivered.accepted_as = 'user_turn'
 		  )`
+}
+
+// agentConversationSeen is what a reader's viewer, bound at viewerParam, must pass to read the
+// conversation of one of the person's one-off messages to a session, rootID naming that message
+// (as text) and session the session it went to: the conversation's own rule, a conversation of no
+// project read by its parties, the ones its root's node states (access.PartyClause over
+// access.MessagePartiesSQL, access.MessageClause's arm for a message on no issue, as the thread
+// read reads it), and the session it is with (access.SessionClause), as the session's conversation
+// window holds each of its roots to both (listAgentMessages). A conversation the reader may not
+// read is then no Agent row of any state and counts in no total here, and its replies count in no
+// unread count of GET /api/v1/me/agents/state (userAgentStatesSeenQuery), so the list, the badge
+// and the window the row links to agree on it.
+func agentConversationSeen(rootID, session, viewerParam string) string {
+	return access.SessionClause(session, viewerParam) + `
+		  and ` + access.PartyClause(access.MessagePartiesSQL(rootID), viewerParam)
 }
 
 // myAgentRootIsOneOff asks that of the root a dismissal mark names, read by the message's primary

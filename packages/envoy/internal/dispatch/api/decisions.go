@@ -214,7 +214,7 @@ func (s *server) specOpenQuestions(
 	for index := range questions {
 		asks[index] = &questions[index].Ask
 	}
-	if err := s.attachOpenedEventIDs(ctx, s.deps.Store.Pool, asks); err != nil {
+	if err := s.attachOpenedEventIDs(ctx, s.deps.Store.Pool, &who, asks); err != nil {
 		return nil, err
 	}
 	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, who, asks); err != nil {

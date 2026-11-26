@@ -326,7 +326,7 @@ func (s *server) readIssueAsks(ctx context.Context, tx pgx.Tx, query string, arg
 	for index := range asks {
 		pointers[index] = &asks[index]
 	}
-	if err := s.attachOpenedEventIDs(ctx, tx, pointers); err != nil {
+	if err := s.attachOpenedEventIDs(ctx, tx, nil, pointers); err != nil {
 		return nil, err
 	}
 	return asks, nil

@@ -58,6 +58,14 @@ const (
 // coalesce because model.Artifact carries it as "" when the document plays no role.
 const artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ''), created_by, created_at`
 
+// documentVisible is access.DocumentClause over the artifact whose id idExpr names, for a
+// statement that reads a row its document owns - a version, a review, a comment anchored to it -
+// rather than the artifact's own row: the row is read only where its reader may read the document.
+func documentVisible(idExpr, viewerParam string) string {
+	return `exists (select 1 from artifacts visible_document where visible_document.id = ` + idExpr +
+		` and ` + access.DocumentClause("visible_document", viewerParam) + `)`
+}
+
 func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.readerOf(w, r)
 	if !ok {
@@ -1025,7 +1033,7 @@ func (s *server) storeArtifact(
 			route = "POST /api/v1/issues/{key}/artifacts"
 		}
 		superseded = s.supersededApprovalAdvice(
-			r.Context(), tx, ledger, route, artifactIssueKey(artifact), artifact.ID, version.Number,
+			r.Context(), tx, ledger, who, route, artifactIssueKey(artifact), artifact.ID, version.Number,
 		)
 		// The open approval request this upload's own version took back from the person it was
 		// waiting on, read off the ledger the move above and the restore's carry are queued on,
@@ -1823,7 +1831,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	var moved *movedApprovalRequest
 	if written != nil {
 		superseded = s.supersededApprovalAdvice(
-			r.Context(), tx, ledger, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number,
+			r.Context(), tx, ledger, who, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number,
 		)
 		// The open approval request this edit's own version took back from the person it was
 		// waiting on, read off the ledger that version's move (docs.MoveApprovalAsk) and any

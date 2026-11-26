@@ -1121,7 +1121,7 @@ func (s *server) loadAsk(ctx context.Context, q queryer, who model.Actor, id str
 	if err != nil {
 		return model.Ask{}, err
 	}
-	if err := s.attachOpenedEventIDs(ctx, q, []*model.Ask{&ask}); err != nil {
+	if err := s.attachOpenedEventIDs(ctx, q, &who, []*model.Ask{&ask}); err != nil {
 		return model.Ask{}, err
 	}
 	return ask, nil
@@ -1248,15 +1248,19 @@ func (s *server) readAskForTransition(ctx context.Context, tx pgx.Tx, who model.
 	if err != nil {
 		return model.Ask{}, err
 	}
-	if err := s.attachOpenedEventIDs(ctx, tx, []*model.Ask{&ask}); err != nil {
+	if err := s.attachOpenedEventIDs(ctx, tx, nil, []*model.Ask{&ask}); err != nil {
 		return model.Ask{}, err
 	}
 	return ask, nil
 }
 
+// attachOpenedEventIDs stamps each ask with its identity event (events.OpenedEventIDs), read among
+// the events who may read (eventReadableSQL), the rule every read of an ask's events binds. A nil
+// who is a write reading the asks its event payloads carry, which reads every event.
 func (s *server) attachOpenedEventIDs(
 	ctx context.Context,
 	q queryer,
+	who *model.Actor,
 	asks []*model.Ask,
 ) error {
 	askIDs := distinctAskIDs(asks)
@@ -1264,6 +1268,9 @@ func (s *server) attachOpenedEventIDs(
 		return nil
 	}
 	readable := events.EveryEvent
+	if who != nil {
+		readable = readableEvents(*who)
+	}
 	openedEventIDs, err := events.OpenedEventIDs(ctx, q, askIDs, readable)
 	if err != nil {
 		return err

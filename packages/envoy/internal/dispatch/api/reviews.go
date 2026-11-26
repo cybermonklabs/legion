@@ -1018,7 +1018,7 @@ func (s *server) renewApprovalAsk(
 	}); err != nil {
 		return nil, err
 	}
-	if err := s.attachOpenedEventIDs(ctx, tx, []*model.Ask{open}); err != nil {
+	if err := s.attachOpenedEventIDs(ctx, tx, nil, []*model.Ask{open}); err != nil {
 		return nil, err
 	}
 	return appended, nil
