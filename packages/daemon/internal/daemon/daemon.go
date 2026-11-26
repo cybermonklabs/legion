@@ -1209,8 +1209,8 @@ type plan struct {
 	// workflow, where neither is reported to anyone.
 	sessionLost       func(c supervise.Claim, cause supervise.SessionLoss, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
-	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
-	// in a provider error; nil without a workflow, where nobody is told.
+	// providerErrorRunReached tells of a claim whose turns keep ending in a provider error, to the
+	// roles its own doc comment names; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)
 	// tools are the git and jj boot resolved on the host, by name, for workspace provisioning;
 	// nil without a repository, and under a runtime whose agents run the worker image's own.
@@ -1814,15 +1814,37 @@ type supervision struct {
 	reports      map[claim.Token]capabilities.Report
 	// podUpdateMu guards podUpdateOpenedAt and podUpdateOpened, what the update-round sweep keeps
 	// between ticks to pace its openings (reconcilePodUpdates): when this daemon last opened a pod
-	// round, and the rounds it has opened whose claims have not recorded one yet, by issue. The two
-	// pace the sweep's openings under `pod_update_rounds_per_minute` and
-	// `pod_update_max_open_rounds`; nothing of either is in the store, because neither decides a
-	// round, and a daemon that has just booted opens its first round at its first sweep. The sweep
-	// is one goroutine, and the mutex is what makes that a fact of this code rather than of its
-	// caller.
+	// round, and the rounds it has opened whose claims have not recorded one yet, by issue, each
+	// with the reasons it posted. The two pace the sweep's openings, and the controller's
+	// (requestPodUpdate), under `pod_update_rounds_per_minute` and `pod_update_max_open_rounds`;
+	// nothing of either is in the store, because neither decides a round, and a daemon that has
+	// just booted opens its first round at its first sweep. The sweep runs on one goroutine and the
+	// controller's request on an API one, and the mutex is what keeps their reads whole.
 	podUpdateMu       sync.Mutex
 	podUpdateOpenedAt time.Time
-	podUpdateOpened   map[string]string
+	podUpdateOpened   map[string]podUpdateOpening
+	// podUpdateWalk is the turn the sweep's walk over the issues (walkPodUpdates) and the
+	// controller's request for one issue's round (requestPodUpdate) each hold: the walk from before
+	// its read of the pause holds, through its finish of each standing replacement record
+	// (finishReplacements, two API server reads of up to 30 seconds for each) and its read of the
+	// project's limits, to the last opening it makes on them; the request from its read of the
+	// claims to its post. The request comes on an API goroutine, and an opening weighed against
+	// limits another opening has moved since they were read would take the project over them: two
+	// openings each reading the one slot left. The sweep's replacements and its reads of kept pods
+	// run after the walk, outside it, since each waits on a pod. It is a one-slot semaphore rather
+	// than a mutex so the request waits for it only while its own context lives and at most
+	// roundRecordBound (postRequestedPodUpdate), as stream.Conn's negotiation is, and is refused
+	// POD_UPDATE_BUSY after that; the walk waits for it as long as it takes. podUpdateWalkOnce makes
+	// it at its first use (podUpdateWalkTurn), so a supervision a test builds by hand needs none of
+	// its own.
+	podUpdateWalkOnce sync.Once
+	podUpdateWalk     chan struct{}
+	// podRoundRecordBound is how long the controller's request for a pod's round waits for a claim
+	// to record the round it posted (awaitPodRoundRecorded), and at most how long it waits for the
+	// sweep's walk to give it the turn (postRequestedPodUpdate), both read through roundRecordBound;
+	// zero is defaultPodRoundRecordBound, the value the daemon runs. A test sets a shorter one so it
+	// need not wait out the default.
+	podRoundRecordBound time.Duration
 	// podUpdateRoundsMu guards podUpdateRounds, what the last sweep decided under those two limits
 	// as the operator's claim listing serves it (api.PodUpdateRounds, podUpdateRoundsView): the
 	// issues that held an open round and the issues each limit held back. It is the sweep's own
@@ -3124,6 +3146,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Supervisor:         s.supervisor,
 		AwaitStream:        s.awaitStream,
 		PodUpdateRounds:    s.podUpdateRoundsView,
+		RequestPodUpdate:   s.requestPodUpdate,
 		BootTokens:         s.tokens,
 		Project:            p.project,
 		DispatchProject:    cfg.Project,
