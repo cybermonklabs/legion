@@ -148,11 +148,23 @@ function refuseServerWithoutAdvances(issue: IssueDetails): void {
  *  server's sentence speaks of the API's field and not of this command's flags. In both of the
  *  server's sentences (`refuseAdvancesRevision`, internal/dispatch/api/issue_advances.go) the
  *  last number is the revision the issue holds, and no other field of the answer carries it, so
- *  the clause takes that number. Every other error adds nothing, so it reads as it did. */
+ *  the clause takes that number: the digits of the message's last run of them, read from its end
+ *  one character at a time. A `(\d+)\D*$` expression over a message a server wrote reads the
+ *  same digits and scans a long tail of them again and again (CodeQL js/polynomial-redos). */
 function advancesRevisionAnswer(issueKey: string, error: unknown): string {
   if (!dispatchAnswered(error, 409) || error.code !== "ADVANCES_REVISION") return "";
-  const held = /(\d+)\D*$/.exec(error.message)?.[1] ?? "<the revision named above>";
+  const message = error.message;
+  let end = message.length;
+  while (end > 0 && !isDigit(message[end - 1])) end -= 1;
+  let start = end;
+  while (start > 0 && isDigit(message[start - 1])) start -= 1;
+  const held = end > start ? message.slice(start, end) : "<the revision named above>";
   return `read the issue with ${commandLine("dispatch_read", { issue: issueKey })}, then send the whole set you mean with ${fieldFlag("dispatch_issue_update", "advances_revision")} ${held}`;
+}
+
+/** Whether `character` is one of `0` to `9`, as `\d` reads one. */
+function isDigit(character: string | undefined): boolean {
+  return character !== undefined && character >= "0" && character <= "9";
 }
 
 /** `dispatch issue`: open an issue, or report the one an external reference already holds. */

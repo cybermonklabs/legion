@@ -12791,10 +12791,14 @@ describe("executeDispatchTool", () => {
     expect(failure).toBeInstanceOf(ToolInputError);
     if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
     const problem = failure.problems[0] ?? "";
+    // Read by its two marks rather than by an expression: `[\s\S]*` before a literal and `$`
+    // scans a long problem again and again (CodeQL js/polynomial-redos).
+    const head = "--- the text Dispatch stores ---\n";
+    const tail = "--- end of the text Dispatch stores ---";
+    const from = problem.indexOf(head);
+    const to = problem.endsWith(tail) ? problem.length - tail.length : -1;
     const printed =
-      /--- the text Dispatch stores ---\n([\s\S]*)--- end of the text Dispatch stores ---$/.exec(
-        problem
-      )?.[1] ?? "";
+      from === -1 || to < from + head.length ? "" : problem.slice(from + head.length, to);
     expect(problem).toContain(
       'line 3 reads the word "*" at character 1, where Dispatch stores the word "-".'
     );
