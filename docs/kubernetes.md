@@ -8807,6 +8807,9 @@ The runtime reads the issue's Sandbox under the pod's launch turn and then asks 
 Where that read lets the teardown act, the same transaction marks the release committed (`issue_releases.committed`), and the runtime then takes the pod.
 From then on no cause cancels the release.
 Each later attempt of the teardown row asks the runtime again, until the runtime answers with no error, and then records the release in a record that names the release's mark (`pod_releases.issue_release_id`) and finishes its own steps.
+The release of a pod no claim owns takes only the pod its launcher read clean (`record.IssueRelease.PodUID`), so under the same launch turn the daemon first reads whether the runtime still holds that pod.
+Where it does not, the store is asked without a commit (`IssueRelease`): a release not yet committed is cancelled as one overtaken, and a release already committed goes on, since an earlier attempt was authorized to take that pod.
+So no release is committed and then cancelled.
 While a committed release has not finished, the whole workflow of its issue waits, not only its wakes:
 
 - every start of a role of the issue waits behind the older `issue_release` row: a phase start, an entry start, a wake's start and a cancel's resume;

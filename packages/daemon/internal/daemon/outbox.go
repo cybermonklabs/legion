@@ -3779,6 +3779,14 @@ func (r *outbox) podDeleted(ctx context.Context, issue, why string) error {
 // record's first write, so it is logged once, by the attempt whose record lands, and a teardown
 // that gave up on its record logs none.
 //
+// A release whose launcher read the workspace first takes the pod that read found clean or
+// nothing (record.IssueRelease.PodUID), and whether the runtime still holds that pod is read under
+// its pod lock, before the store is. Where the runtime no longer holds it, the store is read
+// without a commit (store.Store.IssueRelease): a release neither committed nor recorded is
+// cancelled as one overtaken, since the pod in its place is one no read showed clean, and a
+// release committed or recorded acts, since it cannot be cancelled: an earlier attempt was
+// authorized to take that pod, and the teardown finishes the release as above.
+//
 // A teardown of the release of a pod no role can use that took nothing records no pod release and
 // logs no release line, which would count one release twice, and logs instead that it found no
 // Sandbox to release; it still ends the pause's hold on the pod, runs the end of the pod and
@@ -3818,16 +3826,22 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	// commits the release where it acts (store.Store.CommitIssueRelease): the runtime's steps after
 	// it can fail once the pod is gone, and the teardown that runs again then acts and never
 	// cancels.
+	//
+	// Where the runtime no longer holds the pod the launcher read (record.IssueRelease.PodUID),
+	// that read commits nothing, since a committed release cannot be cancelled: the comment of
+	// releaseIssue says what each answer does then.
 	decision := first
 	authorize := func(ctx context.Context) (bool, error) {
-		inner, err := r.trees.CommitIssueRelease(ctx, r.project, releasing, record.OutOfWorkflow)
+		gone := payload.PodUID != "" && !r.holdsPod(row.Issue, payload.PodUID)
+		read := r.trees.CommitIssueRelease
+		if gone {
+			read = r.trees.IssueRelease
+		}
+		inner, err := read(ctx, r.project, releasing, record.OutOfWorkflow)
 		if err != nil {
 			return false, err
 		}
-		// A release whose launcher read the workspace first takes the pod that read found clean
-		// or nothing (record.IssueRelease.PodUID): read here, under the pod lock, a pod that took
-		// its place is one no read showed clean, and the release is cancelled as one overtaken.
-		if inner.Act == store.ReleaseActs && payload.PodUID != "" && !r.holdsPod(row.Issue, payload.PodUID) {
+		if gone && inner.Act == store.ReleaseActs && !inner.Committed && !inner.PodTaken {
 			r.log.Info("outbox: the pod the release's launcher read is no longer the issue's pod; the teardown takes nothing and the release is cancelled",
 				"issue", row.Issue, "readPod", payload.PodUID)
 			inner.Act, inner.Cause = store.ReleaseCancel, store.ReleaseCauseOvertaken

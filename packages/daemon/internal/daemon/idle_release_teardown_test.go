@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -838,5 +840,180 @@ func (r *idleRig) restarted(t *testing.T) *outbox {
 		pool: r.pool, records: r.issues, project: "legion", dispatchProject: "LEGION", supervisor: sup, trees: r.st,
 		notices: &outboxPublisher{}, dispatch: &roleHoldersDispatch{}, log: quietLogger(),
 		now: func() time.Time { return time.Now().Add(time.Minute) },
+	}
+}
+
+// idleRigReadPodGone is the start of the line a teardown logs when it cancels a release because
+// the runtime no longer holds the pod the release's launcher read (outbox.releaseIssue's authorize).
+const idleRigReadPodGone = "outbox: the pod the release's launcher read is no longer the issue's pod"
+
+// commitWatch is the release's store with each commit of a release counted: each answer of the
+// runtime's read under its pod lock (CommitIssueRelease) that carries Committed, which that read
+// wrote (issue_releases.committed) or found written. Every call reaches the real store.
+type commitWatch struct {
+	outboxTrees
+	commits atomic.Int32
+}
+
+func (s *commitWatch) CommitIssueRelease(ctx context.Context, project string, release store.IssueReleased,
+	outOfWorkflow func(status string) bool) (store.ReleaseDecision, error) {
+	decision, err := s.outboxTrees.CommitIssueRelease(ctx, project, release, outOfWorkflow)
+	if err == nil && decision.Committed {
+		s.commits.Add(1)
+	}
+	return decision, err
+}
+
+// teardownRow is the issue's teardown row as the outbox holds it: the pod it takes or nothing
+// (record.IssueRelease.PodUID), its attempts, and whether it is queued at all, since a row that
+// finished is gone.
+func (r *idleRig) teardownRow(t *testing.T) (pod string, attempts int, queued bool) {
+	t.Helper()
+	err := r.pool.QueryRow(context.Background(), `select coalesce(payload->>'podUid', ''), attempts from outbox
+		where issue = $1 and kind = 'issue_release'`, r.issue.Key).Scan(&pod, &attempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", 0, false
+	}
+	if err != nil {
+		t.Fatalf("read the teardown row: %v", err)
+	}
+	return pod, attempts, true
+}
+
+// The teardown of a release whose launcher read the workspace takes the pod that read found clean
+// or nothing (record.IssueRelease.PodUID, R6 of #5285), and it reads the runtime's pod under the
+// pod lock before it commits the release (outbox.releaseIssue's authorize). Here the launcher of a
+// pod no claim owns finds pod-a clean, and pod-b takes pod-a's place once the launcher has read it
+// (afterPodRead), before the teardown. The teardown cancels the release as one overtaken: the
+// runtime takes nothing, no read commits the release, the mark is gone with the cancel's hold
+// recorded, and the teardown's row finishes. A teardown that committed the release before that
+// check turned its answer into a cancel the store refuses, since a committed release cannot be
+// cancelled (store.CancelIssueRelease): its row failed, and so did every attempt after it, with
+// the mark left committed.
+func TestATeardownWhoseReadPodWasReplacedCancelsWithoutACommit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	rig, _ := noRoleRig(t, false)
+	var logs syncBuffer
+	rig.runner.log = jsonLogger(&logs)
+	watch := &commitWatch{outboxTrees: rig.st}
+	rig.runner.trees = watch
+	rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
+	rig.rt.ScriptWorkspaceWork(rig.issue.Key, runtime.WorkspaceWork{Head: idleRigUnpushed.Head})
+	rig.rt.mu.Lock()
+	rig.rt.afterPodRead = func() { rig.rt.ScriptIssuePod(rig.issue.Key, "pod-b") }
+	rig.rt.mu.Unlock()
+	rig.w.releaseUnownedPods(ctx)
+	if pod, _, queued := rig.teardownRow(t); !queued || pod != "pod-a" {
+		t.Fatalf("the teardown row takes pod %q (queued %t), want a queued teardown of pod-a, the pod the pass read", pod, queued)
+	}
+
+	rig.drain(t)
+
+	if launcherReads(rig) != 1 {
+		t.Fatalf("the launcher read %d times, want once", launcherReads(rig))
+	}
+	if _, taken := rig.rt.reads(); taken != 0 {
+		t.Fatalf("the teardown took %d pods, want none: the clean read was of pod-a, and the runtime holds pod-b", taken)
+	}
+	failed := loggedMessages(t, logs.String(), "outbox row failed")
+	if _, attempts, queued := rig.teardownRow(t); queued || rig.marked(t) || len(failed) != 0 {
+		t.Fatalf("the teardown row is queued = %t after %d attempts, the mark stands = %t and the rows failed %v; want the release cancelled: its row finished and its mark gone",
+			queued, attempts, rig.marked(t), failed)
+	}
+	if commits := watch.commits.Load(); commits != 0 {
+		t.Fatalf("the runtime's reads committed the release %d times, want none: the release was cancelled", commits)
+	}
+	if records := rig.records(t); len(records.Releases) != 0 || len(records.Holds) != 1 ||
+		records.Holds[0].Reason != workflow.IdleHoldOvertaken.String() {
+		t.Fatalf("releases = %+v and holds = %+v, want no release and the one %s", records.Releases, records.Holds, workflow.IdleHoldOvertaken)
+	}
+	if lines := loggedMessages(t, logs.String(), idleRigReadPodGone); len(lines) != 1 || lines[0]["readPod"] != "pod-a" {
+		t.Fatalf("the teardown logged %v, want one line %q naming pod-a", lines, idleRigReadPodGone)
+	}
+	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue"}) || rig.rt.refusals() != 1 {
+		t.Fatalf("the runtime was asked %v and refused %d times, want the release's teardown asked and refused once", asked, rig.rt.refusals())
+	}
+}
+
+// A teardown whose runtime read committed the release, and whose runtime failed after it took the
+// pod, runs again once the runtime no longer holds the pod the launcher's read found clean
+// (record.IssueRelease.PodUID): the runtime took it, so it holds no Sandbox of the issue and
+// answers no pod for it. The retry reads the mark as committed (store.ReleaseDecision.Committed),
+// and the pod check under the pod lock does not cancel it: the retry asks the runtime again, which
+// finds no Sandbox, and the retry records the release, since the mark notes that the first attempt
+// came to the runtime's first write (store.TeardownReached), and clears the mark. A teardown that
+// committed the release before that check turned the retry's answer into a cancel the store
+// refuses, since a committed release cannot be cancelled (store.CancelIssueRelease): every retry
+// failed the same way, and the release never ended, not even at R3's give-up.
+func TestACommittedTeardownRetriedAfterItTookItsReadPodFinishes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	rig, _ := noRoleRig(t, false)
+	var logs syncBuffer
+	rig.runner.log = jsonLogger(&logs)
+	rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
+	rig.rt.ScriptWorkspaceWork(rig.issue.Key, runtime.WorkspaceWork{Head: idleRigUnpushed.Head})
+	rig.rt.mu.Lock()
+	rig.rt.failsAfterAuthorize = 1
+	rig.rt.mu.Unlock()
+	rig.w.releaseUnownedPods(ctx)
+	// The launcher's check runs first, alone: the teardown waits, and the test runs its attempts.
+	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
+		rig.issue.Key); err != nil {
+		t.Fatalf("hold the release's teardown back: %v", err)
+	}
+	rig.drain(t)
+	if pod, _, queued := rig.teardownRow(t); !queued || pod != "pod-a" || launcherReads(rig) != 1 {
+		t.Fatalf("the teardown row takes pod %q (queued %t) after %d launcher reads, want a queued teardown of pod-a after one clean read",
+			pod, queued, launcherReads(rig))
+	}
+
+	// The first attempt: the runtime's read commits the release, and the runtime takes pod-a and
+	// fails after its first write.
+	teardownDueAgain(t, rig, false)
+	if err := rig.runner.RunOnce(ctx); err != nil {
+		t.Fatalf("run the teardown's first attempt: %v", err)
+	}
+	var committed bool
+	var note string
+	if err := rig.pool.QueryRow(ctx, `select committed, teardown from issue_releases where issue = $1`,
+		rig.issue.Key).Scan(&committed, &note); err != nil {
+		t.Fatalf("read the release's mark after the first attempt: %v", err)
+	}
+	if _, taken := rig.rt.reads(); taken != 1 || !committed || store.ReleaseTeardown(note) != store.TeardownReached ||
+		len(rig.records(t).Releases) != 0 {
+		t.Fatalf("after the first attempt the runtime took %d pods, the mark is committed = %t and notes %q, and the releases = %+v; want pod-a taken once, the mark committed and noting %q, and no record",
+			taken, committed, note, rig.records(t).Releases, store.TeardownReached)
+	}
+	// The runtime took pod-a: it holds no Sandbox of the issue now, and answers no pod for it.
+	rig.rt.mu.Lock()
+	rig.rt.sandboxGone = true
+	rig.rt.mu.Unlock()
+	rig.rt.ScriptIssuePod(rig.issue.Key, "")
+
+	teardownDueAgain(t, rig, false)
+	before := len(logs.String())
+	if err := rig.runner.RunOnce(ctx); err != nil {
+		t.Fatalf("run the teardown's retry: %v", err)
+	}
+	logged := logs.String()[before:]
+	failed := loggedMessages(t, logged, "outbox row failed")
+	if _, attempts, queued := rig.teardownRow(t); queued || len(failed) != 0 {
+		t.Fatalf("after the retry the teardown row is queued = %t after %d attempts, and the retry failed %v; want the committed release finished",
+			queued, attempts, failed)
+	}
+	retriedTeardownRecorded(t, rig, 1)
+	if lines := loggedMessages(t, logged, idleRigReadPodGone); len(lines) != 0 {
+		t.Fatalf("the retry logged %v, want no cancel of a committed release", lines)
+	}
+	if holds := rig.records(t).Holds; len(holds) != 0 {
+		t.Fatalf("holds = %+v, want none: no cancel ran", holds)
+	}
+	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue", "ReleaseIssue"}) || rig.rt.refusals() != 0 {
+		t.Fatalf("the runtime was asked %v and refused %d times, want the release's teardown asked twice and never refused", asked, rig.rt.refusals())
+	}
+	if lines := loggedMessages(t, logged, idleRigUnownedTeardown); len(lines) != 1 {
+		t.Fatalf("the retry logged %d lines %q, want one: its record is the release's", len(lines), idleRigUnownedTeardown)
 	}
 }
