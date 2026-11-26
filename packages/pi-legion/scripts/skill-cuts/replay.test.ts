@@ -2023,6 +2023,122 @@ test.each([
   ["go test ./...", false],
   ["jj squash --from @ --into @- -m 'Squash the stack'", false],
   ["docker exec sessionspg-pg16 which psql", false],
+  // The additions of the runner's architect's ruling of 2026-11-26T10:10:22Z, each with the
+  // observed commands that only read, and each flag or form that takes a command off the list.
+  // Catches: a `gh api` GET, which only reads GitHub, left undecided.
+  ["gh api repos/acme/widgets/issues/comments/6979847986 --jq .body", true],
+  // Catches: gh api's flags with no value, or a quoted endpoint, read as a POST.
+  [
+    "gh api --paginate --slurp 'repos/acme/widgets/actions/workflows/ci.yml/runs?per_page=100' --jq '[.[]]'",
+    true,
+  ],
+  // Catches: an explicit GET in lower case read as another method.
+  ["gh api -X get repos/acme/widgets/pulls --jq '.[].number'", true],
+  // Catches: a `gh api` POST taken for a read.
+  ["gh api -X POST repos/acme/widgets/issues", false],
+  // Catches: a `--method` with its value in the next word taken for a read.
+  ["gh api --method PATCH repos/acme/widgets/issues/1", false],
+  // Catches: a method joined to `-X` missed.
+  ["gh api -XDELETE repos/acme/widgets/git/refs/heads/x", false],
+  // Catches: a method joined to `--method` by `=` missed.
+  ["gh api --method=PUT repos/acme/widgets/pulls/1/merge", false],
+  // Catches: a `-f` field, which makes gh api a POST, missed.
+  ["gh api repos/acme/widgets/issues -f title=x", false],
+  // Catches: a `-F` field, which makes gh api a POST, missed.
+  ["gh api repos/acme/widgets/issues -F title=x", false],
+  // Catches: a `--field` field, which makes gh api a POST, missed.
+  ["gh api repos/acme/widgets/issues --field title=x", false],
+  // Catches: a `--raw-field` field, which makes gh api a POST, missed.
+  ["gh api repos/acme/widgets/issues --raw-field body=x", false],
+  // Catches: an `--input` body, which makes gh api a POST, missed.
+  ["gh api repos/acme/widgets/issues --input body.json", false],
+  // Catches: a field joined to `-f` missed.
+  ["gh api repos/acme/widgets/issues -ftitle=x", false],
+  // Catches: a field joined to `-F` missed.
+  ["gh api repos/acme/widgets/issues -Ftitle=x", false],
+  // Catches: a field joined to `--field` by `=` missed.
+  ["gh api repos/acme/widgets/issues --field=title=x", false],
+  // Catches: a field joined to `--raw-field` by `=` missed.
+  ["gh api repos/acme/widgets/issues --raw-field=body=x", false],
+  // Catches: a body file joined to `--input` by `=` missed.
+  ["gh api repos/acme/widgets/issues --input=body.json", false],
+  // Catches: a `-X POST` inside a cluster of short flags missed.
+  ["gh api -iXPOST repos/acme/widgets/issues", false],
+  // Catches: a GraphQL call, which gh always sends as a POST, taken for a read.
+  ["gh api graphql --jq .data", false],
+  // Catches: a leading slash on graphql slipping past the endpoint check.
+  ["gh api /graphql --jq .data", false],
+  // Catches: a field beside an explicit GET taken for a read: the ruling refuses the flag.
+  ["gh api -X GET -f q=x search/issues", false],
+  // Catches: `gh pr view`, which prints a pull request, left undecided.
+  ["gh pr view 1804 -R acme/widgets --json headRefName,headRefOid,state", true],
+  // Catches: `gh pr list`, which prints a list of pull requests, left undecided.
+  [
+    "gh pr list --repo acme/widgets --head legion/ACME-876 --state all --json number,state,url",
+    true,
+  ],
+  // Catches: `gh run view`, which prints a run, left undecided.
+  ["gh run view 41692557611 --repo acme/widgets --json headSha,conclusion,jobs", true],
+  // Catches: `gh run view` of a job's log left undecided.
+  ["gh run view 41692557715 --repo acme/widgets --job 126114596559 --log", true],
+  // Catches: `gh stack view`, which prints a stack, left undecided.
+  ["gh stack view 2>&1 | cat", true],
+  // Catches: `gh pr merge`, which merges a pull request, taken for a read.
+  ["gh pr merge 1804 -R acme/widgets --squash", false],
+  // Catches: `gh run rerun`, which starts a run, taken for a read.
+  ["gh run rerun 41692557611 --repo acme/widgets", false],
+  // Catches: `gh stack push`, which pushes branches, taken for a read.
+  ["gh stack push", false],
+  // Catches: `--help` of a subcommand, whose program is otherwise on the list, left undecided.
+  ["git status --short --branch && git log --oneline -5 && gh stack --help 2>&1 | head -40", true],
+  // Catches: `--help` of a program with no subcommand left undecided.
+  ["jj --help", true],
+  // Catches: `--help` of a dispatch subcommand left undecided.
+  ["dispatch doc-read --help", true],
+  // Catches: `--help` of a program that is not otherwise on the list left undecided.
+  ["make --help", true],
+  // Catches: a last word `--help` behind a flag and its text, which bash runs, taken for a read.
+  ["bash -c 'rm -rf x' --help", false],
+  // Catches: `-h` taken for `--help`.
+  ["rm -rf x -h", false],
+  // Catches: `git worktree list`, which lists the worktrees, left undecided.
+  ["git status -sb && git branch --show-current && git worktree list", true],
+  // Catches: `git worktree add`, which makes a worktree, taken for a read.
+  ["git worktree add ../widgets-876 legion/ACME-876", false],
+  // Catches: `git fetch`, which writes the remote-tracking refs, taken for a read.
+  ["git fetch origin", false],
+  // Catches: `dispatch doc-read` of an issue's document left undecided.
+  ["dispatch doc-read --issue ACME-147", true],
+  // Catches: `dispatch doc-read` of a project's document left undecided.
+  ["dispatch doc-read --project ACME --artifact goals-md", true],
+  // Catches: `dispatch read`, which prints an issue or a comment, left undecided.
+  ["dispatch read --ref dispatch://ACME-30/comment/7c3676be-23bf-4602-b956-907e96e14486", true],
+  // Catches: `dispatch comment`, which writes a comment, taken for a read.
+  ["dispatch comment --issue ACME-147 --body 'Looks right.'", false],
+  // Catches: `env` with no argument, which prints the environment, left undecided.
+  ["env | grep -E '^(LEGION_|DISPATCH_)'", true],
+  // Catches: `env` with an assignment, which runs the command after it, taken for a read.
+  ["env NAME=value make", false],
+  // Catches: `env -i`, which runs the command after it, taken for a read.
+  ["env -i bash", false],
+  // Catches: `ps`, which lists processes, left undecided.
+  ["ps -o pid,ppid,stat,args -p $$", true],
+  // Catches: `jj diff` behind jj's valued `-R` left undecided.
+  ["jj -R . diff -r @ --stat", true],
+  // Catches: `jj status` left undecided.
+  ["jj -R . status", true],
+  // Catches: `jj log` behind a global flag with no value left undecided.
+  ["jj --ignore-working-copy log -r @ --no-graph -T 'commit_id.short()'", true],
+  // Catches: `jj diff --tool`, which runs an external program, taken for a read.
+  ["jj diff --tool meld", false],
+  // Catches: a tool joined to `--tool` by `=` missed.
+  ["jj diff --tool=meld", false],
+  // Catches: `jj log --tool`, which runs an external program for each diff, taken for a read.
+  ["jj log -p --tool meld", false],
+  // Catches: `jj new`, which makes a change, taken for a read.
+  ["jj new", false],
+  // Catches: the alias `jj st` taken for `jj status`.
+  ["jj st", false],
 ])("the load rule: the bash command %p only reads or looks: %p", (command, want) => {
   expect(readOnlyCommand(command)).toBe(want);
 });
@@ -2047,4 +2163,21 @@ test("the load rule: a call that only reads or looks is preparation, one that ch
     ...Array(4).fill("act"),
     ...Array(3).fill("undecided"),
   ]);
+});
+
+// The ruling of 2026-11-26T10:10:22Z widens the read-only list through `onlyLooks`, so a
+// behaviour case's rule and a load test's take it alike.
+test("the read-only list's additions: a bash call of one is preparation by the load rule and by a case's rule whose act makes no bash call that only looks, and the same call with an off-list flag is undecided", () => {
+  // Catches: a load test's `gh api` GET left undecided, or the same call as a PATCH continued
+  // past as preparation.
+  const get = "gh api repos/acme/widgets/pulls/1804 --jq .head.sha";
+  expect(callPart(LOAD_RULE, "bash", { command: get })).toBe("preparation");
+  const patch = "gh api -X PATCH repos/acme/widgets/pulls/1804 --jq .head.sha";
+  expect(callPart(LOAD_RULE, "bash", { command: patch })).toBe("undecided");
+  // Catches: a case's `jj diff` left undecided, or the same call that runs an external tool
+  // continued past as preparation.
+  const docker: MixedRule = { kind: "case", act: DOCKER_ACT };
+  expect(DOCKER_ACT.calls.some((call) => call.tool === "bash" && call.looks)).toBe(false);
+  expect(callPart(docker, "bash", { command: "jj -R . diff -r @ --stat" })).toBe("preparation");
+  expect(callPart(docker, "bash", { command: "jj -R . diff -r @ --tool meld" })).toBe("undecided");
 });

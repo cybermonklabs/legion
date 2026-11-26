@@ -812,6 +812,38 @@ call gets no verdict. One whose other calls only prepare is a round of its own, 
 `behaviour`: its reads are answered, it goes back holding only those calls, and the run records
 each call left out (`leftOut`), never run; after the third round it reads past the last round.
 Claude Code's runs are not changed: they end at their first message.
+
+The read-only list also holds these commands (the runner's architect, 2026-11-26T10:10:22Z),
+because each one only reads: a mixed reply that runs one of them beside its skill reads is no
+longer undecided for that call. Both mixed-reply rules (a behaviour case's and a load test's) use
+the list. Each addition, with its reason:
+
+- `gh api` as a GET: it reads GitHub and writes nothing. A `-X` or `--method` other than GET (in
+  any letter case, joined forms such as `-XDELETE` and `--method=PUT` too), any of `-f`, `-F`,
+  `--field`, `--raw-field` and `--input` (they make it a POST; the list refuses them even beside
+  an explicit GET), and the endpoint `graphql` (gh always sends it as a POST) take it off the
+  list.
+- `gh pr view`, `gh pr list`, `gh run view` and `gh stack view`: they print a pull request, a
+  list, a run or a stack. Each other `gh` subcommand is off the list (`gh pr merge`,
+  `gh run rerun`, `gh stack push`).
+- `--help` of any program: it prints the program's help. Its last word is `--help`, and each
+  word between the program and it is a plain subcommand word (`gh stack --help`, `jj --help`). A
+  flag, a path or a text with spaces there takes it off the list, because
+  `bash -c 'rm -rf x' --help` runs its `-c` text. `-h` is not `--help`.
+- `git worktree list`: it lists the worktrees. Each other `git worktree` subcommand is off the
+  list (`add`, `remove`, `prune`).
+- `dispatch read` and `dispatch doc-read`: they print an issue or a document. Each other
+  `dispatch` subcommand is off the list (`comment`, `doc-edit`, `result`).
+- `env` with no argument: it prints the environment. `env` with an argument runs a command
+  (`env NAME=value make`, `env -i bash`), so it is off the list.
+- `ps`: it lists processes.
+- `jj log`, `jj diff` and `jj status`: they print history, a diff or the status. Their snapshot
+  of the working copy into jj's operation log is bookkeeping, not the task's work. `--tool`
+  runs an external program, so it takes them off the list. Each other `jj` subcommand is off the
+  list too (`jj new`, `jj squash`, the alias `jj st`).
+
+`git fetch` stays off the list, because it writes the remote-tracking refs.
+
 Each run comes to one of five outcomes:
 
 - `loaded`: a reply reads the skill, the first message or one after answered rounds, before any

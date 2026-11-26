@@ -559,7 +559,11 @@ export function caseAct(c: Pick<Case, "realStep" | "violatingStep">): Act {
 
 /** The programs whose words a `bash` command's simple command may start with and still only read
  *  or look (LOAD_RULE), each with the test its arguments must pass for that: any other program,
- *  and one whose arguments fail its test, leaves the call undecided. */
+ *  and one whose arguments fail its test, leaves the call undecided. `gh api` as a GET, `gh pr
+ *  view`, `pr list`, `run view`, `stack view`, `git worktree list`, `dispatch read`, `doc-read`,
+ *  `env` with no argument, `ps`, and `jj log`, `diff`, `status` with no `--tool` are on it by the
+ *  runner's architect's ruling of 2026-11-26T10:10:22Z: jj's snapshot of the working copy into
+ *  its operation log is bookkeeping, not the task's work. */
 const LOOKING_PROGRAMS: Readonly<Record<string, (args: readonly string[]) => boolean>> = (() => {
   const any = () => true;
   /** Where in `args` its subcommand is: the first argument that is no flag nor the value of one
@@ -577,6 +581,60 @@ const LOOKING_PROGRAMS: Readonly<Record<string, (args: readonly string[]) => boo
     (looks: readonly string[], valued: readonly string[]) => (args: readonly string[]) =>
       looks.includes(args[subcommandAt(args, valued)] ?? "");
   const listing = ["-a", "-r", "-v", "-vv", "-l", "--all", "--remotes", "--list", "--show-current"];
+  /** Whether the arguments `args` of `gh api` make it a GET: no `-X`/`--method` but GET (in any
+   *  letter case), none of the flags that send fields or a body and so make it a POST (`-f`, `-F`,
+   *  `--field`, `--raw-field`, `--input`, joined forms too, even beside an explicit GET), and an
+   *  endpoint (the first argument that is no flag nor a flag's value) other than `graphql`, which
+   *  gh always sends as a POST. A cluster of short flags is read as gh reads it: a flag that takes
+   *  a value takes the rest of the cluster, or else the next argument. */
+  const getOnly = (args: readonly string[]): boolean => {
+    const sends = ["--field", "--raw-field", "--input"];
+    const valued = [
+      "--method",
+      "--header",
+      "--jq",
+      "--template",
+      "--hostname",
+      "--cache",
+      "--preview",
+    ];
+    let endpoint: string | undefined;
+    for (let at = 0; at < args.length; at += 1) {
+      const arg = args[at] ?? "";
+      if (arg === "--") {
+        endpoint ??= args[at + 1];
+        break;
+      }
+      if (!arg.startsWith("-")) {
+        endpoint ??= arg;
+      } else if (arg.startsWith("--")) {
+        const equals = arg.indexOf("=");
+        const name = equals < 0 ? arg : arg.slice(0, equals);
+        const value = equals < 0 ? undefined : arg.slice(equals + 1);
+        if (sends.includes(name)) return false;
+        if (value === undefined && valued.includes(name)) at += 1;
+        if (name === "--method" && (value ?? args[at] ?? "").toUpperCase() !== "GET") return false;
+      } else {
+        for (let char = 1; char < arg.length; char += 1) {
+          const flag = arg[char] ?? "";
+          if (flag === "f" || flag === "F") return false;
+          if (!"XHqtp".includes(flag)) continue;
+          const joined = arg.slice(char + 1);
+          if (joined === "") at += 1;
+          const value = joined === "" ? (args[at] ?? "") : joined.replace(/^=/, "");
+          if (flag === "X" && value.toUpperCase() !== "GET") return false;
+          break;
+        }
+      }
+    }
+    return endpoint?.replace(/^\/+/, "") !== "graphql";
+  };
+  const shown = [
+    ["pr", "view"],
+    ["pr", "list"],
+    ["run", "view"],
+    ["stack", "view"],
+  ];
   const runs = [
     "-delete",
     "-exec",
@@ -592,7 +650,7 @@ const LOOKING_PROGRAMS: Readonly<Record<string, (args: readonly string[]) => boo
     ...["ls", "cat", "head", "tail", "wc", "pwd", "cd", "grep", "egrep", "fgrep", "rg", "fd"],
     ...["jq", "tree", "stat", "file", "du", "df", "which", "type", "realpath", "readlink"],
     ...["basename", "dirname", "date", "whoami", "id", "hostname", "uname", "echo", "printf"],
-    ...["true", "test", "[", "nl", "cut", "tr", "diff", "cmp", "comm", "printenv"],
+    ...["true", "test", "[", "nl", "cut", "tr", "diff", "cmp", "comm", "printenv", "ps"],
   ];
   return {
     ...Object.fromEntries(plain.map((program) => [program, any])),
@@ -607,6 +665,7 @@ const LOOKING_PROGRAMS: Readonly<Record<string, (args: readonly string[]) => boo
       if (at < 0 || rest.some((arg) => arg.startsWith("--output"))) return false;
       if (args[at] === "branch") return rest.every((arg) => listing.includes(arg));
       if (args[at] === "remote") return rest.every((arg) => arg === "-v");
+      if (args[at] === "worktree") return rest[0] === "list";
       const looks = ["status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "grep"];
       return looks.includes(args[at] ?? "");
     },
@@ -618,6 +677,17 @@ const LOOKING_PROGRAMS: Readonly<Record<string, (args: readonly string[]) => boo
       ["get", "describe", "logs"],
       ["-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user"]
     ),
+    gh: (args) =>
+      args[0] === "api"
+        ? getOnly(args.slice(1))
+        : shown.some(([command, sub]) => args[0] === command && args[1] === sub),
+    dispatch: looksBy(["read", "doc-read"], []),
+    env: (args) => args.length === 0,
+    jj: (args) =>
+      looksBy(
+        ["log", "diff", "status"],
+        ["-R", "--repository", "--at-operation", "--at-op", "--color", "--config", "--config-file"]
+      )(args) && !args.some((arg) => arg === "--tool" || arg.startsWith("--tool=")),
   };
 })();
 
@@ -679,7 +749,10 @@ export function simpleCommands(command: string): string[][] | undefined {
 
 /** Whether the shell command line `command` only reads or looks (LOAD_RULE): each of its simple
  *  commands (`simpleCommands`), past its variable assignments, starts with a program of
- *  LOOKING_PROGRAMS whose arguments pass that program's test. */
+ *  LOOKING_PROGRAMS whose arguments pass that program's test, or asks any program for its help:
+ *  its last word is `--help` and each word between the program and it is a plain subcommand word
+ *  (no flag, no path, no text with spaces), so `bash -c 'rm -rf x' --help`, which runs the `-c`
+ *  text, is not (the runner's architect, 2026-11-26T10:10:22Z). */
 export function readOnlyCommand(command: string): boolean {
   const commands = simpleCommands(command);
   if (commands === undefined || commands.length === 0) return false;
@@ -688,7 +761,11 @@ export function readOnlyCommand(command: string): boolean {
     while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[at] ?? "")) at += 1;
     const program = words[at];
     if (program === undefined) return true;
-    return LOOKING_PROGRAMS[path.posix.basename(program)]?.(words.slice(at + 1)) === true;
+    const args = words.slice(at + 1);
+    const help =
+      args[args.length - 1] === "--help" &&
+      args.slice(0, -1).every((word) => /^[a-z][a-z0-9-]*$/.test(word));
+    return help || LOOKING_PROGRAMS[path.posix.basename(program)]?.(args) === true;
   });
 }
 
