@@ -15,8 +15,9 @@
 # package.json (the generate mode lists them in <out>.computed.yaml.inputs) - can make many filters
 # select less, while starting only the few jobs whose filters name that file: one dropped read in a
 # helper every Bun gate shares would skip those jobs in the very run that drops it. So when
-# CI_FILTERS_BASE names the commit the change is measured against (the pull request's base, the
-# merge group's base, a dispatched branch's merge base with main) and the change touches one of
+# CI_FILTERS_BASE names the commit the change is measured against (the first parent of a pull
+# request's merge commit, the merge group's base, a dispatched branch's merge base with main:
+# .github/ci-notes/ci.md#the-commit-a-change-is-measured-against) and the change touches one of
 # those files, this computes the base tree's filters too, with the base tree's own engine, and
 # every filter whose patterns differ between the two is `'**'` in <out>: the run selects every job
 # whose selection the change could have moved, as the committed filters file used to, which every
