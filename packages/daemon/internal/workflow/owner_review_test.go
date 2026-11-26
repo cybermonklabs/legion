@@ -26,14 +26,19 @@ func ownerAtReviewStep(t *testing.T, pool *pgxpool.Pool, engine *Engine) record.
 	return root
 }
 
+// ownersReviewCommit is the commit the owner's report of its review step names as the one its
+// review read. It is spelled as a head is (reviewround.IsHead): a review step's completion writes
+// only a commit of that spelling onto its row (stepCommitStays).
+const ownersReviewCommit = "4444444444444444444444444444444444444444"
+
 // ownersReview is the owner's report of its review step 2 of key's task a, as the route
-// complete_step applies it: the verdict, the step returnTo names (0 for none), the head the
-// review read and the entry the owner's start raised on the reviewer's row.
+// complete_step applies it: the verdict, the step returnTo names (0 for none), the commit the
+// review read (ownersReviewCommit) and the entry the owner's start raised on the reviewer's row.
 func ownersReview(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, verdict string, returnTo int) intake.HandoffComplete {
 	t.Helper()
 	row := roleRowOf(t, pool, engine, key, claim.RoleReviewer)
 	return intake.HandoffComplete{Issue: key, Role: claim.RoleReviewer, Claim: claim.Token(treeRoleToken(t, key, claim.RoleArchitect)), Generation: 1,
-		Entry: row.Entry, Step: 2, Summary: "The rollback path is unnamed.", Commit: "head", Verdict: verdict, ReturnTo: returnTo,
+		Entry: row.Entry, Step: 2, Summary: "The rollback path is unnamed.", Commit: ownersReviewCommit, Verdict: verdict, ReturnTo: returnTo,
 		HandoffRecord: "review-1", HandoffVersion: 1}
 }
 

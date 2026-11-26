@@ -30,7 +30,8 @@ func reviewedHead(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, 
 
 // A review step the owner does is told, at its next run, the commit its run before read, as a
 // reviewer's later round is told the commit the round before it read: for `reviewer:owner`, the
-// commit its complete_step fail named, and for `acceptance:owner`, the head of the pull request
+// commit its complete_step fail named, which a review step's completion writes only where it is
+// spelled as a head is (stepCommitStays), and for `acceptance:owner`, the head of the pull request
 // its request_backward_move acted on, where the issue has one (recordOwnersReview), since that move
 // names no commit of its own. Its first run names no commit read. A step of another type the owner
 // does names none at any run.
@@ -54,8 +55,8 @@ func TestAReviewStepOfTheOwnerGetsTheCommitItsRunBeforeRead(t *testing.T) {
 		if told := ownerSteps(t, pool, root.Key); len(told) != 2 {
 			t.Fatalf("the owner was told %+v, want two owner-steps of step 2", told)
 		}
-		if got := reviewedHead(t, pool, engine, root.Key, claim.RoleReviewer); got != "head" {
-			t.Fatalf("the reviewer's row at the second run holds %q, want %q, the commit the owner's fail named", got, "head")
+		if got := reviewedHead(t, pool, engine, root.Key, claim.RoleReviewer); got != ownersReviewCommit {
+			t.Fatalf("the reviewer's row at the second run holds %q, want %q, the commit the owner's fail named", got, ownersReviewCommit)
 		}
 	})
 
@@ -90,7 +91,7 @@ func TestAReviewStepOfTheOwnerGetsTheCommitItsRunBeforeRead(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Testing, stepPlace(2))
 		fail := ownersReport(root.Key, claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect)), claim.RoleTester, 2, "test-1")
-		fail.Verdict, fail.ReturnTo, fail.Commit = "fail", 1, "head"
+		fail.Verdict, fail.ReturnTo, fail.Commit = "fail", 1, ownersReviewCommit
 		fail.Entry = roleRowOf(t, pool, engine, root.Key, claim.RoleTester).Entry
 		if result := applyFacts(t, pool, engine)("fail", fail); result.Refusal != nil {
 			t.Fatalf("the owner's test fail was refused: %+v", result.Refusal)

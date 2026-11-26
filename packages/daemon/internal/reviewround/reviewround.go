@@ -108,9 +108,10 @@ func Split(task string) (body, sentences string, named bool) {
 // lowercase hexadecimal characters. Nothing shorter is compared with a head, since a prefix names
 // a commit only by chance. It is the one test of that spelling: the head a review's Legion footer
 // names is read through it (intake.PullRequestReview.LegionHead), and so is the commit a completion
-// of a deployment role's review step names (workflow's recordStepReview), so each commit either
-// writes as a review's (record.PhaseRow.ReviewedHead) is spelled as a head, and the one Sentences
-// names for the reviewer is one Split reads back.
+// of any step of the type review names, the owner's report of a review step of its own among them
+// (workflow's recordStepReview), so each commit either writes as a review's
+// (record.PhaseRow.ReviewedHead) is spelled as a head, and the one Sentences names for the reviewer
+// is one Split reads back.
 func IsHead(commit string) bool {
 	if len(commit) != 40 {
 		return false
