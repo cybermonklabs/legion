@@ -23,15 +23,17 @@ import (
 // payload written by hand.
 var documentEventAncestorsFixture = filepath.Join("..", "..", "..", "..", "contracts", "fixtures", "document-event-ancestors.json")
 
-// documentEventAncestors is that fixture: the keys of the three issues the test writes, by their
-// place in the tree, and one stored payload for each event type and each kind of owner.
+// documentEventAncestors is that fixture: the keys of the four issues the test writes, by their
+// place in the tree, and one stored payload for each event type and each kind of owner, with the
+// version events of the conversion and of the drain.
 type documentEventAncestors struct {
 	Issues map[string]string             `json:"issues"`
 	Events []documentEventAncestorsEvent `json:"events"`
 }
 
 // documentEventAncestorsEvent is one stored payload of the fixture: whose document it is
-// (grandchild, root or project), its event type, and the payload as the events table holds it.
+// (grandchild, converted grandchild, root or project), its event type, and the payload as the
+// events table holds it.
 type documentEventAncestorsEvent struct {
 	Owner   string          `json:"owner"`
 	Type    string          `json:"type"`
@@ -122,8 +124,9 @@ func requireNoAncestors(t *testing.T, what string, event storedDocumentEvent, ar
 // to an issue names the issue's ancestors, parent first, as the issue's own events do: a page open
 // on an ancestor then reaches its tree and coverage from the event alone, whatever it holds of the
 // issue. A root's events name [] and an artifact of no issue's name none, so a reader tells "no
-// ancestors" from "no chain". The test writes a root, a child and a grandchild of project TEST, and
-// reads the stored payload of the event of each path that appends one, one subtest for each:
+// ancestors" from "no chain". The test writes a root, a child and two grandchildren of project
+// TEST, the second created unconverted and converted later, and reads the stored payload of the
+// event of each path that appends one, one subtest for each:
 //
 //   - W1 and W2, an upload that creates a document and one that versions it (storeArtifact);
 //   - W3, a named version, whose route is one of the callers of commitArtifactVersionEvent;
@@ -136,7 +139,11 @@ func requireNoAncestors(t *testing.T, what string, event storedDocumentEvent, ar
 //   - W9, W1 and W2 on a project's document, which no issue holds, its events stored under the
 //     document itself (documentOwner): no ancestors member;
 //   - W10, W1 and W2 on a picture of the grandchild: an issue's file names the chain as its
-//     documents do.
+//     documents do;
+//   - W11, the conversion of the second grandchild, which versions its spec as it takes it into
+//     the issue's room (issueConversion.finish);
+//   - W12, the drain's revision of the second grandchild's Verification document, whose record a
+//     recorded result moved (drainQueryMark's finishRevision).
 //
 // The chain of every issue-owned row is compared with the ancestors of that issue's own
 // issue.created. Under -update the test writes packages/contracts/fixtures/document-event-ancestors.json
@@ -270,15 +277,63 @@ func TestDocumentEventsNameTheirIssueAncestors(t *testing.T) {
 		requireIssueAncestors(t, "diagram.png's second upload", pictureVersioned, grandchild.Key, chain)
 	})
 
+	// A second grandchild, created while a live process lists no issue room, is converted by the
+	// conversion (docs.ConvertIssue), which writes a version of its spec in the issue's room.
+	converting := createDigestChild(t, handler, database, "TEST", "A leaf the conversion converts", "The converted leaf's words.\n", child.Key, true)
+	convertingChain := newestEventPayload[issueEventFields](t, database, "issue.created", converting.Key).Ancestors
+	if want := []string{child.Key, root.Key}; !slices.Equal(convertingChain, want) {
+		t.Fatalf("the converted grandchild's issue.created ancestors = %#v, want %#v", convertingChain, want)
+	}
+	// The conversion defers an issue one of whose documents owes its block index, so a tick runs
+	// through whatever the writes before it left owed first.
+	if _, err := documents.ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil); err != nil {
+		t.Fatalf("run the block-index tick over what the writes of %s left owed: %v", converting.Key, err)
+	}
+	convertingSpec := converting.PrimaryArtifactID
+	unconvertedSpec := newestQueryVersion(t, database, convertingSpec)
+	if converted, err := documents.ConvertIssue(ctx, converting.Key, docs.IssueRoomGate, false); err != nil || converted.Outcome != docs.IssueConverted {
+		t.Fatalf("the conversion of %s answered %+v, %v; want it converted", converting.Key, converted, err)
+	}
+	convertedSpec := newestQueryVersion(t, database, convertingSpec)
+	if convertedSpec.number != unconvertedSpec.number+1 {
+		t.Fatalf("the conversion of %s leaves its spec at version %d, want the conversion's version after %d",
+			converting.Key, convertedSpec.number, unconvertedSpec.number)
+	}
+	conversionVersioned := readStoredDocumentEvent(t, database, versionEvent(t, database, convertingSpec, convertedSpec.number))
+	t.Run("W11 the conversion of an issue that versions its document", func(t *testing.T) {
+		requireIssueAncestors(t, "the spec's version the conversion wrote", conversionVersioned, converting.Key, convertingChain)
+	})
+
+	// A result recorded on the check of the converted grandchild's Verification document moves that
+	// query's record, and the drain the route runs once the result has committed writes a version
+	// of the document holding the bytes of the one before it (DrainOwedQueries).
+	verification := uploadDocument(t, handler, "/api/v1/issues/"+converting.Key, "verification.md",
+		":::check{#c1 surface=\"cli\"}\nThe converted leaf reads its tree.\n:::\n").Artifact
+	checked := newestQueryVersion(t, database, verification.ID)
+	if recorded := recordResult(t, handler, converting.Key, resultBody("c1", "fail", headCommit, map[string]any{"failed": 1})); recorded.Code != http.StatusCreated {
+		t.Fatalf("record a result of c1 on %s: status=%d body=%s", converting.Key, recorded.Code, recorded.Body.String())
+	}
+	revised := newestQueryVersion(t, database, verification.ID)
+	if revised.number != checked.number+1 || revised.markdown != checked.markdown {
+		t.Fatalf("a result recorded on %s leaves its Verification document at version %d holding %q, want the drain's version after %d holding its bytes, %q",
+			converting.Key, revised.number, revised.markdown, checked.number, checked.markdown)
+	}
+	drained := readStoredDocumentEvent(t, database, versionEvent(t, database, verification.ID, revised.number))
+	t.Run("W12 the drain's revision of a query's document", func(t *testing.T) {
+		requireIssueAncestors(t, "the Verification document's version the drain wrote", drained, converting.Key, convertingChain)
+	})
+
 	// The fixture holds one stored payload for each event type and kind of owner, its uuids and
-	// times made placeholders as the ask-reply fixture's are (normalizeAskReplyFixture). The
-	// issues' keys are TEST-1 to TEST-3 in every run, since each test's database is new.
+	// times made placeholders as the ask-reply fixture's are (normalizeAskReplyFixture), and the
+	// version events of W11 and W12. The issues' keys are TEST-1 to TEST-4 in every run, since each
+	// test's database is new.
 	fixture := documentEventAncestors{
-		Issues: map[string]string{"root": root.Key, "child": child.Key, "grandchild": grandchild.Key},
+		Issues: map[string]string{"root": root.Key, "child": child.Key, "grandchild": grandchild.Key, "converted grandchild": converting.Key},
 		Events: []documentEventAncestorsEvent{
 			created.fixture("grandchild"), versioned.fixture("grandchild"), removed.fixture("grandchild"),
 			rootCreated.fixture("root"), rootVersioned.fixture("root"),
 			projectCreated.fixture("project"), projectVersioned.fixture("project"),
+			conversionVersioned.fixture("converted grandchild"), drained.fixture("converted grandchild"),
 		},
 	}
 	encoded, err := json.MarshalIndent(fixture, "", "  ")

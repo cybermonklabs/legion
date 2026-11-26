@@ -1,6 +1,7 @@
 {
   "issues": {
     "child": "TEST-2",
+    "converted grandchild": "TEST-4",
     "grandchild": "TEST-3",
     "root": "TEST-1"
   },
@@ -232,6 +233,57 @@
           "created_at": "2026-01-01T00:00:10Z"
         },
         "artifact_id": "00000000-0000-4000-8000-000000000004"
+      }
+    },
+    {
+      "owner": "converted grandchild",
+      "type": "artifact.version",
+      "payload": {
+        "name": "spec.md",
+        "version": {
+          "size": 28,
+          "named": false,
+          "number": 2,
+          "authors": [
+            {
+              "id": "issue-conversion",
+              "kind": "system"
+            }
+          ],
+          "summary": null,
+          "created_at": "2026-01-01T00:00:11Z"
+        },
+        "ancestors": [
+          "TEST-2",
+          "TEST-1"
+        ],
+        "artifact_id": "00000000-0000-4000-8000-000000000005"
+      }
+    },
+    {
+      "owner": "converted grandchild",
+      "type": "artifact.version",
+      "payload": {
+        "name": "verification.md",
+        "version": {
+          "size": 87,
+          "named": false,
+          "number": 2,
+          "authors": [
+            {
+              "id": "alice",
+              "kind": "user",
+              "proven": true
+            }
+          ],
+          "summary": null,
+          "created_at": "2026-01-01T00:00:12Z"
+        },
+        "ancestors": [
+          "TEST-2",
+          "TEST-1"
+        ],
+        "artifact_id": "00000000-0000-4000-8000-000000000006"
       }
     }
   ]

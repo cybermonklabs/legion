@@ -324,6 +324,9 @@ type issueConversion struct {
 	treeVersion     model.Version
 	treeVersionNode graphstore.Uncaused
 	index           roomIndex
+	// ancestors is the issue's chain, which each artifact.version finish appends names
+	// (DocumentEventAncestors).
+	ancestors []string
 }
 
 // conversionStop is a conversion that ends with nothing written: an issue passed over or
@@ -517,6 +520,11 @@ func (c *issueConversion) run(ctx context.Context, result *ConvertedIssue) (*con
 			reason: fmt.Sprintf("its room's first update would hold %d items, past the %d one update decodes", items, maxUpdateItems)}, nil
 	}
 	if c.at, err = readNow(ctx, c.tx); err != nil {
+		return nil, err
+	}
+	// The issue's chain, read once under its owner lock with the rest of what the conversion
+	// reads, and before its first write, writeTree's.
+	if c.ancestors, err = DocumentEventAncestors(ctx, c.tx, &c.key); err != nil {
 		return nil, err
 	}
 	for _, step := range []func(context.Context) error{
@@ -1437,10 +1445,11 @@ func (c *issueConversion) moveResults(ctx context.Context) ([]graphstore.Claim, 
 // (R21) - the move of its open approval request to the version the conversion wrote, the carry of
 // its standing approval to that version (carryStandingApproval: a version whose text is the
 // approved text carries it, as R22 has the person's approval carry across a change only of where
-// a block sits), its artifact.version, and, under that event, what retiring its old index and the
-// room's pass stated of its blocks and its version's node, with the stamp of its links; and then
-// what the pass stated of the tree's own fragment and the room's references, with the tree's
-// version's node, at the sentinel, since no event records the tree's own version.
+// a block sits), its artifact.version, naming the issue's chain as run read it, and, under that
+// event, what retiring its old index and the room's pass stated of its blocks and its version's
+// node, with the stamp of its links; and then what the pass stated of the tree's own fragment and
+// the room's references, with the tree's version's node, at the sentinel, since no event records
+// the tree's own version.
 func (c *issueConversion) finish(ctx context.Context) error {
 	sink := eventSink(ctx)
 	caused := map[string]bool{}
@@ -1464,7 +1473,7 @@ func (c *issueConversion) finish(ctx context.Context) error {
 		issue := c.key
 		event := model.Event{
 			IssueKey: &issue, Type: "artifact.version", Actor: ConversionActor,
-			Payload: ArtifactVersionEventPayload(document.id, document.name, document.version, nil, model.ReferenceChanges{}, nil),
+			Payload: ArtifactVersionEventPayload(document.id, document.name, document.version, nil, model.ReferenceChanges{}, c.ancestors),
 		}
 		stated := graphstore.Joined(document.retired, c.index.facts[document.id], document.versionNode)
 		caused[document.id] = true
