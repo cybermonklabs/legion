@@ -20,7 +20,11 @@ import { ApiGateRefusal, sendApiCall } from "./dispatch-commands/api";
 import { askOnceWithinDryRun, DRY_RUN_DEADLINE_MS, defined } from "./dispatch-commands/context";
 import { OK, REFUSED, USAGE } from "./dispatch-commands/exit-codes";
 import { parentStatusConflictLines } from "./dispatch-commands/failures";
-import { hostedDispatch, hostSession, unhostedDispatch } from "./dispatch-commands/host-session";
+import {
+  hostedDispatch,
+  hostSessionDirectory,
+  unhostedDispatch,
+} from "./dispatch-commands/host-session";
 import { printsJson } from "./dispatch-commands/issues";
 import { loginCommand } from "./dispatch-commands/login";
 import {
@@ -263,8 +267,8 @@ function commandHost(
 
 /**
  * `dispatch proxy --socket <path> -- <command>`: its own arguments (`parseProxyArgv`), then the
- * host, the session and Dispatch resolved as every spec command resolves them (`hostSession`, the
- * session's state directory, `hostedDispatch`), under `DISPATCH_TOKEN_BROKER=1` with a DPoP
+ * host, the session, its directory and Dispatch resolved as every spec command resolves them
+ * (`hostSessionDirectory`, `hostedDispatch`), under `DISPATCH_TOKEN_BROKER=1` with a DPoP
  * credential, then the proxy itself (`runDispatchProxy`). It reads the settings a spec command
  * reads, but it never runs on the token files: it starts only under `DISPATCH_TOKEN_BROKER=1`,
  * which the files refuse beside them, so it trades its own token at the broker. Every line of its
@@ -298,14 +302,9 @@ async function runProxyCommand(
     return USAGE;
   };
 
-  const hosted = hostSession(hostName(), env);
+  const hosted = hostSessionDirectory(hostName(), env);
   if ("problem" in hosted) return cannotStart(hosted.problem);
   const { sessionId, file } = hosted;
-  try {
-    sessionDirectory(env, sessionId);
-  } catch (error) {
-    return cannotStart(messageFor(error));
-  }
   // Read before the configuration, whose refusal without the setting would name a bearer the
   // proxy never presents. A value other than 1 is refused there too, unquoted.
   if ((env.DISPATCH_TOKEN_BROKER ?? "").trim() !== "1") {
@@ -560,15 +559,9 @@ export async function runDispatchCli(
     }
   }
 
-  const hosted = hostSession(ledgerHost(), env);
+  const hosted = hostSessionDirectory(ledgerHost(), env);
   if ("problem" in hosted) return refuse(hosted.problem, USAGE, parsed.tool);
-  const { host, sessionId, file } = hosted;
-  let dir: string;
-  try {
-    dir = sessionDirectory(env, sessionId);
-  } catch (error) {
-    return refuse(messageFor(error), USAGE, parsed.tool);
-  }
+  const { host, sessionId, file, dir } = hosted;
 
   if (parsed.dryRun && !dryRunAsksDispatch(parsed.tool, parsed.args)) {
     // The call's own argument check, so the call refuses no arguments its dry run passed. It runs

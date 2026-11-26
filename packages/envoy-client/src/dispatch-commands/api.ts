@@ -144,21 +144,22 @@ export const WRITE_ROUTES: readonly WriteRoute[] = [
   },
 ];
 
+/** Each row of {@link WRITE_ROUTES} in its order, with its pattern split at `/` once, here. */
+const WRITE_ROUTE_SEGMENTS = WRITE_ROUTES.map((row) => ({ row, segments: row.pattern.split("/") }));
+
 /** The row of {@link WRITE_ROUTES} that `method` on `path` (a route, without its query) matches,
  *  or undefined: each segment of the row's pattern as written, and each `{name}` one segment that
  *  is not empty. */
 export function writeRoute(method: string, path: string): WriteRoute | undefined {
   const segments = path.split("/");
-  return WRITE_ROUTES.find((row) => {
-    const pattern = row.pattern.split("/");
-    return (
-      row.method === method &&
-      pattern.length === segments.length &&
-      pattern.every((part, at) =>
+  return WRITE_ROUTE_SEGMENTS.find(
+    (route) =>
+      route.row.method === method &&
+      route.segments.length === segments.length &&
+      route.segments.every((part, at) =>
         part.startsWith("{") ? segments[at] !== "" : part === segments[at]
       )
-    );
-  });
+  )?.row;
 }
 
 /**

@@ -8,6 +8,7 @@ import {
 } from "node:http";
 import { constants } from "node:os";
 import type { Duplex } from "node:stream";
+import { API_ROUTE_PATTERN, DISPATCH_API_METHODS } from "@legion/contracts/dispatch-tools";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { brokerTokenFor } from "./broker-credential";
 import { writeRoute } from "./dispatch-commands/api";
@@ -383,18 +384,16 @@ function elsewhereRefusal(target: string, path: string): string | undefined {
   return `${SENDS} The target ${JSON.stringify(target)} reaches another route than the one it names (a dot segment, a backslash, a # or a control character). Name the route's own path, or read it with dispatch api.`;
 }
 
-/** A path `dispatch api --path` takes: `/api/v1`, or a path under it (`apiPathProblem`, the
- *  contract's rule). The rest of that rule refuses only what {@link elsewhereRefusal} refused
- *  first, or what a URL's path holds percent-encoded. */
-const API_ROUTE = /^\/api\/v1(?:\/|$)/;
-
 /**
  * Why the proxy sends no `method` to `path`, the path of the URL it would send below Dispatch's
  * own path, naming the dispatch command to use instead; undefined for the two kinds of request it
  * sends (R2, R5): a GET under `/api/`, and the comment POST that carries an `Idempotency-Key`. A
  * write names the first command of its row of `WRITE_ROUTES` (`writeRoute`,
- * dispatch-commands/api.ts), and a write under `/api/v1` that no row holds names `dispatch api`,
- * which sends it outside a session whose AskGate reviews Dispatch writes.
+ * dispatch-commands/api.ts), and a write under `/api/v1` (`API_ROUTE_PATTERN`, `dispatch api`'s
+ * own route rule) that no row holds names `dispatch api`, which sends it outside a session whose
+ * AskGate reviews Dispatch writes. The rest of that command's path rule (`apiPathProblem`)
+ * refuses only what {@link elsewhereRefusal} refused first, or what a URL's path holds
+ * percent-encoded.
  */
 function methodRefusal(method: string, path: string, key: string | undefined): string | undefined {
   const quoted = JSON.stringify(path);
@@ -408,12 +407,12 @@ function methodRefusal(method: string, path: string, key: string | undefined): s
       ? undefined
       : `${SENDS} This comment POST carries no Idempotency-Key header. Send it with one, so a resend posts the comment once, or post the comment with dispatch comment.`;
   }
-  if (method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE") {
+  if ((DISPATCH_API_METHODS as readonly string[]).includes(method)) {
     const row = writeRoute(method, path);
     if (row !== undefined) {
       return `${SENDS} ${method} ${quoted} is another write. Send it with dispatch ${row.commands[0]}. AskGate reviews that call if it gates the command.`;
     }
-    if (!API_ROUTE.test(path)) {
+    if (!API_ROUTE_PATTERN.test(path)) {
       return `${SENDS} ${method} ${quoted} is another write, outside /api/v1, and no dispatch command sends it.`;
     }
     return `${SENDS} ${method} ${quoted} is another write, and no named dispatch command sends it. Send it with dispatch api --method ${method} --path <path>. In a session whose AskGate reviews Dispatch writes, that command sends only GET, so it refuses this write.`;

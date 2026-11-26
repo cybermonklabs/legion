@@ -1089,8 +1089,10 @@ const projectKeyValidation: NonNullable<DispatchToolSpec["validation"]> = {
 const ARCHITECTURE_SOURCE_REPO_PATTERN = /^[A-Za-z0-9_-]+\/(?!\.\.?$)[A-Za-z0-9._-]+$/;
 
 /** A route `dispatch api` sends: the API's root, which lists every route, or a route under it,
- *  with a query or none. */
-const API_ROUTE_PATTERN = /^\/api\/v1(?=[/?]|$)/;
+ *  with a query or none. `dispatch proxy` tests a write's path with it too, and names
+ *  `dispatch api` only for a write to such a route (`methodRefusal`, envoy-client's
+ *  dispatch-proxy.ts). */
+export const API_ROUTE_PATTERN = /^\/api\/v1(?=[/?]|$)/;
 
 /** The characters a URL parser percent-encodes in a path and no rule above refuses: Bun's `URL`
  *  writes each as its `%XX`, so a route holding one would be sent as another spelling of it. */

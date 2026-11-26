@@ -385,7 +385,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 					handler(w, r)
 					return
 				}
-				refuseWriteOutsideProjectScope(w, covers)
+				s.writeHandlerError(w, outsideProjectScopeError(covers))
 			}
 		}
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -405,7 +405,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 			// caller cannot tell it from an id nobody holds. The check does not hide which ids
 			// exist, and it does not claim to (the file comment).
 			if belongsTo == "" || !access.CredentialCovers(access.Credential{Listed: []string{covers}}, belongsTo, private) {
-				refuseWriteOutsideProjectScope(w, covers)
+				s.writeHandlerError(w, outsideProjectScopeError(covers))
 				return
 			}
 			if second != nil {
@@ -415,7 +415,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 					return
 				}
 				if checkProject == "" || !access.CredentialCovers(access.Credential{Listed: []string{covers}}, checkProject, checkPrivate) {
-					refuseWriteOutsideProjectScope(w, covers)
+					s.writeHandlerError(w, outsideProjectScopeError(covers))
 					return
 				}
 			}
@@ -445,20 +445,13 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 // nothing, to a caller whose credential names the one project covers. It names that project and
 // nothing of the credential itself. It names no project of the target, since there is none to
 // name and an invented one would say something about what exists. withinProjectScope answers it
-// also for an object of a private project that the credential does not name, and
-// retractCheckResult for a check of such a project (refuseRetractionOfUncoveredCheck), so each
-// answers as for a target that does not exist. Both write this one value, so the answers cannot
-// drift.
+// before a handler runs, also for an object of a private project that the credential does not
+// name, and retractCheckResult answers it for a check of such a project
+// (refuseRetractionOfUncoveredCheck), so each answers as for a target that does not exist. Both
+// write this one value through writeHandlerError, so the answers cannot drift.
 func outsideProjectScopeError(covers string) *apiError {
 	return errorf(http.StatusForbidden, codeProjectScope,
 		"this request's credential names project %s, and this write resolves to no project", covers)
-}
-
-// refuseWriteOutsideProjectScope writes outsideProjectScopeError, for the checks that answer
-// before a handler runs.
-func refuseWriteOutsideProjectScope(w http.ResponseWriter, covers string) {
-	refusal := outsideProjectScopeError(covers)
-	writeError(w, refusal.code, refusal.status, refusal.message)
 }
 
 // withinSessionScope runs the session check in front of one mutating route's handler. A row
