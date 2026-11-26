@@ -285,12 +285,16 @@ export function NodeRow({
                 <span data-node-first-line="" {...pageChrome}>
                   {LENS_WORDS.no_verdict}
                 </span>
-              ) : deleted === null ? (
-                <FirstLine node={node} />
               ) : (
-                <span data-node-first-line="" {...authorText}>
-                  <DeletedLine deleted={deleted} />
-                </span>
+                <>
+                  {deleted === null ? (
+                    <FirstLine node={node} />
+                  ) : (
+                    <span data-node-first-line="" {...authorText}>
+                      <DeletedLine deleted={deleted} />
+                    </span>
+                  )}
+                </>
               )}
               {folded === undefined ? null : (
                 <span className={`ml-1.5 text-xs ${pageQuietText}`}>
