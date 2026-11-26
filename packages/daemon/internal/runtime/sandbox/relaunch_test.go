@@ -479,9 +479,16 @@ func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
 			}
 		}
 	}
-	// roundOver ends loc's pod as its update round does once every role in it has answered.
+	// roundOver ends loc's pod as its update round does once every role in it has answered. The
+	// round's wait for the pod to go runs on a fake clock the test never moves, so it ends once the
+	// controller stand-in has ended the pod, however long a loaded runner takes it to: on the boot
+	// timeout's 2 s of wall clock, a runner busy migrating the package's database template for 27 s
+	// ran the wait out first (`wait out its pod: timed out after 2s`).
 	roundOver := func(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) {
 		t.Helper()
+		was := r.clock
+		r.clock = clocktest.New(rigNow)
+		defer func() { r.clock = was }()
 		if err := r.ReplacePod(g.ctx, runtime.Known{Claim: workerToken, Locator: &loc}, stillDue); err != nil {
 			t.Fatalf("ReplacePod: %v", err)
 		}
@@ -1338,7 +1345,7 @@ func TestALaunchReturnsOnlyOnceTheSandboxStoreHoldsItsRunningPatch(t *testing.T)
 func TestALaunchThatFailsAfterRunningLeavesItsSandboxSuspended(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
-	g.hold.Store(true)
+	g.setHold(true)
 	if _, err := g.r.Spawn(g.ctx, workerSpec(t)); err == nil || !strings.Contains(err.Error(), "wait for its new pod") {
 		t.Fatalf("Spawn: %v, want the new pod's timeout", err)
 	}
@@ -1365,7 +1372,7 @@ func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
 	fc := clocktest.New(rigNow)
 	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
 	g.r.clock = fc
-	g.hold.Store(true)
+	g.setHold(true)
 	// The controller reports on the generation it observed, and a condition of an earlier one is
 	// not read as this launch's, so the rig writes it as the controller would: after the Running
 	// patch, against the generation that patch produced.
@@ -1717,12 +1724,13 @@ func TestAFailedLauncherBindingReadNeverLeavesASupervisedRoleChildRunning(t *tes
 // refusal of the record, RBAC's 403, charged on each try, the third failing the claim; and a
 // throttle that outlasts the launch's own deadline, charged once per try after each has sent the
 // patch again while the throttle lasted, so a server that stays overloaded fails the claim rather
-// than holding its launch for ever.
+// than holding its launch for ever. Every row runs at the rig's boot timeout: a row that shortened
+// it to 300 ms, to end its tries sooner, put its setup's wait for the role launcher under that
+// bound too, and on a loaded runner the wait ran out, or the setup's launch failed once and left
+// the claim a generation ahead of the setup's events.
 func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
-		// bootTimeout is the rig's boot timeout, 0 for the rig's own.
-		bootTimeout time.Duration
 		// answer is the server's answer to an address record after refused refusals, nil to apply it.
 		answer func(refused int32) error
 		// err is what the relaunch fails with, "" for a relaunch that launches uncharged; one that
@@ -1753,18 +1761,13 @@ func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T)
 			refused: func(n int32) bool { return n == 3 }, want: "3, once per charged try",
 		},
 		"a throttle past the launch's deadline, charged once per try": {
-			bootTimeout: 300 * time.Millisecond,
-			answer:      func(int32) error { return apierrors.NewInternalError(errors.New(etcdThrottle)) },
-			err:         "etcdserver: throttle: too many requests",
-			refused:     func(n int32) bool { return n > 3 }, want: "more than 3, each try sending it again while the throttle lasted",
+			answer:  func(int32) error { return apierrors.NewInternalError(errors.New(etcdThrottle)) },
+			err:     "etcdserver: throttle: too many requests",
+			refused: func(n int32) bool { return n > 3 }, want: "more than 3, each try sending it again while the throttle lasted",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			var options []rigOption
-			if tc.bootTimeout != 0 {
-				options = append(options, withOptions(func(o *Options) { o.BootTimeout = tc.bootTimeout }))
-			}
-			g := newRig(t, nil, options...)
+			g := newRig(t, nil)
 			spec := workerSpec(t)
 			machine, _, _ := supervisedSandboxMachine(t, g, spec)
 			first := startSupervisedSandboxRole(t, g, machine, spec, resumeSession)
@@ -2317,7 +2320,7 @@ func (s *supervisedSandboxStore) PutClaimStep(_ context.Context, token claim.Tok
 func TestALaunchWhoseRunningPatchTimesOutAfterApplyingLeavesItsSandboxSuspended(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
-	g.hold.Store(true)
+	g.setHold(true)
 	applyThenTimeOut := k8stesting.ObjectReaction(g.dyn.Tracker())
 	g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
 		patch := a.(k8stesting.PatchAction)

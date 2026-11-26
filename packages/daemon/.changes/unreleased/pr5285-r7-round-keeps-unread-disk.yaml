@@ -1,0 +1,45 @@
+kind: Changed
+body: |-
+  An update round replaces a pod only over a clean read of its workspace, and a replacement that
+  still takes a disk says what it took (R7 of #5285). Before every replacement a round makes,
+  through a role, by issue, or at a launch, the daemon reads the issue workspace through a role's
+  shim or the pod's launcher; a turn that starts after the read voids it. Over a drift the pod's
+  roles can keep working under, a read that finds work that no branch or tag on origin holds, or
+  that fails, ends the round with no replacement: the pod and its roles keep working on the old
+  image and settings, the keep is recorded as an idle release's decline, the open phase's worker
+  or else the architect is told once (`workspace-kept`), and the workspace is read again after each
+  turn of the issue, and an hour after a failed read, until a read finds nothing. A drift of the
+  Kubernetes service account the pod runs as breaks the pod, and so does a drift of the pod's
+  exchange identity where a launch into the pod is refused until its round replaces it
+  (`dispatch_token_broker` set, no `dispatch_token_transition_file`, and a pod that carries no
+  exchange identity); its reason opens on `[breaks the pod] `, so its round replaces the pod after
+  the read whatever it finds, and no keep holds that round back. Any other drift of the exchange
+  identity, a token of another lifetime among them, is one the roles keep working under. A kept
+  volume that the next pod mounts is no exception: a round keeps such a pod as it keeps any other.
+  A round's replacement over a drift that breaks the pod, and a launch's own replacement of an
+  issue pod, tells the architect once what it took (`workspace-taken`): each commit and the
+  working-copy change by name, or that no read could be made. A round over a drift the roles keep
+  working under replaces only over its own clean read, so it tells only where its finish takes
+  another act's record of the same pod whose read found work or failed, and its notice says that
+  the read it tells of is that act's. A launch reads through any launcher of the pod that can, and a launch that deletes a
+  kept volume of a Sandbox that runs no pod says so, and is told only once that Sandbox is gone.
+  Each round's replacement, and each launch's own replacement whose read found work or could not
+  be made, is recorded before it acts (new table `pod_replacements`, migration 20261125023100),
+  and its notice is queued with the record's delete, which takes every record of the same pod or
+  Sandbox with it: a replacement whose call fails, whose daemon stops, or whose notice the store
+  refuses once the pod is taken is finished at a later sweep from the read made before it, never
+  kept, and two acts on one pod or Sandbox, a launch's delete of a Sandbox over its live pod among
+  them, are told once, from the read of their records that tells most: one that found work over one
+  that failed, one that failed over one that found nothing, and of reads of one kind the newest
+  record's. A round's call that finds its pod already taken by such a delete ends the round with
+  no notice of its own and leaves no record of its own: its read moves onto the delete's record
+  where it is the read that tells of the two, by the same rule, so the delete's one notice weighs
+  the round's read too, and a delete that is not made tells nobody. A launch's replacement that
+  takes a round's record, as after a round's call that ran out of time on the pod's launch turn,
+  ends that round with no notice of its own, reading the issue's claims from their machines, and
+  nothing is written on the issue that the pod went before its round was over. A round stays open
+  while the store refuses its notice, and a sweep reads a recorded act only under the pod's launch
+  turn, from the API server. The
+  update-stalled notice of a replacement that failed says "The pod replacement failed" and that the
+  pod may be gone, with the runtime's error quoted. The round's ask says a round can end with no
+  replacement, and the ask of a round that breaks the pod says it cannot.
