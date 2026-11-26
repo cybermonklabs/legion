@@ -618,18 +618,18 @@ type serving struct {
 // servingOf is how file serves name, as the policy load would serve it, with the store's tags
 // where --secrets-json gave them (tags, nil for none):
 //
-//   - a profile with a proxy block, which only an old file read by DecodeProfiles holds
-//     (policy.Profiles.LegacyProxy), or with a dpop block, is behind that block;
+//   - a profile with a proxy block, which an old file holds (policy.Profiles.LegacyProxy), or
+//     with a dpop block, is behind that block;
 //   - another profile is behind the kind its source's proxy tag names, or else the kind its proxy
 //     string names (policy.ProfileKind); behind none when neither names one or the kind is no kind
 //     of the file; and unread when it has no proxy string and the tags were not read, unless the
-//     file declares no kind at all, which no tag can name;
+//     file declares no kind at all (policy.Profiles.Kinds), which no tag can name;
 //   - a name no profile holds is its stored secret's by its own name, behind the kind its own
 //     proxy tag names; but not served by its own name at all when profiles of other names use it
 //     as their source (policy.Profiles.Of), and behind nothing when the list holds no such secret.
 func servingOf(file policy.Profiles, name string, tags *storeTags) serving {
 	rules := file.FileRules()
-	declares := len(rules.Kinds) > 0
+	declares := len(file.Kinds()) > 0
 	byKind := func(s serving, kindName, via string) serving {
 		k := rules.Kind(kindName)
 		if k == nil {

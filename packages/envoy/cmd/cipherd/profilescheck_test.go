@@ -155,9 +155,11 @@ var reportBlockNames = map[string]string{"github": "github", "google": "google",
 
 // profileFieldPaths is every JSON field of policy.Profile, a block's fields (GitHubBlock,
 // GoogleBlock, ProxyBlock) under the block's own field name, read from the types themselves, so a
-// field added to a profile is a field this report's test asks about. The two fields a Profile
-// does not marshal (json "-") are named as the file writes them: ProxyKind is the proxy key's
-// string form and Allow the profile's allow; another such field fails the test until it is named.
+// field added to a profile is a field this report's test asks about. The two exported fields a
+// Profile does not marshal (json "-") are named as the file writes them: ProxyKind is the proxy
+// key's string form and Allow the profile's allow; another such field fails the test until it is
+// named. An unexported field is no field the file can set (encoding/json reads none), so it is
+// none of the report's.
 func profileFieldPaths(t *testing.T) []string {
 	t.Helper()
 	unmarshalled := map[string]string{"ProxyKind": "proxy", "Allow": "allow"}
@@ -167,6 +169,9 @@ func profileFieldPaths(t *testing.T) []string {
 		var paths []string
 		for i := range typ.NumField() {
 			field := typ.Field(i)
+			if !field.IsExported() {
+				continue
+			}
 			tag, _, _ := strings.Cut(field.Tag.Get("json"), ",")
 			if tag == "-" && prefix == "" && unmarshalled[field.Name] != "" {
 				tag = unmarshalled[field.Name]
@@ -295,14 +300,24 @@ func TestProfilesCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
 		want []string
 	}{
 		{
-			"a proxy block of no kind, which the kinds replaced",
-			`{"profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"]}}]}`,
+			"a proxy block of no kind in a file of kinds, which the kinds replaced",
+			`{"kinds": [{"name": "github", "hosts": ["api.github.com"], "ways": ["swap"]}], "profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"]}}]}`,
 			[]string{`profiles[0] "GITHUB_ADMIN_PAT"`, "proxy block is no longer read", "declare the kind under kinds", "GITHUB_ADMIN_PAT, proxy=<kind>"},
 		},
 		{
-			"a proxy block of kind azure, which the kinds replaced",
-			`{"profiles": [{"name": "AZURE_ADMIN", "proxy": {"hosts": ["login.microsoftonline.com"], "kind": "azure"}}]}`,
+			"a proxy block of kind azure in a file of kinds, which the kinds replaced",
+			`{"kinds": [{"name": "azure", "hosts": ["login.microsoftonline.com"], "ways": ["exchange"]}], "profiles": [{"name": "AZURE_ADMIN", "proxy": {"hosts": ["login.microsoftonline.com"], "kind": "azure"}}]}`,
 			[]string{`profiles[0] "AZURE_ADMIN"`, "proxy block is no longer read", "kinds"},
+		},
+		{
+			"a proxy block of a kind no block took, in a file of no kinds",
+			`{"profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"], "kind": "gcp"}}]}`,
+			[]string{`profiles[0] "GITHUB_ADMIN_PAT"`, `proxy.kind is "gcp"`, `a proxy block's kind is "", aws, azure or dpop`},
+		},
+		{
+			"a judge in a proxy block of a file of no kinds",
+			`{"profiles": [{"name": "GITHUB_ADMIN_READ", "source": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"], "judge": 900}}]}`,
+			[]string{`profiles[0] "GITHUB_ADMIN_READ"`, "proxy.judge", "its own judge tag", "the source, GITHUB_ADMIN_PAT"},
 		},
 		{
 			"a judge in a dpop block",

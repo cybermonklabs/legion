@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  A broker that reads kinds starts again against a profiles file that declares no kinds, the file every deployment ran before them. Such a file is read as the broker before the kinds read it: each `proxy` block of no kind, of kind `aws` or of kind `azure` serves its profile's name behind the block's `hosts`, `headers` and `allow`, in the way its kind took (no kind swaps a stored value or a minted token in, `aws` signs with a stored key pair, `azure` exchanges an `azure-login` token), under a kind of its own named for the profile, which no `proxy` tag names. A `judge` or `guidance` in such a block is refused, naming the source's tag that holds it now, and so is a block of any other kind but `dpop`. In a file that declares a kind, a block of those kinds is refused as before, naming `kinds`. `envoy-broker profiles check` reads such a file the same way, and against itself reports nothing changed and no `UNKNOWN`. The reading is transitional: it goes once every deployment's file declares kinds.
+time: 2026-11-26T11:50:35Z
+custom:
+    Issue: INFRA-1129
