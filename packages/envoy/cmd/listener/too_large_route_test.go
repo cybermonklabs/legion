@@ -85,8 +85,10 @@ func (w *subjectWatch) through(t *testing.T, conn *natsgo.Conn) []string {
 
 // headerBandText is a message for POST /v1/messages/publish on topic under idempotency key key
 // whose envelope, as the route builds it, is within the server's max payload by itself, and past
-// it by one byte with the Nats-Msg-Id header its publish carries: the band in which only a size
-// check that counts the header refuses it before the publish.
+// it by one byte with the Nats-Msg-Id header its publish carries. It is one of the two bands a
+// check of the envelope alone would let through; on a topic the stream stores the relay's frame
+// headers reserve more than that header does (bus.RelayFrameHeaderBytes), so the route's check
+// refuses this message for the frame, and either reserve keeps it from the publish.
 func headerBandText(t *testing.T, topic, key string, maxPayload int) string {
 	t.Helper()
 	dedupeKey := publishDedupePrefix + key
@@ -110,12 +112,19 @@ func headerBandText(t *testing.T, topic, key string, maxPayload int) string {
 }
 
 // stampBandText is a message for POST /v1/messages/publish on topic from sender, under idempotency
-// key key, whose envelope with the Nats-Msg-Id header its publish carries is within the server's
-// max payload, and one byte past it once the route adds sender's own stamp (senderStamp): the band
-// the route's check does not cover, which the publish's own check of the same rule refuses. The
-// stamp is read through the route's own function, so a stamp that gains a field moves this row
-// with it.
-func stampBandText(t *testing.T, rig *knownSessionRig, topic, sender, key string, maxPayload int) string {
+// key key, whose envelope is within what the route accepts on that topic and one byte past it once
+// the route adds sender's own stamp (senderStamp): the band the route's check does not cover,
+// which the publish's own check of the same rule refuses. The stamp is read through the route's
+// own function, so a stamp that gains a field moves this row with it.
+//
+// What the route accepts on a topic the stream stores is the max payload less the room the relay's
+// frame headers take (bus.RelayFrameHeaderBytes), since the stored message reaches a session as
+// its bytes under those headers, and that is the smaller of the two reserves: the Nats-Msg-Id
+// header of the stored publish takes less. The same text is sent to target as well, whose agent
+// subject is longer and so reserves more, and the row there asks that the route's own check let
+// it through: the helper fails UNKNOWN when it does not, rather than leave that row passing for
+// the wrong reason.
+func stampBandText(t *testing.T, rig *knownSessionRig, topic, sender, target, key string, maxPayload int) string {
 	t.Helper()
 	stamp := senderStamp(context.Background(), rig.deps.registry, rig.deps.sessions, sender)
 	if stamp == nil {
@@ -131,12 +140,28 @@ func stampBandText(t *testing.T, rig *knownSessionRig, topic, sender, key string
 		if err != nil {
 			t.Fatalf("encode the envelope: %v", err)
 		}
-		return len(encoded) + (&natsgo.Msg{Header: natsgo.Header{natsgo.MsgIdHdr: []string{bus.ForwardMsgID(dedupeKey, topic)}}}).Size()
+		return len(encoded)
 	}
+	// What a send of the same text to target carries before its stamp, which that route checks.
+	sendSize := func(text string) int {
+		item := contracts.AgentSendEnvelope(target, "", listenerMessage(listenerwire.MessageBody{
+			Source: "agent", SourceSession: sender, Message: text,
+		}, contracts.ExpectsReplyUnset))
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			t.Fatalf("encode the send's envelope: %v", err)
+		}
+		return len(encoded)
+	}
+	bound := maxPayload - bus.RelayFrameHeaderBytes(topic)
 	const base = 1000
-	text := strings.Repeat("m", base+(maxPayload+1)-size(strings.Repeat("m", base), stamp))
-	if bare, stamped := size(text, nil), size(text, stamp); bare > maxPayload || stamped != maxPayload+1 {
-		t.Fatalf("UNKNOWN: the message takes %d bytes without the stamp and %d with it, against the max payload of %d: the row wants it within the bound without the stamp and one byte past it with", bare, stamped, maxPayload)
+	text := strings.Repeat("m", base+(bound+1)-size(strings.Repeat("m", base), stamp))
+	if bare, stamped := size(text, nil), size(text, stamp); bare > bound || stamped != bound+1 {
+		t.Fatalf("UNKNOWN: the message takes %d bytes without the stamp and %d with it, against the %d bytes the route accepts on %s: the row wants it within the bound without the stamp and one byte past it with", bare, stamped, bound, topic)
+	}
+	sendBound := maxPayload - bus.RelayFrameHeaderBytes(contracts.LegacyAgentSubject(target))
+	if sent := sendSize(text); sent > sendBound {
+		t.Fatalf("UNKNOWN: a send of the same text to %s carries %d bytes against the %d the send route accepts, so that row's 413 would come from the route's own check", target, sent, sendBound)
 	}
 	return text
 }
@@ -271,7 +296,7 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 	// the publish makes the same size check before it reads that deadline; the send route reads
 	// its target first, so with the deadline spent that read answers, which is what the changelog
 	// and docs/architecture.md say of this band.
-	stampBand := stampBandText(t, rig, topic, live, id.New(), maxPayload)
+	stampBand := stampBandText(t, rig, topic, live, stopped, id.New(), maxPayload)
 	for _, deadline := range []struct {
 		name string
 		ctx  context.Context
