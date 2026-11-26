@@ -212,7 +212,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// holds the scope. No credential holds it beside person, and no act records it: the act of a
 	// proven session (bearerSessionActor) and of a person (actingPerson) record the credential's
 	// scopes through actScopes, which leaves legion-status out. oneProject is also the
-	// test for the one project the token may write (actor.Project, below), so the two cannot
+	// test for the one project the token may write (Credential.NamedProject, below), so the two cannot
 	// drift apart.
 	oneProject := caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1
 	var scopes []string
@@ -254,8 +254,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// service and no person names no project at all. Nor does a token of the project scope none,
 	// the read entry's or one narrowed from it, which names no project and writes none.
 	if oneProject {
-		project := caller.Projects[0]
-		actor.Project = &project
+		actor.Credential.NamedProject = caller.Projects[0]
 	}
 	// The writer the line names: the person, or the service for a token that names none, under
 	// the `service:` prefix requestKeyLogin spells a service with, so one field never reads a
