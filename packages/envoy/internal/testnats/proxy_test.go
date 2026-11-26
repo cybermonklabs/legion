@@ -6,6 +6,7 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // proxiedClient connects to the proxy's URL as a deployed client does, reconnecting for as long as
@@ -27,40 +28,46 @@ func proxiedClient(t *testing.T, proxy *Proxy) (conn *natsgo.Conn, disconnected,
 	return conn, down, up
 }
 
-func waitSignal(t *testing.T, signal <-chan struct{}, within time.Duration, what string) {
-	t.Helper()
-	select {
-	case <-signal:
-	case <-time.After(within):
-		t.Fatalf("%s did not happen within %v", what, within)
-	}
-}
-
 // A proxy relays a client's connection, credentials and all, until Cut: the connection drops at
 // once and every dial is refused while it stays cut. Restore lets the client reconnect, and a new
 // client connect, through the same URL.
 func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
 	proxy := StartProxy(t, URL(t))
 	conn, disconnected, reconnected := proxiedClient(t, proxy)
-	if err := conn.FlushTimeout(time.Second); err != nil {
+	if err := conn.FlushTimeout(requestWait(t)); err != nil {
 		t.Fatalf("flush through the proxy: %v", err)
 	}
 
 	proxy.Cut()
-	waitSignal(t, disconnected, 2*time.Second, "the client's disconnect after the cut")
+	testwait.Receive(t, "the client's disconnect after the cut", disconnected)
 	if refused, err := natsgo.Connect(proxy.URL(), natsgo.Timeout(dialTimeout), natsgo.NoReconnect()); err == nil {
 		refused.Close()
 		t.Fatal("a client connected through a cut proxy")
 	}
-	select {
-	case <-reconnected:
+	// The client tried to reconnect and the cut proxy refused it, which the proxy's own count of
+	// refused dials says with no span: the row's own dial through the cut proxy, just above, is one,
+	// and any later one is the client's reconnect. A window of 300 ms (before) could pass before the
+	// client's first reconnect, whose wait is 50 ms plus up to 100 ms of jitter and a handshake, came
+	// at all on a loaded machine. A reconnect that comes first ends the wait and fails the row then,
+	// so a cut proxy that relays the client's reconnect fails it at once, not at the test's deadline.
+	var through bool
+	testwait.Until(t, "the cut proxy to refuse the client's reconnect", func() (int, bool) {
+		select {
+		case <-reconnected:
+			through = true
+			return 0, true
+		default:
+		}
+		refused := proxy.refusedDials()
+		return refused, refused >= 2
+	})
+	if through {
 		t.Fatal("the client reconnected through a cut proxy")
-	case <-time.After(300 * time.Millisecond):
 	}
 
 	proxy.Restore()
-	waitSignal(t, reconnected, 5*time.Second, "the client's reconnect after the restore")
-	if err := conn.FlushTimeout(time.Second); err != nil {
+	testwait.Receive(t, "the client's reconnect after the restore", reconnected)
+	if err := conn.FlushTimeout(requestWait(t)); err != nil {
 		t.Fatalf("flush after the restore: %v", err)
 	}
 	fresh, err := natsgo.Connect(proxy.URL(), natsgo.Timeout(dialTimeout), natsgo.NoReconnect())
@@ -106,7 +113,7 @@ func TestAFrozenProxyKeepsTheConnectionAndMovesNothingUntilRestored(t *testing.T
 	}
 
 	proxy.Restore()
-	if err := conn.FlushTimeout(2 * time.Second); err != nil {
+	if err := conn.FlushTimeout(requestWait(t)); err != nil {
 		t.Fatalf("flush after the restore: %v", err)
 	}
 	select {
@@ -125,7 +132,7 @@ func TestAProxyWithLatencyAddsItsRoundTrip(t *testing.T) {
 	proxy := StartProxy(t, URL(t), ProxyLatency(rtt))
 	conn, _, _ := proxiedClient(t, proxy)
 	started := time.Now()
-	if err := conn.FlushTimeout(5 * time.Second); err != nil {
+	if err := conn.FlushTimeout(requestWait(t)); err != nil {
 		t.Fatalf("flush through the proxy: %v", err)
 	}
 	if took := time.Since(started); took < rtt {

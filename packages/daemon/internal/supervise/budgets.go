@@ -4,7 +4,8 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // Budgets are a claim's retry counters, each a separate policy with its own reset point.
@@ -43,6 +44,39 @@ type Limits struct {
 	LaunchFailures int
 	PromptFailures int
 	PromptRetires  int
+}
+
+// Spent is whether a failure that left the claim's budgets at b spent any of them: one at or past
+// its limit in l, deaths measured against the launch failure limit as chargeDeath measures them. A
+// failure that spent none, a provider error's run of refused turns (turnOutcome) or a prompt
+// refused at launch (promptRefused), failed the claim on its own account.
+func (b Budgets) Spent(l Limits) bool {
+	return spentAt(b.LaunchFailures, l.LaunchFailures) || spentAt(b.Deaths, l.LaunchFailures) ||
+		spentAt(b.PromptFailures, l.PromptFailures) || spentAt(b.PromptRetires, l.PromptRetires)
+}
+
+// spentAt is whether count has reached limit, a limit of 0 being none.
+func spentAt(count, limit int) bool { return limit > 0 && count >= limit }
+
+// OneAttemptLeft is what b, the budgets a claim failed with, leaves the half-open retry of a
+// production check's look (RequestRetry.OneAttemptLeft): each budget the failure spent (Spent) set
+// one attempt short of its limit in l, and every other count as the failure left it, so one more
+// failure of the same kind fails the claim again. A failure that spent none of them leaves nothing
+// to keep, and the retry starts a fresh run, as every other retry does: the zero Budgets.
+func (b Budgets) OneAttemptLeft(l Limits) Budgets {
+	if !b.Spent(l) {
+		return Budgets{}
+	}
+	short := func(count *int, limit int) {
+		if spentAt(*count, limit) {
+			*count = limit - 1
+		}
+	}
+	short(&b.LaunchFailures, l.LaunchFailures)
+	short(&b.Deaths, l.LaunchFailures)
+	short(&b.PromptFailures, l.PromptFailures)
+	short(&b.PromptRetires, l.PromptRetires)
+	return b
 }
 
 // FailureCause is the one word for what failed a claim, chosen by the site that fails it rather
@@ -120,14 +154,14 @@ var FailureCauses = []FailureCause{
 // launch records with what that process ended (launch, letGo); noEnd where the caller let it go
 // already (registrationDeadline).
 //
-// turn is the moment the caller already reserved for this relaunch in the wake pacing, as
-// launchAfter takes it, and the zero time for every caller but the boot's replay of a recorded
-// death (RecordedDeath.Turn). The retry of a refused relaunch passes the zero time: it is raised
-// anew, so it reserves afresh.
-func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, ending string, turn time.Time) error {
+// place is the place the caller already took for this relaunch in the wake pacing, as launchAfter
+// takes it, and nil for every caller but the boot's replay of a recorded death
+// (RecordedDeath.Place). The retry of a refused relaunch passes nil: it is raised anew, so it
+// takes a place afresh.
+func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, ending string, place *wakepace.Place) error {
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, func(ctx context.Context) error {
-			return m.relaunchAfterFailure(ctx, cause, ending, time.Time{})
+			return m.relaunchAfterFailure(ctx, cause, ending, nil)
 		}, err)
 	}
 	if !m.deathLaunchFailureCharged(cause) {
@@ -137,7 +171,7 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, 
 	if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, true, false, false, turn, ending)
+	return m.launchAfter(ctx, true, false, false, place, ending)
 }
 
 // deathLaunchFailureCharged is whether cause is a death whose launch failure an earlier raise of

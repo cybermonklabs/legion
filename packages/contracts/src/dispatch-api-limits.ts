@@ -164,6 +164,15 @@ export type SettledDeliveryState = (typeof SETTLED_DELIVERY_STATES)[number];
 export const MAX_BROADCAST_RECIPIENTS = 100;
 
 /**
+ * The most session ids one `GET /api/v1/agents/known` names (`id`, repeated). A page asks
+ * once for every agent reference it holds that the live registry does not list, so the bound is a
+ * page's worth with room to spare, and a page holding more asks in batches of this size. Generated
+ * into Go as `contracts.KnownSessionsMax`, which the server enforces with `400 INVALID_QUERY`, so
+ * the dashboard's batches and the server's refusal are one number.
+ */
+export const KNOWN_SESSIONS_MAX = 100;
+
+/**
  * The most references one `GET /api/v1/reference-targets` may name, one `ref` each; past it the
  * server answers `400 CAP_EXCEEDED`. It is set above the heaviest set a page was seen to name:
  * 247 distinct references, measured on 2026-11-05 on the issue the new issue page was designed
@@ -267,13 +276,14 @@ export const DISPATCH_LOGIN_CHANGED = "LOGIN_CHANGED";
 
 /**
  * The code of the `403` for a write by an access token the secrets broker issued that names a
- * session and a service but no person under the project scope `person`: the machine holding it
- * has signed nobody in, so Dispatch has nobody to record the write under. Its reads are
- * unaffected. The message names `agent-secrets login`, the one command that makes the write
- * possible, because whoever reads the refusal is whoever must run it. A token that names a
- * service and no person under the project scope `named` is no such token: an exchange account
- * entry naming no person minted it, its service is that account, and its writes are recorded
- * under the account.
+ * session and a service but no person under the project scope `person`: a machine's token, and
+ * the machine holding it has signed nobody in, so Dispatch has nobody to record the write under.
+ * Its reads are unaffected. A job's token names a service and no person too, but under the
+ * project scope `named` or `public`, and Dispatch takes its writes as that service rather than
+ * refusing them; so does a token an exchange account entry naming no person minted, under the
+ * project scope `named`, whose service is that account. The message names `agent-secrets
+ * login`, the one command that makes the write possible, because whoever reads the refusal is
+ * whoever must run it.
  */
 export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
 

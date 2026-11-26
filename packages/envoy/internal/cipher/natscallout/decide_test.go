@@ -63,6 +63,21 @@ func newSession(t testing.TB, id string, life time.Duration) *session {
 	}
 }
 
+// jobService is the service a job's token names: the identity its job entry lists, here a pod's
+// Kubernetes service account as the exchange spells its subject.
+const jobService = "system:serviceaccount:example-ns:example-job"
+
+// newJobSession is a job's session: its token names the job entry's identity as its service and
+// no person, the entry's project scope and whole list - named with its one project, or public
+// with the private projects its entry lists - and no OAuth scope, as the exchange mints it.
+func newJobSession(t testing.TB, id string, life time.Duration, scope string, projects ...string) *session {
+	t.Helper()
+	s := newSession(t, id, life)
+	s.answer.Person, s.answer.Service = "", jobService
+	s.answer.ProjectScope, s.answer.Projects = scope, projects
+	return s
+}
+
 // request is the authorization request the server sends for this session connecting with nonce:
 // its token in the CONNECT's token field and its proof over nonce in the signature field, which
 // nats.go base64url-encodes.
@@ -141,6 +156,31 @@ func TestASessionTokenGetsItsOwnChannel(t *testing.T) {
 	require.Equal(t, time.Unix(a.answer.ExpiresAt, 0), decision.Expires)
 	require.Contains(t, decision.Grant.Subscribe, "notifications.envoy.deliver.ses_a")
 	require.NotContains(t, decision.Grant.Subscribe, "notifications.envoy.deliver.*")
+}
+
+// A job's live token, named with its one project or public with its entry's private projects,
+// beside a proof over this connection's nonce, is answered as a person's session's token is: with
+// natsgrant.Session's grant of its own session, named session/<id>, expiring with the token.
+func TestAJobsSessionTokenGetsItsOwnChannel(t *testing.T) {
+	for _, row := range []struct {
+		name     string
+		scope    string
+		projects []string
+	}{
+		{"a job's named token", ciphertoken.ProjectScopeNamed, []string{"ACME"}},
+		{"a job's public token", ciphertoken.ProjectScopePublic, []string{"PRIVA", "PRIVB"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			job := newJobSession(t, "ses_job", 15*time.Minute, row.scope, row.projects...)
+			decision, err := Decide(t.Context(), Deps{Introspect: introspector(job)}, nil, job.request(t, "nonce-of-this-connection"))
+			require.NoError(t, err)
+			want, err := natsgrant.Session("ses_job")
+			require.NoError(t, err)
+			require.Equal(t, want, decision.Grant)
+			require.Equal(t, "session/ses_job", decision.Name)
+			require.Equal(t, time.Unix(job.answer.ExpiresAt, 0), decision.Expires)
+		})
+	}
 }
 
 // A service's platform token, from an account the deployment lists, is answered with its kind's
@@ -241,6 +281,10 @@ func TestRefusals(t *testing.T) {
 	readOnly := newSession(t, "ses_reader", 15*time.Minute)
 	readOnly.answer.Person, readOnly.answer.Service = "", "example-reader"
 	readOnly.answer.ProjectScope, readOnly.answer.Scope = ciphertoken.ProjectScopeNone, ciphertoken.ScopeRead
+	// A public token is a job's, which names a service and no person: one beside a person, which
+	// no entry that names a person mints, is no session's credential (ciphertoken.SessionCaller).
+	publicForPerson := newJobSession(t, "ses_public_person", 15*time.Minute, ciphertoken.ProjectScopePublic, "PRIVA")
+	publicForPerson.answer.Person = "person@example.com"
 	// A token narrowed to reading is read-only too, whatever project scope it narrows, so each
 	// answer of the golden file the broker's own test holds its narrowed answers to is no
 	// session's credential to the auth service either: each is a session of its own, presenting
@@ -257,7 +301,7 @@ func TestRefusals(t *testing.T) {
 		"two-hours-token": {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
 		"held-token":      {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
 	}
-	introspected := append([]*session{a, expired, dotted, foreign, unbounded, readOnly}, narrowed...)
+	introspected := append([]*session{a, expired, dotted, foreign, unbounded, readOnly, publicForPerson}, narrowed...)
 	deps := Deps{Introspect: introspector(introspected...), ServiceToken: serviceTokens(tokens)}
 	unreachable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
 		return oauthwire.Introspection{}, errors.New("dial tcp: connection refused")
@@ -291,6 +335,7 @@ func TestRefusals(t *testing.T) {
 		{"a proof of another key", deps, nil, otherKey.request(t, "nonce"), labelKeyMismatch, "key mismatch"},
 		{"a live token that is no session's credential", deps, nil, foreign.request(t, "nonce"), labelNotASession, "token is no session's credential"},
 		{"a read-only token", deps, nil, readOnly.request(t, "nonce"), labelNotASession, "token is no session's credential"},
+		{"a public token beside a person", deps, nil, publicForPerson.request(t, "nonce"), labelNotASession, "token is no session's credential"},
 		{"a proof that is no base64url", deps, nil, badSig, labelProofInvalid, "proof invalid: jws"},
 		{"a token that names no expiry", deps, nil, unbounded.request(t, "nonce"), labelNoExpiry, "token names no expiry"},
 		{"a session id that is not one subject token", deps, nil, dotted.request(t, "nonce"), labelBadSessionID, "session id is not one subject token"},
@@ -448,4 +493,114 @@ func TestAGrantNamingASystemSubjectIsRefused(t *testing.T) {
 			require.NotEmpty(t, response.Jwt)
 		})
 	}
+}
+
+// The deployment's operator identity and the writer hold's probe, as BROKER_NATS_SERVICES lists
+// them (config.ParseNATSServices), beside exampleServices.
+const (
+	operatorAccount = "system:serviceaccount:envoy-operator:envoy-operator"
+	probeAccount    = "system:serviceaccount:envoy-operator:envoy-hold-probe"
+)
+
+var (
+	operatorEntry = config.NATSService{Kind: config.NATSOperator, Account: operatorAccount, AllProjects: true}
+	probeEntry    = config.NATSService{Kind: config.NATSProbe, Account: probeAccount, AllProjects: true}
+	// holdServices are exampleServices with the operator and the probe listed.
+	holdServices = append(append([]config.NATSService{}, exampleServices...), operatorEntry, probeEntry)
+)
+
+// The operator entry is answered with natsgrant.Operator of the hold row's phase while the row is
+// known, and with released's while it is unknown, so the hold never refuses it; its user expires
+// with its token or 10 minutes after the decision, whichever is first, in every phase. Every other
+// client a decision admits - a session, a listed service, the hold's probe - is refused
+// hold_unknown while the row is unknown, naming nothing but that, and is decided as before while it
+// is known, held included (refusing them under held is a later task's). A decision reads the row
+// once, and only for a client it would otherwise admit: a client with no credential or an unlisted
+// one costs the broker's Postgres nothing.
+//
+// It fails when the operator is refused for the hold (the unknown row's operator line), when a
+// client other than the operator is admitted while the row is unknown, or when the operator's user
+// outlives 10 minutes.
+func TestTheOperatorsGrantIsTheHoldsPhase(t *testing.T) {
+	now := time.Now()
+	signer := newHoldSigner(t)
+	a := newSession(t, "ses_a", 15*time.Minute)
+	tokens := map[string]platformToken{
+		"operator-token":       {account: operatorAccount, issued: now, expiry: now.Add(time.Hour)},
+		"short-operator-token": {account: operatorAccount, issued: now, expiry: now.Add(3 * time.Minute)},
+		"listener-token":       {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
+		"probe-token":          {account: probeAccount, issued: now, expiry: now.Add(time.Hour)},
+		"unlisted-token":       {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
+	}
+	stub := &holdStub{}
+	deps := Deps{Introspect: introspector(a), ServiceToken: serviceTokens(tokens), Now: func() time.Time { return now },
+		Hold: NewHoldView(stub.read, signer.HoldKeys, nil, nil)}
+	operatorName := "operator/" + operatorAccount
+	for _, row := range []struct {
+		name   string
+		answer holdAnswer
+		// phase is the operator's grant's phase; known is whether every other client is admitted.
+		phase natsgrant.OperatorPhase
+		known bool
+	}{
+		{"released", rowOf(signer.reading(t, 1, natsgrant.OperatorPhaseReleased, "h-1")), natsgrant.OperatorPhaseReleased, true},
+		{"prepare", rowOf(signer.reading(t, 2, natsgrant.OperatorPhasePrepare, "h-1")), natsgrant.OperatorPhasePrepare, true},
+		{"held", rowOf(signer.reading(t, 3, natsgrant.OperatorPhaseHeld, "h-1")), natsgrant.OperatorPhaseHeld, true},
+		{"unknown: no row", holdAnswer{}, natsgrant.OperatorPhaseReleased, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			stub.set(row.answer)
+			for _, raw := range []string{"operator-token", "short-operator-token"} {
+				before := stub.called()
+				decision, err := Decide(t.Context(), deps, holdServices, serviceRequest(raw))
+				require.NoError(t, err, "the operator was refused under %s", row.name)
+				require.Equal(t, operatorName, decision.Name)
+				require.Equal(t, natsgrant.Operator(row.phase), decision.Grant, "%s's grant under %s", raw, row.name)
+				require.Equal(t, 1, stub.called()-before, "the operator's decision did not read the row once")
+				want := now.Add(10 * time.Minute)
+				if raw == "short-operator-token" {
+					want = tokens[raw].expiry
+				}
+				require.Equal(t, want, decision.Expires, "%s's user expires at %s", raw, decision.Expires)
+			}
+			others := []struct {
+				name string
+				req  Request
+				want Decision
+			}{
+				{"a session", a.request(t, "nonce"), Decision{Name: "session/ses_a", Grant: must(natsgrant.Session("ses_a")), Expires: time.Unix(a.answer.ExpiresAt, 0)}},
+				{"a listener", serviceRequest("listener-token"), Decision{Name: "listener/example-hub", Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)}},
+				{"the hold probe", serviceRequest("probe-token"), Decision{Name: "probe/" + probeAccount, Grant: natsgrant.HoldProbe(), Expires: now.Add(time.Hour)}},
+			}
+			for _, other := range others {
+				before := stub.called()
+				decision, err := Decide(t.Context(), deps, holdServices, other.req)
+				require.Equal(t, 1, stub.called()-before, "%s's decision did not read the row once", other.name)
+				if row.known {
+					require.NoError(t, err, "%s was refused under %s", other.name, row.name)
+					require.Equal(t, other.want, decision, "%s under %s", other.name, row.name)
+					continue
+				}
+				var refused *Refusal
+				require.True(t, errors.As(err, &refused), "%s was admitted while the hold was unknown: %+v", other.name, decision)
+				require.Equal(t, labelHoldUnknown, refused.Label)
+				require.Equal(t, "hold_unknown: the NATS writer hold cannot be read", refused.Reason)
+				require.ErrorIs(t, refused.Cause, errNoHoldRow, "the reporter's line does not say why")
+			}
+			for _, refusedFirst := range []Request{serviceRequest("unlisted-token"), {UserNkey: "UUSER", ServerID: "NSERVER"}} {
+				before := stub.called()
+				_, err := Decide(t.Context(), deps, holdServices, refusedFirst)
+				require.Error(t, err)
+				require.Zero(t, stub.called()-before, "a client refused before its grant read the hold row")
+			}
+		})
+	}
+}
+
+// must is value, failing the calling test's process on err: a grant a literal session id builds.
+func must[T any](value T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return value
 }

@@ -1,0 +1,3 @@
+jj git push --dry-run --ignore-working-copy --color=never --bookmark conflicted
+Error: Bookmark conflicted is conflicted
+Hint: Run `jj bookmark list` to inspect, and use `jj bookmark set` to fix it up.
