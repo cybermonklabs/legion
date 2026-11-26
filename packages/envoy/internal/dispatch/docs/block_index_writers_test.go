@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -23,10 +24,17 @@ import (
 	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
-// deferredItems is a bullet list of more items than a write indexes in its own request: one
-// block for the list and one for each item's paragraph, so it is deferredItems+1 blocks against
-// the bound of deferBlockIndexBlocks.
+// deferredItems is a bullet list of more items than a write indexes in its own request. Each item
+// is two blocks, the list item and its paragraph: R7 of the issue-tree spec nests a moved block
+// "under a container that has no words of its own: a `callout` or a list item", so the renderer
+// records each list item's offset (renderer.list in pmdoc/render.go) and the block index gives
+// the item a node and a row of its own beside its paragraph's. With the list's own block that is
+// deferredBlocks, against the bound of deferBlockIndexBlocks.
 const deferredItems = deferBlockIndexBlocks + 1
+
+// deferredBlocks is how many blocks deferredList(deferredItems) holds: the list, and each item
+// with its paragraph.
+const deferredBlocks = 1 + 2*deferredItems
 
 // deferredList's last item cites an issue, so the document leaves a refs row of its own: the
 // rebuild below is held to writing those and marking work owed, which it can only be seen to
@@ -145,6 +153,30 @@ func countRows(t *testing.T, database *store.Store, table, artifactID string) in
 		t.Fatalf("count the rows of %s for %s: %v", table, artifactID, err)
 	}
 	return count
+}
+
+// blockRowTypes is how many rows of document_blocks the document holds of each block type.
+func blockRowTypes(t *testing.T, database *store.Store, artifactID string) map[string]int {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(),
+		`select type, count(*) from document_blocks where artifact_id = $1 group by type`, artifactID)
+	if err != nil {
+		t.Fatalf("count the block rows of %s by type: %v", artifactID, err)
+	}
+	defer rows.Close()
+	types := map[string]int{}
+	for rows.Next() {
+		var blockType string
+		var count int
+		if err := rows.Scan(&blockType, &count); err != nil {
+			t.Fatalf("scan a block type of %s: %v", artifactID, err)
+		}
+		types[blockType] = count
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("count the block rows of %s by type: %v", artifactID, err)
+	}
+	return types
 }
 
 // countBlockNodes is how many nodes of the store belong to the document, by the ref_key every
@@ -266,9 +298,17 @@ func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
 	if tick := reconcileBlockIndex(t, service, ""); tick.Documents != 1 {
 		t.Fatalf("the tick indexed %d documents, want the deferred one", tick.Documents)
 	}
+	// The rows are the list's, each item's and each item's paragraph's (deferredBlocks): R7 makes
+	// each list item a node beside the paragraph it holds.
 	blocks := countRows(t, database, "document_blocks", document)
-	if blocks != deferredItems+1 {
-		t.Fatalf("the tick wrote %d block rows of the %d-item list, want %d", blocks, deferredItems, deferredItems+1)
+	types := blockRowTypes(t, database, document)
+	t.Logf("the tick wrote %d block rows of the %d-item list: %v by type", blocks, deferredItems, types)
+	if blocks != deferredBlocks {
+		t.Fatalf("the tick wrote %d block rows of the %d-item list (%v by type), want %d: the list, and each item and its paragraph",
+			blocks, deferredItems, types, deferredBlocks)
+	}
+	if want := map[string]int{"bullet_list": 1, "list_item": deferredItems, "paragraph": deferredItems}; !maps.Equal(types, want) {
+		t.Errorf("the tick wrote block rows of %v by type, want %v", types, want)
 	}
 	if nodes := countBlockNodes(t, database, document); nodes != blocks {
 		t.Errorf("the tick wrote %d block nodes beside %d block rows, want one node a row", nodes, blocks)

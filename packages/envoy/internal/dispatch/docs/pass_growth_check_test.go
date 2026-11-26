@@ -19,14 +19,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// The two rooms TestThePassLockTimeGrowsLinearlyWithTheRoom measures, in blocks: the deep spec's
-// 4,682, and 20,000. Each room holds its blocks in two documents of the issue room, half in its
-// spec's fragment and half in its plan's, each in the deep spec's shape (passGrowthRoomText): 20,000
-// blocks of that shape in one document make more elements than a document may hold
-// (pmdoc.MaxDocumentElements), and the room of 4,682 is split as the room of 20,000 is, so the
-// ratio of their times measures the room's size and not one document against two. The plan's
-// document replaces the paragraph createIssueRoom seeds the plan's fragment with (planSeed), and
-// the room's verification holds no block.
+// The two rooms TestThePassLockTimeGrowsLinearlyWithTheRoom measures, in blocks: 4,682, which was
+// the size of api's deep spec before a list item became a block of its own beside its paragraph
+// (R7 of the issue-tree spec; that spec now holds 6,842, api's deepXidBlocks), and 20,000. The
+// rooms keep those sizes, which the bound below and the measurement graphstore's
+// CustomPlansStatement records are taken over. Each room holds its blocks in two documents of the
+// issue room, half in its spec's fragment and half in its plan's, each in the deep spec's shape
+// (passGrowthRoomText): 20,000 blocks of that shape in one document make more elements than a
+// document may hold (pmdoc.MaxDocumentElements), and the room of 4,682 is split as the room of
+// 20,000 is, so the ratio of their times measures the room's size and not one document against
+// two. The plan's document replaces the paragraph createIssueRoom seeds the plan's fragment with
+// (planSeed), and the room's verification holds no block.
 const (
 	passGrowthSmall = 4_682
 	passGrowthLarge = 20_000
