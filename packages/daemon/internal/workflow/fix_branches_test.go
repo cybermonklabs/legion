@@ -513,3 +513,45 @@ func TestAWay2KeepsTheBranchesAndTheRerunTakesItsOwn(t *testing.T) {
 		assertStrings(t, "the deletions", pendingWay2(t, engine).deletions(), []string{"1 a fix 1"})
 	})
 }
+
+// A fix whose own branch cannot be named opens not at all (refuseFixName): with the seam
+// failFixName, which makes every name of a branch beside a fix fail, a CI check that fails at the
+// head of a task in reviewing that takes a fix starts no fix, its failure's row goes to the owner,
+// and the owner is told once, by one ci-failed notice. Its red is the refusal taken out, where the
+// same failure opens fix 1.
+func TestAFixWhoseBranchCannotBeNamedIsRefused(t *testing.T) {
+	engine := returnEngine()
+	engine.failFixName = true
+	r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady, TriggerTesterPassed)
+	r.fails(fixHead, "k-ci")
+	assertStrings(t, "the fixes", r.fixes(), nil)
+	onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		row, err := r.engine.store.CIFailureAt(ctx, tx, issue.Key, issue.Generation, "a", "k-ci", fixHead)
+		if err == nil && (row == nil || row.WentTo != record.CIFailureToOwner) {
+			err = fmt.Errorf("k-ci's failure row = %+v, want the owner's", row)
+		}
+		return err
+	})
+	r.assertToldOwnerOnce("k-ci")
+}
+
+// The worker-died notice of a fix's failed claim names where the work beside the fix stands: the
+// sentence built from the typed facts of fix 1 (besideWorkSentence), the prefix of the branches
+// beside it (claim.BesideFixPrefix) and the fix's own branch F (claim.BesideBranch). Its red is the
+// sentence taken out of the notice.
+func TestAFailedClaimOfAFixNamesWhereItsWorkStands(t *testing.T) {
+	prefix, err := claim.BesideFixPrefix("LEGION-208", 1, "a", 1)
+	if err != nil {
+		t.Fatalf("name the prefix beside fix 1: %v", err)
+	}
+	sentence := besideWorkSentence("LEGION-208", 1, "a", 1)
+	if !strings.Contains(sentence, prefix) || !strings.Contains(sentence, besideFix1(t, claim.RoleImplementer)) {
+		t.Fatalf("the sentence of fix 1's work = %q, want it to name the prefix %s and F %s", sentence, prefix, besideFix1(t, claim.RoleImplementer))
+	}
+	r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
+	r.apply("fix-claim-failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleImplementer, Reason: "the process died"})
+	died := r.workerDied()
+	if len(died) != 1 || !strings.Contains(died[0], strings.TrimSpace(sentence)) {
+		t.Fatalf("the worker-died notices = %q, want the fix's one naming %q", died, sentence)
+	}
+}

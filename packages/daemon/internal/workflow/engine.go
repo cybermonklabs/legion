@@ -216,6 +216,9 @@ type Engine struct {
 	// openBesidePendingWay opens a fix of a task while the task's latest fix ended with its way
 	// pending (openFix). Only a test sets it.
 	openBesidePendingWay bool
+	// failFixName makes every name of a fix's own branch fail (openFix), so the fix rule's refusal
+	// of a fix whose branch cannot be named (refuseFixName) can be reached. Only a test sets it.
+	failFixName bool
 	// For the branches beside a fix (fix_branches.go), each the fault its test plants first:
 	// noEndBesideDelete takes out the deletion of the branches beside a task's fixes that its move
 	// into the retro with no hold queues, at a transition and at the release of an end hold
