@@ -117,8 +117,8 @@ func TestTheHeldGrandchildIsHandedOverWhateverBecomesOfItsAcceptedParent(t *test
 
 // A parent of the closing tree that is still waiting for its own Dispatch children when the
 // linger expires is handed over as every other member that never started is. Nothing held it at
-// admitted but the children-first wait (record.ChildWaits), which its new tree keeps: its
-// children are open in Dispatch still, so its first phase waits for them there as it waited
+// admitted but the children-first wait (record.LineFacts.ChildWaits), which its new tree keeps:
+// its children are open in Dispatch still, so its first phase waits for them there as it waited
 // here. Left behind instead, it would stand todo at admitted in a closed tree, which is the one
 // place no slot, no status and no person's move reaches.
 func TestALingerHandsOverTheParentStillWaitingForItsChildren(t *testing.T) {
@@ -188,7 +188,8 @@ func TestAClosedTreeKeepsOnlyTheMembersThatLeftTheWorkflow(t *testing.T) {
 }
 
 // seedMirrorChild writes what Dispatch says of a child filed under parent: its status and the
-// parent that makes it one of parent's open children (record.ChildWaits reads the pair).
+// parent that makes it one of parent's open children (record.ChildWaitsOf's judgement reads the
+// pair).
 func seedMirrorChild(t *testing.T, pool *pgxpool.Pool, key, status, parent string) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error {
