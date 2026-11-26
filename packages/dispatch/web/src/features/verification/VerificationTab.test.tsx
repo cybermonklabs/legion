@@ -323,6 +323,25 @@ test("a check names what the server compared its results with", async () => {
   expect(compared[1]).toBe("This issue holds no pull request and no branch.");
 });
 
+test("a check whose work has not merged says so", async () => {
+  const { getIssueResults, view } = renderTab(verification, [
+    check("c-unmerged", [], {
+      when: "after_merge",
+      compared_nothing: "not_merged",
+      compared_with: [],
+      pass_stands: { answer: "no", reason: "no_result" },
+    }),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+  await screen.findByTestId("verification-checks");
+  expect(screen.getByTestId("verification-check-compared-with").textContent).toBe(
+    "The work has no merge that Dispatch knows."
+  );
+});
+
 // A basis in a repository the issue links a pull request in and does not resolve to carries that
 // repository, so the tab names it: the linked pull request as GitHub names it, owner/repo#7, and a
 // branch of that repository as branch main of owner/repo, beside the issue's own repository's pull

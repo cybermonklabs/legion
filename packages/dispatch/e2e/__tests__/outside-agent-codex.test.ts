@@ -18,7 +18,15 @@
  *  and, in the same file, not PASS where one crosses the rule the row reads. */
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -172,6 +180,8 @@ interface CodexScenario {
    *  stops that run's Codex (`at-stop`), on the TERM the stand-in tmux's `kill-server` sends, which
    *  comes after the turn's next request, once the leg has read that no record comes. */
   readonly recordLate?: "before-next" | "at-stop";
+  /** The leg's PATH holds no `ln`, so it can link none of the programs it found. */
+  readonly withoutLn?: boolean;
 }
 
 /** Where the real provenance helper is: the stand-in imports its tree comparison. */
@@ -624,6 +634,7 @@ else {
   );
   const bin = textToolPath(scratch, ["bun", "git", "tar", "gzip"]);
   script(join(bin, "tmux"), standInTmux());
+  if (scenario.withoutLn === true) rmSync(join(bin, "ln"), { force: true });
   const codex = script(join(state, "codex"), standInCodex(state));
   // npm: installs the stand-in codex for \`npm install --prefix <dir> @openai/codex@<v>\`, recording
   // the integrity of the two packages as npm does in its hidden lockfile, takes the release for the
@@ -1084,6 +1095,32 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
     },
     // The five runs at once, each a bounded child under the Codex run's bound.
     rowLimit({ atOnce: ["codexRun", "codexRun", "codexRun", "codexRun", "codexRun"] })
+  );
+
+  // The leg links, at its start, the real program behind each tool that Codex and the children it
+  // starts run under the leg's PATH. A program it found and could not link leaves them to whatever
+  // PATH holds, so the leg runs nothing and every row reads UNKNOWN naming the program and the
+  // reason. The control that nothing ran: the stand-in npm, which records every call, was never
+  // called.
+  test(
+    "a Codex leg that cannot link a program it found runs nothing: every row reads UNKNOWN naming it",
+    async () => {
+      const run = await codexStandInRun({ withoutLn: true });
+      expect({ problems: unknownProblems(run), stdout: run.stdout }).toEqual({
+        problems: [],
+        stdout: run.stdout,
+      });
+      const rows = rowsOf(run.stdout);
+      for (const name of codexRows) {
+        const got = rows.get(name)?.got ?? "";
+        for (const part of ["bun (", "was not linked into", "command not found"]) {
+          expect({ name, got }).toEqual({ name, got: expect.stringContaining(part) });
+        }
+      }
+      expect(existsSync(join(run.state, "npm-args"))).toBe(false);
+    },
+    // The run, a bounded child under the Codex run's bound.
+    rowLimit("codexRun")
   );
 
   test(
