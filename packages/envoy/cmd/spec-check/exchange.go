@@ -101,6 +101,9 @@ type fileSystem interface {
 	exchange(a, b string) error
 	// moveNoReplace renames from to to, and refuses when an entry has the name to.
 	moveNoReplace(from, to string) error
+	// rename renames from to to, and replaces an entry of the name to as the system's rename does
+	// (moveByHand).
+	rename(from, to string) error
 	// remove removes the file or the empty directory path.
 	remove(path string) error
 }
@@ -123,6 +126,7 @@ func (osFileSystem) sync(f *os.File) error                     { return f.Sync()
 func (osFileSystem) chmod(path string, mode fs.FileMode) error { return os.Chmod(path, mode) }
 func (osFileSystem) lchown(path string, uid, gid int) error    { return os.Lchown(path, uid, gid) }
 func (osFileSystem) link(oldname, newname string) error        { return os.Link(oldname, newname) }
+func (osFileSystem) rename(from, to string) error              { return os.Rename(from, to) }
 func (osFileSystem) lock(f *os.File) error                     { return tryLock(f) }
 func (osFileSystem) remove(path string) error                  { return os.Remove(path) }
 
@@ -140,8 +144,10 @@ func (osFileSystem) remove(path string) error                  { return os.Remov
 // what this run read. A step that fails before the exchange removes the new directory and its
 // record and leaves dir as it was; a system that cannot exchange two directories refuses the
 // exchange, so print refuses with dir as it was, and names the way out where it knows one
-// (exchangeRefusal). A run that is killed leaves the new or the old directory beside dir, with its
-// record, which the next run finishes (cleanLeftovers). A directory that the process may not write
+// (exchangeRefusal), and so does a system that refuses the move of an entry that print makes
+// after the exchange, which print tries in the new directory first (probeMove). A run that is
+// killed leaves the new or the old directory beside dir, with its record, which the next run
+// finishes (cleanLeftovers). A directory that the process may not write
 // is refused, as the files of such a directory were, and so is a parent that it may not write,
 // where the new directory goes, and an owner that it may not give the new directory, each with the
 // way out (writable, sameOwner). warnings is a line for each step after the exchange that did not
@@ -185,6 +191,9 @@ func writeDir(fsys fileSystem, dir string, lock *specDirLock, files, after map[s
 		if err != nil {
 			return nil, false, err
 		}
+	}
+	if err := probeMove(fsys, staging); err != nil {
+		return nil, false, err
 	}
 	if err := fsys.chmod(staging, old.Mode()&(fs.ModePerm|fs.ModeSetgid|fs.ModeSticky)); err != nil {
 		return nil, false, err
@@ -340,13 +349,17 @@ func finishOld(fsys fileSystem, old, dir string, read map[string]string) (lines 
 		return []string{fmt.Sprintf("print could not read %s, which held %s before the run, so it leaves it: %s", old, dir, err)}, false
 	}
 	var names []string
+	var refused error // the first refusal of a move back into dir that no entry of the name caused
 	for _, entry := range list {
 		name := entry.Name()
 		path, now := filepath.Join(old, name), filepath.Join(dir, name)
 		current, err := os.Lstat(now)
 		if errors.Is(err, fs.ErrNotExist) {
-			if fsys.moveNoReplace(path, now) != nil {
+			if err := move(fsys, path, now); err != nil {
 				names = append(names, name)
+				if refused == nil && !errors.Is(err, fs.ErrExist) {
+					refused = err
+				}
 			}
 			continue
 		}
@@ -362,20 +375,26 @@ func finishOld(fsys fileSystem, old, dir string, read map[string]string) (lines 
 	if what == "" {
 		what = "an entry" // made in old after the run read it, so old was not empty
 	}
+	cause := "another program made or changed " + what + " there while print ran"
+	held := "which another program made or changed there while print ran"
+	if refused != nil {
+		cause = fmt.Sprintf("the system refused to move %s back into %s (%s)", what, dir, refused)
+		held = fmt.Sprintf("which the system refused to move back into %s (%s)", dir, refused)
+	}
 	path, err := keep(fsys, old)
 	switch {
 	case err != nil && read == nil:
 		return []string{fmt.Sprintf("print could not remove %s, which held %s before the run, and holds %s, and print has no record of the texts that the run that left it read: %s", old, dir, what, err)}, true
 	case err != nil:
-		return []string{fmt.Sprintf("print could not remove %s, which held %s before the run, and holds %s, which another program made or changed there while print ran: %s", old, dir, what, err)}, true
+		return []string{fmt.Sprintf("print could not remove %s, which held %s before the run, and holds %s, %s: %s", old, dir, what, held, err)}, true
 	}
 	removeRecord(fsys, old)
 	if read == nil {
 		return []string{fmt.Sprintf("print kept %s, which held %s before the run: it holds %s, and print has no record of the texts that the run that left it read, so compare each with the entry of that name in %s",
 			path, dir, what, dir)}, true
 	}
-	return []string{fmt.Sprintf("print kept %s, which held %s before the run: another program made or changed %s there while print ran, so compare each with the entry of that name in %s",
-		path, dir, what, dir)}, true
+	return []string{fmt.Sprintf("print kept %s, which held %s before the run: %s, so compare each with the entry of that name in %s",
+		path, dir, cause, dir)}, true
 }
 
 // removable reports whether finishOld may remove the regular file path of an old directory, whose
@@ -395,9 +414,10 @@ func removable(path string, current fs.FileInfo, read map[string]string, name st
 }
 
 // undoNew removes staging, a new directory that a killed run of print built beside dir and did not
-// exchange, and its record: it holds only new files and second names of the spec files of dir. An
-// entry that it cannot remove, it keeps, with staging under another name (keep), and answers a line
-// that names it and where it kept it, and kept true. It answers no line when it removed staging.
+// exchange, and its record: it holds only new files, second names of the spec files of dir, and the
+// entry of its probe (probeName, probeMoved). An entry that it cannot remove, it keeps, with
+// staging under another name (keep), and answers a line that names it and where it kept it, and
+// kept true. It answers no line when it removed staging.
 func undoNew(fsys fileSystem, staging, dir string) (lines []string, kept bool) {
 	list, err := os.ReadDir(staging)
 	if err != nil {
@@ -405,8 +425,9 @@ func undoNew(fsys fileSystem, staging, dir string) (lines []string, kept bool) {
 	}
 	var names []string
 	for _, entry := range list {
-		if !entry.Type().IsRegular() || fsys.remove(filepath.Join(staging, entry.Name())) != nil {
-			names = append(names, entry.Name())
+		name := entry.Name()
+		if !entry.Type().IsRegular() && name != probeName && name != probeMoved || fsys.remove(filepath.Join(staging, name)) != nil {
+			names = append(names, name)
 		}
 	}
 	if len(names) == 0 && fsys.remove(staging) == nil {
@@ -429,7 +450,87 @@ func undoNew(fsys fileSystem, staging, dir string) (lines []string, kept bool) {
 // own, and answers that name.
 func keep(fsys fileSystem, path string) (string, error) {
 	kept := path + "-kept-" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	return kept, fsys.moveNoReplace(path, kept)
+	return kept, move(fsys, path, kept)
+}
+
+// move renames from to to, and refuses when an entry has the name to: a rename that keeps an
+// existing name (moveNoReplace), or, where the system answers that it has no such rename (EINVAL,
+// ENOSYS or ENOTSUP), a move that refuses the name another way (moveByHand). A pod's gVisor volume
+// (v9fs) is such a system: it exchanges two directories with renameat2 and RENAME_EXCHANGE, and
+// answers EINVAL for RENAME_NOREPLACE.
+func move(fsys fileSystem, from, to string) error {
+	err := fsys.moveNoReplace(from, to)
+	if !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOSYS) && !errors.Is(err, syscall.ENOTSUP) {
+		return err
+	}
+	if byHand := moveByHand(fsys, from, to); byHand != nil {
+		return fmt.Errorf("%w, and a move that refuses the name another way failed too: %w", err, byHand)
+	}
+	return nil
+}
+
+// moveByHand renames from to to, and refuses an entry of the name to, with no rename that keeps an
+// existing name: a file or a link by a second name, which the system refuses where an entry has
+// the name, and then a removal of the first name; a directory, or a file of a system that refuses
+// a second name, by a rename once no entry has the name to. The caller holds the lock of the spec
+// directory, so no run of print makes that name between the two steps; another program could.
+func moveByHand(fsys fileSystem, from, to string) error {
+	info, err := os.Lstat(from)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		switch err := fsys.link(from, to); {
+		case err == nil:
+			return fsys.remove(from)
+		case errors.Is(err, fs.ErrExist):
+			return err
+		}
+	}
+	switch _, err := os.Lstat(to); {
+	case err == nil:
+		return &os.LinkError{Op: "move", Old: from, New: to, Err: fs.ErrExist}
+	case !errors.Is(err, fs.ErrNotExist):
+		return err
+	}
+	return fsys.rename(from, to)
+}
+
+// probeName and probeMoved are the names of the entry that probeMove makes in the new directory
+// of a run, and moves; no spec file has such a name, and a killed run's new directory may hold
+// one, a file or an empty directory, which undoNew removes.
+const (
+	probeName  = ".probe"
+	probeMoved = ".probe-moved"
+)
+
+// probeMove makes a file and then a directory in staging and moves each to another name there,
+// as the run moves each entry that is no spec file back into the spec directory after the exchange
+// (move), then removes it. A system that refuses such a move refuses the run here, before the
+// record and the exchange change anything, with its refusal and the way out: after the exchange,
+// such a refusal would leave those entries beside the spec directory.
+func probeMove(fsys fileSystem, staging string) error {
+	from, to := filepath.Join(staging, probeName), filepath.Join(staging, probeMoved)
+	for _, directory := range []bool{false, true} {
+		var err error
+		if directory {
+			err = fsys.mkdir(from, 0o700)
+		} else if f, created := fsys.create(from); created != nil {
+			err = created
+		} else {
+			err = f.Close()
+		}
+		if err == nil {
+			err = move(fsys, from, to)
+		}
+		if err != nil {
+			return fmt.Errorf("print moves each entry of the directory that is no spec file back into it after the exchange, and the system refused such a move (%w): run print on a checkout on a local file system of Linux or macOS", err)
+		}
+		if err := fsys.remove(to); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // cleanLeftovers finishes each directory that a killed run of print left beside dir, whose inode

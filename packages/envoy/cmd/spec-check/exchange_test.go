@@ -370,6 +370,10 @@ func (c callFS) moveNoReplace(from, to string) error {
 	return c.call("move", from, func() error { return osFileSystem{}.moveNoReplace(from, to) })
 }
 
+func (c callFS) rename(from, to string) error {
+	return c.call("rename", from, func() error { return osFileSystem{}.rename(from, to) })
+}
+
 func (c callFS) remove(path string) error {
 	return c.call("remove", path, func() error { return osFileSystem{}.remove(path) })
 }
