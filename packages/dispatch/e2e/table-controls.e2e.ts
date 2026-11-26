@@ -2562,8 +2562,11 @@ test("k-keep: the Inbox keeps every field, sort, grouping, view, Mark all read a
   await expect(page, "Clear filters took the section off").toHaveURL(/[?&]section=needs-you(&|$)/);
 
   // The keys the Inbox's list answers (`Inbox.tsx`'s keymap), below the reading column's width,
-  // where each row is a card the keys move the focus over; `l`, which takes the focus into the
-  // reading column where one is drawn; and `g i`, the global binding that opens the Inbox.
+  // where the keys move the focus over short rows and a row's answer box, Snooze and options are
+  // its reading view's (main's #5223): Enter, `h`, a digit and `y` open the focused row's view
+  // and act there, and Escape from outside a text field is the way back to the list, at the row;
+  // `l`, which takes the focus into the reading column where one is drawn; and `g i`, the global
+  // binding that opens the Inbox.
   const copied = await recordClipboard(page);
   await page.setViewportSize({ height: 900, width: 1024 });
   await page.goto("/?assignee=everyone&group=none");
@@ -2592,23 +2595,47 @@ test("k-keep: the Inbox keeps every field, sort, grouping, view, Mark all read a
   await expect(rowOf(order[0] ?? ""), "the ArrowUp key").toBeFocused();
   const ledger = seeded((row) => row.type === "question" && row.priority === "P0");
   const ask = rowOf(ledger.id);
+  const view = readingView(page);
+  /** The reading view while it reads the row `id`. */
+  const viewOf = (id: string) => view.and(page.locator(`[data-inbox-reading-row="${id}"]`));
   await ask.focus();
   await page.keyboard.press("Enter");
-  await expect(ask.locator("[data-ask-answer]"), "the Enter key").toBeFocused();
+  await expect(viewOf(ledger.id), "the Enter key, which opens the row").toBeVisible();
+  await expect(
+    paneScroller(page),
+    "the Enter key, which leaves the focus on the view"
+  ).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(
+    view.locator("[data-ask-answer]"),
+    "the Enter key, into the answer box"
+  ).toBeFocused();
+  await paneScroller(page).focus();
   await page.keyboard.press("Escape");
   await expect(ask, "the Escape key, back to the row").toBeFocused();
   await page.keyboard.press("h");
-  await expect(ask.locator("[data-inbox-snooze]"), "the h key").toBeFocused();
+  await expect(viewOf(ledger.id).locator("[data-inbox-snooze]"), "the h key").toBeFocused();
   await page.keyboard.press("Escape");
   await expect(ask).toBeFocused();
   await page.keyboard.press("y");
   await expect
     .poll(async () => (await copied()).join(" "), { message: "the y key" })
     .toContain(ledger.issueKey ?? "");
-  const decision = rowOf(seeded((row) => row.type === "decision").id);
+  await expect(viewOf(ledger.id), "the y key opens the row").toBeVisible();
+  await paneScroller(page).focus();
+  await page.keyboard.press("Escape");
+  await expect(ask).toBeFocused();
+  const decisionRow = seeded((row) => row.type === "decision");
+  const decision = rowOf(decisionRow.id);
   await decision.focus();
   await page.keyboard.press("1");
-  await expect(decision.locator("[data-ask-option]").first(), "the 1 key").toBeChecked();
+  await expect(
+    viewOf(decisionRow.id).locator("[data-ask-option]").first(),
+    "the 1 key"
+  ).toBeChecked();
+  await paneScroller(page).focus();
+  await page.keyboard.press("Escape");
+  await expect(decision).toBeFocused();
   await walkRowRange(page, rowOf, order, control(page, CONTROL.selectionBar));
   const thread = rowOf(seeded((row) => row.type === "reply").id);
   await thread.focus();
