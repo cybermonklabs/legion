@@ -195,9 +195,11 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // texts directory here, as one the plain write takes does (pruneClaim). The prune is no hook of
 // the commit: the hooks of a commit whose outcome the store could not say run once it can
 // (store.OnCommit), by when a later launch of the claim may have written its own files. A stop
-// that answers an error, that one included, removes nothing: the machine owes it and makes it
-// again with its next claim write, which prunes once it commits where the claim still has no
-// process, and the next boot prunes what is left (pruneAllBut).
+// that answers an error, that one included, removes nothing. A stop the owed-write rule keeps
+// (supervise's writeOwed) the machine makes again with the claim's next write, which prunes once
+// it commits where the claim still has no process; a stop the store refused is not made again,
+// and the claim's next plain write prunes it through the pruning store; and the next boot prunes
+// what is left (pruneAllBut).
 func (p *projectPause) stopped(ctx context.Context, c supervise.Claim, stop supervise.PauseStop) error {
 	at := p.now().UTC()
 	if err := store.Transact(ctx, p.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
