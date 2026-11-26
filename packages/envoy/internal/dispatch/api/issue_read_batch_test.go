@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -444,33 +445,32 @@ func (r *roundTrips) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEnd
 // viewerResolution opens the one statement that resolves a request's viewer (access.Resolve).
 const viewerResolution = access.Marker + "VisibleProjectsSQL"
 
-// readsOwnStatements answers a counted GET read's statements past the one that resolves its
-// caller's viewer, which the read check makes once a request before the handler runs
-// (withinReadScope), as the sign-in lookup is made: the cost a test pins is the read's own. It
-// fails the test unless the read resolved its viewer exactly once, first.
-func readsOwnStatements(t *testing.T, statements []string) []string {
+// requireViewerResolvedFirst fails the test unless a counted request's first round trip is the
+// statement that resolves its caller's viewer (readerOf, through access.Resolve), and no other
+// round trip resolves it again. A request whose route binds a viewer makes that statement once,
+// before its handler's own statements, on the pool its reads use; main's server, which bound no
+// viewer, did not make it, so each cost pin that counts it says so.
+func requireViewerResolvedFirst(t *testing.T, what string, statements []string) {
 	t.Helper()
-	var own []string
 	resolutions := 0
 	for _, statement := range statements {
 		if strings.Contains(statement, viewerResolution) {
 			resolutions++
-			continue
 		}
-		own = append(own, statement)
 	}
-	if resolutions != 1 || !strings.Contains(statements[0], viewerResolution) {
-		t.Fatalf("the read resolved its viewer %d times, want once and first: %v", resolutions, statements)
+	if resolutions != 1 || len(statements) == 0 || !strings.Contains(statements[0], viewerResolution) {
+		t.Fatalf("%s resolved its caller's viewer %d times, want once and first:\n%s",
+			what, resolutions, strings.Join(roundTripLines(statements), "\n"))
 	}
-	return own
 }
 
-// The issue read costs two round trips, and one for an issue with nothing the second batch is
-// for, where the sequential loaders spent a statement on each part of the answer. The request
-// makes one more before the read, every read request's own: it resolves its caller's viewer
-// once (readerOf, access.Resolve), which every statement of the read then binds; that round trip
-// is held to being exactly that one statement, and the read to its two.
-func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
+// The issue read costs three round trips, and two for an issue with nothing the second batch is
+// for, where the sequential loaders spent a statement on each part of the answer. The first is
+// the statement that resolves the caller's viewer (readerOf, access.Resolve), which every
+// statement of the read then binds; the read itself is the two after it, its two batches, or the
+// one for the bare issue. Main's read, which bound no viewer, cost two and one: the viewer is the
+// one round trip this count adds, and the test holds it to being that one statement, first.
+func TestIssueReadCostsThreeRoundTripsTheFirstItsViewer(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
@@ -489,12 +489,14 @@ func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
 	fixture := buildFullIssueRead(t, handler)
 
 	response := countedIssueRead(t, handler, fixture.key)
-	batched := readsOwnStatements(t, counter.take())
+	counted := counter.take()
 	if response.Code != http.StatusOK {
 		t.Fatalf("read the issue: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if len(batched) != 2 {
-		t.Fatalf("the read made %d round trips, want 2: %v", len(batched), batched)
+	requireViewerResolvedFirst(t, "the issue read", counted)
+	if len(counted) != 3 {
+		t.Fatalf("the read made %d round trips, want 3, the first its viewer:\n%s",
+			len(counted), strings.Join(roundTripLines(counted), "\n"))
 	}
 
 	bare := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -521,12 +523,14 @@ func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
 		}
 	}
 	bareRead := countedIssueRead(t, handler, bareKey)
-	bareTrips := readsOwnStatements(t, counter.take())
+	bareTrips := counter.take()
 	if bareRead.Code != http.StatusOK {
 		t.Fatalf("read the bare issue: status=%d body=%s", bareRead.Code, bareRead.Body.String())
 	}
-	if len(bareTrips) != 1 {
-		t.Fatalf("the bare issue's read made %d round trips, want 1: %v", len(bareTrips), bareTrips)
+	requireViewerResolvedFirst(t, "the bare issue's read", bareTrips)
+	if len(bareTrips) != 2 {
+		t.Fatalf("the bare issue's read made %d round trips, want 2, the first its viewer:\n%s",
+			len(bareTrips), strings.Join(roundTripLines(bareTrips), "\n"))
 	}
 }
 
