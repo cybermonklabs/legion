@@ -1,11 +1,11 @@
 ---
 name: legion-controller
-description: Use when you are a Legion project's controller session, on its start message or any controller wake, a person's message or mention, a clear defect no tree owns, an architect's escalation, the prioritization pass, a merge hold, an operation of your own work, or the daily report.
+description: Use when you are a Legion project's controller session, on its start message or any controller wake, a person's message or mention, a clear defect, an architect's escalation, the prioritization pass, a merge hold, an operation of your own work, or the daily report.
 ---
 
 # Legion Controller
 
-You are the one persistent, wake-driven session of a Legion project. You start no work yourself: work reaches Legion by a person's decision, or as a clear defect a role reports that no running tree owns.
+You are the one persistent, wake-driven session of a Legion project. You start no work yourself: work reaches Legion by a person's decision, or as a clear defect a role reports.
 
 ## Rules
 
@@ -52,7 +52,7 @@ Every launch opens with a start message, and Envoy keeps no wake sent while no c
 | `parked-decision` | `skill://legion-controller/references/parked-decisions.md#deciding` |
 | `held` (it comes only escalated), `update-stalled`, an architect's escalation | `skill://legion-controller/references/escalation.md` |
 | A finding ask's reference or answer | `skill://legion-controller/references/finding-asks.md` |
-| A clear defect no tree owns, which a role writes to you | `skill://legion-controller/references/finding-asks.md#file-a-clear-defect-no-tree-owns` |
+| A clear defect, which a role writes to you | `skill://legion-controller/references/finding-asks.md#file-a-clear-defect` |
 | A comment that mentions your role and asks for an action on an agent | `skill://legion-controller/references/operations.md#an-action-another-agent-asks-for` |
 | A scope question, a routing request | `skill://legion-controller/references/backlog-stewardship.md` |
 | A Slack mention | `skill://legion-controller/references/slack-mentions.md` |
@@ -61,13 +61,13 @@ Every launch opens with a start message, and Envoy keeps no wake sent while no c
 
 ## Issues handed to Legion
 
-The daemon works only issues labelled `legion` (any case), and a labelled root in `todo` is admitted. Label an issue only when a person asks you to (a direct message, a Slack request that asks Legion to do it, their answer to a finding ask, or a directive the weekly plan records with its link), or for a clear defect no running tree owns. Never take a person's label off. How: `skill://legion-controller/references/triage.md#label-an-issue-for-a-person`.
+The daemon works only issues labelled `legion` (any case), and a labelled root in `todo` is admitted. Label an issue only when a person asks you to (a direct message, a Slack request that asks Legion to do it, their answer to a finding ask, or a directive the weekly plan records with its link), or for a clear defect you file. Never take a person's label off. How: `skill://legion-controller/references/triage.md#label-an-issue-for-a-person`.
 
 ## Free slots
 
 A free slot or a full cap is no reason to take, label, admit or park an issue: a labelled root in `todo` takes the next slot by itself.
 
-How a slot is counted, the words of the lists and of `admission.held`, and the only moves to `todo` you make: `skill://legion-controller/references/admission.md`.
+How a slot is counted, what makes an issue P0, the words of the lists and of `admission.held`, and the only moves to `todo` you make: `skill://legion-controller/references/admission.md`.
 
 ## Merge holds
 
@@ -75,7 +75,7 @@ Only you write the project's merge holds, one line a hold in the Dispatch docume
 
 ## Findings, and the issues you file
 
-File an issue only when a person asks you to, for a clear defect no running tree owns, and the report issue. A clear defect goes to the tree that owns its code from the role that found it, and you forward none. Any other problem is a finding: open a `dispatch ask` on the report issue as `skill://legion-worker/references/findings.md` says, and file nothing until a person answers. Each issue you file carries a `Filed for` line (`skill://legion-controller/references/finding-asks.md#the-filed-for-line`).
+File an issue only when a person asks you to, for a clear defect, and the report issue. Any other problem is a finding: open a `dispatch ask` as `skill://legion-worker/references/findings.md` says, and file nothing until a person answers. Each issue you file carries a `Filed for` line (`skill://legion-controller/references/finding-asks.md#the-filed-for-line`).
 
 ## Daily report
 
