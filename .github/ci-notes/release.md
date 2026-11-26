@@ -104,9 +104,13 @@ rebuild. The envoy packages of `LEGION_VERSION_ARGS` are every package `go list 
 through the module's `replace` on ../envoy, public and internal, so a change to any of them
 changes the binary and must release one, and the envoy module's own go.mod and go.sum decide
 which versions of their dependencies it links. That list is written here by hand; this is the
-command that prints it, to be run from packages/daemon whenever what the binary links moves:
-  go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
+command that prints it, to be run from packages/daemon, once for each target
+.github/go-release-targets.json lists, whenever what the binary links moves:
+  CGO_ENABLED=0 GOOS=<os> GOARCH=<arch> go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
     sed 's#^github.com/sjawhar/envoy#packages/envoy#' | sort
+packages/daemon/cmd/legion/release_list_test.go (TestTheReleaseListNamesEveryEnvoyPackageLegionLinks,
+in daemon-go) runs that command for each target and fails naming each package the list misses,
+with the targets that link it, or that no target links any longer.
 
 ## Why GOPROXY falls through to direct
 
@@ -577,9 +581,12 @@ called.
 Names the worker image on the legion release this run made: tags the image's digest with the
 legion version on ghcr.io, so a version tag still means "released", and writes the digest
 reference into the release notes. It runs when legion released in this run, even when a later
-package in publish failed. It runs beside worker_image_attest, not after it: if the attestation
-fails, the release names a digest that the consumers' `gh attestation verify` refuses, which
-fails closed. It runs no build and no dependency code, only the runner's own `docker buildx
+package in publish failed. Its condition is on `always()`, so a job skipped upstream does not
+skip this one, and it tests the results of both jobs it reads, as this file's section "Why the
+workflow level permissions block is empty, and the four stages a release waits for" says. It
+runs beside worker_image_attest, not after it: if the attestation fails, the release names a
+digest that the consumers' `gh attestation verify` refuses, which fails closed. It runs no build
+and no dependency code, only the runner's own `docker buildx
 imagetools`, release-push.sh, gh and the pinned login action, so the scopes it holds never meet
 the Dockerfile worker_image ran.
 

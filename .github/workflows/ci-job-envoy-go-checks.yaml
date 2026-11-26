@@ -78,10 +78,10 @@ jobs:
     # the one job it was split from was written with, plus its slowest retried step alone:
     # setup-bun's two `ci_tools_fetch` calls, 3416 s, above the ci-ok report's 2460 s,
     # install-helm's one `ci_tools_fetch` at 1708 s, the workspace install at 1050 s, and the
-    # harness that runs a script outside .github/scripts/, the cluster test's 1423 s, its bound in
+    # harness that runs a script outside .github/scripts/, the cluster test's 1575 s, its bound in
     # the harness pool, which the wait step waits for (render-nats.sh's one retried fetch, the helm
     # install at 5 x 180 + 150 = 1050 s where the helm on PATH does not answer HELM's version,
-    # beside the 373 s its step measured). 1800 + 3416 = 5216 s -> 87 min.
+    # beside the 525 s it measured in the pool). 1800 + 3416 = 5216 s -> 87 min.
     # The gate reads no script outside .github/scripts/, so it does not price that harness: its
     # figure is a reader's, derived in .github/ci-notes/ci-job-envoy-go-checks.md, and
     # dispatch://INFRA-2899 owns the reach that would make it the check's. The 3416 is the check's
@@ -145,8 +145,11 @@ jobs:
         working-directory: packages/envoy
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
         # why: .github/ci-notes/ci-job-envoy-go-checks.md#the-two-steps-whose-scripts-the-gate-does-not-read
-        # The harness's own bound, the pool's `--minutes`: 373 + 1050 = 1423 s -> 24 min.
-        run: ../../.github/scripts/harness-pool.sh start --minutes 24 loadtest/cluster/cluster.test.sh bash loadtest/cluster/cluster.test.sh
+        # The harness's own bound, the pool's `--minutes`: 525 + 1050 = 1575 s -> 27 min. Its waits
+        # end 30 s before that bound: the pool hands the harness HARNESS_POOL_DEADLINE_MS, its start
+        # plus the bound less 30 s, and the command passes it on as LEGION_PROOF_DEADLINE_MS, which
+        # proof-wait.sh's proof_guard_from_env reads.
+        run: ../../.github/scripts/harness-pool.sh start --minutes 27 loadtest/cluster/cluster.test.sh bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh'
         working-directory: packages/envoy
       - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
         run: ../../.github/scripts/harness-pool.sh start loadtest/vm/vm.test.sh bash loadtest/vm/vm.test.sh
