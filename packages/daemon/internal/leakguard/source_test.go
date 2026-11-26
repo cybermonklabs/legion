@@ -534,7 +534,7 @@ func TestTheReadFollowsGitHubsRedirectAndHandsTheDownloadHostNoToken(t *testing.
 // its query whole, and its user name (it masks only a password). The read is refused with a cause
 // that names the failure and the URL's host and path, and holds no part of the credential. The
 // port is one the test holds bound and never listening (testport.Refused), so no other program on
-// the machine can take it and answer the redirect, as one did a port the test had let go of.
+// the machine can take it and answer the redirect, as one can take a port a test lets go of.
 func TestAReadRedirectedWithAURLCredentialIsRefusedWithACauseThatHoldsNoneOfIt(t *testing.T) {
 	dead := testport.Refused(t)
 	const download = "/example-org/deployment/legacy.tar.gz/refs/tags/" + theTag

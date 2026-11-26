@@ -3,6 +3,9 @@
 // reach it across a network's delay (Delayed) or through a proxy that holds or cuts a commit's
 // reply (CommitFaults); and a pool whose transactions are cancelled between two statements
 // (CancelAfterScan). A test is skipped without that Postgres: there is nothing to run against.
+// TableRows and ChangedTables (rows.go) read every table of a database's current schema whole, so
+// a test can say which tables a write changed, a row changed in place among them, or that it
+// changed none.
 //
 // Database is an empty database, as a URL a pgx pool opens (PoolBounded), and PlainDatabase the
 // same as a URL any other client reads. A test that needs the daemon's schema takes

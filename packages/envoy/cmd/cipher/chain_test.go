@@ -392,8 +392,9 @@ func newChainRig(t *testing.T, binary string, broker *chainBroker) *chainRig {
 	r := &chainRig{t: t, binary: binary, home: t.TempDir(), runtime: shortTempDir(t), state: t.TempDir()}
 	r.env = map[string]string{
 		"HOME": r.home, "XDG_RUNTIME_DIR": r.runtime, "XDG_STATE_HOME": r.state, "PATH": "/usr/bin:/bin",
-		// A metadata server that is not there: a port the test holds and nothing listens on, so no
-		// other process can take it and answer (testport.Refused).
+		// A metadata server that is not there: a port the test holds and nothing listens on
+		// (testport.Refused). The held socket is close-on-exec, so the binary the rig runs does not
+		// inherit it, and no other process on the machine can take the port and answer.
 		"GCE_METADATA_HOST": testport.Refused(t),
 	}
 	if broker != nil {

@@ -422,8 +422,8 @@ func TestMachineIdentityIsFoundWithNoSetting(t *testing.T) {
 
 	t.Run("none", func(t *testing.T) {
 		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
-		// A port the test holds and nothing listens on, so no other process can take it and answer
-		// as a metadata server (testport.Refused).
+		// A metadata server that is not there: a port the test holds and nothing listens on, so no
+		// other process can take it and answer as one (testport.Refused).
 		t.Setenv("GCE_METADATA_HOST", testport.Refused(t))
 		start := time.Now()
 		source, skipped, err := DetectMachineIdentity(context.Background(), testAudience)

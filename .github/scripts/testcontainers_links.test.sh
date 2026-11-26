@@ -151,6 +151,15 @@ check "exits 1" "$(is "$status" 1)"
 check "names the build that starts itself" \
   "$(contains "$out" '^::error::tagged: the test binary of example.com/tagged/internal/rig built with -tags memory links testcontainers-go, and it starts itself (tagged/internal/rig/memory_test.go:11)')"
 
+echo "case: a byte-order mark and block comment do not hide a one-tag test"
+shapes "$work" header
+mkdir -p "$work/header/internal/rig"
+printf '\xef\xbb\xbf/*\n//go:build ignore\n*/\n//go:build memory\n\npackage rig\n\nimport (\n\t"os"\n\t"os/exec"\n\t"testing"\n)\n\nfunc TestHeader(t *testing.T) { _ = exec.Command(os.Args[0]).Run(); _ = Start() }\n' >"$work/header/internal/rig/memory_test.go"
+run_check header
+check "exits 1" "$(is "$status" 1)"
+check "reads the actual tagged line after the block comment" \
+  "$(contains "$out" '^::error::header: the test binary of example.com/header/internal/rig built with -tags memory links testcontainers-go, and it starts itself (header/internal/rig/memory_test.go:14)')"
+
 echo "case: a test file under any other constraint is refused, not skipped"
 shapes "$work" compound
 gofile "$work/compound/internal/client/memory_test.go" '//go:build memory && !race' '' 'package client' '' \
