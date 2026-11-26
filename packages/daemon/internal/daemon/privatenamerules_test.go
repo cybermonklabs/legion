@@ -112,7 +112,7 @@ func TestBootRefusesAPrivateNameRuleFileItCannotUse(t *testing.T) {
 				if none, anyNamed, _ := rulesLines(t, logged.String(), ""); none != 0 || anyNamed != 0 {
 					t.Errorf("the refused boot logged the no-file line %d times and a file's line %d times, want neither; log:\n%s", none, anyNamed, logged.String())
 				}
-				if _, _, checked := CheckStart(cfg, lookup(nil)); checked == nil || checked.Error() != err.Error() {
+				if _, _, _, checked := CheckStart(cfg, lookup(nil)); checked == nil || checked.Error() != err.Error() {
 					t.Errorf("CheckStart = %v, want the boot's own refusal %q", checked, err)
 				}
 			})
