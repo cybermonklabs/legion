@@ -451,13 +451,26 @@ type Claim struct {
 	// What the next report of that same process is charged, and what it can end in, is died's
 	// (DeathCharged).
 	ProcessGone bool
-	// DeathCharged is whether the death of the process this claim records has been charged, or
-	// found to have nothing to charge: the decision died makes for one dead process, and the
-	// record that keeps a second report of that same process from being charged a second death.
-	// An end of that process's pod from outside it charges nothing and writes this all the same
-	// (endedFromOutside): a later report of that same process, which the record of that end
-	// sends back there (judge, recordedFromOutside), finds the end decided and decides it no
-	// second time (decidedFromOutside). The rule it keeps is written where it is applied (died,
+	// DeathCharged is whether the end of the process this claim records is decided, and it means
+	// one of two things, which the claim's record of that end tells apart (EndedWork.FromOutside,
+	// decidedFromOutside):
+	//
+	//   - a death died decided: charged, or found to have nothing to charge. It is the decision
+	//     died makes for one dead process, and the record that keeps a second report of that
+	//     same process from being charged a second death;
+	//   - an end of that process's pod from outside it, which endedFromOutside decides, charges
+	//     nothing for and writes this all the same: a later report of that same process, which
+	//     the record of that end sends back there (judge, recordedFromOutside), finds the end
+	//     decided and decides it no second time.
+	//
+	// A reader that asks whether a death was charged takes Claim.chargedDeath, which is true of
+	// the first alone: the queue a paced relaunch waits in (WakeQueue), and the launch failure a
+	// death's relaunch charges once (deathLaunchFailureCharged). A reader that asks whether the
+	// end is decided, whichever of the two it was, reads this field itself: died's guard against
+	// a second charge, the boot's choice of the claims whose decision it replays
+	// (internal/daemon's recordedDeaths and recordedDeath) and the replay's own guard
+	// (relaunchRecordedDeath), the launch a stop owes (stopOwesLaunch), and the clear a running
+	// verdict writes (reportedProcess). The rule it keeps is written where it is applied (died,
 	// endedFromOutside); what leaves a claim to be reported twice is ProcessGone's two windows
 	// above.
 	//
@@ -4262,7 +4275,7 @@ func (m *Machine) relaunchDeath(ctx context.Context, ended string, uncharged boo
 // the claim's last death cause is none, or an older death's, and names nothing of this end.
 func relaunchRecordedDeath(m *Machine, ctx context.Context, ev Event) error {
 	recorded := ev.(RecordedDeath)
-	outside := m.decidedFromOutside()
+	outside := m.claim.decidedFromOutside()
 	relaunching := func() {
 		attrs := []any{"incarnation", m.claim.Locator.Incarnation, "generation", m.claim.Generation}
 		if !outside {
@@ -4828,7 +4841,7 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		if observation.Displaced {
 			return m.displaced(ctx, observation)
 		}
-		if observation.EndReading == runtime.PodEndNotOurs || m.recordedFromOutside() {
+		if observation.EndReading == runtime.PodEndNotOurs || m.claim.recordedFromOutside() {
 			return m.endedFromOutside(ctx, observation)
 		}
 		return m.died(ctx, observation)

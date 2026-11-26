@@ -250,10 +250,11 @@ type StalePlugin struct {
 // so a claim a launch has moved on since is decided nothing (relaunchRecordedDeath).
 //
 // Place is the place the boot took for that relaunch in the wake pacing, as RequestSpawn.Place is
-// for an unfinished launch: the boot places both in one pass, a recorded death in the pacing's
-// first queue (WakeQueue, dispatch://INFRA-5682 R2) and each queue's places in the order their
-// claims' work was owed. nil is a replay the gate joins a place for itself. A place the replay
-// does not take up is given up as its decision ends (Machine.handle).
+// for an unfinished launch: the boot places both in one pass, the relaunch of a charged death in
+// the pacing's first queue and that of an end from outside the pod in the second (WakeQueue,
+// dispatch://INFRA-5682 R2), and each queue's places in the order their claims' work was owed.
+// nil is a replay the gate joins a place for itself. A place the replay does not take up is given
+// up as its decision ends (Machine.handle).
 type RecordedDeath struct {
 	Claim      claim.Token
 	Generation uint64

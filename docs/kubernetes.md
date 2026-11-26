@@ -9769,6 +9769,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **The order those wakes go out in** is the daemon's: each paced wake waits in one of two queues in front of that bucket (`Pacer`, `internal/wakepace/pacer.go`).
   The first queue holds the wake of a role that has an Envoy message waiting and the relaunch of a role whose own process died.
+  The relaunch after an end from outside the pod charges no death, so it waits in the second queue, as the relaunch of a role whose pod was replaced under it does.
   The second holds every other paced wake: a resume by rule, the relaunch of a role whose pod was replaced under it, a stale-plugin relaunch and the catch-up that a start writes in place of a launch.
   At each turn of the bucket the pacing lets out the wake at the head of the first queue, except that while both queues hold wakes the turn after three first-queue wakes in a row goes to the head of the second, so the second queue keeps one turn in four.
   No two wakes are let out in one turn, so the queues change the order of a wave and never its rate.

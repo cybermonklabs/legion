@@ -1651,7 +1651,7 @@ func TestTheBootsReplayOfAnEarlierGenerationRelaunchesNothing(t *testing.T) {
 }
 
 // firstAhead joins n places in pacer's first queue, none bound to a machine: the places the boot's
-// pass takes for the other recorded deaths it relaunches, which wait in the first queue ahead of
+// pass takes for the other charged deaths it relaunches, which wait in the first queue ahead of
 // whatever joins it after them (WakeQueue, dispatch://INFRA-5682 R2).
 func firstAhead(pacer *wakepace.Pacer, n int) {
 	for range n {

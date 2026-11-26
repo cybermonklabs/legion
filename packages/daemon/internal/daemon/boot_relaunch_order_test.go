@@ -161,9 +161,9 @@ func TestABootRelaunchesUnfinishedLaunchesInTheOrderTheirWorkWasOwed(t *testing.
 	r.wantNextTurn(n)
 }
 
-// A restart relaunches the deaths the previous daemon recorded ahead of the launches it left
-// unfinished, whatever their claims' work was owed: the relaunch of a role whose own process died
-// waits in the pacing's first queue (supervise.WakeQueue, dispatch://INFRA-5682 R2), and the
+// A restart relaunches the charged deaths the previous daemon recorded ahead of the launches it
+// left unfinished, whatever their claims' work was owed: the relaunch of a role whose own process
+// died waits in the pacing's first queue (supervise.WakeQueue, dispatch://INFRA-5682 R2), and the
 // boot's pass places the first queue before the second, so the death takes the first turn the
 // pass hands out and the unfinished launches follow in the order their work was owed. Before R2
 // the boot placed both in one owed order, and a death owed after an unfinished launch waited

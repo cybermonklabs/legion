@@ -156,12 +156,16 @@ const displacedMidTurn = "the process was displaced mid-turn, its pod replaced b
 // but records none of the three things below again and writes nothing for them. The claim
 // reads working while its relaunch waits, so the end of the turn, which operators are shown
 // (Claim.LastTurnEnd), would otherwise move to the moment of each such report. A process died
-// decided first (a report read neither way) is no end decided from outside the pod: its record
-// is a death's, and a later report of the same pod read as outside, from a restarted daemon or
-// over a relaunch the lifecycle refused, comes here with the end not yet decided as one from
-// outside. It records the end as from outside and writes the claim, and leaves the end of the
-// turn where died put it, so the first decision of the process, died's or this one, writes it
-// once.
+// decided first (a report read neither way) is no end decided from outside the pod, and a later
+// report of the same pod read as outside, from a restarted daemon or over a relaunch the
+// lifecycle refused, comes here with the end not yet decided as one from outside. Where died
+// recorded what the death ended, that record is of this launch and stays a death's, since
+// neither recordDisplaced nor markFromOutside replaces a record of this launch: the claim stays a
+// charged death (chargedDeath), its relaunch waits in the first queue, and the boot raises it as
+// the death's. Where the death ended nothing worth telling, died recorded nothing, and the record
+// made here is of an end from outside the pod, so from then on the claim reads as a decided end
+// from outside. Either way this writes the claim and leaves the end of the turn where died put
+// it, so the first decision of the process, died's or this one, writes it once.
 //
 // With the task back it records three things, before the relaunch, because a parked relaunch
 // writes nothing until its turn; a write the store would not take is owed and the relaunch goes
@@ -197,7 +201,7 @@ const displacedMidTurn = "the process was displaced mid-turn, its pod replaced b
 // claim is decided and names every role the end ended, so this line, one per claim, is what says
 // what each role got.
 func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Observation) error {
-	decided, charged := m.decidedFromOutside(), m.claim.DeathCharged
+	decided, charged := m.claim.decidedFromOutside(), m.claim.DeathCharged
 	m.log.Info(continuedFromOutsideLine, "starting", slices.Contains(unready, m.claim.State), "detail", observation.Detail)
 	m.recordDisplaced(ctx, observation, endFromOutside, true)
 	if err := m.interrupted(ctx, displacedMidTurn, observation.OutOfMemory); err != nil {
@@ -260,9 +264,8 @@ func (m *Machine) markFromOutside() {
 // pod deleted or terminal, the locator names that pod by uid, and the runtime never answers a pod
 // running after it answered it gone. The next launch is another generation, whose record this
 // does not read.
-func (m *Machine) recordedFromOutside() bool {
-	e := m.claim.EndedWork
-	return e.FromOutside && e.Generation == m.claim.Generation
+func (c Claim) recordedFromOutside() bool {
+	return c.EndedWork.FromOutside && c.EndedWork.Generation == c.Generation
 }
 
 // decidedFromOutside is whether the claim's decided end is one from outside the pod: the process
@@ -270,9 +273,21 @@ func (m *Machine) recordedFromOutside() bool {
 // one from outside the pod (recordedFromOutside). The boot's replay of the decision asks it
 // (relaunchRecordedDeath), so a decided end from outside the pod is relaunched charged nothing
 // whichever of the replay and a report reaches the claim first; and endedFromOutside asks it on
-// entry, so a report over an end already decided decides nothing again.
-func (m *Machine) decidedFromOutside() bool {
-	return m.claim.DeathCharged && m.recordedFromOutside()
+// entry, so a report over an end already decided decides nothing again. It is the one statement
+// of that rule, which chargedDeath reads too.
+func (c Claim) decidedFromOutside() bool {
+	return c.DeathCharged && c.recordedFromOutside()
+}
+
+// chargedDeath is whether the end the claim holds decided is a death of the claim's own process:
+// died's decision, the death charged or found to have nothing to charge (Claim.DeathCharged), and
+// not an end from outside the pod, which writes the same mark and charges nothing
+// (decidedFromOutside). It is what a reader asking whether a death was charged reads: the queue a
+// paced wake of the claim waits in (WakeQueue), since a relaunch after such an end waits in the
+// second, as a displaced relaunch does (dispatch://INFRA-5682 R2), and whether a raise of a
+// death's relaunch finds its launch failure charged already (deathLaunchFailureCharged).
+func (c Claim) chargedDeath() bool {
+	return c.DeathCharged && !c.decidedFromOutside()
 }
 
 // continuedFromOutsideLine is the line, at Info, of an end from outside the claim's pod: the

@@ -17,7 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"math/rand/v2"
 	"slices"
 	"strings"
 	"testing"
@@ -68,9 +67,9 @@ type nextEvent string
 
 const (
 	atReplay nextEvent = "the boot's replay"
-	// atReplayAtPlace is the boot's replay carrying the place the boot's pass took for its
-	// relaunch in the pacing's first queue (RecordedDeath.Place), as the pass posts it for each
-	// death of the restart's wave (internal/daemon's launchUnfinished).
+	// atReplayAtPlace is the boot's replay carrying a place the boot's pass took in the pacing's
+	// first queue (RecordedDeath.Place), as the pass posts one for each charged death of the
+	// restart's wave (internal/daemon's launchUnfinished).
 	atReplayAtPlace nextEvent = "the boot's replay at the place its pass took"
 	atReportOutside nextEvent = "the report read again as outside"
 	atReportNeither nextEvent = "the report read neither way"
@@ -367,23 +366,26 @@ func (claimRefusedStore) PutClaim(context.Context, Claim) error { return errStor
 // stays where the decision put it, in the claim and in the store, through every event after it,
 // a repeated report a second later included. The role is resumed in its own recorded session,
 // holds its task at every step, in the claim and in the store, and is sent it once at the
-// relaunch's ready, and an end from outside the pod is never told as a death. Of the product's
-// rows, only the five where nothing stored and nothing read says the end came from outside the
-// pod (32, 36, 40, 44 and 48) are counted as a stop of the role's process: one death, and the
-// task still sent again. Row 38 is the take-back refused on one daemon and the next report read
-// neither way; row 20 is the same with the record stored by an Uncertain report's write and a
-// restart before the report. Both are charged nothing. Beside the product, a first report read
-// neither way is a death that died charges and decides at D1, its relaunch refused; the reports
-// read as outside after it decide nothing again: they charge nothing more and leave the end of
-// the turn where the death put it.
+// relaunch's ready, and an end from outside the pod is never told as a death. While the claim
+// holds that end decided, its relaunch waits in the pacing's second queue, never in the first
+// that a charged death's waits in (outsideEndQueued). Of the product's rows, only the five where
+// nothing stored and nothing read says the end came from outside the pod (32, 36, 40, 44 and 48)
+// are counted as a stop of the role's process: one death, and the task still sent again. Row 38
+// is the take-back refused on one daemon and the next report read neither way; row 20 is the
+// same with the record stored by an Uncertain report's write and a restart before the report.
+// Both are charged nothing. Beside the product, a first report read neither way is a death that
+// died charges and decides at D1, its relaunch refused; the reports read as outside after it
+// decide nothing again: they charge nothing more and leave the end of the turn where the death
+// put it.
 //
 // The negative controls: judge routing on decidedFromOutside in place of the record, so a report
 // read neither way over a record with no decision goes to died (rows 16, 18, 20, 22, 24, 26, 28,
-// 38, 42 and 46 charge a death); and endedFromOutside deciding again at every report, so D2's
+// 38, 42 and 46 charge a death); endedFromOutside deciding again at every report, so D2's
 // report over a decision D1 stored for a claim in a turn moves the end of the turn (rows 9 and
 // 10, and the rows beside the product of a message's turn, of the relaunch refused at both
 // daemons, of the earlier daemon's cause with the report first and of the first report read
-// neither way).
+// neither way); and WakeQueue reading Claim.DeathCharged in place of Claim.chargedDeath, so the
+// relaunch of a decided end from outside the pod waits in the first queue.
 func TestAnEndFromOutsideMetAgainIsContinuedUnchargedInEveryPossibleOrder(t *testing.T) {
 	for _, o := range append(possibleOrders(t), besideTheProduct()...) {
 		t.Run(o.name, o.walk)
@@ -439,21 +441,23 @@ func (o outsideOrder) walk(t *testing.T) {
 			t.Fatalf("%s: %s", when, got)
 		}
 	}
-	want("the end at D1", turnEnd.see(h))
+	want("the end at D1", turnEnd.see(h), outsideEndQueued(h))
 	h.advance(time.Second)
 	sent := len(h.prompts())
 	if o.restart {
 		h.restart()
-		// The restart's wave places the relaunches of the deaths it found in the pacing's first
-		// queue, ahead of the backlog (internal/daemon's launchUnfinished): another role's place
-		// there stands for that wave, so a relaunch this restart raises waits its turn behind it.
+		// The restart's wave places the relaunches of the charged deaths it found in the pacing's
+		// first queue, ahead of the backlog in the second, where an end from outside the pod's
+		// relaunch waits (internal/daemon's launchUnfinished): another role's place in the first
+		// queue stands for that wave, so a relaunch this restart raises, in either queue, waits
+		// its turn behind it.
 		firstAhead(h.deps.WakePace.Pacer, 1)
 		turnEnd.restarted(h)
 		want("the restart", turnEnd.see(h))
 	}
 	for _, ev := range o.at {
 		o.reach(h, ev, ended, read)
-		want(string(ev), notHeld(h, task))
+		want(string(ev), notHeld(h, task), outsideEndQueued(h))
 		o.wantCharged(h, string(ev))
 		want(string(ev), turnEnd.see(h))
 	}
@@ -468,10 +472,13 @@ func (o outsideOrder) walk(t *testing.T) {
 	if !turnEnd.claim.decided {
 		t.Fatalf("a repeated report: the claim reads deathCharged=%v, want the end decided", h.claim().DeathCharged)
 	}
-	want("a repeated report", turnEnd.see(h), notHeld(h, task))
+	want("a repeated report", turnEnd.see(h), notHeld(h, task), outsideEndQueued(h))
 
-	waiting := h.wantWaitingWake(WakeLaunch)
-	h.advance(waiting.At.Sub(h.clock.Now()))
+	// A relaunch charged no death waits in the second queue, where at D1 the wake queueAhead
+	// parked waits ahead of it, and that wake's turn's jitter puts the relaunch's turn past the
+	// moment its view names: the clock moves on to that turn as the pacer gives it (advanceToTurn).
+	h.wantWaitingWake(WakeLaunch)
+	h.advanceToTurn(h.m)
 	resume := h.wantCalls("Resume", 1)[0]
 	if resume.Previous == nil || *resume.Previous != ended || resume.Spec.ResumeSessionFile != sessionFile {
 		t.Fatalf("resumed %+v from %+v, want the claim's own recorded session after the ended incarnation",
@@ -676,6 +683,19 @@ func notHeld(h *harness, task string) string {
 	return ""
 }
 
+// outsideEndQueued answers how the claim's paced wake waits at a place in the pacing's first
+// queue while the end the claim holds decided is one from outside the pod, and "" where it does
+// not, both read off the view the machine last published (publish): such an end charges no
+// death, so its relaunch waits in the second queue, as a displaced relaunch does, and is never
+// placed as a charged death's (WakeQueue, dispatch://INFRA-5682 R2). Both walks check it.
+func outsideEndQueued(h *harness) string {
+	v := h.m.view.Load()
+	if v.place == nil || !v.Claim.decidedFromOutside() || v.place.Queue() == wakepace.Second {
+		return ""
+	}
+	return "the claim holds its end decided from outside the pod and its paced wake waits in the pacing's first queue, want the second: such an end charges no death"
+}
+
 // answerEveryWrite makes the machine's store answer every write again: no write refused, and the
 // harness's own store in place of one that wraps it, a restarted machine's included.
 func answerEveryWrite(h *harness) {
@@ -765,302 +785,4 @@ func (o outsideOrder) wantTold(h *harness, sent int, task string) {
 	case !o.death && strings.Contains(told, "the process died"):
 		h.t.Fatalf("the relaunched role was sent %q, want an end from outside the pod never told as a death", told)
 	}
-}
-
-// outsideSeeds and outsideSteps bound TestAnEndFromOutsideHoldsItsInvariantsInRandomOrders: the
-// seeds it walks, one subtest each, and the most random steps one walk takes after the end.
-const (
-	outsideSeeds = 1000
-	outsideSteps = 10
-)
-
-// The faults a random walk sets for the next writes (outsideWalk.setFault).
-const (
-	faultTakeBackRefused = "the take-back's PutDelivery refused"
-	faultClaimRefused    = "the claim's PutClaim refused"
-	faultUnknownLanded   = "writes of unknown outcome, landed"
-	faultUnknownLost     = "writes of unknown outcome, not landed"
-	// faultRelaunchRefused is the lifecycle recheck's refusal of every relaunch raised while it
-	// is set, which leaves the claim over its ended process with no relaunch waiting, so the
-	// reports after it reach judge rather than being dropped while one waits (launchWaits).
-	faultRelaunchRefused = "the relaunch refused by the lifecycle recheck"
-)
-
-// An end from outside the pod holds its invariants in random orders of the events that can meet
-// it, against the real machine and this file's harness, from a fixed list of seeds, so every run
-// walks the same orders and a failing seed is replayed by its subtest's name. Each seed stands
-// the claim in a turn of its confirmed task or ready holding its task sent and not confirmed,
-// parks the relaunch behind another claim's wake, maybe sets a fault for the next writes, and
-// sends the end: in about two seeds of three a Gone report read as an end from outside the pod,
-// and in the rest a report read neither way, which died decides as a death (diedFirst), and a
-// second after it. Then come up to outsideSteps random steps, each one of a report read as
-// outside, a report read neither way, an Uncertain report (a claim write), a fault set for the
-// next writes (a write refused or of unknown outcome, or the relaunch refused by the lifecycle
-// recheck), the faults cleared, a second passing, a daemon restart, and the boot's replay a
-// restart owes where its store held the decision (internal/daemon's recordedDeaths). An event
-// the machine answers with an error is allowed. The walk closes with the faults cleared, the
-// replay still owed, one report read neither way, the relaunch's turn and its ready.
-//
-// After every step, with the seed and the steps walked in each failure:
-//
-//  1. Where the end's first report was read as outside and no restart came while the store held
-//     no record of the ended launch typed as an end from outside the pod, the claim is charged
-//     nothing, in memory or in the store; otherwise, at most one death and its launch failure.
-//  2. The claim and the store hold the task at every step: it is never retired.
-//  3. Once the claim reads the end decided (Claim.DeathCharged), the end of the turn
-//     (Claim.LastTurnEnd) does not move in it, and once the stored claim reads it decided, not in
-//     the store either (turnEndWatch). A decision D1 made in memory and its store refused is gone
-//     at a restart, and D2 makes it again, so the claim's watch starts again where the restored
-//     claim is undecided; the store's never does.
-//  4. At the relaunch's ready the task is sent once, never twice.
-//
-// The negative controls are the table test's: judge routing on decidedFromOutside fails
-// invariant 1, a report read neither way over a record with no decision charged a death, on one
-// daemon or after a restart that kept the record; and endedFromOutside deciding again at every
-// report fails invariant 3, D2's report before the replay over a stored decision moving the end
-// of the turn after the decision.
-func TestAnEndFromOutsideHoldsItsInvariantsInRandomOrders(t *testing.T) {
-	for seed := uint64(1); seed <= outsideSeeds; seed++ {
-		t.Run(fmt.Sprintf("seed %d", seed), func(t *testing.T) {
-			newOutsideWalk(t, seed).run()
-		})
-	}
-}
-
-// outsideWalk is one random order of the events that can meet an end from outside the pod, and
-// what its invariants read of the steps it has walked.
-type outsideWalk struct {
-	t    *testing.T
-	seed uint64
-	rng  *rand.Rand
-	// more is a second stream from the seed, of the choices drawn beside rng's: whether the end's
-	// first report is read neither way, and whether a fault set is the relaunch's refusal. Drawn
-	// apart, they leave every draw of rng as it is, so a seed that takes neither walks the order
-	// rng alone gives it.
-	more *rand.Rand
-	h    *harness
-	// ended and generation are the process the end ended and its launch, task the task the claim
-	// held, and sent how many prompts went out before the end.
-	ended      runtime.Locator
-	generation uint64
-	task       string
-	sent       int
-	// walked is every step so far, in order, which a failure prints with the seed.
-	walked []string
-	// fault is the fault set for the next writes, "" for none.
-	fault string
-	// replayOwed is whether the last restart's boot owes the claim its replay, and replayRead the
-	// generation that boot read.
-	replayOwed bool
-	replayRead uint64
-	// lost is whether a restart came while the store held no record of the end as one from
-	// outside the pod.
-	lost bool
-	// diedFirst is whether the end's first report was read neither way, so died decided the end
-	// as a death.
-	diedFirst bool
-	// turnEnd holds the end of the turn where the decision of the end put it (invariant 3).
-	turnEnd turnEndWatch
-}
-
-func newOutsideWalk(t *testing.T, seed uint64) *outsideWalk {
-	w := &outsideWalk{t: t, seed: seed, rng: rand.New(rand.NewPCG(seed, 0)), more: rand.New(rand.NewPCG(seed, 1)),
-		h: pacedHarness(t, wakeRate)}
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("seed %d walked: %s", seed, strings.Join(w.walked, "; "))
-		}
-	})
-	return w
-}
-
-// fail ends the walk with the seed and the steps walked so far in front of what failed.
-func (w *outsideWalk) fail(format string, args ...any) {
-	w.t.Helper()
-	w.t.Fatalf("seed %d, after %s: %s", w.seed, strings.Join(w.walked, "; "), fmt.Sprintf(format, args...))
-}
-
-// run walks the seed's order: the claim stood, the end, the random steps and the close.
-func (w *outsideWalk) run() {
-	h := w.h
-	w.diedFirst = w.more.IntN(3) == 0
-	if w.rng.IntN(2) == 0 {
-		h.reach(StateWorking)
-		w.walked = append(w.walked, "stood in a turn of its confirmed task")
-	} else {
-		h.reach(StateReady)
-		h.must(RequestDeliver{Claim: h.token, Task: owedTask})
-		w.walked = append(w.walked, "stood ready holding its task sent and not confirmed")
-	}
-	queueAhead(h, 1)
-	w.ended, w.generation, w.task, w.sent = h.locator(), h.generation(), owedTask, len(h.prompts())
-	second := func() { w.step("a second passed", func() error { h.advance(time.Second); return nil }) }
-	// A fault before the end, so the end's own take-back and decision can fail as a later
-	// report's can.
-	if w.rng.IntN(2) == 0 {
-		w.setFault()
-	}
-	if w.diedFirst {
-		w.report("the end, read neither way", runtime.NotRecordedProcess, "")
-		// The runtime reads the end as one from outside the pod only at a later event of the pod,
-		// the one that carries DisruptionTarget, so the reports after this one come later.
-		second()
-	} else {
-		w.report("the end, read as outside", runtime.Gone, runtime.PodEndNotOurs)
-	}
-	for range w.rng.IntN(outsideSteps + 1) {
-		steps := []func(){
-			func() { w.report("a report read as outside", runtime.Gone, runtime.PodEndNotOurs) },
-			func() { w.report("a report read neither way", runtime.NotRecordedProcess, "") },
-			func() { w.report("an Uncertain report", runtime.Uncertain, "") },
-			w.setFault,
-			w.clearFaults,
-			second,
-			w.restart,
-		}
-		if w.replayOwed {
-			steps = append(steps, w.replay)
-		}
-		steps[w.rng.IntN(len(steps))]()
-	}
-	w.clearFaults()
-	if w.replayOwed {
-		w.replay()
-	}
-	w.report("a report read neither way", runtime.NotRecordedProcess, "")
-	w.relaunch()
-}
-
-// step runs one step, notes it, and checks the invariants after it. Its error is allowed: a
-// write the store refused or whose outcome is unknown fails the event that made it.
-func (w *outsideWalk) step(name string, run func() error) {
-	w.t.Helper()
-	if err := run(); err != nil {
-		name += " (answered: " + err.Error() + ")"
-	}
-	w.walked = append(w.walked, name)
-	w.check()
-}
-
-// report is a step of the runtime's report of the ended process, of kind read as reading.
-func (w *outsideWalk) report(name string, kind runtime.ObservationKind, reading runtime.PodEndReading) {
-	w.step(name, func() error {
-		return w.h.handle(RuntimeObservation{Observation: runtime.Observation{
-			Locator: w.ended, Kind: kind, At: w.h.clock.Now(), EndReading: reading,
-		}})
-	})
-}
-
-// setFault is a step that sets one fault, at random, for the next writes: one of the store's
-// four, or, one time in five, the lifecycle recheck's refusal of the relaunch, drawn from more.
-func (w *outsideWalk) setFault() {
-	faults := []string{faultTakeBackRefused, faultClaimRefused, faultUnknownLanded, faultUnknownLost}
-	fault := faults[w.rng.IntN(len(faults))]
-	if w.more.IntN(len(faults)+1) == 0 {
-		fault = faultRelaunchRefused
-	}
-	w.step("a fault set: "+fault, func() error {
-		w.fault = fault
-		w.applyFault()
-		return nil
-	})
-}
-
-// clearFaults is a step after which the store answers every write again.
-func (w *outsideWalk) clearFaults() {
-	w.step("the faults cleared", func() error {
-		w.fault = ""
-		w.applyFault()
-		return nil
-	})
-}
-
-// applyFault makes the machine's store answer as the fault set says, the store of a machine a
-// restart built included.
-func (w *outsideWalk) applyFault() {
-	h := w.h
-	answerEveryWrite(h)
-	switch w.fault {
-	case faultTakeBackRefused:
-		h.store.fail("PutDelivery", errStoreRefused)
-	case faultClaimRefused:
-		h.store.fail("PutClaim", errStoreRefused)
-	case faultUnknownLanded, faultUnknownLost:
-		h.m.deps.Store = &unknownOutcomeStore{memStore: h.store, landed: w.fault == faultUnknownLanded}
-	case faultRelaunchRefused:
-		h.m.deps.Store = &unansweredCheckLaunchStore{memStore: h.store, failing: true}
-	}
-}
-
-// restart is a step of a daemon restart: the machine is built from what the store holds, the
-// fault set stands, and the boot owes the claim its replay where the store holds the decision of
-// a live claim recording a process, as internal/daemon's recordedDeaths selects.
-func (w *outsideWalk) restart() {
-	w.step("a restart", func() error {
-		h := w.h
-		h.restart()
-		// Another role's place in the first queue stands for the restart's wave, as in walk.
-		firstAhead(h.deps.WakePace.Pacer, 1)
-		w.applyFault()
-		stored := h.store.load(h.token)
-		if !stored.EndedWork.FromOutside || stored.EndedWork.Generation != w.generation {
-			w.lost = true
-		}
-		w.turnEnd.restarted(h)
-		w.replayOwed = stored.DeathCharged && stored.Locator != nil && slices.Contains(LiveStates(), stored.State)
-		w.replayRead = stored.Generation
-		return nil
-	})
-}
-
-// replay is a step of the boot's replay the last restart owes, with the generation it read.
-func (w *outsideWalk) replay() {
-	w.replayOwed = false
-	w.step("the boot's replay", func() error {
-		return w.h.handle(RecordedDeath{Claim: w.h.token, Generation: w.replayRead})
-	})
-}
-
-// relaunch is the close's relaunch: its turn, where it still waits for one, and its ready, at
-// which the task is sent once (invariant 4).
-func (w *outsideWalk) relaunch() {
-	h := w.h
-	if c := h.claim(); c.Generation == w.generation {
-		waiting := h.m.View().WakeWaiting
-		if waiting == nil || waiting.Kind != WakeLaunch {
-			w.fail("the claim waits for %+v, want its relaunch waiting its turn", waiting)
-		}
-		w.step("the relaunch's turn", func() error { h.advance(waiting.At.Sub(h.clock.Now())); return nil })
-	}
-	w.step("the relaunch's ready", func() error {
-		h.relaunched()
-		return nil
-	})
-	prompts := h.prompts()[w.sent:]
-	if len(prompts) != 1 || !strings.HasSuffix(prompts[0].Message, w.task) {
-		w.fail("the relaunched role was sent %+v, want its task %q once", prompts, w.task)
-	}
-}
-
-// check holds the invariants after a step (TestAnEndFromOutsideHoldsItsInvariantsInRandomOrders).
-func (w *outsideWalk) check() {
-	w.t.Helper()
-	h := w.h
-	c, stored := h.claim(), h.store.load(h.token)
-	switch {
-	case !w.lost && !w.diedFirst && (c.Budgets != Budgets{} || stored.Budgets != Budgets{}):
-		w.fail("the claim carries budgets %+v (%+v stored), want nothing charged for an end from outside the pod that no restart lost the record of",
-			c.Budgets, stored.Budgets)
-	case !atMostOneDeath(c.Budgets) || !atMostOneDeath(stored.Budgets):
-		w.fail("the claim carries budgets %+v (%+v stored), want at most the one death and its launch failure",
-			c.Budgets, stored.Budgets)
-	}
-	if wrong := cmp.Or(notHeld(h, w.task), w.turnEnd.see(h)); wrong != "" {
-		w.fail("%s", wrong)
-	}
-}
-
-// atMostOneDeath is whether b charges nothing but one death and its launch failure at most.
-func atMostOneDeath(b Budgets) bool {
-	return b == Budgets{LaunchFailures: b.LaunchFailures, Deaths: b.Deaths} && b.LaunchFailures <= 1 && b.Deaths <= 1
 }

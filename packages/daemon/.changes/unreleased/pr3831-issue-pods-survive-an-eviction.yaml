@@ -13,7 +13,9 @@ body: |-
   over its request is a neighbour's and is continued, and so is one for disk use in the pod's
   `emptyDir` volumes, which the message names no container for. An end the daemon started itself
   stays its own whatever the kubelet writes. An end from outside the pod is told to the next
-  process as an end from outside the pod, not as the daemon's replacement of the pod.
+  process as an end from outside the pod, not as the daemon's replacement of the pod. Its relaunch
+  waits in the wake pacing's second queue, as a displaced relaunch does, because it charges no
+  death; the first queue stays the relaunch of a role whose own process died.
 
   A death charged for memory or for the pod's own disk is told in plain words, with its number and
   before the runtime's own detail, in the role's next task and in the claim's `lastDeathCause`: the

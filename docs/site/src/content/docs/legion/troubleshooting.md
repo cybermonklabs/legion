@@ -1012,6 +1012,8 @@ did not finish, without waiting for the runtime to report the death a second tim
 A claim whose pod something outside it ended is on that list too: its record says that end was
 charged nothing, so it is relaunched charged nothing, in its own session, whichever of the boot's
 relaunch and the runtime's report of the ended pod reaches it first.
+That relaunch charges no death, so it waits in the pacing's second queue with the restart's
+backlog, which the pacing still lets out one turn in four.
 Where that end cut off its role's work, the role is told that its pod was ended from outside it;
 an end that cut off no work tells the role nothing, on purpose.
 Until its turn, such a claim reads the state it was in when its process ended, most often `working`

@@ -193,12 +193,14 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, 
 // dead process and arms no retry), and by the boot's replay of the death after a restart
 // (relaunchRecordedDeath). The first of them that passes the lifecycle check charges the launch
 // failure, and the others charge none. What says the charge was made is the cause it records
-// (Claim.PendingCause): died clears it in the decision that charges the death (DeathCharged), and
-// the charge sets it to died in the same claim write as the count. So a write the claim makes
-// while the relaunch waits — a task a start queues meanwhile — stores the two together, and a
-// restart reads either both or neither.
+// (Claim.PendingCause), over a death the claim holds charged (Claim.chargedDeath): died clears
+// the cause in the decision that charges the death, and the charge sets it to died in the same
+// claim write as the count. So a write the claim makes while the relaunch waits — a task a start
+// queues meanwhile — stores the two together, and a restart reads either both or neither. An end
+// from outside the pod is decided with the same mark (Claim.DeathCharged) and is no such death:
+// its relaunch charges no launch failure (endedFromOutside).
 func (m *Machine) deathLaunchFailureCharged(cause FailureCause) bool {
-	return cause == CauseDied && m.claim.DeathCharged && m.claim.PendingCause == CauseDied
+	return cause == CauseDied && m.claim.chargedDeath() && m.claim.PendingCause == CauseDied
 }
 
 // chargeDeath counts a process that died after its agent was ready with work outstanding, and
