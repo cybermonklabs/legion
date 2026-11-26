@@ -405,9 +405,11 @@ packages/dispatch/e2e/__tests__/shard-split.test.ts reads the matrix out of this
 the count a run proves is the count the run uses. Nothing repeats the number, which is what a
 denominator larger than the leg list would cost: the missing legs' rows unrun, with nothing red.
 
-WHY SIX AND NOT MORE. Read on 2026-11-26 from the jobs API, over the newest merge-group runs of
-ci.yaml that followed the envoy-go job's own split into legs (run 45882255410 at 19:15Z is the
-first): ten runs, three of which selected this lane, and in all three the shard job ended the
+WHY SIX AND NOT MORE. Read on 2026-11-26 at about 21:50Z from the jobs API, over every
+successful merge-group run of ci.yaml created between 19:15Z and 21:00Z that day: ten runs, the
+window starting where the sample's envoy-go stops being one job of 1,772 to 1,921 s and starts
+running as legs whose longest is 689 s (run 45882255410 is the first of the sample that shows
+them). Three of the ten selected this lane, and in all three the shard job ended the
 run - 862 s in 45894990792, 736 s in 45891327626, 839 s in 45886859589, each ending 7.6 to 11.8
 minutes after the next job that is not this lane's. So a leg's wall clock is the merge group's,
 and the two costs that decide the count are these:
@@ -1425,7 +1427,7 @@ The read is paginated, so gh-read.sh can read no answer of its own: after an att
 exits 1 it reads GitHub's rate_limit route, bounded by its own `timeout 30`. So each attempt
 takes up to 30 + 30 s, and the ladder 3 x 60 + 10 + 20 = 210 s at most. The step's own work
 has a measured maximum of 4 s; it now also runs
-packages/dispatch/e2e/tools/leg-rows.ts over the four shard legs' row lists (1.1 MB for the
+packages/dispatch/e2e/tools/leg-rows.ts over every shard leg's row lists (1.1 MB for the
 full lane's 1,617 rows), measured at 0.02 to 0.08 s on the development box over three runs;
 counted at a whole second, (4 + 1) x 1.15 = 5.75 s, and 210 + 5.75 = 215.75 s, at the next
 whole minute above, is the 4 min that step carries. The rule's two-minute floor does not bind.
