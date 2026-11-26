@@ -6591,7 +6591,11 @@ async function pressLinkToItself(
     await expect(page, `${pressed} loaded the issue's address without the parameter`).toHaveURL(
       opened
     );
-    await expectIssuePageDrawn(page);
+    await expect(issuePage(page), `${pressed} left the new page`).toHaveCount(1);
+    await expect(
+      page.locator("[data-dashboard]"),
+      `${pressed} did not keep Dashboard drawn`
+    ).toBeVisible();
     // A press that starts a load returns once that load has committed (Playwright's click waits
     // for the navigation it began), so this read is of the document the press left the reader in.
     expect(
@@ -6777,7 +6781,11 @@ test("an issue address with ?issue_page=new opens the new page with the setting 
     const page = await alice.newPage();
     await page.setViewportSize(DESKTOP);
     await page.goto(opened);
-    await expectIssuePageDrawn(page);
+    await expect(issuePage(page), `${opened} drew no [data-issue-page]`).toHaveCount(1);
+    await expect(
+      page.locator("[data-dashboard]"),
+      `${opened} drew no Dashboard on the new page`
+    ).toBeVisible();
     await expect(iconRail(page), "the new page's frame draws no icon rail").toHaveCount(1);
     await issueRead(page);
 
@@ -6797,7 +6805,11 @@ test("an issue address with ?issue_page=new opens the new page with the setting 
 
     await page.goBack();
     await expect(page).toHaveURL(opened);
-    await expectIssuePageDrawn(page);
+    await expect(issuePage(page), "Back from the view drew today's page").toHaveCount(1);
+    await expect(
+      page.locator("[data-dashboard]"),
+      "Back from the view drew no Dashboard on the new page"
+    ).toBeVisible();
     await expect(iconRail(page)).toHaveCount(1);
 
     await page.goto(`/issues/${issue.key}`);
@@ -6879,7 +6891,11 @@ test("a link in the Reviews dialog, pressed at ?issue_page=new with the setting 
     });
     await link.click();
     await expect(page, "the press lost the parameter").toHaveURL(opened);
-    await expectIssuePageDrawn(page);
+    await expect(issuePage(page), "the press drew today's page").toHaveCount(1);
+    await expect(
+      page.locator("[data-dashboard]"),
+      "the press drew no Dashboard on the new page"
+    ).toBeVisible();
     await expect(reviews, "the Reviews dialog stayed over the page").toHaveCount(0);
     // A press that starts a load returns once that load has committed, so this read is of the
     // document the press left the reader in.

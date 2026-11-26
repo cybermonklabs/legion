@@ -20,6 +20,7 @@ import {
   VERIFICATION_WORDS,
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
+import { isFilter } from "../web/src/features/issue-page/presets";
 import { blockNodeId } from "../web/src/features/issue-page/statement-rules";
 import {
   answerAsk,
@@ -489,7 +490,7 @@ test("a Contents entry names an issue its words cite by key and title, as its ou
     return { child: seeded.child.key, cited, question: question.id };
   };
   await phase(browser, seed, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.child}`);
+    await gotoIssue(page, `/issues/${seeded.child}/conversation`);
     await expectIssuePageDrawn(page);
     const reference = `dispatch://${seeded.cited.key}`;
     const named = `${seeded.cited.key} ${seeded.cited.title}`;
@@ -2599,7 +2600,7 @@ test("a press on Decisions before the counts arrive opens Decisions, and no cont
       });
       return () => held.resolve();
     };
-    const filters = PRESET_ORDER.filter((preset) => preset !== "conversation");
+    const filters = PRESET_ORDER.filter(isFilter);
     const counts = presetRow(page).locator("[data-preset-count]");
     /** A control's left edge and its width. */
     type ControlBox = { readonly width: number; readonly x: number };
