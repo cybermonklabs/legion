@@ -2098,6 +2098,16 @@ func (g *rig) scriptedStartLauncher(
 	token claim.Token, running uint64, answer func(shimwire.LauncherStart) *shimwire.LauncherStartResult,
 ) *scriptedStartLauncher {
 	g.t.Helper()
+	return g.scriptedStartLauncherOver(token, running, answer, nil)
+}
+
+// scriptedStartLauncherOver is scriptedStartLauncher with the daemon's end of the connection
+// handed to the runtime through wrap, when wrap is not nil: the connection the runtime writes its
+// requests to and reads the launcher's frames from.
+func (g *rig) scriptedStartLauncherOver(
+	token claim.Token, running uint64, answer func(shimwire.LauncherStart) *shimwire.LauncherStartResult, wrap func(net.Conn) net.Conn,
+) *scriptedStartLauncher {
+	g.t.Helper()
 	g.r.launchers.mu.Lock()
 	old := g.r.launchers.sessions[token]
 	g.r.launchers.mu.Unlock()
@@ -2105,6 +2115,9 @@ func (g *rig) scriptedStartLauncher(
 		old.close()
 	}
 	server, client := net.Pipe()
+	if wrap != nil {
+		server = wrap(server)
+	}
 	pod := g.pod(SandboxName(token))
 	session := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "scripted-" + string(token), PodUID: string(pod.UID), ResumesBySession: g.resumesBySession,
