@@ -1,6 +1,7 @@
 package natscallout
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -241,6 +242,24 @@ func (r *operatorRig) admin(t *testing.T) (*nats.Conn, nats.JetStreamContext) {
 // kvBucket is KV_<bucket>, the stream behind a bucket.
 func kvBucket(bucket string) string { return "KV_" + bucket }
 
+// sentAgain sends a create until an answer comes. A create can land while its reply is lost, so
+// a send that draws no answer is sent again: the same create is then answered with the stream the
+// lost send made. Each send keeps its own request bound; only the test binary's deadline ends the
+// sends, so a create the cluster never answers still fails by name.
+func sentAgain(t *testing.T, what string, send func() error) {
+	t.Helper()
+	var err error
+	testwait.Until(t, what+" to be answered", func() (struct{}, bool) {
+		err = send()
+		lost := errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded)
+		if lost {
+			t.Logf("%s drew no answer (%v); sending it again", what, err)
+		}
+		return struct{}{}, !lost
+	})
+	require.NoError(t, err, "%s", what)
+}
+
 // The buckets the operator's grant names: envoy-infra buckets' copied buckets, the session
 // consumers' records, and the other protected buckets.
 var (
@@ -262,8 +281,12 @@ func (r *operatorRig) makeStreams(t *testing.T, entries, entryBytes, maxConsumer
 		if bucket == bus.SessionBucket {
 			replicas = 3
 		}
-		kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: replicas})
-		require.NoError(t, err, "create bucket %s", bucket)
+		var kv nats.KeyValue
+		sentAgain(t, "create bucket "+bucket, func() error {
+			var err error
+			kv, err = js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: replicas})
+			return err
+		})
 		if bucket == sessionConsumers {
 			_, err := kv.Put("listener.example-hub", []byte(`{"name":"session-a"}`))
 			require.NoError(t, err)
@@ -277,8 +300,10 @@ func (r *operatorRig) makeStreams(t *testing.T, entries, entryBytes, maxConsumer
 			}
 		}
 	}
-	_, err := js.AddStream(&nats.StreamConfig{Name: bus.Stream, Subjects: []string{"notifications.>"}, Storage: nats.FileStorage, MaxConsumers: maxConsumers})
-	require.NoError(t, err)
+	sentAgain(t, "create stream "+bus.Stream, func() error {
+		_, err := js.AddStream(&nats.StreamConfig{Name: bus.Stream, Subjects: []string{"notifications.>"}, Storage: nats.FileStorage, MaxConsumers: maxConsumers})
+		return err
+	})
 	return js
 }
 
@@ -388,13 +413,24 @@ type apiAnswer struct {
 // ten seconds (testnats.jetStreamWait says so): one such create here got no answer within ten.
 const answerWait = 30 * time.Second
 
+// requestAnswer sends one request and returns its decoded answer. A caller that can safely retry
+// a request after its reply is lost reads the timeout rather than failing here.
+func requestAnswer(t *testing.T, nc *nats.Conn, subject string, body any) (apiAnswer, error) {
+	t.Helper()
+	msg, err := nc.Request(subject, encoded(t, body), answerWait)
+	if err != nil {
+		return apiAnswer{}, err
+	}
+	answer := apiAnswer{raw: msg.Data}
+	require.NoError(t, json.Unmarshal(msg.Data, &answer), "%s answered %q", subject, msg.Data)
+	return answer, nil
+}
+
 // answered requires a request on subject to be answered, and returns the answer.
 func answered(t *testing.T, nc *nats.Conn, subject string, body any) apiAnswer {
 	t.Helper()
-	msg, err := nc.Request(subject, encoded(t, body), answerWait)
+	answer, err := requestAnswer(t, nc, subject, body)
 	require.NoError(t, err, "%s got no answer", subject)
-	answer := apiAnswer{raw: msg.Data}
-	require.NoError(t, json.Unmarshal(msg.Data, &answer), "%s answered %q", subject, msg.Data)
 	return answer
 }
 
@@ -417,6 +453,51 @@ func succeeds(t *testing.T, nc *nats.Conn, subject string, body any) apiAnswer {
 	}
 	require.Nil(t, answer.Error, "%s was refused: %s", subject, answer.raw)
 	return answer
+}
+
+type streamRequester func(t *testing.T, nc *nats.Conn, subject string, body any) (apiAnswer, error)
+
+// createsStream creates config's named stream. A stream create can land while its reply is lost,
+// so a send that draws no answer is sent again, and a name-in-use answer is accepted only when
+// STREAM.INFO holds every setting the create named.
+func createsStream(t *testing.T, nc *nats.Conn, subject string, config map[string]any) {
+	t.Helper()
+	createsStreamWith(t, nc, subject, config, requestAnswer)
+}
+
+// createsStreamWith is createsStream with the request function the test uses. Its caller can make
+// a reply unavailable after the server created the stream, the loss the sends again recover.
+func createsStreamWith(t *testing.T, nc *nats.Conn, subject string, config map[string]any, ask streamRequester) {
+	t.Helper()
+	var answer apiAnswer
+	sentAgain(t, subject, func() error {
+		var err error
+		answer, err = ask(t, nc, subject, config)
+		return err
+	})
+	if answer.Error == nil {
+		return
+	}
+	name, ok := config["name"].(string)
+	require.True(t, ok, "%s create has no stream name", subject)
+	info := answered(t, nc, "$JS.API.STREAM.INFO."+name, nil)
+	if info.Error == nil {
+		var stream struct {
+			Config map[string]any `json:"config"`
+		}
+		require.NoError(t, json.Unmarshal(info.raw, &stream), "read stream %s", name)
+		matches := true
+		for key, want := range config {
+			got, present := stream.Config[key]
+			wantJSON, wantErr := json.Marshal(want)
+			gotJSON, gotErr := json.Marshal(got)
+			matches = matches && present && wantErr == nil && gotErr == nil && bytes.Equal(wantJSON, gotJSON)
+		}
+		if matches {
+			return
+		}
+	}
+	require.Nil(t, answer.Error, "%s was refused: %s", subject, answer.raw)
 }
 
 // refused requires a request on subject to get no answer, and the server to report a publish
