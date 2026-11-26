@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -372,6 +373,60 @@ func TestTheBackfillStatesThePeopleAnOlderBuildsEditOfACommentNames(t *testing.T
 		t.Errorf("the queue holds %v after the backfill, want none", queued)
 	}
 	requireTheThreadsAgree(t, writes.database, "after the backfill of the edit")
+	requireASecondRunAppendsNothing(t, writes.database)
+}
+
+// R4: participation "holds every thread they were mentioned or addressed in without writing in
+// it", whichever pass states the mention first. A re-index of a comment's text at the sentinel -
+// the scope re-index a text that writes a `#id` owes when its document's question blocks move
+// (refs.ReindexScopeSource) - states the mention of each person the text names that the store
+// holds none of, and no participation, since no event records it.
+//
+// alice's comment is stated by the backfill. A build of the release before then edits it to name
+// dave and to write a `#id`; the trigger queues the edit's event. The scope re-index of the comment
+// runs before any pass reads that event and states dave's mention at the sentinel. The backfill's
+// pass over the queue then finds dave's mention standing and dave taking no part in the comment's
+// thread, and states his participation in it under the edit's event, beside his mention under that
+// event, which explains it to the census of user_threads (mentioned_alone). That census reads no
+// difference, the queue empties, and a second run appends nothing. Its control is the pass
+// deciding on the standing mention alone (writeOlderEdit before INFRA-1152's review C8): it
+// states nothing of dave, who never takes part.
+func TestAPersonAnOlderBuildsEditNamesTakesPartThoughAReindexStatedTheMentionFirst(t *testing.T) {
+	writes := newAddressingWrites(t)
+	writes.createIssue(t, "CENS-1", 1, "U", alice)
+	ctx := context.Background()
+	thread := writeAsAnOlderBuild(t, writes, "comment.created", alice, `
+		insert into comments (issue_key, author, body) values ('CENS-1', $1, 'Is the copy final?')
+		returning id::text, created_at`, actorJSON(t, alice))
+	backfillInboxOnce(t, writes.database)
+
+	const body = "Is the copy final? Over to dispatch://person/" + daveAddress + " for it, as #q1 asks."
+	edited := writeAsTheReleaseBefore(t, writes, func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
+		_, err := tx.Exec(ctx, `update comments set body = $2, edited_at = now() where id = $1::uuid`, thread.id, body)
+		return model.Event{IssueKey: new("CENS-1"), Type: "comment.edited", Actor: alice,
+			Payload: map[string]any{"id": thread.id, "body": body}}, err
+	})
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 1 || queued[0] != edited.ID {
+		t.Fatalf("the queue holds %v after the older build's edit, want its comment.edited %d alone", queued, edited.ID)
+	}
+	if indexed, err := refs.ReindexScopeSource(ctx, writes.database.Pool, graphstore.KindComment, thread.id, writersSizingURL); err != nil || !indexed {
+		t.Fatalf("the scope re-index of the edited comment = %v (%v), want it re-indexed", indexed, err)
+	}
+	requireStands(t, writes.database, "the scope re-index", graphstore.NoEvent,
+		graphstore.KindComment, thread.id, graphstore.TupleMentions, graphstore.KindPerson, daveAddress)
+	if asserted, under := newestOf(t, writes.database, graphstore.KindPerson, daveAddress, graphstore.TupleParticipatesIn, graphstore.KindComment, thread.id); asserted {
+		t.Fatalf("dave takes part in the comment's thread under event %d before the backfill reads the edit: this test proves nothing", under)
+	}
+
+	backfillInboxOnce(t, writes.database)
+	requireStands(t, writes.database, "the edit's participation", edited.ID,
+		graphstore.KindPerson, daveAddress, graphstore.TupleParticipatesIn, graphstore.KindComment, thread.id)
+	requireStands(t, writes.database, "the edit's mention", edited.ID,
+		graphstore.KindComment, thread.id, graphstore.TupleMentions, graphstore.KindPerson, daveAddress)
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 0 {
+		t.Errorf("the queue holds %v after the backfill, want none", queued)
+	}
+	requireTheThreadsAgree(t, writes.database, "after the scope re-index and the backfill of the edit")
 	requireASecondRunAppendsNothing(t, writes.database)
 }
 

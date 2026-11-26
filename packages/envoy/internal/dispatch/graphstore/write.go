@@ -115,9 +115,10 @@ type Uncaused struct {
 	// attributes its node write stated among them, which stand after the first baseAt of these.
 	Tuples []UncausedTuple
 	// People are the facts of the write that name a person - a mentions tuple from the write's
-	// node to a person its text names - which only ToPerson appends (ErrPersonTupleOutsideToPerson):
-	// QueueCaused hands them to QueueToPerson under the event, after Tuples, so each person's node
-	// is written beside them as every such fact's is.
+	// node to a person its text names, or the retraction of one its text no longer names - which
+	// only ToPerson appends (ErrPersonTupleOutsideToPerson): QueueCaused hands them to
+	// QueueToPerson under the event, each with the event as its legacy_source_seq, after Tuples,
+	// so each person's node is written beside them as every such fact's is.
 	People []Tuple
 	// mark is what the node write left on the rows it made or moved (nodeMarks), 0 for a write
 	// that marked none.
@@ -225,7 +226,12 @@ func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 // the write phase sends the statements, rather than copied here: a version's block index holds a
 // tuple a block. The writer does not change write after this call, and a tuple that cannot be
 // encoded fails Send rather than this call, which answers nothing (QueueWrite). The facts that
-// name a person (Uncaused.People) go to QueueToPerson under the same event, after the append.
+// name a person (Uncaused.People) go to QueueToPerson under the same event, after the append, each
+// with that event as its legacy_source_seq, as a session's or a role's mention marked
+// LegacyFromCause takes it: every one of them is the mention of a person a text names
+// (refs' stateMention), and graph_edges answers a mention's legacy_source_seq as its source_seq,
+// so a ?since= read of References whose window holds the event lists it. Under NoEvent it takes
+// none, as no fact of Tuples does.
 func QueueCaused(b *store.WriteBatch, write Uncaused, event int64) {
 	legacy := event
 	queueAppend(b, appending{
@@ -248,6 +254,9 @@ func QueueCaused(b *store.WriteBatch, write Uncaused, event int64) {
 	people := make([]Tuple, len(write.People))
 	for index, tuple := range write.People {
 		tuple.SourceEvent = event
+		if tuple.LegacySourceSeq == nil && event != NoEvent {
+			tuple.LegacySourceSeq = &legacy
+		}
 		people[index] = tuple
 	}
 	QueueToPerson(b, people)

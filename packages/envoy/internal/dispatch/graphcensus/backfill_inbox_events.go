@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
@@ -323,9 +324,15 @@ func laterMoveOf(event int64) string {
 // of out of that node yet (refs.ItemIdentityMentions), made by the node's maker at the edit's
 // moment, and each such person's participates_in in the comment's thread
 // (inboxwrite.MentionParticipation), made by the editor at that moment, all under the edit's event,
-// and no delivery: an edit delivers nothing. A comment whose pointers the store does not hold yet,
-// or that it holds no node of, is the comment pointer pass's, which reads the text the comment
-// holds then. It answers how many tuples it handed the store.
+// and no delivery: an edit delivers nothing. A person the text names whose mention the store holds
+// already is owed the same where they take no part in the thread: a pass that no event records can
+// state the mention before this one runs - a re-index of the comment's text at the sentinel
+// (refs.ReindexScopeSource, refs.ReindexOwed), which states no participation, since a
+// participation stands under the event of a mention that explains it (the census's
+// mentioned_alone) - so the participation R4 owes is decided on the participation itself
+// (takingPart), and its mention is stated again under the edit's event, beside it. A comment whose
+// pointers the store does not hold yet, or that it holds no node of, is the comment pointer pass's,
+// which reads the text the comment holds then. It answers how many tuples it handed the store.
 func writeOlderEdit(ctx context.Context, tx pgx.Tx, event queuedEvent) (int64, error) {
 	var body, visibility string
 	var madeBy []byte
@@ -354,11 +361,19 @@ func writeOlderEdit(ctx context.Context, tx pgx.Tx, event queuedEvent) (int64, e
 	if err := json.Unmarshal(madeBy, &maker); err != nil {
 		return 0, fmt.Errorf("read the maker of comment %s: %w", event.target, err)
 	}
-	standing := make([]refs.Target, len(standingIDs))
+	// A person's standing mention is held back from the plan, so the plan answers every person
+	// the text names, and those of them whom a mention names already are kept below only where
+	// they take no part in the thread.
+	standing := make([]refs.Target, 0, len(standingIDs))
+	var mentionedBefore []string
 	for index := range standingIDs {
-		standing[index] = refs.Target{Kind: standingKinds[index], ID: standingIDs[index]}
+		if standingKinds[index] == graphstore.KindPerson {
+			mentionedBefore = append(mentionedBefore, standingIDs[index])
+			continue
+		}
+		standing = append(standing, refs.Target{Kind: standingKinds[index], ID: standingIDs[index]})
 	}
-	identities, people := refs.ItemIdentityMentions(refs.ItemComment, event.target, visibility, maker, event.at, body, standing)
+	identities, people := refs.ItemIdentityMentions(refs.ItemComment, event.target, visibility, maker, event.at, event.id, body, standing)
 	if len(identities)+len(people) == 0 {
 		return 0, nil
 	}
@@ -366,10 +381,51 @@ func writeOlderEdit(ctx context.Context, tx pgx.Tx, event queuedEvent) (int64, e
 	if err != nil {
 		return 0, err
 	}
-	tuples := append(inboxwrite.UnderEvent(append(identities, people...), event.id),
+	var named []string
+	for _, mention := range people {
+		if slices.Contains(mentionedBefore, mention.ToID) {
+			named = append(named, mention.ToID)
+		}
+	}
+	if len(named) > 0 {
+		taking, err := takingPart(ctx, tx, rootKind, rootID, named)
+		if err != nil {
+			return 0, err
+		}
+		people = slices.DeleteFunc(people, func(mention graphstore.Tuple) bool {
+			return slices.Contains(taking, mention.ToID)
+		})
+	}
+	if len(identities)+len(people) == 0 {
+		return 0, nil
+	}
+	tuples := append(slices.Concat(identities, people),
 		inboxwrite.MentionParticipation(rootKind, rootID, graphstore.Uncaused{People: people}, event.actor, event.at, event.id)...)
 	if err := writeRelations(ctx, tx, tuples); err != nil {
 		return 0, fmt.Errorf("state what an older build's edit of comment %s names: %w", event.target, err)
 	}
 	return int64(len(tuples)), nil
+}
+
+// takingPart is each of logins whose participates_in in the thread whose root is rootKind/rootID
+// stands now: the newest tuple of each one's relation, kept while it asserts
+// (graphstore.CurrentTupleRead), as the record reads a thread's participants (inboxwrite's
+// readMembers), here for the few people one edit names rather than for every member. It reads
+// graph_tuples_as_of_in, led by the root, whose predicate the far end's `<> 'value'` proves.
+func takingPart(ctx context.Context, tx pgx.Tx, rootKind, rootID string, logins []string) ([]string, error) {
+	rows, err := tx.Query(ctx, `
+		select stated.from_id from (`+graphstore.CurrentTupleRead(`t.from_id`, `t.from_id, t.asserted`,
+		`t.to_kind = $1 and t.to_id = $2 and t.kind = '`+graphstore.TupleParticipatesIn+`'
+			  and t.from_kind = '`+graphstore.KindPerson+`' and t.from_id = any($3::text[])
+			  and t.to_kind <> '`+graphstore.KindValue+`'`)+`) stated
+		where stated.asserted
+	`, rootKind, rootID, logins)
+	if err != nil {
+		return nil, fmt.Errorf("read who of %v takes part in %s/%s: %w", logins, rootKind, rootID, err)
+	}
+	taking, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read who of %v takes part in %s/%s: %w", logins, rootKind, rootID, err)
+	}
+	return taking, nil
 }

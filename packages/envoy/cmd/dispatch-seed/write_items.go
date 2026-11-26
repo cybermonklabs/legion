@@ -745,11 +745,11 @@ func (m *mentionRows) add(id string, mentioned []text.Ref, at time.Time) {
 }
 
 // write inserts the rows and answers the citation the server's own writer of an item's refs rows
-// states beside each row it inserts (refs.replaceRefs): a `mentions` tuple, of the row's own kind,
-// out of the item's node to the row's far end, dated by the row and made by the seed's author. The
-// batch wrote every item's node before its rows, so each row is a citation of the store's and says
-// so in its own insert (refs.tuples_stored), but for a far end past the store's address bound,
-// which is no tuple and holds false.
+// states beside each row it inserts (refs.Replacement.Queue): a `mentions` tuple, of the row's
+// own kind, out of the item's node to the row's far end, dated by the row and made by the seed's
+// author. The batch wrote every item's node before its rows, so each row is a citation of the
+// store's and says so in its own insert (refs.tuples_stored), but for a far end past the store's
+// address bound, which is no tuple and holds false.
 func (m *mentionRows) write(ctx context.Context, tx pgx.Tx) ([]graphstore.UncausedTuple, error) {
 	if len(m.ids) == 0 {
 		return nil, nil

@@ -57,44 +57,6 @@ func EditedTargets(previous, body, serverURL string, found []text.Ref) []Target 
 	return targets
 }
 
-// replaceRefs reconciles the Dispatch references written by one source with found: targets no
-// longer mentioned are deleted, new ones inserted with insertedAt as created_at (nil: now()), and
-// an edge that persists keeps its created_at and source_seq. It returns the targets whose inbound
-// edges moved — deleted or inserted, oldest state first — so its caller can resolve the ones
-// a reader refreshes by name (CountedChanges). It is PlanReplace and Queue back to back, the
-// queued statements run at once as a batch of their own. Only targets of a node kind this
-// build knows (nodeKinds) are deleted: during a release a newer build writes the same sources, and
-// an edge to a node kind it added is one this build cannot read out of the body, so it keeps that
-// edge.
-//
-// What it queues settles what the source owes the re-index queues (Replacement.Queue): the whole
-// grammar's always, since this text has now been read with the whole grammar, and the forms
-// queue only when whole says the write indexed the source's blocks in tx before this call, so the
-// text it read is the source's whole text and every delete that index made, its blocks' included,
-// came before this settle (Replacement.SettlingForms, RefsFormsOwed). A caller that leaves the
-// blocks for later passes false and leaves the source owed until this build's own block index of
-// it.
-//
-// No writer of the server calls it: each plans its replacement in its read phase (PlanReplace,
-// PlanItemReplace, rebuild's planSourceReplace) and queues it in its write phase
-// (Replacement.Queue). The tests write a source's references through it.
-func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time, whole bool) ([]Target, error) {
-	replacement, err := PlanReplace(ctx, tx, fromKind, fromID, found, insertedAt)
-	if err != nil {
-		return nil, err
-	}
-	if whole {
-		replacement = replacement.SettlingForms()
-	}
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		replacement.Queue(b)
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return replacement.Changed(), nil
-}
-
 // Replacement is one source's references reconciled with found, the references its text now
 // cites. It is planned against the edges the source holds
 // (PlanReplace, PlanReplaceFrom), so the targets it moves are known before anything is written,

@@ -648,8 +648,12 @@ func userThreadsHeld(extra string) string {
 //     a person who moved the ask onto themselves, under that move's event, whose actor is them
 //     (inboxwrite.OwnMove). A participation with no delivery under anybody else's event is a
 //     difference.
-//   - mentioned_alone: participation stated under the event of a mentions tuple into them, which
-//     keeps no row: the writer that resolves the mention states it (inboxwrite.MentionParticipation).
+//   - mentioned_alone: participation stated under the event of a mentions tuple into them that
+//     asserts the mention, which keeps no row: the writer that resolves the mention states it
+//     (inboxwrite.MentionParticipation). A retraction under that event, which an index states of
+//     a mention its text no longer names (refs' unnamedMentions), explains no participation; the
+//     assertion that caused it stays in the log, so a participation keeps its mention's event as
+//     its explanation once the mention is retracted.
 //   - row_removed: a relation into a thread whose row the removal of the thread's document deleted,
 //     an artifact.removed of that document appended after the relation's own cause: participation
 //     outlives the row (R4), and a mark stands only where a build of the release before removed
@@ -675,7 +679,7 @@ var userThreadsNarrowings = []struct{ name, note, test string }{{
 	test: `held.kind = '` + graphstore.TupleParticipatesIn + `' and held.source_event <> ` + noEvent + ` and exists (
 		select 1 from graph_tuples m
 		where m.to_kind = '` + graphstore.KindPerson + `' and m.to_id = n.id and m.kind = '` + graphstore.TupleMentions + `'
-		  and m.source_event = held.source_event)`,
+		  and m.source_event = held.source_event and m.asserted)`,
 }, {
 	name: "row_removed",
 	note: "relations into a thread whose row the removal of its document deleted: participation outlives the row, and a" +

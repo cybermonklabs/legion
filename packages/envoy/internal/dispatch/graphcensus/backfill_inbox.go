@@ -550,7 +550,7 @@ func writeMessages(ctx context.Context, tx pgx.Tx, ids []string) (inboxWrote, er
 		}
 		written := inboxwrite.Message(held.row.ID, held.author, held.at, issue, "")
 		if issue != nil && held.row.BroadcastID == "" {
-			if identities, people := refs.ItemIdentityMentions(refs.ItemMessage, held.row.ID, held.visibility, held.maker, held.at, held.body, nil); len(identities)+len(people) > 0 {
+			if identities, people := refs.ItemIdentityMentions(refs.ItemMessage, held.row.ID, held.visibility, held.maker, held.at, held.event, held.body, nil); len(identities)+len(people) > 0 {
 				written = written.Names(identities, people)
 			}
 		}
@@ -1047,7 +1047,7 @@ func writeCommentPointers(ctx context.Context, tx pgx.Tx, ids []string, causes [
 			continue
 		}
 		written := inboxwrite.Comment(held.id, held.author, held.at, held.issueKey, held.artifactID, "")
-		if identities, people := refs.ItemIdentityMentions(refs.ItemComment, held.id, held.visibility, held.maker, held.at, held.body, nil); len(identities)+len(people) > 0 {
+		if identities, people := refs.ItemIdentityMentions(refs.ItemComment, held.id, held.visibility, held.maker, held.at, held.event, held.body, nil); len(identities)+len(people) > 0 {
 			written = written.Names(identities, people)
 		}
 		owed, err := inboxwrite.RecordOlder(ctx, tx, written, held.event)

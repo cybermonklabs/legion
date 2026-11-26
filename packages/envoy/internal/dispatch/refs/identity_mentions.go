@@ -1,8 +1,10 @@
 package refs
 
 import (
+	"cmp"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -14,7 +16,9 @@ import (
 // a role (R5). A mention of one is a `mentions` tuple from the comment, issue message or document
 // block that holds it to the identity's node, in the store alone: the graph's refs and block_refs
 // rows hold no party (TargetOf), so a build of the release before this one, which reconciles those
-// rows by deleting every row of its source (replaceRefs, replaceBlockRefs), deletes none of these.
+// rows by deleting every row of its source (that build's replaceRefs and replaceBlockRefs),
+// deletes none of these. This release's index of the text states each and retracts each the text
+// no longer names (identityMentions, unnamedMentions).
 var IdentityKinds = []string{graphstore.KindPerson, graphstore.KindSession, graphstore.KindRole}
 
 // identityTargets is each identity a text's references point at, once each in the order the text
@@ -46,16 +50,11 @@ func identityTargets(located []text.Located) []Target {
 }
 
 // identityMentions plans the `mentions` tuples from fromKind/fromID to each of targets the store
-// does not hold from that node already (standing), made by who at at, and answers them split by
-// the writer that appends them: a person's goes through graphstore.ToPerson, the one writer of a
-// tuple that names a person (graphstore.Uncaused.People), and a session's or a role's with the
-// node's other facts. Each mention is appended once and never retracted, so a re-index of
-// unchanged text appends nothing, and neither does a second write of the same text in one
-// transaction (standing is read, and then held, by the index that plans it).
-//
-// A node reserved for its author (graphstore.VisibilityAuthor) mentions no person but that author
-// (R2): such a tuple would be mail its person can never read, and graphstore.ToPerson refuses it.
-// An end past the store's address bound is no tuple.
+// does not hold from that node now (standing), made by who at at, each split to the writer that
+// appends it (stateMention). A re-index of unchanged text appends nothing, and neither does a
+// second write of the same text in one transaction (standing is read, and then held, by the index
+// that plans it). An end past the store's address bound is no tuple, and a node reserved for its
+// author mentions no person but that author (mentionReaches).
 func identityMentions(
 	fromKind, fromID string,
 	visibility string,
@@ -64,29 +63,82 @@ func identityMentions(
 	targets []Target,
 	standing map[Target]struct{},
 ) (tuples []graphstore.UncausedTuple, people []graphstore.Tuple) {
-	authorKind, authorID, authored := graphstore.AuthorOf(who)
 	for _, target := range targets {
-		if _, held := standing[target]; held || !graphstore.AddressFits(target.ID) {
+		if _, held := standing[target]; held || !graphstore.AddressFits(target.ID) || !mentionReaches(visibility, who, target) {
 			continue
 		}
-		tuple := graphstore.Tuple{
-			FromKind: fromKind, FromID: fromID, Kind: graphstore.TupleMentions,
-			ToKind: target.Kind, ToID: target.ID, At: at, Who: who, Asserted: true,
-		}
-		if target.Kind != graphstore.KindPerson {
-			tuples = append(tuples, graphstore.UncausedTuple{Tuple: tuple})
-			continue
-		}
-		if visibility == graphstore.VisibilityAuthor && !(authored && authorKind == graphstore.KindPerson && authorID == target.ID) {
-			continue
-		}
-		people = append(people, tuple)
+		tuples, people = stateMention(tuples, people, fromKind, fromID, target, who, at, true)
 	}
 	return tuples, people
 }
 
-// statedMentions is each identity mention among tuples, the facts an index states with its node's
-// others: the session and role mentions identityMentions planned.
+// unnamedMentions plans the retraction of each mention the store holds from fromKind/fromID now
+// (standing) whose identity targets, what the node's text names now, does not name, made by who at
+// at, in (kind, id) order, each split as identityMentions splits its own (stateMention). So the
+// identity mentions out of a node follow its text, as its other edges do (PlanItemReplace, the
+// links of the block index): once an edit or a delete takes a mention out of the text, the
+// mention no longer stands. kept is the identities the node mentions apart from its text - a
+// comment's delivery routes, which its comment_mentions rows record (api's commentMentionFacts) -
+// and no change of the text retracts one of them. What a mention caused stands: the delivered_to
+// and the participates_in a mention of a person brought (R2, R4) are facts of their own, which no
+// retraction here touches. A node reserved for its author holds no mention of a person but that
+// author, so it retracts no other (mentionReaches).
+func unnamedMentions(
+	fromKind, fromID string,
+	visibility string,
+	who model.Actor,
+	at time.Time,
+	targets []Target,
+	standing, kept map[Target]struct{},
+) (tuples []graphstore.UncausedTuple, people []graphstore.Tuple) {
+	order := func(first, second Target) int {
+		return cmp.Or(strings.Compare(first.Kind, second.Kind), strings.Compare(first.ID, second.ID))
+	}
+	for _, target := range slices.SortedFunc(maps.Keys(standing), order) {
+		if _, keeps := kept[target]; keeps || slices.Contains(targets, target) || !mentionReaches(visibility, who, target) {
+			continue
+		}
+		tuples, people = stateMention(tuples, people, fromKind, fromID, target, who, at, false)
+	}
+	return tuples, people
+}
+
+// mentionReaches is whether a mention out of a node of visibility, made by who, may name target:
+// a node reserved for its author (graphstore.VisibilityAuthor) mentions no person but that author
+// (R2), since such a tuple would be mail its person can never read, and graphstore.ToPerson
+// refuses it, asserted or retracted.
+func mentionReaches(visibility string, who model.Actor, target Target) bool {
+	if target.Kind != graphstore.KindPerson || visibility != graphstore.VisibilityAuthor {
+		return true
+	}
+	authorKind, authorID, authored := graphstore.AuthorOf(who)
+	return authored && authorKind == graphstore.KindPerson && authorID == target.ID
+}
+
+// stateMention appends the mentions tuple from fromKind/fromID to target, made by who at at,
+// asserting it or, where asserted is false, retracting it, to the facts of the writer that
+// appends it: a person's to people, since graphstore.ToPerson is the one writer of a tuple that
+// names a person (graphstore.Uncaused.People), and a session's or a role's to tuples, with the
+// node's other facts. Either takes the id of the event it is stated under as its
+// legacy_source_seq, a session's and a role's because LegacyFromCause marks them and a person's
+// because graphstore.QueueCaused gives one to every fact of People: graph_edges' identity arm
+// answers that as the edge's source_seq, so a ?since= read of References whose window holds the
+// event lists the mention, and one stated at the sentinel (graphstore.NoEvent), by a pass no
+// event records, carries none and stays out of that read.
+func stateMention(tuples []graphstore.UncausedTuple, people []graphstore.Tuple, fromKind, fromID string, target Target, who model.Actor, at time.Time, asserted bool) ([]graphstore.UncausedTuple, []graphstore.Tuple) {
+	tuple := graphstore.Tuple{
+		FromKind: fromKind, FromID: fromID, Kind: graphstore.TupleMentions,
+		ToKind: target.Kind, ToID: target.ID, At: at, Who: who, Asserted: asserted,
+	}
+	if target.Kind == graphstore.KindPerson {
+		return tuples, append(people, tuple)
+	}
+	return append(tuples, graphstore.UncausedTuple{Tuple: tuple, LegacyFromCause: true}), people
+}
+
+// statedMentions is each identity mention among tuples, asserted or retracted, the facts an index
+// states with its node's others: the session and role mentions identityMentions and
+// unnamedMentions planned.
 func statedMentions(tuples []graphstore.UncausedTuple) []graphstore.Tuple {
 	var mentions []graphstore.Tuple
 	for _, held := range tuples {
@@ -95,6 +147,25 @@ func statedMentions(tuples []graphstore.UncausedTuple) []graphstore.Tuple {
 		}
 	}
 	return mentions
+}
+
+// mentionsAfter is held, the identities the store holds a mention of out of one node, once the
+// mentions of stated out of that node are appended: each one it asserts added and each one it
+// retracts taken out. It changes held and answers it, or a new map where held is nil and stated
+// asserts one.
+func mentionsAfter(held map[Target]struct{}, stated []graphstore.Tuple) map[Target]struct{} {
+	for _, tuple := range stated {
+		target := Target{Kind: tuple.ToKind, ID: tuple.ToID}
+		if !tuple.Asserted {
+			delete(held, target)
+			continue
+		}
+		if held == nil {
+			held = map[Target]struct{}{}
+		}
+		held[target] = struct{}{}
+	}
+	return held
 }
 
 // ItemIdentityMentions is the mentions tuple out of the comment or the message kind/itemID to each
@@ -110,13 +181,16 @@ func statedMentions(tuples []graphstore.UncausedTuple) []graphstore.Tuple {
 // (text.ExtractAt) name every identity the whole grammar names, whatever deployment it is read
 // for. It answers the tuples split by the writer that appends them - a session's and a role's
 // beside the node's other facts (graphstore.Write), a person's through graphstore.ToPerson - each
-// with no event: they are appended under the event of the write they belong to.
+// stated under event, the write's own, which each carries as its source_event and, where it is an
+// event and not graphstore.NoEvent, as its legacy_source_seq, as this release's write of the text
+// states its own (stateMention). It plans no retraction: what it states is what the write of the
+// text named, which its caller holds no later text against.
 //
 // The backfill reads it for a comment or an issue message an older build wrote, and for an edit
 // of a comment it made (graphcensus' commentPointersPass, messagesPass and its pass over the queue
 // of that build's events): that build states none of these tuples and stores no row of a
 // person's mention (TargetOf), so the item's own text is the one record of whom it names.
-func ItemIdentityMentions(kind ItemKind, itemID, visibility string, who model.Actor, at time.Time, body string, standing []Target) (identities, people []graphstore.Tuple) {
+func ItemIdentityMentions(kind ItemKind, itemID, visibility string, who model.Actor, at time.Time, event int64, body string, standing []Target) (identities, people []graphstore.Tuple) {
 	named := identityTargets(text.ExtractAt(body, ""))
 	if len(named) == 0 {
 		return nil, nil
@@ -129,17 +203,28 @@ func ItemIdentityMentions(kind ItemKind, itemID, visibility string, who model.Ac
 		held[target] = struct{}{}
 	}
 	stated, people := identityMentions(string(kind), itemID, visibility, who, at, named, held)
-	return statedMentions(stated), people
+	identities = statedMentions(stated)
+	for _, facts := range [][]graphstore.Tuple{identities, people} {
+		for index := range facts {
+			facts[index].SourceEvent = event
+			if event != graphstore.NoEvent {
+				facts[index].LegacySourceSeq = &event
+			}
+		}
+	}
+	return identities, people
 }
 
 // blockIdentityMentions plans the identity mentions of a document version's blocks: each
 // identity a reference of located names, from the innermost of nodes holding its start, as a
 // block's other mentions are placed (blockPairs), where that block is a node of the store (fits,
 // beside each of nodes), and where the store holds no mention of it out of that block's node
-// already (standing, by block id). A block's node is made by the version's writer and read under
-// its project's visibility (blockNode), which is who and what each mention is stated under, dated
-// at, the version's time. It also answers what each block holds once these are appended, which a
-// later index of the document in the same transaction plans against (BlockIndexing.Held).
+// already (standing, by block id); and the retraction of each mention standing holds out of a
+// block that the version's text of that block no longer names, a block the version no longer
+// holds naming none (unnamedMentions). A block's node is made by the version's writer and read
+// under its project's visibility (blockNode), which is who and what each mention is stated under,
+// dated at, the version's time. It also answers what each block holds once these are appended,
+// which a later index of the document in the same transaction plans against (BlockIndexing.Held).
 func blockIdentityMentions(
 	refKey string,
 	nodes []model.ArtifactBlock,
@@ -159,47 +244,59 @@ func blockIdentityMentions(
 			parties = append(parties, mention)
 		}
 	}
-	if len(parties) == 0 {
-		return nil, nil, held
-	}
 	starts := make([]int, len(parties))
 	for index, mention := range parties {
 		starts[index] = mention.Offset
 	}
-	holders := innermostBlocks(nodes, starts)
 	var order []string
 	named := map[string][]text.Located{}
-	for index, holder := range holders {
-		if holder < 0 || !fits[holder] {
-			continue
+	if len(parties) > 0 {
+		for index, holder := range innermostBlocks(nodes, starts) {
+			if holder < 0 || !fits[holder] {
+				continue
+			}
+			blockID := nodes[holder].ID
+			if _, seen := named[blockID]; !seen {
+				order = append(order, blockID)
+			}
+			named[blockID] = append(named[blockID], parties[index])
 		}
-		blockID := nodes[holder].ID
-		if _, seen := named[blockID]; !seen {
-			order = append(order, blockID)
+	}
+	state := func(blockID string, blockTuples []graphstore.UncausedTuple, blockPeople []graphstore.Tuple) {
+		tuples, people = append(tuples, blockTuples...), append(people, blockPeople...)
+		if mentions := mentionsAfter(held[blockID], slices.Concat(statedMentions(blockTuples), blockPeople)); len(mentions) > 0 {
+			held[blockID] = mentions
+		} else {
+			delete(held, blockID)
 		}
-		named[blockID] = append(named[blockID], parties[index])
 	}
 	for _, blockID := range order {
 		blockTuples, blockPeople := identityMentions(BlockNodeKind, blockNodeAddress(refKey, blockID),
 			graphstore.VisibilityProject, writer, at, identityTargets(named[blockID]), standing[blockID])
-		tuples, people = append(tuples, blockTuples...), append(people, blockPeople...)
-		for _, tuple := range slices.Concat(statedMentions(blockTuples), blockPeople) {
-			if held[blockID] == nil {
-				held[blockID] = map[Target]struct{}{}
-			}
-			held[blockID][Target{Kind: tuple.ToKind, ID: tuple.ToID}] = struct{}{}
-		}
+		state(blockID, blockTuples, blockPeople)
+	}
+	// In block id order, so the retractions come in an order a reader of the log can predict,
+	// which a map's iteration would not give.
+	for _, blockID := range slices.Sorted(maps.Keys(standing)) {
+		blockTuples, blockPeople := unnamedMentions(BlockNodeKind, blockNodeAddress(refKey, blockID),
+			graphstore.VisibilityProject, writer, at, identityTargets(named[blockID]), standing[blockID], nil)
+		state(blockID, blockTuples, blockPeople)
 	}
 	return tuples, people, held
 }
 
-// IdentityMentionsRead is the select of the identities the store holds `mentions` tuples to from
-// one node, its kind and id the SQL expressions kind and id - numbered parameters, or columns of
-// the statement it is spliced into - and the identity kinds the array kinds (IdentityKinds): a
-// mention is appended once and never retracted (identityMentions), so an asserted tuple is one
-// that stands. It answers (to_kind, to_id), each once.
+// IdentityMentionsRead is the select of the identities the store holds a mention of from one
+// node now, its kind and id the SQL expressions kind and id - numbered parameters, or columns of
+// the statement it is spliced into, which must not be a table aliased t, the alias the read takes
+// for graph_tuples - and the identity kinds the array kinds (IdentityKinds): the newest `mentions`
+// tuple of each pair of ends, kept only while it asserts (graphstore.CurrentTupleRead), since the
+// index retracts a mention its node's text no longer names (unnamedMentions) and an asserted tuple
+// older than that retraction stands no more. It reads graph_tuples_current, whose predicate the
+// kind's literal and the far end's `<> 'value'` prove, and answers (to_kind, to_id), each once.
 func IdentityMentionsRead(kind, id, kinds string) string {
-	return `select distinct m.to_kind, m.to_id from graph_tuples m
-		where m.from_kind = ` + kind + ` and m.from_id = ` + id + ` and m.kind = '` + graphstore.TupleMentions + `'
-		  and m.to_kind = any(` + kinds + `) and m.asserted`
+	return `select newest.to_kind, newest.to_id from (` +
+		graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted`,
+			`t.from_kind = `+kind+` and t.from_id = `+id+` and t.kind = '`+graphstore.TupleMentions+`'
+			  and t.to_kind = any(`+kinds+`) and t.to_kind <> '`+graphstore.KindValue+`'`) + `) newest
+		where newest.asserted`
 }
