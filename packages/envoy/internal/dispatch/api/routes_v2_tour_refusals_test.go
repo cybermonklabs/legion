@@ -93,6 +93,9 @@ var tourRefusals = map[string][]tourRefusal{
 	"POST /api/v2/projects": {
 		{Name: "a key that is no project key", Change: refusalBody("key", "lower"), Code: apicode.InvalidProject},
 	},
+	"POST /api/v2/going-requests": {
+		{Name: "a token that names another project, asking of a private project it does not name", Change: refusalGoingInAPrivateProject, Code: apicode.ProjectNotFound},
+	},
 	"POST /api/v2/priorities": {
 		{Name: "a blank title", Change: refusalBody("title", "  "), Code: apicode.PriorityInput},
 	},
@@ -355,6 +358,29 @@ func refusalCreateInAPrivateProject(t *testing.T, tour *routeTour, request tourR
 	seedExec(t, tour.database, "the step's project made private", `
 		update projects set owner = 'alice', visibility = 'private' where key = $1
 	`, body["project"])
+	caller := newBrokerCaller(t)
+	token := "a-tour-token-naming-another-project-" + uuid.NewString()
+	answer := liveNamedToken(caller.jkt)
+	answer.Projects = []string{tour.project(t)}
+	tour.brokerTokens.Says(token, answer)
+	request.As = tourCaller{Token: token, Broker: caller}
+	return request
+}
+
+// refusalGoingInAPrivateProject is a tourRefusal's change that asks its step's question of a
+// project of the tour's own made private, owned by alice, on a broker token that names one other
+// project (liveNamedToken, its project replaced): such a credential gets 404 PROJECT_NOT_FOUND and
+// records nothing, as the route's description says and /api/v1 answers since #4682
+// (going_routes.go, errProjectNotFound).
+func refusalGoingInAPrivateProject(t *testing.T, tour *routeTour, request tourRequest) tourRequest {
+	t.Helper()
+	private := tour.project(t)
+	seedExec(t, tour.database, "a project of the tour made private", `
+		update projects set owner = 'alice', visibility = 'private' where key = $1
+	`, private)
+	body := maps.Clone(request.Body.(map[string]any))
+	body["project"] = private
+	request.Body = body
 	caller := newBrokerCaller(t)
 	token := "a-tour-token-naming-another-project-" + uuid.NewString()
 	answer := liveNamedToken(caller.jkt)
