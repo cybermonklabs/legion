@@ -6,8 +6,8 @@
 # with git, so the base has to be fetched before the check runs.
 # Every fetch goes through fetch-depth-if-shallow.sh: in CI's shallow checkout it fetches with
 # the depth written here, which deepens the checkout only as far as the base needs; in a whole
-# clone, such as a developer's, it fetches with no depth, which would make the clone shallow and
-# cut the history that every worktree of the clone reads.
+# clone, such as a developer's, it fetches with no depth, since a depth would make the clone
+# shallow and cut the history that every worktree of the clone reads.
 # ci.yaml's changes job runs it too, on a dispatch of a branch that selects by its diff, and hands
 # the merge base it prints to the filter generation as CI_FILTERS_BASE
 # (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job).

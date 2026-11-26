@@ -23,7 +23,8 @@ GATE = gate("ci_filters", "ci-filters", runs=[
     (".github/actionlint.yaml", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads its configuration "
                                 "from the project it runs in"),
     (".github/actions/**", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads the action.yml of every "
-                           "local action a step's `uses:` names, for the inputs it checks"),
+                           "local action a step's `uses:` names, for the inputs it checks; and "
+                           "ci_workflow_rules.py's check_shallow_fetches (rule 26) reads every file under it"),
     (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
     (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
     (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
@@ -45,7 +46,10 @@ GATE = gate("ci_filters", "ci-filters", runs=[
     (".github/workflows/**", "ci_workflow_rules.py reads every workflow of the directory: "
                              "check_one_merge_group_workflow, which refuses a new one and so has to run on the change "
                              "that adds it, check_cache_round_trip, which holds every restore of a filled family to "
-                             "the fill's key, and ci_only_documents, which finds the files only ci.yaml calls"),
+                             "the fill's key, ci_only_documents, which finds the files only ci.yaml calls, and "
+                             "check_shallow_fetches (rule 26), which refuses a run: line that fetches with a depth"),
+    (".github/scripts/**", "ci_workflow_rules.py's check_shallow_fetches (rule 26) reads every file under it for a "
+                           "git fetch or git pull with a depth, so the change that adds one has to run this check"),
     # Every filter is computed from two sets this check reads in every Go file: the //ci: lines
     # of the tests, and the repository's Go test files the `!` patterns keep a filter off. A test
     # file added, deleted or given a //ci: line anywhere changes what the changes job computes, so

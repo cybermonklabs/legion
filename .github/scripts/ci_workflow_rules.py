@@ -1,11 +1,12 @@
 """The rules about ci.yaml that stand on their own: what no `if:` of it may say, what every job's
 `if:` must say, what ci-caches.yaml must save
 for the entries ci.yaml restores and which packages the daemon fill job's race build must compile, which workspaces
-ci_job_reads.py's WORKSPACES must name, and
-that no other workflow of this repository runs on a merge group.
+ci_job_reads.py's WORKSPACES must name,
+that no other workflow of this repository runs on a merge group, and that no script or workflow
+under .github fetches with a depth but through fetch-depth-if-shallow.sh.
 None of them
 reads a filter, a gate or the closure of a go command, so none belongs in the filter-coverage
-engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 13, 14 and 16, and
+engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 13, 14, 16 and 26, and
 ci_filter_coverage.main()
 is what runs them, over the documents it already loaded where the rule reads only those - the
 rerun-guard rule over ci.yaml alone, since the `if:` it reads is the caller job's; the cache
@@ -16,8 +17,9 @@ ci.yaml and the called files that are ci.yaml's alone (ci_only_documents says wh
 others, and reads the directory to find them) - the workspace rule over the
 root manifest and the WORKSPACES table main() hands it, and the race-fill rule over ci-caches.yaml
 and the DAEMON_RACE_PACKAGES list and DAEMON_RACE_FILL_JOB job main() hands it the same way, since what this module imports is
-the engine's names, never the data's, and the merge-group rule over the workflow directory, which
-it reads itself.
+the engine's names, never the data's, the merge-group rule over the workflow directory, which
+it reads itself, and the shallow-fetch rule over the repository's file list main() hands it,
+each file under .github/scripts, .github/actions and .github/workflows of which it reads itself.
 
 It sits beside that engine (and workflow_paths.py, the path model) in the repository it checks,
 and imports the engine's names for the two workflow files, the repository root, the checks
@@ -703,3 +705,175 @@ def check_one_merge_group_workflow(problems: list) -> None:
                                     f"the queue refused to enqueue with `Required status check \"ci-ok\" is expected` while a "
                                     f"green ci-ok sat in another workflow's check suite. Run this work on pull_request, or "
                                     f"move it into {WORKFLOW}"))
+
+
+# ------------------------------------------------- no fetch with a depth outside the one helper
+# A `git fetch --depth=<n>` in a whole clone makes that clone shallow: git writes the commits at
+# the depth's edge into the clone's shallow file, and every later read treats them as having no
+# parents. Every worktree of a clone shares that one file, so a fetch in one of them cuts the
+# history all of them read, and git merge-base and an ancestor test then answer from the commits
+# still in view. A script under .github runs in CI's shallow checkout and also in developers'
+# clones, so its fetch goes through SHALLOW_FETCH_HELPER, which passes the depth only to a shallow
+# repository.
+SHALLOW_FETCH_DIRS = (".github/scripts/", ".github/actions/", ".github/workflows/")
+SHALLOW_FETCH_HELPER = ".github/scripts/fetch-depth-if-shallow.sh"
+DEPTH_OPTIONS = ("--depth", "--deepen", "--shallow-since", "--shallow-exclude")
+_DEPTH_OPTION = r"(--depth|--deepen|--shallow-since|--shallow-exclude)(?=[=\s\"',)\]]|$)"
+# A shell command, with its quoted words blanked (blank_quotes): git as a command word, then fetch
+# or pull and a depth option within one command, so no `;`, `|` or `&&` between them, though a
+# `2>&1` or `&>` redirection may be.
+_SAME_COMMAND = r"(?:[^;|&\n]|>&|&>)*?"
+SHELL_DEPTH_FETCH = re.compile(rf"(?:^|[\s;&|(`])git\s{_SAME_COMMAND}\b(?:fetch|pull)\b{_SAME_COMMAND}{_DEPTH_OPTION}")
+# A quoted word: a Python or JavaScript argument list's element, or a command handed on as one string.
+QUOTED_WORD = re.compile(r"\"((?:\\.|[^\"\\])*)\"|'([^']*)'")
+# The repository a fetch writes to, when `git -C <dir>` names it.
+GIT_DIR_OPERAND = re.compile(r"\bgit\s+-C\s+(\"[^\"]*\"|'[^']*'|\S+)")
+# `name=$(mktemp ...)`: a directory the harness made for itself.
+MKTEMP_VARIABLE = re.compile(r"(?:^|[\s;(])(\w+)=\"?\$\(mktemp\b", re.M)
+
+
+def logical_lines(text: str) -> list:
+    """(the number of its first line, the text) of each line of a script or workflow file, with a
+    line that ends in a backslash joined to the next, as bash joins it; comment lines (`#`, and
+    `//` for the TypeScript and Go beside the scripts) aside."""
+    out, start, parts = [], 0, []
+    for number, line in enumerate(text.split("\n"), 1):
+        if not parts:
+            start = number
+            if line.lstrip().startswith(("#", "//")):
+                continue
+        if line.endswith("\\"):
+            parts.append(line[:-1])
+            continue
+        parts.append(line)
+        out.append((start, " ".join(parts)))
+        parts = []
+    if parts:
+        out.append((start, " ".join(parts)))
+    return out
+
+
+def blank_quotes(line: str) -> str:
+    """The line with the text inside each shell quote blanked, the quotes kept: the words a
+    command passes as data (an echo's message, a printf's format) are not the command. A `$(`
+    inside double quotes opens a command of its own, read as a new line is, to its `)`, so
+    `"$(contains "$out" "...")"` blanks the inner strings too and keeps the command between."""
+    out, i, n = [], 0, len(line)
+    levels = [[None, 0]]  # per command substitution: the open quote, and the `(`s open in it
+    while i < n:
+        c = line[i]
+        level = levels[-1]
+        quote = level[0]
+        if quote == "'":
+            if c == "'":
+                level[0] = None
+            out.append(c if c == "'" else " ")
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            out.append(line[i:i + 2] if quote is None else "  ")
+            i += 2
+            continue
+        if line.startswith("$(", i):
+            levels.append([None, 0])
+            out.append("$(")
+            i += 2
+            continue
+        if quote == '"':
+            if c == '"':
+                level[0] = None
+            out.append(c if c == '"' else " ")
+        else:
+            if c in "'\"":
+                level[0] = c
+            elif c == "(":
+                level[1] += 1
+            elif c == ")":
+                if level[1]:
+                    level[1] -= 1
+                elif len(levels) > 1:
+                    levels.pop()
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def depth_fetch(path: str, line: str) -> str | None:
+    """The depth option a git fetch or pull on this line passes, or None: as a shell command,
+    outside a Python file, whose docstrings are prose; or as quoted words, in any file - an argument
+    list whose "fetch" or "pull" follows git and comes before a depth option, or one quoted command
+    string that starts with git."""
+    if not path.endswith(".py"):
+        found = SHELL_DEPTH_FETCH.search(blank_quotes(line))
+        if found:
+            return found.group(1)
+    quoted = [(m.start(), m.group(1) if m.group(1) is not None else m.group(2)) for m in QUOTED_WORD.finditer(line)]
+    for _, word in quoted:
+        if word.startswith("git "):
+            found = SHELL_DEPTH_FETCH.search(word)
+            if found:
+                return found.group(1)
+    for at, (start, word) in enumerate(quoted):
+        if word in ("fetch", "pull") and re.search(r"\bgit\b", line[:start]):
+            for _, later in quoted[at + 1:]:
+                option = next((o for o in DEPTH_OPTIONS if later == o or later.startswith(f"{o}=")), None)
+                if option:
+                    return option
+    return None
+
+
+def fixture_fetch(text: str, line: str) -> bool:
+    """A harness's fetch into a fixture repository it made: the line names its repository with
+    `git -C <dir>`, and <dir> is under a directory the harness made with mktemp - `$W/...` where the
+    harness assigns `W=$(mktemp ...)`, or a variable the harness assigns `$W/...` or `$(mktemp ...)`.
+    Such a repository is new, so a depth there cuts no clone anyone else reads."""
+    operand = GIT_DIR_OPERAND.search(line)
+    if not operand:
+        return False
+    word = operand.group(1).strip("\"'")
+    made = set(MKTEMP_VARIABLE.findall(text))
+    match = re.fullmatch(r"\$\{?(\w+)\}?(/.*)?", word)
+    if not match:
+        return False
+    name, below = match.groups()
+    if name in made:
+        return True
+    if below:
+        return False
+    assigned = re.findall(rf"(?:^|[\s;(]){re.escape(name)}=\"?\$\{{?(\w+)\}}?/", text, re.M)
+    return any(parent in made for parent in assigned)
+
+
+def check_shallow_fetches(files: list, problems: list) -> list:
+    """Rule 26: no file under .github/scripts, .github/actions or .github/workflows runs a git fetch
+    or git pull with one of DEPTH_OPTIONS, but SHALLOW_FETCH_HELPER itself, and, in a harness
+    (`*.test.sh`), a fetch into a fixture repository the harness made (fixture_fetch). Each refusal
+    names the file, the line and the command. The rule reads the words as written: a depth option
+    handed to git through a variable is not seen, which is the review's to catch. Returns the
+    report line."""
+    paths = [f for f in files if f.startswith(SHALLOW_FETCH_DIRS) and f != SHALLOW_FETCH_HELPER]
+    if not paths:
+        problems.append(error(None, f"rule 26 found no file under {', '.join(SHALLOW_FETCH_DIRS)} to read, so whether "
+                                    "a script there fetches with a depth is unknown"))
+        return []
+    calls = fixtures = 0
+    for path in paths:
+        text = (REPO / path).read_bytes().decode("utf-8", "replace")
+        for number, line in logical_lines(text):
+            option = depth_fetch(path, line)
+            if option is None:
+                continue
+            calls += 1
+            if path.endswith(".test.sh") and fixture_fetch(text, line):
+                fixtures += 1
+                continue
+            command = " ".join(line.split())[:160]
+            problems.append(error(path, f"{path} line {number} runs `{command}`: a git fetch or pull with "
+                                        f"{option} makes a whole clone shallow, and every worktree of that clone then "
+                                        f"reads a cut history. Fetch through {SHALLOW_FETCH_HELPER} --depth=<n> <git "
+                                        f"fetch arguments>, which passes the depth only to a shallow repository; a "
+                                        f"harness may fetch with a depth only into a fixture it made, named by git -C "
+                                        f"<dir> under its mktemp directory"))
+    return [f"rule 26: {len(paths)} files under {', '.join(SHALLOW_FETCH_DIRS)} read; {calls} git fetch or pull "
+            f"line(s) with a depth, {fixtures} of them a harness's fetch into its own fixture, "
+            f"{calls - fixtures} refused"]

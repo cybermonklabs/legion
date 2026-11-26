@@ -374,6 +374,15 @@
 #      arm, with two, or with one that lists no file, a dispatch-browser.yaml that runs the script
 #      from no step or from two directories, and no file of .github/ci-gates that declares that
 #      filter, fail too, rather than holding the filter to nothing.
+#  26. a line of a file under .github/scripts, .github/actions or .github/workflows - a comment
+#      aside, a line that ends in a backslash joined to the next - that runs a git fetch or git pull
+#      with --depth, --deepen, --shallow-since or --shallow-exclude, naming the file, the line and
+#      the command. In a whole clone such a fetch makes the clone shallow, and every worktree of it
+#      then reads a cut history. The one fetch that may pass a depth is
+#      .github/scripts/fetch-depth-if-shallow.sh's, which passes it only to a shallow repository;
+#      a harness (`*.test.sh`) may also fetch with a depth into a fixture repository it made, named
+#      by `git -C <dir>` where <dir> is under a directory the harness assigns from mktemp
+#      (ci_workflow_rules.py fixture_fetch). A depth handed to git through a variable is not seen.
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to

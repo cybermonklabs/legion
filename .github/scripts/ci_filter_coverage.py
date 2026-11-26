@@ -3737,6 +3737,8 @@ def check() -> int:
     rules.check_race_fill_scripts(data.RACE_FILL_SCRIPTS, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
+    # Rule 26: no git fetch or pull under .github passes a depth but through fetch-depth-if-shallow.sh.
+    report += rules.check_shallow_fetches(files, problems)
     # Rule 20: a vet for another platform passes over no file a build tag would compile.
     report += check_vet_tags(session, data, problems)
     problems += session.problems

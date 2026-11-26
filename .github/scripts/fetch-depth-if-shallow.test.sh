@@ -2,12 +2,12 @@
 # Tests for `fetch-depth-if-shallow.sh`: a fetch with a depth deepens a shallow checkout, as
 # actions/checkout leaves a run's tree, and leaves a whole clone whole.
 #
-# Each case clones a fixture origin over file://, so git honours --depth: one commit deep for
-# CI's checkout, whole for a developer's clone. The origin then gets commits the clone lacks, and
-# the case fetches the newest through the script. A control runs the same fetch with plain git in
-# a whole clone and sees the clone made shallow, so the whole-clone cases can see the cut they
-# test for. Other cases give the script a first argument that is no depth option, a directory that
-# is no repository, and a git whose shallow answer is neither true nor false.
+# The clones are made once, over file:// so git honours --depth, and the cases share them: one
+# commit deep for CI's checkout, whole for a developer's clone. The origin then gets commits the
+# clones lack, and most cases fetch the newest through the script. A control runs the same fetch
+# with plain git in a whole clone and sees the clone made shallow, so the whole-clone cases can see
+# the cut they test for. Other cases give the script a first argument that is not --depth=<n>, a
+# directory that is no repository, and a git whose shallow answer is neither true nor false.
 #
 # Run from anywhere: .github/scripts/fetch-depth-if-shallow.test.sh
 # CI runs it in ci.yaml's test job.
@@ -67,7 +67,6 @@ whole=$(clone whole)
 whole_control=$(clone whole-control)
 refused=$(clone refused)
 shallow=$(clone shallow --depth=1)
-deepen=$(clone deepen --depth=1)
 # Three commits land on the origin's main after the clones, as main moves on after a clone.
 add_commits 3
 tip=$(git -C "$seed" rev-parse HEAD)
@@ -93,7 +92,7 @@ check "the shallow clone is shallow" "$(is "$(git -C "$shallow" rev-parse --is-s
 check "the whole clone lacks the origin's tip" "$(is "$(holds "$whole" "$tip")" false)"
 
 echo "control: plain git fetch --depth=1 in a whole clone makes it shallow"
-(cd "$whole_control" && git fetch -q --depth=1 --no-tags origin "$tip")
+git -C "$work/whole-control" fetch -q --depth=1 --no-tags origin "$tip"
 check "the clone is now shallow" \
   "$(is "$(git -C "$whole_control" rev-parse --is-shallow-repository)" true)"
 check "and its history is cut to the one commit fetched, though it holds the 10 below it" \
@@ -114,28 +113,23 @@ check "the commit is fetched" "$(holds "$shallow" "$tip")"
 check "the checkout is still shallow" "$(is "$(git -C "$shallow" rev-parse --is-shallow-repository)" true)"
 check "the commit's history is the 3 commits the depth names" "$(is "$(git -C "$shallow" rev-list --count "$tip")" 3)"
 
-echo "case: a shallow checkout is deepened by --deepen"
-deepen_head=$(git -C "$deepen" rev-parse HEAD)
-fetch "$deepen" --deepen=2 -q --no-tags origin "$deepen_head"
-check "it exits 0" "$(is "$status" 0)"
-check "the checkout's history is its 1 commit and the 2 below it" \
-  "$(is "$(git -C "$deepen" rev-list --count HEAD)" 3)"
-
 echo "case: a fetch that git refuses exits with git's status"
 fetch "$whole" --depth=1 -q --no-tags origin 1111111111111111111111111111111111111111
 check "it exits 128, git's status for a commit the origin does not serve" "$(is "$status" 128)"
 check "it prints git's message" "$(contains "$out" 'fatal: ')"
 
-echo "case: a first argument that is no depth option is refused, and nothing is fetched"
+echo "case: a first argument that is not --depth=<n> is refused, and nothing is fetched"
 fetch "$refused" -q --no-tags origin "$tip"
 check "it exits 2" "$(is "$status" 2)"
 check "it names what the first argument must be" \
-  "$(contains "$out" "^::error file=.github/scripts/fetch-depth-if-shallow.sh::the first argument must be --depth=<n>, --deepen=<n>, --shallow-since=<date> or --shallow-exclude=<ref>, not '-q'\$")"
+  "$(contains "$out" "^::error file=.github/scripts/fetch-depth-if-shallow.sh::the first argument must be --depth=<n>, not '-q'\$")"
 check "the commit is not fetched" "$(is "$(holds "$refused" "$tip")" false)"
 fetch "$refused" --depth= origin "$tip"
 check "a depth option with no value is refused too" "$(is "$status" 2)"
 fetch "$refused"
 check "and so is no argument at all" "$(is "$status" 2)"
+fetch "$refused" --deepen=2 origin "$tip"
+check "and so is another depth option, --deepen" "$(is "$status" 2)"
 
 echo "case: a directory that is no repository fails with git's status before any fetch"
 mkdir "$work/none"
@@ -156,10 +150,7 @@ fi
 echo "$*" >> "$(dirname "$0")/calls"
 SH
 chmod +x "$work/old-git/git"
-set +e
-out=$(cd "$refused" && PATH="$work/old-git:$PATH" timeout 60 "$script" --depth=1 origin "$tip" 2>&1)
-status=$?
-set -e
+PATH="$work/old-git:$PATH" fetch "$refused" --depth=1 origin "$tip"
 check "it exits 2" "$(is "$status" 2)"
 check "it names git's answer" \
   "$(contains "$out" "^::error file=.github/scripts/fetch-depth-if-shallow.sh::git rev-parse --is-shallow-repository printed '--is-shallow-repository', not true or false, so whether a depth would make this repository shallow is unknown\$")"
