@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -450,15 +451,18 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 
 		before := stopTheWorker(t, pool, rt, d, root, tester)
 
-		// The issue reaches the one phase a merge closes it from, as the rest of its run would
-		// leave it, and GitHub reports the merge. On this release that phase is merging, which
-		// the merger holds until its merge closes the issue (dispatch://INFRA-714 R2), so this
-		// is not finish's done: a merge of an issue already done closes nothing and opens no
-		// check.
+		// The issue reaches the phase a merge is taken from, as the rest of its run would leave
+		// it, and GitHub reports the merge. The merge stands the issue in verifying, and the
+		// first read of its checks after it, which the outbox makes and this applies as it would,
+		// opens the production check (workflow's openCheckAtRead). A merge of an issue already
+		// done is taken from no phase and opens no check, so this is not finish's done.
 		mergingPhase(t, pool, root)
+		engine := startedAgainEngine(cfg)
 		applyFact(t, pool, "api", "merged:"+root, intake.PullRequestMerged{Repo: startedAgainRepo, Number: 42,
-			MergeSHA: "0bada55e0bada55e0bada55e0bada55e0bada55e"}, startedAgainEngine(cfg))
-		testwait.Eventually(t, "the merge to open "+root+"'s production check", func() bool {
+			MergeSHA: "0bada55e0bada55e0bada55e0bada55e0bada55e"}, engine)
+		applyFact(t, pool, "outbox", "read:"+root, intake.CloseChecksRead{Issue: root, Generation: 1, ReadAt: time.Now().Add(time.Second),
+			Answer: &record.CheckReadAnswer{Results: dispatch.IssueResults{Issue: root}}}, engine)
+		testwait.WithinPolling(t, 30*time.Second, 100*time.Millisecond, "the first read after the merge to open "+root+"'s production check", func() bool {
 			var open bool
 			if err := pool.QueryRow(context.Background(),
 				`select exists (select 1 from production_checks where issue = $1)`, root).Scan(&open); err != nil {

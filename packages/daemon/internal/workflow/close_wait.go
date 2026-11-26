@@ -272,7 +272,7 @@ func unreadCause(issue record.Issue, view closeView) string {
 	}
 	cause := fmt.Sprintf("no basis of the read names the merge commit %s", issue.Merge.SHA)
 	if len(said) > 0 {
-		cause += ". Dispatch said " + strings.Join(said, ", ")
+		cause += ". Dispatch said:" + listed(said)
 	}
 	return cause
 }
@@ -376,9 +376,21 @@ func (e *Engine) waitEntered(ctx context.Context, tx pgx.Tx, issue record.Issue,
 func closeWaitsReason(issue record.Issue, number int, wait record.CloseWait) string {
 	reason := fmt.Sprintf("Pull request #%d of %s merged. %s now waits in verifying for the checks of its goal, with the status testing.", number, issue.Key, issue.Key)
 	if len(wait.Beneath) > 0 {
-		reason += fmt.Sprintf(" Its close also waits for these issues beneath it: %s.", strings.Join(wait.Beneath, ", "))
+		reason += " Its close also waits for these issues beneath it:" + listed(wait.Beneath) + "\n"
+	} else {
+		reason += " "
 	}
-	return reason + " Read what the close waits for in close-wait.md and in legion state."
+	return reason + "Read what the close waits for in close-wait.md and in legion state."
+}
+
+// listed is items one to a line, each after a dash, so a notice that names many items keeps each
+// sentence short: the sentence before it ends in a colon.
+func listed(items []string) string {
+	var text strings.Builder
+	for _, item := range items {
+		text.WriteString("\n- " + item)
+	}
+	return text.String()
 }
 
 // closeChecksRead applies the read of an issue's checks (intake.CloseChecksRead): it stores the
@@ -524,9 +536,11 @@ func (e *Engine) closeWaitNoResult(ctx context.Context, tx pgx.Tx, issue record.
 	}
 	reason := fmt.Sprintf("The production check of %s closed as %s, at generation %d and merge commit %s.", issue.Key, check.Outcome, check.Generation, check.MergeSHA)
 	if len(without) > 0 {
-		reason += " These checks have no pass: " + strings.Join(without, ", ") + "."
+		reason += " These checks have no pass:" + listed(without) + "\n"
+	} else {
+		reason += " "
 	}
-	reason += fmt.Sprintf(" %s stays open in verifying. Read what its close waits for in close-wait.md.", issue.Key)
+	reason += fmt.Sprintf("%s stays open in verifying. Read what its close waits for in close-wait.md.", issue.Key)
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "close-wait-no-result", Role: claim.RoleArchitect, Reason: reason})
 }
 
@@ -639,8 +653,8 @@ func (e *Engine) tellAtOnce(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	if stored.Unapproved != nil && (old.Unapproved == nil || !slices.Equal(old.Unapproved.Checks, stored.Unapproved.Checks)) {
 		return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "checks-unapproved", Role: claim.RoleArchitect,
-			Reason: fmt.Sprintf("These checks of %s changed since the approved Verification document: %s. A person must approve its current version before %s closes.",
-				issue.Key, strings.Join(stored.Unapproved.Checks, ", "), issue.Key)})
+			Reason: fmt.Sprintf("These checks of %s changed since the approved Verification document:%s\nA person must approve its current version before %s closes.",
+				issue.Key, listed(stored.Unapproved.Checks), issue.Key)})
 	}
 	return nil
 }
@@ -827,7 +841,7 @@ func (e *Engine) tellEachStanding(ctx context.Context, tx pgx.Tx, issues []recor
 			continue
 		}
 		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "close-wait-standing", Role: claim.RoleArchitect,
-			Reason: fmt.Sprintf("%s still waits in verifying for its close. ", issue.Key) + strings.Join(terms, " ") + " Read the whole wait in close-wait.md."}); err != nil {
+			Reason: fmt.Sprintf("%s still waits in verifying for its close. Each term that holds it:", issue.Key) + listed(terms) + "\nRead the whole wait in close-wait.md."}); err != nil {
 			return err
 		}
 		toldAt := now
@@ -887,10 +901,10 @@ func standingTerms(issue record.Issue, stored record.StoredWait, lingers bool) [
 
 // waitedFor is what a person's done on an issue in verifying closed past: each item of its stored
 // wait, in the words of close-wait.md's headings, for the close's message.
-func waitedFor(issue record.Issue) string {
+func waitedFor(issue record.Issue) []string {
 	stored, err := storedWaitOf(issue)
 	if err != nil {
-		return ""
+		return nil
 	}
 	var items []string
 	for _, check := range stored.Checks {
@@ -917,7 +931,7 @@ func waitedFor(issue record.Issue) string {
 	if stored.Unapproved != nil {
 		items = append(items, "a person's approval of its Verification document")
 	}
-	return strings.Join(items, ", ")
+	return items
 }
 
 // personClosedPast is a person's done on issue, which waits in verifying (D16, door 6): the close
@@ -933,13 +947,14 @@ func (e *Engine) personClosedPast(ctx context.Context, tx pgx.Tx, issue *record.
 	}
 	items := waitedFor(*issue)
 	for _, member := range record.Beneath(*issue, members) {
-		if member.Status != record.DoneStatus && !strings.Contains(items, member.Key+" ") {
-			items = strings.Trim(items+", "+fmt.Sprintf("%s beneath it (%s)", member.Key, member.Status), ", ")
+		named := fmt.Sprintf("%s beneath it (%s)", member.Key, member.Status)
+		if member.Status != record.DoneStatus && !slices.ContainsFunc(items, func(item string) bool { return strings.HasPrefix(item, member.Key+" ") }) {
+			items = append(items, named)
 		}
 	}
 	body := fmt.Sprintf("A person closed %s before the checks of its goal closed it.", issue.Key)
-	if items != "" {
-		body += " Its close waited for: " + items + "."
+	if len(items) > 0 {
+		body += " Its close waited for:" + listed(items)
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: body}); err != nil {
 		return err
