@@ -104,15 +104,15 @@ func unnamedMentions(
 }
 
 // mentionReaches is whether a mention out of a node of visibility, made by who, may name target:
-// a node reserved for its author (graphstore.VisibilityAuthor) mentions no person but that author
-// (R2), since such a tuple would be mail its person can never read, and graphstore.ToPerson
-// refuses it, asserted or retracted.
+// a node reserved for its author (graphstore.VisibilityAuthor) mentions no person but the author
+// who proved (R2, graphstore.AuthorIsPerson), since such a tuple would be mail its person can
+// never read, and graphstore.ToPerson, which asks the same rule, refuses it, asserted or
+// retracted.
 func mentionReaches(visibility string, who model.Actor, target Target) bool {
 	if target.Kind != graphstore.KindPerson || visibility != graphstore.VisibilityAuthor {
 		return true
 	}
-	authorKind, authorID, authored := graphstore.AuthorOf(who)
-	return authored && authorKind == graphstore.KindPerson && authorID == target.ID
+	return graphstore.AuthorIsPerson(who, target.ID)
 }
 
 // stateMention appends the mentions tuple from fromKind/fromID to target, made by who at at,

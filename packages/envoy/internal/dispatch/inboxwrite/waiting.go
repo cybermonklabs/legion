@@ -138,7 +138,12 @@ func deliveredUnder(ask, person, event, alias string) string {
 // withdrawn asks, a settlement that may restore an ask it retracted - takes it in its read phase,
 // after its owner lock and before the read, so a move of the default (putProjectDefaultAssignee,
 // which takes that lock exclusive before it reads the default it moves) either commits before the
-// write reads the default or waits for the write to commit and then finds the ask it delivered.
+// write reads the default or waits for the write to commit and then finds the ask it delivered. A
+// write into the thread of one open ask that falls through so - a comment or a callback reply in
+// it, an edit there that names somebody new, an answer to it - takes the same lock before it reads
+// who takes part in the thread, or appends a participation the move would read (HoldAskDefault,
+// AskDefaultProject), so the move either committed first, and the write delivers to the default it
+// left, or finds the write's own participation in the thread once it committed and leaves it.
 // A shared lock conflicts with the exclusive one as `for share` of the project row conflicted with
 // that route's `for no key update`, and not with another shared one, and it assigns no
 // transaction id. The caller holds its owner lock, under which an issue's assignee does not move;
@@ -167,6 +172,28 @@ func HoldProjectDefault(ctx context.Context, tx pgx.Tx, project string) error {
 		return fmt.Errorf("hold the default assignee of project %s: %w", project, err)
 	}
 	return nil
+}
+
+// AskDefaultProject is SQL text over an asks row aliased a: the project whose default assignee the
+// ask waits on and a move of that default reaches (DefaultMoved) - an open ask handed to nobody,
+// on an issue nobody holds or on a project document, by the owner rule HoldDefault reads - and
+// the empty string for an ask that waits on no default. A write into the ask's thread reads it
+// under the owner lock,
+// under which none of the rows it reads moves, beside a read of the ask it makes already where it
+// has one (api's describeAsk), and hands it to HoldProjectDefault.
+const AskDefaultProject = `coalesce(case when a.state = '` + asks.StateOpen + `' and a.asked_of is null then coalesce(
+		(select i.project_key from issues i where i.key = a.issue_key and i.assignee is null),
+		(select ar.project_key from artifacts ar where ar.id = a.artifact_id and ar.issue_key is null)) end, '')`
+
+// HoldAskDefault is HoldDefault for a write into the thread of ask askID with no read of the ask
+// of its own to read the project in (AskDefaultProject): it reads that project and holds it shared
+// (HoldProjectDefault), and holds nothing for an ask a move of a default does not reach.
+func HoldAskDefault(ctx context.Context, tx pgx.Tx, askID string) error {
+	var project string
+	if err := tx.QueryRow(ctx, `select `+AskDefaultProject+` from asks a where a.id = $1::uuid`, askID).Scan(&project); err != nil {
+		return fmt.Errorf("read whether ask %s falls through to its project's default: %w", askID, err)
+	}
+	return HoldProjectDefault(ctx, tx, project)
 }
 
 // waitingOn is the person ask askID waits on while it is open (asks.AskedOfPersonExpression), and

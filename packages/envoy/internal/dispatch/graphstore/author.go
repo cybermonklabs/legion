@@ -18,8 +18,9 @@ import (
 //
 // This is the one rule, and every reader and every writer asks it rather than keeping a copy:
 // the going routes' asker (api.createGoingRequest), the visibility a test's write reserves a node
-// for its author under (graphstoretest.VisibilityFor, which is handed this answer) and the SQL
-// every author-private read binds (AuthorIsSQL, which states the same test over a stored author).
+// for its author under (graphstoretest.VisibilityFor, which is handed this answer), the SQL
+// every author-private read binds (AuthorIsSQL, which states the same test over a stored author)
+// and the person a node reserved for its author may reach (AuthorIsPerson).
 func ProvesAuthor(actor model.Actor) bool {
 	_, proved := provedAuthor(actor)
 	return proved
@@ -68,6 +69,18 @@ func provedAuthor(actor model.Actor) (author, bool) {
 		return author{Kind: authorService, ID: *actor.Service}, true
 	}
 	return author{}, false
+}
+
+// AuthorIsPerson reports whether login, a person's canonical login, is the author actor proved
+// (provedAuthor): the one person a node actor made and reserved for its author
+// (VisibilityAuthor) may reach. Every writer that keeps such a node from reaching anybody else
+// asks it: ToPerson, which refuses a tuple between the node and any other person
+// (ErrReservedForAuthor); the read of the same refusal in SQL (ReservedForAuthorRead), which
+// states it through AuthorIsSQL; and refs' plan of a mention out of such a node, which states no
+// mention ToPerson would refuse.
+func AuthorIsPerson(actor model.Actor, login string) bool {
+	proved, ok := provedAuthor(actor)
+	return ok && proved.Kind == authorPerson && proved.ID == login
 }
 
 // NamesCredential reports whether a recorded actor names a credential at all: an id, an owner or

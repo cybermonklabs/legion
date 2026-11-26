@@ -72,10 +72,11 @@ func heldIn(t *testing.T, holder queryer, pid uint32, table string, modes ...str
 // thread's root `for update` (step 2) and is queued at the caller's own row of a Reply thread it
 // names beside it (step 3). The reply then queues at the root with the statement that takes it
 // before anything else of the thread, holding no attempt row and no write of messages, since it
-// takes the root before its attempt and its insert (inboxwrite.Recording.QueueRootLock). Once the
-// gate is let go the dismissal writes its mark, which moves the root's column, and commits; the
-// reply then deletes the mark, which moves the column back, and the thread is in the Inbox,
-// unread, with no mark and no column.
+// takes the root before its attempt and its insert: an Agent thread is on no issue, so the reply's
+// plan takes the root as it walks to it (inboxwrite.RootWalkLockStatement, inboxwrite.PlanRecord).
+// Once the gate is let go the dismissal writes its mark, which moves the root's column, and
+// commits; the reply then deletes the mark, which moves the column back, and the thread is in the
+// Inbox, unread, with no mark and no column.
 //
 // With the reply's lock taken only where its clear runs, after its insert, it queues at the root
 // holding the attempt row and the insert's lock on messages, and the reads of what it holds red.
@@ -92,7 +93,7 @@ func TestASessionReplyTakesTheAgentRootBeforeItsAttemptWhileADismissHoldsIt(t *t
 	storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockThreads)
 	replied := make(chan *httptest.ResponseRecorder, 1)
 	go func() { replied <- replyTo(t, handler, seed.agent, "And another thing.") }()
-	replying := storetest.WaitForStatementBehind(t, database, held.tx, inboxwrite.RootLockStatement)
+	replying := storetest.WaitForStatementBehind(t, database, held.tx, inboxwrite.RootWalkLockStatement)
 	// The root's own lock takes the row share mode on messages; the attempt's takes it on
 	// message_deliveries, and the insert the row exclusive mode on messages.
 	if locks := heldIn(t, held.tx, replying, "message_deliveries", rowShareMode, rowExclusiveMode); locks > 0 {

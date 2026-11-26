@@ -679,10 +679,8 @@ func (s *server) createStoredMessage(
 			if err := graphstore.QueueAuthored(b, graphstore.KindMessage, message.ID, actor, createdAt, graphstore.LatestEvent); err != nil {
 				return err
 			}
-			if err := queueRecordAndMentions(b, recording, indexed, actor, createdAt, graphstore.LatestEvent); err != nil {
-				return err
-			}
-		} else if err := recording.Queue(b, graphstore.LatestEvent); err != nil {
+		}
+		if err := recording.Queue(b, graphstore.LatestEvent); err != nil {
 			return err
 		}
 		// A targeted message's attempt 1 is queued here, with the writes of the transaction that

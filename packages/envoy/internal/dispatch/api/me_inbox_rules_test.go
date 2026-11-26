@@ -320,6 +320,7 @@ func TestOneInboxKeepsEverySubtractionRule(t *testing.T) {
 		{"a session whose mention of a comment was sent gets no second copy", meInboxMentionSent},
 		{"a session whose mention of a comment failed gets one copy", meInboxMentionFailed},
 		{"a session whose mention of a comment is still being sent is held back, and the event is read again", meInboxMentionPending},
+		{"a session whose comment names itself, its mention failing, gets no copy of its own event", meInboxOwnMention},
 		{"a claimed or routed issue sends a person's comment to the claimant and the route, not the primary document's writers", meInboxClaimantAndRoute},
 		{"a direct reply is unread past the read mark and the Clear alone, from the one person node", meInboxTwoMarks},
 		{"a reply already marked by its id is out", meInboxReadByID},
@@ -481,6 +482,32 @@ func meInboxMentionFailed(t *testing.T) {
 	}
 	if causes := meInboxSessionDeliveries(t, database, comment, "s2"); !slices.Equal(causes, []string{"comment.created"}) {
 		t.Errorf("the comment reached s2 under %v, want the outbox's one copy: its mention failed", causes)
+	}
+}
+
+// meInboxOwnMention holds the own-event rule (R3) to the copy a session's mention leaves to the
+// outbox: s2 writes a comment that names itself, the listener refuses the mention's send, and the
+// outbox, which copies a comment to each session a failed mention names (mentionDeliveries
+// .mentioned), copies it to every session but the event's own actor, so s2 is sent nothing of its
+// own comment and the comment stands delivered to it by nothing.
+func meInboxOwnMention(t *testing.T) {
+	listener, state := newMentionListener(t)
+	state.refuseSends("s2")
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Second})
+	issue := createInteractionIssue(t, handler, "OWNM", "A session's comment names itself", "before")
+	created := decodeMentionedComment(t, bearerRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"body": "A note to myself.", "actor": map[string]any{"kind": "session", "id": "s2"},
+		"mentions": []map[string]any{{"target": "session:s2"}},
+	}))
+	if settled := settledCommentDeliveries(t, database, created.ID); len(settled) != 1 || settled[0].State != model.DeliveryStateFailed {
+		t.Fatalf("the mention whose send the listener refused = %#v, want its one attempt failed", settled)
+	}
+	runOutboxUntilSettled(t, deps, &recordingOutboxPublisher{}, issue.Key, created.ID)
+	if causes := meInboxSessionDeliveries(t, database, created.ID, "s2"); len(causes) != 0 {
+		t.Errorf("s2's own comment reached s2 under %v, want nothing: an event reaches no session that is its actor", causes)
+	}
+	if destinations := publishedDestinationsOf(t, database, "comment.created", created.ID); slices.Contains(destinations, contracts.LegacyAgentSubject("s2")) {
+		t.Errorf("s2's comment.created was published to %v, which holds s2's own topic", destinations)
 	}
 }
 

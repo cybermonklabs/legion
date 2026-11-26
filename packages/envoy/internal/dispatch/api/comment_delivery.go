@@ -1472,8 +1472,9 @@ func (s *server) planCommentReply(
 	// The reply's id and created_at, reserved here, and, as createCommentFor reads them beside its
 	// clock, the members of the thread its head is the root of (inboxwrite.MembersColumn), which
 	// its record then reads no second time (inboxwrite.Write.Members): nothing below writes before
-	// the record is planned, and every writer of those rows and tuples waits at the owner lock this
-	// plan is made under.
+	// the record is planned, and every writer of those rows and tuples waits at a lock this plan is
+	// made under - the owner lock, and, in the thread of an ask that falls through to its project's
+	// default assignee, that project's owner lock, which describeAsk took shared.
 	members, membersArgs := `null::jsonb`, []any(nil)
 	if kind, id, replies := commentHead(plan.thread.AskID, plan.thread.ReplyTo); replies {
 		members, membersArgs = inboxwrite.MembersColumn(1, kind, id)
@@ -1852,7 +1853,10 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// The stamp of the reply's references and everything the reply states in the node and tuple
 	// store, in one batch right after its event: the reply's node's cause, its two base
 	// attributes, the artifact it is owned by and what it answers; what its body is in the store -
-	// its blocks' nodes, their part_of and the links they hold, and its citations; who wrote it,
+	// its blocks' nodes, their part_of and the links they hold, its citations, and its mentions,
+	// among them the mentions tuple to each session its text names, which the outbox reads to
+	// deliver the reply's comment.answered to that session once, as it delivers a new comment to
+	// each session its mentions name (R5, outbox's readsMentions); who wrote it,
 	// which for a session answering a mention is the first write that records that session
 	// (graphstore.QueueAuthored), skipped with the rest for a reply left out of the store; the
 	// follow of the ask a session replies in the thread of, which comes after the author's own
@@ -1861,7 +1865,8 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// follow before it would take the pair in the other order (R17); what the answer makes of the
 	// attempt it answers, which the flip above records sent, an attempt the store owes its session
 	// a node for, and what the attempt's row then holds (graphstore.QueueAttempted); and last who
-	// took part and whom the reply reached, as a comment's write records it (createCommentFor).
+	// took part and whom the reply reached, with the part each person its text newly mentions
+	// takes in its thread, as a comment's write records it (createCommentFor).
 	answered := answeredDelivery{was: attempt.State, itemKind: graphstore.KindComment, itemID: comment.ID}
 	if attempt.SessionID != nil {
 		answered.session = *attempt.SessionID
@@ -1886,9 +1891,6 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		graphstore.QueueAttempted(b, actor, event.ID, graphstore.CommentAttempt(comment.ID, attempt.Target, input.Attempt))
-		if plan.stored.pointersStored {
-			return queueRecordAndMentions(b, plan.recording, plan.indexed, actor, plan.createdAt, event.ID)
-		}
 		return plan.recording.Queue(b, event.ID)
 	}); err != nil {
 		s.writeHandlerError(w, err)
@@ -1905,9 +1907,11 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 
 // answeredDelivery is what one answer makes of the attempt it answers: the session that attempt
 // names, the state the row recorded before the answer, and the thing the attempt carried as the
-// store addresses it. itemID is empty for a thing whose delivery this store records no tuple of
-// yet, which a message is: a message is a node of its project, but the change that records its
-// deliveries is a later one.
+// store addresses it. itemID is empty for a message: the store records a message attempt's
+// delivery on the attempt's own node alone (graphstore.QueueAttempted, which the answer queues
+// under the same event), and no writer states it out of the message's node - the outbox records
+// a comment's receipt there (outbox's mentionReached), and no message's - so an answer that
+// stated one would hold the message to a delivery nothing else of that attempt states.
 type answeredDelivery struct {
 	session  string
 	was      string
@@ -1932,9 +1936,8 @@ type answeredDelivery struct {
 // The delivered_to tuple is stated only where this flip is what makes the attempt a delivery.
 // An attempt the listener had already taken carries its own comment.delivery receipt, and the
 // outbox's record of that receipt states the tuple (outbox's mentionReached); stating it again
-// under this event would write one delivery as two. A thing whose delivery this store records no
-// tuple of yet carries no tuple at all, and a session past the bound is no far end the store can
-// key.
+// under this event would write one delivery as two. An answer that names no item, a message's,
+// carries no tuple at all, and a session past the bound is no far end the store can key.
 //
 // It is queued after the write that records who answered (graphstore.QueueAuthored), which takes
 // the author's person node and their session node in one statement in ascending (kind, id). The

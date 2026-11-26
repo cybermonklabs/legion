@@ -2,10 +2,10 @@
 --
 -- The events of the writes an older build makes that change no row this release marks:
 --   events_inbox_owed   one row for each event a build before this release appends of a write
---                       that moves who an open ask waits on or edits a comment, its id, which the
---                       backfill and the block-index tick's catch-up read and delete once they have
---                       stated what the write owes the store (graphcensus's inboxEventsPass,
---                       writeQueuedInboxEvents).
+--                       that moves who an open ask waits on or edits a comment or an issue
+--                       message, its id, which the backfill and the block-index tick's catch-up
+--                       read and delete once they have stated what the write owes the store
+--                       (graphcensus's inboxEventsPass, writeQueuedInboxEvents).
 --
 -- This release's writers state, in the write's own transaction, what each of these writes owes
 -- the node and tuple store. Three writes move who an ask waits on (the spec's R2) - patchIssue's
@@ -14,19 +14,21 @@
 -- project's default (settings.project_default_assignee.updated) - and so does the restore of an ask
 -- that was not open, by an issue's reopen or by a settlement (ask.opened): each appends the new
 -- person's delivered_to and participates_in and retracts the old person's
--- (inboxwrite.QueueMoveWaiting). An edit of a comment (comment.edited) states the mentions tuple to
--- each person its new text names and their participates_in in the comment's thread (R5, R4). A
--- build before this release writes the issue's, the ask's, the project's or the comment's row and
--- nothing of the store, and none of those rows' markers moves: asks.tuples_stored_at is the moment
--- of the ask's create and answer the store holds, and comments.tuples_stored marks its pointers. So
--- no pass over a marker reads such a write again, and a mention of a person is no row at all
--- (refs.TargetOf). The trigger below queues the write's event instead, in the statement that
--- appends it. The backfill and the block-index tick's catch-up take the queue one batch at a time
--- (graphcensus.Backfill, graphcensus.CatchUpOwedRows), each event once, and the tick owes its
--- catch-up while the queue holds a row (graphcensus.EventsOweObjectPass). A write of this kind that
--- build made before this migration touched no ask or comment the store holds the tuples of: only
--- this release states them, after its migrations, and the backfill's asks and comment pointer
--- passes state each row that build wrote as it stands when they run.
+-- (inboxwrite.QueueMoveWaiting). An edit of a comment (comment.edited) or of an issue message
+-- (message.edited) states the mentions tuple to each person its new text names and their
+-- participates_in in the item's thread (R5, R4). A build before this release writes the issue's,
+-- the ask's, the project's, the comment's or the message's row and nothing of the store, and none
+-- of those rows' markers moves: asks.tuples_stored_at is the moment of the ask's create and answer
+-- the store holds, comments.tuples_stored marks a comment's pointers and messages.node_kind a
+-- message's, and no edit moves either. So no pass over a marker reads such a write again, and a
+-- mention of a person is no row at all (refs.TargetOf). The trigger below queues the write's event
+-- instead, in the statement that appends it. The backfill and the block-index tick's catch-up take
+-- the queue one batch at a time (graphcensus.Backfill, graphcensus.CatchUpOwedRows), each event
+-- once, and the tick owes its catch-up while the queue holds a row (graphcensus.EventsOweObjectPass).
+-- A write of this kind that build made before this migration touched no ask, comment or message
+-- the store holds the tuples of: only this release states them, after its migrations, and the
+-- backfill's asks, comment pointer and messages passes state each row that build wrote as it
+-- stands when they run.
 --
 -- The trigger's WHEN is the marker triggers' own (20261116150000, 20261116160000, 20261116170000,
 -- 20261122100122) with the event types above: every connection of this release's pool carries
@@ -37,8 +39,8 @@
 -- of an issue that moves its asks; a repeat of an event already queued is kept once. It writes only
 -- the queue, which no other writer takes a lock of before an events row, so it adds to that build's
 -- write one step after the events row it appends, and the catch-up takes the queue's rows after the
--- owners of the asks and comments they name, as that build's writer takes those owners before it
--- appends.
+-- owners of the asks, comments and messages they name, as that build's writer takes those owners
+-- before it appends.
 --
 -- The table is new and holds no row. `create trigger` takes SHARE ROW EXCLUSIVE on events for its
 -- catalogue write and holds it until the migration commits, at once, since no other statement of
@@ -63,7 +65,7 @@ create table events_inbox_owed (
 create function events_inbox_owed_by_older_writer() returns trigger language plpgsql as $$
 begin
   if current_setting('dispatch.store_marker_writer', true) is distinct from 'on'
-     and (new.type in ('ask.asked_of', 'ask.opened', 'settings.project_default_assignee.updated', 'comment.edited')
+     and (new.type in ('ask.asked_of', 'ask.opened', 'settings.project_default_assignee.updated', 'comment.edited', 'message.edited')
           or (new.type = 'issue.updated' and coalesce(new.payload->'changed', '[]'::jsonb) @> '["assignee"]'::jsonb)) then
     insert into events_inbox_owed (event_id) values (new.id) on conflict do nothing;
   end if;
@@ -75,5 +77,6 @@ $$;
 create trigger events_inbox_owed after insert on events
   for each row
   when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on'
-        and new.type in ('issue.updated', 'ask.asked_of', 'ask.opened', 'settings.project_default_assignee.updated', 'comment.edited'))
+        and new.type in ('issue.updated', 'ask.asked_of', 'ask.opened', 'settings.project_default_assignee.updated', 'comment.edited',
+                         'message.edited'))
   execute function events_inbox_owed_by_older_writer();

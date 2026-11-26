@@ -3,7 +3,7 @@
 // The basebuild tag, and how a test of it is run: store_census_test.go. This file's tests read the
 // base release at $TMPDIR/base-dispatch (baseRelease), built from BASELINE_SHA, and are run as
 //
-//	go test -tags basebuild -timeout 30m ./cmd/dispatch -run '^(TestAReassignmentThePreviousBuildWritesMovesTheAsksDeliveryAndParticipation|TestAPersonMentionThePreviousBuildWritesReachesThatPerson)$' -count=1 -v
+//	go test -tags basebuild -timeout 30m ./cmd/dispatch -run '^(TestAReassignmentThePreviousBuildWritesMovesTheAsksDeliveryAndParticipation|TestAPersonMentionThePreviousBuildWritesReachesThatPerson|TestAnIssueMessageThePreviousBuildEditsToNameAPersonReachesThatPerson)$' -count=1 -v
 
 package main
 
@@ -407,6 +407,76 @@ func TestAPersonMentionThePreviousBuildWritesReachesThatPerson(t *testing.T) {
 	if !heldTuple(t, ctx, database, graphstore.KindBlock, revisedBlock, graphstore.TupleMentions, graphstore.KindPerson, named) {
 		t.Errorf("the block %s of the document %s, whose version 2 the base wrote, no longer holds the mentions tuple to %s this head stated of version 1", revisedBlock, revised, named)
 		logDocumentBlocks(t, ctx, database, revised)
+	}
+}
+
+// R5: "A mention is a tuple ... The mentions tuple runs from the comment, issue message or document
+// block that holds it to the identity it points at." R4: participation "holds every thread they
+// were mentioned or addressed in without writing in it". R9: the writes a release before this one
+// makes take their tuples once, from the backfill or the block-index tick's catch-up.
+//
+// This head's edit of an issue message states the mentions tuple to each person its new text
+// names and their participates_in in the message's thread, and delivers nothing (api's
+// editMessage). The base release edits issue messages too and states nothing of the store, and a
+// message this head wrote names its node on its row from its create, a marker no edit moves, so
+// no pass over that marker reads the base's edit: the trigger of migration 20261122100123 queues
+// its message.edited for the backfill and the tick (graphcensus' writeQueuedInboxEvents).
+//
+// alice writes two issue messages through this head, each naming nobody; this head edits the first
+// to name bob, and the base edits the second to name him, while the two serve one database. Once
+// the roll ends and the backfill has run, the message the base edited holds the mentions tuple to
+// bob and bob takes part in its thread, whose root it is, as the message this head edited does,
+// which is the expected result the base's edit is held to; neither edit delivers it to him. A
+// person's address is an email address (text's personLoginPattern), so bob is bob@example.com.
+func TestAnIssueMessageThePreviousBuildEditsToNameAPersonReachesThatPerson(t *testing.T) {
+	ctx := context.Background()
+	previous, current, database, head, databaseURL := startRoll(t, ctx)
+
+	const bob = "bob@example.com"
+	current.call(t, http.MethodPost, "/api/v1/projects", `{"key":"EDIT","name":"An edit during a roll"}`, http.StatusCreated)
+	issue, _ := createCensusIssue(t, current, "EDIT", "A message edited to name a person", "# Spec\n\nThe spec.\n")
+	edited := map[string]string{}
+	for _, by := range []string{"head", "base"} {
+		answer := current.send(t, http.MethodPost, "/api/v1/issues/"+issue+"/messages",
+			`{"body":"Who takes the copy, for the `+by+`?"}`, asUser("alice"))
+		var message struct {
+			ID string `json:"id"`
+		}
+		if answer.status != http.StatusCreated || json.Unmarshal(answer.body, &message) != nil || message.ID == "" {
+			t.Fatalf("alice's issue message for the %s through this head: %s", by, answer)
+		}
+		if heldTuple(t, ctx, database, "message", message.ID, graphstore.TupleMentions, graphstore.KindPerson, bob) {
+			t.Fatalf("alice's issue message %s, which names nobody, holds a mentions tuple to %s before any edit: this test proves nothing", message.ID, bob)
+		}
+		server := current
+		if by == "base" {
+			server = previous
+		}
+		if answer := server.send(t, http.MethodPatch, "/api/v1/messages/"+message.ID,
+			`{"body":"Over to dispatch://person/`+bob+` for the copy, from the `+by+`."}`, asUser("alice")); answer.status != http.StatusOK {
+			t.Fatalf("the %s edits alice's issue message %s to name %s: %s", by, message.ID, bob, answer)
+		}
+		edited[by] = message.ID
+	}
+	endRoll(t, previous, head, databaseURL)
+
+	deadline := time.Now().Add(rollCatchUpWait)
+	for time.Now().Before(deadline) &&
+		(!heldTuple(t, ctx, database, "message", edited["base"], graphstore.TupleMentions, graphstore.KindPerson, bob) ||
+			!heldTuple(t, ctx, database, graphstore.KindPerson, bob, graphstore.TupleParticipatesIn, "message", edited["base"])) {
+		time.Sleep(time.Second)
+	}
+	for _, by := range []string{"head", "base"} {
+		message := edited[by]
+		if !heldTuple(t, ctx, database, "message", message, graphstore.TupleMentions, graphstore.KindPerson, bob) {
+			t.Errorf("the issue message %s the %s edited to name dispatch://person/%s holds no mentions tuple to that person %s after the roll ended and the backfill ran", message, by, bob, rollCatchUpWait)
+		}
+		if !heldTuple(t, ctx, database, graphstore.KindPerson, bob, graphstore.TupleParticipatesIn, "message", message) {
+			t.Errorf("%s, whom the %s's edit of the issue message %s names, takes no part in its thread", bob, by, message)
+		}
+		if heldTuple(t, ctx, database, "message", message, graphstore.TupleDeliveredTo, graphstore.KindPerson, bob) {
+			t.Errorf("the issue message %s the %s edited to name %s is delivered to that person, want no delivery: an edit delivers nothing", message, by, bob)
+		}
 	}
 }
 

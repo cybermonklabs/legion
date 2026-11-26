@@ -30,8 +30,9 @@ import (
 // for another reason reaches it: the pass reads the four tables whole.
 //
 // The tick's pass also catches up the rows of the inbox's caches that build leaves unmarked
-// (CatchUpOwedRows), so once a run of the backfill has recorded its horizon (backfillRan) the read
-// answers true too for an event that leaves such a row owed (rollOwedByEvents): a person's
+// (CatchUpOwedRows), so once a run of the backfill of this build's marking rule or a later one has
+// recorded its horizon (backfillRan) the read answers true too for an event that leaves such a row
+// owed (rollOwedByEvents): a person's
 // user_thread_state.updated, user_state.updated or user_agent_state.updated, which that build's
 // read marks, dismissals, clears and snoozes append naming the person, where a user_threads row or
 // a row of the five other read-state tables of that person is owed; an ask's ask.opened, ask.edited
@@ -45,8 +46,9 @@ import (
 // append no event, so only a pass started for another reason reaches an attempt one moved. And
 // whatever the events are, it answers true while the queue of the events that build's outbox
 // recorded (events_published_owed) holds one: that record appends no event. So it does while the
-// queue of that build's moves of who an ask waits on and its edits of a comment
-// (events_inbox_owed) holds one: the event it queues names no row the catch-up's other passes owe;
+// queue of that build's moves of who an ask waits on and its edits of a comment or an issue
+// message (events_inbox_owed) holds one: the event it queues names no row the catch-up's other
+// passes owe;
 // and while a document that build stated the blocks of without their identity mentions waits for
 // the block identity pass (blockIdentitiesOwed): its fence write appends no event.
 //

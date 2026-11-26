@@ -430,6 +430,131 @@ func TestAPersonAnOlderBuildsEditNamesTakesPartThoughAReindexStatedTheMentionFir
 	requireASecondRunAppendsNothing(t, writes.database)
 }
 
+// R5 and R4 of an issue message, as of a comment: this release's edit of an issue message states
+// the mentions tuple to each identity its new text names and each newly named person's
+// participates_in in the message's thread, under the edit's event, and delivers nothing (api's
+// editMessage, editMentionParticipation).
+//
+// alice's issue message and bob's reply to it, written as a build of the release before writes
+// them, are stated by the backfill, which names each one's node on its row (writeMessages): the
+// message's marker, which no edit moves. That build then edits bob's reply to name dave and an
+// agent's session, and states no mention of either; only the edit's event, which the trigger
+// queues, tells the backfill. The backfill states the reply's mentions tuples to dave and to the
+// session under the edit's event, dave's participation in the reply's thread, whose root is
+// alice's message, and in no thread whose root is the reply, and no delivered_to to either. The
+// queue empties, the census of user_threads reads no difference, and a second run appends nothing.
+// Its control is the queue's message edits left out of the pass (olderEditedItems holding
+// comment.edited alone): the reply names nobody and dave takes part in nothing.
+func TestTheBackfillStatesThePeopleAnOlderBuildsEditOfAnIssueMessageNames(t *testing.T) {
+	writes := newAddressingWrites(t)
+	writes.createIssue(t, "CENS-1", 1, "U", alice)
+	ctx := context.Background()
+	root := writeAsAnOlderBuild(t, writes, "message.created", alice, `
+		insert into messages (issue_key, author, body) values ('CENS-1', $1, 'Is the copy final?')
+		returning id::text, created_at`, actorJSON(t, alice))
+	reply := writeAsAnOlderBuild(t, writes, "message.answered", bob, `
+		insert into messages (issue_key, author, body, in_reply_to) values ('CENS-1', $1, 'Nearly.', $2::uuid)
+		returning id::text, created_at`, actorJSON(t, bob), root.id)
+	backfillInboxOnce(t, writes.database)
+	var named bool
+	if err := writes.database.Pool.QueryRow(ctx, `select node_kind is not null from messages where id = $1::uuid`, reply.id).Scan(&named); err != nil || !named {
+		t.Fatalf("after the backfill bob's reply %s names its node %t (%v), want it named: this test proves nothing", reply.id, named, err)
+	}
+
+	const body = "Nearly. Over to dispatch://person/" + daveAddress + " for it, with dispatch://agent/" + mentionedSession + "."
+	edited := writeAsTheReleaseBefore(t, writes, func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
+		_, err := tx.Exec(ctx, `update messages set body = $2, edited_at = now() where id = $1::uuid`, reply.id, body)
+		return model.Event{IssueKey: new("CENS-1"), Type: "message.edited", Actor: bob,
+			Payload: map[string]any{"id": reply.id, "body": body}}, err
+	})
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 1 || queued[0] != edited.ID {
+		t.Fatalf("the queue holds %v after the older build's edit, want its message.edited %d alone", queued, edited.ID)
+	}
+
+	backfillInboxOnce(t, writes.database)
+	for _, mentioned := range []struct{ kind, id string }{{graphstore.KindPerson, daveAddress}, {graphstore.KindSession, mentionedSession}} {
+		requireStands(t, writes.database, "the edit's mention", edited.ID,
+			graphstore.KindMessage, reply.id, graphstore.TupleMentions, mentioned.kind, mentioned.id)
+		if asserted, under := newestOf(t, writes.database, graphstore.KindMessage, reply.id, graphstore.TupleDeliveredTo, mentioned.kind, mentioned.id); asserted {
+			t.Errorf("the edit delivered message %s to %s %s under event %d, want no delivery: an edit delivers nothing", reply.id, mentioned.kind, mentioned.id, under)
+		}
+	}
+	requireStands(t, writes.database, "the edit's participation", edited.ID,
+		graphstore.KindPerson, daveAddress, graphstore.TupleParticipatesIn, graphstore.KindMessage, root.id)
+	requireEnded(t, writes.database, "the edit's participation", graphstore.KindPerson, daveAddress, graphstore.TupleParticipatesIn, graphstore.KindMessage, reply.id)
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 0 {
+		t.Errorf("the queue holds %v after the backfill, want none", queued)
+	}
+	requireTheThreadsAgree(t, writes.database, "after the backfill of the message's edit")
+	requireASecondRunAppendsNothing(t, writes.database)
+}
+
+// R9's tick catch-up is the backfill's for a row it reaches only once a run of this build's
+// backfill has recorded its horizon (backfillRan): cmd/dispatch/README.md says "a build of rule 2
+// reads no cursor or horizon of rule 1". The release before this one is of the marking rule
+// before this build's, and its backfill-graph-store records a horizon of that rule
+// (graph_backfill_horizon) having walked none of the inbox's passes, so a database whose one
+// horizon is of that rule has had no run of this backfill: what a build before this one left owed
+// is still the backfill's, which takes the tables in one walk.
+//
+// A build of the release before edits alice's comment, and the trigger of migration 20261122100123
+// queues the edit's event. With a horizon of the rule before alone, the edit owes the block-index
+// tick nothing (EventsOweObjectPass) and the tick's catch-up (CatchUpOwedRows) marks nothing and
+// leaves the queue as it was. Once a horizon of this build's rule is recorded, the same edit owes
+// the tick its catch-up, which takes the event off the queue. Its control is backfillRan reading a
+// horizon of any rule (before INFRA-1152's review C11): the edit owes the tick at once, and the
+// first catch-up takes it.
+func TestAHorizonOfTheMarkingRuleBeforeIsNoRunOfThisBuildsBackfill(t *testing.T) {
+	writes := newAddressingWrites(t)
+	writes.createIssue(t, "CENS-1", 1, "U", alice)
+	ctx := context.Background()
+	comment := writeAsAnOlderBuild(t, writes, "comment.created", alice, `
+		insert into comments (issue_key, author, body) values ('CENS-1', $1, 'Is the copy final?')
+		returning id::text, created_at`, actorJSON(t, alice))
+	after := newestEventID(t, writes.database)
+	const body = "Is the copy final? Over to dispatch://person/" + daveAddress + " for it."
+	edited := writeAsTheReleaseBefore(t, writes, func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
+		_, err := tx.Exec(ctx, `update comments set body = $2, edited_at = now() where id = $1::uuid`, comment.id, body)
+		return model.Event{IssueKey: new("CENS-1"), Type: "comment.edited", Actor: alice,
+			Payload: map[string]any{"id": comment.id, "body": body}}, err
+	})
+	recordHorizon := func(rule int) {
+		t.Helper()
+		if _, err := writes.database.Pool.Exec(ctx, `
+			insert into graph_backfill_horizon (marking_rule, event_id) values ($1, $2)
+			on conflict (marking_rule) do update set event_id = excluded.event_id, recorded_at = now()
+		`, rule, edited.ID); err != nil {
+			t.Fatalf("record a horizon of marking rule %d: %v", rule, err)
+		}
+	}
+
+	recordHorizon(refs.BlockIndexMarkingRule - 1)
+	if eventsOwe(t, writes.database, after, edited.ID) {
+		t.Errorf("with a horizon of marking rule %d alone the older build's edit owes the tick's catch-up, want nothing owed before this build's backfill ran",
+			refs.BlockIndexMarkingRule-1)
+	}
+	caught, err := CatchUpOwedRows(ctx, writes.database)
+	if err != nil {
+		t.Fatalf("catch the inbox's rows up over a horizon of the rule before: %v", err)
+	}
+	if caught.Rows != 0 || caught.More {
+		t.Errorf("with a horizon of marking rule %d alone the tick's catch-up reports %#v, want nothing read", refs.BlockIndexMarkingRule-1, caught)
+	}
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 1 || queued[0] != edited.ID {
+		t.Errorf("with a horizon of marking rule %d alone the queue holds %v after the tick's catch-up, want the older build's edit %d still there",
+			refs.BlockIndexMarkingRule-1, queued, edited.ID)
+	}
+
+	recordHorizon(refs.BlockIndexMarkingRule)
+	if !eventsOwe(t, writes.database, after, edited.ID) {
+		t.Errorf("with a horizon of this build's marking rule %d the older build's edit owes the tick's catch-up nothing, want it owed", refs.BlockIndexMarkingRule)
+	}
+	catchUpTheTick(t, writes.database, "over a horizon of this build's rule")
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 0 {
+		t.Errorf("with a horizon of this build's marking rule the queue holds %v after the tick's catch-up, want none", queued)
+	}
+}
+
 // R5, R2 and R4 of a comment and an issue message a build before this one wrote before this
 // release's schema reached the database, or before any backfill ran: such a build states no
 // mention of an identity and stores no row of a person's (refs.TargetOf), so the item's text is

@@ -592,6 +592,163 @@ func TestTheCensusReadsAnOlderBuildsRowsOnceTheBackfillMarksThem(t *testing.T) {
 	}
 }
 
+// R9 holds the census to no difference on what this release's writers leave. An attempt the
+// listener took is a delivery, and its delivered_to stays stated when the row leaves the taken
+// states (graphstore's attemptMoved): a session can settle an attempt failed after it was sent or
+// queued, since its reply that reports an error sets the row's state with no guard on the state it
+// was in (api's replyComment, and the message reply's error arm). The census holds the node to
+// that rule: it expects the delivered_to of a row its node was ever stated taken for
+// (attemptTaken), and of no other.
+//
+// A comment's mention attempt goes from pending to sent, reaching ses-sent, and then to failed, and
+// a targeted message's attempt from pending to queued for ses-queued and then to failed, each step
+// stated through the writer as its route states it (graphstore.QueueAttempted). After each step the
+// census of both attempt tables reads no difference, and once both have failed each node's
+// delivered_to still stands, its one assertion. Then a second mention of the comment, to
+// ses-never, is refused - opened and settled failed, never taken - and the census still reads no
+// difference; and once its node asserts a delivered_to to ses-never, which no writer of an attempt
+// states, the census of comment_deliveries reads a difference at that attempt, and that of
+// message_deliveries none. Its control is the census expecting a delivered_to only while the row is
+// taken (attemptFacts before INFRA-1152's review C15): each attempt that failed after it was taken
+// reads a difference.
+func TestTheAttemptCensusReadsNoDifferenceOnceATakenAttemptFails(t *testing.T) {
+	f := newInboxCensus(t)
+	ctx := context.Background()
+	pool := f.writes.database.Pool
+	var comment, message string
+	if err := pool.QueryRow(ctx, `
+		insert into comments (issue_key, author, body) values ('CENS-1', $1, 'For the agent.') returning id::text
+	`, actorJSON(t, alice)).Scan(&comment); err != nil {
+		t.Fatalf("write the comment that mentions ses-sent: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		insert into messages (issue_key, author, body, target) values ('CENS-1', $1, 'For the agent.', 'session:ses-queued') returning id::text
+	`, actorJSON(t, alice)).Scan(&message); err != nil {
+		t.Fatalf("write the message for ses-queued: %v", err)
+	}
+	attempts := []struct {
+		what, session          string
+		key                    graphstore.AttemptKey
+		opened, taken, refused string
+	}{{
+		what: "the comment's mention attempt", session: "ses-sent", key: graphstore.CommentAttempt(comment, "session:ses-sent", 1),
+		opened: `insert into comment_deliveries (comment_id, target, attempt, delivery, state, node_kind, node_address)
+			values ($1::uuid, 'session:ses-sent', 1, 'aside', 'pending', $2, $3)`,
+		taken: `update comment_deliveries set state = 'sent', session_id = 'ses-sent', envelope_id = 'envelope-sent'
+			where comment_id = $1::uuid and target = 'session:ses-sent'`,
+		refused: `update comment_deliveries set state = 'failed', error = 'the session could not act on it'
+			where comment_id = $1::uuid and target = 'session:ses-sent'`,
+	}, {
+		what: "the message's attempt", session: "ses-queued", key: graphstore.MessageAttempt(message, 1),
+		opened: `insert into message_deliveries (message_id, attempt, delivery, session_id, state, node_kind, node_address)
+			values ($1::uuid, 1, 'aside', '', 'pending', $2, $3)`,
+		taken:   `update message_deliveries set state = 'queued', session_id = 'ses-queued', envelope_id = 'envelope-queued' where message_id = $1::uuid`,
+		refused: `update message_deliveries set state = 'failed', error = 'the session could not act on it' where message_id = $1::uuid`,
+	}}
+	itemOf := func(key graphstore.AttemptKey) string {
+		if key.Message != "" {
+			return key.Message
+		}
+		return key.Comment
+	}
+	// step writes one move of an attempt's row and states what the row then holds, in one
+	// transaction, as the route that moves it does; the first move writes the attempt's node
+	// before its row, which names it.
+	step := func(what string, key graphstore.AttemptKey, opens bool, statement string) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			args := []any{itemOf(key)}
+			if opens {
+				if err := graphstore.Write(ctx, tx, []graphstore.Node{graphstore.AttemptNode(key, alice, f.at(), graphstore.NoEvent)}, nil); err != nil {
+					return err
+				}
+				args = append(args, graphstore.KindDeliveryAttempt, key.ID())
+			}
+			if _, err := tx.Exec(ctx, statement, args...); err != nil {
+				return err
+			}
+			return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, key)
+				return nil
+			})
+		}); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	// requireAttemptsAgree fails unless the census of each attempt table reads rows of its own and
+	// no difference.
+	requireAttemptsAgree := func(when string, rows map[string]int64) {
+		t.Helper()
+		report, _ := f.census(t, when)
+		for name, want := range rows {
+			if kind := censusKind(t, report, name); kind.Rows != want || kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
+				t.Errorf("%s the census of %s reads %d row(s), %d rows no tuple states and %d nodes no row projects (%v %v), want %d and no difference",
+					when, name, kind.Rows, kind.RowDifferences, kind.NodeDifferences, kind.ReportedRows, kind.ReportedNodes, want)
+			}
+		}
+	}
+	one := map[string]int64{"comment_deliveries": 1, "message_deliveries": 1}
+
+	for _, attempt := range attempts {
+		step("open "+attempt.what, attempt.key, true, attempt.opened)
+	}
+	requireAttemptsAgree("with both attempts pending,", one)
+	for _, attempt := range attempts {
+		step("take "+attempt.what, attempt.key, false, attempt.taken)
+		if asserted, _ := newestOf(t, f.writes.database, graphstore.KindDeliveryAttempt, attempt.key.ID(), graphstore.TupleDeliveredTo,
+			graphstore.KindSession, attempt.session); !asserted {
+			t.Fatalf("%s, taken by %s, states no delivered_to to that session: this test proves nothing", attempt.what, attempt.session)
+		}
+	}
+	requireAttemptsAgree("with the comment's attempt sent and the message's queued,", one)
+	for _, attempt := range attempts {
+		step("fail "+attempt.what, attempt.key, false, attempt.refused)
+		var stated, asserted int
+		if err := pool.QueryRow(ctx, `
+			select count(*), count(*) filter (where asserted)
+			from graph_tuples
+			where from_kind = $1 and from_id = $2 and kind = $3 and to_kind = $4 and to_id = $5
+		`, graphstore.KindDeliveryAttempt, attempt.key.ID(), graphstore.TupleDeliveredTo, graphstore.KindSession, attempt.session).Scan(
+			&stated, &asserted); err != nil {
+			t.Fatalf("read the delivered_to tuples of %s: %v", attempt.what, err)
+		}
+		if stated != 1 || asserted != 1 {
+			t.Fatalf("once failed, %s holds %d delivered_to tuple(s) to %s, %d asserting, want its one assertion: this test proves nothing",
+				attempt.what, stated, attempt.session, asserted)
+		}
+	}
+	requireAttemptsAgree("once both attempts failed after they were taken,", one)
+
+	refused := graphstore.CommentAttempt(comment, "session:ses-never", 1)
+	step("open the comment's mention of ses-never", refused, true, `
+		insert into comment_deliveries (comment_id, target, attempt, delivery, state, node_kind, node_address)
+		values ($1::uuid, 'session:ses-never', 1, 'aside', 'pending', $2, $3)`)
+	step("refuse the comment's mention of ses-never", refused, false, `
+		update comment_deliveries set state = 'failed', session_id = 'ses-never', error = 'no live session ses-never'
+		where comment_id = $1::uuid and target = 'session:ses-never'`)
+	both := map[string]int64{"comment_deliveries": 2, "message_deliveries": 1}
+	requireAttemptsAgree("with the mention of ses-never refused,", both)
+	f.state(t, nil, []graphstore.Tuple{{
+		FromKind: graphstore.KindDeliveryAttempt, FromID: refused.ID(), Kind: graphstore.TupleDeliveredTo,
+		ToKind: graphstore.KindSession, ToID: "ses-never", At: f.at(), Who: graphstore.AttemptWriter,
+		SourceEvent: graphstore.NoEvent, Asserted: true,
+	}})
+	report, _ := f.census(t, "once the refused mention's node asserts a delivered_to")
+	// A digest kind reads a row and its node that disagree as one row difference at the row's label.
+	kind := censusKind(t, report, "comment_deliveries")
+	named := slices.ContainsFunc(kind.ReportedRows, func(difference Difference) bool {
+		return strings.Contains(difference.At, "session:ses-never")
+	})
+	if kind.RowDifferences != 1 || !named {
+		t.Errorf("once the never-taken mention of ses-never asserts a delivered_to the census of comment_deliveries reads %d row difference(s) (%v %v), want one, at that attempt",
+			kind.RowDifferences, kind.ReportedRows, kind.ReportedNodes)
+	}
+	if kind := censusKind(t, report, "message_deliveries"); kind.RowDifferences+kind.NodeDifferences != 0 {
+		t.Errorf("the census of message_deliveries reads %d difference(s) (%v %v), want none", kind.RowDifferences+kind.NodeDifferences,
+			kind.ReportedRows, kind.ReportedNodes)
+	}
+}
+
 // The census reads one read-only repeatable-read snapshot whose statement_timeout is what is left
 // of its deadline, so a census held up behind a lock ends at its bound rather than holding its
 // snapshot for as long as the lock stands.

@@ -44,9 +44,9 @@ import (
 // stored no row of a person's, refs.TargetOf, so the item's text is read for them), what each
 // read-state row says (graphstore.ToPerson, graphstore.FromPerson), and what each write of that
 // build that changes no
-// row's marker owes - a move of who an ask waits on, an edit of a comment - read off the queue of
-// its events (inboxEventsPass, backfill_inbox_events.go). Every batch takes the order the live
-// writers take - the owner rows, then
+// row's marker owes - a move of who an ask waits on, an edit of a comment or of an issue message -
+// read off the queue of its events (inboxEventsPass, backfill_inbox_events.go). Every batch takes
+// the order the live writers take - the owner rows, then
 // the project rows an ask's waiting person is read under, then the item rows and its block state,
 // then the item's own store writes, then a thread's user_threads rows in ascending login, then the
 // deliveries to them - so a live write of this release and a batch over one thread take turns.
@@ -749,11 +749,14 @@ var threadItemsStored = `not exists (
 		  and octet_length(coalesce(m.replies_to_block, '')) <= ` + addressBound + `
 		  and not exists (select 1 from graph_nodes n where n.kind = '` + graphstore.KindMessage + `' and n.id = m.id::text)))`
 
-// backfillRan is true where a run of the backfill has recorded the horizon it began at
-// (recordBackfillHorizon), of any marking rule: every run walks the inbox's passes after that. A
-// row a build before this one left unmarked before any run is the backfill's, which takes the
-// table in one walk.
-const backfillRan = `exists (select 1 from graph_backfill_horizon)`
+// backfillRan is true where a run of the backfill of this build's marking rule
+// (refs.BlockIndexMarkingRule), or of a later one, has recorded the horizon it began at
+// (recordBackfillHorizon): every such run walks the inbox's passes after that. The release before
+// this one is of the rule before, and its backfill-graph-store records a horizon of that rule
+// having walked none of these passes, so such a horizon is no run of this backfill. A row a build
+// before this one left unmarked before such a run is the backfill's, which takes the table in one
+// walk.
+var backfillRan = `exists (select 1 from graph_backfill_horizon where marking_rule >= ` + strconv.Itoa(refs.BlockIndexMarkingRule) + `)`
 
 // RollRows is what the block-index tick's catch-up of the rows another build left unmarked did
 // (CatchUpOwedRows): how many rows it marked, and whether a pass read a full batch, so that rows
@@ -782,9 +785,10 @@ type RollRows struct {
 // published_destinations after the event commits, appending no event, so no read of the log after
 // the tick's cursor finds a publish that lands after the tick has read its event. The pass over the
 // queue of an older build's events (inboxEventsPass) reads the queue migration 20261122100123
-// fills, here as in the backfill: a move of who an ask waits on and an edit of a comment change no
-// row's marker, so no pass over a marker reaches them, and the queue holds each such event until
-// the batch that states it deletes it, whichever of the backfill and the tick takes it first.
+// fills, here as in the backfill: a move of who an ask waits on and an edit of a comment or of an
+// issue message change no row's marker, so no pass over a marker reaches them, and the queue holds
+// each such event until the batch that states it deletes it, whichever of the backfill and the
+// tick takes it first.
 // Each pass reads its rows through the index that holds the rows it owes
 // (TestTheRollPassesReadTheirOwedRowsThroughThePartialIndexes), but two: the asks pass reads asks
 // whole, as the object pass does, since its marker test reads an answer's moment through a cast no
@@ -826,8 +830,8 @@ func rollPasses() []inboxPass {
 // It runs each pass's own write over one batch of the rows that pass owes, from its first, each
 // batch in a transaction of its own under the locks the backfill's batch takes, outside the tick's
 // other transactions, so each class reaches zero one batch a tick after that build stops writing.
-// Until a run of the backfill has recorded its horizon (backfillRan) it reads nothing more: every
-// such row is the backfill's then.
+// Until a run of the backfill of this build's marking rule or a later one has recorded its horizon
+// (backfillRan) it reads nothing more: every such row is the backfill's then.
 func CatchUpOwedRows(ctx context.Context, database *store.Store) (RollRows, error) {
 	var done RollRows
 	var ran bool
@@ -868,8 +872,9 @@ func CatchUpOwedRows(ctx context.Context, database *store.Store) (RollRows, erro
 // store does not state yet (the decline pass's own read, declinesOwed, and write, writeDeclines),
 // and the node of each session they name that holds none (the session pass's arm over the log,
 // eventSessions). The tick reads each event once, so each is given that write once, where a pass
-// over declines would read the log again on every tick. Until a run of the backfill has recorded
-// its horizon (backfillRan) it writes nothing: every such write is the backfill's then. Its first
+// over declines would read the log again on every tick. Until a run of the backfill of this
+// build's marking rule or a later one has recorded its horizon (backfillRan) it writes nothing:
+// every such write is the backfill's then. Its first
 // statement reads that beside whether any event in (after, through] is of a type its two reads
 // read (catchUpEventTypes), and where none is it reads nothing more, since both would answer
 // nothing: so a tick whose events hold no decline and name no session costs one statement here.
@@ -1164,12 +1169,13 @@ var commentMentionsOwed = func() string {
 }()
 
 // commentMentionsPass states each comment_mentions row an older build wrote as this release's
-// comment write states the delivery route it records (api's commentMentionFacts): a mentions tuple
-// out of the comment's node to the session or role its target routes to, a second to the session
-// it resolved to, and the comment's urgency, its delivery value, each made by the comment's author
-// at its created_at under the event that caused the comment's node - the comment's own write, the
-// event the census holds those tuples to (commentMentionProjection); and sets the row's
-// tuples_stored.
+// comment write states the delivery route it records (graphstore.CommentMentionFacts, which api's
+// commentMentionFacts calls too): a mentions tuple out of the comment's node to the session or role
+// its target routes to, a second to the session it resolved to, and the comment's urgency, its
+// delivery value, each made by the comment's author at its created_at under the event that caused
+// the comment's node - the comment's own write, the event the census holds those tuples to
+// (commentMentionProjection), which each mention carries as its legacy_source_seq too where it is
+// an event; and sets the row's tuples_stored.
 func commentMentionsPass() inboxPass {
 	return inboxPass{
 		kind: "comment_mentions",
@@ -1184,18 +1190,16 @@ func commentMentionsPass() inboxPass {
 
 // writeCommentMentions takes the owner rows of the comments keys names, then reads again and locks
 // the comment_mentions rows of keys still owed, in key order, as the delivery sender takes a
-// mention's row after its comment's owner (api's claimCommentDeliveryAttempt), and states them. A
-// comment's mention of one session or role is stated once however many of its rows name it, and
-// its delivery once, the mode its first row records: the writer applies one mode to every target
-// (api's validateCommentMentions).
+// mention's row after its comment's owner (api's claimCommentDeliveryAttempt), and states them,
+// each comment's rows at once (graphstore.CommentMentionFacts): a comment's mention of one session
+// or role is stated once however many of its rows name it, and its delivery once, the mode its
+// first row records: the writer applies one mode to every target (api's validateCommentMentions).
 func writeCommentMentions(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWrote, error) {
 	if err := lockOwnersOf(ctx, tx, commentOwners, column(keys, 0)); err != nil {
 		return inboxWrote{}, err
 	}
-	routeKind, routeID := routeEnd(`m.target`)
 	rows, err := tx.Query(ctx, `
-		select m.comment_id::text, m.target, `+routeKind+`, `+routeID+`, m.resolved_session_id, m.delivery,
-		       c.author, c.created_at, n.source_event
+		select m.comment_id::text, m.target, m.resolved_session_id, m.delivery, c.author, c.created_at, n.source_event
 		`+commentMentionsOwed+`
 		  and (m.comment_id, m.target) in (select * from unnest($1::uuid[], $2::text[]))
 		order by m.comment_id, m.target
@@ -1205,18 +1209,17 @@ func writeCommentMentions(ctx context.Context, tx pgx.Tx, keys [][]string) (inbo
 		return inboxWrote{}, fmt.Errorf("read the comment_mentions rows no tuple states: %w", err)
 	}
 	type mention struct {
-		comment, target, routeKind, routeID, delivery string
-		resolved                                      *string
-		author                                        model.Actor
-		at                                            time.Time
-		event                                         int64
+		comment, target, delivery string
+		resolved                  *string
+		author                    model.Actor
+		at                        time.Time
+		event                     int64
 	}
 	var read []mention
 	for rows.Next() {
 		var held mention
 		var author []byte
-		if err := rows.Scan(&held.comment, &held.target, &held.routeKind, &held.routeID, &held.resolved, &held.delivery,
-			&author, &held.at, &held.event); err != nil {
+		if err := rows.Scan(&held.comment, &held.target, &held.resolved, &held.delivery, &author, &held.at, &held.event); err != nil {
 			rows.Close()
 			return inboxWrote{}, fmt.Errorf("read a comment_mentions row no tuple states: %w", err)
 		}
@@ -1234,32 +1237,23 @@ func writeCommentMentions(ctx context.Context, tx pgx.Tx, keys [][]string) (inbo
 		return inboxWrote{}, nil
 	}
 	tuples := make([]graphstore.Tuple, 0, 3*len(read))
-	stated := make(map[[3]string]struct{}, 2*len(read))
 	comments, targets := make([]string, len(read)), make([]string, len(read))
-	ends := make([][2]string, 0, 2)
+	var routes []graphstore.CommentRoute
+	var stated []graphstore.UncausedTuple
 	for index, held := range read {
 		comments[index], targets[index] = held.comment, held.target
-		ends = append(ends[:0], [2]string{held.routeKind, held.routeID})
-		if held.resolved != nil {
-			ends = append(ends, [2]string{graphstore.KindSession, *held.resolved})
+		routes = append(routes, graphstore.CommentRoute{Target: held.target, Session: held.resolved})
+		if index+1 < len(read) && read[index+1].comment == held.comment {
+			continue
 		}
-		for _, end := range ends {
-			key := [3]string{held.comment, end[0], end[1]}
-			if _, seen := stated[key]; seen {
-				continue
-			}
-			stated[key] = struct{}{}
-			tuples = append(tuples, graphstore.Tuple{
-				FromKind: graphstore.KindComment, FromID: held.comment, Kind: graphstore.TupleMentions, ToKind: end[0], ToID: end[1],
-				At: held.at, Who: held.author, SourceEvent: held.event, Asserted: true,
-			})
+		// The comment's last row: every route its rows name is stated at once, with the mode its
+		// first row records, and the facts of the batch's next comment reuse the same slices.
+		first := read[index+1-len(routes)]
+		stated = graphstore.CommentMentionFacts(stated[:0], held.comment, routes, first.delivery, held.author, held.at, held.event)
+		for _, fact := range stated {
+			tuples = append(tuples, fact.Tuple)
 		}
-		if index == 0 || read[index-1].comment != held.comment {
-			tuples = append(tuples, graphstore.Tuple{
-				FromKind: graphstore.KindComment, FromID: held.comment, Kind: graphstore.TupleDelivery, ToKind: graphstore.KindValue,
-				ToID: held.delivery, At: held.at, Who: held.author, SourceEvent: held.event, Asserted: true,
-			})
-		}
+		routes = routes[:0]
 	}
 	if err := writeRelations(ctx, tx, tuples); err != nil {
 		return inboxWrote{}, fmt.Errorf("state the delivery routes of a batch of comments: %w", err)

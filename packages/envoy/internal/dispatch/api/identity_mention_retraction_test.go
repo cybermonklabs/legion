@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -183,5 +184,61 @@ func TestASinceReadListsTheIdentityMentionTheWriteInItsWindowStated(t *testing.T
 	if edges := graphEdges(t, handler, url.Values{"from": {commentRef}, "since": {strconv.FormatInt(created, 10)}}).Edges; slices.ContainsFunc(edges,
 		func(edge model.GraphEdge) bool { return edge.Node.Kind == graphstore.KindPerson }) {
 		t.Fatalf("?from= the comment since its own event lists %#v, want no mention of a person", edges)
+	}
+}
+
+// R5's delivery route is a mention as a name in the comment's text is: a session the request's
+// mentions array names is a mentions tuple out of the comment (graphstore.CommentMentionFacts),
+// and a poller reads it as it reads the comment's other edges. Its tuple carries the comment's
+// event as its legacy_source_seq, which graph_edges' identity arm answers as the edge's source_seq,
+// so a ?since= read of the comment whose window holds that event lists the session, and a read
+// since that event itself lists it no more. The comment's body names nobody, so only the array
+// names the session. A read lists an edge only to a node it resolves, and no write of this test
+// reaches the session - the server has no listener to send the mention through - so the test
+// writes the session's node first, as the write that first reached it would have.
+func TestASinceReadListsTheRouteOnlyTheRequestsMentionsName(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "ROUT", "Routes since", "before")
+	const session = "s-routed"
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the write of session %s's node: %v", session, err)
+	}
+	defer tx.Rollback(ctx)
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{
+		graphstore.SessionNode(session, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), graphstore.NoEvent),
+	}, nil); err != nil {
+		t.Fatalf("write session %s's node: %v", session, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit session %s's node: %v", session, err)
+	}
+	// The log's head is a safe since here, as in the test above: the comment draws its event id
+	// after this read.
+	beforeTheComment := eventHead(t, database)
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": "Can you take the copy?", "mentions": []map[string]any{{"target": "session:" + session}},
+	}, "alice")
+	created := writeEventOf(t, database, "comment.created", comment.ID)
+	commentRef := "dispatch://" + issue.Key + "/comment/" + comment.ID
+	routed := func(edge model.GraphEdge) bool {
+		return edge.Kind == graphstore.TupleMentions && edge.Node.Kind == graphstore.KindSession && edge.Node.ID == session
+	}
+
+	since := url.Values{"from": {commentRef}, "since": {strconv.FormatInt(beforeTheComment, 10)}}
+	awaitSinceRead(t, database, "?from= the comment since the log's head before it, wanting its route to "+session+
+		" stamped with event "+strconv.FormatInt(created, 10),
+		func() model.GraphReferences { return graphEdges(t, handler, since) },
+		func(read model.GraphReferences) bool {
+			return slices.ContainsFunc(read.Edges, func(edge model.GraphEdge) bool {
+				return routed(edge) && edge.SourceSeq != nil && *edge.SourceSeq == created
+			})
+		})
+	// The awaited read listed the route, so the horizon had passed the comment's event, and a read
+	// since that same event answers no route because of the since filter alone.
+	if edges := graphEdges(t, handler, url.Values{"from": {commentRef}, "since": {strconv.FormatInt(created, 10)}}).Edges; slices.ContainsFunc(edges, routed) {
+		t.Fatalf("?from= the comment since its own event lists %#v, want no route to session %s", edges, session)
 	}
 }

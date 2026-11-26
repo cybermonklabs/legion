@@ -603,13 +603,26 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 // caller's transaction, leaving in held what it states on the ask's node; it appends no event.
 // For an answer it also reads, before the answer's queued update moves the ask's marker, what that
 // marker still owes the store (inboxwrite.ReadAsk), which closeAskTx records with the answer; any
-// other transition reads nothing of it, and answers the zero value.
+// other transition reads nothing of it, and answers the zero value. An answer reads who takes part
+// in the ask's thread, so where the ask is open, handed to nobody and on an owner that falls
+// through to its project's default assignee, the project the owner check read
+// (requireOpenOwnerStatusAndDefault) is held shared before that read
+// (inboxwrite.HoldProjectDefault): a move of the default either committed first, and the answer
+// reaches the person it moved the ask to, or waits for the answer and then finds the ask closed,
+// which it moves nothing of.
 func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, id string, transition askTransition, held *graphstore.Uncaused) (model.Ask, inboxwrite.Ask, error) {
 	unlockedAsk, err := s.loadAsk(ctx, tx, id)
 	if err != nil {
 		return model.Ask{}, inboxwrite.Ask{}, err
 	}
-	if err := s.requireOpenOwner(ctx, tx, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
+	owner := ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)
+	var project string
+	if transition.Inbox == inboxwrite.Replies {
+		_, project, err = s.requireOpenOwnerStatusAndDefault(ctx, tx, owner)
+	} else {
+		err = s.requireOpenOwner(ctx, tx, owner)
+	}
+	if err != nil {
 		return model.Ask{}, inboxwrite.Ask{}, err
 	}
 	ask, err := s.readAskForTransition(ctx, tx, id)
@@ -640,6 +653,11 @@ func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Le
 	// planned, so the record reads them no second time.
 	var before inboxwrite.Ask
 	if transition.Inbox == inboxwrite.Replies {
+		if ask.State == asks.StateOpen && ask.AskedOf == nil {
+			if err := inboxwrite.HoldProjectDefault(ctx, tx, project); err != nil {
+				return model.Ask{}, inboxwrite.Ask{}, err
+			}
+		}
 		if before, err = inboxwrite.ReadAskAndMembers(ctx, tx, id); err != nil {
 			return model.Ask{}, inboxwrite.Ask{}, err
 		}

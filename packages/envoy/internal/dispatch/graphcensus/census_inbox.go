@@ -18,11 +18,13 @@ import (
 // values as well as relations and is held digest against digest. Each reports a row no tuple
 // states and a tuple no row projects; each kind of a table that holds a marker counts the rows a
 // build of the release before this one wrote and the backfill has not marked yet as a class of
-// its own (unmarked), which reads zero once the backfill ends, where published_destinations, which
-// holds no marker, and user_threads_version, which reads the marked user_threads rows alone, count
-// none; each reports its marked rows as two populations (populations), the rows that release
-// wrote and the backfill marked and the rows this release's writers wrote; and each counts the
-// tuples its projection does not hold by design as figures of their own (narrowings).
+// its own (unmarked), which reads zero once the backfill ends; published_destinations, which holds
+// no marker, counts as that class the events an older build's outbox recorded that the queue of
+// migration 20261122100122 still holds (events_published_owed), which reads zero once the
+// block-index tick has taken them, and user_threads_version, which reads the marked user_threads
+// rows alone, counts none; each reports its marked rows as two populations (populations), the rows
+// that release wrote and the backfill marked and the rows this release's writers wrote; and each
+// counts the tuples its projection does not hold by design as figures of their own (narrowings).
 //
 // How a kind tells its two populations apart:
 //
@@ -363,7 +365,8 @@ func attemptValue(kind, value string) string {
 // attemptFacts are the facts every attempt row states alike: its number, its state and whether it
 // is a duplicate, always; its envelope and its error where it holds one; its claim's moment; owed_to
 // its target while it is pending; and delivered_to its session once the listener took it
-// (model.DeliveryTaken).
+// (attemptTaken), which stays stated when the row leaves the taken states, as a session's report
+// of an error on an attempt it was sent or queued settles the row failed.
 func attemptFacts(target, session string) []string {
 	targetKind, targetID := routeEnd(target)
 	return []string{
@@ -374,10 +377,34 @@ func attemptFacts(target, session string) []string {
 		attemptValue(graphstore.AttemptError, `d.error`),
 		attemptValue(graphstore.AttemptClaimedAt, moment(`d.claimed_at`)),
 		`case when d.state = '` + model.DeliveryStatePending + `' then '` + graphstore.TupleOwedTo + `>' || ` + targetKind + ` || ':' || ` + targetID + ` end`,
-		`case when d.state in ` + model.DeliveryTakenStatesSQL + ` and coalesce(` + session + `, '') <> '' and ` + graphstore.AddressFitsSQL(session) + `
+		`case when ` + attemptTaken + ` and coalesce(` + session + `, '') <> '' and ` + graphstore.AddressFitsSQL(session) + `
 		      then '` + graphstore.TupleDeliveredTo + `>` + graphstore.KindSession + `:' || ` + session + ` end`,
 	}
 }
+
+// attemptTaken is true of an attempt row d the listener took, now or at any moment the store stated
+// it: its state is one the listener took it in (model.DeliveryTakenStatesSQL), or the store's log
+// asserts one of those states as a value of its node (graphstore.AttemptState). It is the one rule
+// the census holds an attempt's delivered_to to, and it is the writer's own: every writer of an
+// attempt's facts - each route through graphstore.QueueAttempted, and the backfill and the
+// block-index tick's catch-up through graphstore.AttemptFactsAsWritten - states them in one
+// statement (graphstore's attemptMoved), which reads the row once and states the delivered_to with
+// the state value whenever the row is in a taken state, and which retracts no delivered_to. So the
+// store states a delivered_to exactly where it has stated a taken state, and a log no statement
+// deletes from keeps both (TestNoStatementDeletesANodeOrATuple). A row that failed and was never
+// taken - a refused send - expects none.
+//
+// The receipt in the log (a comment.delivery or message.delivery of a taken state) is no exact
+// record of it. The backfill states a row a build of the release before wrote as the row stands
+// when it runs, so a row that build sent and then settled failed before the backfill took it holds
+// a taken receipt and no delivered_to; and the event that stated a delivered_to the backfill wrote
+// is its item's event or the sentinel, which tells nothing of the state. The node's state values
+// are stated by the same statement as the delivered_to, for every writer alike.
+var attemptTaken = `(d.state in ` + model.DeliveryTakenStatesSQL + ` or exists (
+		select 1 from graph_tuples taken
+		where taken.from_kind = '` + graphstore.KindDeliveryAttempt + `' and taken.from_id = d.node_address
+		  and taken.kind = '` + graphstore.AttemptState + `' and taken.to_kind = '` + graphstore.KindValue + `'
+		  and taken.to_id in ` + model.DeliveryTakenStatesSQL + ` and taken.asserted))`
 
 var (
 	commentAttemptCensus = attemptCensus{
@@ -413,8 +440,9 @@ func attemptProjection(table attemptCensus) projection {
 	return projection{
 		name: table.table, nodeKind: graphstore.KindDeliveryAttempt, table: table.table,
 		note: "one delivery_attempt node per row: the digest is the row's number, state, duplicate flag, envelope, errors" +
-			" and moments, owed_to its target while it is pending, delivered_to its session once the listener took it" +
-			" and answered_by its reply, against the newest value of each kind and the relations the node states now",
+			" and moments, owed_to its target while it is pending, delivered_to its session once the listener took it," +
+			" which stays once the row leaves the taken states, and answered_by its reply, against the newest value of" +
+			" each kind and the relations the node states now",
 		rows: `
 		select ` + table.label + `, d.node_kind, d.node_address, md5(d.node_address || '|' || ` + statedLinks(table.facts...) + `)
 		from ` + table.table + ` d` + table.joins + `

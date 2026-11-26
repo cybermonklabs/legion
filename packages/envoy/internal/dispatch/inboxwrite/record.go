@@ -193,10 +193,10 @@ func (w Write) Unstored() Write {
 // names: a mentions tuple to that person among the facts its index states
 // (graphstore.Uncaused.People, refs.PlanItemIndex). The write delivers to each of them beside its
 // thread's other participants (R2's mention arm), and moves the row each holds, in the one
-// ascending-login pass over the thread's rows. Their participation is no fact of the record: the
-// writer that resolves the mention appends it (MentionParticipation, R4's mention arm). A person a
-// mention of the same item named before, whose tuple stands, is no fact of this index, and so is
-// none of them.
+// ascending-login pass over the thread's rows. Each of them takes part in the thread's root from
+// this write too (R4's mention arm), which the record states last, once it holds those rows
+// (Recording.Queue's step 6, MentionParticipation). A person a mention of the same item named
+// before, whose tuple stands, is no fact of this index, and so is none of them.
 func (w Write) ReachesMentioned(indexed graphstore.Uncaused) Write {
 	mentioned := slices.Clone(w.mentioned)
 	for _, login := range mentionedLogins(indexed) {
@@ -239,17 +239,23 @@ func (w Write) Names(identities, people []graphstore.Tuple) Write {
 }
 
 // MentionParticipation is R4's mention arm for the facts indexed states of one comment or message
-// written in the thread whose root is rootKind/rootID (Recording.Root, ThreadRoot): a
-// participates_in from each person a mentions tuple of indexed names but who to that root, made by
-// who at at under event. The writer that resolves the mention appends it through
-// graphstore.QueueToPerson - a comment's or a message's create after its record (Recording.Queue),
-// so it falls after the lock pass over the thread's rows, and an edit beside what its index states
-// - and never Record, which reads a write's author and its deliveries and appends no mention arm.
-// A person who takes part already states the same relation again, which reads as it stood.
+// written in the thread whose root is rootKind/rootID (ThreadRoot): a participates_in from each
+// person a mentions tuple of indexed names but who to that root, made by who at at under event. A
+// comment's or a message's create states it through its own record, after the lock pass over the
+// thread's rows (Recording.Queue's step 6, over the persons ReachesMentioned took from the same
+// facts); an edit appends it through graphstore.QueueToPerson beside what its index states; and an
+// older build's write has RecordOlder append it. A person who takes part already states the same
+// relation again, which reads as it stood.
 func MentionParticipation(rootKind, rootID string, indexed graphstore.Uncaused, who model.Actor, at time.Time, event int64) []graphstore.Tuple {
+	return mentionParticipation(rootKind, rootID, mentionedLogins(indexed), who, at, event)
+}
+
+// mentionParticipation is MentionParticipation over logins, each person a write's text newly
+// mentions, by login.
+func mentionParticipation(rootKind, rootID string, logins []string, who model.Actor, at time.Time, event int64) []graphstore.Tuple {
 	writer := personOf(who)
 	var taking []graphstore.Tuple
-	for _, login := range mentionedLogins(indexed) {
+	for _, login := range logins {
 		if login == writer {
 			continue
 		}
@@ -369,11 +375,17 @@ func deliveredTo(fromKind, fromID, login string, at time.Time, who model.Actor, 
 //     marked_seq at the log position of this moment (migration 20261116160000); then, where the
 //     upsert moved the mark, A's read_through to T at the moment that row's read mark stands at
 //     once the upsert ran, stated by the same statement (queueKeepRow, graphstore.MarkArm), as
-//     every writer of a read mark states it (the spec's R6).
+//     every writer of a read mark states it (the spec's R6);
+//  6. for a comment or a message, the participates_in from each person but A its text newly
+//     mentions to T (Write.ReachesMentioned, R4's mention arm, mentionParticipation), once
+//     every row of T this write takes is held. A write whose head pointers the store holds no
+//     tuple of (Write.Unstored) states no tuple of these steps: its record moves T's rows as
+//     the trigger body did (Recording.queueUnstored).
 //
 // A session's reply to a message ends, between steps 1 and 2, its thread root's Agent
 // dismissals, under the root `for no key update` (Recording.QueueRootLock), which the API's
-// writers of such a reply take before its insert and Record takes first in its batch: the
+// writers of such a reply take before its insert and Record takes first in its batch - or which
+// the plan of a reply on no issue took already (threadHeld): the
 // retraction of the dismissed tuple of each person whose user_agent_thread_dismissed row names
 // it, then the delete of those rows, each statement reading the rows as they stand once the root
 // is held, as the trigger user_agent_thread_dismissed_clear does for an older build's reply
@@ -382,8 +394,8 @@ func deliveredTo(fromKind, fromID, login string, at time.Time, who model.Actor, 
 //
 // Steps 2 to 4 hold one lock rule: the rows are locked before the delivered_to of the people
 // holding them is appended, and the backfill marks a row under the same lock, so no delivery falls
-// on both sides of a mark. The owner lock every such write holds first (store.LockOwner) orders
-// two writes into one thread, and the lock order written on api/inbox_read.go's
+// on both sides of a mark. The locks every writer into one thread holds before it reads the
+// thread order two such writes (PlanRecord), and the lock order written on api/inbox_read.go's
 // markInboxReadThreads states this step.
 func Record(ctx context.Context, tx pgx.Tx, w Write, event int64) error {
 	recording, err := PlanRecord(ctx, tx, w)
@@ -414,6 +426,10 @@ type Recording struct {
 	// clears is, for a session's reply to a message, whether the reply ends the Agent dismissals of
 	// its root, which its write phase reads where it ends them.
 	clears bool
+	// rootHeld is, for a reply in a message thread on no issue, that the plan took the thread's
+	// root `for no key update` before it read who takes part (threadHeld), so the reply's write
+	// phase takes it no second time (QueueRootLock).
+	rootHeld bool
 	// delivered is, for a reply, each person in the thread's participant set but A, and each person
 	// its text newly mentions but A, by login, and moved each of them who holds a row of the thread;
 	// starter is the person who started a direct conversation, whom a session's reply reaches beside
@@ -427,16 +443,11 @@ type Recording struct {
 	failClear, failThreads bool
 }
 
-// Root is the root of the thread the record is written in, as (kind, id), as the plan read it
-// (threadOf): what a mention's participation points at (MentionParticipation).
-func (r Recording) Root() (string, string) {
-	return r.thread.kind, r.thread.id
-}
-
 // QueueRootLock queues, for a session's reply to a message, the lock of the root of the thread the
 // reply is written in, `for no key update` (queueRootLock): its writer queues it before the
 // reply's insert, and before any lock of a message or an attempt below the root it takes, so the
-// root is the first row of the thread the reply holds. The reply's clear deletes the root's Agent
+// root is the first row of the thread the reply holds; a reply on no issue holds the root from its
+// plan already (threadHeld), and queues nothing here. The reply's clear deletes the root's Agent
 // dismissals and then settles the root (queueAgentDismissalsClear), each of which updates the
 // root's row (agent_dismissed_at, migration 20261125053125) while the reply holds the marks it
 // deleted. Without this lock the reply would reach the root holding no more than the `for key
@@ -444,37 +455,49 @@ func (r Recording) Root() (string, string) {
 // `for no key update` could wait for a mark the reply's delete holds while the reply's settle
 // waits for the root, and Postgres would fail one of the two. Any other record queues nothing.
 func (r Recording) QueueRootLock(b *store.WriteBatch) {
-	if r.clears {
+	if r.clears && !r.rootHeld {
 		queueRootLock(b, r.thread.id)
 	}
 }
 
-// PlanRecord plans w's record in the write's read phase, in tx, under the owner lock every writer
-// of w's thread takes first: the thread (threadOf), what an answer's catch-up owes (owedBy), the
-// person an ask's create reaches where the create did not read them (waitingOn), and for a reply
-// the thread's participants and rows (readMembers), which a write that starts its own thread has
-// none of and does not read (StartsThread). It reads and takes no row lock, so it holds no
-// transaction id: each read is of rows a writer of this thread changes only under that owner lock.
-// What the dismiss route writes under the person's rows and the root's lock instead - a dismissal -
-// is read in the write phase, by the statement that ends it (Recording.Queue): the Agent
-// dismissals a session's reply ends (queueAgentDismissalsClear) and the dismissed tuples of the
-// people a reply reaches (graphstore.QueueMarksEnded).
+// PlanRecord plans w's record in the write's read phase, in tx: the thread (threadOf), what an
+// answer's catch-up owes (owedBy), the person an ask's create reaches where the create did not
+// read them (waitingOn), and for a reply the thread's participants and rows (readMembers), which a
+// write that starts its own thread has none of and does not read (StartsThread). Its caller has
+// taken before it the locks every writer of w's thread takes before it reads the thread: the
+// owner lock (store.LockOwner) and, where the thread is that of an open ask that falls through to
+// its project's default assignee, that project's owner lock shared (HoldDefault,
+// HoldProjectDefault, HoldAskDefault), which a move of the default takes exclusive before it moves
+// who takes part. A reply in a message thread on no issue, which no owner lock orders, takes its
+// thread's root `for no key update` here, in the statement that walks to it, before it reads who
+// takes part (threadHeld), and that lock gives its transaction an id. Every other plan takes no
+// row lock, and so holds no transaction id: each read is of rows a writer of this thread changes
+// only under those locks. What the dismiss route writes under the person's rows and the root's
+// lock instead - a dismissal - is read in the write phase, by the statement that ends it
+// (Recording.Queue): the Agent dismissals a session's reply ends (queueAgentDismissalsClear) and
+// the dismissed tuples of the people a reply reaches (graphstore.QueueMarksEnded).
 func PlanRecord(ctx context.Context, tx pgx.Tx, w Write) (Recording, error) {
-	// A message's reply walks to its root and reads that root's members in one statement
-	// (threadAndMembers); a write that read its members already reads none.
+	// A message's reply on an issue walks to its root and reads that root's members in one
+	// statement (threadAndMembers); one on no issue takes the root as it walks to it and reads
+	// the members in the statement after (threadHeld); a write that read its members already
+	// reads none.
 	var thread thread
 	var err error
-	members, membersRead := w.members, w.membersRead
-	if w.NodeKind == graphstore.KindMessage && w.Arm == Replies && !w.unstored && !w.root && !membersRead {
+	members, membersRead, rootHeld := w.members, w.membersRead, false
+	switch {
+	case w.NodeKind == graphstore.KindMessage && w.Arm == Replies && !w.unstored && !w.root && !membersRead && w.IssueKey == nil:
+		thread, err = threadHeld(ctx, tx, w)
+		rootHeld = true
+	case w.NodeKind == graphstore.KindMessage && w.Arm == Replies && !w.unstored && !w.root && !membersRead:
 		thread, members, err = threadAndMembers(ctx, tx, w)
 		membersRead = true
-	} else {
+	default:
 		thread, err = threadOf(ctx, tx, w)
 	}
 	if err != nil {
 		return Recording{}, err
 	}
-	r := Recording{w: w, thread: thread}
+	r := Recording{w: w, thread: thread, rootHeld: rootHeld}
 	r.authorKind, r.authorID, r.named = storeAuthor(w.Author)
 	if r.named && r.authorKind == graphstore.KindPerson {
 		r.person = r.authorID
@@ -647,6 +670,12 @@ func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 		if err := queueKeepRow(b, thread, w, login, event); err != nil {
 			return err
 		}
+	}
+
+	// 6. Each person the text newly mentions takes part in T, once every row of T this write
+	// takes is held.
+	if w.Arm == Replies {
+		graphstore.QueueToPerson(b, mentionParticipation(thread.kind, thread.id, w.mentioned, w.Who, w.At, event))
 	}
 	return nil
 }

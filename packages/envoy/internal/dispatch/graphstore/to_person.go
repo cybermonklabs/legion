@@ -50,10 +50,10 @@ var ErrPersonTupleOutsideToPerson = errors.New("a delivered_to, mentions or part
 //
 // A thing reserved for its author reaches no person but that author: a tuple whose other end is
 // a node the store holds at VisibilityAuthor is refused with ErrReservedForAuthor, naming the
-// node and its visibility, unless the person is who made that node (AuthorOf of its made_by), and
-// nothing of the call is appended. A node the store holds no row for is visible, as the read's own
-// predicate has it (refs.VisibleKind). An end past the store's address bound is no tuple, and the
-// rest of the call is appended.
+// node and its visibility, unless the person is the author that node's made_by proved (the one
+// rule, AuthorIsPerson), and nothing of the call is appended. A node the store holds no row for is
+// visible, as the read's own predicate has it (refs.VisibleKind). An end past the store's address
+// bound is no tuple, and the rest of the call is appended.
 //
 // It is QueueToPerson run at once, as a batch of its own, for a writer with no write phase. Its
 // error is the batch's: a refusal, a statement that fails, or a tuple QueueToPerson cannot take.
@@ -118,7 +118,7 @@ func QueueToPerson(b *store.WriteBatch, tuples []Tuple) {
 				if !held {
 					continue
 				}
-				if kind, id, named := AuthorOf(author); named && kind == KindPerson && id == reach.person {
+				if AuthorIsPerson(author, reach.person) {
 					continue
 				}
 				return reservedRefusal(stated[index], reach.person, reach.end)
@@ -184,13 +184,13 @@ graph_relations_appended as (
 
 // ReservedForAuthorRead is a read over rows, a common-table expression of the caller's statement
 // answering ToPersonRows, of the first tuple ToPerson would refuse (ErrReservedForAuthor): one
-// whose other end is a node the store holds at VisibilityAuthor and whose person is not who made
-// that node (AuthorOf of its made_by, user_threads_login in SQL). It answers (kind, from_kind,
-// from_id, to_kind, to_id, person), no row where none would be refused, for the caller's
-// callback to refuse with RefuseReservedForAuthor; the caller makes it the query of the statement
-// whose arms append the same rows (ToPersonArms), written after them, so the rows are worked out
-// once: those arms run to their end whatever it answers, and a refusal ends the transaction,
-// which commits nothing of them.
+// whose other end is a node the store holds at VisibilityAuthor and whose person is not the author
+// that node's made_by proved (the one rule in SQL, AuthorIsSQL, as ToPerson asks it in Go through
+// AuthorIsPerson). It answers (kind, from_kind, from_id, to_kind, to_id, person), no row where
+// none would be refused, for the caller's callback to refuse with RefuseReservedForAuthor; the
+// caller makes it the query of the statement whose arms append the same rows (ToPersonArms),
+// written after them, so the rows are worked out once: those arms run to their end whatever it
+// answers, and a refusal ends the transaction, which commits nothing of them.
 func ReservedForAuthorRead(rows string) string {
 	return `
 		select stated.kind, stated.from_kind, stated.from_id, stated.to_kind, stated.to_id, person.login
@@ -200,7 +200,7 @@ func ReservedForAuthorRead(rows string) string {
 		                           case when stated.kind = '` + TupleParticipatesIn + `' then stated.to_id else stated.from_id end as id) other
 		join graph_nodes n on n.kind = other.kind and n.id = other.id
 		where n.visibility = '` + VisibilityAuthor + `'
-		  and person.login is distinct from ` + PersonOfSQL(`n.made_by`) + `
+		  and not ` + AuthorIsSQL(`n.made_by`, `jsonb_build_object('kind', '`+authorPerson+`', 'id', person.login)`) + `
 		limit 1`
 }
 

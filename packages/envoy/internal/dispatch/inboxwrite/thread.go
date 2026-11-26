@@ -3,7 +3,6 @@ package inboxwrite
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 
@@ -29,11 +28,14 @@ const MaxThreadDepth = 64
 // takes it (coalesce(ask_id, reply_to, id)): the ask its replies_to names, else the comment its
 // replies_to names, which is the root of its thread (api's threadHeadOf stores every reply against
 // its head), else the comment itself. comments.reply_to carries no acyclicity constraint, so the
-// step is never repeated. A message's replies_to names the message it answers, and the walk climbs
-// those to the root its in_reply_to chain reaches within MaxThreadDepth steps, as
+// step is never repeated. A comment whose pointers the store does not hold (comments.tuples_stored
+// false) - an older build's, which states no tuple - takes that step by its row's ask_id and
+// reply_to, as user_threads_comment does, which is the old arm answering a row the marker test
+// passes until the backfill gives it its tuples: read by its tuples alone, such a reply would be
+// the root of its own thread. A message's replies_to names the message it answers, and the walk
+// climbs those to the root its in_reply_to chain reaches within MaxThreadDepth steps, as
 // user_threads_message walks it. A message on the way whose row names no node - an older build's,
-// which states no tuple - is climbed by its in_reply_to, which is the old arm answering a row the
-// marker test passes until the backfill gives it its tuples.
+// which states no tuple - is climbed by its in_reply_to, the same old arm.
 //
 // A write that plans its record before its own write phase has run (PlanRecord) has queued its
 // head pointer tuples and not written them, so no read finds them: it names the node they point
@@ -52,19 +54,28 @@ func threadOf(ctx context.Context, tx pgx.Tx, w Write) (thread, error) {
 		if w.parent != nil {
 			return *w.parent, nil
 		}
-		err := tx.QueryRow(ctx, `
-			select t.to_kind, t.to_id
-			from graph_tuples t
-			where t.from_kind = $1 and t.from_id = $2 and t.kind = $3 and t.to_kind = any($4::text[]) and t.asserted
-			order by t.to_kind = $5 desc, t.seq desc
-			limit 1
+		var kind, id *string
+		if err := tx.QueryRow(ctx, `
+			select coalesce(stored.to_kind, older.to_kind), coalesce(stored.to_id, older.to_id)
+			from (values (1)) as one (row)
+			left join lateral (
+				select t.to_kind, t.to_id
+				from graph_tuples t
+				where t.from_kind = $1 and t.from_id = $2 and t.kind = $3 and t.to_kind = any($4::text[]) and t.asserted
+				order by t.to_kind = $5 desc, t.seq desc
+				limit 1
+			) stored on true
+			left join lateral (
+				select case when c.ask_id is not null then $5 else $1 end as to_kind, coalesce(c.ask_id, c.reply_to)::text as to_id
+				from comments c
+				where c.id = `+store.CastableUUID(`$2`)+` and not c.tuples_stored and coalesce(c.ask_id, c.reply_to) is not null
+			) older on true
 		`, w.NodeKind, w.NodeID, graphstore.TupleRepliesTo, []string{graphstore.KindAsk, graphstore.KindComment},
-			graphstore.KindAsk).Scan(&root.kind, &root.id)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return root, nil
-		}
-		if err != nil {
+			graphstore.KindAsk).Scan(&kind, &id); err != nil {
 			return thread{}, fmt.Errorf("read the thread comment %s is written in: %w", w.NodeID, err)
+		}
+		if kind != nil && id != nil {
+			root = thread{kind: *kind, id: *id}
 		}
 		return root, nil
 	}
@@ -132,6 +143,36 @@ func threadAndMembers(ctx context.Context, tx pgx.Tx, w Write) (thread, []member
 	return root, members, nil
 }
 
+// threadHeld is threadOf of w, a reply in a message thread on no issue, with the root its walk
+// reaches (messageWalk) locked `for no key update` in the same statement (RootWalkLockStatement),
+// the level the root's own lock takes it at (queueRootLock). No owner lock orders two writers of a
+// thread on no issue, so its root does: each of them takes the root before it reads who takes
+// part (PlanRecord), and reads them in the statement after this one, whose snapshot holds every
+// write into the thread that committed before the root was granted to it.
+func threadHeld(ctx context.Context, tx pgx.Tx, w Write) (thread, error) {
+	root := thread{kind: graphstore.KindMessage, id: w.NodeID}
+	start, depth := w.NodeID, 0
+	if w.parent != nil {
+		start, depth = w.parent.id, 1
+	}
+	var locked bool
+	if err := tx.QueryRow(ctx, RootWalkLockStatement, start, graphstore.KindMessage, graphstore.TupleRepliesTo, MaxThreadDepth, depth).
+		Scan(&root.id, &locked); err != nil {
+		return thread{}, fmt.Errorf("take the root of the thread message %s is written in: %w", w.NodeID, err)
+	}
+	return root, nil
+}
+
+// RootWalkLockStatement is the statement threadHeld takes a thread's root with, as
+// pg_stat_activity shows it while the reply that sent it waits there: the walk from $1, at depth
+// $5, over the message kind $2 and the relation $3, at most $4 deep (messageWalk), and the root's
+// row `for no key update` in a subquery of its own, so the statement answers the root the walk
+// reached beside whether its row was there to lock.
+const RootWalkLockStatement = messageWalk + `,
+		root as (select id from walk order by depth desc limit 1)
+		select root.id, exists (select 1 from messages m where m.id = root.id::uuid for no key update)
+		from root`
+
 // ThreadRoot is the root of the thread the node kind/id is written in, as (kind, id), read as
 // Record reads a write's (threadOf).
 func ThreadRoot(ctx context.Context, tx pgx.Tx, kind, id string) (string, string, error) {
@@ -155,20 +196,25 @@ type member struct {
 // readMembers is step 2 of Record's plan, in one statement: every user_threads row of the thread,
 // and, beside them, the people whose participates_in and whose dismissed into the thread's root
 // stand now, each read the way CurrentIn reads a relation (CurrentTupleRead), so a retraction
-// takes a person out. It locks nothing and runs in the write's read phase, under the owner lock
-// every writer of a thread's rows and the backfill take first (store.LockOwner), so nothing that
-// moves the thread's rows, their markers or its participation moves them between this read and
-// the write phase; the rows themselves are taken `for no key update` by the write phase's first
-// statement of the step (queueThreadLock), before the deliveries this read decides are appended,
-// and the dismissals the write ends are read again where they are ended (graphstore.QueueMarksEnded),
-// since the dismiss route takes no owner lock. The read takes every row of the thread, which holds
-// the row of each person the write's catch-up delivers to (owedBy) as well as every participant's,
-// since each of those is a row of the thread. A session or nobody keys no row, and neither does a
+// takes a person out. It locks nothing and runs in the write's read phase, after the locks that
+// order every writer of the thread's rows and its participation: the owner lock every such writer
+// and the backfill take first (store.LockOwner); for the thread of an ask that falls through to its
+// project's default assignee, that project's owner lock taken shared (HoldDefault,
+// HoldProjectDefault), which a move of the default takes exclusive before it moves who takes part;
+// and for a reply in a thread on no issue, which no owner lock orders, the thread's root
+// (threadHeld). So nothing that moves the thread's rows, their markers or its participation moves
+// them between this read and the write phase; the rows themselves are taken `for no key update` by
+// the write phase's first statement of the step (queueThreadLock), before the deliveries this read
+// decides are appended, and the dismissals the write ends are read again where they are ended
+// (graphstore.QueueMarksEnded), since the dismiss route takes no owner lock. The read takes every
+// row of the thread, which holds the row of each person the write's catch-up delivers to (owedBy)
+// as well as every participant's, since each of those is a row of the thread. A session or nobody
+// keys no row, and neither does a
 // thread whose owner resolves to no project, so such a thread holds no row and still answers its
 // participants. A row's marker is read to tell a marked row from one the marker test passes, and
 // no other column of a marked row is read. A write whose read phase reads its thread already may
 // read its members in that statement instead (MembersColumn, Write.Members), and a message's
-// reply reads them with its walk (threadAndMembers).
+// reply on an issue reads them with its walk (threadAndMembers).
 func readMembers(ctx context.Context, tx pgx.Tx, thread thread) ([]member, error) {
 	var column []byte
 	if err := tx.QueryRow(ctx, `select `+membersColumn(`$1::text`, `$2::text`), thread.kind, thread.id).Scan(&column); err != nil {

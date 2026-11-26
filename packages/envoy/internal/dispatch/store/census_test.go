@@ -944,10 +944,11 @@ func TestCensusExemptsTheEventsPublishedOwedTriggerAtAnyTableSize(t *testing.T) 
 }
 
 // The shipped 20261122100123 creates the queue of the events an older build appends for the writes
-// that change no row this release marks - a move of who an ask waits on, an edit of a comment - its
-// function and its trigger after each insert into events, under a lock_timeout of its own: each
-// statement changes only the catalog or the transaction's own settings, and the trigger runs only
-// on inserts written after it, so over a database at 20261122100122 with the limit at one byte the
+// that change no row this release marks - a move of who an ask waits on, an edit of a comment or of
+// an issue message - its function and its trigger after each insert into events, under a
+// lock_timeout of its own: each statement changes only the catalog or the transaction's own
+// settings, and the trigger runs only on inserts written after it, so over a database at
+// 20261122100122 with the limit at one byte the
 // census exempts it, refuses nothing, and prints events above that limit with why the migration is
 // exempt, whatever events holds.
 func TestCensusExemptsTheEventsInboxOwedTriggerAtAnyTableSize(t *testing.T) {

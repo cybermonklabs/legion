@@ -281,12 +281,13 @@ func takesClaimantRoute(event model.Event, claimant string) bool {
 	return false
 }
 
-// recipientFilter keeps, of the sessions one route of a notifying event reaches on their own
-// topics, each one once, and none that is the event's actor. Whether a session is left to its
-// own mention of a new comment is the destination build's own rule, asked of the comment's
+// recipientFilter keeps, of the sessions one route of an event reaches on their own topics, each
+// one once, and none that is the event's actor (R3's own-event rule). Whether a session is left to
+// its own mention of a new comment is the destination build's own rule, asked of the comment's
 // attempt rows where every copy bound for a session's own topic asks it
-// (destinations.addSession, destinations.leftToMention). addAuthorRoutes and
-// addPrimaryDocumentAuthors both filter through this.
+// (destinations.addSession, destinations.leftToMention). addAuthorRoutes,
+// addPrimaryDocumentAuthors and the sessions a comment's mentions name (eventDestinations) all
+// filter through this.
 type recipientFilter struct {
 	actor model.Actor
 	seen  map[string]bool
