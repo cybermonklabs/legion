@@ -1507,6 +1507,14 @@ pr_comments_holding() {
   jq -c --arg m "$2" '(if type == "array" then . else [] end) | [.[] | select(.body | contains($m)) | {id, user: .user.login, body}]' \
     <<<"${1:-null}" 2>/dev/null || printf '[]\n'
 }
+# comment_ids_holding LISTING MARKER prints, as one JSON array, the ids of the comments of LISTING
+# (pr_comment_listing) whose body carries MARKER, and `[]` for a listing that is none: the one read
+# of A17's comments by the run's refusal marker, which its reads say and record_leak_comments
+# records for the cleanup.
+comment_ids_holding() {
+  jq -c --arg m "$2" '(if type == "array" then . else [] end) | [.[] | select((.body // "") | contains($m)) | .id]' \
+    <<<"${1:-null}" 2>/dev/null || printf '[]\n'
+}
 # pr_comments NUMBER MARKER is pr_comments_holding over the listing read from GitHub now.
 pr_comments() {
   local listing

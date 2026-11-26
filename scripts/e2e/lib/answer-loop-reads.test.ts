@@ -3262,6 +3262,32 @@ describe("GitHub", () => {
     expect(run(`leak_reason_quoted '' '${reason}'`).code).toBe(1);
   });
 
+  // The one read of A17's comments by a marker: the ids of the comments carrying it, what A17's
+  // reads say and record_leak_comments records for the cleanup. A comment A17's control places
+  // carrying the refusal marker is read; a listing that is none, or holds nothing, holds none.
+  test("comment_ids_holding reads the ids of the comments carrying a marker, and none of a listing that is none", () => {
+    const listing = "listing=$(pr_comment_listing 41)";
+    expect(read(`${listing}; comment_ids_holding "$listing" answer-loop-a17-4242-files`)).toEqual({
+      code: 0,
+      text: "[9001]",
+    });
+    expect(read(`${listing}; comment_ids_holding "$listing" answer-loop-leak-4242`)).toEqual({
+      code: 0,
+      text: "[]",
+    });
+    const placed = `placed=$(jq -c '. + [{id: 9010, body: "answer-loop-leak-4242, placed by the control of A17"}, {id: 9011, body: null}]' <<<"$(pr_comment_listing 41)")`;
+    expect(read(`${placed}; comment_ids_holding "$placed" answer-loop-leak-4242`)).toEqual({
+      code: 0,
+      text: "[9010]",
+    });
+    for (const none of ["null", "", "not json", '{"message":"Not Found"}', "[]"]) {
+      expect(read(`comment_ids_holding ${shq(none)} answer-loop-leak-4242`)).toEqual({
+        code: 0,
+        text: "[]",
+      });
+    }
+  });
+
   test("pr_comments reads the comments holding the marker, and an error body as none", () => {
     expect(read("pr_comments 41 answer-loop-a17-4242-files | jq length").text).toBe("1");
     expect(read("pr_comments 43 answer-loop-a17-4242-files | jq length").text).toBe("2");
@@ -3950,6 +3976,427 @@ a20_nothing_posted comment-100 ${control} ${replies} && echo quiet || echo poste
     });
   });
 
+  /** A daemon log line of the shape the loop writes, with the attributes a read judges. */
+  const logLine = (fields: Record<string, unknown>) =>
+    JSON.stringify({ time: "2026-11-24T12:00:00.000Z", level: "INFO", ...fields });
+  /** A comment of a thread's record as Dispatch answers it: a person's, or a session's. */
+  const threadComment = (
+    id: string,
+    session: string | null,
+    answers: string | null,
+    body: string
+  ) => ({
+    id,
+    author:
+      session === null ? { id: "user:smoke", kind: "user" } : { id: session, kind: "session" },
+    answers,
+    body,
+  });
+  /** The reply A20's control places in the tester's name under UNDER, carrying the loop's mark. */
+  const a20Placed = (id: string, under: string) =>
+    threadComment(
+      id,
+      "session-tester",
+      under,
+      "Placed by the control of A20 in the tester's name, as a reply of the loop's would stand: <!-- legion-answer:c0de424220 -->"
+    );
+
+  // A20's leg of two stopped writers: in a thread where the tester wrote and then the replaced tester,
+  // the replaced tester, the newest, answers the person's reply with tester-old-session's keys, the
+  // tester posts nothing there, and the tester's daemon takes the reply for no question naming the
+  // replaced tester as its answerer. Its control places a reply in the tester's name under the
+  // control's reply, and the read fails on it; a thread Dispatch answered no record of, or one of
+  // no replies, holds no answer.
+  describe("a20_writers_read", () => {
+    const skippedLog = join(dir, "a20-writers.log");
+    beforeAll(() => {
+      writeFileSync(
+        skippedLog,
+        `${logLine({ msg: "answers: hand-off is no question; not answered", event: "dispatch-303", session: "session-tester", because: "a reply in a comment thread that session session-tester-old answers, as the author of its newest comment before the reply" })}\n`
+      );
+    });
+    const thread = [
+      threadComment("comment-301", "session-tester", null, "I ran the rerun after the fix."),
+      threadComment("comment-302", "session-tester-old", null, "I ran the 20 runs before the fix."),
+      threadComment("comment-303", null, "comment-302", "How many of the 20 runs failed, and why?"),
+    ];
+    const answer = (session: string, body: string) =>
+      threadComment("comment-304", session, "comment-303", body);
+    const keyed =
+      "3 of the 20 runs failed, on a shared temporary directory. <!-- legion-answer:a20a20a20a20 -->";
+    const writers = (
+      name: string,
+      replies: unknown[] | null,
+      options: { log?: string; handed?: boolean } = {}
+    ) => {
+      const file = join(dir, `a20-writers-${name}.json`);
+      if (replies !== null)
+        writeFileSync(file, JSON.stringify({ comment: { id: "comment-300" }, replies }));
+      return run(`${rig("said_text")}
+${rig("a20_nothing_posted")}
+${rig("a20_writers_because")}
+${rig("a20_writers_read")}
+questions_file=${shq(liveQuestions)}
+agent[files:tester.session]=session-tester; agent[files:tester_old.session]=session-tester-old
+daemon_log=${options.log ?? shq(skippedLog)}; boot_offset=0
+dispatch_get() { cat ${shq(file)} 2>/dev/null || return 22; }
+record=${options.handed ? `$(cat ${shq(file)}); dispatch_get() { return 22; }` : ""}
+a20_writers_read comment-300 comment-303 0 "$record" && echo held || echo failed
+echo "$read_said"`).out;
+    };
+
+    test("holds when the replaced tester, the newest writer, answered with the keys and the tester posted nothing", () => {
+      const out = writers("held", [...thread, answer("session-tester-old", keyed)]);
+      expect(out).toMatch(/^held/);
+      expect(out).toContain(
+        "the replaced tester session-tester-old's answer under the person's reply comment-303 in the thread of comment-300 holds the keys"
+      );
+      expect(out).toContain(
+        "the tester's hand-offs taken for no question as the replaced tester's to answer: 1"
+      );
+      // The record A20's control read once is the one read, and no thread is fetched for it.
+      expect(
+        writers("handed", [...thread, answer("session-tester-old", keyed)], { handed: true })
+      ).toMatch(/^held/);
+    });
+
+    test("fails on the reply A20's control places in the tester's name under the person's reply", () => {
+      const out = writers("placed", [
+        ...thread,
+        answer("session-tester-old", keyed),
+        a20Placed("comment-305", "comment-303"),
+      ]);
+      expect(out).toMatch(/^failed/);
+      expect(out).toContain(
+        "the tester's reply under comment-303 in the thread of comment-300: Placed by the control of A20"
+      );
+    });
+
+    test("fails when the older writer answered, the answer lacks the keys, or no hand-off was taken for no question", () => {
+      const older = writers("older", [...thread, answer("session-tester", keyed)]);
+      expect(older).toMatch(/^failed/);
+      expect(older).toContain("comment-303 in the thread of comment-300 none");
+      expect(
+        writers("lacking", [...thread, answer("session-tester-old", "I cannot say.")])
+      ).toContain('lacks "3"');
+      const unskipped = writers("unskipped", [...thread, answer("session-tester-old", keyed)], {
+        log: "$empty_log",
+      });
+      expect(unskipped).toMatch(/^failed/);
+      expect(unskipped).toContain("as the replaced tester's to answer: 0");
+    });
+
+    test("fails on a thread Dispatch answered no record of, and on one of no replies", () => {
+      expect(writers("missing", null)).toMatch(/^failed/);
+      expect(writers("empty", [])).toMatch(/^failed/);
+    });
+  });
+
+  // A20's leg of a reply that asks nothing: in a thread the tester wrote in, the person's reply that
+  // asks nothing is taken as a question, ended with nothing posted (state dropped) and its exchange
+  // appended, and the tester posts nothing under it. Its control places a reply in the tester's
+  // name under the control's reply, and the read fails on it; a thread Dispatch answered no record
+  // of, or one that holds no comment of the tester's, shows nothing.
+  describe("a20_quiet_read", () => {
+    const needle = "(a reply that asks nothing, run 4242, A20)";
+    const droppedLog = join(dir, "a20-quiet.log");
+    const holding = join(dir, "a20-quiet-tester.jsonl");
+    const lacking = join(dir, "a20-quiet-tester-lacking.jsonl");
+    beforeAll(() => {
+      writeFileSync(
+        droppedLog,
+        `${logLine({ msg: "answers: question", question: "q-quiet", session: "session-tester", state: "received", kind: "thread_reply" })}\n${logLine({ msg: "answers: question", question: "q-quiet", session: "session-tester", state: "dropped", kind: "thread_reply" })}\n`
+      );
+      writeFileSync(
+        holding,
+        `${JSON.stringify({ type: "custom", customType: "legion-answer", data: { questionId: "q-quiet" }, content: `Thank you, that settles it; nothing more is needed from you. ${needle}` })}\n`
+      );
+      writeFileSync(
+        lacking,
+        `${JSON.stringify({ type: "message", message: { role: "user", content: "an earlier task" } })}\n`
+      );
+    });
+    const thread = [
+      threadComment("comment-311", "session-tester", null, "The rerun after the fix is done."),
+      threadComment(
+        "comment-312",
+        null,
+        "comment-311",
+        `Thank you, that settles it; nothing more is needed from you. ${needle}`
+      ),
+    ];
+    const quiet = (
+      name: string,
+      replies: unknown[] | null,
+      options: { log?: string; conversation?: string; handed?: boolean } = {}
+    ) => {
+      const file = join(dir, `a20-quiet-${name}.json`);
+      if (replies !== null)
+        writeFileSync(file, JSON.stringify({ comment: { id: "comment-310" }, replies }));
+      return run(`${rig("said_text")}
+${rig("a20_nothing_posted")}
+${rig("a20_quiet_read")}
+agent[files:tester.session]=session-tester; agent[files:tester.file]=${shq(options.conversation ?? holding)}
+daemon_log=${options.log ?? shq(droppedLog)}; boot_offset=0
+dispatch_get() { cat ${shq(file)} 2>/dev/null || return 22; }
+record=${options.handed ? `$(cat ${shq(file)}); dispatch_get() { return 22; }` : ""}
+a20_quiet_read comment-310 comment-311 comment-312 0 ${shq(needle)} "$record" && echo held || echo failed
+echo "$read_said"`).out;
+    };
+
+    test("holds when the question ended with nothing posted, its exchange in the conversation, and no reply under the person's", () => {
+      const out = quiet("held", thread);
+      expect(out).toMatch(/^held/);
+      expect(out).toContain(
+        "the thread of comment-310 holds the tester's comment comment-311: yes"
+      );
+      expect(out).toContain("the tester's questions ended with nothing posted: 1");
+      expect(quiet("handed", thread, { handed: true })).toMatch(/^held/);
+    });
+
+    test("fails on the reply A20's control places in the tester's name under the person's reply", () => {
+      const out = quiet("placed", [...thread, a20Placed("comment-313", "comment-312")]);
+      expect(out).toMatch(/^failed/);
+      expect(out).toContain(
+        "the tester's reply under comment-312 in the thread of comment-310: Placed by the control of A20"
+      );
+    });
+
+    test("fails when no question ended with nothing posted, or the conversation holds no exchange of it", () => {
+      const posted = quiet("undropped", thread, { log: "$empty_log" });
+      expect(posted).toMatch(/^failed/);
+      expect(posted).toContain("ended with nothing posted: 0");
+      expect(quiet("unappended", thread, { conversation: lacking })).toContain(
+        `its conversation holds "${needle}": no`
+      );
+    });
+
+    test("fails on a thread Dispatch answered no record of, and on one of no replies", () => {
+      const missing = quiet("missing", null);
+      expect(missing).toMatch(/^failed/);
+      expect(missing).toContain("holds the tester's comment comment-311: no");
+      expect(quiet("empty", [])).toMatch(/^failed/);
+    });
+  });
+
+  // A8's resolution and notice legs: the person's resolution of an ask of the pre-change reviewer's,
+  // and the daemon's own notice to the planner, each reached the loop, which logged it taken for no
+  // question for its reason, and no question of that session. Their control places a question line
+  // for each session in the daemon's log, and each read fails on it; a log nobody could read, or
+  // one that holds nothing, shows nothing.
+  describe("a8_quiet_read and a8_untaken_read", () => {
+    const boot = logLine({ msg: "daemon started" });
+    const skipped = (session: string, because: string) =>
+      logLine({
+        msg: "answers: hand-off is no question; not answered",
+        event: "dispatch-81",
+        session,
+        because,
+      });
+    const resolved = skipped(
+      "session-reviewer",
+      "a ask.resolved event, which asks the agent nothing"
+    );
+    const noticed = skipped("session-planner", "the daemon's own post");
+    const a8 = (name: string, lines: string[] | null, call: string, body = "") => {
+      const logFile = join(dir, `a8-read-${name}.log`);
+      if (lines !== null) writeFileSync(logFile, lines.map((line) => `${line}\n`).join(""));
+      return run(`${rig("said_text")}
+${rig("control_question")}
+${rig("control_mark")}
+${rig("place_log_line")}
+${rig("a8_untaken_read")}
+${rig("a8_quiet_read")}
+${rigVariable("a8_resolved_because")}
+${rigVariable("a8_notice_because")}
+agent[files:pre_change.session]=session-reviewer; agent[files:planner.session]=session-planner
+daemon_log=${shq(logFile)}; boot_offset=0
+${body}
+${call} && echo held || echo failed
+echo "$read_said"`).out;
+    };
+    const resolution = `a8_quiet_read pre_change "$a8_resolved_because" 0 0`;
+    const notice = `a8_quiet_read planner "$a8_notice_because" 0 0`;
+
+    test("hold when the hand-off was taken for no question for its reason and no question of the session was logged", () => {
+      const out = a8("resolved", [boot, resolved], resolution);
+      expect(out).toMatch(/^held/);
+      expect(out).toContain(
+        `taken for no question as "a ask.resolved event, which asks the agent nothing" 0 → 1; this boot's log: 2 lines; questions of the pre_change's session session-reviewer 0 → 0`
+      );
+      expect(a8("resolved-untaken", [boot, resolved], "a8_untaken_read pre_change 0")).toMatch(
+        /^held/
+      );
+      expect(a8("noticed", [boot, noticed], notice)).toMatch(/^held/);
+      expect(a8("noticed-untaken", [boot, noticed], "a8_untaken_read planner 0")).toMatch(/^held/);
+    });
+
+    test("fail on the question line A8's control places for the session, read now or over the listing read once", () => {
+      const placed = a8(
+        "resolved-placed",
+        [boot, resolved],
+        resolution,
+        "place_log_line session-reviewer A8"
+      );
+      expect(placed).toMatch(/^failed/);
+      expect(placed).toContain("questions of the pre_change's session session-reviewer 0 → 1");
+      expect(
+        a8(
+          "resolved-placed-once",
+          [boot, resolved],
+          `a8_untaken_read pre_change 0 "$(boot_listing)"`,
+          "place_log_line session-reviewer A8"
+        )
+      ).toMatch(/^failed/);
+      expect(
+        a8("noticed-placed", [boot, noticed], notice, "place_log_line session-planner A8 received")
+      ).toMatch(/^failed/);
+      expect(
+        a8(
+          "noticed-placed-once",
+          [boot, noticed],
+          `a8_untaken_read planner 0 "$(boot_listing)"`,
+          "place_log_line session-planner A8 received"
+        )
+      ).toMatch(/^failed/);
+    });
+
+    test("fail when the hand-off was taken for another reason, or for another session", () => {
+      expect(
+        a8(
+          "crossed-reason",
+          [boot, skipped("session-reviewer", "the daemon's own post")],
+          resolution
+        )
+      ).toMatch(/^failed/);
+      expect(a8("crossed-session", [boot, resolved], notice)).toMatch(/^failed/);
+    });
+
+    test("fail on a log nobody could read and on one that holds nothing, read now or handed", () => {
+      const missing = a8("missing", null, "a8_untaken_read pre_change 0");
+      expect(missing).toMatch(/^failed/);
+      expect(missing).toContain("this boot's log: no listing at all");
+      expect(a8("missing-quiet", null, resolution)).toMatch(/^failed/);
+      const empty = a8("empty", [], "a8_untaken_read pre_change 0");
+      expect(empty).toMatch(/^failed/);
+      expect(empty).toContain("this boot's log: 0 lines");
+      expect(a8("handed-none", [boot, resolved], "a8_untaken_read pre_change 0 null")).toMatch(
+        /^failed/
+      );
+      expect(a8("handed-empty", [boot, resolved], "a8_untaken_read pre_change 0 '[]'")).toMatch(
+        /^failed/
+      );
+      expect(a8("handed-none-quiet", [boot, resolved], `${resolution} null`)).toMatch(/^failed/);
+    });
+  });
+
+  // A12's legs: the fault passed on, and exactly one reply to the question on the asker's topic,
+  // the daemon's own, naming the fault in the sentence it gives it under the leg's bound and saying
+  // it passed the question on. A model's cut-off reply posted in its place, or a late one beside it,
+  // fails the leg; so does the out-of-form reply A12's control places, and an inbox nobody recorded
+  // or that holds nothing.
+  describe("a12_leg_read", () => {
+    const sentences: Record<string, string> = {
+      model_calls: "I could not answer within the bound of 1 model calls.",
+      answer_seconds: "I could not answer within the 1-second bound.",
+      length: "My answer was cut off at the 16-token output bound.",
+      malformed: "My reply was not in the form the daemon checks, so it is not posted.",
+      over_limit: "I am over the project's daily limit of $0.01 for answers.",
+    };
+    const passedLog = join(dir, "a12-passed.log");
+    beforeAll(() => {
+      writeFileSync(
+        passedLog,
+        Object.keys(sentences)
+          .map(
+            (fault) =>
+              `${logLine({ msg: "answers: question passed to the controller", question: `q-${fault}`, reason: fault })}\n`
+          )
+          .join("")
+      );
+    });
+    const reply = (message: string) =>
+      JSON.stringify({
+        at: "2026-11-24T12:00:00.000Z",
+        session: "asker-session",
+        text: `In Reply To: event-a12\nMessage:\n${message}\n\nTopic: notifications.agent.asker-session`,
+      });
+    const daemonReply = (fault: string) =>
+      reply(
+        `${sentences[fault]} I passed your question to the Legion controller.\n\n<!-- legion-answer:a12a12a12a12 -->`
+      );
+    const modelReply = reply(
+      "The module path is example.com/stage4b-fix <!-- legion-answer:a12a12a12a12 -->"
+    );
+    const leg = (name: string, fault: string, inbox: string[] | null, body = "", inboxArg = "") => {
+      const evidenceDir = join(dir, `a12-leg-${name}`);
+      mkdirSync(evidenceDir, { recursive: true });
+      if (inbox !== null)
+        writeFileSync(join(evidenceDir, "inbox.jsonl"), inbox.map((line) => `${line}\n`).join(""));
+      return run(`${rig("said_text")}
+${rig("a12_leg")}
+${rig("a12_not_posted")}
+${rig("a12_leg_read")}
+daemon_log=${shq(passedLog)}; boot_offset=0
+evidence=${shq(evidenceDir)}
+${body}
+a12_leg_read ${fault} event-a12 ${inboxArg} && echo held || echo failed
+echo "$read_said"`).out;
+    };
+
+    test("holds over the daemon's own reply alone, naming its fault, for every leg", () => {
+      for (const fault of Object.keys(sentences)) {
+        const out = leg(`alone-${fault}`, fault, [daemonReply(fault)]);
+        expect(out).toMatch(/^held/);
+        expect(out).toContain("replies to event-a12 on the asker's topic: 1 (want one)");
+      }
+      // The inbox A12's control read once is the one read.
+      expect(
+        leg(
+          "handed",
+          "length",
+          [daemonReply("length")],
+          "inbox=$(inbox_listing); evidence=$bare_evidence",
+          '"$inbox"'
+        )
+      ).toMatch(/^held/);
+      expect(run(`${rig("a12_leg")}\na12_leg length`).out.trim()).toBe(
+        "{ output_tokens: 16 }|My answer was cut off at the 16-token output bound."
+      );
+      expect(run(`${rig("a12_leg")}\na12_leg none`).code).toBe(1);
+    });
+
+    test("fails where the model's cut-off reply was posted in its place, or a late one beside it", () => {
+      const cut = leg("cut", "length", [modelReply]);
+      expect(cut).toMatch(/^failed/);
+      expect(cut).toContain(`the daemon's own reply naming the fault ("${sentences.length}"): no`);
+      const two = leg("two", "answer_seconds", [daemonReply("answer_seconds"), modelReply]);
+      expect(two).toMatch(/^failed/);
+      expect(two).toContain("replies to event-a12 on the asker's topic: 2 (want one)");
+    });
+
+    test("fails on another fault's reply, a fault not passed on, and the reply A12's control places", () => {
+      expect(leg("other", "length", [daemonReply("model_calls")])).toMatch(/^failed/);
+      const unpassed = leg("unpassed", "length", [daemonReply("length")], "daemon_log=$empty_log");
+      expect(unpassed).toMatch(/^failed/);
+      expect(unpassed).toContain("passed to the controller: no");
+      expect(
+        leg("placed", "malformed", [
+          reply(
+            "not the reply form (placed by the control of A12) <!-- legion-answer:c0de424212 -->"
+          ),
+        ])
+      ).toMatch(/^failed/);
+    });
+
+    test("fails on an inbox the run never recorded and on one that holds nothing, read now or handed", () => {
+      expect(leg("missing", "length", null)).toMatch(/^failed/);
+      expect(leg("empty", "length", [])).toMatch(/^failed/);
+      expect(leg("handed-none", "length", [daemonReply("length")], "", "null")).toMatch(/^failed/);
+      expect(leg("handed-empty", "length", [daemonReply("length")], "", "'[]'")).toMatch(/^failed/);
+    });
+  });
+
   // A21's read: the picker mention and the message to the failed role's topic, each answered by the
   // failed implementer, and nothing of the issue started across both legs.
   describe("a21_read", () => {
@@ -4073,10 +4520,12 @@ a21_nothing_posted ALX-11 ${control} && echo quiet || echo "posted: $read_said"`
   });
 
   // A21's first holder's leg: the mention of a role no session took settled queued naming no
-  // session, and its marker reached the first holder's inbox. Its control mentions another role,
-  // one the first holder did not claim, under a marker of its own, which reaches no inbox of the
-  // holder's: the leg's read fails on it. comment-111 is a mention Dispatch kept (its one delivery
-  // queued naming no session), comment-110 one it sent to a session.
+  // session, and its marker reached the first holder's inbox. Its control mentions another role of
+  // its own, which the first holder then claims, under a marker of its own: with answers removed
+  // Dispatch keeps that mention for nobody and its marker reaches no inbox of the holder's, so the
+  // leg's read fails on it, where a daemon that answered would have it kept and relayed, and the
+  // read hold. comment-111 is a mention Dispatch kept (its one delivery queued naming no session),
+  // comment-110 one it sent to a session, comment-90 one that failed and comment-80 one pending.
   describe("a21_holder_read", () => {
     const evidenceDir = join(dir, "a21-holder-evidence");
     const relay = (session: string, role: string, marker: string) =>
@@ -4113,13 +4562,56 @@ echo "$read_said"`).out;
       ).toMatch(/^held/);
     });
 
-    test("fails over its control's mention of a role the first holder did not claim, whose marker reached no inbox of it", () => {
+    // The listener's answer to the first holder's claim of the control's own role: its interest,
+    // holding the role's topic.
+    const mergerClaim = `'{"session_id":"holder-session","topics":["notifications.role.legion-alx-alx-11-merger"]}'`;
+
+    test("fails over its control's mention of the role its first holder claimed, kept for nobody and reaching no inbox of it", () => {
       const out = holder(
-        `legion-alx-alx-11-merger comment-111 answer-loop-a21-holder-control-4242-files ${claim}`
+        `legion-alx-alx-11-merger comment-90 answer-loop-a21-holder-control-4242-files ${mergerClaim}`
       );
       expect(out).toMatch(/^failed/);
-      expect(out).toContain("settled queued naming no session: yes");
+      expect(out).toContain("settled queued naming no session: no");
       expect(out).toContain("its inbox holds answer-loop-a21-holder-control-4242-files: no");
+      // As control_read_a21 hands it the mention's record and the inbox, each read once.
+      expect(
+        holder(
+          `legion-alx-alx-11-merger comment-90 answer-loop-a21-holder-control-4242-files ${mergerClaim} no "$(inbox_listing)"`
+        )
+      ).toMatch(/^failed/);
+    });
+
+    test("holds over its control's mention had Dispatch kept it and relayed its marker to the first holder that claimed its role", () => {
+      const relayed = shq(
+        `[${relay("holder-session", "merger", "answer-loop-a21-holder-control-4242-files")}]`
+      );
+      expect(
+        holder(
+          `legion-alx-alx-11-merger comment-111 answer-loop-a21-holder-control-4242-files ${mergerClaim} yes ${relayed}`
+        )
+      ).toMatch(/^held/);
+    });
+
+    test("a21_holder_holds reads the first holder's claim of the mentioned role, and a21_holder_settled a delivery no longer pending", () => {
+      const holds = (claim: string, token: string) =>
+        run(
+          `${rig("a21_holder_holds")}\nholder_session=holder-session\na21_holder_holds ${claim} ${token}`
+        ).code;
+      expect(holds(mergerClaim, "legion-alx-alx-11-merger")).toBe(0);
+      // Another role, another session, a refusal and no answer at all hold no such claim.
+      expect(holds(mergerClaim, "legion-alx-alx-11-tester")).toBe(1);
+      expect(
+        holds(
+          `'{"session_id":"other-session","topics":["notifications.role.legion-alx-alx-11-merger"]}'`,
+          "legion-alx-alx-11-merger"
+        )
+      ).toBe(1);
+      expect(holds(`'{"error":"role held"}'`, "legion-alx-alx-11-merger")).toBe(1);
+      expect(holds("''", "legion-alx-alx-11-merger")).toBe(1);
+      const settled = (id: string) =>
+        run(`${rig("a21_holder_settled")}\na21_holder_settled ${id}`).code;
+      for (const id of ["comment-111", "comment-110", "comment-90"]) expect(settled(id)).toBe(0);
+      for (const id of ["comment-80", "comment-404", "''"]) expect(settled(id)).toBe(1);
     });
 
     test("fails when the mention did not settle queued, or names no marker", () => {
@@ -4197,18 +4689,19 @@ a22_nothing_posted ALX-22 ${controlMarker} session-tester-old && echo quiet || e
     });
   });
 
-  // A18's resume leg's part that the loop posts nothing: no reply to the question reached the
-  // asker. Its control places one on the asker's topic in reply to its own question, carrying the
-  // loop's mark, and the read fails on it. No event is no send, and shows nothing.
-  test("a18_nothing_posted fails on the reply A18's control places on the asker's topic", () => {
+  // The part of A7's forwarded leg and A18's resume leg that the loop posts nothing: no reply to the
+  // question reached the asker. Each control places one on the asker's topic in reply to its own
+  // question, carrying the loop's mark, and the read fails on it. No event is no send, and shows
+  // nothing.
+  test("nothing_posted_to fails on the reply A7's and A18's controls place on the asker's topic", () => {
     const evidenceDir = join(dir, "a18-evidence");
     mkdirSync(evidenceDir, { recursive: true });
     const nothing = (event: string) =>
-      run(`${rig("control_question")}\n${rig("control_mark")}\n${rig("a18_nothing_posted")}
+      run(`${rig("control_question")}\n${rig("control_mark")}\n${rig("nothing_posted_to")}
 evidence=${shq(evidenceDir)}
 jq -cn --arg t "In Reply To: event-a18"$'\\n'"Message:"$'\\n'"Placed by the control of A18, a reply to the question as the loop's would stand. $(control_mark A18)"$'\\n\\n'"Topic: notifications.agent.asker-session" \\
   '{at: "2026-11-24T12:00:00.000Z", session: "asker-session", text: $t}' >"$evidence/inbox.jsonl"
-a18_nothing_posted ${event} && echo quiet || echo "posted: $read_said"`).out.trim();
+nothing_posted_to ${event} && echo quiet || echo "posted: $read_said"`).out.trim();
     expect(nothing("event-never")).toBe("quiet");
     expect(nothing("event-a18")).toBe("posted: replies on the asker's topic to event-a18: 1");
     expect(nothing("''")).toBe("posted: replies on the asker's topic to (no event): 0");
@@ -4848,13 +5341,13 @@ control_read_a7`
   // carrying its mark on the asker's topic, and the row's read that nothing was posted is run over
   // the inbox read once after it.
   for (const [row, read, said] of [
-    ["A7", "a7_nothing_posted", "replies on the asker's topic to event-placed: 1"],
+    ["A7", "nothing_posted_to", "replies on the asker's topic to event-placed: 1"],
     [
       "A12",
       "a12_not_posted_read",
       "the reply to event-placed on the asker's topic: In Reply To: event-placed",
     ],
-    ["A18", "a18_nothing_posted", "replies on the asker's topic to event-placed: 1"],
+    ["A18", "nothing_posted_to", "replies on the asker's topic to event-placed: 1"],
   ]) {
     test(`control_reply_placed counts ${row}'s ${read} only over an inbox holding the placed reply`, () => {
       const placed = (name: string, inbox: string[] | null, place = placeReply) =>
@@ -4893,14 +5386,23 @@ control_reply_placed ${row} event-placed "not the reply form (placed by the cont
     });
   }
 
-  // A8 places a line of each session's in the daemon's log; its parts that say the loop answers
-  // nothing are run over the log read once after, and count only where it holds both lines.
-  test("control_read_a8 counts its log's reads only over this boot's log holding the two lines it placed", () => {
+  // A8 places a line of each leg's session in the daemon's log; its parts that say the loop answers
+  // nothing are run over the log read once after, and count only where it holds all four lines: the
+  // replaced tester's, the architect's, the pre-change reviewer's (the resolution leg) and the
+  // planner's (the notice leg, `received`, which the third leg's count of the planner's posted
+  // answers leaves out).
+  describe("control_read_a8 counts its log's reads only over this boot's log holding the four lines it placed", () => {
     const boot = `${JSON.stringify({ time: "2026-11-24T12:00:00.000Z", level: "INFO", msg: "daemon started" })}\n`;
+    const four = [
+      "place_log_line session-tester-old A8",
+      "place_log_line session-architect A8",
+      "place_log_line session-reviewer A8",
+      "place_log_line session-planner A8 received",
+    ];
     const a8 = (
       name: string,
       log: string | null,
-      place: boolean,
+      place: string[],
       inbox: string[] | null = [otherLine]
     ) => {
       const logFile = join(dir, `control-a8-${name}.log`);
@@ -4910,37 +5412,65 @@ control_reply_placed ${row} event-placed "not the reply form (placed by the cont
         `${rig("control_read_a8")}
 ${rig("a8_own_unanswered_read")}
 ${rig("a8_edit_unanswered_read")}
+${rig("a8_quiet_read")}
+${rig("a8_untaken_read")}
+${rigVariable("a8_resolved_because")}
+${rigVariable("a8_notice_because")}
 ${rig("place_log_line")}
 daemon_log=${shq(logFile)}; boot_offset=0
 fixture_evidence=$evidence
 evidence=${shq(caseEvidence(`a8-${name}`, inbox))}
 cp "$fixture_evidence/model-calls.jsonl" "$evidence/model-calls.jsonl"
 agent[files:tester_old.session]=session-tester-old; agent[files:architect.session]=session-architect; agent[files:planner.session]=session-planner
+agent[files:pre_change.session]=session-reviewer
 control[files:A8.stored]=0; control[files:A8.sent]='200 event-a8'; control[files:A8.posted]=0; control[files:A8.handed]=0
 control[files:A8.appended]=0; control[files:A8.own]=0; control[files:A8.edit]=0; control[files:A8.refused]=0
+control[files:A8.resolved_skipped]=0; control[files:A8.resolved_questions]=0; control[files:A8.notice_skipped]=0; control[files:A8.notice_questions]=0
 a8_once_read() { read_said=once; return 1; }
 a8_kill_read() { read_said=kill; return 1; }
 a8_own_delivered_read() { read_said=delivered; return 1; }
-${place ? "place_log_line session-tester-old A8\nplace_log_line session-architect A8" : ""}
+${place.join("\n")}
 control_read_a8`
       );
     };
-    const held = a8("held", boot, true);
-    expect(held).toMatch(/^A8 control PASS: /);
-    expect(held).toContain("failed: questions for the replaced tester 0 → 1, answers of it 0");
-    expect(held).toContain("failed: questions for the architect 0 → 1");
-    expect(a8("missing", null, false)).toMatch(
-      /^A8 control FAIL: .*this boot's daemon log, where [^:]*: no listing at all/
-    );
-    expect(a8("empty", "", false)).toMatch(
-      /^A8 control FAIL: .*this boot's daemon log, where [^:]*: an empty listing/
-    );
-    expect(a8("lacking", boot, false)).toMatch(
-      /^A8 control FAIL: .*: a listing of 1 entry holding no session-tester-old c0de42428, no session-architect c0de42428/
-    );
-    expect(a8("no-inbox", boot, true, null)).toMatch(
-      /^A8 control FAIL: .*the inbox, where its first two legs look for the planner's replies: no listing at all/
-    );
+    test("reads PASS where every read failed over the four placed lines", () => {
+      const held = a8("held", boot, four);
+      expect(held).toMatch(/^A8 control PASS: /);
+      expect(held).toContain("failed: questions for the replaced tester 0 → 1, answers of it 0");
+      expect(held).toContain("failed: questions for the architect 0 → 1");
+      expect(held).toContain(
+        `A8's resolution leg failed: taken for no question as "a ask.resolved event, which asks the agent nothing" 0 → 0; this boot's log: 5 lines; questions of the pre_change's session session-reviewer 0 → 1`
+      );
+      expect(held).toContain(
+        "A8's read that the loop answers no resolution failed: this boot's log: 5 lines; questions of the pre_change's session session-reviewer 0 → 1"
+      );
+      expect(held).toContain(
+        `A8's notice leg failed: taken for no question as "the daemon's own post" 0 → 0; this boot's log: 5 lines; questions of the planner's session session-planner 0 → 1`
+      );
+      expect(held).toContain(
+        "A8's read that the loop answers no notice failed: this boot's log: 5 lines; questions of the planner's session session-planner 0 → 1"
+      );
+    });
+    test("reads FAIL over a log nobody could read and over one that holds nothing", () => {
+      expect(a8("missing", null, [])).toMatch(
+        /^A8 control FAIL: .*this boot's daemon log, where [^:]*: no listing at all/
+      );
+      expect(a8("empty", "", [])).toMatch(
+        /^A8 control FAIL: .*this boot's daemon log, where [^:]*: an empty listing/
+      );
+    });
+    test("reads FAIL over a log lacking a placed line, and with no inbox", () => {
+      expect(a8("lacking", boot, [])).toMatch(
+        /^A8 control FAIL: .*: a listing of 1 entry holding no session-tester-old c0de42428, no session-architect c0de42428, no session-reviewer c0de42428, no session-planner c0de42428/
+      );
+      // The two lines the control placed before it had the resolution and notice legs are not enough.
+      expect(a8("two", boot, four.slice(0, 2))).toMatch(
+        /^A8 control FAIL: .*: a listing of 3 entries holding no session-reviewer c0de42428, no session-planner c0de42428/
+      );
+      expect(a8("no-inbox", boot, four, null)).toMatch(
+        /^A8 control FAIL: .*the inbox, where its first two legs look for the planner's replies: no listing at all/
+      );
+    });
   });
 
   // A17's leak-guard leg: the reviewer found the control reading PASS where GitHub listed nothing
@@ -5013,7 +5543,7 @@ control_read_a17`
         "A18",
         `${rig("control_read_a18")}
 ${rig("control_reply_placed")}
-${rig("a18_nothing_posted")}
+${rig("nothing_posted_to")}
 evidence=${shq(caseEvidence(`a18-${name}`, inbox))}
 asker_session=asker-session
 github_writes=()
@@ -5070,43 +5600,131 @@ control_read_a19`
     expect(a19(`printf '[]\\n'`)).toMatch(/^A19 control FAIL: .*approval: an empty listing/);
   });
 
-  test("control_read_a20 counts A20's read only over the thread holding the control's replies, and its last sentence over the placed reply", () => {
+  describe("control_read_a20 counts each of A20's reads only over its thread holding the control's replies, and each nothing-posted part over its placed reply", () => {
     const before = `jq -ce --arg p "$1" '.[$p]' "$fixtures/dispatch.json"`;
     const after = `jq -c --arg body "Placed by the control of A20 in the tester's name, as a reply of the loop's would stand: $(control_mark A20)" '.replies += [{id: "comment-106", author: {id: "session-tester", kind: "agent"}, answers: "comment-103", body: $body}]' <<<"$(${before})"`;
-    const a20 = (name: string, options: { before?: string; after?: string } = {}) =>
+    const comment = (id: string, session: string | null, answers: string | null, body: string) => ({
+      id,
+      author:
+        session === null ? { id: "user:smoke", kind: "user" } : { id: session, kind: "session" },
+      answers,
+      body,
+    });
+    // The thread of two writers, the tester's comment and then the replaced tester's, and the
+    // control's reply under the newer; and the thread of the tester's comment and the control's
+    // reply under it that asks nothing.
+    const writersRecord = {
+      comment: { id: "comment-300" },
+      replies: [
+        comment("comment-301", "session-tester", null, "I ran the rerun after the fix."),
+        comment("comment-302", "session-tester-old", null, "I ran the 20 runs before the fix."),
+        comment("comment-303", null, "comment-302", "How many of the 20 runs failed?"),
+      ],
+    };
+    const quietRecord = {
+      comment: { id: "comment-310" },
+      replies: [
+        comment("comment-311", "session-tester", null, "The rerun after the fix is done."),
+        comment("comment-312", null, "comment-311", "Thank you, that settles it."),
+      ],
+    };
+    const printed = (value: unknown) => `printf '%s\\n' ${shq(JSON.stringify(value))}`;
+    const placed = (record: unknown, id: string, under: string) =>
+      `jq -c --arg body "Placed by the control of A20 in the tester's name, as a reply of the loop's would stand: $(control_mark A20)" '.replies += [{id: "${id}", author: {id: "session-tester", kind: "session"}, answers: "${under}", body: $body}]' <<<${shq(JSON.stringify(record))}`;
+    const a20 = (
+      name: string,
+      options: {
+        before?: string;
+        after?: string;
+        writers?: string;
+        writersAfter?: string;
+        quiet?: string;
+        quietAfter?: string;
+      } = {}
+    ) =>
       verdict(
         "A20",
         `${rig("control_read_a20")}
+${rig("control_placed_a20")}
 ${rig("a20_nothing_posted")}
 agent[files:a3.comment]=comment-100; agent[files:tester.session]=session-tester; agent[files:tester.issue]=ALX-3
 control[files:A20.count]=2; control[files:A20.reply]=comment-102; control[files:A20.control]=comment-103
 control[files:A20.skipped]=0; control[files:A20.panes]=0
+control[files:A20.writers]='comment-300 comment-301 comment-302'; control[files:A20.wreply]=comment-303; control[files:A20.wskipped]=0
+control[files:A20.quiet]='comment-310 comment-311'; control[files:A20.qreply]=comment-312; control[files:A20.qdropped]=0
+control[files:A20.qneedle]='(a reply that asks nothing, run 4242, control of A20)'
 flag=${shq(placedFlag(`a20-${name}`))}
-dispatch_get() { if [ -f "$flag" ]; then ${options.after ?? after}; else ${options.before ?? before}; fi; }
-place_comment() { touch "$flag"; printf 'comment-106\\n'; }
+dispatch_get() {
+  case "$1" in
+    comments/comment-300) if [ -f "$flag.300" ]; then ${options.writersAfter ?? placed(writersRecord, "comment-305", "comment-303")}; else ${options.writers ?? printed(writersRecord)}; fi ;;
+    comments/comment-310) if [ -f "$flag.310" ]; then ${options.quietAfter ?? placed(quietRecord, "comment-313", "comment-312")}; else ${options.quiet ?? printed(quietRecord)}; fi ;;
+    *) if [ -f "$flag" ]; then ${options.after ?? after}; else ${options.before ?? before}; fi ;;
+  esac
+}
+place_comment() {
+  case "$4" in
+    comment-303) touch "$flag.300"; printf 'comment-305\\n' ;;
+    comment-312) touch "$flag.310"; printf 'comment-313\\n' ;;
+    *) touch "$flag"; printf 'comment-106\\n' ;;
+  esac
+}
 a20_read() { read_said="handed $(jq -c '[.replies[]?.id]' <<<"$7")"; return 1; }
+a20_writers_read() { read_said="handed $(jq -c '[.replies[]?.id]' <<<"$4")"; return 1; }
+a20_quiet_read() { read_said="handed $(jq -c '[.replies[]?.id]' <<<"$6")"; return 1; }
 control_read_a20`
       );
-    const held = a20("held");
-    expect(held).toMatch(/^A20 control PASS: /);
-    expect(held).toContain(
-      `A20's read failed: handed ["comment-101","comment-102","comment-103","comment-104","comment-105"]`
-    );
-    expect(held).toContain(
-      "failed: the tester's reply under comment-103 in the thread of comment-100: Placed by the control of A20"
-    );
-    expect(a20("gone", { before: "return 22" })).toMatch(
-      /^A20 control FAIL: .*the thread of comment-100, where its read looks for the tester's replies: no listing at all/
-    );
-    expect(a20("lacking", { before: `printf '{"replies":[{"id":"comment-101"}]}\\n'` })).toMatch(
-      /^A20 control FAIL: .*: a listing of 1 entry holding no comment-102, no comment-103/
-    );
-    expect(a20("gone-after", { after: "return 22" })).toMatch(
-      /^A20 control FAIL: .*the thread of comment-100 as that read is handed it: no listing at all/
-    );
-    expect(a20("lacking-after", { after: before })).toMatch(
-      /^A20 control FAIL: .*as that read is handed it: a listing of 5 entries holding no comment-106/
-    );
+    test("reads PASS where every read failed over its thread and each placed reply", () => {
+      const held = a20("held");
+      expect(held).toMatch(/^A20 control PASS: /);
+      expect(held).toContain(
+        `A20's read failed: handed ["comment-101","comment-102","comment-103","comment-104","comment-105"]`
+      );
+      expect(held).toContain(
+        "failed: the tester's reply under comment-103 in the thread of comment-100: Placed by the control of A20"
+      );
+      expect(held).toContain(
+        `A20's two writers' leg failed: handed ["comment-301","comment-302","comment-303"]`
+      );
+      expect(held).toContain(
+        "its read that the tester, the older writer, posts nothing there failed: the tester's reply under comment-303 in the thread of comment-300: Placed by the control of A20"
+      );
+      expect(held).toContain(
+        `A20's leg of a reply that asks nothing failed: handed ["comment-311","comment-312"]`
+      );
+      expect(held).toContain(
+        "its read that the tester posts nothing under a reply that asks nothing failed: the tester's reply under comment-312 in the thread of comment-310: Placed by the control of A20"
+      );
+    });
+    test("reads FAIL over A3's thread nobody could read or lacking the control's replies or the placed reply", () => {
+      expect(a20("gone", { before: "return 22" })).toMatch(
+        /^A20 control FAIL: .*the thread of comment-100, where its read looks for the tester's replies: no listing at all/
+      );
+      expect(a20("lacking", { before: `printf '{"replies":[{"id":"comment-101"}]}\\n'` })).toMatch(
+        /^A20 control FAIL: .*: a listing of 1 entry holding no comment-102, no comment-103/
+      );
+      expect(a20("gone-after", { after: "return 22" })).toMatch(
+        /^A20 control FAIL: .*the thread of comment-100 as that read is handed it: no listing at all/
+      );
+      expect(a20("lacking-after", { after: before })).toMatch(
+        /^A20 control FAIL: .*as that read is handed it: a listing of 5 entries holding no comment-106/
+      );
+    });
+    test("reads FAIL over its two last legs' threads nobody could read, holding nothing, or lacking a comment", () => {
+      expect(a20("writers-gone", { writers: "return 22" })).toMatch(
+        /^A20 control FAIL: .*the thread of comment-300, where its two writers' leg looks for the replaced tester's answer: no listing at all/
+      );
+      expect(
+        a20("writers-lacking", { writers: printed({ replies: [writersRecord.replies[0]] }) })
+      ).toMatch(
+        /^A20 control FAIL: .*: a listing of 1 entry holding no comment-302, no comment-303/
+      );
+      expect(a20("quiet-empty", { quiet: printed({ replies: [] }) })).toMatch(
+        /^A20 control FAIL: .*the thread of comment-310, where its leg of a reply that asks nothing looks for the tester's comment and its reply: an empty listing/
+      );
+      expect(a20("quiet-gone-after", { quietAfter: "return 22" })).toMatch(
+        /^A20 control FAIL: .*the thread of comment-310 as that read is handed it: no listing at all/
+      );
+    });
   });
 
   test("control_read_a21 counts its reads only over the comments holding its mentions and the placed reply, the mention's record and the inbox", () => {
@@ -5126,7 +5744,9 @@ control_read_a20`
     ]);
     const before = `printf '%s\\n' ${shq(comments)}`;
     const after = `jq -c --arg body "Placed by the control of A21 in the failed implementer's name, as a reply of the loop's would stand: $(control_mark A21)" '. + [{id: "comment-113", author: {id: "session-implementer", kind: "session"}, reply_to: "comment-111", body: $body}]' <<<"$(${before})"`;
-    const holder = `printf '%s\\n' '{"comment":{"id":"comment-112","deliveries":[{"target":"role:legion-alx-alx-11-merger","state":"queued","session_id":null,"error":null}]},"replies":[]}'`;
+    // The control's own mention of the merger role as a daemon with answers removed leaves it:
+    // kept for nobody, failed `no holder for role`.
+    const holder = `printf '%s\\n' '{"comment":{"id":"comment-112","deliveries":[{"target":"role:legion-alx-alx-11-merger","state":"failed","session_id":null,"error":"no holder for role legion-alx-alx-11-merger"}]},"replies":[]}'`;
     const a21 = (
       name: string,
       inbox: string[] | null,
@@ -5142,7 +5762,7 @@ holder_session=holder-session
 agent[files:failed_implementer.issue]=ALX-11; agent[files:failed_implementer.session]=session-implementer
 control[files:A21.comment]=comment-110; control[files:A21.control]=comment-111; control[files:A21.panes]=1; control[files:A21.role_event]=event-role
 control[files:A21.holder]=comment-112; control[files:A21.holder_marker]=answer-loop-a21-holder-control-4242-files
-control[files:A21.claim]='{"session_id":"holder-session"}'
+control[files:A21.claim]='{"session_id":"holder-session","topics":["notifications.role.legion-alx-alx-11-merger"]}'
 claim_token() { printf 'legion-alx-%s-%s\\n' "\${1,,}" "$2"; }
 flag=${shq(placedFlag(`a21-${name}`))}
 dispatch_get() {
@@ -5159,7 +5779,10 @@ control_read_a21`
     expect(held).toMatch(/^A21 control PASS: /);
     expect(held).toContain(`A21's read failed: handed ["comment-110","comment-111"]`);
     expect(held).toContain(
-      "settled queued naming no session: yes; the first holder holder-session's claim"
+      `A21's first holder's leg, over the control's mention of role:legion-alx-alx-11-merger (its delivery records [{"target":"role:legion-alx-alx-11-merger","state":"failed","session_id":null,"error":"no holder for role legion-alx-alx-11-merger"}]), a role its first holder holder-session claimed once the mention settled failed: a mention of role:legion-alx-alx-11-merger`
+    );
+    expect(held).toContain(
+      "settled queued naming no session: no; the first holder holder-session's claim"
     );
     expect(held).toContain("its inbox holds answer-loop-a21-holder-control-4242-files: no");
     expect(held).toContain(
@@ -5186,6 +5809,47 @@ control_read_a21`
     expect(a21("lacking-after", [otherLine], { after: before })).toMatch(
       /^A21 control FAIL: .*as that read is handed them: a listing of 2 entries holding no comment-113/
     );
+  });
+
+  // A21's control has its first holder claim the role its own mention names, once that mention
+  // settled, as the row's holder does: a claim of another role, or none, is no step its read can
+  // hold on, and the control's message reads as not taken.
+  test("control_send_a21 has the first holder claim the role its mention names, and counts a claim of another role as not taken", () => {
+    const send = (claim: string) =>
+      run(`${controls}
+${rig("control_send_a21")}
+${rig("a21_holder_holds")}
+${rig("a21_holder_body")}
+agent[files:failed_implementer.issue]=ALX-11; agent[files:failed_implementer.token]=legion-alx-alx-11-implementer
+holder_session=holder-session
+claim_token() { printf 'legion-alx-%s-%s\\n' "\${1,,}" "$2"; }
+pane_count() { printf '1\\n'; }
+question_text() { printf 'Where does the backoff start?\\n'; }
+control_suffix() { printf '(control of %s)\\n' "$2"; }
+control_comment() { control[files:A21.$2]=comment-$2; }
+control_ask_marked() { control[files:A21.$6]=event-role; }
+soft_wait() { shift 2; "$@"; }
+a21_holder_settled() { printf 'settled %s\\n' "$1"; }
+a21_holder_claim() { ${claim}; }
+control_send_a21
+printf 'claimed: %s\\nunsent: %s\\nwhy: %s\\n' "\${control[files:A21.claim]}" "\${control[files:A21.unsent]:-}" "\${control[files:A21.why]:-}"`)
+        .out;
+    const landed = send(
+      `printf '{"session_id":"holder-session","topics":["notifications.role.%s"]}\\n' "$1"`
+    );
+    expect(landed).toContain("settled comment-holder");
+    expect(landed).toContain(
+      'claimed: {"session_id":"holder-session","topics":["notifications.role.legion-alx-alx-11-merger"]}'
+    );
+    expect(landed).toContain("unsent: \n");
+    const other = send(
+      `printf '{"session_id":"holder-session","topics":["notifications.role.legion-alx-alx-11-tester"]}\\n'`
+    );
+    expect(other).toContain("unsent: 1");
+    expect(other).toContain(
+      "why: the first holder holder-session's claim of role:legion-alx-alx-11-merger (listener: "
+    );
+    expect(send("return 1")).toContain("unsent: 1");
   });
 
   // A22's second leg: the reviewer found the control reading PASS over a list missing the planted

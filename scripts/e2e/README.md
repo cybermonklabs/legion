@@ -1581,7 +1581,7 @@ CI does not run it.
   the listener refuses a registration that asks for none (`409 not_requested`), and no session receives from a plain NATS subscription ("Session consumers" in `packages/envoy/AGENTS.md`).
   The asker's consumer carries the answers to its questions.
   The controller stand-in holds both passes' controller roles, `legion-<project token>-controller`, since the listener stores a project's controller lane, `notifications.legion.<project token>.controller`, only for the session holding that role, so its consumer carries the notices the daemons publish there.
-  The third stand-in, A21's first holder, registers only for that row's last leg and again for A21's control, each time claiming the issue's `tester` role, which no other session of the run took, and its consumer carries what the listener kept for that role.
+  The third stand-in, A21's first holder, registers only for that row's last leg and again for A21's control, claiming the issue's `tester` role for the row and its `merger` role for the control, neither of which another session of the run took, and its consumer carries what the listener kept for that role.
   The inbox writes each envelope it is relayed as a line of `inbox.jsonl` — when it came, the session the subject was watched for, and its text as a session's deliverer renders it (`In Reply To: <event id>`, `Message:`, the payload, `Topic: …`), the same dedupe key never twice on one topic — and then answers the frame `done`, which acknowledges it to the consumer.
   A dedupe key names one envelope on one topic and not one across the run: each daemon keys its controller notices by its own outbox row, so the second pass's daemon repeats the first one's keys on its own lane, and each of those notices is recorded.
   It answers the listener's connection probe on the same subject (`Envoy-Probe: 1`) `done` too, and records nothing of it.
@@ -1717,6 +1717,8 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   the answer is written into that tester's conversation instead, once
   — one more `legion-answer` marker entry (`appended_exchanges`), holding the answer's own marker once.
   A person's edit of A1's comment, on the open root issue (a closed issue refuses every comment edit, `409 ISSUE_CLOSED`), creates no question for the architect.
+  A person's resolution of an ask opened in the pre-change reviewer's own name on its issue (`agent_ask`, `person_resolves`, kind `resolved`), and a Dispatch message to the planner on its issue in the daemon's own session, `legion-daemon:<project>`, as the daemon writes its notices (`daemon_notice`), each reach the loop:
+  the daemon logs `answers: hand-off is no question; not answered` for that session, with `because` `a ask.resolved event, which asks the agent nothing` or `the daemon's own post`, and logs no question of it (`a8_quiet_read`).
 
 - A9: two questions at once are answered in order;
   the resumed architect's first captured request holds each question once, and its conversation holds exactly one appended exchange per question
@@ -1790,7 +1792,8 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
     Each answer is waited for 360 s, the bound and a minute for the post, and the transcript notes the bound as the daemon's own state reads it back (`settings.answers.bounds.answer_seconds` of `legion state --json`), which the clause's PASS names too.
 
 - A12: the daemon restarted with each bound in turn (`model_calls: 1`, `answer_seconds: 1`, `output_tokens: 16`, a stand-in reply out of form, `daily_usd: 0.01`):
-  each ends with `answers: question passed to the controller` naming the fault and the daemon's own reply.
+  each ends with `answers: question passed to the controller` naming the fault and with exactly one reply to the question on the asker's topic, the daemon's own: it names the fault in the sentence the daemon gives it under that bound and says it passed the question to the controller (`a12_leg`, `a12_leg_read`).
+  So a cut-off or late model reply the loop posted beside that reply, or in its place, fails the leg; the `answer_seconds` leg reads a minute after the daemon's reply, since a model call that bound stopped may still end.
   Two of the five legs are answered by a stand-in reply of the proof's own, each a model step no real model gives on demand:
   the reply out of form, and the `model_calls` leg's first reply, which calls the `gh` tool, so the one model call that bound allows still called a tool and its `answers: answered` line carries `fault` `model_calls` after `calls` 1.
   A question cannot be trusted to reach that bound
@@ -1889,7 +1892,12 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   Control: a second reply the person posts at once, under their own, follows a person's comment in a thread whose root a person wrote, so it is no agent's to answer:
   the tester's daemon logs it `answers: hand-off is no question; not answered` with `because` `a reply in a comment thread whose root and newest comment before the reply no agent wrote`, and the thread holds the tester's two replies and no third.
   The two waits share one 300 s deadline, taken when both replies are posted: the control's wait has what is left of it once the answer's wait ends.
-  No later check posts a reply in that thread, or in another the tester wrote in, which the loop would answer as well.
+  Two more legs, each in a thread of its own on that closed issue, share a second 300 s deadline, taken once both their replies are posted.
+  Of two stopped writers the newest answers: under the person's comment the tester's comment and then the replaced tester's are written in each one's own name over the agents' bearer (`a20_writers_thread`, `place_comment`), as each would stand had it written there before it stopped, and the person's reply under them, mentioning nobody, asks `tester-old-session`;
+  Dispatch sends it to both writers, the replaced tester answers there with the question's keys, the tester writes nothing under it, and the tester's daemon logs it with `because` `a reply in a comment thread that session <replaced tester> answers, as the author of its newest comment before the reply` (`a20_writers_read`).
+  A reply that asks nothing gets no post: in a thread where the tester's comment follows the person's (`a20_quiet_thread`), the person's reply under it thanks the tester and asks nothing;
+  the tester's daemon takes it as a question that may ask nothing, the model says it asks nothing, and the question ends `dropped` with nothing posted and its exchange in the tester's conversation (`a20_quiet_read`).
+  No later check posts a reply in these threads, or in another the tester wrote in, which the loop would answer as well.
 
 - A21 (last of each pass): a tree of its own, with its architect (no task) and an Oh My Pi implementer whose conversation holds the answer to a question, both suspended, the implementer until its session has left the listener's registry.
   An implementer that is not suspended ends the row there: its architect is suspended and its FAIL recorded, with nothing seeded.
@@ -1947,6 +1955,10 @@ The GPT-6.1 merger's legs wait 360 s for an answer under the rig's own 300-secon
 Rows whose read is of a conversation (A9, A10, A15, A23) read only what follows the control's own question, since the conversation still holds the answers the loop gave with `answers` on.
 A control row reads PASS only when no part of the row's read held, and its detail quotes what each part said.
 A control whose message was not taken reads FAIL, since a read of nothing shows nothing.
+A control counts a read's failure only over a listing it read once and found holding what it sent or placed there (`listing_fault`, `control_seen`), and hands that listing to the read:
+a read fails as surely over a listing nobody could read, or one that holds nothing, as over the control's own message or placement.
+A missing or empty listing reads FAIL, however the read ended;
+a listing where the control's own message cannot stand (the asker's inbox, which holds replies alone, or this boot's daemon log, where a daemon with `answers` removed writes nothing of the question) must have been read and hold entries.
 
 What a row's read needs besides the message, the control does as the row does:
 
@@ -1964,6 +1976,8 @@ What a row's read needs besides the message, the control does as the row does:
   (b) The running-agent leg's read that the loop posted nothing (`a7_loop_posted_nothing`), which the row's first leg ends in, is run over row A1's thread: the architect's reply on A1's ask, which the loop posted with its mark.
   The read finds the loop's answer there and reads as failed; it makes no model call, and the control's detail says what it read.
 
+- A8's resolution and notice legs: the control opens an ask of its own in the pre-change reviewer's name, which the person resolves, and sends the planner a message of its own in the daemon's own Dispatch session, as the row does.
+
 - A12's out-of-form leg and A23's fourth search run the proxy's stand-in step the row uses, each in a window of its own after every other read, since a stand-in answers every call of the daemon's label.
   A12's four legs that a bound of `answers.bounds` makes (`model_calls`, `answer_seconds`, `length`, `over_limit`) and its `model_calls` answered line cannot be reproduced where the daemon has no `answers` block to hold the bound, so the control does not read them.
   A23's fourth search runs on the daemon's default bounds for the same reason, where the row sets `model_calls: 2`.
@@ -1972,24 +1986,29 @@ What a row's read needs besides the message, the control does as the row does:
   The control asks the reviewer for an approval and, when one was posted since, delivers it as the row delivers its own (`deliver_review`), so that the daemon's move from `reviewing` to `accepting` can hold.
 
 - A20: the control's read takes the reply count it needs, the tester's replies the thread holds before the control's own post and the one its answer would add, where the row's read wants two.
-  Its placed reply, in the tester's name under the control's reply, is placed after that read, which holds the nothing-posted part too, and the read of that part alone must then fail.
+  Its two last legs' threads are the control's own, made as the row makes them (`a20_writers_thread`, `a20_quiet_thread`), and each leg's read is run over its thread, read once, counted only where it holds the writers' comments and the control's reply.
+  Each placed reply, in the tester's name under the control's reply, is placed after that leg's read, which holds the nothing-posted part too, and the read of that part alone must then fail.
 
 - A21: the control sends what the row sends: the person's mention of the failed implementer's role, the mention of the reviewer's role that no session of the run took (its id is the one the read takes), and a message to the failed role's topic under a marker of its own.
-  For the first holder's leg it mentions the issue's `merger` role, which no session of the run took either, under a marker of its own, and the first holder registers again and claims the leg's own role, the issue's `tester`, as the leg does (`a21_holder_claim`).
-  The leg's read (`a21_holder_read`) is run over that mention, whose marker must then not reach the first holder's inbox, since the holder claimed another role.
+  For the first holder's leg it mentions the issue's `merger` role, which no session of the run took either, under a marker of its own, waits up to 60 s for that mention's one delivery to settle, as the row waits, and has the first holder register again and claim that same role (`a21_holder_claim`), as the row's first holder claims the role its mention names.
+  A claim that did not land for the first holder reads as a message not taken, since no marker could reach a holder of no role (`a21_holder_holds`).
+  The leg's read (`a21_holder_read`) is run over that mention's record and the inbox, each read once.
+  With `answers` on, Dispatch would keep the mention `queued` for the role's first holder and the listener would relay its marker to that holder, so the read could hold;
+  with `answers` removed the mention settles `failed` (`no holder for role …`), kept for nobody, and the marker reaches no inbox of the holder, so the read must fail, and the control's detail quotes the mention's delivery records.
 
 - A22's and A23's configuration legs read this daemon's own boot line and `legion config check` line, read once for the pass, with the row's own absent and off lines, which the row kept.
 
 For a part of a row that says the loop posts nothing, the control places, where the row looks, a post carrying the loop's mark (`<!-- legion-answer:c0de<tag><n> -->`, `control_mark`), and that part's own read must then fail too.
 Each post is placed after the row's main read, which holds that part too, but for A8's, which go in with the control's messages:
 
-- A7's forwarded question, A12's reply out of form and A18's resume leg get a reply on the asker's topic in reply to the control's own question (`place_inbox_reply`), which `a7_nothing_posted`, `a12_not_posted_read` and `a18_nothing_posted` read.
-  A18's control waits until the inbox holds its reply before that read.
+- A7's forwarded question, A12's reply out of form and A18's resume leg get a reply on the asker's topic in reply to the control's own question (`place_inbox_reply`), which `nothing_posted_to` (A7's and A18's) and `a12_not_posted_read` read.
+  Each of the three controls, A7's and A12's as A18's, waits up to 60 s until the inbox holds its placed reply before that read (`control_reply_placed`).
 
-- A20's last sentence gets a reply in the tester's own name under the control's reply in A3's thread (`a20_nothing_posted`), and A21's read a reply in the failed implementer's name under the control's mention of the reviewer's role (`a21_nothing_posted`), each written in that session's own name over the agents' bearer (`place_comment`).
+- A20's last sentence and its two last legs each get a reply in the tester's own name under the control's reply in that leg's thread (`a20_nothing_posted`, `control_placed_a20`), and A21's read a reply in the failed implementer's name under the control's mention of the reviewer's role (`a21_nothing_posted`), each written in that session's own name over the agents' bearer (`place_comment`).
 
 - A22's second leg gets, on its target issue, the comment the planner's dispatch tool would post, in the planner's name with the control's marker and the tool's mark (`<!-- legion-answer:c0de<tag>22.1 -->`), and under it a reply in the name of the replaced tester, the session the row's comment mentions (`a22_nothing_posted`).
-  The placed comment mentions nobody, since a mention would hand the replaced tester's daemon a message, whose hand-offs A8's control counts.
+  The placed comment mentions nobody, since the read is of its replies alone.
+  A8's control, which counts the replaced tester's hand-offs, reads before this placement, and with `answers` removed the listener hands nothing off.
 
 - A6's second leg gets an `agent-decision` notice of the control's reply on the controller stand-in's topic, sent in the asker's name and waited for until the inbox holds it (`place_controller_notice`), which `a6_nothing_posted` reads.
 
@@ -1997,9 +2016,10 @@ Each post is placed after the row's main read, which holds that part too, but fo
   it is recorded so that the run's cleanup deletes it, and the control waits until GitHub's listing holds it.
   The leg's part that no comment carries that marker (`refused_marker_absent`, read alone as `a17_nothing_written`, apart from the first leg's comment that `refused_write_absent` reads it beside) must then fail.
 
-- A8's read of the parts that say the loop answers nothing, its own answer and an edit, is the daemon's log, so its control appends a JSON line to that log, an `answers: question` line naming the replaced tester's session and one naming the architect's, each with the marker and `placed_by` saying the control placed it and no daemon wrote it (`place_log_line`), and the control row's detail says so.
+- A8's read of the parts that say the loop answers nothing, its own answer, an edit, a resolution and a notice, is the daemon's log, so its control appends a JSON line to that log for each leg's session, an `answers: question` line naming the replaced tester's session, the architect's, the pre-change reviewer's and the planner's, each with the marker and `placed_by` saying the control placed it and no daemon wrote it (`place_log_line`), and the control row's detail says so.
+  The planner's line is `received`, the first line a question the loop took is logged with, since A8's third leg counts the planner's posted answers apart.
+  The resolution and notice legs' reads run whole over that log (`a8_quiet_read`), and their part that the loop answers nothing runs alone too (`a8_untaken_read`).
 
-A21's first holder's leg, whose read says a kept message reaches the role's first holder, is read over the control's mention of a role the first holder did not claim (above).
 The asker's inbox is started again on A13's restarted NATS, since the controls read it.
 A run narrowed past A13 (`LEGION_E2E_ANSWER_LOOP_ONLY` without A13) runs no control row.
 
