@@ -38,7 +38,7 @@ func proofSeeds() []seed {
 	add(o+"fatal-unprompted-report-over-hold", waiting+"fatalReport error :failed :kept")
 	cs = append(cs, seed{o + "resumable-root-exits-over-hold", Start(PhIdle, true), waiting + "exit error :H4 :kept"})
 	add("TestIndepPauseEdges/late-stop-after-busy-unconfirmed", ack+"wait "+next+"busy1 probe open row :H2 ok :H4 :served")
-	add("TestIndepPauseEdges/prompted-fatal-error", waiting+"fatal :failed :unread")
+	add("TestIndepPauseEdges/prompted-fatal-error", waiting+"fatal :failed :kept")
 	for _, group := range []string{"TestIndepPauseRestart/", "TestIndepCompareRestartOutcome/"} {
 		for _, a := range []struct{ n, p, x string }{{"provider", waiting, "error"}, {"no-turn", waiting, "no"}, {"waited-out", ack + "wait start open row end ", "no"}, {"late", waiting, "late"}, {"replayed", held + "end detach late reconnect ", "replay"}} {
 			add(group+a.n, a.p+a.x+"!1.1 :pending :noStop boot row :kept bound :H4 :owed")
@@ -64,7 +64,7 @@ func proofSeeds() []seed {
 				add("F2/turnEnded/"+by+id, base+hold+by+" end :H2 ok :served :H4")
 			}
 			add("F3/queue"+id, base+hold+"end new :kept error :unread")
-			add("F4/unpromptedTurnEnded"+id, base+hold+"end fatalReport :failed :unread")
+			add("F4/unpromptedTurnEnded"+id, base+hold+"end fatalReport :failed :kept")
 		}
 	}
 	return cs

@@ -234,10 +234,15 @@ type History struct {
 	Recovering uint8 // bit per logical task, from boot until an authoritative decision
 	// Turned is a bit per request whose attempt a turn start confirmed the
 	// logical task through. The replacement oracle reads it, not Task.Conf.
-	Turned       [3]uint8
-	Need         [3]uint8 // independent pre-runtime launch snapshots
-	FatalPending bool     // fatal evidence received, until the failure commits (M6)
-	Bad          uint16
+	Turned        [3]uint8
+	Need          [3]uint8 // independent pre-runtime launch snapshots
+	FatalPending  bool     // fatal evidence received, until the failure commits (M6)
+	FatalOpen     bool     // driver's receipt ledger: this source had an open attempt
+	FatalReceived uint8    // driver's receipt ledger, never a transition's conclusion
+	FatalClosed   uint8    // receipt sequence the committed failure closed
+	FatalL        uint8    // logical task the received fatal named
+	FatalID       uint8    // delivery identity it named; fatal failure never takes it back
+	Bad           uint16
 }
 type State struct {
 	M, S                                        Row
@@ -249,6 +254,7 @@ type State struct {
 	Prepared, Sending                           uint8 // slot+1; zero means none
 	Deferred                                    Event // M8: one unconsumed input, then backpressure
 	Booted                                      bool  // Check the immediate state rebuilt by restart
+	IgnoreHoldTimer                             bool  // test-only scheduler plant
 }
 
 // Start is a reachable ready, launching or working claim with a live process.
@@ -285,6 +291,17 @@ func (s State) armed() uint16 {
 	if t == 0 {
 		t = r.TurnBy
 	}
+	if r.Hold.By != 0 && !s.StopRetry && !s.IgnoreHoldTimer {
+		t = earlier(t, r.Hold.due())
+	}
+	return t
+}
+
+// recordedDeadline is the driver's direct reading of every timer the model
+// recorded. Unlike armed it cannot be changed by a scheduler-selection plant.
+func (s State) recordedDeadline() uint16 {
+	r := s.M
+	t := earlier(r.RecoverBy, r.TurnBy)
 	if r.Hold.By != 0 && !s.StopRetry {
 		t = earlier(t, r.Hold.due())
 	}

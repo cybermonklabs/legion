@@ -38,9 +38,10 @@ func (x *Effects) add(a Action, w Write, k uint8) { x.List[x.N] = Effect{a, w, k
 type decision struct {
 	State
 	Effects
-	input                                         Event
-	crash, keepEnded                              bool
-	wakeBreaksRecovery, dropFatal, skipFatalApply bool
+	input                                                                                                Event
+	crash, keepEnded                                                                                     bool
+	wakeBreaksRecovery, dropFatal, skipFatalApply, queueDropsCredit, intentDropsPause, forceFatalFailure bool
+	badFatalClose                                                                                        bool
 	// Test variants substitute one door; nil is the specified one. store sees
 	// the deciding state and one write; load sees the row a restart reads;
 	// the booleans are the named plant defects.
@@ -73,6 +74,20 @@ func (d *decision) write(w Write, r Row, cause Event) bool {
 	d.P = Pending{Kind: w, Want: r, Cause: cause}
 	return d.flush()
 }
+func fatalCause(e Event) bool {
+	return e.K == KReport && e.A == RpFatal || e.K == KResult && e.A == AFatal
+}
+
+// closeFatal records the close at the durable commit, not on the reply. A
+// crash after that commit cannot make the recovery fence mistake it for an
+// ordinary recovery mutation.
+func (d *decision) closeFatal(p Pending) {
+	if d.H.FatalPending && p.Kind == EvidenceWrite && p.Want.Phase == PhFailed && fatalCause(p.Cause) {
+		d.H.FatalClosed = d.H.FatalReceived
+		d.H.FatalPending = false
+	}
+}
+
 func (d *decision) flush() bool {
 	p := d.P
 	if p.Uncertain {
@@ -107,6 +122,7 @@ func (d *decision) flush() bool {
 	// The oracles read the history as it stood before this commit.
 	d.H.Bad |= checkCommit(d.State, prev, p)
 	d.observeCommit(prev, p)
+	d.closeFatal(p)
 	if d.fault(CrashAfterCommit) {
 		d.crash = true
 		return false
@@ -142,6 +158,9 @@ func (d *decision) install() {
 		d.StopRetry = false
 	}
 	if d.M.Phase == PhFailed {
+		// A read-back installs a failure an earlier step committed. Its close
+		// was recorded at that commit; a receipt that arrived since is settled
+		// by that failure and closes nothing (the read-back commits nothing).
 		d.W.Fatal = Event{}
 		d.W.FatalStuck = false
 		d.H.FatalPending = false
@@ -152,6 +171,12 @@ func (d *decision) install() {
 // the send decision. A negative answer cannot license a retry of another root.
 func (d *decision) observeCommit(prev Row, p Pending) {
 	r := d.S
+	// The driver's ledger records a credit only once the turn-start write
+	// commits. A failed transition cannot manufacture a credit for its oracle.
+	if p.Kind == ClaimWrite && (p.Cause.K == KTurnStart || p.Cause.K == KNamedStart) &&
+		p.Cause.R < NA && r.Task.L != 0 && r.Task.Conf != 0 {
+		d.H.Turned[r.Task.L] |= 1 << p.Cause.R
+	}
 	l := prev.Task.L
 	if l == 0 {
 		return
@@ -211,6 +236,7 @@ const (
 	FatalReceipt  // fatal evidence taken from the shim was lost before failure committed
 	Settled       // drain, repair or an armed timer left work no own step can make
 	AttemptBound  // an open attempt waits without its own turn or answer bound
+	FatalClose    // committed fatal failure did not preserve its required outcome
 )
 
 // creditedOpen is whether an attempt the oracle saw a turn credited through
@@ -220,6 +246,24 @@ func creditedOpen(r Row, turned uint8) bool {
 	for k, a := range r.Att {
 		if a.open() && a.Stage != AtLost && turned&(1<<k) != 0 {
 			return true
+		}
+	}
+	return false
+}
+
+// creditPromptOpen is the driver's turn-credit ledger applied to the shim's
+// prompt roots. A loss of the alias that reported the turn does not erase that
+// credit while another alias of the forwarded prompt is still open.
+func creditPromptOpen(s State, l uint8) bool {
+	for k := uint8(0); k < NA; k++ {
+		if s.H.Turned[l]&(1<<k) == 0 {
+			continue
+		}
+		root := s.W.Requests[k].Root
+		for j, a := range s.M.Att {
+			if j != int(k) && a.open() && a.L == l && s.W.Requests[j].Written && s.W.Requests[j].Root == root {
+				return true
+			}
 		}
 	}
 	return false
@@ -246,7 +290,9 @@ func bootMemoryBad(s State) bool {
 }
 
 func recoveryMutation(before, after State, fx Effects) bool {
-	if before.M.RecoverBy == 0 || !before.W.Proc || before.M.Task.L == 0 {
+	// Recovery is open in the committed row. Memory lags it only behind a
+	// lost reply, and the step that committed that write was judged then.
+	if before.S.RecoverBy == 0 || !before.W.Proc || before.S.Task.L == 0 {
 		return false
 	}
 	for _, f := range fx.List[:fx.N] {
@@ -257,33 +303,68 @@ func recoveryMutation(before, after State, fx Effects) bool {
 	if !after.W.Proc {
 		return true
 	}
-	for k, a := range before.M.Att {
-		if a.open() && (after.M.Att[k].Stage == AtInvalid ||
-			after.P.Kind != 0 && after.P.Want.Att[k].Stage == AtInvalid) {
+	for k, a := range before.S.Att {
+		// The fence judges the commit that invalidates an open attempt: not a
+		// failed write's Want, and not a later read-back that installs a
+		// commit an earlier step made (that step was judged when it committed).
+		if a.open() && after.S.Att[k].Stage == AtInvalid {
 			return true
 		}
 	}
 	return false
 }
 
+// appliedInput is the event a step decides on: the driver's input, or, for a
+// drain or a backlog replay, the item the driver delivered earlier and the
+// step now consumes.
+func appliedInput(before State, e Event) Event {
+	switch e.K {
+	case KDrain:
+		if before.W.Fatal.K != 0 {
+			return before.W.Fatal
+		}
+		return before.Deferred
+	case KReplay:
+		if before.W.N != 0 {
+			return before.W.Backlog[0]
+		}
+	}
+	return e
+}
+
 // recoveryAuthorized names D10's causes: its deciding answer, its answer
 // bound, no live process, or a stop that cannot wait (which records an intent
-// or calls the runtime rather than replacing it).
-func recoveryAuthorized(before State, e Event, after State, fx Effects) bool {
-	switch e.K {
-	case KResult, KRefusal, KReplay, KTimerRecov, KDeath, KExit, KReport:
-		return true
-	case KRestart:
-		return e.A != 0 // the claim has no process after a process-ended boot
+// or calls the runtime rather than replacing it). A drain or a replay is
+// judged by the item it applies, never by its own kind.
+func recoveryAuthorized(before State, input Event, after State, fx Effects) bool {
+	if !before.W.Proc || after.M.Phase == PhEnded || after.S.Phase == PhEnded {
+		return true // D10: no live process remains
 	}
-	if before.P.Cause.K == KResult || before.P.Cause.K == KRefusal {
-		return true // a repair is applying the recovery answer it accepted
+	e := appliedInput(before, input)
+	switch e.K {
+	case KResult, KRefusal:
+		return true // D10: the restored prompt's deciding answer
+	case KTimerRecov:
+		return true // D10: the answer bound
+	case KDeath, KExit:
+		return true // D10: the process ended
+	case KRestart:
+		return e.A != 0 // D10: process-ended restart
+	}
+	if before.P.Cause.K == KResult || before.P.Cause.K == KRefusal || before.P.Cause.K == KTimerRecov || before.P.Cause.K == KDeath || before.P.Cause.K == KExit {
+		return true // a repair is installing one of those three D10 causes
 	}
 	if after.M.Intent.By != 0 || after.P.Kind == IntentWrite && after.P.Want.Intent.By != 0 {
-		return true
+		return true // D10: a stop that cannot wait is durably recorded
 	}
 	for _, f := range fx.List[:fx.N] {
 		if f.Action == RuntimeStop {
+			return true // D10: that non-waitable stop reached the runtime
+		}
+		if f.Action == Commit && f.Write == IntentWrite {
+			// D10: this step committed a stop that cannot wait, which took
+			// the restored task back, even if a later decision in the same
+			// step (a StartedBy release) then cleared the intent.
 			return true
 		}
 	}
@@ -361,7 +442,10 @@ func settleBad(s State) bool {
 		}
 		t = next
 	}
-	if !t.W.Down && t.W.Fatal.K != 0 {
+	if t.W.Down {
+		return false
+	}
+	if t.H.FatalPending || t.W.Fatal.K != 0 {
 		return true
 	}
 	if !t.W.Down && (t.P.Kind != 0 || t.StopOwed) {
@@ -371,6 +455,39 @@ func settleBad(s State) bool {
 		return true
 	}
 	return !t.W.Down && t.M.Hold.By != 0 && !t.StopRetry && t.M.Hold.due() != 0 && t.M.Hold.due() <= t.Now
+}
+
+// fatalClose is the receipt-ledger classifier. The normal close and a bad
+// close both decide recovery before the recovery fence observes its delta.
+func fatalClose(before, after State) bool {
+	return after.H.FatalClosed > before.H.FatalClosed && after.H.FatalOpen && after.H.FatalL != 0
+}
+
+// fatalCloseBad checks a classified close's result. Its task and pause-stop
+// checks read the close step's delta: an older committed pause stop is not a
+// violation of this close.
+func fatalCloseBad(before, after State, fx Effects) bool {
+	if !fatalClose(before, after) {
+		return false
+	}
+	l, id := after.H.FatalL, after.H.FatalID
+	if after.S.Phase != PhFailed || after.S.RecoverBy != 0 {
+		return true
+	}
+	if after.S.Task.L != l || after.S.Task.ID != id || after.S.Task.Conf != 0 || after.S.Ret[l] != 0 {
+		return true
+	}
+	for pause, stops := range after.S.Stops {
+		if stops != before.S.Stops[pause] {
+			return true
+		}
+	}
+	for _, f := range fx.List[:fx.N] {
+		if f.Action == RuntimeReplace || f.Action == Send || f.Action == Forward {
+			return true
+		}
+	}
+	return false
 }
 
 func checkServed(r Row, h History) uint16 {
@@ -443,8 +560,15 @@ func checkCommit(s State, prev Row, p Pending) uint16 {
 // due states inside a decision are checked at its return, not mid-transaction.
 func Check(s State) uint16 {
 	bad := s.H.Bad | checkServed(s.M, s.H) | checkServed(s.S, s.H)
+	if l := s.M.Task.L; l != 0 && s.M.Task.Conf == 0 &&
+		s.S.Task.L == l && s.S.Task.Conf == 0 && creditPromptOpen(s, l) {
+		bad |= I1
+	}
 	if bootMemoryBad(s) {
 		bad |= BootMemory
+	}
+	if s.S.Intent.By != 0 && s.S.Hold.Pause != 0 && s.S.Intent.Pause != s.S.Hold.Pause {
+		bad |= Ended
 	}
 	if s.H.FatalPending && s.W.Fatal.K == 0 && s.M.Phase != PhFailed && s.S.Phase != PhFailed {
 		bad |= FatalReceipt
@@ -478,7 +602,7 @@ func Check(s State) uint16 {
 	for id, n := range s.H.Need {
 		r := s.S
 		carried := n == 0 || r.Stops[id] == 2 ||
-			r.Intent.By != 0 && (r.Intent.Pause == uint8(id) && r.Intent.Causes != 0 || r.Intent.Causes&n == n) ||
+			r.Intent.By != 0 && r.Intent.Causes&n == n ||
 			r.Phase == PhSusp && r.LastStop.Pause != uint8(id) && r.LastStop.Causes&n == n ||
 			r.Phase == PhEnded || r.Phase == PhFailed || r.Intent.By == 0 && r.live() && (s.W.Proc || r.Phase == PhLaunch)
 		if !carried {

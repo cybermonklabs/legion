@@ -43,7 +43,7 @@ func retire(r *Row, why, k uint8) {
 // answer to come.
 func (d *decision) queue(e Event) {
 	r := d.M
-	if r.Task.L == e.A || r.Ret[e.A] != 0 || r.Task.L != 0 && (r.RecoverBy != 0 || r.Task.Unknown || r.Task.Conf != 0 && r.waiting() || e.K == KSupersede && r.outstanding()) {
+	if r.Task.L == e.A || r.Ret[e.A] != 0 || r.Task.L != 0 && (r.RecoverBy != 0 || r.Task.Unknown || r.Task.Conf != 0 && r.waiting() || !d.queueDropsCredit && creditedOpen(r, d.H.Turned[r.Task.L]) || e.K == KSupersede && r.outstanding()) {
 		return
 	}
 	retire(&r, RReplaced, 0)
@@ -119,14 +119,13 @@ func (d *decision) turn(e Event) {
 				if a.Under != q.Under || a.L != q.L {
 					continue
 				}
-			} else if e.R == Foreign || !(a.Stage == AtAcked || a.Stage == AtReg && d.W.Requests[k].Written && a.Under == r.Task.ID && d.Sending == uint8(k+1)) {
+			} else if e.R == Foreign || e.R < NA && d.W.Requests[k].Root != e.R || !(a.Stage == AtAcked || a.Stage == AtReg && d.W.Requests[k].Written && a.Under == r.Task.ID && d.Sending == uint8(k+1)) {
 				continue
 			}
 			r.Task.Conf = 1
 			r.News = a.News
 			r.Att[k].TurnBy = 0
 			refreshTurnBy(&r)
-			d.H.Turned[r.Task.L] |= 1 << k // the oracle's own record of the credit
 			break
 		}
 		if d.Restored && r.Task.L != 0 && r.RecoverBy != 0 {
@@ -164,7 +163,7 @@ func (d *decision) outcome(e Event) {
 		// Only this prompt's turn suppresses its timer. An earlier prompt's
 		// confirmation can remain while a separately forwarded resend still
 		// waits for its own turn (M3, D6).
-		if !d.W.Requests[k].Started {
+		if d.W.Requests[k].Root == k && !d.W.Requests[k].Started {
 			r.Att[k].TurnBy = after(d.Now, 1)
 			refreshTurnBy(&r)
 		}
@@ -190,7 +189,8 @@ func (d *decision) outcome(e Event) {
 	d.write(DeliveryWrite, r, e)
 }
 func (d *decision) fail(r *Row) {
-	take(r)
+	// M6/O3: fatal failure keeps the exact task the source reported. It is
+	// neither a take-back nor a served retirement.
 	invalidate(r)
 	r.Phase, r.Work = PhFailed, WkNone
 	r.Hold = Hold{}

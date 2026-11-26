@@ -111,6 +111,7 @@ func TestPlants(t *testing.T) {
 		// High 1 of the read: a lost resend clears the confirmation that an
 		// older acknowledged prompt still holds, and a newer task replaces it.
 		{"I1-loss-unconfirms-older-prompt", I1, ack + "wait " + next + "start :confirmed", 2, func(d *decision) {
+			d.queueDropsCredit = true
 			d.store = func(s State, k Write, r Row) Row {
 				if c := s.P.Cause; k == DeliveryWrite && c.K == KOutcome && c.A == OcLost {
 					r.Task.Conf = 0
@@ -165,6 +166,36 @@ func TestPlants(t *testing.T) {
 				return r
 			}
 		}},
+		// I1 reads the credited prompt ledger, not confirmation or stage.
+		{"I1-credit-survives-lost-alias", I1, wire + "lost " + next + "start :confirmed", 1, func(d *decision) {
+			d.store = func(s State, k Write, r Row) Row {
+				if c := s.P.Cause; k == DeliveryWrite && c.K == KOutcome && c.A == OcLost {
+					r.Task.Conf = 0
+				}
+				return r
+			}
+		}},
+		// Ended compares the hold's independent pause provenance to intent.
+		{"ended-intent-loses-pause-tag", Ended, waiting + "refuses :H2", 1, func(d *decision) {
+			d.intentDropsPause = true
+		}},
+		// I3 requires every snapshot cause, not merely one non-zero cause.
+		{"I3-intent-loses-one-launch-cause", I3, waiting + "park refuses stalePlugin!5.1 :H3r", 1, func(d *decision) {
+			d.store = func(_ State, k Write, r Row) Row {
+				if k == ClaimWrite && r.Intent.By != 0 {
+					r.Intent.Causes &^= WakeLaunch
+				}
+				return r
+			}
+		}},
+		// A failure that is not a ledgered fatal item remains subject to D10.
+		{"recovery-failure-without-fatal", RecoveryFence, work + "end boot :doubt", 1, func(d *decision) {
+			d.forceFatalFailure = true
+		}},
+		// A ledgered fatal close must keep its exact task and pause-stop state.
+		{"fatal-close-takes-task-or-stops-pause", FatalClose, waiting + ":H2", 1, func(d *decision) {
+			d.badFatalClose = true
+		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			from := roots
@@ -184,13 +215,24 @@ func TestPlants(t *testing.T) {
 			t.Logf("caught %s: %s + %v", c.name, w.Origin, w.Steps)
 		})
 	}
+	t.Run("deadline-scheduler-skips-hold", func(t *testing.T) {
+		ps := replaySeed(t, seed{"deadline-scheduler-skips-hold", ready, ack + "boot open row op :op"})
+		s := ps[len(ps)-1].State
+		s.IgnoreHoldTimer = true
+		out := Explore([]Prefix{{State: s, Origin: "deadline-scheduler-skips-hold", Length: ps[len(ps)-1].Length}}, 1)
+		w, ok := out.Violations[Late]
+		if !ok {
+			t.Fatal("missed scheduler plant")
+		}
+		t.Logf("caught deadline-scheduler-skips-hold: %s + %v", w.Origin, w.Steps)
+	})
 }
 func invariantName(bit uint16) string {
 	return map[uint16]string{
 		I1: "I1", I2: "I2", I3: "I3", Twice: "told-twice",
 		Late: "deadline", Ended: "ended-pause-stop", BootMemory: "boot-memory",
 		RecoveryFence: "recovery-fence", FatalReceipt: "fatal-receipt",
-		Settled: "settle", AttemptBound: "attempt-bound",
+		Settled: "settle", AttemptBound: "attempt-bound", FatalClose: "fatal-close",
 	}[bit]
 }
 

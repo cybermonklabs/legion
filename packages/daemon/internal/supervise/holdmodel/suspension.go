@@ -85,6 +85,9 @@ func (d *decision) intend(r Row, e Event, displaced bool) {
 	}
 	i := Intent{h.By, h.Pause, reasons(r), displaced}
 	i.Causes |= r.Intent.Causes
+	if d.intentDropsPause {
+		i.Pause = 0
+	}
 	if r.unresolved() {
 		take(&r)
 	}
@@ -170,8 +173,10 @@ func (d *decision) dropEnded() bool {
 	return true
 }
 func (d *decision) endedPause(r *Row) bool {
+	// Hold provenance is independent of an intent's mutable holder tag. A
+	// takeover cannot make the pause that originally held the process vanish.
 	p := r.Hold.Pause
-	if r.Intent.By != 0 {
+	if p == 0 && r.Intent.By != 0 {
 		p = r.Intent.Pause
 	}
 	if d.keepEnded || d.StopOwed || !r.live() || p == 0 || p == d.W.Pause {
@@ -290,7 +295,11 @@ func (d *decision) restart(dead bool) {
 	}
 	if d.W.Fatal.K != 0 {
 		// Redeliver on the first decision (including KDrain). This also
-		// permits store-down and a second restart before the retry.
+		// permits store-down and a second restart before the retry. The
+		// rebuilt daemon receives the item again, with no pending write.
+		if d.H.FatalPending {
+			d.judgeReceipt()
+		}
 		return
 	}
 	r := d.M

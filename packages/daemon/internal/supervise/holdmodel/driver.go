@@ -53,7 +53,7 @@ func explore(roots []Prefix, depth int, step transition) Stats {
 				out.Sequences += n.ways
 				bad := Check(t)
 				if bad != 0 {
-					for bit := uint16(1); bit != 0 && bit <= AttemptBound; bit <<= 1 {
+					for bit := uint16(1); bit != 0 && bit <= FatalClose; bit <<= 1 {
 						if bad&bit == 0 {
 							continue
 						}

@@ -63,13 +63,16 @@ func execute(d decision) (State, Effects) {
 		d.crash = false
 		d.restart(false)
 	}
-	// The deadline oracle. Time moves only when a timer fires, to that timer's
-	// own time, so a decision that ends later than the earliest timer armed
-	// before it has passed an earlier deadline (O1, D2).
-	if a := before.armed(); a != 0 && d.Now > before.Now && d.Now > a {
+	// The deadline oracle reads each timer the driver recorded, rather than
+	// the scheduler's own selection, so a selection defect cannot hide itself.
+	if a := before.recordedDeadline(); a != 0 && d.Now > before.Now && d.Now > a {
 		d.H.Bad |= Late
 	}
-	if recoveryMutation(before, d.State, d.Effects) && !recoveryAuthorized(before, input, d.State, d.Effects) {
+	if fatalClose(before, d.State) {
+		if fatalCloseBad(before, d.State, d.Effects) {
+			d.H.Bad |= FatalClose
+		}
+	} else if recoveryMutation(before, d.State, d.Effects) && !recoveryAuthorized(before, input, d.State, d.Effects) {
 		d.H.Bad |= RecoveryFence
 	}
 	return d.State, d.Effects
@@ -92,8 +95,6 @@ func (d *decision) evict() {
 // receiveFatal records fatal evidence when the daemon receives it, before it
 // retries any pending write: its source redelivers it until the failure
 // commits (M6), across a failed write's repair and across a restart alike.
-// The receipt's exact match is retained as a normal result so a later repair
-// cannot disqualify the evidence by invalidating its attempt.
 func (d *decision) receiveFatal(e Event) {
 	r := d.M
 	if r.Phase == PhEnded || r.Phase == PhFailed {
@@ -108,13 +109,33 @@ func (d *decision) receiveFatal(e Event) {
 	default:
 		return
 	}
+	if d.H.FatalPending {
+		return // the source's replay is the same item until this one commits
+	}
 	d.H.FatalPending = true
+	d.H.FatalReceived++
+	d.judgeReceipt()
 	if d.skipFatalApply {
 		d.W.FatalStuck = true
 	}
 	if !d.dropFatal {
 		d.W.Fatal = e
 	}
+}
+
+// judgeReceipt records, in the receipt ledger, the task the received fatal
+// item names and whether it names an open attempt of that task. It does not
+// when the store has already retired the task, or when this daemon's pending
+// write retires it (served, replaced, phase or claim end): a pending write is
+// retried before the fatal item is applied, so that earlier decision closes
+// the task first. A pending take-back retires nothing, so the fatal close
+// still keeps the task. A restart rebuilds memory and drops the pending
+// write, and the source delivers the item again, so restart judges it again.
+func (d *decision) judgeReceipt() {
+	r := d.M
+	d.H.FatalL, d.H.FatalID = r.Task.L, r.Task.ID
+	retiring := d.P.Kind != 0 && r.Task.L != 0 && d.P.Want.Ret[r.Task.L] != 0
+	d.H.FatalOpen = r.Task.L != 0 && r.outstanding() && d.S.Ret[r.Task.L] == 0 && !retiring
 }
 
 // deferInput keeps the one input a failed repair left unconsumed (M8). Retries
@@ -281,9 +302,9 @@ func (d *decision) dispatch(e Event) {
 	// Unacknowledged fatal evidence decides first (M6, O3): its failure ends
 	// the hold and any intent, so nothing below can stop the claim.
 	if d.W.Fatal.K != 0 {
-		if !d.M.live() {
-			d.W.Fatal = Event{} // the claim ended or stopped first: the evidence decides nothing
-		} else if d.W.Fatal != e {
+		// A receipt may arrive while another write read back an ended or
+		// suspended row. It still takes priority until failure commits.
+		if d.W.Fatal != e {
 			d.deferInput(e)
 			e = d.W.Fatal
 		}
@@ -300,13 +321,29 @@ func (d *decision) dispatch(e Event) {
 }
 func (d *decision) row(e Event) {
 	r := d.M
+	if d.W.FatalStuck && d.H.FatalPending {
+		return
+	}
 	// Receipt made this fatal eligible. It has priority over a held or already
 	// stopped claim too: M6/O3 require its durable failure, not a pause stop.
 	if !d.W.FatalStuck && d.W.Fatal == e && (e.K == KReport && e.A == RpFatal || e.K == KResult && e.A == AFatal) {
 		// A runtime stop may have landed before its transaction did. Failure
 		// owns the claim now, so that uncommitted pause stop is cancelled.
 		d.StopOwed, d.StopRetry = false, false
+		// Receipt preceded a repair that may have taken the task back. A fatal
+		// close from an open attempt keeps the source's task, whether the
+		// receipt was the prompted result or an unprompted fatal report.
+		if d.H.FatalL != 0 {
+			r.Task.Conf = 0
+		}
+		if d.H.FatalOpen && d.H.FatalL != 0 {
+			r.Task.L, r.Task.ID = d.H.FatalL, d.H.FatalID
+		}
 		d.fail(&r)
+		if d.badFatalClose {
+			take(&r)
+			r.Stops[1] = 1
+		}
 		d.write(EvidenceWrite, r, e)
 		return
 	}
@@ -342,6 +379,11 @@ func (d *decision) row(e Event) {
 		}
 		d.answer(e)
 	case KReport:
+		if d.forceFatalFailure {
+			d.fail(&r)
+			d.write(EvidenceWrite, r, e)
+			return
+		}
 		d.report(e)
 	case KFailEffects:
 		if r.Notify {

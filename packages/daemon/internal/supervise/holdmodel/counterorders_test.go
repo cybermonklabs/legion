@@ -112,6 +112,39 @@ func xSeeds() []seed {
 	add("N9/operator-restart-bound", waiting+"op boot reconnect op :op bound :H4 :unread")
 	add("N10/bound-resend-late-success-of-first", waiting+"bound unpause resume "+next+"ok :kept :again")
 	add("FIFO/fourth-frame-evicted", ack+"wait "+next+"ack1 start1 detach end late ok1 foreign reconnect replay replay replay :served")
+	// Depth-3 witnesses of this round. W1: a fatal report's failure commits
+	// but its reply is lost; the exact fatal result that follows is settled
+	// by that failure, and its read-back is no second fatal close. W2: a
+	// deferred exit drained during recovery is D10's no-process cause.
+	cs = append(cs, seed{"read/X/W1/lost-fatal-reply-then-exact-fatal", Start(PhIdle, true), ack + "wait!2.1 repeatFatal!2.1 fatal :failed :kept"})
+	legacy := ready
+	legacy.S.Task = Task{L: 1, ID: 1, Unknown: true}
+	legacy.M = legacy.S
+	cs = append(cs, seed{"read/X/W2/deferred-exit-drained-in-recovery", legacy, "boot daemonDL!1.1 exit!1.1 drain!1.2 :pending repair :claimEnd"})
+	// W3: a fatal failure commits during recovery with its reply lost; the
+	// reconnect's read-back installs it and is no second recovery mutation.
+	// W4: a served retirement's write fails, then a fatal report arrives;
+	// the retirement is retried first, and the answered attempt is not the
+	// fatal item's open attempt (the claim fails, the task stays served).
+	limit := ready
+	limit.M.Charges = ChargeLimit - 1
+	limit.S = limit.M
+	cs = append(cs, seed{"read/X/W3/fatal-commit-read-back-in-recovery", limit, "q prepare register!4.1 fatalReport!2.1 reconnect :failed :kept"})
+	add("W4/fatal-after-failed-served-retirement", waiting+"ok!1.1 ready!1.1 fatalReport drain :failed :served")
+	// W5: in recovery doubt a stale relaunch waits; the hold's bound commits
+	// a stop that cannot wait (D10), which takes the restored task back, and
+	// a StartedBy row then releases that daemon hold, so the relaunch runs.
+	cs = append(cs, seed{"read/X/W5/stale-relaunch-after-bound-stop-in-recovery", legacy, "boot daemonDL!1.1 stale bound!1.1 st :launch :rotated"})
+	cs = append(cs, seed{"read/X/W5/stale-relaunch-after-lost-reply-bound-stop", legacy, "boot daemonDL!1.1 stale bound!2.1 st :launch :rotated"})
+	// W6, W7: a pending write that retires the task (claim end, replacement)
+	// is retried before a fatal report applies, so the report closes no open
+	// attempt and resurrects no retired task.
+	add("W6/fatal-after-failed-claim-end", "q prepare register exit!1.1 fatalReport :failed :claimEnd")
+	cs = append(cs, seed{"read/X/W7/fatal-after-failed-replacement", limit, "q prepare register deliver(T2,phase)!1.1 fatalReport :failed :second"})
+	// W8: a fatal report arrives behind a pending served retirement, and the
+	// retry crashes. The rebuilt daemon has no pending write, so the source's
+	// redelivery names the open attempt again and its failure is a fatal close.
+	add("W8/fatal-redelivered-after-crash-drops-pending-retirement", wire+"boot reconnect ok!1.1 repeatFatal!3.1 reconnect :failed :kept")
 	return cs
 }
 

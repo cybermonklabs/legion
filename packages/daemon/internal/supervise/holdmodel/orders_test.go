@@ -43,7 +43,7 @@ func orderSeeds() []seed {
 	for _, op := range []string{"bound", "death", "new"} {
 		add("fatal-write-before/"+op, waiting+"down fatal :pending "+op+" up repair :failed :kept")
 	}
-	add("duplicate-unprompted-report", waiting+"fatalReport!2.1 repeatFatal :failed :unread")
+	add("duplicate-unprompted-report", waiting+"fatalReport!2.1 repeatFatal :failed :kept")
 	add("supersede-lost", wire+"lost supersede :kept new :second")
 	for _, n := range []string{"adoption-timeout", "negotiation-failure"} {
 		add(n, "q prepare register prewire open row :H4 :unread")
