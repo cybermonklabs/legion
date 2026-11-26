@@ -639,3 +639,59 @@ func TestAFixInAFreshPodTakesItsCommitsFromItsBranch(t *testing.T) {
 		}
 	})
 }
+
+// A fix in a fresh pod goes on pushing its work to its own branch F, at the next update round's ask,
+// with the commands its texts give it. The adoption made its copy at F's head on origin, and the
+// clone holds F only as that remote bookmark, so the push has to find F tracked: jj refuses to push
+// a bookmark over a remote one it does not track, and the fix's work since the round then stays on
+// a disk the next round deletes. Here the first pod pushes F with fix.txt; a fresh pod adopts the
+// fix at F, commits fix2.txt, and pushes F with the same two commands, each held to exit 0, after
+// which F on origin holds both files.
+func TestAFixInAFreshPodPushesItsOwnBranch(t *testing.T) {
+	jj, err := exec.LookPath("jj")
+	if err != nil {
+		t.Fatalf("jj is required: %v", err)
+	}
+	const key = "ACME-42"
+	fixBranch, err := claim.BesideBranch(key, 1, "a", 1, claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := newOrigin(t, key)
+	pushes := []string{
+		`jj -R "$LEGION_WORKSPACE-fix" bookmark set ` + fixBranch + ` -r @-`,
+		`jj -R "$LEGION_WORKSPACE-fix" git push --remote origin --bookmark ` + fixBranch,
+	}
+	push := func(t *testing.T, r *copyRig) {
+		t.Helper()
+		for _, command := range pushes {
+			output, status := r.shell(r.fixDir, command)
+			t.Logf("exit %d: %s\n%s", status, command, output)
+			if status != 0 {
+				t.Fatalf("%s exited %d on this jj, want 0:\n%s", command, status, output)
+			}
+		}
+	}
+
+	first := newPodRig(t, jj, origin, key)
+	head := first.head
+	if got := first.adopt("fix", shimwire.AdoptWorkingCopy{FixFrom: head, FixBranch: fixBranch}); !got.OK || got.FixDir != first.fixDir {
+		t.Fatalf("the first pod's adoption answered %#v, want ok with fixDir %s", got, first.fixDir)
+	}
+	first.commit(first.fixDir, "fix.txt", "fix: the failure")
+	push(t, first)
+
+	second := newPodRig(t, jj, origin, key)
+	if got := second.adopt("fix", shimwire.AdoptWorkingCopy{FixFrom: head, FixBranch: fixBranch}); !got.OK || got.FixDir != second.fixDir {
+		t.Fatalf("the fresh pod's adoption answered %#v, want ok with fixDir %s", got, second.fixDir)
+	}
+	second.commit(second.fixDir, "fix2.txt", "fix: the failure, after the round")
+	push(t, second)
+	files, err := fixturegit.Isolated(t, t.TempDir()).Try(origin, "git", "ls-tree", "-r", "--name-only", "refs/heads/"+fixBranch)
+	if err != nil {
+		t.Fatalf("origin holds no %s after the fresh pod's push: %v", fixBranch, err)
+	}
+	if names := strings.Fields(files); !slices.Contains(names, "fix.txt") || !slices.Contains(names, "fix2.txt") {
+		t.Errorf("%s on origin holds %v after the fresh pod's push, want fix.txt and fix2.txt", fixBranch, names)
+	}
+}
