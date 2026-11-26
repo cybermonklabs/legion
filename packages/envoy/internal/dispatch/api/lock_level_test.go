@@ -109,13 +109,13 @@ var (
 //
 // Row locks elsewhere are untouched: doc_checkpoints is read plainly under the document lock, and
 // message_deliveries, comment_mentions, comment_deliveries and architecture_sources still use
-// `for update`. A targeted message's own row is taken `for no key update` (message_delivery.go),
-// so a reply's foreign key, which takes it `for key share`, never waits on it; a session's reply
-// takes its thread's root `for no key update` itself before its insert
-// (inboxwrite.Recording.QueueRootLock; on no issue its plan, inboxwrite.RootWalkLockStatement),
-// so where that message is the root the reply queues behind the lock as a dismissal or a restore
-// of the thread does. The viewer's own state row takes none:
-// its route serialises on the project's advisory owner lock (state.go, store.LockOwner).
+// `for update`. A targeted message's own row is taken `for no key update` (message_delivery.go), so
+// a reply's foreign key, which takes it `for key share`, never waits on it; a session's reply takes
+// its thread's root `for no key update` itself before its insert
+// (inboxwrite.Recording.QueueRootLock; on no issue its plan, inboxwrite.RootWalkLockStatement), so
+// where that message is the root the reply queues behind the lock as a dismissal or a restore of
+// the thread does. The viewer's own state row takes none: its route serialises on the project's
+// advisory owner lock (state.go, store.LockOwner).
 //
 // The match is statement-scoped and conservative, and it prints the statement rather than naming
 // a table, because which row a statement locks is a property of the whole statement. A lock

@@ -948,9 +948,8 @@ func TestCensusExemptsTheEventsPublishedOwedTriggerAtAnyTableSize(t *testing.T) 
 // an issue message - its function and its trigger after each insert into events, under a
 // lock_timeout of its own: each statement changes only the catalog or the transaction's own
 // settings, and the trigger runs only on inserts written after it, so over a database at
-// 20261122100122 with the limit at one byte the
-// census exempts it, refuses nothing, and prints events above that limit with why the migration is
-// exempt, whatever events holds.
+// 20261122100122 with the limit at one byte the census exempts it, refuses nothing, and prints
+// events above that limit with why the migration is exempt, whatever events holds.
 func TestCensusExemptsTheEventsInboxOwedTriggerAtAnyTableSize(t *testing.T) {
 	requireTriggerMigrationExempt(t, 20261122100122, 20261122100123, "20261122100123_events_inbox_owed.up.sql")
 }

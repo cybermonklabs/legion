@@ -32,25 +32,24 @@ import (
 // The tick's pass also catches up the rows of the inbox's caches that build leaves unmarked
 // (CatchUpOwedRows), so once a run of the backfill of this build's marking rule or a later one has
 // recorded its horizon (backfillRan) the read answers true too for an event that leaves such a row
-// owed (rollOwedByEvents): a person's
-// user_thread_state.updated, user_state.updated or user_agent_state.updated, which that build's
-// read marks, dismissals, clears and snoozes append naming the person, where a user_threads row or
-// a row of the five other read-state tables of that person is owed; an ask's ask.opened, ask.edited
-// or ask.answered, a comment's comment.created, comment.answered or comment.edited and a message's
-// message.created or message.answered, where that item's blocks, their links or its citations are
-// owed, an ask's or a message's row, a comment's row where the comment names its node (the pointer
-// pass and the pass past the store's bound), a message's attempts, or a comment's delivery routes
-// (comment_mentions), or, for an answer, a user_threads row of the ask's thread; and
-// a comment.delivery, a message.delivery or a message.accepted, the receipt of an attempt its
-// sender settled or its session accepted, where an attempt row of that item is owed. Its claims
-// append no event, so only a pass started for another reason reaches an attempt one moved. And
-// whatever the events are, it answers true while the queue of the events that build's outbox
-// recorded (events_published_owed) holds one: that record appends no event. So it does while the
-// queue of that build's moves of who an ask waits on and its edits of a comment or an issue
-// message (events_inbox_owed) holds one: the event it queues names no row the catch-up's other
-// passes owe;
-// and while a document that build stated the blocks of without their identity mentions waits for
-// the block identity pass (blockIdentitiesOwed): its fence write appends no event.
+// owed (rollOwedByEvents): a person's user_thread_state.updated, user_state.updated or
+// user_agent_state.updated, which that build's read marks, dismissals, clears and snoozes append
+// naming the person, where a user_threads row or a row of the five other read-state tables of that
+// person is owed; an ask's ask.opened, ask.edited or ask.answered, a comment's comment.created,
+// comment.answered or comment.edited and a message's message.created or message.answered, where
+// that item's blocks, their links or its citations are owed, an ask's or a message's row, a
+// comment's row where the comment names its node (the pointer pass and the pass past the store's
+// bound), a message's attempts, or a comment's delivery routes (comment_mentions), or, for an
+// answer, a user_threads row of the ask's thread; and a comment.delivery, a message.delivery or a
+// message.accepted, the receipt of an attempt its sender settled or its session accepted, where an
+// attempt row of that item is owed. Its claims append no event, so only a pass started for another
+// reason reaches an attempt one moved. And whatever the events are, it answers true while the queue
+// of the events that build's outbox recorded (events_published_owed) holds one: that record appends
+// no event. So it does while the queue of that build's moves of who an ask waits on and its edits
+// of a comment or an issue message (events_inbox_owed) holds one: the event it queues names no row
+// the catch-up's other passes owe; and while a document that build stated the blocks of without
+// their identity mentions waits for the block identity pass (blockIdentitiesOwed): its fence write
+// appends no event.
 //
 // The read collects the ids the events name, kind by kind, and reads only those rows and their
 // nodes, through each row's unique key and the node's, so a tick whose events name only rows that

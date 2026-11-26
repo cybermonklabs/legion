@@ -609,8 +609,7 @@ func TestTheCensusReadsAnOlderBuildsRowsOnceTheBackfillMarksThem(t *testing.T) {
 // difference; and once its node asserts a delivered_to to ses-never, which no writer of an attempt
 // states, the census of comment_deliveries reads a difference at that attempt, and that of
 // message_deliveries none. Its control is the census expecting a delivered_to only while the row is
-// taken (attemptFacts before INFRA-1152's review C15): each attempt that failed after it was taken
-// reads a difference.
+// taken (attemptFacts): each attempt that failed after it was taken reads a difference.
 func TestTheAttemptCensusReadsNoDifferenceOnceATakenAttemptFails(t *testing.T) {
 	f := newInboxCensus(t)
 	ctx := context.Background()

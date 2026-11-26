@@ -389,8 +389,8 @@ func TestTheBackfillStatesThePeopleAnOlderBuildsEditOfACommentNames(t *testing.T
 // thread, and states his participation in it under the edit's event, beside his mention under that
 // event, which explains it to the census of user_threads (mentioned_alone). That census reads no
 // difference, the queue empties, and a second run appends nothing. Its control is the pass
-// deciding on the standing mention alone (writeOlderEdit before INFRA-1152's review C8): it
-// states nothing of dave, who never takes part.
+// deciding on the standing mention alone (writeOlderEdit): it states nothing of dave, who never
+// takes part.
 func TestAPersonAnOlderBuildsEditNamesTakesPartThoughAReindexStatedTheMentionFirst(t *testing.T) {
 	writes := newAddressingWrites(t)
 	writes.createIssue(t, "CENS-1", 1, "U", alice)
@@ -502,8 +502,7 @@ func TestTheBackfillStatesThePeopleAnOlderBuildsEditOfAnIssueMessageNames(t *tes
 // tick nothing (EventsOweObjectPass) and the tick's catch-up (CatchUpOwedRows) marks nothing and
 // leaves the queue as it was. Once a horizon of this build's rule is recorded, the same edit owes
 // the tick its catch-up, which takes the event off the queue. Its control is backfillRan reading a
-// horizon of any rule (before INFRA-1152's review C11): the edit owes the tick at once, and the
-// first catch-up takes it.
+// horizon of any rule: the edit owes the tick at once, and the first catch-up takes it.
 func TestAHorizonOfTheMarkingRuleBeforeIsNoRunOfThisBuildsBackfill(t *testing.T) {
 	writes := newAddressingWrites(t)
 	writes.createIssue(t, "CENS-1", 1, "U", alice)

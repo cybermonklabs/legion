@@ -175,12 +175,11 @@ func HoldProjectDefault(ctx context.Context, tx pgx.Tx, project string) error {
 }
 
 // AskDefaultProject is SQL text over an asks row aliased a: the project whose default assignee the
-// ask waits on and a move of that default reaches (DefaultMoved) - an open ask handed to nobody,
-// on an issue nobody holds or on a project document, by the owner rule HoldDefault reads - and
-// the empty string for an ask that waits on no default. A write into the ask's thread reads it
-// under the owner lock,
-// under which none of the rows it reads moves, beside a read of the ask it makes already where it
-// has one (api's describeAsk), and hands it to HoldProjectDefault.
+// ask waits on and a move of that default reaches (DefaultMoved) - an open ask handed to nobody, on
+// an issue nobody holds or on a project document, by the owner rule HoldDefault reads - and the
+// empty string for an ask that waits on no default. A write into the ask's thread reads it under
+// the owner lock, under which none of the rows it reads moves, beside a read of the ask it makes
+// already where it has one (api's describeAsk), and hands it to HoldProjectDefault.
 const AskDefaultProject = `coalesce(case when a.state = '` + asks.StateOpen + `' and a.asked_of is null then coalesce(
 		(select i.project_key from issues i where i.key = a.issue_key and i.assignee is null),
 		(select ar.project_key from artifacts ar where ar.id = a.artifact_id and ar.issue_key is null)) end, '')`

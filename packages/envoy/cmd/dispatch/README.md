@@ -2914,7 +2914,7 @@ An ask's `block_id` is left out for the same reason it is named by the scope tri
 it keys the question map of the document the block is on (`refs.QuestionMap`) rather than the ask's own scope, so a change to it owes that document's whole scope, which re-indexes the ask with every other source of it.
 A markdown version owes its document and that document's scope, since the version declares the question blocks every `#id` in its scope resolves against, and an image's or file's version owes neither.
 An ask that gains or changes `block_id` or `block_artifact_id` is the settlement of a question block, so it owes that document's scope, and the document it left as well where its block moved.
-A write this release makes settles its own row in the write's transaction (`refs.replaceRefs`), so only a write of an earlier build is left owed.
+A write this release makes settles its own row in the write's transaction (`refs.Replacement.Queue`), so only a write of an earlier build is left owed.
 Each touches no row; each census answers `0`.
 
 Migration `20261103205042_refs_grammar_seed` owes that index to every text already stored:
@@ -2966,7 +2966,7 @@ A delete that cascades from the owner's own delete owes nothing: the owner is go
 Each holds its table's lock alone for its short transaction and touches no row; each census answers `0`.
 
 This release settles a source's row only in a transaction that indexed the source's whole text, its blocks too, after every delete that index made:
-`refs.replaceRefs` after the block index the same write made before it, an ask's parts index after its question (`refs.PlanAskParts` queued with `ItemIndexing.SettlingForms`, and the question reconciled after the parts on a write that holds the parts alone, as an answer, a resolution and the block index of an owed ask do), a gone source's re-index and `refs.ForgetDocument` after their delete, and `rebuild-refs`' orphan sweep, which deletes the edges of every gone source and then what the queue holds for every gone source, in one transaction.
+`refs.Replacement.Queue` under `SettlingForms` after the block index the same write made before it, an ask's parts index after its question (`refs.PlanAskParts` queued with `ItemIndexing.SettlingForms`, and the question reconciled after the parts on a write that holds the parts alone, as an answer, a resolution and the block index of an owed ask do), a gone source's re-index and `refs.ForgetDocument` after their delete, and `rebuild-refs`' orphan sweep, which deletes the edges of every gone source and then what the queue holds for every gone source, in one transaction.
 A write that leaves the source's blocks for later settles nothing of this queue: `rebuild-refs`' re-index of each source, and a document version with no rendering, leave the source owed until this release's own block index of it, which a process of the previous release may otherwise take and write without these forms.
 So only a delete by a build that does not settle the queue, or a write of this release that left the blocks to its block index, leaves a source owed.
 The server drains the queue itself, in a duty of its own (`docs.Service.RunRefsFormsReconciliation`, lease `refs-forms-decisions`, `packages/envoy/AGENTS.md`), so the edges of these forms in text stored before this release, or rewritten by the release before it, appear with no edit and no command run.
@@ -4194,7 +4194,8 @@ What the run reads instead is the two versions the document's own row records: `
 A document whose `store_version` is below its `version` is one another release indexed after the store stated it, and the run marks it too.
 The reconciliation's index pass over its latest version finds the store last stated the document at a version other than the latest one any release indexed, so it reads what the store still asserts of the document beside the rows and decides from the version's render: a block the store holds live that the version does not hold is stated `gone`, as a block a version drops is, and a link the store asserts that no block of the version holds is retracted (`TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill`).
 A version of the document that this release writes before the run does the same, in its own index pass.
-Neither pass retracts a block's mention of a person, an agent's session or a role: no `block_refs` row holds a party, so only the store holds the mention, and the index never retracts one (`TestThePassOverAVersionThePreviousReleaseIndexedKeepsItsBlocksIdentityMentions`).
+Neither pass retracts a block's mention of a person, an agent's session or a role for a row the release before dropped: no `block_refs` row holds a party, so only the store holds the mention, and no pass that drops a `block_refs` row retracts one (`TestThePassOverAVersionThePreviousReleaseIndexedKeepsItsBlocksIdentityMentions`).
+The block index retracts a block's mention only where the version's text of that block no longer names it, and the next index whose text names it again states it again.
 No release deletes a comment's row: no route of either deletes one, and a document is removed only while no comment points at it, so a comment leaves nothing to state `gone`.
 
 It is no repair.
@@ -5170,6 +5171,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/inbox?project=&assignee=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
+  Kept for one release, for a page or `dispatch` command of the release before: no page or command of this release calls it but the two fallbacks of a roll (Two builds at once, above), the page's read of every project's open asks (`openAsksOfTheReleaseBefore`) and `dispatch inbox`'s (`inboxReadOfTheReleaseBefore`), and the Inbox reads `GET /api/v1/me/inbox`.
   List open asks newest-first, including their issue key, title, and assignee.
   `assignee=me|unassigned|<email>` filters on the person each ask waits on — whoever it was handed to, the assignee of its issue until somebody hands it on, and the default assignee of its project while the issue holds nobody — so it keeps the asks waiting on the caller or on that person, and `unassigned` keeps the asks that chain names nobody for, which every project naming a default assignee leaves none of;
   an email nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`.
@@ -5183,7 +5185,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/me/replies?kind=&state=&limit=&offset=&cursor=&issue=|artifact=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
-  Kept for one release, for a page or `dispatch` command of the release before: no page or command of this release calls it but the two fallbacks of a roll (Two builds at once, above), and the Inbox reads `GET /api/v1/me/inbox`.
+  Kept for one release, for a page or `dispatch` command of the release before: no page or command of this release calls it but `dispatch inbox`'s fallback of a roll (`inboxReadOfTheReleaseBefore`, Two builds at once, above), and the Inbox reads `GET /api/v1/me/inbox`.
   List the caller's Inbox threads, in the state's own order, of the kinds `kind` names:
   `reply`, the default, the threads they wrote in (an ask, a comment thread, an issue message thread) where somebody else has written since they last read it, less an open ask on an open issue that waits on them, which the Inbox already lists;
   `agent`, their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or an Aside the session did not take as a turn of its live conversation) holding a reply from that session;

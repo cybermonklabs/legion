@@ -361,22 +361,19 @@ func retractCommentPointer(t *testing.T, database *store.Store, id, kind, toKind
 // and the head it answers, with no tuple of what it answers. bob then edits his reply through this
 // build to name dave: dave takes part in alice's comment, the thread's root, under the edit's
 // event, and in no thread whose root is the reply. Its control is threadOf reading the reply's
-// tuples alone (before INFRA-1152's review C16): dave takes part in the reply itself, a thread no
-// later reply to alice's comment reaches.
+// tuples alone: dave takes part in the reply itself, a thread no later reply to alice's comment
+// reaches.
 func TestAnEditOfAnOlderBuildsReplyMakesWhomItNamesTakePartInItsHeadsThread(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "OLDR", "An older reply edited", "The spec.\n")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Is the copy final?"}, "alice")
 	ctx := context.Background()
-	tx, err := database.Pool.Begin(ctx)
+	tx, err := olderBuild(t, database).Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the older build's reply: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `select set_config($1, 'off', true)`, store.StoreMarkerWriterSetting); err != nil {
-		t.Fatalf("write as the release before: %v", err)
-	}
 	var reply string
 	var at time.Time
 	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&reply, &at); err != nil {

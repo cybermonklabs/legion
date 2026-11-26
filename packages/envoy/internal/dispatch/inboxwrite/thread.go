@@ -195,10 +195,10 @@ type member struct {
 
 // readMembers is step 2 of Record's plan, in one statement: every user_threads row of the thread,
 // and, beside them, the people whose participates_in and whose dismissed into the thread's root
-// stand now, each read the way CurrentIn reads a relation (CurrentTupleRead), so a retraction
-// takes a person out. It locks nothing and runs in the write's read phase, after the locks that
-// order every writer of the thread's rows and its participation: the owner lock every such writer
-// and the backfill take first (store.LockOwner); for the thread of an ask that falls through to its
+// stand now, each read the way CurrentIn reads a relation (CurrentTupleRead), so a retraction takes
+// a person out. It locks nothing and runs in the write's read phase, after the locks that order
+// every writer of the thread's rows and its participation: the owner lock every such writer and the
+// backfill take first (store.LockOwner); for the thread of an ask that falls through to its
 // project's default assignee, that project's owner lock taken shared (HoldDefault,
 // HoldProjectDefault), which a move of the default takes exclusive before it moves who takes part;
 // and for a reply in a thread on no issue, which no owner lock orders, the thread's root
@@ -209,12 +209,11 @@ type member struct {
 // (graphstore.QueueMarksEnded), since the dismiss route takes no owner lock. The read takes every
 // row of the thread, which holds the row of each person the write's catch-up delivers to (owedBy)
 // as well as every participant's, since each of those is a row of the thread. A session or nobody
-// keys no row, and neither does a
-// thread whose owner resolves to no project, so such a thread holds no row and still answers its
-// participants. A row's marker is read to tell a marked row from one the marker test passes, and
-// no other column of a marked row is read. A write whose read phase reads its thread already may
-// read its members in that statement instead (MembersColumn, Write.Members), and a message's
-// reply on an issue reads them with its walk (threadAndMembers).
+// keys no row, and neither does a thread whose owner resolves to no project, so such a thread holds
+// no row and still answers its participants. A row's marker is read to tell a marked row from one
+// the marker test passes, and no other column of a marked row is read. A write whose read phase
+// reads its thread already may read its members in that statement instead (MembersColumn,
+// Write.Members), and a message's reply on an issue reads them with its walk (threadAndMembers).
 func readMembers(ctx context.Context, tx pgx.Tx, thread thread) ([]member, error) {
 	var column []byte
 	if err := tx.QueryRow(ctx, `select `+membersColumn(`$1::text`, `$2::text`), thread.kind, thread.id).Scan(&column); err != nil {

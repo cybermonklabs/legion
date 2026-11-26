@@ -99,9 +99,11 @@ func heldBlockParentDifferences(
 // A reading's authored_by (PlanDecisionNodes), an ask block copy's copied_from (docs'
 // claimCopies) and a block's mention of a person, an agent's session or a role (IdentityKinds,
 // blockIdentityMentions) are no link: no block_refs row projects any of them, so no pair of a
-// version writes them and no pass that drops a row retracts them. An identity mention is never
-// retracted at all (identityMentions), and a person's goes through graphstore.ToPerson alone,
-// which refuses it in any other write.
+// version writes them and no pass that drops a row retracts them. The block index retracts an
+// identity mention only where the version's text of its block no longer names it
+// (unnamedMentions), and the next index whose text names it again states it again
+// (identityMentions). A person's goes through graphstore.ToPerson alone, which refuses it in any
+// other write.
 type heldLink struct{ kind, toKind, toID string }
 
 // heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by

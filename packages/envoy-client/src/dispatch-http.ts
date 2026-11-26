@@ -1631,9 +1631,10 @@ export class DispatchClient {
    *  one-off messages they sent an agent session that it answered. The route reads the caller's
    *  own `person` scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED.
    *
-   *  It sends the GET once and throws an answer of no route as it came (`isNoRoute`), as
-   *  `readRoute` does: `dispatch inbox` has an answer of its own to a Dispatch without this route,
-   *  the two reads of the release before, which every build serves
+   *  It sends the GET through one `#send` (once, and once more only after Dispatch answers that
+   *  the token presented is not live) and throws an answer of no route as it came (`isNoRoute`),
+   *  as `readRoute` does: `dispatch inbox` has an answer of its own to a Dispatch without this
+   *  route, the two reads of the release before, which every build serves
    *  (`inboxReadOfTheReleaseBefore`), so asking again over a roll's waits would only delay it.
    *  kept for one release: dispatch-inbox-fallback
    */

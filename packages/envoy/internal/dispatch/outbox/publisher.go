@@ -1257,9 +1257,9 @@ func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lo
 	// attempt of a callback reply does. So a session the comment names and nothing else routes to
 	// is still told of it once (R5). The event's own actor is none of them (recipientFilter, R3's
 	// own-event rule): a session whose comment names itself, or a role it holds, is sent nothing.
-	mentioned := newRecipientFilter(event)
+	filter := newRecipientFilter(event)
 	for _, sessionID := range slices.Sorted(maps.Keys(d.mentions.mentioned)) {
-		if mentioned.keep(sessionID) {
+		if filter.keep(sessionID) {
 			d.addWorkingSession(sessionID, "publish mentioned session", "session:"+sessionID)
 		}
 	}

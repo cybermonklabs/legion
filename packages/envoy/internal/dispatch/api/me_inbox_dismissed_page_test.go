@@ -315,7 +315,7 @@ func TestTheDismissedStateRefusesAnOffsetItsPageCannotCountTo(t *testing.T) {
 		return query
 	}
 	for _, query := range []url.Values{
-		// The request the review named.
+		// The largest offset, under a page of one.
 		dismissed("1", math.MaxInt),
 		// One past the bound of a page of one.
 		dismissed("1", math.MaxInt-1),

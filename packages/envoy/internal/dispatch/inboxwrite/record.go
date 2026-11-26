@@ -484,11 +484,12 @@ func PlanRecord(ctx context.Context, tx pgx.Tx, w Write) (Recording, error) {
 	var thread thread
 	var err error
 	members, membersRead, rootHeld := w.members, w.membersRead, false
+	walksToRoot := w.NodeKind == graphstore.KindMessage && w.Arm == Replies && !w.unstored && !w.root && !membersRead
 	switch {
-	case w.NodeKind == graphstore.KindMessage && w.Arm == Replies && !w.unstored && !w.root && !membersRead && w.IssueKey == nil:
+	case walksToRoot && w.IssueKey == nil:
 		thread, err = threadHeld(ctx, tx, w)
 		rootHeld = true
-	case w.NodeKind == graphstore.KindMessage && w.Arm == Replies && !w.unstored && !w.root && !membersRead:
+	case walksToRoot:
 		thread, members, err = threadAndMembers(ctx, tx, w)
 		membersRead = true
 	default:

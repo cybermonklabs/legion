@@ -880,13 +880,12 @@ func CatchUpOwedRows(ctx context.Context, database *store.Store) (RollRows, erro
 // store does not state yet (the decline pass's own read, declinesOwed, and write, writeDeclines),
 // and the node of each session they name that holds none (the session pass's arm over the log,
 // eventSessions). The tick reads each event once, so each is given that write once, where a pass
-// over declines would read the log again on every tick. Until a run of the backfill of this
-// build's marking rule or a later one has recorded its horizon (backfillRan) it writes nothing:
-// every such write is the backfill's then. Its first
-// statement reads that beside whether any event in (after, through] is of a type its two reads
-// read (catchUpEventTypes), and where none is it reads nothing more, since both would answer
-// nothing: so a tick whose events hold no decline and name no session costs one statement here.
-// It answers how many declines and sessions it wrote.
+// over declines would read the log again on every tick. Until a run of the backfill of this build's
+// marking rule or a later one has recorded its horizon (backfillRan) it writes nothing: every such
+// write is the backfill's then. Its first statement reads that beside whether any event in (after,
+// through] is of a type its two reads read (catchUpEventTypes), and where none is it reads nothing
+// more, since both would answer nothing: so a tick whose events hold no decline and name no session
+// costs one statement here. It answers how many declines and sessions it wrote.
 // kept for one release: inbox-roll-catch-up
 func CatchUpEvents(ctx context.Context, tx pgx.Tx, after, through int64) (int, error) {
 	if through <= after {

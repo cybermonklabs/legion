@@ -1231,14 +1231,13 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// This reply - its own body, and the block it names - is read and planned here, before the
-	// first statement that takes a row lock, so no document work runs while the transaction
-	// holds a transaction id (INFRA-636): the plan's own last statement, a reply on no issue's
-	// lock of its thread's root, comes after every read of the body (planMessageReply). The
-	// refusal the planning earns is raised in the branch that answers with it, where it was
-	// raised; the index it finds the parent owes is
-	// written there too, under the parent's lock, which is taken below: the order
-	// refs.IndexItemIfOwed states, and the one queueReplyParentMessageLock queues for a route
-	// with a write phase.
+	// first statement that takes a row lock, so no document work runs while the transaction holds a
+	// transaction id (INFRA-636): the plan's own last statement, a reply on no issue's lock of its
+	// thread's root, comes after every read of the body (planMessageReply). The refusal the
+	// planning earns is raised in the branch that answers with it, where it was raised; the index
+	// it finds the parent owes is written there too, under the parent's lock, which is taken below:
+	// the order refs.IndexItemIfOwed states, and the one queueReplyParentMessageLock queues for a
+	// route with a write phase.
 	var plan messageReplyPlan
 	if input.Body != nil {
 		if plan, err = s.planMessageReply(r.Context(), tx, actor, message, *input.Body, input.InReplyToBlock); err != nil {

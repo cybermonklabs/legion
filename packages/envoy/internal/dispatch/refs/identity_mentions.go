@@ -187,8 +187,8 @@ func mentionsAfter(held map[Target]struct{}, stated []graphstore.Tuple) map[Targ
 // text named, which its caller holds no later text against.
 //
 // The backfill reads it for a comment or an issue message an older build wrote, and for an edit
-// of a comment it made (graphcensus' commentPointersPass, messagesPass and its pass over the queue
-// of that build's events): that build states none of these tuples and stores no row of a
+// that build made of either (graphcensus' commentPointersPass, messagesPass and its pass over the
+// queue of that build's events): that build states none of these tuples and stores no row of a
 // person's mention (TargetOf), so the item's own text is the one record of whom it names.
 func ItemIdentityMentions(kind ItemKind, itemID, visibility string, who model.Actor, at time.Time, event int64, body string, standing []Target) (identities, people []graphstore.Tuple) {
 	named := identityTargets(text.ExtractAt(body, ""))
