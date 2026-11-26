@@ -454,7 +454,8 @@ What each part is for:
   ([Envoy](/legion/dispatch/envoy/#how-slack-mentions-arrive-and-how-an-agent-replies) says how
   the mentions arrive and where the controller's reply token is stored). A channel belongs to one
   project: the loader refuses one named twice. A daemon restarted with a changed list relaunches the
-  controller, which resumes its session hearing the new list.
+  controller, which resumes its session hearing the new list, unless the session is older than
+  `controller_session_max_age_hours`, when the relaunch starts a fresh session.
 - **`projects.<KEY>.production_check`** (optional) decides whether a merge that closes one of the
   project's issues opens a
   [production check](/legion/legion/concepts/#the-production-check), and which role works it. It

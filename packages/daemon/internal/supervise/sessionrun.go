@@ -133,35 +133,45 @@ func diedEnding(beforeReady bool, cause string) string {
 // A session the claim may not clear yet — one it records and does not hold, whose role the Envoy
 // listener still names it the holder of (mayForget) — is resumed as before, and the line says why;
 // the next launch asks again.
-func (m *Machine) replaceEndedSession(ctx context.Context) {
+//
+// It answers whether the rule applied, forgotten or refused, so the launch asks the same session's
+// forget no second time for R3 (launchNow, replaceAgedSession): a refusal of R1's is a lookup under
+// the machine's lock, and its line already says the session is resumed.
+func (m *Machine) replaceEndedSession(ctx context.Context) (applied bool) {
 	run := m.claim.SessionRun
 	if m.claim.Role != claim.RoleController || m.claim.Session == "" || !run.TurnFinished || run.Ends < controllerSessionEnds {
-		return
+		return false
 	}
 	old := m.claim.Session
 	if err := m.mayForget(ctx, "the replacement of the controller's session"); err != nil {
 		m.log.Warn("supervise: the controller's session ended two launches in a row before it finished a turn, but it cannot be cleared yet, so this launch resumes it",
 			"session", old, "endings", run.Endings, "error", err)
-		return
+		return true
 	}
 	why := fmt.Sprintf("%d of its launches in a row ended before it finished a turn; the last %d: %s",
 		run.Ends, len(run.Endings), strings.Join(run.Endings, "; then "))
 	m.log.Warn(sessionReplacedLine, "session", old, "requirement", "R1", "reason", why, "endings", run.Endings)
 	m.forgetSession(why)
+	return true
 }
 
 // replaceAgedSession forgets the project controller's recorded session where its id says it began
 // more than Deps.ControllerSessionMaxAge ago, so the relaunch running it spawns a fresh agent
 // (dispatch://INFRA-2045 R3). It runs in every launch, after replaceEndedSession and after the
-// launch let the old process go (launchNow, letGo), which is what makes it a rule of relaunches
-// alone: the daemon stops no live controller for its session's age, and an old session is replaced
-// at the next relaunch the daemon makes anyway — after a death, a launch failure, a pod update or
-// displacement, a stale-plugin refresh, a turn ended past its bound, or the keeper's retry or
-// resume by rule. A launch an operator's own request raises (exempt: an operator's resume or retry,
-// the operator's spawn route, exemptWake) keeps its session, because the operator asked for that
-// session and said so. The fresh agent is told in its first prompt which session it replaces and
-// why (abandonedTask), and one Warn line names the old session, the reason and when it started
-// (R4). The old session's transcript stays in its store.
+// launch let the old process go (launchNow, letGo), and is skipped where replaceEndedSession
+// applied, which is what makes it a rule of relaunches alone: the daemon stops no live controller
+// for its session's age, and an old session is replaced at the next launch the daemon makes
+// anyway — every launch of the controller that no operator's request raised, a death's, a launch
+// failure's, a pod update's or displacement's, a stale-plugin refresh's, a turn ended past its
+// bound, the keeper's spawn, retry or resume by rule, and the boot relaunch of an unfinished launch
+// among them. A launch an operator's own request raises keeps its session, because the operator
+// asked for that session: an operator's resume (RequestResume), and a task an operator delivers to
+// a suspended controller (deliverResuming). Those are the controller's two exempt launches
+// (exemptWake; an operator's retry is refused for the controller, and the operator's spawn route
+// names an issue), and the wake gate lets every launch of the controller through by identity, so
+// for the controller exempt is read for this rule alone. The fresh agent is told in its first
+// prompt which session it replaces and why (abandonedTask), and one Warn line names the old
+// session, the reason and when it started (R4). The old session's transcript stays in its store.
 //
 // The age is the time the session id records, a UUIDv7, so it survives a daemon restart and a new
 // pod. An id of another form says nothing of its age: the session is resumed, and one Warn line,

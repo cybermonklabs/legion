@@ -7709,7 +7709,7 @@ A suspend and resume of the controller's claim (`legion claims suspend`, then `l
 - It does not lift any limit of the issue pod's guard ("What it does not do" above).
   Among them, it never ends memory that Oh My Pi holds in its own process, it never ends a process it cannot read, and it does not stop a fill faster than its margin.
   The controller's pod has no role namespaces, so a process that is not dumpable reads as the second kind of "It does not end a process it cannot read" above wherever it runs in that pod.
-  When Oh My Pi itself fills the limit, the container still ends `OOMKilled`, and the daemon relaunches the controller and resumes its session ("The claim" in [Daemon-launched controller](#daemon-launched-controller)).
+  When Oh My Pi itself fills the limit, the container still ends `OOMKilled`, and the daemon relaunches the controller and resumes its session, or starts a fresh one when the session is older than `controller_session_max_age_hours` ("The claim" in [Daemon-launched controller](#daemon-launched-controller)).
 
 ### One session load at a time in an issue pod
 
@@ -10625,7 +10625,7 @@ controller start has none to start`): one controller runs per project.
 
 **The claim.**
 The controller is one claim, `legion-<project>-controller`, on the role `controller` with no issue and no tree.
-It is supervised like any claim: a pod that dies is relaunched and resumes the same Oh My Pi session, within `launch_failure_limit`;
+It is supervised like any claim: a pod that dies is relaunched and resumes the same Oh My Pi session, within `launch_failure_limit`, unless the session is older than `controller_session_max_age_hours`, when that relaunch, as every launch of the controller that no operator's request raised, starts a fresh session;
 a daemon that restarts re-adopts the running pod and launches no second one.
 A claim whose budget ran out fails, as any claim does, and the daemon retries it with fresh budgets after a minute, doubling the wait at each retry that fails again up to thirty minutes, and resetting it once the controller is ready.
 `legion claims list` shows the claim; the workflow never sees it.
@@ -10676,7 +10676,7 @@ Karpenter never consolidates or replaces for drift the node it runs on, though i
 GKE Autopilot holds off a scale-down or node-upgrade eviction of the pod for up to seven days ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) has what it does not stop), after which Autopilot may evict it like any other pod, and it is relaunched and resumes the same session like any claim's pod that dies ("The claim", above), unless the session has finished a turn and that death is its second end in a row before another finished turn, or the session is older than `controller_session_max_age_hours`, when the relaunch starts a fresh session (`controller_turn_bound_minutes` and `controller_session_max_age_hours` above say the rest).
 Its agent is told `LEGION_CONTROLLER=1`, `LEGION_ROLE=controller`, `LEGION_PROJECT`, `LEGION_DAEMON_URL`, the Envoy, NATS and Dispatch settings, `LEGION_SLACK_CHANNELS`, the project's Slack channels comma-separated and empty for none (the runtime's, always set, and refused in `runtime.kubernetes.pod.env` and `provider_keys`, so no list but the project's reaches it;
 its plugin subscribes to each channel's mention topic while the session holds the controller role, registered with no listener, and a resume first drops every Slack topic an earlier session registered (a restored one would outlive the role), so a resume or relaunch hears the channels the launch names and no others;
-the list is one of the addresses the runtime records per generation, so a daemon restarted with another `slack_channels` re-adopts the controller as an address that moved and relaunches it, resuming its session;
+the list is one of the addresses the runtime records per generation, so a daemon restarted with another `slack_channels` re-adopts the controller as an address that moved and relaunches it, resuming its session, or starting a fresh one when the session is older than `controller_session_max_age_hours`;
 `legion controller start` drops an inherited value, and any controller but this one ignores it), the launch secrets' `<NAME>_FILE` pointers, and the six gh variables exactly as each role of an issue pod is told them (`LEGION_GH_OWNERS_DIR=/var/run/legion/gh`, `GH_CONFIG_DIR` its first owner's directory there, `LEGION_GH_PATH=/usr/local/bin/gh`, `GH_TOKEN=""`, `GITHUB_TOKEN=""`, `GH_HOST=""`) and the git credential entries every role of an issue pod is told ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), and nothing of a tree, an issue or a checkout.
 Its system prompt is the controller's role prompt, a part saying it runs headless in a pod, the daemon's `Design gate steps:` line, the project's repositories sentence, the project's `Slack channels:` line after it when `slack_channels` names any, and the deployment instructions.
 Its one container, the launcher, carries the controller's reservation

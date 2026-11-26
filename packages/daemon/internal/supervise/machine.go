@@ -3208,10 +3208,12 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 
 // launchAfter is launch, whose first try waits the backoff when charged: the launch follows a
 // launch failure charged just before it (relaunchAfterFailure). exempt is whether the request
-// that raised it is one the wake pacing never makes wait (exemptWake); every other path into a
-// launch is paced, and the gate sits here, between the lifecycle check and letGo, because a
-// launch the tree lifecycle refuses charges no budget and so takes no token either, while a
-// launch that waits its turn keeps the process it still runs until that turn comes.
+// that raised it is one the wake pacing never makes wait (exemptWake), and so also whether the
+// launch keeps the project controller's session older than its age (replaceAgedSession,
+// dispatch://INFRA-2045 R3); every other path into a launch is paced, and the gate sits here,
+// between the lifecycle check and letGo, because a launch the tree lifecycle refuses charges no
+// budget and so takes no token either, while a launch that waits its turn keeps the process it
+// still runs until that turn comes.
 //
 // Which lane the wake it reserves waits under is no part of what this path says: it is every
 // launch's, raised by a death, a resume, a retry, a repoint or the stale-plugin lane alike, so
@@ -3319,18 +3321,19 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt, requested bool
 	// session, and so does a daemon-driven relaunch of a session older than its age, once the
 	// process it replaces is let go and what that process ended recorded (replaceEndedSession,
 	// replaceAgedSession, dispatch://INFRA-2045 R1 and R3).
-	m.replaceEndedSession(ctx)
-	m.replaceAgedSession(ctx, exempt)
+	if !m.replaceEndedSession(ctx) {
+		m.replaceAgedSession(ctx, exempt)
+	}
 	return m.launchTries(ctx, launchTry{intent: intent, charged: charged, exempt: exempt, requested: requested, waiting: waiting}, nil)
 }
 
 // launchTry is what every try of one launch reads, and what a try parked at its issue pod's gate
 // carries to its grant (askPod): the intent of the stale-plugin relaunch the launch is, for the
 // retries it may arm (relaunchAtProbe); whether its next try waits the backoff (charged); whether
-// the request that raised it is one the wake pacing lets through (exempt); whether a request
-// raised it at all, which the pod's gate reads (requested); and whether the launch retries a wait
-// for its pod's update round that is logged already, which a charged failure ends
-// (startWaitsForPodRound, waiting).
+// the request that raised it is one the wake pacing lets through, which also keeps the controller's
+// aged session (exempt, replaceAgedSession); whether a request raised it at all, which the pod's
+// gate reads (requested); and whether the launch retries a wait for its pod's update round that is
+// logged already, which a charged failure ends (startWaitsForPodRound, waiting).
 type launchTry struct {
 	intent                              *pluginIntent
 	charged, exempt, requested, waiting bool

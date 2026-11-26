@@ -933,6 +933,11 @@ func operatorDelivery(ev Event) bool {
 // claim.IsController). Every other path into a launch is paced, so every other event is too: an
 // operator's delivery carries no launch of its own, and revive reads the exemption from the
 // delivery itself (deliverResuming).
+//
+// The same flag keeps the project controller's session older than its age at the launch it raises
+// (replaceAgedSession, dispatch://INFRA-2045 R3): the gate lets every launch of the controller
+// through by identity, so for the controller this is the flag's one effect, and a daemon request
+// marked exempt here would turn R3 off for that request.
 func exemptWake(ev Event) bool {
 	switch ev := ev.(type) {
 	case RequestSpawn:

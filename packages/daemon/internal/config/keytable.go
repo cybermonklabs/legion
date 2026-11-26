@@ -389,7 +389,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "controller_session_max_age_hours", Default: "`72`", RequiredBy: "no",
-			Description: "Under `controller: daemon`, how many hours old, read from its session id, the project controller's session may grow before a relaunch the daemon makes of it — after a death, a launch failure, a pod update or displacement, a stale-plugin refresh, a turn ended past its bound, or the keeper's retry or resume — starts a fresh session instead of resuming it; the daemon stops no live controller for it, and an operator's own resume or retry keeps the session. The fresh session is told which session it replaces and why. Decimals allowed; `0` turns the rule off.",
+			Description: "Under `controller: daemon`, how many hours old, read from its session id, the project controller's session may grow before a launch the daemon makes of it starts a fresh session instead of resuming it: every launch of the controller that no operator's request raised, a death's, a launch failure's, a pod update's or displacement's, a stale-plugin refresh's, a turn ended past its bound, the keeper's retry or resume, and the boot relaunch of an unfinished launch among them. The daemon stops no live controller for it, and an operator's own resume, or a task an operator delivers to a suspended controller, keeps the session. The fresh session is told which session it replaces and why. Decimals allowed; `0` turns the rule off.",
 			Read:        reads(readHoursOrOff, func(f *fileConfig, v *time.Duration) { f.ControllerSessionMaxAge = v }),
 		},
 		{
