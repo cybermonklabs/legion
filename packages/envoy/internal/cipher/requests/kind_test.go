@@ -517,7 +517,7 @@ func TestAFailedMintIsNamedAndReleasesNothing(t *testing.T) {
 // attempts the real minter's Retry makes, its line says attempts=3, and the counter holds the
 // third attempt under type google-login.
 func TestAFailedMintsLineNamesItsAttempts(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	machine, enrollmentID, key, _ := newFixture(t)
 	retag(t, machine, requestTypeSecret("FLAKY_LOGIN", policy.TypeGoogleLogin, policy.TierAgent, ""))
 	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -556,7 +556,7 @@ func TestAFailedMintsLineNamesItsAttempts(t *testing.T) {
 // no minter, as every unservable secret's does. A new value stored and decoded serves it again,
 // and the same grant mints, since a value's version moves no policy Version.
 func TestAMintThatRefusesTheStoredValueRefusesTheSecret(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	machine, enrollmentID, key, _ := newAppFixture(t, "REFUSED_APP_KEY")
 	secret := requestTypeSecret("REFUSED_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, "")
 	retag(t, machine, secret)

@@ -75,7 +75,7 @@ func loggedAs(capture *logtest.Recorder, message string) []map[string]any {
 // what refuses it S is A's binding of the name, not B's login, its entry in the list or any row of
 // A's. Every failure names S.
 func TestASessionNameStaysWithItsFirstRegistrar(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	ts := newTestServer(t)
@@ -153,7 +153,7 @@ const notThisRegistrarsMessage = "broker: the token exchange refused a pod's tra
 // one principal at the exchange, so the claim on the name, which binds a name to a principal,
 // cannot be what refuses P_B: A's binding of S is, at the route and at the exchange alike.
 func TestAPodAnotherDaemonRegisteredCannotTradeUnderAHeldName(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	ts := newTestServer(t)
@@ -215,7 +215,7 @@ const boundToNoDaemonMessage = "broker: the token exchange refused a pod's trade
 // the route, which binds S to A, P's trade under S is answered: a registration that binds the
 // name to the pod's registrar admits the pod.
 func TestATradeUnderANameBoundToNoDaemonIsRefused(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	ts := newTestServer(t)

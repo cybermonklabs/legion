@@ -198,7 +198,7 @@ func stalledRowsFirst(t *testing.T, m *Machine, list listUnderTest, stalled int)
 // fixed, and this row cannot tell on its own whether a waiting row holds a slot:
 // TestARowWaitingOnAnotherRowsQuestionHoldsNoSlot does, on the memo itself.
 func TestRowsWaitingOnAStalledProjectHoldNoQuestionSlot(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at list_rows_test.go:223).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (`took >= dispatchListWindow-500*time.Millisecond`).
 	for _, c := range listsUnderTest {
 		t.Run(c.name, func(t *testing.T) {
 			m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
@@ -400,7 +400,7 @@ func TestNoQuestionIsAskedOnceTheListsClockHasEnded(t *testing.T) {
 // be asked, so it is left off and logged with the SLOW rows: the threshold listRowsAtOnce's doc
 // states. With no bound on the rows read at once, the TEAM row is listed after 64 too.
 func TestAListReadsAtMostSixtyFourRowsAtOnce(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	for _, c := range listsUnderTest {
 		for _, k := range []struct {
 			stalled int
@@ -532,7 +532,7 @@ func panicLogged(capture *logtest.Recorder) bool {
 // panics, asked outside any list, is ErrProjectAccessUnavailable. Each panic is logged at ERROR
 // with its stack. Unrecovered, each panic ends the test binary.
 func TestAReadThatPanicsFailsItsRowClosedAndTheListGoesOn(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	for _, c := range listsUnderTest {
 		t.Run("a question of "+c.name, func(t *testing.T) {
 			m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)

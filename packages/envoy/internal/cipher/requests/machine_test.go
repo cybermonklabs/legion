@@ -626,7 +626,7 @@ func TestANameNoSecretCanCarrySpendsNoMissReread(t *testing.T) {
 // LoadFailedMessage, the line that reports a failed reread of the store, and answers the request
 // with its context's error, writing no request and so no grant.
 func TestARereadItsCallerAbandonedRaisesNoAlarm(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	m, enr, key, _ := newFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -668,7 +668,7 @@ func (d abandoningDescriber) DescribeSecret(ctx context.Context, _ *secretsmanag
 // Secrets Manager itself fails, while the request is still live, logs LoadFailedMessage once,
 // naming the requested secret, and the name stays unknown with no request written.
 func TestAnOrdinaryRereadFailureRaisesThePolicyAlarm(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	m, enr, key, _ := newFixture(t)
 	loader := policytest.Loader(fixtureStore(m), fixtureService)
 	loader.Store = policytest.StoreThrough(fixtureStore(m), failingDescriber{SecretsManagerAPI: fixtureStore(m), err: errors.New("throttled")})
@@ -1466,7 +1466,7 @@ const leftOutLine = "broker: a profile's permission was left out, since the inst
 // what the installation holds left out (Release.GitHubLeftOut), and writes one WARN line for each
 // entry (leftOutLine) with the profile's name, the account and the entry.
 func TestTheReleaseNamesEachPermissionTheCutLeftOut(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	logged := policytest.CaptureLog(t)
 	machine, enrollmentID, key, _ := newAppFixture(t, "APP_KEY")
 	retag(t, machine, requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))

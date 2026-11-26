@@ -233,7 +233,7 @@ func TestTheGitHubAppFieldIsRefusedWithItsOwnCode(t *testing.T) {
 // (secrets.ErrMintNoInstallation). Each is logged at WARN as a refused scope, never as the
 // operator's mint failure, beside the record of the refusal the answer recorder writes for it.
 func TestAProfileMintRefusalIs422ProfileMintRefused(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	logged := policytest.CaptureLog(t)
 	s := newProfileServer(t, minting)
 	grantID := s.grant(t)

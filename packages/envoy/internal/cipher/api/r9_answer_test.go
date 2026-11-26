@@ -39,7 +39,7 @@ func TestARegistrationNamingNoKeyAndNoGenerationIsAnsweredAsBefore(t *testing.T)
 // no key and no generation either, logs the line the merge base logged, with the attributes it
 // had and no others: no thumbprint or generation sent or stored, and none replaced.
 func TestARegistrationNamingNoKeyAndNoGenerationLogsAsBefore(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (api_test.newRegistrationRig, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (api_test.newRegistrationRig, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	rig := newRegistrationRig(t, "pod-uid-watched")
 	for _, write := range []string{"the first write", "a renewal"} {
 		rig.register(t, map[string]any{"session": "watched-session"})

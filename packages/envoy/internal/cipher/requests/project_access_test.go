@@ -426,7 +426,7 @@ func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
 // (listApprovesSecrets); while it cannot say that either, the list holds none of those requests
 // (TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover).
 func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	keyedService, keyedServiceKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-g-keyed-"+t.Name())
 	_, keyedGrant := grantOf(t, m, keyedService, keyedServiceKey, "INFRA-13: deploy the broker", "SERVICE_KEY")

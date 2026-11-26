@@ -352,7 +352,7 @@ func TestAPendingRequestGetsTheCheckMintBeforeAPersonIsAsked(t *testing.T) {
 // before anybody is asked (secrets.ErrMintNoInstallation, naming the account). A target naming
 // one account of two that are both installed is minted on that account's installation alone.
 func TestAPendingRequestWithAnAccountTargetIsCheckedToo(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	for _, tc := range []struct {
 		name string
 		// installations are where the App is installed, accounts the profile's, as the

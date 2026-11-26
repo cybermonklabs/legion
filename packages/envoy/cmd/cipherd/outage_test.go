@@ -64,7 +64,7 @@ import (
 // beat (enroll.ServingClock.Beat), and a row that read such a move as a renewal read the renewer
 // as renewing seconds after the renewal before it.
 func TestABrokerOutageLongerThanALease(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at outage_test.go:234).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (`gap >= lease*5/12`).
 	databaseURL := storetest.URL(t)
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")

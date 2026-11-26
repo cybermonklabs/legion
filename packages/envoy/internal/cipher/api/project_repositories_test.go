@@ -222,7 +222,7 @@ func TestTheRepositoryAnswerIsOnlyForTheEdgeOfThatProject(t *testing.T) {
 // project Dispatch does not hold, a Dispatch refusing the broker's own token and a broker that
 // reads no Dispatch at all.
 func TestAnUnreadableDispatchAnswerIsUnknown(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at project_repositories_test.go:259).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (`elapsed > projectrepos.Timeout+time.Second`).
 	for _, row := range []struct {
 		name  string
 		setup func(*projectaccesstest.Server)

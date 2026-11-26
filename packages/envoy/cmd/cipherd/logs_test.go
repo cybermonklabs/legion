@@ -52,7 +52,7 @@ func isolateAWS(t *testing.T) {
 // line's fields are and with no newline at its end, its info and its warning are not written, and
 // its V is true at level 0 and false past it; and OpenTelemetry's error is an ERROR.
 func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.isolateAWS, t.Setenv at logs_test.go:34); it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.Keep, slog.SetDefault at logtest.go:47).
+	// Not parallel: it sets environment variables of the whole process (main.isolateAWS, t.Setenv); it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.Keep, slog.SetDefault).
 	placeholder := placeholder.Prefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"
 	out := &logtest.Buffer{}
 	logtest.Keep(t)
@@ -250,7 +250,7 @@ func (r *redirectedStderr) point(w io.Writer) {
 // loads for the AWS store, or an IAM database, is the one with awsLog as its logger, whose lines
 // are the broker's own rather than the SDK's own log.Logger on stderr.
 func TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.isolateAWS, t.Setenv at logs_test.go:34).
+	// Not parallel: it sets environment variables of the whole process (main.isolateAWS, t.Setenv).
 	isolateAWS(t)
 	st, awsCfg, err := openStore(t.Context(), config.Config{DatabaseURL: storetest.URL(t)}, true)
 	if err != nil {

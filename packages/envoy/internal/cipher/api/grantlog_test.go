@@ -273,7 +273,7 @@ func eventFor(t *testing.T, events []store.GrantLogEvent, kind, requestID string
 // callers that reach every other named-caller route — Dispatch's server and the Envoy listener —
 // read nothing here at all.
 func TestGrantLog(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	ts, reviewToken, listenerToken := newGrantLogServer(t)

@@ -44,7 +44,7 @@ func projectsDownDispatch(t *testing.T) *projectaccesstest.Server {
 // same fixed sentence, which names neither project; what Dispatch answered goes to the broker's
 // log.
 func TestAnUnansweredProjectNamesNoProjectToTheSession(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	tagged := func(name, project string) secrets.LocalSecret {
 		s := policytest.Secret(name, policy.OwnerShared, policy.TierAgent, strings.ToLower(name)+"-v1")
 		s.Tags[policy.TagProject] = project

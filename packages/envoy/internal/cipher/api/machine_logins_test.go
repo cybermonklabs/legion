@@ -331,7 +331,7 @@ func TestOnlyTheLoginThatEnrolledAPodDeletesItsEnrollment(t *testing.T) {
 // login's enrollment of the same pod UID. A machine session sending a pod token is 403
 // POD_IDENTITY_MISMATCH.
 func TestAPodRenewsCarryingItsCurrentToken(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.Swap, slog.SetDefault).
 	ts := newTestServer(t)
 	cred, credKey := ts.mintServiceLauncherCredential(t)
 	enrollPod := func(t *testing.T) (string, string, *ecdsa.PrivateKey) {

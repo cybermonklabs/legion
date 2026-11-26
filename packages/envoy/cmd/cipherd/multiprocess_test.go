@@ -632,7 +632,7 @@ func race[T any](fleet *brokerFleet, step func(client *ciphertest.Client) T) []T
 // for ever, so TestABrokerFleetDerivesItsRereadRate drives that at fleets of its own. The binary
 // is built once for every row here.
 func TestTwoBrokers(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at multiprocess_test.go:1076).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (`time.Since(controlSignalled) > controlWindow`).
 	binary := buildBroker(t)
 	pair := startBrokerPair(t, binary)
 	conn := pair.database(t)

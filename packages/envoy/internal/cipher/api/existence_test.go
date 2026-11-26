@@ -336,7 +336,7 @@ func (*throttled) Error() string {
 // has no caller to be told of it, so it is the broker's failure and it logs the ERROR line
 // "broker: reread secret failed" that an operator's alert counts, naming the secret.
 func TestARereadNoCallerWaitsOnLogsTheStoresFailure(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	local := secrets.NewLocal()
 	loader := policytest.Loader(local)
 	loader.Store = policytest.StoreThrough(local, failingDescriber{SecretsManagerAPI: local})
@@ -373,7 +373,7 @@ func (panickingDescriber) DescribeSecret(context.Context, *secretsmanager.Descri
 // so a panic there would stop the whole broker. It recovers the panic, identifies the reread
 // step and the panic in one ERROR line, and the broker goes on answering.
 func TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	local := secrets.NewLocal()
 	loader := policytest.Loader(local)
 	loader.Store = policytest.StoreThrough(local, panickingDescriber{SecretsManagerAPI: local})
@@ -401,7 +401,7 @@ func TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing(t *testing.T) {
 }
 
 func TestAPanicInARereadsPeerNoticeNamesTheStep(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	local := secrets.NewLocal(policytest.Secret("NEW_KEY", testApprover, policy.TierAgent, "v1"))
 	mux := http.NewServeMux()
 	api.Register(mux, api.Deps{

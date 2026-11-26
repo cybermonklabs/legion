@@ -390,7 +390,7 @@ func TestARestrictedMemberListsAndEndsNoServicesMachineLogin(t *testing.T) {
 // (api.MachineLoginsOwnOnlyMessage) once, since it writes it at most once per person per minute.
 // The control: once Dispatch answers him a full member, his list holds the daemon's login again.
 func TestAFullMemberEndsTheirOwnMachineLoginWhileTheirKindCannotBeRead(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	const bob = "bob@example.com"
 	ts, access, stand := restrictedStand(t)
 	tokenLogin, _ := ts.mintServiceLauncherCredential(t)
@@ -451,7 +451,7 @@ func TestAFullMemberEndsTheirOwnMachineLoginWhileTheirKindCannotBeRead(t *testin
 // call: Dispatch's page reads the list each time it opens. While Dispatch is down, bob lists his
 // machine logins three times and carol once: one line names bob and one names carol.
 func TestTheOwnLoginsLineIsWrittenOncePerPersonPerMinute(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	const bob = "bob@example.com"
 	ts, access, _ := restrictedStand(t)
 	down := projectaccesstest.NewServer(t, nil, nil)
@@ -490,7 +490,7 @@ func TestTheOwnLoginsLineIsWrittenOncePerPersonPerMinute(t *testing.T) {
 // line, and is counted cancelled (answer.Recorder.NoteCallerEnded), as every route counts a caller
 // that hung up.
 func TestARevokeWhoseCallerHungUpWritesNothingAndNoErrorLine(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	ts := newTestServer(t)
 	box, boxKey := ts.newSessionEnrollment(t, "hang-up-box-"+t.Name(), "operator@example.com")
 	grant := ts.approveAs(t, ts.requestAs(t, boxKey, box, "DEEL_API_KEY"), testApprover)
@@ -559,7 +559,7 @@ func (h hangsUpAfterKinds) MemberKind(ctx context.Context, person string) (strin
 // ERROR line and is counted cancelled (answer.Recorder.NoteCallerEnded), as a hang-up during the
 // read is; it ends nothing, since its transaction never began.
 func TestARevokeWhoseCallerHungUpAfterTheMemberKindReadWritesNoErrorLine(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	ts := newTestServer(t)
 	box, boxKey := ts.newSessionEnrollment(t, "hang-up-after-box-"+t.Name(), "operator@example.com")
 	grant := ts.approveAs(t, ts.requestAs(t, boxKey, box, "DEEL_API_KEY"), testApprover)

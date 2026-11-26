@@ -117,7 +117,7 @@ func TestTheEdgesHealthIsServedFromItsCachedPing(t *testing.T) {
 // through writeUnavailable at the edge too, and the callers write fifty-five lines, none naming a
 // port.
 func TestTheEdgesHealthWritesOneLineAPing(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	log := &logtest.Recorder{}
 	logtest.SetDefault(t, log)
 	failing := fmt.Errorf("database away")

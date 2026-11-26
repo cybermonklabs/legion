@@ -156,7 +156,7 @@ func eventFor(t *testing.T, events []store.GrantLogEvent, kind, requestID string
 // event is rendered through store.LogGrantEvent itself, so what is compared is the two
 // constructions and not a third rendering of either.
 func TestGrantLogLineAndTheRoutesEventSayTheSameThing(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture, m, enr, key, approver := newGrantLogFixture(t, "sess-drift")
 	ctx := context.Background()
 	since := time.Now().Add(-time.Hour)
@@ -296,7 +296,7 @@ func linedRows(t *testing.T, lines []loggedLine) [][3]string {
 // all for a release (grant.used) or for an enrollment's own row. A session that reads its grant
 // every few seconds writes one audit row per release and no grant-log line for any of them.
 func TestGrantLogLogsEveryDecisionAndEveryGrantEndAndNothingElse(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture, m, enr, key, approver := newGrantLogFixture(t, "sess-volume")
 	ctx := context.Background()
 
@@ -384,7 +384,7 @@ func TestGrantLogLogsEveryDecisionAndEveryGrantEndAndNothingElse(t *testing.T) {
 // grant.revoked audit row of its own, so the log carries one line per grant rather than one per
 // revoke.
 func TestGrantLogLogsOneLinePerAuditRowAndNotOnePerTransaction(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture, m, enr, key, approver := newGrantLogFixture(t, "sess-withhold")
 	ctx := context.Background()
 
@@ -436,7 +436,7 @@ func TestGrantLogLogsOneLinePerAuditRowAndNotOnePerTransaction(t *testing.T) {
 // request's detail says another session of the owner cancelled it. The request's own session
 // cancelling still reads as before.
 func TestACancelByAnotherEnrollmentOfTheOwnerNamesTheRequestsEnrollment(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture, m, enr, key, _ := newGrantLogFixture(t, "sess-owner-cancel")
 	ctx := context.Background()
 	other, _ := newEnrollment(t, m.Store, "session", "box-other-"+t.Name(), new(fixtureOperator), nil)

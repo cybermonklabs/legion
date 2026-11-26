@@ -275,7 +275,7 @@ type oldReleaseAnswer struct {
 // profile the profiles file grants the requester at once; a read-only body is cut to contents and
 // metadata at read, whatever the profile holds, and a write body gets the profile's permissions.
 func TestOldClientBodiesAreAnsweredAsBefore(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	s := newGitHubAppFieldServer(t, false)
 	logged := policytest.CaptureLog(t)
 	requesters := map[string]func() caller{

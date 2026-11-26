@@ -42,7 +42,7 @@ func lastRelease(t *testing.T, capture *logtest.Recorder, grantID string) map[st
 // "[redacted]". A command that is not a list of strings refuses the whole body, 400
 // INVALID_RELEASE, as any field of the wrong shape does, and releases nothing.
 func TestAReleaseBodyNamesTheCommandItStarts(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	s := newProfileServer(t, minting)

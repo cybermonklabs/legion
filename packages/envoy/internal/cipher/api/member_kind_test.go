@@ -51,7 +51,7 @@ func TestAnUncheckableMemberKindIsAnsweredUnderItsOneCode(t *testing.T) {
 // hung up (answer.Recorder.NoteCallerEnded): it says nothing of Dispatch. A failure to ask
 // Dispatch is logged at ERROR and counted failed, as before.
 func TestACallerThatEndedIsNoDispatchFailure(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	for _, row := range []struct {
 		name    string
 		failure error

@@ -52,7 +52,7 @@ func (g *goneOnFirstAsk) States(ctx context.Context, _ []string) (map[string]pro
 // own pending rows, rows whose responsible person is someone else (the fallback), and the grant
 // list.
 func TestAListWhoseCallerWentAwayLogsNothingOfTheRowsItLeftOff(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	const rows = 5
 	for _, list := range []struct {
 		name string

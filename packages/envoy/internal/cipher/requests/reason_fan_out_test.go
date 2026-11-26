@@ -84,7 +84,7 @@ func (f *fanOutLog) States(ctx context.Context, projects []string) (map[string]p
 // it are left off, asked about it once, and the third is listed: a project Dispatch could not be
 // asked about hides the rows it is named by, and no other.
 func TestAListReadsAStoredReasonOfEightyProjectsWellInsideDispatchsWindow(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at reason_fan_out_test.go:132).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (`took >= dispatchListWindow/2`).
 	reason := densestReason(80)
 	if n, runes := len(record.ReasonProjects(reason)), utf8.RuneCountInString(reason); n != 80 || runes > record.MaxReasonRunes {
 		t.Fatalf("densestReason(80) names %d projects in %d runes; want 80 in at most %d", n, runes, record.MaxReasonRunes)

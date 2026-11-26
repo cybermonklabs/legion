@@ -848,7 +848,7 @@ func TestApproveMachineRecordWithoutCodeIsCodeRequired(t *testing.T) {
 // session's own status/values reads, the UI's grant list, and human revocation, refused for any
 // login but the approver's.
 func TestAgentSecretRequestLifecycle(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at api_test.go:975).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (`listed.ExpiresAt.Sub(time.Now()) > 15*time.Minute`).
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 
@@ -1142,7 +1142,7 @@ func TestCreateRequestWithMaxGrantNeedsLifetime(t *testing.T) {
 // operator, naming the secret and the error's class, never the stored value: the refresh token
 // it holds, a canary no JSON or log quoting changes, is in neither.
 func TestAFailedMintIs502MintFailed(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	logged := policytest.CaptureLog(t)
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{

@@ -270,7 +270,7 @@ func TestADeviceLoginsKeyMustBeItsRequestObjects(t *testing.T) {
 }
 
 func TestARefreshMovesTheCredentialsExpiry(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at oauth_login_test.go:298).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (`at.Sub(expires).Abs() > time.Second`).
 	rig := ciphertest.NewRig(t)
 	m, tok, credentialID := approvedLogin(t, rig)
 	ctx := context.Background()

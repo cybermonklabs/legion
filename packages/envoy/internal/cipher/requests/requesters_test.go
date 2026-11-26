@@ -266,7 +266,7 @@ func TestRequestersAnApprovalAfterTheDropIsRecordedAsADenial(t *testing.T) {
 // demands: a secret that lists who may ask for it sets whatever cap it likes, or none at all
 // (TestUncappedListedLoginAwaitsOwner).
 func TestRequestersAListedSecretGrantsForNoLongerThanItsOwnMaxGrant(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at requesters_test.go:285).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (`time.Until(*released.Expires) > time.Hour`).
 	ctx := context.Background()
 	m, enr, key, _ := newFixture(t)
 	retag(t, m, listedSecret("LISTED_KEY", fixtureOperator, policy.TierAgent, fixtureOperator))

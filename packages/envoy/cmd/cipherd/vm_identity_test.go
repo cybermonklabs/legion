@@ -102,7 +102,7 @@ func captureLog(t *testing.T) *bytes.Buffer {
 // the cluster's key set alone, builds the pod verifier on it, answers that same key set for the
 // token exchange, holds no Google key set, and logs nothing about Google.
 func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (main.captureLog, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (main.captureLog, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	logged := captureLog(t)
 	d := &discovery{}
 	found, err := discoverVerifiers(context.Background(), vmConfig(t, ""), d.keysFor)
@@ -133,7 +133,7 @@ func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
 // own keys, and logs one line naming the issuer, the audience, the machine services and how many
 // machine entries the exchange holds.
 func TestAGoogleAudienceDiscoversGooglesIssuer(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (main.captureLog, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (main.captureLog, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	logged := captureLog(t)
 	d := &discovery{}
 	found, err := discoverVerifiers(context.Background(), vmConfig(t, "example-vm-audience"), d.keysFor)
@@ -157,7 +157,7 @@ func TestAGoogleAudienceDiscoversGooglesIssuer(t *testing.T) {
 // keys the broker reads and whose tokens the exchange takes, so a dev stack's stand-in
 // (cmd/dev-oidc-issuer) serves in Google's place with nothing else changed.
 func TestAStandInIssuerIsDiscoveredInGooglesPlace(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (main.captureLog, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (main.captureLog, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	logged := captureLog(t)
 	d := &discovery{}
 	cfg := vmConfig(t, "example-vm-audience")

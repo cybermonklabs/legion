@@ -112,7 +112,7 @@ func objectParts(compacts ...string) []string {
 // signed for another broker address is refused GRANT_CHAIN_INVALID, as before, and writes one
 // WARN line naming the grant, its record, the enrollment, at=values and the refusal's own text.
 func TestAReleaseOfAGrantWhoseChainFailsIsLogged(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := captureRecords(t)
 	m, enr, key, approver := newFixture(t)
 	stale, grantID := approvedGrant(t, m, anotherBroker, enr, key, approver, "DEEL_API_KEY")
@@ -132,7 +132,7 @@ func TestAReleaseOfAGrantWhoseChainFailsIsLogged(t *testing.T) {
 // of a live grant whose chain fails gets no such grant back, as before, and writes one WARN line
 // at=reuse naming it; the session gets a new pending request of this broker instead.
 func TestReusingAGrantWhoseChainFailsIsLoggedAndAsksAfresh(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := captureRecords(t)
 	m, enr, key, approver := newFixture(t)
 	stale, grantID := approvedGrant(t, m, anotherBroker, enr, key, approver, "DEEL_API_KEY")
@@ -149,7 +149,7 @@ func TestReusingAGrantWhoseChainFailsIsLoggedAndAsksAfresh(t *testing.T) {
 // chain fails is refused as the session's release is, and writes the same line at=airlock, the
 // grant's own enrollment named, since the proxy proves no enrollment of its own.
 func TestTheAirlocksReadOfAGrantWhoseChainFailsIsLogged(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := captureRecords(t)
 	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("DEEL_API_KEY", "")}})
 	stale, grantID := approvedGrant(t, m, anotherBroker, enr, key, fixtureOperator, "DEEL_API_KEY")
@@ -169,7 +169,7 @@ func TestTheAirlocksReadOfAGrantWhoseChainFailsIsLogged(t *testing.T) {
 // broker is released to the session and to the proxy, and handed back to the session's next ask
 // for the same names, and none of the three writes the line.
 func TestAGrantOfThisBrokerLogsNoFailedChain(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := captureRecords(t)
 	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("DEEL_API_KEY", "")}})
 	own, grantID := approvedGrant(t, m, testAudience, enr, key, fixtureOperator, "DEEL_API_KEY")
@@ -203,7 +203,7 @@ func TestAGrantOfThisBrokerLogsNoFailedChain(t *testing.T) {
 // ErrGrantChainInvalid, Create's reuse answers it too rather than asking afresh, and neither
 // writes the line, though the grant is one whose chain would fail once the record was read.
 func TestADatabaseFailureInTheChainCheckLogsNoFailedChain(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := captureRecords(t)
 	m, enr, key, approver := newFixture(t)
 	_, grantID := approvedGrant(t, m, anotherBroker, enr, key, approver, "DEEL_API_KEY")
@@ -234,7 +234,7 @@ func TestADatabaseFailureInTheChainCheckLogsNoFailedChain(t *testing.T) {
 // no new request and no line, since G2 is the newest and verifies. With G2 made the older of the
 // two, each ask meets G1 first, passes it over with one line at=reuse, and still hands back G2.
 func TestReuseTakesTheNewestGrantAndPassesOverOneWhoseChainFails(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := captureRecords(t)
 	m, enr, key, approver := newFixture(t)
 	earlier, earlierKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)

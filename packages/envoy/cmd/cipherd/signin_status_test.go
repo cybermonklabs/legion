@@ -179,7 +179,7 @@ func passClientChecks(t *testing.T, passes []clientCheckPass) {
 // writes it once more, and the pass that finds the client ready again writes
 // clientCheckReadyMessage once, naming the state it leaves, after which ready writes nothing.
 func TestClientCheckLogsAChangeOfStateNotEachPass(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (main.passClientChecks, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (main.passClientChecks, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	st := storetest.Open(t)
 	issuer := oidctest.New(t)
 	signIn := ciphertest.SignIn(issuer, issuer.PublishKey(t, "signin-key"))
@@ -207,7 +207,7 @@ func TestClientCheckLogsAChangeOfStateNotEachPass(t *testing.T) {
 // check's own state is written beside them. The store that fails is a pool on the test's own
 // database, closed before it runs a statement, as a database that stopped answering fails.
 func TestClientCheckLogsAFailedWriteOnceUntilItWritesAgain(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (main.passClientChecks, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (main.passClientChecks, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	st := storetest.Open(t)
 	issuer := oidctest.New(t)
 	signIn := ciphertest.SignIn(issuer, issuer.PublishKey(t, "signin-key"))

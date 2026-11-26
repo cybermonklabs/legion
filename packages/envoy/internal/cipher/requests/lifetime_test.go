@@ -48,7 +48,7 @@ func age(t *testing.T, m *Machine, grantID string, elapsed time.Duration) {
 // record names the lifetime, and a later request for the same names with the same lifetime reuses
 // the live grant, while one with another lifetime, or none, does not.
 func TestATTLGrantEndsAfterItsLifetime(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at lifetime_test.go:77).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (`time.Until(*release.Expires) > 2*time.Minute`).
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 
@@ -321,7 +321,7 @@ func TestAHumanTierGrantWithNoTTLLastsFifteenMinutes(t *testing.T) {
 // request names no lifetime. A session that signs eight hours gets eight hours, so a person who
 // reads that on the card still decides it.
 func TestAHumanTierRequestNamingALongerTTLKeepsIt(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at lifetime_test.go:339).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (`time.Until(*expires) > 9*time.Hour`).
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	want := int((8 * time.Hour).Seconds())
@@ -440,7 +440,7 @@ func TestAMixedNoTTLRequestLastsTwelveHours(t *testing.T) {
 // no lifetime while its human-tier secret was default-grant=session, still pending when the tag is
 // removed, is granted DefaultHumanGrantLifetime on approval.
 func TestAPendingSessionLengthRequestApprovedAfterItsTagGoesGetsTheHumanDefault(t *testing.T) {
-	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at lifetime_test.go:461).
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (`time.Until(*expires) > DefaultHumanGrantLifetime`).
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	want := int(DefaultHumanGrantLifetime / time.Second)

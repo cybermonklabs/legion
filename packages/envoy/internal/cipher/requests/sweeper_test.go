@@ -213,7 +213,7 @@ func sweepLines(records []slog.Record) []string {
 // fails at its first statement as against a database that stopped answering; the store that
 // answers is the fixture's own, set on the same Sweeper, which is what holds each sweep's state.
 func TestSweeperLogsEachSweepsFailureOnceUntilItSucceedsAgain(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	closed, err := pgxpool.NewWithConfig(ctx, m.Store.Pool.Config())

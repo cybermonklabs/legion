@@ -143,7 +143,7 @@ func requireNothingSecretLogged(t *testing.T, capture *logtest.Recorder, m *Mach
 // session got and the enrollment, and the grant-log line of the request.cancelled row, whose raw
 // detail holds the reason.
 func TestTheEndOfARequestSignedForAnotherBrokerIsLogged(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture, m, enr, key, _ := newGrantLogFixture(t, "sess-moved")
 	since := time.Now().Add(-time.Hour)
 	stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
@@ -160,7 +160,7 @@ func TestTheEndOfARequestSignedForAnotherBrokerIsLogged(t *testing.T) {
 // TestEachStaleRequestEndedIsLoggedNamingTheOneNewRequest: an ask that ends two requests of
 // another broker writes one line for each, both naming the one request it made.
 func TestEachStaleRequestEndedIsLoggedNamingTheOneNewRequest(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture, m, enr, key, _ := newGrantLogFixture(t, "sess-moved-twice")
 	since := time.Now().Add(-time.Hour)
 	retagStripeKey(t, m)
@@ -183,7 +183,7 @@ func TestEachStaleRequestEndedIsLoggedNamingTheOneNewRequest(t *testing.T) {
 // of this broker, the line for the ended request names that one as new_request, the request the
 // session is referred to, whether the ask coalesced onto it or was refused for it.
 func TestTheEndBeforeARequestThatVerifiesNamesThatRequest(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	for _, c := range []struct {
 		name    string
 		refused bool
@@ -225,7 +225,7 @@ func TestTheEndBeforeARequestThatVerifiesNamesThatRequest(t *testing.T) {
 // TestARequestSignedForThisBrokerLogsNoEnd: the control. An ask that coalesces onto a request of
 // this broker, and one refused for it, end nothing and log no end.
 func TestARequestSignedForThisBrokerLogsNoEnd(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture, m, enr, key, _ := newGrantLogFixture(t, "sess-not-moved")
 	ctx := context.Background()
 	own, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of this broker", "DEEL_API_KEY"), "")
@@ -248,7 +248,7 @@ func TestARequestSignedForThisBrokerLogsNoEnd(t *testing.T) {
 // the commit alone: a deferred constraint trigger, which Postgres runs at commit, refuses the
 // request.cancelled audit row the end wrote, and the whole transaction rolls back with it.
 func TestACreateWhoseCommitFailsLogsNoEnd(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	for _, c := range []struct {
 		name string
 		// verifies plants a request of this broker after the stale one, which the ask then
@@ -304,7 +304,7 @@ func TestACreateWhoseCommitFailsLogsNoEnd(t *testing.T) {
 // of its own, as Cancel and the sweep's expiry do, leaves the column's default, {}, and its
 // grant-log line carries that same {} as its raw detail, never null.
 func TestARequestEndedWithNoAuditDetailLogsAnEmptyObject(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture, m, enr, key, _ := newGrantLogFixture(t, "sess-no-detail")
 	ctx := context.Background()
 	since := time.Now().Add(-time.Hour)
@@ -343,7 +343,7 @@ func TestARequestEndedWithNoAuditDetailLogsAnEmptyObject(t *testing.T) {
 // newer than the request that verifies. The line for the ended request names the request that
 // verifies as new_request, whether the ask coalesced onto it or was refused for it.
 func TestTheEndAfterARequestThatVerifiesNamesThatRequest(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	for _, c := range []struct {
 		name    string
 		refused bool
@@ -379,7 +379,7 @@ func TestTheEndAfterARequestThatVerifiesNamesThatRequest(t *testing.T) {
 // the stale request an ask decided at once ends names the request that ask wrote, granted or
 // denied, as new_request.
 func TestTheEndOnAnAskDecidedAtOnceNamesTheRequestWrittenAtOnce(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	for _, c := range askDecidedAtOnce {
 		t.Run(c.name, func(t *testing.T) {
 			capture, m, enr, key, _ := newGrantLogFixture(t, "sess-moved-at-once-"+c.name)
@@ -401,7 +401,7 @@ func TestTheEndOnAnAskDecidedAtOnceNamesTheRequestWrittenAtOnce(t *testing.T) {
 // TestTheEndOnAReusedGrantNamesItsRequest: R5 v9's sixth case. The line for the stale request an
 // ask a live grant answers ends names the reused grant's request as new_request.
 func TestTheEndOnAReusedGrantNamesItsRequest(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture, m, enr, key, approver := newGrantLogFixture(t, "sess-moved-reused")
 	since := time.Now().Add(-time.Hour)
 	granted, _, stale := liveGrantBesideAStaleRequest(t, m, enr, key, approver)
@@ -418,7 +418,7 @@ func TestTheEndOnAReusedGrantNamesItsRequest(t *testing.T) {
 // TestAnAskRefusedBeforeAnythingIsWrittenLogsNoEnd: R5 v9's seventh case. An ask refused before
 // Create writes a request ends nothing, so it writes no end line and no request.cancelled line.
 func TestAnAskRefusedBeforeAnythingIsWrittenLogsNoEnd(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.newGrantLogFixture, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	for _, c := range askRefusedBeforeAnyWrite {
 		t.Run(c.name, func(t *testing.T) {
 			capture, m, enr, key, _ := newGrantLogFixture(t, "sess-moved-refused-early")

@@ -327,7 +327,7 @@ func (r *registrationRig) loggedOnly(t *testing.T, what string, want map[string]
 // as registered, naming the registrar and the thumbprint and generation it sent beside those
 // stored, and no key replaced, since there was none to replace.
 func TestAFreshRegistrationLogsWhatWasSentAndStored(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (api_test.newRegistrationRig, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (api_test.newRegistrationRig, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	const kA = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	rig := newRegistrationRig(t, "pod-uid-fresh")
 	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
@@ -345,7 +345,7 @@ func TestAFreshRegistrationLogsWhatWasSentAndStored(t *testing.T) {
 // neither, and is still logged naming the registrar beside the thumbprint it replaced, since the
 // line of a takeover is the one record of it.
 func TestARegistrationReplacingAKeyLogsTheKeyItReplaced(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (api_test.newRegistrationRig, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (api_test.newRegistrationRig, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	const kA, kB = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 	rig := newRegistrationRig(t, "pod-uid-relaunched")
 	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
@@ -381,7 +381,7 @@ func TestARegistrationReplacingAKeyLogsTheKeyItReplaced(t *testing.T) {
 // own naming the registrar and the thumbprint and generation it sent beside the row's, which it
 // left as it was.
 func TestARegistrationTheGenerationRuleRefusesLogsALineOfItsOwn(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (api_test.newRegistrationRig, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (api_test.newRegistrationRig, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	const kA, kB = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 	rig := newRegistrationRig(t, "pod-uid-late")
 	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kB, "generation": 2})

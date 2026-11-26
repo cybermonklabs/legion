@@ -13,7 +13,7 @@ import (
 )
 
 func TestARereadStartedAfterDetachedWaitBeganIsNotCounted(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	local := secrets.NewLocal(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "v1"))
 	detached := &Detached{}
 	if err := detached.Wait(context.Background()); err != nil {

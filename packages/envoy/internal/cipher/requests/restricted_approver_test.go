@@ -358,7 +358,7 @@ func TestARestrictedMemberKeepsWhatIsTheirOwn(t *testing.T) {
 // Dispatch answers, the lists hold the group's requests again, the dismissal is written, and their
 // revoke ends the group's grant.
 func TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	rows := groupApproverRows(t)
 	m := rows.m
 	ctx := context.Background()
@@ -807,7 +807,7 @@ func personSessionAnyoneRows(t *testing.T) approverRows {
 // member whose grant list failed to read their kind a moment before is refused once Dispatch
 // answers.
 func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	answers := func(status int, body string) func(*testing.T, approverRows) {
 		return func(_ *testing.T, r approverRows) { r.dispatch.SetAnswer(status, body); r.asks() }
 	}

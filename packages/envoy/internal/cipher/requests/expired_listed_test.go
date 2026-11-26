@@ -170,7 +170,7 @@ func linesOf(capture *logtest.Recorder, message string) []map[string]string {
 // answers the first one's values and writes nothing; each is logged once. The list that asks for
 // no state holds the overdue request before the sweep and not after it, as it always did.
 func TestExpiredSecretRequestStaysListedUntilDismissed(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	m, _, _, approver := newFixture(t)
@@ -548,7 +548,7 @@ func TestExpiredRequestCancelledBeforeItsDeadlineIsNotListed(t *testing.T) {
 // is left out with no line, list after list. A pending record left out is logged once, as it
 // always was.
 func TestExpiredRecordLeftOutOfAStatesListIsNotLogged(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	m, enr, key, approver := newFixture(t)

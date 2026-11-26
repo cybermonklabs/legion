@@ -19,7 +19,7 @@ import (
 // is still given back, and one ERROR line names FIRST_KEY with the goroutine's stack and holds
 // neither value. Unrecovered, the panic ends the test binary, as it would the broker.
 func TestAGiveBackThatPanicsLeavesItsValueToLapseAndGoesOn(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	const firstValue, secondValue = "ghs_the-first-minted-token", "ghs_the-second-minted-token"
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)

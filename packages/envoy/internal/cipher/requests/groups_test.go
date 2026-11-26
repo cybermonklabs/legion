@@ -312,7 +312,7 @@ func TestAnAutomaticGrantOfAStaleGroupIsNotReusedUnderAnUnchangedPolicy(t *testi
 // lapsed grant once the group is stale: refused as no longer live, the group's refusal beneath,
 // and no broken-chain line written.
 func TestAnApprovedGrantOfAStaleGroupIsRefusedWithNoChainAlarm(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := captureRecords(t)
 	f := newGroupFixture(t)
 	_, grantID := f.approvedTeamKey(t)
@@ -360,7 +360,7 @@ func requireLines(t *testing.T, capture *logtest.Recorder, mark, chainMark int, 
 // naming the grant, its record, its secret, the decider, the group and where; a fresh group's
 // refusal writes exactly one broken-chain line beside it, and a stale group's none.
 func TestALapsedGroupApprovalWritesOneLogLine(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := captureRecords(t)
 	f := newGroupFixture(t)
 	ctx := context.Background()
@@ -592,7 +592,7 @@ func (f *groupFixture) retag(t *testing.T, name string, secret secrets.LocalSecr
 // the one that can fail, since the reuse path is where a lapsed line was once written from the
 // policy's approver rather than the record's.
 func TestTheLapseLineFollowsTheRecordsGroup(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := captureRecords(t)
 	f := newGroupFixture(t)
 	ctx := context.Background()

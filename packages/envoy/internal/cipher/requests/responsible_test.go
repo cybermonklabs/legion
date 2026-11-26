@@ -179,7 +179,7 @@ func TestASharedRequestIsListedForTheClaimIssuesAssignee(t *testing.T) {
 // reached, so an operator sees that the step is off, and the line holds nothing of what the read
 // held; a row that read nothing, or read an issue nobody is assigned to, logs none.
 func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (an upper bound on a measured time at responsible_test.go:229).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (`took > most`).
 	for _, c := range []struct {
 		name      string
 		claim     string

@@ -235,7 +235,7 @@ func TestARereadNamesTheTypeItServes(t *testing.T) {
 // told to reread the name as on a 200, on a context of the handler's own; one whose request ended
 // during its metadata read merged nothing and tells nobody, nor does the 500.
 func TestARereadWhoseRequestEndedLogsNoError(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	verifier, sign := oneSession(t)
 	// route is the reread route over a policy of local whose Secrets Manager calls client makes,
 	// telling the other pods through notifier.

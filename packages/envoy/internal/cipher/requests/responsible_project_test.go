@@ -40,7 +40,7 @@ func wantListed(t *testing.T, m *Machine, recordID string, all, want []string) {
 // responsible person may see it, so the list writes one line counting them and no line for any one
 // of them.
 func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	const rows = 20
 	const takes = 300 * time.Millisecond
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
@@ -184,7 +184,7 @@ func wantUnreadLine(t *testing.T, capture *logtest.Recorder, recordID string) {
 // Dispatch still answers each reader's member kind in both outages; a list whose reader's kind
 // cannot be read holds none of their secret requests (TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover).
 func TestTheFallbackFailsClosed(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	t.Run("control", func(t *testing.T) {
 		m, stranded := strandedRow(t)
 		capture := &logtest.Recorder{}

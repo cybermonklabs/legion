@@ -109,7 +109,7 @@ func wantTrimLog(t *testing.T, captured string, changed, unchanged []string) {
 // (The values below are fixtures, not credentials; each is read as a length and a digest all
 // the same.)
 func TestTheBrokerTrimsAStoredValuesTrailingLineEnding(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	const pem = "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"
 	logged := policytest.CaptureLog(t)
 	m, enrollmentID, key, _ := newAppFixture(t, "MINTED_INPUT_KEY")
@@ -175,7 +175,7 @@ func TestTheBrokerTrimsAStoredValuesTrailingLineEnding(t *testing.T) {
 // word the tag holds, and the log holds one line for each of them. The rows share one fixture
 // and one log capture and none is parallel. (The values below are fixtures, not credentials.)
 func TestTheBrokerReleasesTheTrimmedValue(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	logged := policytest.CaptureLog(t)
 	m, enrollmentID, key, _ := newFixture(t)
 	tagged := func(name, leftover, stored string) secrets.LocalSecret {

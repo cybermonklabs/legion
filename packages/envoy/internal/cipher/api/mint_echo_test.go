@@ -22,7 +22,7 @@ import (
 // failure line quotes the refresh token. The minter retries as the broker's does, waiting no real
 // time, so the error that reaches both is the last of its three attempts'.
 func TestAMintFailureEchoingTheRefreshTokenReachesNeitherTheSessionNorTheLog(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags at policytest.go:329).
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	const canary = "refresh-token-canary-77d2"
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
