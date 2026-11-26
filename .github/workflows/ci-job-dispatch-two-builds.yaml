@@ -188,7 +188,6 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/dispatch-previous
-            !${{ runner.temp }}/dispatch-previous/src
           key: dispatch-previous-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.previous.outputs.commit }}
       # A restored directory holds the complete build of that commit, which the script leaves as it
       # is. The runner context is not available in a job's env, so each step that reads the build's
@@ -221,7 +220,6 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/dispatch-first-rollout
-            !${{ runner.temp }}/dispatch-first-rollout/src
           key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.first-rollout.outputs.commit }}
       - name: Build the first-rollout build
         env:
