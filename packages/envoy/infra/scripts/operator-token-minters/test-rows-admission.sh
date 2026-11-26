@@ -604,7 +604,7 @@ worker_cap_row() {
     later-refused | later-short)
       REVIEW_WORKERS=4 run
       for file in "$dir"/review-requests-*.tsv; do
-        if ! cut -f7 "$file" | grep -qxF group:system:masters; then later="$(cut -f7 "$file" | sed -n 1p)"; break; fi
+        if ! awk -F '\t' '$7 == "group:system:masters" { f = 1 } END { exit !f }' "$file"; then later="$(cut -f7 "$file" | sed -n 1p)"; break; fi
       done
       [ -n "$later" ] || fail "no batch of the first run went without the witness, so the item ($1) proves nothing"
       rm -f "$dir"/review-call-*.json "$dir"/review-requests-*.tsv "$dir/review-calls"
