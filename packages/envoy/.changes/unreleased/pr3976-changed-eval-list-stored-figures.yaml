@@ -20,8 +20,9 @@ body: |-
   the evals whose rows it moved there: of the two defaults' figures, the evals that hold Legion
   rows under `:default`. The same commit folds those evals' figures a first paint of each such cut
   reads (each offered window ending today, tomorrow or the day after, with a compare range one
-  window back, and their days), and no other day, and the refresher's pass that publishes the move
-  folds every other day of them, newest first. A first paint of every cut a move touches, the
+  window back, and, of an 84- or 85-day read, the compare range one window back of that compare
+  range, and their days), and no other day, and the refresher folds every other day of them,
+  newest first, in transactions of about 250 ms each. A first paint of every cut a move touches, the
   project's own rows among them, reads the stored figures from the move's commit on; a read of an
   older range reads them once the refold has come down past it, and folds their day rows until
   then. Every other eval is read from the stored figures throughout. A cut marked otherwise (the
@@ -30,9 +31,12 @@ body: |-
   waits for the process whose refresher holds the lease to fold it, for up to 30 s, and the next
   day's first paint is folded before the rest of a refold, so the first read after a restart, a
   deploy or a midnight reads the stored figures too. A register
-  write that moves what an eval folds by is folded by the refresher's next pass, which reads the
-  change log from a cursor of its own. Both reads fold each eval's rows in one order, by day and
-  within a day by the key each row is stored under, its repository and its series, so a sum of
+  write that moves what an eval folds by is read by the refresher's next pass, which reads the
+  change log from a cursor of its own and marks stale each cut whose stored figures hold the old
+  fold key: those are folded again as a move's are, first paint first and then in batches of
+  about 250 ms, and a read of one folds its day rows until the refold has passed it. Both reads
+  fold each eval's rows in one order, by day and within a day by the key each row is stored under,
+  its repository and its series, so a sum of
   floats answers the same bits whatever order the rows come back in. The bench waits for every
   project's figures to be built before it measures a first paint.
   A change of the delivery settings reaches an open evals page in one pass of the refresher, as
@@ -41,7 +45,9 @@ body: |-
   the settings with those the rows stand built under (`eval_days_settings`), so a change no day row
   reads (a workflow path, the population rule, the roll-up job) rewrites nothing; and the same
   settings saved again by another person log no change at all (migration
-  `20261120111107_delivery_settings_bookkeeping`).
+  `20261120111107_delivery_settings_bookkeeping`). Settings that move no day row are recorded with
+  one change the open delivery views are recomputed for, so the Delivery and Pipeline pages
+  answer under the settings the rows stand built under, as their reads do.
   A move of the deploy repository rewrites nothing: the delivery and CI evals that read it (the
   lead times to production, deploy-frequency, deploy-run-success, pr-ci and the deploy cards) are
   kept, with their stored figures and their items, once for every repository that holds a

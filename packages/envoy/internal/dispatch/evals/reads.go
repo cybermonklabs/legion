@@ -668,11 +668,6 @@ func windowEntryBytes(entry *Entry, lastPairs bool) int {
 	return bytes
 }
 
-// Items is ItemsIn on the pool.
-func (s *Store) Items(ctx context.Context, evalID, series, rowKind, row string, repos []string, window Range, limit, offset int) (Page[Reading], error) {
-	return ItemsIn(ctx, s.database.Pool, evalID, series, rowKind, row, repos, window, limit, offset)
-}
-
 // ItemsIn reads in q one page of a logged eval's standing readings (superseded_at is null)
 // measured in window, newest first, through eval_readings_row: those of one series, row kind and
 // row where each is not "", and those whose attributes.repo is one of repos where repos names any.

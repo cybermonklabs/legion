@@ -14,8 +14,8 @@ body: |-
   that names `from`, `to`, `q` or `at` more than once is `400 INVALID_QUERY` naming the key, as
   an eval read is, where it was answered the first value's window or search; a facet such as
   `repo` or `priority` still takes any number of values. So that no statement that writes a
-  logged eval's stored rows passes 256 KiB, a logged eval holds at most 234 series and a day row
-  of it at most 21,626 values: a register or readings write that would leave an eval holding more
+  logged eval's stored rows passes 256 KiB, an eval holds at most 234 series, listed or not, and a
+  day row of a logged eval at most 21,626 values: a register or readings write that would leave an eval holding more
   series is `400 EVAL_SERIES_LIMIT`, and a reading that would put more values on its day row
   `400 READING_DAY_SAMPLES_LIMIT`, each naming the bound. A readings write sends every list that
   grows with its batch (its readings, the ids it corrects, its day rows' insert, lock and update,
@@ -39,4 +39,9 @@ body: |-
   counting every one and `limit` those listed (the rest are read by id from the eval's items), and
   the register write's answer lists the eval's series by name the same way beside a new
   `series_total`, so a repeat under the key is answered the first answer rather than
-  `ANSWER_NOT_KEPT`.
+  `ANSWER_NOT_KEPT`. A body the register write cannot decode is refused `400 INVALID_JSON` with its
+  error cut to 1,024 bytes, the number it could not read cut first, so the answer still names the
+  field. A register write names each series once: one named twice is `400 EVAL_SERIES_INVALID`
+  naming the second. A `doc_block` that names no block of the project's `evals-md` is
+  `400 EVAL_FIELD_INVALID`, since the eval would have no method and the seed would replace the
+  field at the next boot.
