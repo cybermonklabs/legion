@@ -92,8 +92,9 @@ func (e *NotPausedError) Error() string {
 // ProjectReleasingError is a pause refused because a project release of the project runs
 // (dispatch://INFRA-3583 R13): its record is neither finished nor ended by a boot
 // (ProjectRelease.Runs). The release reads each pod's unpushed work through a running role and
-// asks those roles to push it; a pause would stop them, and the release would then delete their
-// pods with no read. Release is the release that runs, which the refusal names.
+// asks those roles to push it; a pause would stop them, and the release would then read their pods
+// only through their launchers, with a narrower count, and delete them with nobody asked to push.
+// Release is the release that runs, which the refusal names.
 type ProjectReleasingError struct {
 	Release ProjectRelease
 }

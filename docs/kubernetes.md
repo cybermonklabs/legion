@@ -9083,6 +9083,8 @@ The release does five things, in this order:
 
 1. It sets a mark in the daemon's memory, and then records itself in the daemon's database.
    The mark comes first, before the record and before the release reads which claims it stops, and every role start reads the mark once more just before its role starts, so a start either sees the mark or is among the claims the release stops.
+   Once the mark is set, the release waits for an orphan sweep that began before the mark to end its orphan reconciliation, its stale-plugin refresh and its pod update rounds, before it records itself or reads, asks or deletes anything; every sweep after reads the mark and skips those three (`sweepOnce`, `packages/daemon/internal/daemon/daemon.go`).
+   So no pod update round writes the record of a replacement after the release has settled the records of the round's pod (step 4), and none ends as a replacement over a pod the release deleted, which would tell the issue's architect of a replacement that never took the pod.
    A record that does not commit clears the mark again, and the command prints the daemon's refusal: so does one whose transaction finds that a pause committed after the first read of the pause, which the release answers `409 PROJECT_PAUSED` as above.
    The record's start is the moment of the write that commits, and the bound counts from that start.
    The daemon tries to record the release for a tenth of the bound, and for at least 2 seconds, and waits up to 2 seconds more for a commit it has already sent.
@@ -9156,7 +9158,9 @@ The release does five things, in this order:
    A record whose act was not made, the pod still running as the issue's own, is forgotten, and the daemon logs one line naming the issue, the pod and the record's operation: such a record is one the release's mark left standing, a launch that read the round's pod as replaced just before the mark and was then refused, or a round's replacement whose call failed, one that ran out waiting for the pod's launch turn among them, which no sweep reads while the mark holds.
    Left standing, it would read as made once the pod is gone, and the next boot would tell the issue's architect of a replacement that never took the pod.
    A record whose act was made took an earlier pod, and it stands: the next boot tells the architect of it, as before.
-   A record the daemon cannot say was made, or whose read or whose forget failed, leaves the pod, with a reason that names the record's operation and what was uncertain or failed, and the release forgets no record of the pod then.
+   A record the daemon cannot say was made, or whose read failed, leaves the pod, with a reason that names the record's operation and what was uncertain or failed, and the release forgets no record of the pod then, since it reads every record of the pod before it forgets any.
+   A forget that fails leaves the pod too, with a reason that names that record's operation and the error, and each record the release forgot before it stays forgotten.
+   When the daemon cannot read the records from its database, the pod is left with a reason that says the records could not be read, with the error, and names no record.
    A kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)) is a volume claim the Sandbox owns, so it goes with the Sandbox too, as at a suspension of the issue (`SuspendIssue`).
    Then it ends the pod's hold streaks; when it cannot end them, it logs the error and goes on, and the streaks stand until the idle pass reads the issue after the next boot.
    A pod it asked nothing is deleted as soon as its last read and its stop are done.
@@ -9190,6 +9194,7 @@ When the wait ends after the daemon answered with the release, between two reads
 A release that stopped short names why (`result.failure`), such as a list of the project's Sandboxes that it could not read, and still has a line for each claim of the project it was to stop.
 A pod deleted with work lost does not change the exit code.
 `--dry-run` reads the workspaces as the release would, a pod in which no role process runs through its launcher, and prints each Sandbox with the outcome a release would give it now, the roles it would ask (`a release would ask …`), and the claims it would stop, each line ending `(the next boot would start it)`, or `operator (the next boot does not start it)` for a claim of a pod a release would leave.
+It reads no record of a replacement (`pod_replacements`), so it does not show a pod that a release would leave over such a record (step 4).
 It names the roles a release would ask for each pod whose workspace holds unpushed commits, whose shim refused the read, that has a role in a turn, or that has a role reporting running background work, as step 3 reads them.
 It asks, stops and saves nothing, and exits 0 when the daemon answers with a dry run.
 When `--wait` ends before the daemon answers, it exits 1 and says that a dry run records and starts nothing.

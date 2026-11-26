@@ -1,4 +1,4 @@
 {
   "code": "PROJECT_RELEASING",
-  "error": "project release 3 runs (started 2026-11-15T08:50:00Z, bound 2026-11-15T09:20:00Z): it reads each pod's unpushed work through a running role and asks those roles to push it, and a pause would stop them, so the release would delete their pods unread; nothing was paused and no role was stopped. Pause once the release has finished (legion project release reads it)"
+  "error": "project release 3 runs (started 2026-11-15T08:50:00Z, bound 2026-11-15T09:20:00Z): it reads each pod's unpushed work through a running role and asks those roles to push it, and a pause would stop them, so the release would read their pods only through their launchers, with a narrower count, and delete them with nobody asked to push; nothing was paused and no role was stopped. Pause once the release has finished (legion project release reads it)"
 }

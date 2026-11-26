@@ -2996,10 +2996,16 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 // sweepOnce is one pass of the sweep (reconcileOrphans). While the project release holds every
 // start, the pass skips each act of it that makes a pod or starts a role: the orphan
 // reconciliation, which makes and repairs the repository caches as it sweeps them, the
-// stale-plugin refresh, which relaunches, and the pod update sweep, which replaces pods. The
-// stall backstop and the silence report still run: neither makes a pod itself, and what each
-// starts is held where it starts — the launch check refuses the backstop's relaunch, and the
-// outbox holds the starts the silence report's facts queue.
+// stale-plugin refresh, which relaunches, and the pod update sweep, which replaces pods. It reads
+// the mark and runs those acts under the mark's sweep lock (projectRelease.sweep), which the
+// release takes once it has set the mark (projectRelease.awaitSweep), so the release waits for a
+// pass in flight that read the mark clear, and records, reads, asks and deletes nothing until that
+// pass has ended those acts: a pod update round of it writes no record of a replacement after the
+// release's settle read the records of its pod, and ends no round as a replacement made over the
+// pod the release deleted. The stall backstop and the silence report run outside that lock, and
+// still run while the mark holds: neither makes a pod itself, and what each starts is held where
+// it starts — the launch check refuses the backstop's relaunch, and the outbox holds the starts
+// the silence report's facts queue.
 func (s *supervision) sweepOnce(ctx context.Context) {
 	claims, err := s.supervisor.Claims(ctx)
 	if err != nil {
@@ -3008,13 +3014,13 @@ func (s *supervision) sweepOnce(ctx context.Context) {
 		}
 		return
 	}
-	if !s.plan.release.held() {
+	s.plan.release.sweep(func() {
 		if err := s.runtime.ReconcileOrphans(ctx, knownClaims(claims), orphanGrace); err != nil && ctx.Err() == nil {
 			s.log.Error("reconcile orphans", "error", err)
 		}
 		s.refreshStalePlugins(claims, "sweep")
 		s.reconcilePodUpdates(ctx, claims)
-	}
+	})
 	s.backstopStalledTurns(ctx, claims)
 	s.tellSilentPhaseWorkers(ctx, claims)
 }

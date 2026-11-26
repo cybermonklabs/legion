@@ -30,10 +30,13 @@ body: |-
   its disk, and the claims that ran there stay held for an operator.
   Before it deletes an issue pod, under the pod's launch turn, the release settles each standing
   record of a replacement of that pod that an update round or a launch wrote before acting: it
-  forgets a record whose act the cluster shows was not made, so the next boot tells the issue's
-  architect of no replacement that never took the pod, keeps one whose act was made, and leaves
-  the pod, with a reason naming the record's operation, where the daemon cannot say whether the
-  act was made or cannot read or forget the record.
+  forgets a record whose act the cluster shows was not made, so the next boot does not tell the
+  issue's architect of a replacement that never took the pod, and keeps one whose act was made. It
+  leaves the pod where the daemon cannot say whether a record's act was made or cannot read that
+  act or forget the record, with a reason naming the record's operation, and where it cannot read
+  the records at all, with a reason saying so; a record forgotten before a forget that failed
+  stays forgotten. A pod update sweep that began before the release is waited for before the
+  release records itself, so none of its rounds writes such a record after the settle.
   A notice, role message, phase-ended message, hook prompt, merge-queue removal message, merge
   holds change message or merge-forward message held through the release reaches its claim once
   the next boot's start of it holds its role again. The controller's `retry`, `resume_agent` and

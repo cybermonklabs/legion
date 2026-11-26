@@ -253,7 +253,7 @@ func (s *server) pauseProject(w http.ResponseWriter, r *http.Request, answer Ans
 		release := releasing.Release
 		s.log.Info("api: refused a pause: a project release runs", "release", release.ID, "by", string(by.Kind), "by_session", by.Session)
 		s.writeFailure(w, r, http.StatusConflict, pause.CodeReleasing, fmt.Sprintf(
-			"project release %d runs (started %s, bound %s): it reads each pod's unpushed work through a running role and asks those roles to push it, and a pause would stop them, so the release would delete their pods unread; nothing was paused and no role was stopped. Pause once the release has finished (legion project release reads it)",
+			"project release %d runs (started %s, bound %s): it reads each pod's unpushed work through a running role and asks those roles to push it, and a pause would stop them, so the release would read their pods only through their launchers, with a narrower count, and delete them with nobody asked to push; nothing was paused and no role was stopped. Pause once the release has finished (legion project release reads it)",
 			release.ID, release.StartedAt.UTC().Format(time.RFC3339), release.BoundAt.UTC().Format(time.RFC3339)))
 	default:
 		s.logRequestFailure(r, err, "api: the project's pause failed", "by", string(by.Kind), "by_session", by.Session)

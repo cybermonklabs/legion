@@ -81,11 +81,12 @@ func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authoriz
 // Secrets, which records that delete (annotate, secretsReleasedAnnotation) and changes no mode.
 // It answers true once it has deleted or kept the Sandbox it found, and false where it acted on
 // nothing (runtime.IssueReleaser), the released kept Sandbox read off the object the API answered
-// (releasedKept). Each of hooks — a release's writing, a close's settle — runs once that Sandbox
-// is found and is this call's to act on, just before suspendOver, the first write, in order and
-// under the turn, handed the read of a recorded act on the Sandbox (actState), which takes no turn
-// again; the first error ends the call before any write. A delete and a release's record on a kept
-// Sandbox are kept for IssueSandbox until the store shows them (noteTaken).
+// (releasedKept). Each of hooks, a release's writing or the project release's settle
+// (SuspendIssue), runs once that Sandbox is found and is this call's to act on, just before
+// suspendOver, the first write, in order and under the turn, handed the read of a recorded act on
+// the Sandbox (actState), which takes no turn again; the first error ends the call before any
+// write. A delete and a release's record on a kept Sandbox are kept for IssueSandbox until the
+// store shows them (noteTaken).
 func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
 	hooks []func(context.Context, runtime.ActRead) error, keep bool) (bool, error) {
 	act := "suspend"
@@ -131,12 +132,14 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 	if keep {
 		pod = r.storedPod(name)
 	}
-	read := func(ctx context.Context, recorded runtime.RecordedAct) (runtime.ActState, error) {
-		return r.actState(ctx, name, recorded)
-	}
-	for _, hook := range hooks {
-		if err := hook(ctx, read); err != nil {
-			return false, fmt.Errorf("%s issue %s: %w", act, issue, err)
+	if len(hooks) > 0 {
+		read := func(ctx context.Context, recorded runtime.RecordedAct) (runtime.ActState, error) {
+			return r.actState(ctx, name, recorded)
+		}
+		for _, hook := range hooks {
+			if err := hook(ctx, read); err != nil {
+				return false, fmt.Errorf("%s issue %s: %w", act, issue, err)
+			}
 		}
 	}
 	if _, err := r.suspendOver(ctx, s, pod, nil); err != nil {

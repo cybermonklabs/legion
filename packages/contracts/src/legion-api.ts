@@ -2406,7 +2406,8 @@ const legionPauseHeldPod = z.object({
  * `PROJECT_PAUSED` (entry 20261125162422) names the `pause` where one stands and `heldPods`, each pod a
  * pause still holds, where one does: the release of a daemon process that has run none refuses
  * while the project is paused and while a pod that a pause stopped is still held after the resume,
- * since it would delete such a pod unread. A pause while a project release runs answers
+ * since it would read such a pod only through its launcher, with a narrower count, and delete it
+ * with nobody asked to push. A pause while a project release runs answers
  * `PROJECT_RELEASING` (entry 20261125162422), which names nothing beside its sentence, and the sentence
  * names the release. A blank reason's refusal (`PAUSE_REASON_REQUIRED`) names nothing beside its
  * sentence and is the plain refusal (`LegionErrorResponse`). The daemon client reads a refusal's

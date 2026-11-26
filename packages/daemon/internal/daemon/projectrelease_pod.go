@@ -40,7 +40,7 @@ func (r *projectReleaser) readAll(ctx context.Context, run *releaseRun, pods []*
 		go func() {
 			defer wg.Done()
 			ctx := store.ForConcurrentWorker(ctx)
-			if pod.class == releaseUnread {
+			if pod.class == releaseByLauncher {
 				reads[i] = r.launcherRead(ctx, pod.sandbox.Issue)
 			} else {
 				reads[i] = r.readPod(ctx, pod.sandbox.Issue)
@@ -250,7 +250,7 @@ func (r *projectReleaser) takePod(ctx context.Context, run *releaseRun, pod *rel
 	case releaseLeaves:
 		r.leave(ctx, run, pod, pod.why)
 		return
-	case releaseUnread:
+	case releaseByLauncher:
 		r.stopAndDelete(ctx, run, pod, releaseRead{})
 		return
 	}
@@ -626,9 +626,11 @@ func (run *releaseRun) unreached(pod *releasePod) bool {
 //   - An act the runtime cannot say was made, a read that fails and a store that does not answer
 //     leave the pod: the release does not delete over a record it cannot settle.
 //
-// It answers "" once every record of the issue is settled, and otherwise why the pod is left,
-// naming the record's operation and what was uncertain or failed. Every record of the issue is
-// read before any is forgotten, so a pod left for one record forgets none.
+// It answers "" once every record of the issue is settled, and otherwise why the pod is left: that
+// the store could not read the records, with its error, or the operation of the record it could not
+// settle and what was uncertain or failed. Every record of the issue is read before any is
+// forgotten, so a pod left over a record's act forgets none; a forget that fails leaves the pod
+// over its record, and each record forgotten before it stays forgotten.
 func (r *projectReleaser) settleReplacements(ctx context.Context, issue string, read runtime.ActRead) string {
 	standing, err := r.store.PodReplacements(ctx, r.project)
 	if err != nil {
@@ -667,9 +669,10 @@ func (r *projectReleaser) settleReplacements(ctx context.Context, issue string, 
 // and the refusal an earlier read wrote are the last the release knows of the workspace, which
 // went with the pod unread at the end, so the outcome is deleted_read_refused with
 // releaseNoRoleAtLastRead as its reason. A pod no read through a role's shim reached was read
-// through its launcher (launcherRead), and its line takes that read and its reason (writeRead).
+// through its launcher (launcherRead), and its line takes that read and its reason (writeRead):
+// that line holds no count and no refusal (unreached), so the first case never takes it.
 func writeDeleted(line *api.ReleasedSandbox, last releaseRead) {
-	if !last.read && !last.launcher && (line.Commits != nil || line.Refusal != "") {
+	if !last.read && (line.Commits != nil || line.Refusal != "") {
 		line.Outcome, line.Reason = api.ReleaseDeletedReadRefused, releaseNoRoleAtLastRead
 		return
 	}

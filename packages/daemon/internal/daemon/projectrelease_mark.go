@@ -41,6 +41,14 @@ import (
 // boot, which ends the record, starts the claims the release stopped. The zero value holds
 // nothing, and so does a nil mark: a test that builds a part of the daemon by hand reads every
 // start as free.
+//
+// A pass of the sweep reads the mark, and runs the acts it holds, under sweeping (sweep), and the
+// release takes sweeping once it has set the mark (awaitSweep): a pass that read the mark clear
+// before it was set finishes those acts before the release records itself, reads, asks or deletes
+// anything, and every pass after reads the mark set and skips them. So no pod update round writes
+// the record of a replacement (recordRoundReplacement) after the release's settle has read the
+// records of its pod (projectReleaser.settleReplacements), and none ends as a replacement made
+// over a pod the release deleted.
 type projectRelease struct {
 	marked atomic.Bool
 	// hook is the release once its record has committed (recorded), nil before and once unmark
@@ -57,6 +65,10 @@ type projectRelease struct {
 	// held back (supervisor.sendHeldTasks). openSupervision sets it once, at boot, before anything
 	// can set the mark; nil runs nothing.
 	unmarked func()
+	// sweeping is held by a pass of the supervision's sweep across its read of the mark and the
+	// acts the mark holds (sweep), and taken once by the release once it has set the mark
+	// (awaitSweep).
+	sweeping sync.Mutex
 }
 
 // mark sets the mark and reports whether this call set it: a process runs one release, so a mark
@@ -141,6 +153,31 @@ func (r *projectRelease) unmark() {
 // held is whether the project release holds every start now. A nil mark holds nothing.
 func (r *projectRelease) held() bool {
 	return r != nil && r.marked.Load()
+}
+
+// sweep runs acts, the acts of a pass of the supervision's sweep that the mark holds
+// (supervision.sweepOnce), unless the mark is held: it reads the mark and runs acts under
+// sweeping, so a release that sets the mark while acts run waits for them (awaitSweep). A nil mark
+// holds nothing, and acts run.
+func (r *projectRelease) sweep(acts func()) {
+	if r == nil {
+		acts()
+		return
+	}
+	r.sweeping.Lock()
+	defer r.sweeping.Unlock()
+	if !r.marked.Load() {
+		acts()
+	}
+}
+
+// awaitSweep waits for a pass of the sweep that runs the acts the mark holds to finish them
+// (sweep): the release calls it once it has set the mark (projectReleaser.Start), so the pass that
+// read the mark clear has ended its acts when it returns, and every pass after reads the mark set.
+// The section it holds is empty: taking sweeping is the wait.
+func (r *projectRelease) awaitSweep() {
+	r.sweeping.Lock()
+	r.sweeping.Unlock()
 }
 
 // ownRound is the round the release of this process asks its roles under (projectReleaseRound),

@@ -142,11 +142,11 @@ var releaseDeletedOutcomes = []ReleaseOutcome{ReleaseDeletedClean, ReleaseDelete
 // process says that as its reason. The line of a pod no role process ran in at any read gives as
 // its reason that its launcher read the workspace, counting only the commits under a working copy
 // or a local bookmark, which is fewer than a role's shim counts, or that the launcher did not read
-// it and why; several reasons are joined by "; ". OtherImage marks an issue
-// pod whose pod runs an image other than the daemon's own. Asked is, until the bound, each role the
-// release's ask was written to, and from the bound only those of them the ask reached a session of
-// before the bound or that answered; on a dry run it is each role a release would ask. Each carries
-// when it answered or whether the bound passed first.
+// it and why; several reasons are joined by "; ". OtherImage marks an issue pod whose pod runs an
+// image other than the daemon's own. Asked is, until the bound, each role the release's ask was
+// written to, and from the bound only those of them the ask reached a session of before the bound
+// or that answered; on a dry run it is each role a release would ask. Each carries when it answered
+// or whether the bound passed first.
 type ReleasedSandbox struct {
 	Name               string                     `json:"name"`
 	Kind               runtime.ProjectSandboxKind `json:"kind"`
