@@ -5,10 +5,13 @@
 package judge
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,8 +23,10 @@ import (
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
@@ -44,18 +49,32 @@ const (
 	testAnswerText    = "Yes, on this issue's own runs."
 )
 
-// testRules give the judge 900 seconds of testSecret and 300 of shortJudgeSecret, each with its
-// guidance, and nothing of any other name. Each entry binds a host, as every proxy block does.
-func testRules() proxyrules.Rules {
-	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-		{Name: testSecret, Hosts: []string{"api.deel.example"}, Judge: new(uint32(900)), Guidance: testGuidance},
-		{Name: shortJudgeSecret, Hosts: []string{"release.example"}, Judge: new(uint32(shortJudgeSeconds)), Guidance: shortGuidance},
-		{Name: "NO_JUDGE_KEY", Hosts: []string{"other.example"}},
-	}}
+// testPolicy is a live policy whose tags give the judge 900 seconds of testSecret and 300 of
+// shortJudgeSecret, each with its guidance, and nothing of NO_JUDGE_KEY or any other name.
+func testPolicy(t *testing.T) *policy.Current {
+	t.Helper()
+	return judgedPolicy(t, testGuidance)
+}
+
+// judgedPolicy is testPolicy with guidance as testSecret's guidance tag.
+func judgedPolicy(t *testing.T, guidance string) *policy.Current {
+	t.Helper()
+	return guidedPolicy(t, guidance, shortGuidance)
+}
+
+// guidedPolicy is testPolicy with first as testSecret's guidance tag and second as
+// shortJudgeSecret's. Both keys are testApprover's own.
+func guidedPolicy(t *testing.T, first, second string) *policy.Current {
+	t.Helper()
+	return policytest.Current(t, secrets.NewLocal(
+		policytest.Judged(policytest.Secret(testSecret, testApprover, policy.TierHuman, "v"), 900, first),
+		policytest.Judged(policytest.Secret(shortJudgeSecret, testApprover, policy.TierHuman, "v"), shortJudgeSeconds, second),
+		policytest.Secret("NO_JUDGE_KEY", testApprover, policy.TierHuman, "v"),
+	))
 }
 
 // agentKey is a key the requesting session gets at once, which a request names beside a judge
-// key: it needs no decision, the judge decides nothing of it, and the rules give it no entry.
+// key: it needs no decision, the judge decides nothing of it, and it carries no judge tag.
 const agentKey = "AGENT_KEY"
 
 // pending is a request the judge holds: one judge key, which is the key it decides, a signed
@@ -217,6 +236,14 @@ type modelStandIn struct {
 	reply  string
 	delay  time.Duration
 	tokens chatTokens
+	// replies, when it names the one key a call decides, is that call's reply in place of reply,
+	// so a test can have one key's call grant and another's deny; delays, the same for delay, so
+	// one key's call can run past the model's bound while another's answers.
+	replies map[string]string
+	delays  map[string]time.Duration
+	// obey, when set, answers each call as a model that obeys every guidance in its prompt
+	// would (proxyrulestest.ObeyedVerdict), in place of reply.
+	obey bool
 }
 
 // chatTokens are the counts the stand-in's usage chunk reports.
@@ -245,6 +272,23 @@ func (m *modelStandIn) serve(w http.ResponseWriter, r *http.Request) {
 	m.bodies = append(m.bodies, body)
 	m.authorizations = append(m.authorizations, r.Header.Get("Authorization"))
 	status, reply, delay, tokens := m.status, m.reply, m.delay, m.tokens
+	if data, err := callData(body); err == nil {
+		if len(data.Keys) == 1 {
+			if own, ok := m.replies[data.Keys[0].Name]; ok {
+				reply = own
+			}
+			if own, ok := m.delays[data.Keys[0].Name]; ok {
+				delay = own
+			}
+		}
+		if m.obey {
+			keys := make([]proxyrulestest.GuidedKey, 0, len(data.Keys))
+			for _, k := range data.Keys {
+				keys = append(keys, proxyrulestest.GuidedKey{Name: k.Name, Guidance: k.Guidance})
+			}
+			reply = verdictReply(proxyrulestest.ObeyedVerdict(keys, data.Reason))
+		}
+	}
 	m.mu.Unlock()
 	if delay > 0 {
 		select {
@@ -313,49 +357,88 @@ func (m *modelStandIn) presented() []string {
 // data is the Data object the judge sent with its first call, read back out of the user message.
 func (m *modelStandIn) data(t *testing.T) Data {
 	t.Helper()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.bodies) == 0 {
+	every := m.everyData(t)
+	if len(every) == 0 {
 		t.Fatal("the model was never asked, so it got no data")
 	}
+	return every[0]
+}
+
+// everyData is the Data object of every call the model got, in the order the calls arrived.
+func (m *modelStandIn) everyData(t *testing.T) []Data {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var every []Data
+	for _, body := range m.bodies {
+		data, err := callData(body)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, body)
+		}
+		every = append(every, data)
+	}
+	return every
+}
+
+// callBodies is the raw body of every call the model got, in order.
+func (m *modelStandIn) callBodies() [][]byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([][]byte(nil), m.bodies...)
+}
+
+// callData reads the Data object back out of one Chat Completions request body's user message.
+func callData(body []byte) (Data, error) {
 	var call struct {
 		Messages []struct {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		} `json:"messages"`
 	}
-	if err := json.Unmarshal(m.bodies[0], &call); err != nil {
-		t.Fatalf("the model call is no JSON object: %v\n%s", err, m.bodies[0])
+	if err := json.Unmarshal(body, &call); err != nil {
+		return Data{}, fmt.Errorf("the model call is no JSON object: %w", err)
 	}
-	var data Data
 	for _, message := range call.Messages {
 		if message.Role != "user" {
 			continue
 		}
-		if err := json.Unmarshal([]byte(contentText(t, message.Content)), &data); err != nil {
-			t.Fatalf("the user message is no Data object: %v\n%s", err, message.Content)
+		text, err := messageText(message.Content)
+		if err != nil {
+			return Data{}, err
 		}
-		return data
+		var data Data
+		if err := json.Unmarshal([]byte(text), &data); err != nil {
+			return Data{}, fmt.Errorf("the user message is no Data object: %w", err)
+		}
+		return data, nil
 	}
-	t.Fatalf("the model call carries no user message:\n%s", m.bodies[0])
-	return data
+	return Data{}, errors.New("the model call carries no user message")
 }
 
 // contentText is a chat message's text, whether the provider shape carried it as one string or
 // as a list of parts.
 func contentText(t *testing.T, content json.RawMessage) string {
 	t.Helper()
+	text, err := messageText(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return text
+}
+
+// messageText is contentText for a caller with no t: the text, or why there is none.
+func messageText(content json.RawMessage) (string, error) {
 	var text string
 	if json.Unmarshal(content, &text) == nil {
-		return text
+		return text, nil
 	}
 	var parts []struct {
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(content, &parts); err != nil || len(parts) == 0 {
-		t.Fatalf("a message's content is neither a string nor parts: %s", content)
+		return "", fmt.Errorf("a message's content is neither a string nor parts: %s", content)
 	}
-	return parts[0].Text
+	return parts[0].Text, nil
 }
 
 // fakeRequests is the request machine as the judge sees it: it answers the policy question a
@@ -382,7 +465,7 @@ type fakeRequests struct {
 	projectReasons []string
 	projectTakes   time.Duration
 	// state and stateErr are what JudgeRequestState answers, and stateAsked how many
-	// times a run asked it.
+	// times a run asked it. LogJudged reads state too, for the verdict of the row it writes.
 	state      string
 	stateErr   error
 	stateAsked int
@@ -406,10 +489,37 @@ type fakeRequests struct {
 	// (JudgePolicy and JudgeProject), the method's name and whether its context was one
 	// requests.JudgeDispatch made.
 	bounded []boundedCall
-	// applied, logged and denied are the detail objects of each write, in order, and refusals
-	// the reason each denial gave its agent.
+	// applied, logged and denied are the rows of each write, in order (written), and refusals
+	// the reason each denial gave its agent; given is every verdict the run itself gave a
+	// write, which the machine never takes.
 	applied, logged, denied []map[string]any
 	refusals                []string
+	given                   []string
+}
+
+// written is the row a write of this machine keeps: what the run gave it, with the verdict the
+// row's own transaction sets, as the machine's do (decider.judgedRow, LogJudged), and none where
+// that transaction wrote nothing. A verdict the run gave is recorded in given and not kept.
+func (f *fakeRequests) written(judged map[string]any, verdict string) map[string]any {
+	row := maps.Clone(judged)
+	if row == nil {
+		row = map[string]any{}
+	}
+	if given, ok := row["verdict"]; ok {
+		f.given = append(f.given, fmt.Sprint(given))
+		delete(row, "verdict")
+	}
+	if verdict != "" {
+		row["verdict"] = verdict
+	}
+	return row
+}
+
+// givenVerdicts is every verdict the run gave a write of this machine.
+func (f *fakeRequests) givenVerdicts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.given...)
 }
 
 func newRequests() *fakeRequests {
@@ -523,7 +633,11 @@ func (f *fakeRequests) ApplyJudgeDecision(ctx context.Context, recordID, modelID
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.applied = append(f.applied, judged)
+	verdict := requests.JudgedGranted
+	if f.applyErr != nil {
+		verdict = "" // the transaction rolled back and wrote nothing
+	}
+	f.applied = append(f.applied, f.written(judged, verdict))
 	if f.onApply != nil {
 		f.onApply()
 	}
@@ -534,21 +648,28 @@ func (f *fakeRequests) ApplyJudgeDecision(ctx context.Context, recordID, modelID
 }
 
 // LogJudged writes the row, or answers what wrote answers in its place: JudgedAlreadyApplied
-// writes nothing, as the machine does when the approval's own row is there.
-func (f *fakeRequests) LogJudged(ctx context.Context, _, _ string, judged map[string]any) (requests.JudgedWrite, error) {
+// writes nothing, as the machine does when the approval's own row is there. The row's verdict is
+// what the machine's is: applied unknown where wrote says so, else handed to the person for a
+// request still pending (state), else not pending.
+func (f *fakeRequests) LogJudged(ctx context.Context, _, _ string, judged map[string]any) (requests.JudgedLog, error) {
 	if err := f.transact(ctx); err != nil {
-		return "", err
+		return requests.JudgedLog{}, err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	wrote := f.wrote
-	if wrote == "" {
-		wrote = requests.JudgedWritten
+	wrote := cmp.Or(f.wrote, requests.JudgedWritten)
+	if wrote == requests.JudgedAlreadyApplied {
+		return requests.JudgedLog{Write: wrote}, f.logErr
 	}
-	if wrote != requests.JudgedAlreadyApplied {
-		f.logged = append(f.logged, judged)
+	verdict := requests.JudgedNotPending
+	switch {
+	case wrote == requests.JudgedAppliedUnknown:
+		verdict = requests.AppliedUnknown
+	case f.state == "pending":
+		verdict = requests.JudgedHandedOver
 	}
-	return wrote, f.logErr
+	f.logged = append(f.logged, f.written(judged, verdict))
+	return requests.JudgedLog{Write: wrote, Verdict: verdict}, f.logErr
 }
 
 func (f *fakeRequests) DenyJudged(ctx context.Context, recordID, modelID string, judged map[string]any, why string) (requests.Decision, error) {
@@ -557,7 +678,11 @@ func (f *fakeRequests) DenyJudged(ctx context.Context, recordID, modelID string,
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.denied = append(f.denied, judged)
+	verdict := requests.JudgedRefused
+	if f.denyErr != nil {
+		verdict = "" // the transaction rolled back and wrote nothing
+	}
+	f.denied = append(f.denied, f.written(judged, verdict))
 	f.refusals = append(f.refusals, why)
 	if f.denyErr != nil {
 		return requests.Decision{}, f.denyErr
@@ -603,11 +728,12 @@ func tokenFile(t *testing.T, token string) string {
 	return path
 }
 
-// testOptions judges with the three stand-ins, under the rules that give the judge testSecret.
+// testOptions judges with the three stand-ins, under the policy whose tags give the judge
+// testSecret.
 func testOptions(t *testing.T, d *dispatchStandIn, m *modelStandIn, r *fakeRequests) Options {
 	t.Helper()
 	return Options{
-		Rules:    testRules(),
+		Policy:   testPolicy(t),
 		Dispatch: Dispatch{BaseURL: d.server.URL, Account: ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", tokenFile(t, "projected-token")), HTTP: d.server.Client()},
 		Model: Model{
 			ID: testModel,
