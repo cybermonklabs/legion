@@ -28,7 +28,9 @@ const firstDay = 24 * time.Hour
 // the wait of urgent work over its first day apart. It is the one code every scorecard is read by,
 // the record's (Score) and a replay's two timelines' (Run), so a gap between them is a gap of the
 // timelines and not of two readings. It fills the measures alone; the run or the record names the
-// rest.
+// rest. Priority taken in today's line's order and the wait of urgent work read each issue at the
+// priority Dispatch resolves for it, under every rule, and a timeline that lacks the history of an
+// ancestor such a priority rests on (Timeline.MissingAncestors) gives neither: 0 and no priority.
 //
 // It reads each state of the timeline once, in time order, after one sort of all of them, and
 // keeps the pairs of priority taken by the places of their members in each of two orders of the
@@ -95,9 +97,13 @@ func (m measuring) span(from, to time.Time) Scorecard {
 	card.PastReviewNotHolding = occupy(&counted.pastReviewNotHolding)
 	card.SlotHoursInTurn = counted.inTurn.hours
 	card.SlotHoursNoTurn = counted.noTurn.hours
+	// Priority taken in today's line's order bands each issue by the priority Dispatch resolves for
+	// it, which a timeline that lacks an ancestor it rests on does not give: it stands at 0 there.
 	if span > 0 {
 		card.PriorityTaken = counted.pairs[byRank].priority / span
-		card.PriorityTakenBanded = counted.pairs[byBand].priority / span
+		if len(m.tl.MissingAncestors) == 0 {
+			card.PriorityTakenBanded = counted.pairs[byBand].priority / span
+		}
 	}
 	within := func(at time.Time) bool { return !at.Before(from) && at.Before(to) }
 	var slotWaits []float64
@@ -192,16 +198,21 @@ type urgentReading struct {
 
 // urgentReadings is the waits of urgent work over the timeline, by priority in the order of
 // urgentPriorities: each issue whose wait as urgent work begins in the span (Course.Todo), counted
-// in the highest of its own Dispatch priorities from that moment to its first slot, the priority at
-// the slot's moment included; with the minutes from that moment to its first slot, the first one
-// given at or after it, and to its done, its first move to done at or after it, each by the end of
-// the run (Timeline.End), and to that end, a cut wait, where it has none by then.
+// in the highest of the priorities Dispatch resolves for it from that moment to its first slot, the
+// priority at the slot's moment included; with the minutes from that moment to its first slot, the
+// first one given at or after it, and to its done, its first move to done at or after it, each by
+// the end of the run (Timeline.End), and to that end, a cut wait, where it has none by then. A
+// timeline that lacks an ancestor a priority rests on (Timeline.MissingAncestors) counts no issue
+// in any priority: the input the reading rests on is missing.
 func (m measuring) urgentReadings() [len(urgentPriorities)]urgentReading {
+	var read [len(urgentPriorities)]urgentReading
+	if len(m.tl.MissingAncestors) > 0 {
+		return read
+	}
 	end := m.tl.End
 	if end.Before(m.tl.To) {
 		end = m.tl.To
 	}
-	var read [len(urgentPriorities)]urgentReading
 	for _, key := range m.keys {
 		c := m.tl.Issues[key]
 		if c.Todo.IsZero() {

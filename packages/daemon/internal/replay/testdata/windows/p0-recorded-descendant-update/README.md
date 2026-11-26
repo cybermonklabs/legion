@@ -57,7 +57,6 @@ The span is 60 minutes. No issue finishes, returns a slot, waits on another issu
 ## What the window shows
 
 The child changes to P0 at Dispatch's recorded update, and the rule with the new P0 start starts it at that update's pass despite a full regular cap, from the recorded value alone.
-`pending_test.go` skips the window by name until the replay reads the resolved priority (plan task t39).
 
 ## The signals, worked by hand
 

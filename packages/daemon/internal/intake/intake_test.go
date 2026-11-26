@@ -818,13 +818,14 @@ func settingsSubject(project string) string {
 	return "notifications.dispatch.project." + project + ".settings.repo_project.updated"
 }
 
-// A boot narrows the Dispatch consumer an earlier daemon made to the issue events and the subject of
-// Dispatch's settings.repo_project.updated: the consumer is updated in place, its position kept, and
-// its filters read back exactly the issue events and this project's default assignee subject, the
-// one setting the approvals signal reads. An event Dispatch then publishes on the repo-project
-// settings subject is never delivered: once an issue event published after it is acknowledged,
-// nothing is pending or awaiting its acknowledgement, and processed_events holds a row for the issue
-// events alone.
+// A boot narrows the Dispatch consumer an earlier daemon made to the issue events, the project's
+// merge holds document (mergeHoldsSubject) and this project's default assignee subject, the one
+// setting the approvals signal reads: the consumer that heard the subject of Dispatch's
+// settings.repo_project.updated beside the issue events is updated in place, its position kept,
+// and its filters read back exactly those three. An event Dispatch then publishes on the
+// repo-project settings subject is never delivered: once an issue event published after it is
+// acknowledged, nothing is pending or awaiting its acknowledgement, and processed_events holds a
+// row for the issue events alone.
 //
 // The read-back of the filters is the control: with the settings subject put back among them, and
 // no decode of its event left (A8: no branch stays for it), the event is delivered and terminated
@@ -851,7 +852,7 @@ func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
 		t.Fatalf("OpenConsumers over the earlier daemon's consumer: %v", err)
 	}
 	narrowed := consumerInfo(t, stream, dispatchConsumerName(spec.Project))
-	if want := []string{"notifications.dispatch.issue.>", defaultAssigneeSubject(spec.Project)}; narrowed.Config.FilterSubject != "" || !slices.Equal(narrowed.Config.FilterSubjects, want) {
+	if want := []string{"notifications.dispatch.issue.>", "notifications.dispatch.document.CAPTURE.merge-holds-md.>", defaultAssigneeSubject(spec.Project)}; narrowed.Config.FilterSubject != "" || !slices.Equal(narrowed.Config.FilterSubjects, want) {
 		t.Fatalf("Dispatch consumer filters = %q %v, want exactly %v", narrowed.Config.FilterSubject, narrowed.Config.FilterSubjects, want)
 	}
 	if narrowed.NumPending != 1 || narrowed.Delivered.Stream != 0 {
@@ -908,7 +909,7 @@ func TestTheBootAddsTheDefaultAssigneeSubjectToTheDispatchConsumerAndKeepsItsPos
 		t.Fatalf("OpenConsumers over the earlier daemon's consumer: %v", err)
 	}
 	updated := consumerInfo(t, stream, dispatchConsumerName(spec.Project))
-	if want := []string{"notifications.dispatch.issue.>", defaultAssigneeSubject(spec.Project)}; updated.Config.FilterSubject != "" || !slices.Equal(updated.Config.FilterSubjects, want) {
+	if want := []string{"notifications.dispatch.issue.>", mergeHoldsSubject(spec.Project), defaultAssigneeSubject(spec.Project)}; updated.Config.FilterSubject != "" || !slices.Equal(updated.Config.FilterSubjects, want) {
 		t.Fatalf("Dispatch consumer filters = %q %v, want exactly %v", updated.Config.FilterSubject, updated.Config.FilterSubjects, want)
 	}
 	if updated.NumPending != 1 || updated.Delivered.Stream != 0 {
@@ -950,6 +951,169 @@ func TestTheBootAddsTheDefaultAssigneeSubjectToTheDispatchConsumerAndKeepsItsPos
 	if moved := facts[1].(DispatchDefaultAssignee); moved.Assignee != "smoke" || moved.Seq != 8 {
 		t.Fatalf("the default assignee fact = %+v, want smoke at the event's sequence 8", moved)
 	}
+}
+
+// Dispatch publishes each event of a project document on
+// notifications.dispatch.document.<KEY>.<slug>.<type>. The decoder reads each event that changes
+// the daemon's own project's merge holds document (its creation and a new version) as the
+// project's merge holds change, under the Dispatch event's id. A rename changes the title alone
+// and leaves the slug and every line, Dispatch removes no project document, a person's edit
+// settling (artifact.human_edited, which follows that edit's own artifact.version), an approval
+// and a request for changes are no fact, since each would tell every role a second time or of no
+// change of a hold; nor is an event of another document, of another project's merge holds
+// document, or of another kind on the document, such as a comment. A payload that names another
+// project or another type than its subject, or no document, is refused.
+//
+// The negative control is artifact.renamed and artifact.removed back in mergeHoldsChangeTypes:
+// their two rows then decode to a MergeHoldsChanged.
+func TestAMergeHoldsDocumentEventIsTheProjectsMergeHoldsChange(t *testing.T) {
+	change := MergeHoldsChanged{Project: "CAPTURE", Event: "dispatch-71"}
+	for _, tc := range []struct {
+		name, project, slug, eventType string
+		want                           Fact
+	}{
+		{"a new version of the document", "CAPTURE", "merge-holds-md", "artifact.version", change},
+		{"the document's creation", "CAPTURE", "merge-holds-md", "artifact.created", change},
+		{"the document's rename", "CAPTURE", "merge-holds-md", "artifact.renamed", nil},
+		{"the document's removal", "CAPTURE", "merge-holds-md", "artifact.removed", nil},
+		{"a person's edit of the document settling", "CAPTURE", "merge-holds-md", "artifact.human_edited", nil},
+		{"an approval of the document", "CAPTURE", "merge-holds-md", "artifact.approved", nil},
+		{"a request for changes to the document", "CAPTURE", "merge-holds-md", "artifact.changes_requested", nil},
+		{"another document of the project", "CAPTURE", "runbook-md", "artifact.version", nil},
+		{"another project's merge holds", "OTHER", "merge-holds-md", "artifact.version", nil},
+		{"a comment on the document", "CAPTURE", "merge-holds-md", "comment.created", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := decodeMessage(documentSubject(tc.project, tc.slug, tc.eventType), "CAPTURE", capturedRepositories,
+				documentEnvelope(t, tc.project, tc.eventType, true))
+			if err != nil {
+				t.Fatalf("decode the document event: %v", err)
+			}
+			if !reflect.DeepEqual(got.Fact, tc.want) {
+				t.Fatalf("fact = %#v, want %#v", got.Fact, tc.want)
+			}
+			if got.EventID != "dispatch-71" {
+				t.Fatalf("event id = %q, want the Dispatch event's dispatch-71, which ApplyFact records", got.EventID)
+			}
+		})
+	}
+	subject := documentSubject("CAPTURE", "merge-holds-md", "artifact.version")
+	for _, tc := range []struct {
+		name string
+		data []byte
+	}{
+		{"a payload of another project", documentEnvelope(t, "OTHER", "artifact.version", true)},
+		{"a payload of another type", documentEnvelope(t, "CAPTURE", "artifact.renamed", true)},
+		{"a payload that names no document", documentEnvelope(t, "CAPTURE", "artifact.version", false)},
+	} {
+		if _, err := decodeMessage(subject, "CAPTURE", capturedRepositories, tc.data); err == nil {
+			t.Errorf("%s on %s decoded, want it refused", tc.name, subject)
+		}
+	}
+	if _, err := decodeMessage("notifications.dispatch.document.CAPTURE.merge-holds-md", "CAPTURE", capturedRepositories,
+		documentEnvelope(t, "CAPTURE", "artifact.version", true)); err == nil {
+		t.Error("a document subject that names no event type decoded, want it refused")
+	}
+}
+
+// The Dispatch consumer hears every event of the project's merge holds document beside the issue
+// events, and nothing of another document or of another project's merge holds. A boot over an
+// earlier daemon's consumer, which filtered on the issue events alone, adds the document's subject
+// and keeps the consumer's position: the backlog the consumer had stays pending, and the
+// document's event published after the boot is pending beside it.
+func TestTheDispatchConsumerHearsTheProjectsMergeHoldsDocument(t *testing.T) {
+	ctx := context.Background()
+	js, stream := testJetStream(t)
+	spec := consumerSpec(&lockedBuffer{})
+	name := dispatchConsumerName(spec.Project)
+	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	if _, err := stream.CreateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable: name, FilterSubjects: []string{"notifications.dispatch.issue.>"},
+		AckPolicy: jetstream.AckExplicitPolicy, AckWait: spec.AckWait,
+	}); err != nil {
+		t.Fatalf("create the earlier daemon's consumer: %v", err)
+	}
+	if pending := consumerInfo(t, stream, name).NumPending; pending != 1 {
+		t.Fatalf("the earlier daemon's consumer has %d messages pending, want its backlog of 1", pending)
+	}
+	if _, err := OpenConsumers(ctx, js, migratedPool(t), spec); err != nil {
+		t.Fatalf("OpenConsumers over the earlier consumer: %v", err)
+	}
+	info := consumerInfo(t, stream, name)
+	want := []string{"notifications.dispatch.issue.>", "notifications.dispatch.document.CAPTURE.merge-holds-md.>", defaultAssigneeSubject(spec.Project)}
+	if !slices.Equal(info.Config.FilterSubjects, want) {
+		t.Fatalf("Dispatch consumer filters = %v, want %v", info.Config.FilterSubjects, want)
+	}
+	if info.NumPending != 1 {
+		t.Fatalf("the updated consumer has %d messages pending, want the backlog of 1 it kept", info.NumPending)
+	}
+	publish(t, js, documentSubject("OTHER", "merge-holds-md", "artifact.version"), documentEnvelope(t, "OTHER", "artifact.version", true))
+	publish(t, js, documentSubject("CAPTURE", "runbook-md", "artifact.version"), documentEnvelope(t, "CAPTURE", "artifact.version", true))
+	publish(t, js, documentSubject("CAPTURE", "merge-holds-md", "artifact.version"), documentEnvelope(t, "CAPTURE", "artifact.version", true))
+	if pending := consumerInfo(t, stream, name).NumPending; pending != 2 {
+		t.Fatalf("the consumer has %d messages pending, want 2: its backlog and the project's merge holds event, and no other document's", pending)
+	}
+}
+
+// A merge holds change is a workflow fact: the consumer applies it through ApplyFact under the
+// Dispatch event's id, so the same event delivered again applies nothing a second time.
+func TestConsumeAppliesAMergeHoldsChangeOnce(t *testing.T) {
+	pool := migratedPool(t)
+	createWrites(t, pool)
+	js, stream := testJetStream(t)
+	spec := consumerSpec(&lockedBuffer{})
+	stop := startConsume(t, js, spec, pool, handlerFunc(func(ctx context.Context, tx pgx.Tx, fact Fact) (Result, error) {
+		_, err := tx.Exec(ctx, `insert into intake_test_writes (handler) values ($1)`, fmt.Sprintf("%#v", fact))
+		return Result{}, err
+	}))
+	defer stop()
+
+	subject := documentSubject("CAPTURE", "merge-holds-md", "artifact.version")
+	data := documentEnvelope(t, "CAPTURE", "artifact.version", true)
+	publish(t, js, subject, data)
+	last := publish(t, js, subject, data)
+	assertAcknowledgedThrough(t, stream, dispatchConsumerName(spec.Project), last)
+	var applied []string
+	rows, err := pool.Query(context.Background(), `select handler from intake_test_writes order by id`)
+	if err != nil {
+		t.Fatalf("read the applied facts: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var fact string
+		if err := rows.Scan(&fact); err != nil {
+			t.Fatalf("scan an applied fact: %v", err)
+		}
+		applied = append(applied, fact)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate the applied facts: %v", err)
+	}
+	want := []string{fmt.Sprintf("%#v", MergeHoldsChanged{Project: "CAPTURE", Event: "dispatch-71"})}
+	if !slices.Equal(applied, want) {
+		t.Fatalf("applied %v, want the merge holds change once", applied)
+	}
+}
+
+func documentSubject(project, slug, eventType string) string {
+	return "notifications.dispatch.document." + project + "." + slug + "." + eventType
+}
+
+// documentEnvelope is a Dispatch event of a project document as the outbox publishes it
+// (packages/envoy/internal/dispatch/outbox/publisher.go, envelope): the event itself, its
+// artifact_id the document's, a session's actor as the controller's edit has, and Dispatch's
+// artifact.version payload (docs.ArtifactVersionEventPayload). Without withDocument the event's
+// artifact_id is null, which no document event carries.
+func documentEnvelope(t *testing.T, project, eventType string, withDocument bool) []byte {
+	t.Helper()
+	artifact := `"a4cf7999-cab2-4326-939d-cb1e76733cc3"`
+	if !withDocument {
+		artifact = "null"
+	}
+	return envelopeJSON(t, "dispatch-71", "dispatch", fmt.Sprintf(`{"id":71,"issue_key":null,"artifact_id":%s,"project":%q,"seq":4,"type":%q,`+
+		`"actor":{"kind":"session","id":"ses_controller"},"notify":false,"created_at":"2026-11-15T10:00:00Z",`+
+		`"payload":{"artifact_id":"a4cf7999-cab2-4326-939d-cb1e76733cc3","name":"merge-holds.md","version":{"number":2,"named":true}},"quiet":false}`,
+		artifact, project, eventType))
 }
 
 // The repositories GitHub intake hears change at runtime (SetRepositories): the
@@ -2155,8 +2319,10 @@ func TestDecodeReopenedPullRequestAsOpened(t *testing.T) {
 
 // A Dispatch event names who wrote it. A session actor's id is decoded, so the workflow can tell a
 // write by an agent holding a claim, or by an outside session, from a person's move. A user actor
-// decodes none, and neither does the daemon's own session, legion-daemon:<PROJECT>: both are the
-// writes the workflow acts on.
+// decodes none, and neither does the daemon's own session, legion-daemon:<PROJECT> of its own
+// project: both are the writes the workflow acts on. The daemon of another project writes an issue
+// of this project as its own session when it runs a claim on one, and that session decodes as any
+// other session does. An event of another project's issue is no fact, whoever wrote it.
 func TestDecodeDispatchIssueNamesASessionActor(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile("testdata/dispatch/issue-updated.json")
@@ -2201,6 +2367,33 @@ func TestDecodeDispatchIssueNamesASessionActor(t *testing.T) {
 	}
 	if issue, ok := daemon.Fact.(DispatchIssue); !ok || issue.ActorSession != "" || !issue.DaemonActor {
 		t.Fatalf("fact = %#v, want the daemon's own actor", daemon.Fact)
+	}
+	envelope["payload"] = strings.Replace(payload, `"actor":{"kind":"user","id":"smoke"}`, `"actor":{"kind":"session","id":"legion-daemon:OTHER"}`, 1)
+	byOtherDaemon, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherDaemon, err := decodeMessage("notifications.dispatch.issue.CAPTURE-3.issue.updated", "CAPTURE", capturedRepositories, byOtherDaemon)
+	if err != nil {
+		t.Fatalf("decode the write of another project's daemon: %v", err)
+	}
+	if issue, ok := otherDaemon.Fact.(DispatchIssue); !ok || issue.ActorSession != "legion-daemon:OTHER" || issue.DaemonActor {
+		t.Fatalf("fact = %#v, want the session actor legion-daemon:OTHER", otherDaemon.Fact)
+	}
+	// The same event on OTHER-3, an issue of another project, written by this daemon's own session.
+	onOther := strings.ReplaceAll(payload, "CAPTURE", "OTHER")
+	envelope["payload"] = strings.Replace(onOther, `"actor":{"kind":"user","id":"smoke"}`, `"actor":{"kind":"session","id":"legion-daemon:CAPTURE"}`, 1)
+	envelope["topic"] = "notifications.dispatch.issue.OTHER-3.issue.updated"
+	ofOther, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	elsewhere, err := decodeMessage("notifications.dispatch.issue.OTHER-3.issue.updated", "CAPTURE", capturedRepositories, ofOther)
+	if err != nil {
+		t.Fatalf("decode the daemon's write on another project's issue: %v", err)
+	}
+	if elsewhere.Fact != nil {
+		t.Fatalf("fact = %#v, want no fact for an event of another project's issue", elsewhere.Fact)
 	}
 }
 

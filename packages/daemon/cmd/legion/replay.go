@@ -640,6 +640,9 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 				window.End().Format(time.RFC3339), time.Duration(window.After), window.From.Format(time.RFC3339), window.To.Format(time.RFC3339))
 		}
 		fmt.Fprintf(stdout, "legion replay run: %s\n", result.Counts())
+		if len(result.MissingAncestors) > 0 {
+			fmt.Fprintf(stdout, "legion replay run: %s\n", replay.MissingAncestorsLine(*windowDir, result.MissingAncestors))
+		}
 		for _, name := range slices.Sorted(maps.Keys(result.Unlimited)) {
 			fmt.Fprintf(stdout, "legion replay run: the %s model gives no limit for its signal, so %s has no limit in this run\n", result.Unlimited[name], name)
 		}
@@ -717,7 +720,7 @@ func newReplayScorecardCommand(stdout, stderr io.Writer) *cobra.Command {
 			fmt.Fprintf(stderr, "legion replay scorecard: %v\n", err)
 			return 1
 		}
-		card, err := replay.Score(window)
+		card, missing, err := replay.ScoreRecord(window)
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay scorecard: %v\n", err)
 			return 1
@@ -726,7 +729,10 @@ func newReplayScorecardCommand(stdout, stderr io.Writer) *cobra.Command {
 			return printReplayJSON(stdout, card)
 		}
 		fmt.Fprintf(stdout, "the record of %s from %s to %s\n", window.Project, card.From.Format(time.RFC3339), card.To.Format(time.RFC3339))
-		for _, measured := range replay.MeasuresOf(card) {
+		if len(missing) > 0 {
+			fmt.Fprintf(stdout, "%s\n", replay.MissingAncestorsLine(*windowDir, missing))
+		}
+		for _, measured := range replay.MeasuresRead(card, missing) {
 			fmt.Fprintf(stdout, "%s %s\n", measured.Name, strconv.FormatFloat(measured.Value, 'f', -1, 64))
 		}
 		for _, key := range slices.Sorted(maps.Keys(card.FirstSlot)) {
@@ -1566,7 +1572,7 @@ func newReplayRulesCommand(stdout, _ io.Writer) *cobra.Command {
 			fmt.Fprintf(stdout, "  a start takes: %s\n", rule.Take)
 			fmt.Fprintf(stdout, "  a conflicting head: %s\n", rule.Conflict)
 			fmt.Fprintf(stdout, "  the slot goes back at the ready mark: %t\n", rule.ReleaseAtReady)
-			fmt.Fprintf(stdout, "  a P0 starts above the cap: %t\n", rule.P0AboveCap)
+			fmt.Fprintf(stdout, "  a P0 starts outside the cap: %t\n", rule.P0AboveCap)
 			fmt.Fprintf(stdout, "  an idle wait on children or a person gives the slot back after: %s\n", rule.IdleReturn)
 			if rule.Signals != signals.Off {
 				fmt.Fprintf(stdout, "  admits below P0 by signals: %s\n", rule.Signals)

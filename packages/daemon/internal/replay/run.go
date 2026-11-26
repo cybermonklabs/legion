@@ -116,20 +116,22 @@ type RunConfig struct {
 // (runWindow): the window's trace (BuildTrace); the lines of the record a run's script reads
 // beside it (recordLines) and the window's Dispatch events, both in the order the trace read them
 // (readTrace); the commits of the base branches a stretch's M is counted from and the conflict
-// model fitted on them (newBaseMerges, windowConflicts); the record's ranks (ranksOf); the
+// model fitted on them (newBaseMerges, windowConflicts); the priority Dispatch resolves for each
+// issue at each moment (resolvePriorities) and the record's ranks with it (ranksOf); the
 // record's lines and events from before the window's start, which each run's line timeline reads
 // (recordBefore); and the load models fitted on the window's record (FitLoadModels), which a run
 // that reads a modelled signal reads its own course from (ModelReader); each of the last two read
 // the first time a run asks for it. No run writes into any of it.
 type windowInputs struct {
-	trace     Trace
-	lines     recordLines
-	events    []readEvent
-	merges    baseMerges
-	conflicts ConflictModel
-	ranks     rankFunc
-	before    func() (recordBefore, error)
-	models    func() (LoadModels, error)
+	trace      Trace
+	lines      recordLines
+	events     []readEvent
+	merges     baseMerges
+	conflicts  ConflictModel
+	priorities resolvedPriorities
+	ranks      rankFunc
+	before     func() (recordBefore, error)
+	models     func() (LoadModels, error)
 }
 
 // newWindowInputs reads w's inputs (windowInputs).
@@ -139,8 +141,9 @@ func newWindowInputs(w Window) (*windowInputs, error) {
 		return nil, err
 	}
 	merges := newBaseMerges(w, trace)
+	priorities := resolvePriorities(trace)
 	return &windowInputs{trace: trace, lines: recordLinesOf(lines), events: events, merges: merges,
-		conflicts: windowConflicts(trace, merges), ranks: ranksOf(trace),
+		conflicts: windowConflicts(trace, merges), priorities: priorities, ranks: ranksOf(trace, priorities),
 		before: sync.OnceValues(func() (recordBefore, error) { return readRecordBefore(w) }),
 		models: sync.OnceValues(func() (LoadModels, error) { return fitLoadModels(w, trace) })}, nil
 }
@@ -246,6 +249,12 @@ type RunResult struct {
 	SignalSummaries map[string]SignalSummary
 	Signals         map[string]SignalReading
 	SuppliedRefused map[string]int
+	// MissingAncestors is each ancestor whose history the window lacks on which the priority
+	// Dispatch resolves for an issue of it rests (spec R10), empty for none: the missing input the
+	// run names, where its scorecards hold no wait of urgent work and no priority taken in today's
+	// line's order (Measure), which `legion replay run` says (run.json's missingAncestors). A rule
+	// with the new P0 start makes no run of such a window (resolvedPriorities.refuseMissing).
+	MissingAncestors []string
 
 	// snapshot is the snapshot timeline Scorecard is read from, which a test reads states from.
 	snapshot Timeline
@@ -338,6 +347,9 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
+	if err := in.priorities.refuseMissing(cfg.Rule); err != nil {
+		return RunResult{}, err
+	}
 	trace := in.trace
 	script, err := buildScript(trace, in.events, in.lines)
 	if err != nil {
@@ -400,6 +412,11 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		snap:     newSnapshots(w.From, w.To, w.End(), in.ranks),
 		counters: Divergence{Refused: []RefusedMove{}, Finished: map[int]int{}, TurnsLeftOut: map[int]int{}, DrawnWork: drawn},
 	}
+	// A rule with the new P0 start reads the priority Dispatch resolves: the replay's copy of
+	// Dispatch shows it in place of each issue's own (shadow.priorities), and so does its start state.
+	if d.rule.P0AboveCap {
+		d.shadow.priorities = &in.priorities
+	}
 	d.conflicts, d.merges, d.loops, d.stretchFrom = conflicts, in.merges, recordedLoops(script), map[string]time.Time{}
 	d.waiting, d.reopens, d.starting, d.stretchDraws, d.lastDraw = map[string]waitingConflict{}, map[string][]int{}, map[string][]int{},
 		map[stretchDraw]int{}, map[string]stretchDraw{}
@@ -437,7 +454,11 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	if d.sig.models != nil && d.sig.models.SuppliedMinutes > 0 {
 		d.used[assumeSuppliedTokenLimit] = true
 	}
+	if in.priorities.inherited {
+		d.used[assumeResolvedFromChains] = true
+	}
 	result.Unplaced, result.Assumptions = d.unplaced, d.assumptionsUsed(len(Assumptions))
+	result.MissingAncestors = in.priorities.missingAncestors()
 	result.Conflicts = d.conflicts
 	result.Unlimited, result.SlotPasses, result.Deadlines, result.SignalValues = d.sig.unlimited, d.sig.passes, d.sig.deadlines, d.sig.values
 	result.GitReads, result.GitLoopHours, result.GitReadTable = d.git.reads, d.gitLoopHours(), d.git.tables
@@ -449,8 +470,9 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	// state being the record's.
 	result.snapshot.beginWaitsAt(recordedWaitStarts(trace, in.ranks, w.From, result.snapshot.startWaiters()))
 	// Each issue's wait as urgent work begins where the record's issue events show, as its ranks
-	// and priorities are the record's: a person's todo and a person's priority are kept as recorded.
-	result.snapshot.readUrgency(trace)
+	// are the record's, and its priority is the one Dispatch resolves from the record: a person's
+	// todo and a person's priority are kept as recorded.
+	result.snapshot.readUrgency(trace, in.priorities)
 	d.counters.NoWorkAdmissions, d.counters.NoWorkSlotHours = len(d.noWork), result.snapshot.heldHours(d.noWork)
 	result.Divergence = d.counters
 	result.Scorecard = d.scorecard(Measure(result.snapshot))
@@ -618,7 +640,7 @@ func (d *driver) lineTimeline() (Timeline, Trace, error) {
 	if err != nil {
 		return Timeline{}, Trace{}, fmt.Errorf("replay: read the run's own log and events back as a record: %w", err)
 	}
-	return lineTimeline(t, d.inputs.ranks, func(time.Time) record.SlotRule { return d.rule }), t, nil
+	return lineTimeline(t, d.inputs.ranks, d.inputs.priorities, func(time.Time) record.SlotRule { return d.rule }), t, nil
 }
 
 // runRecord is a run's run.json: what it ran — the rule, the branch, the seed, the slowdown, the
@@ -688,6 +710,12 @@ type runRecord struct {
 	Signals      map[string]SignalReading `json:"signals,omitempty"`
 	Draws        []StretchDraw            `json:"draws"`
 	UnkeyedDraws UnkeyedDraws             `json:"unkeyedDraws"`
+	// MissingAncestors is each ancestor whose history the window lacks on which the priority
+	// Dispatch resolves for an issue of it rests (RunResult.MissingAncestors), [] for none: a report
+	// that reads the run reads neither its wait of urgent work nor its priority taken in today's
+	// line's order where it names any (runRead.unresolved), and a run.json written before it named
+	// them, whose measures read each issue's own priority, is refused (readRun).
+	MissingAncestors []string `json:"missingAncestors"`
 }
 
 // UnkeyedDraws is the draws a run made that it keys to no seed, issue and stretch, so that two runs
@@ -729,7 +757,7 @@ func (d *driver) writeOutputs(result RunResult, began time.Time) error {
 		GitReads: result.GitReads, GitLoopHours: result.GitLoopHours, GitReadTable: result.GitReadTable,
 		Limits: d.sig.limits, TokenLimit: d.cfg.TokenLimit, IdleAfter: Duration(d.sig.idleAfter), Unlimited: d.sig.unlimited, Ceiling: d.ceiling(), SlotPasses: d.sig.passes,
 		Deadlines: d.sig.deadlines, SignalValues: d.sig.values, SignalSummaries: result.SignalSummaries, Signals: result.Signals,
-		SuppliedRefused: result.SuppliedRefused, Draws: d.drawn, UnkeyedDraws: d.unkeyed}
+		SuppliedRefused: result.SuppliedRefused, Draws: d.drawn, UnkeyedDraws: d.unkeyed, MissingAncestors: result.MissingAncestors}
 	for name, value := range map[string]any{scorecardFile: result.Scorecard, lineScorecardFile: result.LineScorecard, runFile: ran} {
 		data, err := json.MarshalIndent(value, "", "  ")
 		if err != nil {

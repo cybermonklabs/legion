@@ -9,7 +9,8 @@ package replay
 type Assumption struct {
 	// Number is the assumption's number: 1 to 18 are the list of the tool's spec, in its order,
 	// 19 to 25 were added by its plan, 26 to 37 are the tool's own, 38 on were added to the plan,
-	// and 50 came with the forward merge of cybermonklabs/legion#4592 (Assumptions).
+	// 50 came with the forward merge of cybermonklabs/legion#4592, and 51 with the priority
+	// Dispatch resolves (spec R10) (Assumptions).
 	Number int `json:"number"`
 	// Text is what the replay assumes.
 	Text string `json:"text"`
@@ -35,7 +36,9 @@ type Assumption struct {
 // provider's limit between two observations of it, the architect's D13); and the project's token
 // limit a replay takes from its caller where the record holds none (49: RunConfig.TokenLimit); and
 // the design-gate basis of cybermonklabs/legion#4592, which a replay rests no step on (50:
-// OutboxHandling's two basis reads). A run names the ones its measures rest on by these numbers.
+// OutboxHandling's two basis reads); and the priority Dispatch resolves where the record holds
+// none, reconstructed from the window's parent chains (51: resolvePriorities). A run names the ones
+// its measures rest on by these numbers.
 var Assumptions = []Assumption{
 	{Number: 1,
 		Text:      "A work segment takes its recorded time at any start and at any number in flight.",
@@ -189,6 +192,9 @@ var Assumptions = []Assumption{
 	{Number: assumeNoBasis,
 		Text:      "No root's design-gate step rests on an ancestor's approval: the replay reads no ancestor's open approval request for a pending basis and no re-parented root's new parent for one.",
 		Direction: "Wrong only for a window whose roots registered a step on an ancestor's approval, or that a person made children of a live tree: such a step opens in the record at the ancestor's approval and, in the replay, at the root's own, which can start its tree earlier or later than recorded, in either direction. The tool finishes both reads, the pending-basis seed and the re-parent seed, without acting. Replay a window recorded after cybermonklabs/legion#4592 that holds such a step, and compare its gate's opening with the record's."},
+	{Number: assumeResolvedFromChains,
+		Text:      "Where Dispatch recorded no resolved priority, an issue's priority is the one Dispatch's rule gives from the window's own events: its own, else that of the nearest issue above it on its Dispatch parent chain that has one, in any project, up to 32 levels, read at each change of a priority or a parent, every ancestor the window holds being one Dispatch showed the daemon.",
+		Direction: "Doubtful where Dispatch hid an ancestor from the daemon's reader that the collector read, or where a chain moved with no event in the window: an issue counted at an inherited priority it did not have counts in the wait of urgent work and in today's line's order at that priority, under every rule, and a rule with the new P0 start starts it outside the cap where Dispatch would not have, which favours that rule on the wait of urgent work. The tool reads Dispatch's recorded value wherever an event carries one, names each ancestor whose history the window lacks, and then compares no rule with the new P0 start and prints no measure that rests on the priority. Check on a window recorded after Dispatch served resolved_priority, whose recorded values the reconstruction must give."},
 }
 
 // assumeSlotFromBeforeTheReach is the assumption the trace's own inference rests on, that an issue
@@ -223,3 +229,9 @@ const assumeSuppliedTokenLimit = 49
 // rest on, which the worker stub finishes without acting (OutboxHandling: the pending-basis seed
 // and the re-parent seed): no root's step rests on an ancestor's approval in a replay.
 const assumeNoBasis = 50
+
+// assumeResolvedFromChains is the assumption a run rests on where an issue of its window takes a
+// priority it inherits from an issue above it that the replay reconstructs from the window's parent
+// chains, Dispatch having recorded no resolved priority for it there (resolvedPriorities.inherited),
+// which every rule's measures read, and a rule with the new P0 start its admissions.
+const assumeResolvedFromChains = 51

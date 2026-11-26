@@ -1434,7 +1434,8 @@ Each is the share of those pairs in which the holder ranks below the waiting iss
 An issue that waits for a slot is a member of the line, in either part, that holds no slot, that no wait holds back, and that `admission.blocked` and `admission.held` do not name.
 Each reads every rule in one order, so that rules whose own lines order differently are read on one scale.
 `priorityTaken` ranks by `record.RankLess` over the Dispatch rank of each issue's tree root, and then over the issue's own rank: the order of the lines that the recorded windows ran.
-`priorityTakenBanded` ranks in today's line's order: first by the band of the Dispatch priority that places each issue, its own or else its tree root's (`record.PriorityOf`), P0 first and an issue with none after P3, and then as `priorityTaken` ranks.
+`priorityTakenBanded` ranks in today's line's order: first by the band of the priority Dispatch resolves for each issue ([The priority Dispatch resolves](#the-priority-dispatch-resolves)), placed as the line places an issue (`record.PriorityOf` over the resolved priorities), P0 first and an issue with none after P3, and then as `priorityTaken` ranks.
+It reads that priority under every rule, a recorded rule among them, so the rules compare on one banding of the line.
 `validate` tests `priorityTaken` and the forecast reads it, and `compare` judges the rules on `priorityTakenBanded`.
 At a moment with no pair, each share is 0.
 
@@ -1447,6 +1448,8 @@ At a moment with no pair, each share is 0.
 - `waits[<word>]`: the `.count` and `.hours` of the waits on other issues, by what ended each.
   A wait runs while an issue in flight, before its review, waits on an unfinished `blocked_by` link, or, at admitted under an open design gate, on an open child.
   A started parent that the admission pass moves into `awaiting_children` (cybermonklabs/legion#4592) waits there on its open children, from the move until the last of them closes or moves out.
+  Under `cover` a started parent with an open child keeps its phase instead, and its wait on its open children counts in each phase from `planning` through `accepting`, from the first pass that reads an open child under it until the last of them closes or moves out.
+  That is the wait that a cover takes, whether or not a child starts on the parent's slot.
   A child at admitted that has not started has no wait here: its wait is the line's.
   A wait goes on while the root of its tree lingers.
 
@@ -1485,7 +1488,8 @@ At a moment with no pair, each share is 0.
 `urgentWaits[P0]` and `urgentWaits[P1]` give the wait of P0 work and of P1 work apart, each where an issue counts in it.
 An issue counts only where Legion works it: an issue of the window's project that enters the workflow in the record, a root handed to Legion or a child of a tree in the workflow.
 An issue that nobody handed to Legion, which a window holds for its events alone, counts in neither.
-An issue counts as P0, or as P1, where its own Dispatch priority is that one at its first todo in the window, or a person raises it to that one before its first slot, at the slot's moment included.
+An issue counts as P0, or as P1, where the priority Dispatch resolves for it is that one at its first todo in the window, or becomes that one before its first slot, at the slot's moment included: a person raises it, or an issue above it changes.
+It reads that priority under every rule, so the rules compare on one set of urgent issues.
 It counts in the highest of those.
 Its first todo is the first Dispatch event in the window that shows it todo where the event before it did not.
 An issue that was todo before the window and stands todo at its start counts from the window's start.
@@ -1497,8 +1501,9 @@ The record's scorecard cuts at the end of the window's record, the same way.
 
 - `.firstSlot` and `.done`: the wait to the first slot and the wait to done, each with `.medianMinutes` and `.p90Minutes`, the median and the 90th percentile by nearest rank over the issues, cut waits included, and `.cut`, how many of the waits are cut.
 
-A replay reads each issue's first todo and its priorities from the record's Dispatch events, as it reads the ranks, and its first slot and its done from its own run.
+A replay reads each issue's first todo from the record's Dispatch events and its priority as Dispatch resolves it from them, as it reads the ranks, and its first slot and its done from its own run.
 `firstDayApart` gives no wait of urgent work.
+A window that lacks the history of an ancestor on which such a priority rests gives no wait of urgent work and no `priorityTakenBanded`, which stands at 0; the run names the missing input, and no report prints either or judges a rule on it.
 
 ### What else a scorecard holds
 
@@ -1578,7 +1583,7 @@ main (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: false
+  a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 0s
 
 legion-v20.42.5 (commit 958173da0ea4cd03290a1964edf9eb92e6685200)
@@ -1592,7 +1597,7 @@ legion-v20.42.5 (commit 958173da0ea4cd03290a1964edf9eb92e6685200)
   a start takes: own_slot
   a conflicting head: moves_back_conflict
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: false
+  a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 0s
 
 legion-v19.57.3 (commit 9542c6fbbecd184ccee73523ab3defa39d6cf23a)
@@ -1606,7 +1611,7 @@ legion-v19.57.3 (commit 9542c6fbbecd184ccee73523ab3defa39d6cf23a)
   a start takes: own_slot
   a conflicting head: moves_back_checks_red
   the slot goes back at the ready mark: true
-  a P0 starts above the cap: false
+  a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 0s
 
 legion-v22.14.1 (commit bafd3618eb58722419c77f34174c1b77525c891b)
@@ -1620,7 +1625,7 @@ legion-v22.14.1 (commit bafd3618eb58722419c77f34174c1b77525c891b)
   a start takes: own_slot
   a conflicting head: implementer_merges_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: false
+  a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 0s
 
 keep-past-review (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
@@ -1634,7 +1639,7 @@ keep-past-review (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: false
+  a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 0s
 
 blockers-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
@@ -1648,7 +1653,7 @@ blockers-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: false
+  a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 0s
 
 returned-by-rank (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
@@ -1662,7 +1667,7 @@ returned-by-rank (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: false
+  a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 0s
 
 cover (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
@@ -1676,7 +1681,7 @@ cover (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: cover
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: false
+  a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 0s
 
 wait-grace (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
@@ -1690,7 +1695,7 @@ wait-grace (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: false
+  a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 0s
 
 wait-grace-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
@@ -1704,7 +1709,7 @@ wait-grace-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: false
+  a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 0s
 
 returned-by-first-slot (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
@@ -1718,7 +1723,7 @@ returned-by-first-slot (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: false
+  a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 0s
 
 rework-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
@@ -1732,7 +1737,7 @@ rework-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: false
+  a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 0s
 
 rework-first-keep (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
@@ -1746,7 +1751,7 @@ rework-first-keep (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: false
+  a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 0s
 
 arrival-order (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
@@ -1760,7 +1765,7 @@ arrival-order (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: false
+  a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 0s
 
 before-p0 (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
@@ -1774,7 +1779,7 @@ before-p0 (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: false
+  a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 0s
 
 p0-at-once (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
@@ -1788,7 +1793,7 @@ p0-at-once (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: true
+  a P0 starts outside the cap: true
   an idle wait on children or a person gives the slot back after: 0s
 
 idle-return-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
@@ -1802,7 +1807,7 @@ idle-return-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: false
+  a P0 starts outside the cap: false
   an idle wait on children or a person gives the slot back after: 1h0m0s
 
 p0-idle (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
@@ -1816,7 +1821,7 @@ p0-idle (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: true
+  a P0 starts outside the cap: true
   an idle wait on children or a person gives the slot back after: 1h0m0s
 
 signals (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
@@ -1830,7 +1835,7 @@ signals (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: true
+  a P0 starts outside the cap: true
   an idle wait on children or a person gives the slot back after: 0s
   admits below P0 by signals: ceiling
 
@@ -1845,7 +1850,7 @@ signals-backoff (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
-  a P0 starts above the cap: true
+  a P0 starts outside the cap: true
   an idle wait on children or a person gives the slot back after: 0s
   admits below P0 by signals: backoff
 ```
@@ -1885,8 +1890,8 @@ Each line of a rule gives one choice:
 
 - `the slot goes back at the ready mark`: whether an issue in merging gives its slot back at the merger's ready mark, under a rule that keeps a slot in merging.
 
-- `a P0 starts above the cap`: whether an issue whose own priority is P0 starts outside the cap, whatever the number of slots in use, under the P0 bound.
-  `p0-at-once` and `p0-idle` start one there; `main`, the rules of the recorded windows and every other rule start none, until cybermonklabs/legion#5488 merges and `main` starts one there too.
+- `a P0 starts outside the cap`: whether an issue that Dispatch resolves to P0 starts outside the cap, whatever the number of slots in use, under the P0 bound, and whether the rule reads the priority Dispatch resolves for its line's order and its holder counts too ([The priority Dispatch resolves](#the-priority-dispatch-resolves)).
+  `p0-at-once`, `p0-idle`, `signals` and `signals-backoff` start one there; `main`, the rules of the recorded windows and every other rule start none, until cybermonklabs/legion#5488 merges and `main` starts one there too.
 
 - `an idle wait on children or a person gives the slot back after`: how long a holder that waits on its children or on a person goes with no turn of any of its roles before it gives its slot back.
   `0s` gives no slot back for that.
@@ -1992,8 +1997,9 @@ These candidates give the comparison what each answer does to P0 and P1 work and
 Each is `main` with one choice changed, or two for `p0-idle`, so each carries the commit of `main`.
 
 The record keeps each issue's own Dispatch priority, P0 to P3 or none (`record.Issue.Priority`), as the newest Dispatch event, listing or detail read shows it.
-A replay gives each issue the priority that its recorded Dispatch events show: the start state writes each record with the priority of its newest event before the window's start, each event that the replay applies carries its own, and each boot's listing carries the priority of the replay's copy of Dispatch.
+Under a recorded rule, `main` and `before-p0` among them, a replay gives each issue the priority that its recorded Dispatch events show: the start state writes each record with the priority of its newest event before the window's start, each event that the replay applies carries its own, and each boot's listing carries the priority of the replay's copy of Dispatch.
 So `main` and every candidate order the line by priority in a replay, as the daemon does, and the rules of the recorded windows do not.
+Under a rule with the new P0 start, `p0-at-once`, `p0-idle`, `signals` and `signals-backoff`, the replay gives each issue the priority Dispatch resolves for it in place of its own ([The priority Dispatch resolves](#the-priority-dispatch-resolves)).
 
 `main` orders the whole line by priority first.
 An entry stands in the band of the priority that places it: the issue's own priority, or its tree root's priority where it has none.
@@ -2001,13 +2007,13 @@ P0 comes first, and an entry that has neither priority comes after P3.
 Within one band, the line keeps the rule's order, under `main` the returned issues first, oldest first, and then the issues that have not started, by rank.
 The comparison ran this order as the candidate `priority-first` before that change reached `main`, and `main` is that rule now.
 
-`p0-at-once` starts an issue whose own priority is P0 outside the cap.
+`p0-at-once` starts an issue that Dispatch resolves to P0 outside the cap.
 The cap counts only the holders that did not start outside it, so where the admission pass would start such an issue but for the cap, it starts it, whatever the number of slots in use.
 The P0 bound limits how many such issues hold a slot at once: with a bound in force, such an issue starts only while fewer of them than the bound hold a slot, and at the bound it waits in the line where its priority places it.
 With no bound, every such issue that waits only for a slot starts.
 A replay reads the bound in force at each pass from the window's `p0Bounds`, and none before the first change.
 Every other hold on a start holds it as before: a wait on another issue, a hold of the Dispatch consumer or of the boot's catch-up, and a tree's cleanup.
-The issue's own priority alone counts: a child that has no priority of its own takes its root's priority only for its place in a line that orders by priority.
+The priority Dispatch resolves decides, for the start, the line's order and the holders the cap counts: a child that has no priority of its own takes that of the nearest issue above it that has one, and the root of a Legion tree is no substitute.
 Below P0, the cap holds as under `main`.
 The stall measure and the read of a free slot count the holders as the promotion counts them, so a P0 that the promotion starts is a line that moves, and a P0 holder fills no slot of the cap.
 The pass logs each such start as `admission starts a P0 issue outside the cap`, and each such issue held at the bound as `admission holds a P0 issue at the P0 bound`, each with the issue, the P0 holders, the other holders, the cap and the bound.
@@ -2039,6 +2045,28 @@ The admission pass logs a slot that an idle holder gave back with the reason `id
 The line timeline places such a holder in the returned part as it places an issue after a release for a wait.
 It does not read the children or the person that the holder waits on, so it counts the holder as waiting only for a slot.
 The snapshot timeline counts the same holder as passed over while its children work, and a root that waits on a person as in no line, and `compare` gives that difference as the gap between the two timelines.
+
+### The priority Dispatch resolves
+
+Dispatch resolves a priority for each issue: its own, else that of the nearest issue above it on its Dispatch parent chain that has one, in any project, up to 32 levels, else none (`resolved_priority`, spec R10).
+A rule with the new P0 start, whose field `a P0 starts outside the cap` is true, reads it for the start of a P0 issue outside the cap, the line's priority order and the holders the cap counts.
+Each recorded rule keeps its release's own admissions and order, by each issue's own priority.
+The measures read it under every rule: the wait of urgent work and `priorityTakenBanded`.
+
+A replay reads it from the record as the measures and the rules need it (`resolvePriorities`):
+
+- Where an event of an issue carries `resolved_priority`, the value it carries stands from that event on, a null one as none, and nothing of the issue is reconstructed after it.
+
+- Before an issue's first such event, as in every event of a Dispatch release before `resolved_priority`, the replay reconstructs it from the window's own events: each issue above it at its own priority, read at the window's start and at each change of a priority, a parent or a recorded value of the issue or of an issue above it (assumption 51).
+
+Under a rule with the new P0 start, the replay's copy of Dispatch serves that priority as each issue's priority, so the daemon's mirror holds it.
+The start state records each issue at the one standing just before the window's start, each event the copy applies shows the one standing at its moment, and where an issue above an issue changes, the copy applies at that moment an `issue.updated` of the issue, as Dispatch appends one on each issue whose resolved priority a write to another issue moves.
+The daemon's own rule, `record.PriorityOf` and the cap's counts then read the resolved priority with no change of the daemon: an issue that resolves to none has a tree root that resolves to none, its root standing on its chain.
+Once the daemon's record keeps the resolved priority that Dispatch serves, the copy serves it in that field in place of the own priority, the one place of the replay that supplies it.
+
+A window that lacks the history of an ancestor on which the priority of an issue of its project rests is refused for every rule with the new P0 start: `legion replay run` names each such ancestor with the issues resting on it, and `validate`, `forecast`, `compare` and `limits` make no run of such a rule on the window and read none.
+`collect` names in `missingAncestors` each ancestor Dispatch did not show, and the replay also finds one that a window collected before `collect` read each ancestor lacks.
+A recorded rule still runs on such a window, and its run and the window's record name the missing input (`missingAncestors` in `run.json` and `record.json`) and read no measure that rests on it.
 
 ### `signals` and `signals-backoff`
 
@@ -3962,3 +3990,30 @@ A step that the record opens on an ancestor's approval opens in the replay at th
 
 **The reading that would test it.** _A window that holds a step on a basis._
 Replay a window recorded after cybermonklabs/legion#4592 in which a root registered a step on an ancestor's approval, and compare the moment its gate opens, and its tree's first start, with the record's.
+
+### Assumption 51: Where Dispatch recorded no resolved priority, the window's parent chains give it
+
+A window recorded before Dispatch served `resolved_priority` holds each issue's own priority alone.
+The replay then reconstructs the priority Dispatch resolves for each issue by Dispatch's own rule: the issue's own priority, else that of the nearest issue above it on its Dispatch parent chain that has one, in any project, up to 32 levels, else none.
+It reads the chain again at the window's start and at each change of a priority or a parent of the issue or of an issue above it.
+Where an event carries Dispatch's own value, that value stands from the event on, and nothing is reconstructed after it.
+The measures read the priority this gives under every rule, and a rule with the new P0 start its admissions too ([The priority Dispatch resolves](#the-priority-dispatch-resolves)).
+
+**Evidence in a recorded window.** _The fixture windows of R10, no recorded window yet._
+The fixture windows `p0-inherited-across-projects`, `p0-inherited-from-the-nearest-ancestor` and `one-free-slot-opposite-order` hold children whose priority comes from a parent in another project, worked by hand by this rule, and `p0-recorded-descendant-update` holds Dispatch's recorded value, which the replay takes as it stands.
+
+**If it is wrong.**
+An ancestor that Dispatch hid from the daemon's reader, but that the collector read, gives an issue a priority that Dispatch would not have given it, and a chain that moved with no event in the window gives an issue the old chain's priority.
+
+- Issues finished: Unknown, because a rule with the new P0 start may start an issue outside the cap where Dispatch would not have.
+
+- Started work that waits for a slot: Unknown, for the same reason.
+
+- Priority taken by holders: Up or down where an issue stands in another band of today's line's order than Dispatch would give it.
+
+- Other delays: Unknown, for the same reason as the issues finished.
+
+- Slots: Up for a rule with the new P0 start, where it starts an issue outside the cap on a priority that Dispatch would not have given it.
+
+**The reading that would test it.** _A window recorded after Dispatch served `resolved_priority`._
+Strip `resolved_priority` from the events of such a window, reconstruct each issue's priority from the window's parent chains, and compare it with Dispatch's recorded value at each event.

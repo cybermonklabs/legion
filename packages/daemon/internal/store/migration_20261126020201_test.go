@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -18,11 +17,13 @@ const queueEventsVersion = 20261126020201
 const queueEventsRelease = "the release that keeps each merge-queue timeline event of a project's pull requests"
 
 // 20261126020201 adds queue_events, one row per GitHub timeline event of a project's pull
-// requests' merge-queue moves, adds read_error on signal_inputs so a failed boot read marks
-// the queue input absent with its reason until a read succeeds, and widens outbox_kind_check with
-// queue_timeline_read. Its way back drops queue_events, deletes queue_timeline_read rows, drops
-// the added column, deletes the queue row of signal_inputs and deletes this version row so a
-// roll-forward runs the file again.
+// requests' merge-queue moves, and adds read_error on signal_inputs so a failed boot read marks
+// the queue input absent with its reason until a read succeeds. Its way back drops queue_events,
+// deletes queue_timeline_read rows (the kind 20261126190955 admits), drops the added column,
+// deletes the queue row of signal_inputs and deletes this version row so a roll-forward runs the
+// file again. The file writes no list of the outbox's kind check, so the roll forward succeeds
+// over a merge_holds_changed row the earlier release queued while it ran: a list written again
+// here, which could not name that kind, would refuse the row and stop Migrate (SQLSTATE 23514).
 func TestTheQueueEventsArriveWith20261126020201AndTheirWayBackLetsThemComeAgain(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -34,9 +35,6 @@ func TestTheQueueEventsArriveWith20261126020201AndTheirWayBackLetsThemComeAgain(
 	const tables = `select count(*)::text from information_schema.tables where table_name = 'queue_events'`
 	if got := rowsAsText(t, store, tables); !reflect.DeepEqual(got, []string{"0"}) {
 		t.Fatalf("queue_events before the migration = %v, want absent", got)
-	}
-	if err := exec(`insert into outbox (kind, issue, payload, attempts, next_at, last_error) values ('queue_timeline_read', 'LEGION-208', '{}', 0, now(), '')`); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
-		t.Fatalf("queueing queue_timeline_read before the migration = %v, want outbox_kind_check refusal", err)
 	}
 
 	if _, err := store.Migrate(ctx); err != nil {
@@ -79,13 +77,17 @@ func TestTheQueueEventsArriveWith20261126020201AndTheirWayBackLetsThemComeAgain(
 	if err := exec(`insert into outbox (kind, issue, payload, attempts, next_at, last_error) values ($1, 'LEGION-208', '{}', 0, now(), '')`, string(record.OutboxKindQueueTimelineRead)); err != nil {
 		t.Fatalf("queue queue_timeline_read after migration: %v", err)
 	}
+	const timelineReads = `select count(*)::text from outbox where kind = 'queue_timeline_read'`
 
 	if err := exec(wayBackOf(t, queueEventsVersion, queueEventsRelease)); err != nil {
 		t.Fatalf("the way back: %v", err)
 	}
 	const version = `select count(*)::text from schema_version where version = 20261126020201`
-	if got := append(rowsAsText(t, store, tables), rowsAsText(t, store, version)...); !reflect.DeepEqual(got, []string{"0", "0"}) {
-		t.Fatalf("after the way back queue_events and version row = %v, want neither", got)
+	if got := append(append(rowsAsText(t, store, tables), rowsAsText(t, store, version)...), rowsAsText(t, store, timelineReads)...); !reflect.DeepEqual(got, []string{"0", "0", "0"}) {
+		t.Fatalf("after the way back queue_events, version row and queue_timeline_read rows = %v, want none of them", got)
+	}
+	if err := exec(`insert into outbox (kind, issue, payload, attempts, next_at, last_error) values ('merge_holds_changed', 'LEGION-208', '{}', 0, now(), '')`); err != nil {
+		t.Fatalf("queue the earlier release's merge_holds_changed row after the way back: %v", err)
 	}
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("roll forward after the way back: %v", err)

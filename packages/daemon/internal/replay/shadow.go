@@ -50,6 +50,16 @@ type shadow struct {
 	approvals      signals.ApprovalState
 	readsApprovals bool
 	approvalsMoved int
+	// priorities, where set, is the priority Dispatch resolves for each issue, which the copy shows
+	// as each issue's priority in place of its own under a rule with the new P0 start
+	// (record.SlotRule.P0AboveCap), so the daemon's mirror holds it (record.Issue.Priority): each
+	// issue of the project at the one standing at each write of its payload (showPriority), at the
+	// window's start (showPrioritiesBefore), and at each change of it that no event of the issue
+	// makes (priorityWrite). It is the one place a replay supplies the daemon the resolved
+	// priority: once the daemon's record keeps the resolved_priority Dispatch serves of its own, the
+	// copy serves it there and the daemon's own reading of it takes this one's place. Nil under every
+	// other rule, whose copy shows each issue's own.
+	priorities *resolvedPriorities
 }
 
 // shadowIssue is one issue of the shadow.
@@ -235,6 +245,7 @@ func (s *shadow) take(iss *shadowIssue, e envelope, before map[string]json.RawMe
 			}
 			iss.payload[name], iss.setBy[name] = value, place
 		}
+		s.showPriority(iss, at)
 		iss.decodeShown()
 		iss.stamp(at)
 		payload, err := iss.render(s.ranks)
@@ -446,6 +457,7 @@ func (s *shadow) statusWrite(key, status string, handOver bool, at time.Time) (j
 		}
 	}
 	iss.decodeShown()
+	s.showPriority(iss, at)
 	iss.stamp(at)
 	payload, err := iss.render(s.ranks)
 	if err != nil {
@@ -484,6 +496,7 @@ func (s *shadow) rankWrite(key, rank string, shown bool, at time.Time) (json.Raw
 		return nil, false, nil
 	}
 	iss.seq++
+	s.showPriority(iss, at)
 	iss.stamp(at)
 	moved := maps.Clone(iss.payload)
 	if shown {
@@ -507,6 +520,69 @@ func (s *shadow) made(iss *shadowIssue, kind string, actor jsonActor, payload js
 		"project": mustJSON(iss.project), "type": mustJSON(kind), "actor": mustJSON(actor), "notify": json.RawMessage("true"),
 		"payload": payload,
 	}, at)
+}
+
+// showPriority shows iss at the priority Dispatch resolves for it at at, in place of its own,
+// where the copy shows the resolved priorities (shadow.priorities) and iss is an issue of the
+// project whose payload the copy holds.
+func (s *shadow) showPriority(iss *shadowIssue, at time.Time) {
+	if s.priorities != nil && iss.payload != nil && iss.project == s.project {
+		iss.payload["priority"] = mustJSON(s.priorities.at(iss.key, at).Level())
+	}
+}
+
+// showPrioritiesBefore shows each issue of the project the copy holds a payload of at the priority
+// Dispatch resolves for it just before at, the window's start, where the copy shows the resolved
+// priorities: the copy then stands where Dispatch stood, a change of an ancestor after the issue's
+// newest event before the start included, as the start state records it (Trace.shownPriorities).
+func (s *shadow) showPrioritiesBefore(at time.Time) {
+	if s.priorities == nil {
+		return
+	}
+	for _, iss := range s.issues {
+		if iss.payload != nil && iss.project == s.project {
+			iss.payload["priority"] = mustJSON(s.priorities.before(iss.key, at).Level())
+		}
+	}
+}
+
+// priorityActor is the actor of the replay's own updates of an issue whose resolved priority a
+// change of another issue moves (priorityWrite): the replay itself, as Dispatch names itself
+// (system), the writer of that change making the change's own event, which the copy applies.
+var priorityActor = jsonActor{Kind: "system", ID: "replay-resolved-priority"}
+
+// priorityWrite shows key at the priority Dispatch resolves for it at at, where the copy shows the
+// resolved priorities, and answers the event the change makes in Dispatch at at: an issue.updated
+// of the shadow's payload at the new priority, whose changed field is the priority, by
+// priorityActor, at the issue's next sequence, as Dispatch appends one on each issue whose resolved
+// priority a write to another issue changes. It answers false where the copy shows no resolved
+// priority, holds no payload of the issue, or shows it at that priority already: an event of the
+// issue applied at the change, its own or Dispatch's recorded update of it, showed it. No recorded
+// event is this one: the record's place of the event that last set each field
+// (shadowIssue.setBy) stays as it was.
+func (s *shadow) priorityWrite(key string, at time.Time) (json.RawMessage, bool, error) {
+	iss, ok := s.issues[key]
+	if s.priorities == nil || !ok || iss.payload == nil {
+		return nil, false, nil
+	}
+	shown := mustJSON(s.priorities.at(key, at).Level())
+	if sameJSON(iss.payload["priority"], shown) {
+		return nil, false, nil
+	}
+	iss.seq++
+	iss.payload["priority"] = shown
+	iss.stamp(at)
+	written := maps.Clone(iss.payload)
+	if rank, ranked := s.ranks[key]; ranked {
+		written["rank"] = mustJSON(rank)
+	}
+	written["changed"] = mustJSON([]string{"priority"})
+	payload, err := json.Marshal(written)
+	if err != nil {
+		return nil, false, err
+	}
+	raw, err := s.made(iss, "issue.updated", priorityActor, payload, at)
+	return raw, err == nil, err
 }
 
 // jsonActor is a Dispatch event's actor as Dispatch writes it.

@@ -36,6 +36,11 @@ type Costs struct {
 	// (Scorecard.UrgentWaits): the median and the 90th percentile of its wait to the first slot and
 	// to done are each a measure (urgentWaitMeasures).
 	UrgentWaits map[string]UrgentWait `json:"urgentWaits,omitempty"`
+	// Unresolved says the run's window lacks the history of an ancestor on which the priority
+	// Dispatch resolves for an issue of it rests (runRecord.MissingAncestors): its costs give no
+	// priority taken in today's line's order and no wait of urgent work, so no rule is judged on
+	// either there (spec R10: no comparison that depends on the missing input).
+	Unresolved bool `json:"unresolved,omitempty"`
 }
 
 // costsOf is the costs card gives, its loops and waits summed in the order of their keys so the
@@ -57,7 +62,8 @@ type SeedCosts map[int64]Costs
 
 // costMeasure is one of the measures a rule is judged on: its name, whether more of it is better,
 // and its value among a Costs, false where the Costs give none (a wait of urgent work with no issue
-// of its priority).
+// of its priority, and priority taken in today's line's order or a wait of urgent work of costs
+// that are Unresolved).
 type costMeasure struct {
 	name         string
 	higherBetter bool
@@ -71,7 +77,7 @@ type costMeasure struct {
 var costMeasures = slices.Concat([]costMeasure{
 	{name: "done", higherBetter: true, of: func(c Costs) (float64, bool) { return c.Done, true }},
 	{name: "waitOnlyForSlot.hours", of: func(c Costs) (float64, bool) { return c.WaitOnlyForSlot, true }},
-	{name: "priorityTakenBanded", of: func(c Costs) (float64, bool) { return c.PriorityTaken, true }},
+	{name: "priorityTakenBanded", of: func(c Costs) (float64, bool) { return c.PriorityTaken, !c.Unresolved }},
 	{name: "otherDelays.hours", of: func(c Costs) (float64, bool) { return c.OtherDelays, true }},
 }, urgentWaitMeasures())
 
@@ -93,7 +99,7 @@ func urgentWaitMeasures() []costMeasure {
 				measures = append(measures, costMeasure{name: "urgentWaits[" + key + "]." + wait.name + "." + at.name,
 					of: func(c Costs) (float64, bool) {
 						urgent, counts := c.UrgentWaits[key]
-						return at.of(wait.of(urgent)) / 60, counts
+						return at.of(wait.of(urgent)) / 60, counts && !c.Unresolved
 					}})
 			}
 		}
@@ -1018,10 +1024,16 @@ func (r Runs) ownErrors(before, after windowRecord) (map[string]float64, error) 
 	if err != nil {
 		return nil, err
 	}
-	cards := ForecastCards{Before: before.Scorecard, After: after.Scorecard, Own: owned, AfterOwn: afterOwned}
+	cards := ForecastCards{Before: before.Scorecard, After: after.Scorecard, Own: owned, AfterOwn: afterOwned,
+		BeforeMissing: before.MissingAncestors, AfterMissing: after.MissingAncestors}
 	held := map[string]float64{}
 	for _, m := range costMeasures {
-		if largest, measured := cards.ownError(func(card Scorecard) (float64, bool) { return m.of(costsOf(card)) }); measured {
+		of := func(card Scorecard, unresolved bool) (float64, bool) {
+			costs := costsOf(card)
+			costs.Unresolved = unresolved
+			return m.of(costs)
+		}
+		if largest, measured := cards.ownError(of); measured {
 			held[m.name] = largest
 		}
 	}
@@ -1689,7 +1701,10 @@ func coded[S ~string](names []S) []string {
 
 // writeScorecards writes each window's scorecard, read from its record, with the issues done by
 // anyone beside Legion's done (Scorecard.DoneByAnyone) and the wait of its urgent work
-// (urgentRows), whose cut waits run to the end of the window's record.
+// (urgentRows), whose cut waits run to the end of the window's record. A window that lacks the
+// history of an ancestor a resolved priority rests on gives neither priority taken in today's
+// line's order nor the wait of urgent work, and names the missing input in their place
+// (windowRecord.writeMissing).
 func (c comparison) writeScorecards(p *printer) {
 	p.line("## The scorecard of each window, read from its record")
 	p.line("")
@@ -1699,14 +1714,21 @@ func (c comparison) writeScorecards(p *printer) {
 		p.line("")
 		p.line("### %s", w.Name)
 		p.line("")
+		w.writeMissing(p)
 		p.line("| measure | value |")
 		p.line("| --- | --- |")
 		for _, m := range MeasuresOf(w.Scorecard) {
+			if !w.gives(m.Name) {
+				continue
+			}
 			p.line("| %s | %s |", m.Name, formatNumber(m.Value))
 		}
 		p.line("| doneByAnyone | %d |", w.Scorecard.DoneByAnyone)
 		p.line("| issues with a first slot | %d |", len(w.Scorecard.FirstSlot))
 		for _, row := range urgentRows() {
+			if !w.gives(urgentMeasure) {
+				break
+			}
 			p.line("| %s | %s |", row.name, row.cell([]Scorecard{w.Scorecard}))
 		}
 	}
@@ -1825,8 +1847,12 @@ func (c comparison) writeMatrix(p *printer, decision Decision) {
 			p.line("")
 			p.line("### %s, `%s` (%s; seeds: %d)", w.Name, at.Label(), verdict, seeds)
 			p.line("")
+			w.writeMissing(p)
 			p.line("%s", tableHead("measure", coded(c.rules)))
 			for _, name := range names {
+				if !w.gives(name) {
+					continue
+				}
 				row := "| " + name + " |"
 				for _, column := range values[name] {
 					mean, low, high := spread(column)
@@ -1835,6 +1861,9 @@ func (c comparison) writeMatrix(p *printer, decision Decision) {
 				p.line("%s", row)
 			}
 			for _, urgent := range urgentRows() {
+				if !w.gives(urgentMeasure) {
+					break
+				}
 				row := "| " + urgent.name + " |"
 				for _, rule := range c.rules {
 					row += " " + urgent.cell(snapshotCards(c.runs.parts[partKey{window: w.Name, rule: rule}].runs[at.Label()])) + " |"
@@ -1863,6 +1892,9 @@ func (c comparison) writeMatrix(p *printer, decision Decision) {
 			}
 			p.line("%s", tableHead("judged against `main`", slices.Concat([]string{"error"}, coded(rules))))
 			for k, m := range costMeasures {
+				if !w.gives(m.name) {
+					continue
+				}
 				row := "| " + m.name + " | " + errorText(decision.Errors, m.name) + " |"
 				for _, rule := range rules {
 					cell := "no run"
@@ -2049,8 +2081,12 @@ func (c comparison) writeGaps(p *printer) {
 		p.line("")
 		p.line("### %s", w.Name)
 		p.line("")
+		w.writeMissing(p)
 		p.line("%s", tableHead("measure", coded(c.rules)))
 		for _, name := range measureNames(cards...) {
+			if !w.gives(name) {
+				continue
+			}
 			row := "| " + name + " |"
 			for _, rule := range c.rules {
 				gap := widest[rule][name]

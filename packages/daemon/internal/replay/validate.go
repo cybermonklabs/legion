@@ -467,13 +467,17 @@ var MainBranchAt = BranchAt{Branch: MainBranch, Slowdown: 1}
 // branch, against its record. A branch that fails a test gives no comparison of rules, and a
 // window whose main branch fails gives none at all. The main branch also names the issues that
 // break it (BranchValidation.Breakers). CapBacktest is present when the validation is a cap
-// backtest (ValidateConfig.CapBacktest).
+// backtest (ValidateConfig.CapBacktest). MissingAncestors is each ancestor whose history the
+// window lacks on which the priority Dispatch resolves for an issue of it rests
+// (windowRecord.MissingAncestors): the validation then shows no measure that rests on it
+// (restsOnResolved), none of which R5 tests, and names the missing input.
 type Validation struct {
-	Window      string             `json:"window"`
-	Rule        string             `json:"rule"`
-	Record      Scorecard          `json:"record"`
-	Branches    []BranchValidation `json:"branches"`
-	CapBacktest *CapBacktest       `json:"capBacktest,omitempty"`
+	Window           string             `json:"window"`
+	Rule             string             `json:"rule"`
+	Record           Scorecard          `json:"record"`
+	Branches         []BranchValidation `json:"branches"`
+	CapBacktest      *CapBacktest       `json:"capBacktest,omitempty"`
+	MissingAncestors []string           `json:"missingAncestors,omitempty"`
 }
 
 // branch is the validation of the branch at, and false where the validation did not run it.
@@ -559,6 +563,9 @@ func (v Validation) Write(w io.Writer, depth int, issuesOf func(BranchAt) bool) 
 	}
 	p.line("The first-slot test passes where the median error of each issue's first slot is within %s minutes; the measures of the first day apart are shown and not tested.", gapFirstSlot)
 	p.line("`priorityTakenBanded`, priority taken in today's line's order, is shown and is not one of R5's tests, which read priority taken by rank alone (`priorityTaken`), the order of the recorded windows' lines; R7 reads its error across the change of the rule.")
+	if len(v.MissingAncestors) > 0 {
+		p.line("%s", MissingAncestorsLine(v.Window, v.MissingAncestors))
+	}
 	p.line("")
 	p.line("| branch | seeds | R5 | tests failed | first slot error: median | 90th percentile | done error: median | 90th percentile |")
 	p.line("| --- | --- | --- | --- | --- | --- | --- | --- |")

@@ -309,14 +309,14 @@ type issueHours struct {
 func assertRecordedHours(t *testing.T, window Window, want []issueHours) Scorecard {
 	t.Helper()
 	trace := placedTrace(t, window)
-	lined := lineTimeline(trace, ranksOf(trace), trace.ruleAt)
+	lined := recordLineTimeline(trace)
 	for _, issue := range want {
 		card := measureAlone(lined, issue.key)
 		assertNear(t, issue.key+"'s inFlight.hours", card.InFlight.Hours, issue.inFlight)
 		assertNear(t, issue.key+"'s startedWithoutSlot.hours", card.StartedWithoutSlot.Hours, issue.b)
 		assertNear(t, issue.key+"'s waitOnlyForSlot.hours", card.WaitOnlyForSlot.Hours, issue.a)
 	}
-	return scoreTrace(trace)
+	return scoreTrace(trace, resolvePriorities(trace))
 }
 
 // assertSnapshotHours fails for each issue of want whose hours in either reading of started work

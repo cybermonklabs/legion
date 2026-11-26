@@ -242,3 +242,59 @@ func TestAPassThatMovesASlotWritesOneRecordLine(t *testing.T) {
 		}
 	})
 }
+
+// A cover's release is named in the pass's record line by the wait the waiter gives its slot for
+// (R9), as a release for a wait is: under cover a started parent whose open Dispatch child starts
+// on its slot gives the slot for its wait on its children (record.LineFacts.StartedParentWaits,
+// blockers.CoverWaits), children_wait, and a holder whose blocked_by link names an issue that
+// starts on its slot gives it for the link, link_wait. Each waiter holds the cap's one slot, so
+// the start in the same pass is the cover's.
+func TestACoverNamesTheWaitItGivesTheSlotFor(t *testing.T) {
+	cases := []struct {
+		name string
+		seed func(t *testing.T, pool *pgxpool.Pool)
+		want passRecord
+	}{
+		{name: "a started parent's open child",
+			seed: func(t *testing.T, pool *pgxpool.Pool) {
+				const parent, child = "ACME-160", "ACME-161"
+				acmeRoot(t, pool, parent, phase.Implementing, "in_progress", "a", nil, nil)
+				approvedGate(t, pool, parent)
+				takeSlot(t, pool, parent)
+				acmeChild(t, pool, child, parent, phase.Admitted, "todo", "b")
+				inTx(t, pool, func(tx pgx.Tx) {
+					reading := record.DispatchReading{Key: child, Project: acmeProject, Seq: 2, Status: record.Carry("todo"),
+						Parent: record.Carry(parent), Blockers: record.Carry([]string(nil))}
+					if err := record.NewStore().PutDispatchIssue(context.Background(), tx, reading); err != nil {
+						t.Fatalf("seed the mirror of %s under %s: %v", child, parent, err)
+					}
+				})
+			},
+			want: passRecord{Slots: 1, Cap: 1, Given: []record.SlotGiven{{Issue: "ACME-161", Kind: record.LineFirstPhase.String()}},
+				Taken: []record.SlotTaken{{Issue: "ACME-160", Reason: record.TakenChildrenWait}}},
+		},
+		{name: "a blocked_by link",
+			seed: func(t *testing.T, pool *pgxpool.Pool) {
+				const holder, blocker = "ACME-170", "ACME-171"
+				acmeRoot(t, pool, holder, phase.Implementing, "in_progress", "a", []string{blocker}, nil)
+				approvedGate(t, pool, holder)
+				takeSlot(t, pool, holder)
+				acmeQueuedRoot(t, pool, blocker, "b")
+			},
+			want: passRecord{Slots: 1, Cap: 1, Given: []record.SlotGiven{{Issue: "ACME-171", Kind: record.LineQueuedRoot.String()}},
+				Taken: []record.SlotTaken{{Issue: "ACME-170", Reason: record.TakenLinkWait}}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			var logged bytes.Buffer
+			admission := ruledAdmission(t, 1, keptSlotRule("cover"), slog.New(slog.NewJSONHandler(&logged, nil)))
+			tc.seed(t, pool)
+			tickThrough(t, pool, admission, "the pass")
+			if got, _ := passRecords(t, &logged); !reflect.DeepEqual(got, []passRecord{tc.want}) {
+				t.Fatalf("the record lines of the pass = %+v, want %+v", got, []passRecord{tc.want})
+			}
+		})
+	}
+}

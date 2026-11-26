@@ -337,8 +337,10 @@ func (s *seeder) issue(iss *IssueTrace) error {
 // the trace holds that wait at the start), Dispatch status, rank, priority, parent, tree,
 // generation, hold, awaiting and whether it is handed to Legion, and a lingering root's linger. Its
 // priority is its own as its newest Dispatch event before the start shows it, as the daemon's
-// intake reads each event's (record.Issue.Priority). Nil where it had not entered the workflow,
-// and nil with the reason where it had and its record cannot be placed.
+// intake reads each event's (record.Issue.Priority), or, where the replay's copy of Dispatch shows
+// the priority Dispatch resolves in its place (Trace.shownPriorities), the one standing just
+// before the start. Nil where it had not entered the workflow, and nil with the reason where it
+// had and its record cannot be placed.
 func (s *seeder) startRecord(iss *IssueTrace) (*record.Issue, string) {
 	entry, visits := s.run(iss)
 	if entry == nil {
@@ -352,9 +354,13 @@ func (s *seeder) startRecord(iss *IssueTrace) (*record.Issue, string) {
 		return nil, "Dispatch names no repository of it, which the daemon records every issue on"
 	}
 	shown := event.Issue
+	priority := shown.Priority
+	if resolved := s.t.shownPriorities; resolved != nil {
+		priority = resolved.before(iss.Key, s.at)
+	}
 	issue := record.Issue{Key: iss.Key, Tree: entry.Tree, Project: s.t.Project, Title: cmp.Or(iss.Title, iss.Key), Phase: phase.Done,
 		Generation: entry.Generation, Status: shown.Status, DispatchStatus: shown.Status, Rank: shown.Rank,
-		Priority: shown.Priority, LastDispatchSeq: seq,
+		Priority: priority, LastDispatchSeq: seq,
 		HandedOver: dispatch.CarriesLegionLabel(shown.Labels), Repo: iss.Repo, GitHubRepo: iss.Repo,
 		DefaultBranch: cmp.Or(s.t.Branches[iss.Repo], defaultBranch)}
 	if shown.Parent != "" {

@@ -1314,7 +1314,7 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 	to := compareFrom.Add(compareHours * time.Hour)
 	recorded := func(name string, order int, rule, commit string) windowRecord {
 		return windowRecord{Name: name, Order: order, Project: "ACME", From: compareFrom, To: to, Rule: rule, Scorecard: sampleCard(compareHours),
-			Parts: []Part{{From: compareFrom, To: to, Release: "fixture", Commit: commit, Rule: rule}}}
+			Parts: []Part{{From: compareFrom, To: to, Release: "fixture", Commit: commit, Rule: rule}}, MissingAncestors: []string{}}
 	}
 	before := recorded("window-two", 0, "legion-v19.57.3", "1111111111111111111111111111111111111111")
 	before.Stretches = 4
@@ -1381,7 +1381,7 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 			return snapshot, line, runRecord{Rule: rule.Name, RuleCommit: rule.Commit, BuildCommit: b.commit, Branch: at.Branch, Seed: seed,
 				Slowdown: at.Slowdown, Scenario: at.Branch.NeverStarted, Assumptions: []int{1, 3, 4},
 				Divergence:      Divergence{NoWorkAdmissions: noWork, NoWorkSlotHours: noWorkHours},
-				SignalSummaries: map[string]SignalSummary{}, SuppliedRefused: map[string]int{},
+				SignalSummaries: map[string]SignalSummary{}, SuppliedRefused: map[string]int{}, MissingAncestors: []string{},
 				StartedAt: b.started.Add(time.Duration(b.runs) * time.Minute), Gaps: Gaps(snapshot, line)}
 		}, func(directory string, ran runRecord) any {
 			if readings := signalReadings[directory]; readings != nil {
@@ -1643,7 +1643,7 @@ func madeUpRun(_ windowRecord, _ int, rule record.SlotRule, at BranchAt, seed in
 	card.Rule, card.Branch, card.Seed, card.Slowdown = rule.Name, at.Branch.Name, seed, at.Slowdown
 	return card, card, runRecord{Rule: rule.Name, RuleCommit: rule.Commit, Branch: at.Branch, Seed: seed, Slowdown: at.Slowdown,
 		Scenario: at.Branch.NeverStarted, Assumptions: []int{1}, StartedAt: compareFrom, Gaps: Gaps(card, card),
-		SignalSummaries: map[string]SignalSummary{}, SuppliedRefused: map[string]int{}}
+		SignalSummaries: map[string]SignalSummary{}, SuppliedRefused: map[string]int{}, MissingAncestors: []string{}}
 }
 
 // madeUpWindows is two windows of compareHours hours from compareFrom for a comparison of made-up
@@ -1654,7 +1654,8 @@ func madeUpWindows(before, after string) []windowRecord {
 	var windows []windowRecord
 	for i, rule := range []string{before, after} {
 		windows = append(windows, windowRecord{Name: fmt.Sprintf("window-%d", i+1), Order: i, Project: "ACME", From: compareFrom, To: to, Rule: rule,
-			Scorecard: sampleCard(compareHours), Parts: []Part{{From: compareFrom, To: to, Release: "fixture", Commit: strings.Repeat("1", 40), Rule: rule}}})
+			Scorecard: sampleCard(compareHours), Parts: []Part{{From: compareFrom, To: to, Release: "fixture", Commit: strings.Repeat("1", 40), Rule: rule}},
+			MissingAncestors: []string{}})
 	}
 	return windows
 }

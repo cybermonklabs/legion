@@ -54,7 +54,6 @@ Before 10:00 no issue holds a slot, so no pair of a holder and a waiting issue s
 ## What the window shows
 
 A replay that orders the line by each issue's own priority, or its tree root's, starts ACME-1 under `p0-at-once`, the issue that is first only under the recorded rule, and counts ACME-2 in no urgent wait.
-`pending_test.go` skips the window by name until the replay reads the resolved priority (plan task t39).
 
 ## The signals, worked by hand
 

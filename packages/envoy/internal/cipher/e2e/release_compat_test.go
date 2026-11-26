@@ -104,3 +104,46 @@ func TestTheReleaseOfANameBehindAKindDecodesWithTheR1Client(t *testing.T) {
 		t.Errorf("the answer holds PROXIED_TOKEN's value: %s", body)
 	}
 }
+
+// TestTheReleaseOfANameBehindAProxyBlockOfAFileOfNoKinds: under a profiles file that declares no
+// kinds, as every deployment's file did before them, a name behind a proxy block is released as
+// it was then: the command gets a placeholder for it, never its value, and the hosts of its block,
+// which the client keeps off NO_PROXY; a name no block names is released as its value beside it.
+// The client of release R1 decodes the answer.
+func TestTheReleaseOfANameBehindAProxyBlockOfAFileOfNoKinds(t *testing.T) {
+	stored := append(slices.Clone(e2eSecrets), policytest.Secret("PROXIED_TOKEN", testApprover, policy.TierAgent, "proxied-v1"))
+	file := policytest.ProfilesFile(`{"name": "PROXIED_TOKEN", "proxy": {"hosts": ["api.example.com", "uploads.example.com"], "headers": ["Authorization"]}}`)
+	ts := newE2EServerWith(t, e2eOptions{secrets: stored, profiles: file})
+	enrollmentID, key := ts.loginAndEnroll(t, testApprover, "e2e-proxy-block")
+
+	status, body := ts.session(t, key, enrollmentID, http.MethodPost, "/v1/requests",
+		map[string]any{"request": signAgentSecretRequest(t, key, ts.URL, "read it through the proxy", "PROXIED_TOKEN", "AUTO_READ_TOKEN"), "session_id": nil})
+	created := decode[wireCreateRequestResponse](t, body)
+	if status != http.StatusOK || created.State != "granted" || created.GrantID == nil {
+		t.Fatalf("POST /v1/requests = %d %s; want granted at once", status, body)
+	}
+	status, body = ts.session(t, key, enrollmentID, http.MethodPost, "/v1/grants/"+*created.GrantID+"/values", nil)
+	if status != http.StatusOK {
+		t.Fatalf("POST /v1/grants/{id}/values = %d: %s", status, body)
+	}
+	var r1 r1GrantValues
+	if err := json.Unmarshal(body, &r1); err != nil {
+		t.Fatalf("the client of release R1 cannot decode the answer: %v (%s)", err, body)
+	}
+	if r1.Values["AUTO_READ_TOKEN"] != "read-v1" || len(r1.Values) != 1 {
+		t.Errorf("values = %v; want AUTO_READ_TOKEN's alone, PROXIED_TOKEN held back", r1.Values)
+	}
+	if r1.Airlock == nil || r1.Airlock.ProxyURL != e2eProxyURL {
+		t.Fatalf("airlock = %+v; want the proxy %s", r1.Airlock, e2eProxyURL)
+	}
+	held, named := r1.Airlock.Names["PROXIED_TOKEN"]
+	if !named || len(r1.Airlock.Names) != 1 || held.Value == "" || held.Slots["value"] != held.Value {
+		t.Fatalf("airlock names = %+v; want PROXIED_TOKEN alone, one value slot holding its placeholder", r1.Airlock.Names)
+	}
+	if !slices.Equal(held.Hosts, []string{"api.example.com", "uploads.example.com"}) {
+		t.Errorf("PROXIED_TOKEN's hosts = %v; want its block's", held.Hosts)
+	}
+	if strings.Contains(string(body), "proxied-v1") {
+		t.Errorf("the answer holds PROXIED_TOKEN's value: %s", body)
+	}
+}

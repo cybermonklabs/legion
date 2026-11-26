@@ -211,7 +211,8 @@ func fitLoadModels(w Window, t Trace) (LoadModels, error) {
 	if err != nil {
 		return LoadModels{}, err
 	}
-	r := newModelRecord(w, t, inFlightSteps(lineTimeline(t, ranksOf(t), t.ruleAt)), kills, events)
+	// The issues in flight rest on no priority, so the timeline is read with none resolved.
+	r := newModelRecord(w, t, inFlightSteps(lineTimeline(t, ranksOf(t, resolvedPriorities{}), resolvedPriorities{}, t.ruleAt)), kills, events)
 	models := LoadModels{Project: w.Project, From: w.From, To: w.To, fit: r}
 	at, err := models.Replay(r.recordTimeline())
 	if err != nil {

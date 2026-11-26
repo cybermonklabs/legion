@@ -228,8 +228,8 @@ No issue waits for a slot: 0.
 As under `legion-v22.14.1`.
 
 **Waits on another issue.**
-ACME-1's children wait at admitted, 09:20 to 11:30: `child_done`, count 1, 2.1666… hours.
-Its wait on ACME-3 from 11:40 stands in planning and implementing, a phase that is neither admitted nor `awaiting_children`, so the measures count no wait of it (`replay.md`, "The measures", `waits`); it is the cover's, which reading (b) counts.
+ACME-1's children wait at admitted, 09:20 to 11:30, and its wait on ACME-3, 11:40 to ACME-3's `done` at 13:20, each ended by its last open child's `done`: `child_done`, count 2, 130 + 100 = 230 minutes, 3.8333… hours.
+Under `cover` a started parent with an open child keeps its phase, and its wait on its open children counts in each phase from planning through accepting (`replay.md`, "The measures", `waits`), so ACME-1's wait on ACME-3 counts in planning and implementing, as it counts in `awaiting_children` under `main`; it is the wait the cover takes, whose 100 minutes reading (b) counts too.
 
 **Assumptions.**
 Those of `legion-v22.14.1`, and 14 (the cover of ACME-3 for ACME-1): `assumptions` is [1, 2, 3, 4, 7, 9, 10, 11, 13, 14, 17]; `scenario` is `none`.

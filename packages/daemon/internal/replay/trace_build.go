@@ -78,6 +78,12 @@ type Trace struct {
 	// about and the reason: a line that disagrees with what the trace already holds, a move whose
 	// trigger has no source, a turn end with no start. The trace still places what it can of it.
 	Unplaced []UnplacedFact
+	// shownPriorities, where set, is the priority Dispatch resolves for each issue, which the
+	// replay's copy of Dispatch shows in place of the issue's own under a rule with the new P0 start
+	// (record.SlotRule.P0AboveCap, shadow.priorities): the start state records each issue at the
+	// one standing just before its moment (seeder.startRecord). Nil for a record's own trace and
+	// under every other rule, whose start state records each issue's own priority.
+	shownPriorities *resolvedPriorities
 }
 
 type claimCause struct {
@@ -159,6 +165,14 @@ type IssueTrace struct {
 	Slots []SlotSpan
 	// Waits is each wait of the issue, by the time it began.
 	Waits []Wait
+	// StartedChildren is each wait of the issue on its open Dispatch children while its phases
+	// have started (traceBuilder.startedChildren), by the time it began: a stretch in which it
+	// stood in flight, in a phase whose start an open child holds (record.OpenChildHolds), with a
+	// child open under it. No line of the daemon tells it, and only a rule whose cover takes that
+	// wait where the parent stands counts it (coverTakesStartedParents): under the daemon's own
+	// rule such a parent moves into awaiting_children instead (TriggerChildrenOpen), and under the
+	// recorded rules no open child holds a started parent's start.
+	StartedChildren []Wait
 	// Turns is each turn of a worker of the issue, of any role, by the time it began.
 	Turns []Turn
 	// Gates is each fact of the issue's design gate, from the gate lines and the verdicts on its
@@ -1826,9 +1840,10 @@ func (b *traceBuilder) turnEnds(ref ClaimRef, at time.Time, by TurnEnd, ownLine 
 // slot spans, the slots it infers held from before the reach, each merger's move back that a post
 // names as one for a conflict (mergerConflicts), each issue's link, children and person waits' ends
 // and the sessions of its claims, the slots it infers held at the window's start, its check of the
-// slots against the record's count there, each issue's worker starts and segments, and the ticks;
-// and it ends what stands at the window's end. A session whose title names an issue the trace holds
-// nothing else of runs no claim a replay writes, and is left out.
+// slots against the record's count there, each issue's waits on its open children while its phases
+// have started (startedChildren), read once every slot is, its worker starts and segments, and the
+// ticks; and it ends what stands at the window's end. A session whose title names an issue the
+// trace holds nothing else of runs no claim a replay writes, and is left out.
 func (b *traceBuilder) finish() {
 	b.childGenerations()
 	b.t.Slots = append(b.t.Slots, b.buffered...)
@@ -1852,6 +1867,7 @@ func (b *traceBuilder) finish() {
 	b.countSlots()
 	for _, key := range keys {
 		iss := b.t.Issues[key]
+		b.startedChildren(iss)
 		slices.SortStableFunc(iss.Waits, func(x, y Wait) int { return x.Start.Compare(y.Start) })
 		for i := range iss.Waits {
 			if iss.Waits[i].EndedBy == "" {
@@ -2178,6 +2194,18 @@ func measuredPhase(p phase.Phase) bool {
 	return beforeReview(p) || p == phase.AwaitingChildren
 }
 
+// coverTakesStartedParents says whether rule's cover takes a started parent's wait on its open
+// Dispatch children where the parent stands: a start that may take a cover (record.TakeCover)
+// under a wait that stops no phase, which names the started parents (record.SlotRule.StartedParents)
+// and moves none of them into awaiting_children. Such a parent waits in each phase whose start an
+// open child holds (record.OpenChildHolds: planning through accepting), and the measures count
+// that wait there as they count a parent's wait in awaiting_children under a rule whose wait stops
+// the phase (IssueTrace.StartedChildren, snapshots.waitAt).
+func coverTakesStartedParents(rule record.SlotRule) bool {
+	rule = rule.OrMain()
+	return rule.Take == record.TakeCover && !rule.WaitStopsPhase
+}
+
 // linkWaits builds iss's waits on its Dispatch blocked_by links: a stretch in which the issue is
 // in flight and a blocker its links name is unfinished (not done, or with no event the window
 // holds), begun while the issue stands before its review, from the moment both hold to the moment
@@ -2272,6 +2300,73 @@ func (b *traceBuilder) linkWaits(iss *IssueTrace) {
 	}
 	if waiting != nil {
 		iss.Waits = append(iss.Waits, *waiting)
+	}
+}
+
+// startedChildren builds iss's waits on its open Dispatch children while its phases have started
+// (IssueTrace.StartedChildren): a stretch in which the issue is in flight, stands in a phase whose
+// start an open child holds (record.OpenChildHolds, read where its visit stands, a hold keeping its
+// visit) and has a child open under it (childrenAt), from the moment all three hold to the moment
+// one fails: its last open child closed (child_done) or moved from under it (child_moved_out), it
+// moved out of those phases (moved_on), or its run ended (left_workflow). No design gate ends it,
+// as the started parents' judgement reads none (record.SlotRule.StartedParents).
+func (b *traceBuilder) startedChildren(iss *IssueTrace) {
+	candidates := b.childrenOf(iss.Key)
+	stretches := iss.inFlight()
+	if len(candidates) == 0 || len(stretches) == 0 {
+		return
+	}
+	var moments []time.Time
+	for _, key := range candidates {
+		for _, event := range b.t.Issues[key].Dispatch {
+			if event.Issue != nil {
+				moments = append(moments, event.At)
+			}
+		}
+	}
+	for _, stretch := range stretches {
+		moments = append(moments, stretch[0], stretch[1])
+	}
+	for _, visit := range iss.Visits {
+		moments = append(moments, visit.Enter, visit.Exit)
+	}
+	moments = slices.DeleteFunc(moments, time.Time.IsZero)
+	slices.SortFunc(moments, time.Time.Compare)
+	moments = slices.CompactFunc(moments, time.Time.Equal)
+	var waiting *Wait
+	var before []string
+	for _, at := range moments {
+		visit, flying := iss.visitAt(at), withinStretches(stretches, at)
+		var open []string
+		if flying && visit != nil && record.OpenChildHolds(visit.Phase) {
+			open = b.childrenAt(iss.Key, candidates, at)
+		}
+		if waiting != nil && len(open) == 0 {
+			switch {
+			case !flying || visit == nil:
+				waiting.EndedBy = WaitLeft
+			case !record.OpenChildHolds(visit.Phase):
+				waiting.EndedBy = WaitMovedOn
+			default:
+				waiting.EndedBy = WaitChildDone
+				for _, key := range before {
+					if state := b.dispatchStateAt(b.t.Issues[key], at); state != nil && state.Parent != iss.Key {
+						waiting.EndedBy = WaitChildMovedOut
+					}
+				}
+			}
+			waiting.End = at
+			iss.StartedChildren = append(iss.StartedChildren, *waiting)
+			waiting = nil
+		}
+		if waiting == nil && len(open) > 0 {
+			waiting = &Wait{Kind: WaitChildren, Start: at, On: open}
+		}
+		before = open
+	}
+	if waiting != nil {
+		waiting.EndedBy = WaitOpen
+		iss.StartedChildren = append(iss.StartedChildren, *waiting)
 	}
 }
 

@@ -82,7 +82,6 @@ The span is 60 minutes. No issue finishes, returns a slot, waits on another issu
 
 The rule with the new P0 start starts ACME-2 when only the cap holds it; ACME-3, an explicit P1 under the same Dispatch root, does not pass the cap; ACMEAUX-2's raise at 09:40 moves ACME-4 from P2 to P0 at that moment and starts it; and the recorded rule starts nothing outside the cap.
 A replay that reads each issue's own priority, or its tree root's, as the replay did before the resolved priority, starts neither ACME-2 nor ACME-4 under `p0-at-once`, and counts only ACME-3 in the urgent waits of either rule; one that takes the new P0 classification only at a later pass starts ACME-4 late.
-`pending_test.go` skips the window by name until the replay reads the resolved priority (plan task t39).
 
 ## The signals, worked by hand
 

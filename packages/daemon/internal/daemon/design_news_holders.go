@@ -21,8 +21,8 @@ import (
 // reconcile's other guard). A claim the start reaches that holds such a task gets no start until a
 // turn takes it, so its news waits for that turn (workflow.NewsWaitsForTask). Otherwise by the next
 // start of its phase: a claim behind its phase's current entry, owed that entry's start, no claim
-// at all, or one that retired, failed, or an operator suspended, since the start that revives it
-// carries the news.
+// at all, one that retired or failed, or one a suspension that holds (the operator's or the
+// controller's) is over, since the start that brings its agent back carries the news.
 func holderTold(run record.RoleRun, entry int64) workflow.NewsState {
 	switch {
 	case !record.RecordedClaimTakesNews(run.Claim, entry):
@@ -53,5 +53,5 @@ func newsOnlyRefusal(machine *supervise.Machine, found bool, entry int64) string
 	case record.ClaimEnded(held.State):
 		return fmt.Sprintf("the claim is %s, and the start that revives it carries the news", held.State)
 	}
-	return "an operator suspended the claim, and the start that resumes it carries the news"
+	return fmt.Sprintf("the %s's suspension holds the agent, and once a resume lifts it the start that resumes the agent carries the news", held.Holder())
 }

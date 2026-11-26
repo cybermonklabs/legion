@@ -27,6 +27,12 @@ type Timeline struct {
 	From, To, End time.Time
 	// Issues is each issue's course, by key.
 	Issues map[string]*Course
+	// MissingAncestors is each ancestor whose history the window lacks on which the priority
+	// Dispatch resolves for an issue of it rests (resolvedPriorities.missingAncestors), set with
+	// the issues' priorities (readUrgency): with any, the timeline gives no issue's priority the
+	// measures can read, and Measure reads no wait of urgent work and no priority taken in today's
+	// line's order (spec R10: no comparison that depends on the missing input).
+	MissingAncestors []string
 }
 
 // Course is one issue's course over a timeline.
@@ -47,13 +53,14 @@ type Course struct {
 	Waits []CourseWait
 	// Todo is the moment the issue's wait as urgent work begins (urgentWaits, urgencyOf): its first
 	// todo in the span, or the span's start where it stood todo there from before; zero for an
-	// issue that did neither. Priorities is its own Dispatch priority from Todo on: the priority at
-	// Todo, then each other one its issue events show after it, in time order.
+	// issue that did neither. Priorities is its priority as Dispatch resolves it from Todo on
+	// (resolvedPriorities): the priority at Todo, then each change of it after, in time order.
 	Todo       time.Time
 	Priorities []PriorityAt
 }
 
-// PriorityAt is an issue's own Dispatch priority from a moment on, as its issue events show it.
+// PriorityAt is an issue's priority from a moment on: the one Dispatch resolves for it
+// (resolvedPriorities), as the measures read it.
 type PriorityAt struct {
 	At       time.Time
 	Priority record.Priority
@@ -85,9 +92,11 @@ type IssueState struct {
 	// Tree is the key of the issue's tree root; Rank and RootRank are the Dispatch ranks of the
 	// issue and of that root, which record.RankLess compares to place it (the true ranks, which a
 	// replay's own copy of Dispatch does not show under FirstStarts recorded, design 10.7); and
-	// Priority is the Dispatch priority that places it in today's line's band, its own or else its
-	// root's (record.PriorityOf). They are set for a holder and an issue that waits for a slot
-	// alone, the two a pair of priority taken is made of (rankFunc.place).
+	// Priority is the Dispatch priority that places it in today's line's band, its resolved one or
+	// else its root's (record.PriorityOf over the priorities Dispatch resolves, which is the
+	// resolved one: an issue that resolves to none has a root that does). They are set for a holder
+	// and an issue that waits for a slot alone, the two a pair of priority taken is made of
+	// (rankFunc.place).
 	Tree, Rank, RootRank string
 	Priority             record.Priority
 	// InFlight says the daemon has started the issue's work and it has not reached done or left
@@ -190,17 +199,17 @@ func upTo(ts []time.Time, at time.Time) int {
 	return sort.Search(len(ts), func(i int) bool { return ts[i].After(at) })
 }
 
-// rankFunc is what places an issue on the board at a moment: its Dispatch rank and its own
-// Dispatch priority.
+// rankFunc is what places an issue on the board at a moment: its Dispatch rank and the priority
+// Dispatch resolves for it.
 type rankFunc func(key string, at time.Time) (string, record.Priority)
 
-// ranksOf is the rank and the own priority of each issue of t at each moment as its Dispatch
-// events show them: those of its newest issue event at or before the moment, or of its first for a
-// moment before every one, and "" and none for an issue the window holds no issue event of. A
-// replay reads the ranks and the priorities of its record's trace, the true ones, whatever its own
-// copy of Dispatch shows (design 10.7). Each issue's events are indexed once, and each is read by
-// binary search.
-func ranksOf(t Trace) rankFunc {
+// ranksOf is the rank of each issue of t at each moment as its Dispatch events show it, that of its
+// newest issue event at or before the moment, or of its first for a moment before every one, and
+// "" for an issue the window holds no issue event of; with the priority priorities resolves for it
+// then, under every rule, so every rule is measured on one banding of the line. A replay reads the
+// ranks and the priorities of its record's trace, the true ones, whatever its own copy of Dispatch
+// shows (design 10.7). Each issue's events are indexed once, and each is read by binary search.
+func ranksOf(t Trace, priorities resolvedPriorities) rankFunc {
 	shown := make(map[string]shownStates, len(t.Issues))
 	for key, iss := range t.Issues {
 		shown[key] = shownOf(iss)
@@ -214,19 +223,19 @@ func ranksOf(t Trace) rankFunc {
 		if state == nil {
 			state = s.states[0]
 		}
-		return state.Rank, state.Priority
+		return state.Rank, priorities.at(key, at)
 	}
 }
 
 // place sets in state what places key, in tree, on the board at at: its tree, the ranks of the
-// issue and of its tree root, and the priority that places it in today's line's band, its own or
-// else its root's (record.PriorityOf), as ranks reads them. Both timelines place a holder and an
-// issue that waits for a slot by it.
+// issue and of its tree root, and the priority that places it in today's line's band, as the line
+// places an issue (record.PriorityOf) over the priorities Dispatch resolves, as ranks reads them.
+// Both timelines place a holder and an issue that waits for a slot by it.
 func (ranks rankFunc) place(state *IssueState, key, tree string, at time.Time) {
-	rank, own := ranks(key, at)
-	rootRank, rootPriority := ranks(tree, at)
+	rank, resolved := ranks(key, at)
+	rootRank, rootResolved := ranks(tree, at)
 	state.Tree, state.Rank, state.RootRank = tree, rank, rootRank
-	state.Priority = record.PriorityOf(record.Issue{Priority: own}, record.Issue{Priority: rootPriority})
+	state.Priority = record.PriorityOf(record.Issue{Priority: resolved}, record.Issue{Priority: rootResolved})
 }
 
 // shownStates is an issue's Dispatch state as each of its issue events shows it, in time order,
@@ -346,9 +355,13 @@ type issueIndex struct {
 	// flight is its stretches in flight (IssueTrace.inFlight).
 	flight [][2]time.Time
 	// inFlight, slots, turns, waits, person and held count its stretches in flight, its slots,
-	// its workers' turns, its waits on other issues (link and children), its waits on a person and
-	// its holds.
+	// its workers' turns, its waits on other issues (link and children, and its started waits),
+	// its waits on a person and its holds.
 	inFlight, slots, turns, waits, person, held stretchCount
+	// started is its waits on its open children while its phases have started
+	// (IssueTrace.StartedChildren) that the rule the daemon ran at each one's start counts
+	// (coverTakesStartedParents), in the order they began.
+	started []Wait
 	// restarts is each moment a hold of it ended with its worker sent the held phase again
 	// (Wait.released), in order: the held phase's retry writes that worker's start.
 	restarts []time.Time
@@ -356,8 +369,10 @@ type issueIndex struct {
 	gate gateSteps
 }
 
-// indexIssue indexes iss, the gate of the tree it roots read as gateStepsOf reads it.
-func indexIssue(iss *IssueTrace, gateLines bool) *issueIndex {
+// indexIssue indexes iss, the gate of the tree it roots read as gateStepsOf reads it, and its waits
+// on its open children while its phases have started read by rule, the rule the daemon ran at each
+// moment.
+func indexIssue(iss *IssueTrace, gateLines bool, rule func(time.Time) record.SlotRule) *issueIndex {
 	x := &issueIndex{iss: iss, shown: shownOf(iss), flight: iss.inFlight(), gate: gateStepsOf(iss, gateLines)}
 	done, rank, priority := false, "", record.NoPriority
 	for i, state := range x.shown.states {
@@ -390,6 +405,12 @@ func indexIssue(iss *IssueTrace, gateLines bool) *issueIndex {
 			if wait.released() && !wait.End.IsZero() {
 				x.restarts = append(x.restarts, wait.End)
 			}
+		}
+	}
+	for _, wait := range iss.StartedChildren {
+		if coverTakesStartedParents(rule(wait.Start)) {
+			x.started = append(x.started, wait)
+			waits = append(waits, [2]time.Time{wait.Start, wait.End})
 		}
 	}
 	slices.SortFunc(x.restarts, time.Time.Compare)
@@ -439,7 +460,7 @@ func (r *lineReader) of(key string) *issueIndex {
 	if !ok {
 		return nil
 	}
-	x := indexIssue(iss, r.t.GateLines)
+	x := indexIssue(iss, r.t.GateLines, r.rule)
 	r.index[key] = x
 	return x
 }
@@ -460,8 +481,8 @@ func (r *lineReader) of(key string) *issueIndex {
 // each move back takes the cause the trace read it with (Move.Cause), a merger's move back for a
 // conflicting head a conflict.
 // It runs to t's end, the end of the window's run-out, and each issue's wait as urgent work is read
-// from t's issue events (readUrgency).
-func lineTimeline(t Trace, ranks rankFunc, rule func(time.Time) record.SlotRule) Timeline {
+// from t's issue events with the priorities Dispatch resolves, priorities (readUrgency).
+func lineTimeline(t Trace, ranks rankFunc, priorities resolvedPriorities, rule func(time.Time) record.SlotRule) Timeline {
 	tl := Timeline{From: t.From, To: t.To, End: t.End, Issues: map[string]*Course{}}
 	r := &lineReader{t: t, ranks: ranks, rule: rule, index: map[string]*issueIndex{}}
 	for _, move := range t.Slots {
@@ -489,7 +510,7 @@ func lineTimeline(t Trace, ranks rankFunc, rule func(time.Time) record.SlotRule)
 			}
 			c.set(at, state)
 		}
-		moves, waits := iss.Moves(), issueWaits(iss, x.flight)
+		moves, waits := iss.Moves(), issueWaits(iss, x.flight, x.started)
 		if c == nil && len(moves)+len(waits)+len(iss.MergeForwards) > 0 {
 			c = tl.course(key)
 		}
@@ -503,61 +524,58 @@ func lineTimeline(t Trace, ranks rankFunc, rule func(time.Time) record.SlotRule)
 			c.Waits = waits
 		}
 	}
-	tl.readUrgency(t)
+	tl.readUrgency(t, priorities)
 	return tl
 }
 
 // readUrgency sets, for each issue of t's project that Legion works, one t holds an entry into the
 // workflow of (Entry: a root handed to Legion, or a child of a tree in the workflow), and whose wait
-// as urgent work begins in t's span (urgencyOf), the moment it begins and the issue's own Dispatch
-// priority from then on, as t's issue events show them (Course.Todo, Course.Priorities), making a
-// course for an issue tl holds none of. An issue no one handed to Legion, which a window holds for
-// its events alone, is no work of Legion's and waits for no slot. The line timeline reads them from
-// its own trace, and a replay's snapshot timeline from its record's, as it reads the ranks.
-func (tl *Timeline) readUrgency(t Trace) {
+// as urgent work begins in t's span (urgencyOf), the moment it begins, as t's issue events show it,
+// and its priority from then on as Dispatch resolves it (Course.Todo, Course.Priorities, from
+// priorities), making a course for an issue tl holds none of; and the ancestors the window lacks
+// on which a priority rests (Timeline.MissingAncestors). An issue no one handed to Legion, which a
+// window holds for its events alone, is no work of Legion's and waits for no slot. The line
+// timeline reads the todo from its own trace, and a replay's snapshot timeline from its record's,
+// as it reads the ranks; both read the priorities of the record's trace.
+func (tl *Timeline) readUrgency(t Trace, priorities resolvedPriorities) {
+	tl.MissingAncestors = priorities.missingAncestors()
 	for key, iss := range t.Issues {
 		if iss.Project != t.Project || len(iss.Entries) == 0 {
 			continue
 		}
-		if since, priorities := urgencyOf(iss, t.From, t.To); !since.IsZero() {
+		if since := urgencyOf(iss, t.From, t.To); !since.IsZero() {
 			c := tl.course(key)
-			c.Todo, c.Priorities = since, priorities
+			c.Todo, c.Priorities = since, priorities.from(key, since)
 		}
 	}
 }
 
-// urgencyOf is where iss's wait as urgent work begins and its own Dispatch priority from then on
-// (Course.Todo, Course.Priorities): at its first todo in [from, to), the first issue event in the
-// span that shows it todo where the issue event before it, of any moment, did not, or at from where
-// the newest issue event before from shows it todo; and the priority its issue events show at that
-// moment, then each other one an issue event after it shows, of any moment. Zero and none for an
+// urgencyOf is where iss's wait as urgent work begins (Course.Todo): at its first todo in [from,
+// to), the first issue event in the span that shows it todo where the issue event before it, of any
+// moment, did not, or at from where the newest issue event before from shows it todo. Zero for an
 // issue that neither turned todo in the span nor stood todo at its start.
-func urgencyOf(iss *IssueTrace, from, to time.Time) (time.Time, []PriorityAt) {
-	var since, lastAt time.Time
+func urgencyOf(iss *IssueTrace, from, to time.Time) time.Time {
+	var lastAt time.Time
 	var last *DispatchIssueState
-	var priorities []PriorityAt
 	for _, event := range iss.Dispatch {
 		state := event.Issue
 		if state == nil {
 			continue
 		}
-		if since.IsZero() && !event.At.Before(from) {
+		if !event.At.Before(from) {
 			switch {
 			case last != nil && last.Status == "todo":
-				since, priorities = from, []PriorityAt{{At: from, Priority: last.Priority}}
+				return from
 			case state.Status == "todo" && event.At.Before(to):
-				since = event.At
+				return event.At
 			}
-		}
-		if !since.IsZero() && (len(priorities) == 0 || priorities[len(priorities)-1].Priority != state.Priority) {
-			priorities = append(priorities, PriorityAt{At: event.At, Priority: state.Priority})
 		}
 		last, lastAt = state, event.At
 	}
-	if since.IsZero() && last != nil && last.Status == "todo" && lastAt.Before(from) {
-		since, priorities = from, []PriorityAt{{At: from, Priority: last.Priority}}
+	if last != nil && last.Status == "todo" && lastAt.Before(from) {
+		return from
 	}
-	return since, priorities
+	return time.Time{}
 }
 
 // recordedWaitStarts is, for each of keys that t's record shows waiting for a slot at at, the
@@ -596,23 +614,29 @@ func recordedWaitStarts(t Trace, ranks rankFunc, at time.Time, keys []string) ma
 
 // issueWaits is iss's waits on other issues as the measures count them (`replay.md`, "The
 // measures": a stretch in which an issue in flight, standing before its review or in
-// awaiting_children, waits on another issue): each stretch of its link and children waits in which
-// it stands in flight (flight) and in such a phase (measuredStretches), in the order they began,
-// each run of them that overlap
-// or touch read as one wait, from the first one's start to the last one's end, ended by what ended
-// the last. A wait that begins where another ends is the same stretch of waiting, as the snapshot
-// timeline reads it, whose wait goes on at a settle where something is left to wait on whatever
-// ended and began there (snapshots.waitAt): a blocker done at the moment another is linked, or a
-// children wait the trace ends where the daemon's next line of a children wait of the issue begins
-// (IssueTrace.nextWaitStart). A wait cut by its stretch's end ends as that stretch does: its move
-// past its review (moved_on), where the daemon judges no wait of it any longer (blockers' waitsOf)
-// and the snapshot timeline ends it too (waitEnd), or its leave (left_workflow). So a children
-// wait the daemon tells of a child that has not started, the line's hold on its first phase, is
-// none of them, as the snapshot timeline, which reads the waits of the issues in flight alone,
-// counts none.
-func issueWaits(iss *IssueTrace, flight [][2]time.Time) []CourseWait {
+// awaiting_children, waits on another issue, and in which a started parent waits on its open
+// children in the phase it stands in under a rule whose cover takes that wait): each stretch of its
+// link and children waits in which it stands in flight (flight) and in such a phase
+// (measuredStretches), and each of its waits on its open children while its phases have started
+// that the rule counts (started, issueIndex.started), which the trace bounds by its run and those
+// phases itself (traceBuilder.startedChildren), in the order they began, each run of them that
+// overlap or touch read as one wait, from the first one's start to the last one's end, ended by
+// what ended the last. A wait that begins where another ends is the same stretch of waiting, as the
+// snapshot timeline reads it, whose wait goes on at a settle where something is left to wait on
+// whatever ended and began there (snapshots.waitAt): a blocker done at the moment another is
+// linked, or a children wait the trace ends where the daemon's next line of a children wait of the
+// issue begins (IssueTrace.nextWaitStart). A wait cut by its stretch's end ends as that stretch
+// does: its move past its review (moved_on), where the daemon judges no wait of it any longer
+// (blockers' waitsOf) and the snapshot timeline ends it too (waitEnd), or its leave
+// (left_workflow). So a children wait the daemon tells of a child that has not started, the line's
+// hold on its first phase, is none of them, as the snapshot timeline, which reads the waits of the
+// issues in flight alone, counts none.
+func issueWaits(iss *IssueTrace, flight [][2]time.Time, started []Wait) []CourseWait {
 	stretches := measuredStretches(iss, flight)
 	var pieces []CourseWait
+	for _, wait := range started {
+		pieces = append(pieces, CourseWait{Start: wait.Start, End: wait.End, EndedBy: wait.EndedBy})
+	}
 	for _, wait := range iss.Waits {
 		if wait.Kind != WaitLink && wait.Kind != WaitChildren {
 			continue
@@ -832,12 +856,13 @@ func (r *lineReader) stateAt(x *issueIndex, at time.Time) IssueState {
 //   - a release for a wait: the loop places an issue that carries the mark of a pass that took
 //     its slot back for a wait on another issue (record.Issue.ReleasedForWaitAt, which
 //     record.Store.ReleaseSlotForWait writes with the release) as LineWaitingOnIssue, whatever it
-//     owes, until a pass gives it a slot and clears the mark. Its last slot's SlotSpan.ForWait
-//     reads that release: the reason the pass's record line gives, or a link or children wait of
-//     the issue that stands where the slot went back. A pass clears the mark too where the issue
-//     needs no slot (admit's releaseSlots): a move into a phase the rule keeps no slot in, whose
-//     move back owes its start, and a tree that stopped being live, so a mark stands only while
-//     the tree has stood live since the release.
+//     owes, until a pass gives it a slot and clears the mark. Its last slot's release reads so
+//     (issueIndex.forWait): the reason the pass's record line gives, or a link or children wait
+//     of the issue that stands where the slot went back, a wait on its open children while its
+//     phases have started that the rule counts among them. A pass clears the mark too where the
+//     issue needs no slot (admit's releaseSlots): a move into a phase the rule keeps no slot in,
+//     whose move back owes its start, and a tree that stopped being live, so a mark stands only
+//     while the tree has stood live since the release.
 //
 // The issue's place in that part is the caller's: blocked while a link or children wait of it
 // stands, as the promotion passes over an entry while what it waits on is unfinished
@@ -855,7 +880,7 @@ func (r *lineReader) returnedAt(x *issueIndex, tree string, visit *Visit, at tim
 	if i := sort.Search(len(slots), func(i int) bool { return slots[i].Start.After(at) }); i > 0 {
 		last = &slots[i-1]
 	}
-	if last != nil && last.ForWait && !liveSince.After(last.End) {
+	if last != nil && x.forWait(last) && !liveSince.After(last.End) {
 		return true
 	}
 	var written time.Time
@@ -866,6 +891,21 @@ func (r *lineReader) returnedAt(x *issueIndex, tree string, visit *Visit, at tim
 		written = x.restarts[i-1]
 	}
 	return !written.IsZero() && (last == nil || last.End.Before(written))
+}
+
+// forWait says whether span, a slot of x's issue, went back for a wait on another issue: as the
+// trace reads it (SlotSpan.ForWait), or, where no record line names why it went back, for a wait of
+// the issue on its open children while its phases have started that the rule counts (started)
+// standing where it went back, as the trace reads a link or children wait that stands there
+// (traceBuilder.forWait): the trace holds no rule's reading of that wait, so only the line reader,
+// which reads by the rule, can read the release so.
+func (x *issueIndex) forWait(span *SlotSpan) bool {
+	if span.ForWait || span.Reason != "" || span.End.IsZero() || span.Inferred {
+		return span.ForWait
+	}
+	return slices.ContainsFunc(x.started, func(wait Wait) bool {
+		return !wait.Start.After(span.End) && (wait.End.IsZero() || wait.End.After(span.End))
+	})
 }
 
 // treeLiveAt says whether tree is live at at and its root does not linger (NeedsSlot's tree half:

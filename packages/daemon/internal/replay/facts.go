@@ -341,4 +341,9 @@ var FactSources = map[string]FactSource{
 	"PendingBasisRead": {Way: FactLeftOut, Assumption: assumeNoBasis},
 	"BasisChangesRead": {Way: FactLeftOut, Assumption: assumeNoBasis},
 	"ReparentRead":     {Way: FactLeftOut, Assumption: assumeNoBasis},
+
+	// An event of the project's merge holds document (cybermonklabs/legion#4065): a recorded
+	// window holds the project's issue events alone, and the fact only tells the architects in
+	// accepting and the mergers in merging, so none comes to it.
+	"MergeHoldsChanged": {Way: FactLeftOut, Assumption: assumeNoticesChangeNothing},
 }
