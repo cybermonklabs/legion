@@ -165,11 +165,19 @@ func WriteRefused(w http.ResponseWriter, refusal *Refusal) {
 //
 // A failure of the server's own is none of these and is left to the caller. None of the
 // refusals is a fault of the server's to alarm an operator over, and under load every request
-// meets one, so each is logged at debug; only the unknown outcome is logged at error.
+// meets one, so each is logged at debug; only the unknown outcome is logged at error. That line
+// names the call the database never answered (unknownOutcome) and the request's class, and no
+// value of err, which can carry text a caller's credential chose (unserved says why); the access
+// line beside it names the route.
 func WriteUnserved(w http.ResponseWriter, ctx context.Context, err error, wrote bool) bool {
 	unanswered := unknownOutcome(err)
 	if unanswered != "" && wrote {
-		slog.Error("dispatch: the database did not answer "+unanswered+"; its outcome is unknown and it may have committed", "error", err)
+		if ticket := TicketFrom(ctx); ticket != nil {
+			slog.Error("dispatch: the database did not answer "+unanswered+"; its outcome is unknown and it may have committed",
+				"class", ticket.arrival.class)
+		} else {
+			slog.Error("dispatch: the database did not answer " + unanswered + "; its outcome is unknown and it may have committed")
+		}
 		if unserved(w, ctx, err) {
 			return true
 		}
