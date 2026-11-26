@@ -72,11 +72,12 @@ func buildRecordResponse(detail requests.RecordDetail) recordResponse {
 // confirmation code: machine.Service.ApplyDecision checks it on both approve and deny. The two
 // approver_ account fields are the account that person signed in to Dispatch as, which an approval
 // records on the credential it mints and is refused by once that account no longer holds the
-// address; approver_session_generation is where Dispatch's check of that person stood, by which an
-// approval checked before a replacement is refused. A Dispatch from before them sends none of the
-// three, and its approvals record no account; a current one sends them only while this broker's
-// GET /v1/settings says it takes them (settingsResponse.ApproverFields), and relays no approve when
-// it cannot read those settings.
+// address; approver_session_generation is where the caller's check of that person stood, by which
+// an approval checked before a replacement is refused. Dispatch in this tree sends none of the
+// three, and its approvals record no account; the change that records accounts at Dispatch sends
+// them, and only to a broker whose GET /v1/settings says it takes them
+// (settingsResponse.ApproverFields), since a broker from before them refuses a body carrying any
+// of them 400 INVALID_DECISION.
 type decideBody struct {
 	// The login of the person deciding, which the record's rule must admit: its approver, or
 	// anyone signed in for the denial of a service's machine login.
@@ -92,9 +93,9 @@ type decideBody struct {
 	// The approver's address's session generation at Dispatch as Dispatch's check of the approver
 	// read it (its user_sessions.generation, 0 when it holds none): an approval is refused 403
 	// APPROVER_REPLACED when a revoke recorded a replacement of the address at a greater one,
-	// since the check passed before that replacement, whichever account it names. Absent from a
-	// Dispatch that sends none, whose approval naming no account is held to a time window after a
-	// replacement instead (machine.ApprovalInFlightWindow).
+	// since the check passed before that replacement, whichever account it names. Every approve
+	// Dispatch relays in this tree carries none, and its approval naming no account is held to a
+	// time window after a replacement instead (machine.ApprovalInFlightWindow).
 	ApproverSessionGeneration *int64 `json:"approver_session_generation"`
 }
 
