@@ -419,10 +419,10 @@ func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) contex
 // BrokerError holds a part of the credential either. Its words read cipheraddr.WordsNotPrinted
 // beside an address that is not clean, and are empty beside a clean one, so a machine login's
 // device authorization prints it as "broker <n>" and those words (BrokerError.Error).
-// requestReach.settle reads its status, so a 4xx refusal is reported as one and not as an unknown
-// outcome, and any other status, a 3xx or a 5xx, stays unknown. It reads the broker's own answer
-// (redact.BrokerAnswer), never errors.As, which also reaches an answer Class or Masked holds:
-// another server's, whose words they withheld.
+// requestReach.settle reads its status, so a 4xx refusal but a 408 is reported as one and not as an
+// unknown outcome, and any other status, a 408, a 3xx or a 5xx, stays unknown (settle says why). It
+// reads the broker's own answer (redact.BrokerAnswer), never errors.As, which also reaches an
+// answer Class or Masked holds: another server's, whose words they withheld.
 // The redactor printed the answer whole exactly when its Cause, which is what it prints of the
 // failure without a call's operation and URL, is the answer's own text. That holds under a
 // caller's %w too, whose words it drops while it still prints the answer, which is why this asks

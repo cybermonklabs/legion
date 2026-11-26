@@ -876,7 +876,9 @@ test("a reply or a BTW answer Dispatch refused is said not posted, with Dispatch
 // a 5xx, or a 408, which a gateway can answer after it forwarded the write), may have been posted,
 // so the line says it may or may not have been, never that it was not. A BTW answer that ends so
 // is answered with the error, and when that error reply ends so too the line says the same of the
-// BTW answer.
+// BTW answer. Each error is injected as the host's reply fails, so the 5xx and 408 rows hold the
+// router's own reading of an error that reaches it unclassified; the Dispatch client's keyed POST
+// ends both statuses as `DispatchWriteUnsettledError` before any host sees them.
 for (const [name, failure, tail] of [
   [
     "a write left unsettled",

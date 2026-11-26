@@ -110,8 +110,11 @@ export function acceptLanded(messageId: string, error: DispatchWriteLandedError)
  *  (`DispatchWriteUnsettledError`: an earlier attempt got a 5xx or a 408 or failed in transport,
  *  or the last was cut off for silence or by the deadline), or on a status after which the request
  *  may have reached Dispatch (`mayHaveReachedServer`: a 5xx or a 408, a gateway's included), which
- *  can follow a write Dispatch committed. Dispatch's other 4xx, and an error raised before
- *  anything was sent, say it was not posted. */
+ *  can follow a write Dispatch committed. The Dispatch client's keyed POST, which every host's
+ *  reply goes through, already ends a 5xx or a 408 as `DispatchWriteUnsettledError`
+ *  (`answerEvent`'s `may-have-run`), so the second test holds for such an error that reaches here
+ *  unclassified. Dispatch's other 4xx, and an error raised before anything was sent, say it was
+ *  not posted. */
 function mayHaveBeenPosted(error: unknown): boolean {
   return (
     error instanceof DispatchWriteUnsettledError ||
@@ -421,12 +424,11 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
     await reply(delivery, { ...result, followUp })
   }
 
-  /** Posts one reply to a delivery, naming on stderr a reply that was not posted, which Dispatch
-   *  refused or never received; one that may or may not have been posted, which ended with no
-   *  definitive answer after an attempt may have reached Dispatch (`DispatchWriteUnsettledError`)
-   *  or on a 5xx; and one Dispatch made and gave no copy of its answer for
-   *  (`DispatchWriteLandedError`), which is posted: the error's message says what was made
-   *  (`replyWarning`). */
+  /** Posts one reply to a delivery, naming on stderr how it ended (`replyWarning`): posted, where
+   *  Dispatch made it and gave no copy of its answer (`DispatchWriteLandedError`), and the error's
+   *  message says what was made; may or may not have been posted, where `mayHaveBeenPosted` says
+   *  an attempt may have reached Dispatch; and not posted otherwise, which Dispatch refused or
+   *  never received. */
   const answer = async (delivery: DispatchDelivery, body: string | undefined): Promise<void> => {
     if (body === undefined) return
     await post(delivery, { body }).catch((error: unknown) => {
