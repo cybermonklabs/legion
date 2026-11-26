@@ -250,7 +250,7 @@ type overrides struct {
 	// streamListen takes the worker stream's listener for the address the stream binds
 	// (stream.Options.Listen); nil, in production, binds it. A test whose two daemons must listen
 	// on one worker_stream_port hands over a socket it holds across both, so the port is never free
-	// between its pick and a bind (controllerSandboxRig).
+	// between its pick and a bind (controllerSandboxRig, idleWakeRig).
 	streamListen func(network, address string) (net.Listener, error)
 	// strandedReported runs once the boot's report of the claims nothing will wake has finished,
 	// whether it logged or not (reportStranded); nil, in production, is nothing. The report runs

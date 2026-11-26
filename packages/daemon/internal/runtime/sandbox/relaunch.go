@@ -366,6 +366,12 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			// GPT-6.1 Sol's point 4 on #5285 at 0259f8af), and no read is made only where none
 			// can make it.
 			took = "the pod's launchers are not bound to it"
+			if len(held) == 0 {
+				// A stored template that names no role's launcher is judged by no role
+				// (launcherBound), so the launch cannot tell what the pod carries, as where the
+				// template cannot be read (keptBy, below).
+				took = "the pod's stored template names no role's launcher, so the launch cannot tell what the pod carries"
+			}
 		}
 	}
 	// A live pod a round covers that this launch would keep may be the pod of an update round
