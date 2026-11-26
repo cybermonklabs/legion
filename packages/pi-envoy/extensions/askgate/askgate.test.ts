@@ -3299,7 +3299,15 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
   // The dry runs' budgets asserted below are derived from the real clock as the here-document
   // row's is (the dry run's `firstMs` in askgate-core.ts), so this row holds the clock too
   // (HELD_CLOCK): what it reads is each script, the directory it ran in and DRY_RUN_TIMEOUT_MS,
-  // never the host's slowness.
+  // never the host's slowness. What a held clock cannot hold is the dry runs' own subprocesses: a
+  // real `dispatch` that does not finish inside the gate's DRY_RUN_TIMEOUT_MS (20 s, a production
+  // budget) is cut and run again (askgate-core.ts, `retryMs`), and the row then counts eight or
+  // nine dry runs. That happened in 5 of 20 runs at the 240 rung (Job infra-1580-r33lcd-c6cbb of
+  // the cluster's `builds` namespace, 595 busy loops for the 240 rung, row A 31.2 s, at
+  // ad82f821), and in none of 5 there with each run's output kept (-r34lcd240-l7kqr). So this
+  // row's acceptance rung is 96 busy loops, 48 per CPU: 20 of 20 there, at most 27 053 ms
+  // (-r34lcd96-l9xlr, 171 busy loops for the 96 rung, at 96f50466), as in the file's 20 whole
+  // runs at that rung (-r33aw-2qkfc).
   test("a leading cd and a trailing 2>&1 are reviewed, the dry-run in the cd's directory resolved against the call's", async () => {
     fs.mkdirSync(path.join(work, "sub", "inner"), { recursive: true });
     fs.writeFileSync(path.join(work, "sub", "note.txt"), "Body from the working directory.");

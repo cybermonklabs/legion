@@ -151,12 +151,12 @@
     }
   },
   "//": [
-    "test, its first command: --timeout 160000 is six times, rounded up, the slowest row this command runs that sets no limit of its own, read under the calibrated load: daemon-client.test.ts's 'every name the declared read set holds is read by the consumer sources', 25 300 ms over 20 runs of the command at the 96 rung (Job infra-1580-r31psr2-bsxwq of the cluster's builds namespace, two CPUs and 8 GiB, 144 busy loops for the 96 rung, at 339a24dd). Rows that set their own limit keep main's, among them handoff-record.test.ts's three real-jj rows, shell-command.test.ts's 'matches a real bash on every here-document and comment it accepts' and provider-refusal.test.ts's linear-time row, each at 60_000.",
+    "test, its first command: --timeout 210000 is six times, rounded up, the slowest row this command runs that sets no limit of its own, read under the calibrated load: daemon-client.test.ts's 'every name the declared read set holds is read by the consumer sources', 34 080 ms over 20 runs of the command at the 96 rung (Job infra-1580-r33psr-76pvn of the cluster's builds namespace, two CPUs and 8 GiB, 95 busy loops for the 96 rung, row A 32.4 s, at ad82f821), and 25 300 ms at 339a24dd (-r31psr2-bsxwq). Rows that set their own limit keep main's, among them handoff-record.test.ts's three real-jj rows, shell-command.test.ts's 'matches a real bash on every here-document and comment it accepts' and provider-refusal.test.ts's linear-time row, each at 60_000.",
     "test, its second command: jj-attribution.test.ts runs alone at --timeout 540000, the pi-shared job's room for one hang: its timeout-minutes 10 less its 45 s at 06d187e7 (CI run 45437325102), 555 s. Six times its slowest row is past that room, so the room decides: the templates row, 336 481 ms over 20 runs of the command at the 240 rung (Job infra-1580-r31psj-p27px, 340 busy loops for the 240 rung, row A 36.3 s, at 339a24dd), and 442 299 ms at 06d187e7 (Job infra-1580-t27-j3-99kcl)."
   ],
   "scripts": {
     "typecheck": "bun ../contracts/scripts/gen-api.ts && bunx tsc --noEmit",
-    "test": "bun test --timeout 160000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns 'src/jj-attribution.test.ts' && bun test --timeout 540000 --preload @legion/test-fixtures/row-deadline src/jj-attribution.test.ts",
+    "test": "bun test --timeout 210000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns 'src/jj-attribution.test.ts' && bun test --timeout 540000 --preload @legion/test-fixtures/row-deadline src/jj-attribution.test.ts",
     "lint": "bunx biome check src/ test/"
   },
   "devDependencies": {

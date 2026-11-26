@@ -175,6 +175,12 @@ test("summarises the session's open asks into context and records the session id
 // far larger than a pipe holds (64 KiB on Linux), read slowly, must still arrive whole, its last ask
 // included, so the exit waits until stdout has taken every byte. Read this way, a 2 MB write to a
 // pipe lost its tail on 10 of 10 exits that did not end the stream first, and on none that did.
+// The hook reads its 2 MB of asks from Dispatch under its own 3 s bound (`OPEN_ASKS_TIMEOUT_MS`), a
+// production budget no guard can widen. At the 80 rung one run in 20 printed 68 bytes where the
+// summary is over 2 MB (the file run whole, Jobs infra-1580-r34ow1 to -r34ow4 of the cluster's
+// `builds` namespace, at 96f50466), as the broker-route rows meet that bound there. So this row's
+// acceptance rung is theirs, 32 busy loops, 16 per CPU: 20 of 20 there, at most 24 401 ms
+// (infra-1580-r35pipe-mx7g6, 55 busy loops for the 32 rung, row A 31.4 s, at 96f50466).
 test("a summary larger than a pipe holds arrives whole before the hook ends its process", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-large-"))
   const asks = Array.from({ length: 2_000 }, (_, index) => ({
