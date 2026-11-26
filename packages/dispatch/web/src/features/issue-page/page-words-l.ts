@@ -9,24 +9,37 @@
  * - Put a new key for a table of this file in this file, from any pull request.
  * - Import nothing from `page-words.ts`, not even a type. Import only the type `PartWords` from
  *   `./page-words-parts`, values from `./page-structure`, and the shared words the box at the
- *   foot of the outline draws, from the modules that write them for every composer, none of
- *   which imports `page-words.ts` or a part's file. A value import from `page-words.ts` or
- *   `./page-words-parts` makes an import cycle.
+ *   foot of the outline draws, from the modules of words that write them for every composer
+ *   (`conversation/composer-words.ts`, `conversation/delivery.ts`, `writes/write-words.ts`,
+ *   `artifacts/upload-words.ts`). Each of those imports only other modules of words, types and
+ *   constants of `@legion/contracts`, so this file still loads where no component can: a browser
+ *   spec's Node loader reads `page-words.ts`, and cannot read a module that imports a JSON file
+ *   as the components do. A value import from `page-words.ts` or `./page-words-parts` makes an
+ *   import cycle.
  */
-import { UPLOAD_FAILED_TEXT } from "../artifacts/ArtifactUpload";
+import { UPLOAD_FAILED_TEXT } from "../artifacts/upload-words";
+import {
+  ADDRESS_WORDS,
+  CHANGED_EDIT_LEAD,
+  COMPOSER_WORDS,
+  DELIVERY_COMMANDS,
+  DISCARD_DRAFT_LABEL,
+  GONE_REPLY_WORDS,
+  KEPT_REPLY_WORDS,
+  MOVED_SEND_WORDS,
+  OFFER_LABELS,
+  WRITTEN_ELSEWHERE_WORDS,
+} from "../conversation/composer-words";
 import { MODE_LABELS, NO_DELIVERY_WORDS, TITLES_JOINER } from "../conversation/delivery";
-import { CHANGED_EDIT_LEAD, OFFER_LABELS } from "../conversation/KeptDraftOffers";
-import { GONE_REPLY_WORDS, KEPT_REPLY_WORDS } from "../conversation/KeptReply";
-import { COMPOSER_WORDS, DISCARD_DRAFT_LABEL } from "../conversation/MentionComposer";
-import { ADDRESS_WORDS, DELIVERY_COMMANDS, MOVED_SEND_WORDS } from "../conversation/send-request";
-import { WRITTEN_ELSEWHERE_WORDS } from "../conversation/useKeptDrafts";
 import {
   EXPIRED_RETRY_WORDS,
   SAME_KEY_RETRY_WORDS,
+  STOP_TRYING_LABEL,
   STOPPED_SEND_WORDS,
   STOPPED_WRITE_WORDS,
-} from "../writes/keyed-write";
-import { STOP_TRYING_LABEL, STOPPING_LABEL, STOPPING_REASON } from "../writes/StopTrying";
+  STOPPING_LABEL,
+  STOPPING_REASON,
+} from "../writes/write-words";
 import { freeze } from "./page-structure";
 import type { PartWords } from "./page-words-parts";
 

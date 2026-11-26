@@ -41,6 +41,7 @@ import {
   SendExpiredError,
   SendStoppedError,
 } from "../writes/keyed-write";
+import { KEYED_SEND_LATE_TEXT } from "../writes/write-words";
 import type {
   ComposerOwner,
   DraftIntake,
@@ -49,9 +50,9 @@ import type {
   ReplyParent,
   ReplyTarget,
 } from "./composer-model";
+import { COMPOSER_WORDS } from "./composer-words";
 import type { OutlineLook } from "./MentionComposer";
-import { COMPOSER_WORDS, MentionComposer } from "./MentionComposer";
-import { KEYED_SEND_LATE_TEXT } from "./send-request";
+import { MentionComposer } from "./MentionComposer";
 import { unsentDraftsOf } from "./unsent-drafts";
 import { composerNameOf } from "./useKeptDrafts";
 

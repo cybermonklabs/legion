@@ -12,6 +12,7 @@ import {
 } from "../../theme/classes";
 import { SendStoppedError } from "../writes/keyed-write";
 import type { ComposerKind, ReplyTarget } from "./composer-model";
+import { CHANGED_EDIT_LEAD, OFFER_LABELS } from "./composer-words";
 import { useHeldSend, useHeldSends } from "./held-sends";
 import { GoneReply } from "./KeptReply";
 import type { SentDraft } from "./send-request";
@@ -30,19 +31,6 @@ export const KIND_WORDS: Record<ComposerKind, string> = {
   comment: "a comment",
   suggestion: "a suggestion",
 };
-
-/** The reader's presses for a draft offered beside a field, which drop it or take it into the
- *  field: for a kept draft, and for an edit that waits beside the comment. */
-export const OFFER_LABELS = {
-  dropDraft: "Discard my draft",
-  dropEdit: "Discard my edit",
-  takeEdit: "Use my edit",
-  takeHere: "Use it here",
-} as const;
-
-/** What an edit written over a body the comment no longer holds says, before the edit. */
-export const CHANGED_EDIT_LEAD =
-  "This comment changed since you wrote your edit. The field shows the comment as it reads now. Your edit is kept here:";
 
 /** One of the reader's presses for a draft offered beside a field. */
 interface OfferPress {

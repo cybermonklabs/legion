@@ -64,12 +64,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import {
-  appendToDraft,
-  DraftUploadStatus,
-  STOPPED_UPLOAD_WORDS,
-  uploadErrorMessage,
-} from "../artifacts/ArtifactUpload";
+import { appendToDraft, DraftUploadStatus, uploadErrorMessage } from "../artifacts/ArtifactUpload";
 import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "../inbox/ask-urgency";
 import { useComposerRegistry } from "../margin/margin-context";
 import { useAgentText } from "../refs/AgentName";
@@ -106,6 +101,12 @@ import {
   type ReplyTarget,
 } from "./composer-model";
 import {
+  COMPOSER_WORDS,
+  type ComposerWords,
+  DELIVERY_COMMANDS,
+  DISCARD_DRAFT_LABEL,
+} from "./composer-words";
+import {
   deliveryModesOf,
   MODE_LABELS,
   noDeliveryReasons,
@@ -120,11 +121,9 @@ import { MentionField, type MentionFieldChange, type MentionFieldHandle } from "
 import { ReplyQuote } from "./ReplyQuote";
 import {
   carriedIdsOf,
-  DELIVERY_COMMANDS,
   type DeliveryPlan,
   deliveryPlan,
   heldSeeds,
-  KEYED_SEND_LATE_TEXT,
   requestFor,
   type SaveCommentEdit,
   type SentDraft,
@@ -139,73 +138,9 @@ import { useComposerSend } from "./useComposerSend";
 import { useDraftHomes } from "./useDraftHomes";
 import { composerNameOf, mountDraft, type OfferedDraft, useKeptDrafts } from "./useKeptDrafts";
 
-/** A table of words whose every string may be another host's: the shape of `COMPOSER_WORDS`. */
-type WordsLike<T> = { readonly [K in keyof T]: T[K] extends string ? string : WordsLike<T[K]> };
-
-/**
- * What the composer says in answer to the reader's act, on every surface, and what the issue
- * page's box says in its place from the page's own list (`OutlineLook.words`):
- *
- * - `deletedReply`: Send's refusal of a reply to a post deleted since the reply opened, by the
- *   post's kind, before where the draft goes instead (`DELETED_REPLY_WAY`);
- * - `delivery`: what a send to the sessions the draft names would do - the plain mode they take
- *   in place of Send, no mode at all, or not the mode the draft asks for, with the prefixed modes
- *   they would take instead - around the sessions' titles and the modes' names, its verb in one
- *   or many;
- * - `late`: a send past its deadline (`KEYED_SEND_LATE_TEXT`);
- * - `refusals`: why Send refuses an empty draft, a delivery command with nothing after it, and
- *   an edit that waits beside a newer body;
- * - `refused`: a send Dispatch refused, before its words, or the words where it gave none;
- * - `stoppedUpload`: what a file the reader stopped uploading is, and what it may have been.
- */
-export const COMPOSER_WORDS = {
-  deletedReply: {
-    ask: "The ask this reply answers was deleted, so it takes no reply.",
-    comment: "The comment this reply answers was deleted, so it takes no reply.",
-    message: "The message this reply answers was deleted, so it takes no reply.",
-  },
-  delivery: {
-    deaf: {
-      many: " advertise no delivery mode, so sending it records a failed attempt. ",
-      one: " advertises no delivery mode, so sending it records a failed attempt. ",
-    },
-    plain: {
-      after: { many: " do not advertise Send.", one: " does not advertise Send." },
-      before: "Sending as ",
-      between: ": ",
-    },
-    unsupported: {
-      after: ", so sending it records a failed attempt.",
-      before: { many: " do not advertise ", one: " does not advertise " },
-      instead: {
-        after: " instead.",
-        article: { aside: "an ", btw: "a " },
-        before: " Prefix with ",
-        between: " to send it as ",
-        or: " or ",
-      },
-    },
-  },
-  late: KEYED_SEND_LATE_TEXT,
-  refusals: {
-    afterCommand: { after: ".", before: "Type the message after " },
-    editChanged: "Use your edit or discard it before you save.",
-    empty: "Type a message first.",
-    emptyQuestion: "Type the question first.",
-  },
-  refused: { before: "Couldn't send — ", unanswered: "network error" },
-  stoppedUpload: STOPPED_UPLOAD_WORDS,
-} as const;
-
-/** The words of `COMPOSER_WORDS`, as a host gives them (`OutlineLook.words`). */
-export type ComposerWords = WordsLike<typeof COMPOSER_WORDS>;
-
 /** Where every composer but the issue page's box says a reply to a deleted post goes instead,
  *  after `COMPOSER_WORDS.deletedReply`. */
 const DELETED_REPLY_WAY = "Press Cancel reply to send it as a message that answers none.";
-
-/** The control beside a refusal that drops the draft it handed back. */
-export const DISCARD_DRAFT_LABEL = "Discard draft";
 
 /** Which of a notice's words fit `named`, the sessions it names: those of one, or of many. */
 function oneOrMany(named: readonly unknown[]): "many" | "one" {

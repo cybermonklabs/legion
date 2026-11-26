@@ -34,12 +34,12 @@ import {
 } from "../../theme/classes";
 import type { UploadResult } from "../artifacts/ArtifactUpload";
 import { heldSends } from "../conversation/held-sends";
-import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import { unsentDraftsOf } from "../conversation/unsent-drafts";
 import { composerNameOf } from "../conversation/useKeptDrafts";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { nodeRouteFromHref, shortForm } from "../refs/routes";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
+import { KEYED_SEND_LATE_TEXT } from "../writes/write-words";
 import {
   ALICE,
   answerBoxReads,

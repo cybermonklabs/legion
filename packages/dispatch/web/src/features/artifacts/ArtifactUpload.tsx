@@ -41,6 +41,7 @@ import { buildDispatchReference, type DispatchReferenceRoute } from "../refs/rou
 import { retriesUnderItsKey, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { endedStopped, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { STOPPED_UPLOAD_WORDS, UPLOAD_FAILED_TEXT } from "./upload-words";
 
 /** Why a closed issue's Artifacts tab, or its document's repair, takes no upload: Dispatch refuses
  *  one until the issue is reopened. */
@@ -175,13 +176,6 @@ export const UPLOAD_BASE_REQUIRED_REFUSAL =
  *  at all. */
 export const UPLOAD_BASE_UNREADABLE_REFUSAL =
   "Could not read the document this upload would replace, so nothing was uploaded.";
-
-/** What an upload's refusal says where Dispatch gave no answer of its own (`uploadErrorMessage`). */
-export const UPLOAD_FAILED_TEXT = "Could not upload the artifact.";
-
-/** What a draft's upload the reader stopped is, and what it may have been, as its refusal says
- *  (`stoppedNote`). */
-export const STOPPED_UPLOAD_WORDS = { made: "stored", what: "the upload" } as const;
 
 // A refused upload is described by the server, which names the bound it hit: a markdown document
 // is at most 1 MiB and any other file at most 25 MiB, so a 413 is not one message. The refusals
