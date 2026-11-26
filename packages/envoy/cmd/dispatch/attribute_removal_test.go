@@ -518,7 +518,8 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 				continue
 			}
 			answered++
-			line := fmt.Sprintf("Answered %s by %s at %s: ", entry.BlockID, entry.AnsweredBy, entry.AnsweredAt)
+			id, _ := json.Marshal(entry.BlockID)
+			line := fmt.Sprintf("Answered %s by %s at %s: ", id, entry.AnsweredBy, entry.AnsweredAt)
 			if entry.Answer != nil {
 				words, _ := json.Marshal(*entry.Answer)
 				line += string(words)

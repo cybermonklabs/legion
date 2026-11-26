@@ -42,8 +42,10 @@ export function openerAsks(lines: readonly string[]): readonly TextAsk[] {
 
 /**
  * One line per answered ask of `asks`, for a live read's trailer:
- * `Answered <block id> by <answerer> at <time>: <answer>`, the words quoted as JSON, so a line
- * break stays on the line, and the options chosen beside them where the answer chose any.
+ * `Answered "<block id>" by <answerer> at <time>: <answer>`, the words quoted as JSON, so a line
+ * break stays on the line, and the options chosen beside them where the answer chose any. The
+ * block id is quoted as JSON for the same reason: it is text the document's writer chooses, and a
+ * line break in it would otherwise start a line of the trailer that reads as an answer.
  */
 export function answeredAskLines(asks: readonly TextAsk[]): string[] {
   return asks.flatMap((ask) => {
@@ -61,7 +63,7 @@ export function answeredAskLines(asks: readonly TextAsk[]): string[] {
           ? words
           : `${words} (${chose})`;
     return [
-      `Answered ${ask.block_id} by ${ask.answered_by} at ${ask.answered_at ?? "an unrecorded time"}: ${answer}`,
+      `Answered ${JSON.stringify(ask.block_id)} by ${ask.answered_by} at ${ask.answered_at ?? "an unrecorded time"}: ${answer}`,
     ];
   });
 }
