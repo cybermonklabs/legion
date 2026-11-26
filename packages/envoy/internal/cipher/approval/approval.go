@@ -104,7 +104,7 @@ type Config struct {
 	// person is a member of a group approver and so sees the buttons (record.MayDecide).
 	Machine *requests.Machine
 	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
-	// again (hold.Gate.Check). Nil is a broker with no Dispatch to ask, which holds nobody.
+	// again (hold.Gate.Decide). Nil is a broker with no Dispatch to ask, which holds nobody.
 	Hold *hold.Gate
 }
 

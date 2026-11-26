@@ -310,9 +310,9 @@ func WithProjectAccess(access projectaccess.Access) Option {
 // sets: Dispatch's answer that a person is not held then serves only with the deadline such a
 // Dispatch puts on it (not_held_until), a person of whom the broker keeps no answer is not served
 // while Dispatch cannot be asked, and every refusal of a held person says the Workspace Directory
-// ends the hold (hold.Gate.HeldWords). NewRig fails t when it is given without WithDispatchAccess,
-// as the broker's boot refuses the setting without BROKER_PROJECT_ACCESS_URL: that broker builds
-// no gate, so the rule would rule nothing and hold nobody.
+// ends the hold (hold.Verdict.HeldWords). NewRig fails t when it is given without
+// WithDispatchAccess, as the broker's boot refuses the setting without BROKER_PROJECT_ACCESS_URL:
+// that broker builds no gate, so the rule would rule nothing and hold nobody.
 func WithHoldRequiresDeadline() Option {
 	return func(c *rigConfig) { c.holdRequiresDeadline = true }
 }

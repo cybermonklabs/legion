@@ -15,9 +15,7 @@ type routeAuth int
 const (
 	authNone routeAuth = iota
 	authLauncher
-	authLauncherEnd
 	authProof
-	authProofEnd
 	authRenewProof
 	authAccount
 	authService
@@ -50,10 +48,6 @@ type caller struct {
 	// edge is the edge-listener entry of BROKER_NATS_SERVICES whose account the identity token
 	// that authenticated the request names: the projects it may ask about.
 	edge EdgeListener
-	// proved marks a caller authenticate refused after its credential proved it: a session or a
-	// machine login the hold refused (refuseHeld). The answer's record then names that caller,
-	// where every other refusal raised in authentication names none.
-	proved bool
 }
 
 // power is one authority over the broker a caller of an accountAuth route may hold: one bit, so
@@ -140,6 +134,11 @@ type routeHandler struct {
 	// power is what a caller must hold to reach this route, noPower on every route no
 	// ServiceAccount token authenticates.
 	power power
+	// hold is the route's hold step, which handle runs once authenticate has proved the caller and
+	// before the route: it asks the hold gate (Deps.Hold) about the person the credential names,
+	// and writes the refusal and reports true for a person it refuses. Nil is a route that asks the
+	// hold nothing: one that only ends access or lists what to end, and the lease renewal.
+	hold  func(s *server, w http.ResponseWriter, r *http.Request, who caller) bool
 	serve func(s *server, w http.ResponseWriter, r *http.Request, who caller)
 }
 
@@ -150,40 +149,40 @@ func public(h func(*server, http.ResponseWriter, *http.Request)) routeHandler {
 
 // launcherAuth is a route for a machine's launcher (agent-secrets-helper, or the Legion daemon),
 // which signs each call's Proof header with the key its machine login's credential is bound to.
-// Once the proof and the credential check, authenticate asks the hold gate (Deps.Hold) about the
-// person the credential names as its operator: one Dispatch holds is refused 403
-// MEMBERSHIP_HELD, and every person is 503 HOLD_UNCHECKABLE while the gate cannot decide. A
+// Once the proof and the credential check, its hold step asks the hold gate (Deps.Hold) about the
+// person the credential names as its operator (refuseHeldLauncher): one Dispatch holds is refused
+// 403 MEMBERSHIP_HELD, and every person is 503 HOLD_UNCHECKABLE while the gate cannot decide. A
 // service's login names no operator and is asked nothing.
 func launcherAuth(h func(*server, http.ResponseWriter, *http.Request, enroll.Credential)) routeHandler {
-	return routeHandler{auth: authLauncher, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
+	return routeHandler{auth: authLauncher, hold: (*server).refuseHeldLauncher, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s, w, r, who.launcher)
 	}}
 }
 
-// launcherEndAuth is launcherAuth without the hold, for the routes that only end access or list
-// what to end: a person Dispatch holds may call them, because they only end or list access.
+// launcherEndAuth is launcherAuth without the hold step, for the routes that only end access or
+// list what to end: a person Dispatch holds may call them, because they only end or list access.
 func launcherEndAuth(h func(*server, http.ResponseWriter, *http.Request, enroll.Credential)) routeHandler {
-	return routeHandler{auth: authLauncherEnd, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
+	return routeHandler{auth: authLauncher, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s, w, r, who.launcher)
 	}}
 }
 
 // sessionAuth is a route for an enrolled agent session, which signs each call's Proof header with
 // its own key, and which acts only on its own enrollment, requests and grants. Once the proof
-// checks, authenticate asks the hold gate (Deps.Hold) about the person the session's enrollment
-// names as its operator: one Dispatch holds is refused 403 MEMBERSHIP_HELD, and every person is
-// 503 HOLD_UNCHECKABLE while the gate cannot decide. A pod's enrollment names no operator and is
-// asked nothing.
+// checks, its hold step asks the hold gate (Deps.Hold) about the person the session's enrollment
+// names as its operator (refuseHeldProof): one Dispatch holds is refused 403 MEMBERSHIP_HELD, and
+// every person is 503 HOLD_UNCHECKABLE while the gate cannot decide. A pod's enrollment names no
+// operator and is asked nothing.
 func sessionAuth(h func(*server, http.ResponseWriter, *http.Request, string)) routeHandler {
-	return routeHandler{auth: authProof, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
+	return routeHandler{auth: authProof, hold: (*server).refuseHeldProof, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s, w, r, who.enrollment)
 	}}
 }
 
-// sessionEndAuth is sessionAuth without the hold, for the routes that only end access: a session
-// whose person Dispatch holds may call them, because they only end access.
+// sessionEndAuth is sessionAuth without the hold step, for the routes that only end access: a
+// session whose person Dispatch holds may call them, because they only end access.
 func sessionEndAuth(h func(*server, http.ResponseWriter, *http.Request, string)) routeHandler {
-	return routeHandler{auth: authProofEnd, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
+	return routeHandler{auth: authProof, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s, w, r, who.enrollment)
 	}}
 }

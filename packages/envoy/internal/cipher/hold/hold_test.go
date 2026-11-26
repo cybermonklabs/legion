@@ -410,6 +410,85 @@ func TestHoldGateReadsEachFailureAsCannotBeAsked(t *testing.T) {
 	}
 }
 
+// noHeldWarning is the line the gate logs, once a minute for every person at once, while Dispatch
+// answers with no held field.
+const noHeldWarning = "broker: Dispatch answers no held, as a Dispatch older than the hold does; serving each person on the last answer Dispatch gave for them"
+
+// TestADispatchThatAnswersNoHeldIsLoggedOnceAMinuteForEveryone: a Dispatch older than the hold
+// answers every person with no held field. That is the deployment's state, not each person's, and
+// Dispatch was asked: the gate answers each person from the answer it kept, as it does while
+// Dispatch cannot be asked (ada, kept held, stays held; bob, kept not held, and carol, of whom no
+// answer is kept, are served), and logs one WARN line a minute for everyone, naming the error. It
+// logs no line per person that Dispatch could not be asked, and counts nobody in
+// broker_hold_unchecked_total. A caller with no time left to ask, whose person the client holds a
+// young answer naming no held for, is answered the same way: a second gate over the same client
+// stands for the gate once its five-second memory of the answer has passed and the client's cache
+// has not.
+//
+// The fault: the gate reading the answer as a failure to ask, as it did; bob and carol each get
+// the per-person WARN line and a count, and the one line a minute is missing. The same fault on
+// the path with no time to ask alone (its cached answer read as no answer, unasked for want of
+// time): the second gate logs bob's per-person line and no line a minute.
+func TestADispatchThatAnswersNoHeldIsLoggedOnceAMinuteForEveryone(t *testing.T) {
+	ctx := t.Context()
+	st := storetest.Open(t)
+	kept := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	if err := st.KeepPersonStanding(ctx, ada, true, kept, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.KeepPersonStanding(ctx, bob, false, kept, nil); err != nil {
+		t.Fatal(err)
+	}
+	asOf := time.Now().UTC().Truncate(time.Microsecond)
+	r := newRig(answering(t, http.StatusOK, `{"person":"x","member_kind":"full","as_of":"`+asOf.Format(time.RFC3339Nano)+`"}`),
+		projectaccesstest.StaticAccount("token"), st)
+	if err := r.gate.Check(ctx, ada); !isHeld(err) {
+		t.Fatalf("Check(%s), kept held, against a Dispatch that answers no held = %v, want hold.ErrHeld", ada, err)
+	}
+	for _, person := range []string{bob, carol, bob, carol} {
+		if err := r.gate.Check(ctx, person); err != nil {
+			t.Fatalf("Check(%s) against a Dispatch that answers no held = %v, want nil: served on the answer kept for them", person, err)
+		}
+	}
+	if warned := r.logs.at(slog.LevelWarn, servedWarning, ""); len(warned) != 0 {
+		t.Fatalf("a Dispatch that answers no held logged %+v, want no line per person that Dispatch could not be asked", warned)
+	}
+	for _, lastAnswer := range []string{"not_held", "none"} {
+		if got := r.unchecked(t, lastAnswer); got != 0 {
+			t.Fatalf("broker_hold_unchecked_total{last_answer=%q} against a Dispatch that answers no held = %d, want 0", lastAnswer, got)
+		}
+	}
+	noHeld := r.logs.at(slog.LevelWarn, noHeldWarning, "")
+	if len(noHeld) != 1 || !strings.Contains(noHeld[0].attrs["error"], "names no held") {
+		t.Fatalf("five checks in a minute against a Dispatch that answers no held logged %+v, want one WARN %q naming the error", noHeld, noHeldWarning)
+	}
+	if all := r.logs.at(slog.LevelWarn, "", ""); len(all) != 1 {
+		t.Fatalf("five checks in a minute against a Dispatch that answers no held logged %d WARN lines, want 1: %+v", len(all), all)
+	}
+	r.clock.advance(time.Minute)
+	if err := r.gate.Check(ctx, bob); err != nil {
+		t.Fatalf("Check(%s) a minute later = %v, want nil", bob, err)
+	}
+	if got := len(r.logs.at(slog.LevelWarn, noHeldWarning, "")); got != 2 {
+		t.Fatalf("a check a minute later left %d lines %q, want 2", got, noHeldWarning)
+	}
+
+	logged := &logs{}
+	second := &rig{client: r.client, clock: r.clock, logs: logged, registry: metrics.New()}
+	second.gate = hold.New(hold.Config{Access: r.client, Store: st, Log: slog.New(logged), Metrics: second.registry, Now: r.clock.read})
+	noTime, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer cancel()
+	if err := second.gate.Check(noTime, bob); err != nil {
+		t.Fatalf("Check(%s) with 0.3 s left and a young answer naming no held cached = %v, want nil", bob, err)
+	}
+	if warned := second.logs.at(slog.LevelWarn, servedWarning, ""); len(warned) != 0 || second.unchecked(t, "not_held") != 0 {
+		t.Fatalf("Check(%s) with 0.3 s left logged %+v and counted %d, want no line per person and no count", bob, warned, second.unchecked(t, "not_held"))
+	}
+	if got := len(second.logs.at(slog.LevelWarn, noHeldWarning, "")); got != 1 {
+		t.Fatalf("Check(%s) with 0.3 s left logged %d lines %q, want 1", bob, got, noHeldWarning)
+	}
+}
+
 // TestHoldGateKeepsAnswerThirtySeconds: the gate answers from Dispatch's answer as long as the
 // broker caches it, thirty seconds from its ask, so a hold Dispatch records after that answer is
 // read at the first check after those thirty seconds. An answer the gate has written is not

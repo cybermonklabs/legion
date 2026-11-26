@@ -1,12 +1,16 @@
 // Package hold is the broker's one check of whether Dispatch holds a person's credentials until
-// they sign in again: Gate.Check, which each point that serves a person's credential asks. It asks
-// Dispatch's person route through internal/cipher/projectaccess and keeps every answer it gets in
+// they sign in again: Gate.Decide, which each point that serves a person's credential asks, and
+// whose Verdict it switches on. It asks Dispatch's person route through
+// internal/cipher/projectaccess and keeps every answer it gets in
 // person_standing (internal/cipher/store), so that while Dispatch cannot be asked it answers from
 // the last answer Dispatch gave: a person last answered held stays held, since only Dispatch ends
 // a hold, and everyone else is served, with one WARN line a minute per person and
-// broker_hold_unchecked_total. The answer is kept in the database rather than in this process, so
-// a restart or a second broker process answers alike, and each process keeps the latest answer by
-// Dispatch's own clock (the answer's as_of) whatever order the writes arrive in.
+// broker_hold_unchecked_total. A Dispatch older than the hold answers with no held field
+// (projectaccess.ErrNoHeldField); the gate answers each person from the last answer the same way,
+// with one WARN line a minute for every person at once and no count. The answer is kept in the
+// database rather than in this process, so a restart or a second broker process answers alike,
+// and each process keeps the latest answer by Dispatch's own clock (the answer's as_of) whatever
+// order the writes arrive in.
 //
 // An IAP deployment's Dispatch puts a deadline on every answer that a person is not held
 // (not_held_until). The gate serves such an answer, fresh, cached or kept, until its deadline and
@@ -17,7 +21,7 @@
 // Dispatch cannot be asked.
 //
 // A caller asks before it opens a database transaction or takes a lock, as projectaccess
-// requires of every caller: Check asks Dispatch and writes person_standing itself.
+// requires of every caller: Decide asks Dispatch and writes person_standing itself.
 package hold
 
 import (
@@ -64,7 +68,7 @@ var (
 const askTimeout = 3 * time.Second
 const writeTimeout = 1 * time.Second
 
-// readReserve is what CheckUntil leaves a caller that has a deadline, out of the time it has left,
+// readReserve is what checkUntil leaves a caller that has a deadline, out of the time it has left,
 // for reading the answer person_standing keeps once Dispatch cannot be asked: the ask ends at
 // askTimeout or at the caller's deadline less this, whichever comes first. The NATS auth service's
 // decision has 1.5 s for everything (natscallout's decideBudget), so an ask bounded by the caller
@@ -81,7 +85,7 @@ const failureMemory = 5 * time.Second
 
 // logEvery is how often the gate logs the same thing about one person while it goes on: a person
 // it serves while Dispatch cannot be asked, and, for every person at once, Dispatch refusing the
-// broker's own account.
+// broker's own account and Dispatch answering with no held field.
 const logEvery = time.Minute
 
 // maxRemembered bounds the gate's per-person memories of failures, warnings and writes before it
@@ -133,6 +137,8 @@ type Gate struct {
 	warned map[string]time.Time
 	// refusalLogged is when the gate last logged Dispatch refusing the broker's own account.
 	refusalLogged time.Time
+	// noHeldLogged is when the gate last logged Dispatch answering with no held field.
+	noHeldLogged time.Time
 }
 
 type failure struct {
@@ -160,37 +166,34 @@ func New(cfg Config) *Gate {
 	return g
 }
 
-// Check answers ErrHeld for a held person and ErrUncheckable when it cannot decide, each wrapped
-// with the person, and nil for everyone else. A held answer it cannot write is
-// errors.Join(ErrUncheckable, ErrHeld): a route checks ErrUncheckable first and answers 503, and
-// the airlock's read of a carried call cuts the call on any error matching ErrHeld. An empty
-// person is an error. A nil *Gate answers nil. It is CheckUntil's error.
-func (g *Gate) Check(ctx context.Context, person string) error {
-	_, err := g.CheckUntil(ctx, person)
-	return err
-}
-
-// CheckUntil is Check, answering beside a person it serves the deadline of the not-held answer it
-// served them on (not_held_until), which introspection carries: the zero time for an answer naming
-// none, as every answer outside IAP, and for a person served with no answer kept.
+// checkUntil is the check Decide reads (kindOf): ErrHeld for a held person and ErrUncheckable when
+// it cannot decide, each wrapped with the person, and nil for everyone else, with beside a person
+// it serves the deadline of the not-held answer it served them on (not_held_until), which
+// introspection carries: the zero time for an answer naming none, as every answer outside IAP, and
+// for a person served with no answer kept. A held answer it cannot write is
+// errors.Join(ErrUncheckable, ErrHeld), and a passed deadline ErrUncheckable and ErrDeadlinePassed.
+// An empty person is an error. A nil *Gate answers nil.
 //
 // It asks Dispatch about person as record.CanonicalLogin spells them, bounded by askTimeout and,
 // for a caller with a deadline, by that deadline less readReserve, and answers from Dispatch's
 // answer, which it writes to person_standing, deadline included, unless it already wrote that
 // answer; the write runs apart from ctx, bounded by writeTimeout, so a caller that hangs up does
 // not stop it. Dispatch refusing the broker's own account is ErrUncheckable for every person,
-// logged at ERROR once a minute. Every other failure to ask, the ask's own bound running out among
-// them, is answered from the later, by as_of, of the kept row and a held answer the gate could not
-// write, read in the time the bound left the caller, and is remembered failureMemory unless the
-// caller itself hung up. A caller with no more than readReserve left asks nothing: it is answered
-// from the client's young cached answer when there is one (CacheTTL), and else from the kept row.
+// logged at ERROR once a minute. Dispatch's answer naming no held, a Dispatch older than the hold
+// (projectaccess.ErrNoHeldField), cached or fresh, is answered as a failure to ask is, logged at
+// WARN once a minute for every person at once rather than per person, and not counted. Every
+// other failure to ask, the ask's own bound running out among them, is answered from the later,
+// by as_of, of the kept row and a held answer the gate could not write, read in the time the bound
+// left the caller, and is remembered failureMemory unless the caller itself hung up. A caller with
+// no more than readReserve left asks nothing: it is answered from the client's young cached answer
+// when there is one (CacheTTL), and else from the kept row.
 //
 // A held answer, fresh or kept, is ErrHeld whatever deadline it carries. A not-held answer, fresh,
 // cached or kept, whose deadline is not after the gate's clock is ErrUncheckable, and so is
 // Dispatch's unavailable answer, whose deadline is its own as_of, whatever the gate's clock says;
 // under RequireDeadline, so is a not-held answer naming no deadline and a person of whom no answer
 // is kept while Dispatch cannot be asked; none of these is logged or counted as served.
-func (g *Gate) CheckUntil(ctx context.Context, person string) (time.Time, error) {
+func (g *Gate) checkUntil(ctx context.Context, person string) (time.Time, error) {
 	if g == nil {
 		return time.Time{}, nil
 	}
@@ -214,8 +217,13 @@ func (g *Gate) CheckUntil(ctx context.Context, person string) (time.Time, error)
 	if bound <= 0 {
 		// No time to ask, but a young answer the client already holds is Dispatch's answer, served
 		// as one, with no WARN line and no count; only a person it holds none for is unasked.
-		if answer, err := g.access.Person(projectaccess.CachedOnly(ctx), person); err == nil {
+		answer, err := g.access.Person(projectaccess.CachedOnly(ctx), person)
+		switch {
+		case err == nil:
 			return g.answered(ctx, person, answer)
+		case errors.Is(err, projectaccess.ErrNoHeldField):
+			g.logNoHeld(person, err)
+			return g.unasked(ctx, person, err)
 		}
 		return g.unasked(ctx, person, errNoTimeToAsk)
 	}
@@ -231,6 +239,10 @@ func (g *Gate) CheckUntil(ctx context.Context, person string) (time.Time, error)
 	case errors.Is(err, dispatchread.ErrBrokerRefused):
 		g.logRefusal(person, err)
 		return time.Time{}, fmt.Errorf("%w: %s: %w", ErrUncheckable, person, err)
+	case errors.Is(err, projectaccess.ErrNoHeldField):
+		// Dispatch answered, and its answer says nothing of a hold: the deployment's state, logged
+		// once a minute for everyone, and answered below as a failure to ask is.
+		g.logNoHeld(person, err)
 	}
 	if ctx.Err() != nil {
 		// The caller hung up, which is no failure of Dispatch's to remember for the next one. An ask
@@ -248,7 +260,8 @@ func (g *Gate) CheckUntil(ctx context.Context, person string) (time.Time, error)
 // notHeld is the check of a not-held answer for person whose deadline is until (the zero time for
 // none), given as of asOf, the database time of Dispatch's read the answer rests on: served until
 // until by the gate's clock, or ErrUncheckable at or past it; ErrUncheckable for Dispatch's
-// unavailable answer, until equal to asOf (identity.Standing writes a person it cannot confirm so),
+// unavailable answer, until equal to asOf (as an IAP deployment's Dispatch is to answer a person it
+// cannot confirm; Dispatch in this tree names no deadline yet, access.PersonAnswer),
 // whatever the gate's clock says, so a broker whose clock is behind Dispatch's database serves no
 // such person; and, under RequireDeadline, ErrUncheckable for an answer naming none.
 func (g *Gate) notHeld(person string, until, asOf time.Time) (time.Time, error) {
@@ -348,6 +361,10 @@ func (g *Gate) unasked(ctx context.Context, person string, cause error) (time.Ti
 			return time.Time{}, fmt.Errorf("%w, by Dispatch's last answer while it could not be asked (%w)", err, cause)
 		}
 	}
+	if errors.Is(cause, projectaccess.ErrNoHeldField) {
+		// logNoHeld says this once a minute for every person at once.
+		return until, nil
+	}
 	lastAnswer := "none"
 	if found {
 		lastAnswer = "not_held"
@@ -413,6 +430,23 @@ func (g *Gate) logRefusal(person string, err error) {
 	}
 }
 
+// logNoHeld logs Dispatch answering with no held field (err) at WARN, once a minute for every
+// person at once: a Dispatch older than the hold answers every person so, which is the
+// deployment's state during a roll, not this person's.
+func (g *Gate) logNoHeld(person string, err error) {
+	now := g.now()
+	g.mu.Lock()
+	due := g.noHeldLogged.IsZero() || now.Sub(g.noHeldLogged) >= logEvery
+	if due {
+		g.noHeldLogged = now
+	}
+	g.mu.Unlock()
+	if due {
+		g.log.Warn("broker: Dispatch answers no held, as a Dispatch older than the hold does; serving each person on the last answer Dispatch gave for them",
+			"person", person, "error", err)
+	}
+}
+
 // heldUnwritten is a held answer for person that no write has kept yet, for cause:
 // ErrUncheckable and ErrHeld at once.
 func heldUnwritten(person string, cause error) error {
@@ -424,19 +458,7 @@ func heldUnwritten(person string, cause error) error {
 		fmt.Errorf("%w: %s", ErrHeld, person))
 }
 
-// HeldWords is what every point that refuses a person the gate holds says: who is held and what
-// ends the hold. Under RequireDeadline, which only an IAP deployment's broker sets, a sign-in
-// releases nothing and the Workspace Directory's next active answer does, so the words say that,
-// as Dispatch's own refusal there does; elsewhere the person's next sign-in to Dispatch, or
-// Dispatch confirming them with Google again, ends it.
-func (g *Gate) HeldWords(person string) string {
-	if g != nil && g.requireDeadline {
-		return fmt.Sprintf("Google's Workspace Directory no longer confirms %s; their credentials work again once it does", person)
-	}
-	return fmt.Sprintf("%[1]s's credentials are held by Dispatch; they work again when %[1]s signs in to Dispatch, or when Dispatch can confirm %[1]s with Google again", person)
-}
-
-// Reason is why the gate could not decide a person (err, an error Check answered that matches
+// Reason is why the gate could not decide a person (err, a check's error that matches
 // ErrUncheckable), in words a refused caller may read: one of six fixed reasons, never the gate's
 // error, which can carry a Postgres error's database user, name and address. Dispatch refusing the
 // broker's own account is the deployment's to fix; a held answer the broker could not keep still
@@ -447,7 +469,7 @@ func (g *Gate) HeldWords(person string) string {
 // have confirmed the person: an IAP Dispatch answers a person with no row as it answers one whose
 // last confirmation lapsed (not_held_until equal to as_of), and the broker cannot tell the two apart.
 // Every point that refuses 503 HOLD_UNCHECKABLE, or server_error at the token endpoint, names one
-// of them, and logs err itself.
+// of them (Verdict.Words), and logs err itself.
 func Reason(err error) string {
 	switch {
 	case errors.Is(err, dispatchread.ErrBrokerRefused):
