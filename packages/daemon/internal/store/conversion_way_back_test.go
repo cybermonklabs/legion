@@ -25,10 +25,10 @@ import (
 const conversionRelease = "the release that stores no tree"
 
 // keysBeforeTheConversion is, for each outbox kind the release before runs, the payload keys its
-// type declares (record's payload types at legion/INFRA-4728's 16c3848777, which that release
-// decodes strictly: record.DecodeOutboxPayload, DisallowUnknownFields). It is a copy because that
-// release's types are not in the tree; the types they nest are the same in both releases. A kind
-// absent here is one that release does not run: retention_end.
+// type declares (record's payload types at main's ecd967b17a4e, with #5285's launcher workspace
+// read, which that release decodes strictly: record.DecodeOutboxPayload, DisallowUnknownFields).
+// It is a copy because that release's types are not in the tree; the types they nest are the same
+// in both releases. A kind absent here is one that release does not run: retention_end.
 var keysBeforeTheConversion = map[record.OutboxKind][]string{
 	record.OutboxKindDispatchStatus:  {"kind", "status", "observedStatus", "reason", "handOverTree", "handOverLinger", "closeGeneration", "observedSeq"},
 	record.OutboxKindDispatchMessage: {"body", "artifact"},
@@ -39,9 +39,9 @@ var keysBeforeTheConversion = map[record.OutboxKind][]string{
 		"roundNamed", "ruleResume", "needsSlot", "relaunch", "assignment", "freshSession", "linger", "reason", "checkLook", "checkOpenedAt",
 		"pause", "issue", "wakeKind"},
 	record.OutboxKindGateSeed:          {"artifactId", "step", "version", "generation"},
-	record.OutboxKindIssueSuspend:      {"tree", "generation", "treeGeneration"},
-	record.OutboxKindIssueBundle:       {"tree", "generation", "treeGeneration", "role"},
-	record.OutboxKindIssueRelease:      {"tree", "generation", "treeGeneration"},
+	record.OutboxKindIssueSuspend:      {"tree", "generation", "treeGeneration", "turnStart", "podUid"},
+	record.OutboxKindIssueBundle:       {"tree", "generation", "treeGeneration", "role", "closeRoles", "turnStart", "launcher", "close", "podUid"},
+	record.OutboxKindIssueRelease:      {"tree", "generation", "treeGeneration", "podUid"},
 	record.OutboxKindIssueBranch:       {"generation"},
 	record.OutboxKindCheckWake:         {"look", "openedAt", "reason"},
 	record.OutboxKindCheckLook:         {"look", "openedAt"},
@@ -230,6 +230,7 @@ func TestTheTreeConversionWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 
 	fence := record.Fence{Generation: 2, Entry: 4, PodUID: "pod-uid-1"}
 	carriedFence := record.Fence{Generation: 3, Entry: 5, PodUID: "pod-uid-2"}
+	turnAt := time.Date(2026, 11, 21, 8, 30, 0, 0, time.UTC)
 	queued := []struct {
 		name    string
 		issue   string
@@ -273,10 +274,21 @@ func TestTheTreeConversionWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 			after: `{"op":"start","tree":"LEGION-2","role":"implementer","task":"Implement it.","generation":3,"phase":"implementing","entry":5}`},
 		{name: "the carried root's cleanup", issue: carried, payload: record.Fenced(record.IssueSuspend{Tree: root, TreeGeneration: 2}, carriedFence),
 			refused: true, after: `{"tree":"LEGION-2","generation":3,"treeGeneration":3}`},
+		{name: "a suspension without a read pod", issue: root, payload: record.Fenced(record.IssueSuspend{Tree: root, TreeGeneration: 2}, fence),
+			refused: true, after: `{"tree":"LEGION-1","generation":2,"treeGeneration":2}`},
+		{name: "a suspension with a launcher read pod", issue: root, payload: record.Fenced(record.IssueSuspend{Tree: root, TreeGeneration: 2,
+			TurnStart: &turnAt, ReadPodUID: "pod-read-1"}, fence),
+			refused: true, after: `{"tree":"LEGION-1","generation":2,"treeGeneration":2,"turnStart":"2026-11-21T08:30:00Z","podUid":"pod-read-1"}`},
 		{name: "a workspace check", issue: root, payload: record.Fenced(record.IssueWorkspaceCheck{Tree: root, TreeGeneration: 2, Role: claim.RoleImplementer}, fence),
 			refused: true, after: `{"tree":"LEGION-1","generation":2,"treeGeneration":2,"role":"implementer"}`},
+		{name: "a launcher workspace check", issue: root, payload: record.Fenced(record.IssueWorkspaceCheck{Tree: root, TreeGeneration: 2,
+			TurnStart: turnAt, Launcher: true, Close: true, PodUID: "pod-read-3"}, fence),
+			refused: true, after: `{"tree":"LEGION-1","generation":2,"treeGeneration":2,"role":"","turnStart":"2026-11-21T08:30:00Z","launcher":true,"close":true,"podUid":"pod-read-3"}`},
 		{name: "a release", issue: root, payload: record.Fenced(record.IssueRelease{Tree: root, TreeGeneration: 2}, fence), refused: true,
 			after: `{"tree":"LEGION-1","generation":2,"treeGeneration":2}`},
+		{name: "a release with a launcher read pod", issue: root, payload: record.Fenced(record.IssueRelease{Tree: root, TreeGeneration: 2,
+			ReadPodUID: "pod-read-2"}, fence), refused: true,
+			after: `{"tree":"LEGION-1","generation":2,"treeGeneration":2,"podUid":"pod-read-2"}`},
 		{name: "a gate seed", issue: root, payload: record.Fenced(record.GateSeed{ArtifactID: "artifact-1", Step: record.DesignStepSpec, Version: 1}, fence)},
 		{name: "a branch", issue: root, payload: record.Fenced(record.IssueBranch{}, fence)},
 		{name: "a production check's wake", issue: root, payload: record.Fenced(record.CheckWakeDue{Look: 1, Reason: "the agent's own wake"}, fence),

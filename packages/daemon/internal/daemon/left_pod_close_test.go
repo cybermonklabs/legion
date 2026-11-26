@@ -349,8 +349,9 @@ func TestAParkedIssuesIdleClaimIsStoppedSoItsPodIsNotHeldTreeNotLive(t *testing.
 //
 // The test stages that pod — a parked issue, its one claim suspended by the daemon and recording
 // no process, the runtime still holding its Sandbox, quiet for half an hour — and reads that a
-// pass takes it: the passes queue the close's Sandbox suspension alone, which deletes the Sandbox,
-// the pod and the disk, and leave the claim as it was.
+// pass takes it: the passes queue the close's workspace check, which the pod's launcher reads
+// since no role runs there (R6), and whose clean read queues the Sandbox suspension, which
+// deletes the Sandbox, the pod and the disk, and leaves the claim as it was.
 func TestAPodHeldTreeNotLiveIsTakenOnceItsCloseHasNothingLeftToStop(t *testing.T) {
 	t.Parallel()
 	rig := newLeftPodRig(t, true)
@@ -362,8 +363,11 @@ func TestAPodHeldTreeNotLiveIsTakenOnceItsCloseHasNothingLeftToStop(t *testing.T
 	}
 
 	queued := rig.queuedBy(t, func() { idlePasses(rig) })
-	if !slices.Equal(queued, []string{"issue_suspend"}) {
-		t.Fatalf("the passes queued %v, want the close's Sandbox suspension alone: no claim is left to stop, and nothing else takes the pod", queued)
+	if !slices.Equal(queued, []string{"issue_bundle"}) {
+		t.Fatalf("the passes queued %v, want the close's workspace check alone: no claim is left to stop, and nothing else takes the pod", queued)
+	}
+	if reads := rig.rt.CallsOf("PodWorkspaceWork"); len(reads) != 0 {
+		t.Fatalf("the pod's launcher read the workspace %d times before the lane ran the check", len(reads))
 	}
 	rig.drain(t)
 
@@ -640,6 +644,17 @@ func rowTurnStart(t *testing.T, rig *idleRig, kind, op string) (time.Time, bool)
 // they were queued. It answers the rig and the planner's turn start.
 func checkedLeftPodClose(t *testing.T, reading func(rig *idleRig, readAt time.Time)) (*idleRig, time.Time) {
 	t.Helper()
+	rig, turnAt := leftPodCloseChecked(t, reading)
+	if rig.declined(t) {
+		t.Fatal("the clean read recorded a decline")
+	}
+	return rig, turnAt
+}
+
+// leftPodCloseChecked is checkedLeftPodClose without its last word on the decline, for a check
+// whose reading hook scripts work for the read to find.
+func leftPodCloseChecked(t *testing.T, reading func(rig *idleRig, readAt time.Time)) (*idleRig, time.Time) {
+	t.Helper()
 	rig := newLeftPodRig(t, false)
 	parkChild(t, rig)
 	rig.drain(t)
@@ -663,9 +678,6 @@ func checkedLeftPodClose(t *testing.T, reading func(rig *idleRig, readAt time.Ti
 	rig.drain(t)
 	if read, _ := rig.rt.reads(); !slices.Equal(read, []claim.Role{claim.RolePlanner}) {
 		t.Fatalf("the workspace was read through %v, want one read through the planner", read)
-	}
-	if rig.declined(t) {
-		t.Fatal("the clean read recorded a decline")
 	}
 	return rig, turnAt
 }
@@ -710,6 +722,44 @@ func TestALeftPodCloseHoldsOnATurnThatEndedDuringItsRead(t *testing.T) {
 			t.Fatalf("rows after the check = %v, want the close's stop and its Sandbox suspension queued after a clean read with no turn since the pass", rows)
 		}
 	})
+}
+
+// The same turn beside a read that found work (the Legion reviewer's point 2 on R6 of
+// #5285): the read can have missed the push that turn made, so the check records no
+// decline from it, which would hold the pod as holding work until another turn, and a pod whose
+// claims then stop holds it for good (pods.IdleDecline.HoldsUnpushedWork). The check finishes
+// without acting and the next pass reads the workspace again. The control is the same read with
+// no turn since the pass, which records the decline.
+func TestALeftPodCloseRecordsNoDeclineFromAReadATurnRanBeside(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		turned bool
+	}{
+		{"a_turn_that_ended_during_the_read", true},
+		{"control:_no_turn_since_the_pass", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig, _ := leftPodCloseChecked(t, func(rig *idleRig, readAt time.Time) {
+				rig.rt.ScriptWorkspaceWork(rig.issue.Key, idleRigUnpushed)
+				if !tc.turned {
+					return
+				}
+				if _, err := rig.pool.Exec(context.Background(), `update claims set last_turn_start = $2 where issue = $1`,
+					rig.issue.Key, readAt.Add(-time.Second)); err != nil {
+					t.Errorf("record the turn: %v", err)
+				}
+			})
+			if declined := rig.declined(t); declined == tc.turned {
+				t.Fatalf("a decline stands = %t, want %t: a read a turn ran beside is no word of the disk", declined, !tc.turned)
+			}
+			for _, left := range rig.rows(t) {
+				if left == "issue_suspend" || left == "supervise:suspend" {
+					t.Fatalf("rows after the check = %v, want no stop and no Sandbox suspension: the read found work", rig.rows(t))
+				}
+			}
+		})
+	}
 }
 
 // The check's transaction queues the close's stops and commits, and the lane runs them after it, so
@@ -825,7 +875,7 @@ func TestALeftPodCloseStopHoldsOnATurnThatStartedAfterItsCheck(t *testing.T) {
 // close would delete it with the pod: the passes hold the pod as unowned_unpushed_work, as the
 // release of a pod no claim owns does (pods.IdleDecline.HoldsUnpushedWork), queue nothing, ask for
 // no teardown and record one streak of that hold. The control stands the same pod with no decline,
-// and the passes close it as before: the Sandbox suspension alone.
+// and the passes close it: the workspace check alone, which the pod's launcher reads (R6).
 func TestALeftPodWithNoLiveClaimKeepsADiskADeclineSaysHoldsWork(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -872,8 +922,8 @@ func TestALeftPodWithNoLiveClaimKeepsADiskADeclineSaysHoldsWork(t *testing.T) {
 
 	t.Run("control: no decline", func(t *testing.T) {
 		rig := failedLeftPod(t)
-		if queued := rig.queuedBy(t, func() { idlePasses(rig) }); !slices.Equal(queued, []string{"issue_suspend"}) {
-			t.Fatalf("the passes queued %v, want the close's Sandbox suspension alone", queued)
+		if queued := rig.queuedBy(t, func() { idlePasses(rig) }); !slices.Equal(queued, []string{"issue_bundle"}) {
+			t.Fatalf("the passes queued %v, want the close's workspace check alone, read by the pod's launcher", queued)
 		}
 	})
 }

@@ -1625,6 +1625,18 @@ func (LingerClose) OutboxKind() OutboxKind { return OutboxKindLingerClose }
 // zero moment is a fence that any turn passes. A release before this field refuses a row that
 // carries it (DisallowUnknownFields), so a rollback waits for such rows to run
 // (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
+//
+// PodUID is the pod the suspension was queued for (Fence.PodUID, above), which the fence fills
+// wherever the writer names none.
+//
+// ReadPodUID, on the suspension a left pod's close queues after its launcher's clean read, is the
+// pod that read found clean (IssueWorkspaceCheck.PodUID, R6 of #5285): the suspension takes that
+// pod or nothing, read under the runtime's pod lock, and is refused where the runtime holds
+// another pod or none (internal/daemon's suspendIssue, holdsPod). Only that writer sets it, and no
+// fence fills it, so a suspension no launcher's read let through names none and binds nothing by
+// it. A release before this field refuses a row that carries it (DisallowUnknownFields), so a
+// rollback waits for such rows to run too (docs/kubernetes.md, "Rolling back the release that
+// keeps no saved workspace").
 type IssueSuspend struct {
 	Tree           string     `json:"tree"`
 	Generation     uint64     `json:"generation"`
@@ -1632,6 +1644,7 @@ type IssueSuspend struct {
 	Entry          int64      `json:"entry,omitempty"`
 	PodUID         string     `json:"podUid,omitempty"`
 	TurnStart      *time.Time `json:"turnStart,omitempty"`
+	ReadPodUID     string     `json:"readPodUid,omitempty"`
 }
 
 func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
@@ -1664,6 +1677,24 @@ func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 // (workflow.LeftPodCloseAfterCheck), and each `suspend` it queues carries the moment on
 // (SuperviseRequest.TurnStart), so a turn between the decision and the stop holds that stop. A
 // release's row leaves it zero, since its mark holds it.
+//
+// Launcher makes the pod's launcher read the workspace rather than Role's shim (R6 of
+// #5285, runtime.PodWorkspaceReader): no role process runs in the pod, so no shim
+// is there to read through. It is the check of the release of a pod no claim owns
+// (workflow.UnownedPodRelease), inside that release's mark, and, with Close, of the close of a left
+// pod with no live claim, which marks no release and stops no role: its clean read queues the
+// Sandbox suspension alone, fenced on TurnStart. Such a row names no Role, since no role's shim
+// reads it; a decline it records tells the issue's architect (workspace-kept, WorkspaceKeptNotice).
+// A release before these two fields refuses a row that carries either (DisallowUnknownFields), so
+// a rollback waits for such rows to run (docs/kubernetes.md, "Rolling back the release that keeps
+// no saved workspace").
+//
+// PodUID, on a launcher's row, is the pod the pass read the runtime holding when it queued the
+// check (pods.IdleView.PodUID), where a row of a shim's read names the pod the issue's claims run
+// in (Fence.PodUID); "" where neither could say: a read the launcher made of another pod is
+// evidence of that pod alone, and is discarded (internal/daemon's checkIssueWorkspace and
+// checkLeftPodWorkspace), and the teardown and the suspension that a clean read lets through take
+// that pod or nothing (IssueRelease.ReadPodUID, IssueSuspend.ReadPodUID).
 type IssueWorkspaceCheck struct {
 	Tree           string       `json:"tree"`
 	Generation     uint64       `json:"generation"`
@@ -1673,7 +1704,13 @@ type IssueWorkspaceCheck struct {
 	PodUID         string       `json:"podUid,omitempty"`
 	CloseRoles     []claim.Role `json:"closeRoles,omitempty"`
 	TurnStart      time.Time    `json:"turnStart,omitzero"`
+	Launcher       bool         `json:"launcher,omitempty"`
+	Close          bool         `json:"close,omitempty"`
 }
+
+// LeftPodClose is whether the check is the first act of a left pod's close (CloseRoles, or Close
+// for a close that stops no role) rather than of a release.
+func (c IssueWorkspaceCheck) LeftPodClose() bool { return len(c.CloseRoles) > 0 || c.Close }
 
 func (IssueWorkspaceCheck) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
 
@@ -1690,12 +1727,26 @@ func (IssueWorkspaceCheck) OutboxKind() OutboxKind { return OutboxKindIssueBundl
 // again from what was pushed to the issue's branch. The check took the pod only because the
 // workspace held nothing that was not pushed. A new pod of a kept Sandbox mounts the volume the
 // last pod used.
+//
+// PodUID is the pod the teardown was queued for (Fence.PodUID), which the fence fills wherever the
+// writer names none.
+//
+// ReadPodUID, on the teardown of a release whose launcher reads the workspace first, is the pod
+// that check reads (IssueWorkspaceCheck.PodUID, R6 of #5285): the teardown takes that pod or
+// nothing, read under the runtime's pod lock, and a pod that took its place since, or no pod at
+// all, cancels the release (internal/daemon's releaseIssue, holdsPod). Only that writer sets it,
+// and no fence fills it, so a release that reads nothing (a kept volume's) names none and binds
+// nothing by it. A release before this field refuses a row that carries it
+// (DisallowUnknownFields), so a rollback waits for such rows to run, an issue_release row behind
+// its check among them (docs/kubernetes.md, "Rolling back the release that keeps no saved
+// workspace").
 type IssueRelease struct {
 	Tree           string `json:"tree"`
 	Generation     uint64 `json:"generation"`
 	TreeGeneration uint64 `json:"treeGeneration"`
 	Entry          int64  `json:"entry,omitempty"`
 	PodUID         string `json:"podUid,omitempty"`
+	ReadPodUID     string `json:"readPodUid,omitempty"`
 }
 
 func (IssueRelease) OutboxKind() OutboxKind { return OutboxKindIssueRelease }
@@ -2875,8 +2926,14 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
 		}
 	case IssueWorkspaceCheck:
-		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 || value.Role == "" {
-			return fmt.Errorf("a release's workspace check requires its tree, both workflow generations and the role whose shim reads the workspace")
+		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 || (value.Role == "") != value.Launcher {
+			return fmt.Errorf("a release's workspace check requires its tree, both workflow generations and the role whose shim reads the workspace, and names no role where the pod's launcher reads it")
+		}
+		if value.Launcher && len(value.CloseRoles) > 0 {
+			return fmt.Errorf("a workspace check the pod's launcher reads stops no role, so it names no close roles")
+		}
+		if value.Close && !value.Launcher {
+			return fmt.Errorf("a close's workspace check that stops no role is read by the pod's launcher")
 		}
 	case IssueRelease:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
@@ -3332,6 +3389,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // not `session-lost` because the kind is published as the notice's one-line message, and that
 // session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
 // of migration 20261120042902 deletes its unsent rows.
+//
+// `workspace-kept` (WorkspaceKeptNotice) is a pod no role runs in that the daemon keeps for its
+// disk, or a pod an update round kept for its disk; `workspace-taken` (WorkspaceTakenNotice) is a
+// replacement that still took a disk that may hold work.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -3340,7 +3401,7 @@ var validNoticeKinds = []NoticeKind{
 	"child-closed", "child-status", "children-first", "awaiting-children", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "task-stopped", "plan-not-taken", "retro-held",
-	ReparentedNotice,
+	ReparentedNotice, WorkspaceKeptNotice, WorkspaceTakenNotice,
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
@@ -3358,6 +3419,38 @@ const VolumeNearFullNotice NoticeKind = "volume-near-full"
 // (R17): the phase under way, the slot it holds, its design-gate steps and their basis, and,
 // where the new parent opens it, R1's path (workflow's reparentRead).
 const ReparentedNotice NoticeKind = "reparented"
+
+// WorkspaceKeptNotice is the architect's notice that the daemon keeps a pod in which no role
+// process runs, because the pod's launcher read its workspace and found work that no branch or tag
+// on origin holds, or could not read it (R6 of #5285, internal/daemon's
+// keptMessage): the release of a pod no claim owns and the close of a left pod with no live claim
+// delete a disk only after a read shows it clean. It names the state of each claim of the issue
+// and what the read found, and it is sent once for each pod kept so (store's recordDecline). It is
+// the architect's because no live role of the issue is there to push the work, and the architect
+// is who can bring one back. Where the owning architect will not hold its role again, the notice
+// reaches the project's controller instead, as a ControllerNotice of the same kind and words
+// (internal/daemon's tellControllerOfKeptPod), since the pod counts as told once its notice is
+// queued. No earlier release decodes it, so a rollback deletes its unsent rows, the controller's
+// among them, first (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
+//
+// An update round over a drift the pod's roles can keep working under that reads work in the pod's
+// workspace, or cannot read it, keeps the pod too (R7 of #5285, internal/daemon's
+// keepPodForRound): where the open phase's worker has no live process in the pod, its architect is
+// told by this notice, once for the pod, with each claim's state and what the read found.
+const WorkspaceKeptNotice NoticeKind = "workspace-kept"
+
+// WorkspaceTakenNotice is the architect's notice that a replacement of its issue's pod took a disk
+// that may hold work no branch or tag on origin holds (R7 of #5285): an update
+// round over a drift that breaks the pod (runtime.Breaks), or a launch's own
+// replacement of an issue pod (runtime.TakenPod), whose read of the workspace before the
+// replacement found such work or could not be made. It names each commit and the working-copy
+// change, or that no read could be made and why, and it is sent once for each replacement. It is
+// the architect's because the work is gone with the pod and the architect is who can have it made
+// again. Where the owning architect will not hold its role again, it reaches the project's
+// controller instead, as WorkspaceKeptNotice does. No earlier release decodes it, so a rollback
+// deletes its unsent rows with the workspace-kept ones (docs/kubernetes.md, "Rolling back the
+// release that keeps no saved workspace").
+const WorkspaceTakenNotice NoticeKind = "workspace-taken"
 
 // validNoticeKind says whether kind is a notice an architect is told.
 func validNoticeKind(kind NoticeKind) bool {

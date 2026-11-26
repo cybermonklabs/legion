@@ -159,8 +159,12 @@
 --     'merge_queue_removal', 'claim_release') and split_part(issue, '-', 1) = '<PROJECT>';
 -- update outbox set payload = payload - 'generation'
 --   where kind in ('check_wake', 'check_look', 'check_bound') and split_part(issue, '-', 1) = '<PROJECT>';
--- update outbox set payload = payload - 'entry' - 'podUid'
---   where kind in ('issue_suspend', 'issue_bundle', 'issue_release') and split_part(issue, '-', 1) = '<PROJECT>';
+-- update outbox set payload = payload - 'entry' - 'podUid' - 'readPodUid'
+--     || case when coalesce(payload->>'readPodUid', '') <> '' then jsonb_build_object('podUid', payload->>'readPodUid') else '{}'::jsonb end
+--   where kind in ('issue_suspend', 'issue_release') and split_part(issue, '-', 1) = '<PROJECT>';
+-- update outbox set payload = case when coalesce(payload->>'launcher', '') = 'true'
+--     then payload - 'entry' else payload - 'entry' - 'podUid' end
+--   where kind = 'issue_bundle' and split_part(issue, '-', 1) = '<PROJECT>';
 -- update outbox set payload = payload - 'podUid' where kind = 'supervise' and split_part(issue, '-', 1) = '<PROJECT>';
 -- update outbox set payload = payload - 'generation' - 'entry' - 'oldParent' - 'phase' - 'slot' - 'steps'
 --   where kind = 'reparent_seed' and split_part(issue, '-', 1) = '<PROJECT>';

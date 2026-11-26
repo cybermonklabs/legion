@@ -21,14 +21,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// A wake brings a released pod back. The release suspended every claim of the pod with the source
-// `released` and deleted the pod, its disk and its Sandbox; a wake resumes one of those claims,
-// which relaunches its session in a fresh pod whose launcher restores the workspace bundle the
-// release saved. Five things wake a pod, and this file holds four of them: the CI settlement, the
-// role message and the agent message the Envoy listener reports, and the stored backstop. The
-// fifth — a delivery the daemon already had for a role of the pod — needs nothing here, because a
-// delivery to a suspended claim already resumes it (supervise's deliverResuming) and the delivery
-// is its own account of why the pod came back.
+// A wake brings a released pod back. The release read the pod's workspace first and went on only
+// where it held nothing that no branch or tag on origin holds; it suspended every claim of the pod
+// with the source `released` and deleted the pod, its disk and its Sandbox, or, where the Sandbox
+// owns a kept volume, kept that Sandbox Suspended with its volume. A wake resumes one of those
+// claims, which relaunches its session in a fresh pod that provisions the workspace from the
+// issue's pushed branch, or mounts the kept volume as the roles left it. Five things wake a pod,
+// and this file holds four of them: the CI settlement, the role message and the agent message the
+// Envoy listener reports, and the stored backstop. The fifth — a delivery the daemon already had
+// for a role of the pod — needs nothing here, because a delivery to a suspended claim already
+// resumes it (supervise's deliverResuming) and the delivery is its own account of why the pod came
+// back.
 //
 // Every wake acts only on a claim that is still `released`, of an issue still in the workflow
 // whose tree is live, and a role comes back once while its pod is on its way: the role's one open
@@ -155,7 +158,7 @@ const (
 // role reads one account of its workspace, and what they say is what the daemon knows: the
 // release's check keeps a pod whose workspace holds a commit on a working copy or a local bookmark
 // that no branch or tag on origin holds, or a working-copy change (internal/daemon's
-// checkIssueWorkspace, the shim's workspaceWorkRevset), and a pod whose disk went with it comes
+// checkIssueWorkspace, workspace.WorkRevset), and a pod whose disk went with it comes
 // back with a workspace that provisioning made from the issue's pushed branch. The read does not
 // count a commit that no working copy and no bookmark reaches, a side head a role left with
 // `jj new <base>`, so the release can take one, and the text says so: it never says that nothing

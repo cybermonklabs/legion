@@ -245,11 +245,15 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 		return fmt.Errorf("publish notice for %s to its architect %s: %w", row.Issue, architect, published)
 	}
 	if state := r.claimState(architect); claimEnded(state) {
+		const ended = "its claim has failed, retired, or is not supervised"
 		if err := r.parkDecision(ctx, row.Issue, snapshot.root, payload, key, row.ID); err != nil {
 			return err
 		}
+		if err := r.tellControllerOfKeptPod(ctx, row.Issue, row.ID, notice, key, architect, ended); err != nil {
+			return err
+		}
 		r.log.Info("outbox notice finished undelivered: its architect will not hold its role again",
-			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "because", "its claim has failed, retired, or is not supervised",
+			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "because", ended,
 			"state", state)
 		return nil
 	}
@@ -309,7 +313,9 @@ func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, ar
 // it named is handed over to that fresh catch-up instead (workflow.HandOverKept, through
 // supersededKept), the copy that would have carried its claims on never being written. That check
 // reads the claim from memory, outside ApplyFact's lock, which the ready handler holds, so a copy
-// can still lose the race to a ready; the notice executor checks again when it runs the row.
+// can still lose the race to a ready; the notice executor checks again when it runs the row. A
+// notice of the issue pod's disk whose architect will not hold its role again goes to the
+// controller when the copy runs (noticeAnswered, tellControllerOfKeptPod).
 func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reason, recipient string) error {
 	key := record.OutboxKey(reported.row)
 	issue, notice := reported.issue, reported.notice

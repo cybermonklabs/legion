@@ -271,13 +271,20 @@ func TestAnIdleReleaseDeclinesAWorkspaceWithOneUnpushedCommitAndKeepsThePod(t *t
 // its disk through, and the release of a pod no claim owns reads the decline instead
 // (pods.IdleDecline.HoldsUnpushedWork): the disk holds the work the check found, so the pass holds
 // the pod as unowned_unpushed_work, records that hold, marks no release and asks for no teardown.
-// A role started again in that same pod and stopped since leaves the disk, and the work, where it
-// was, so the hold stands. Only a pod made again — the runtime answering another pod for the issue
-// than the one the check read — takes the disk the decline spoke of, and the pass releases it.
+// A role started again in that same pod and stopped since can have pushed the work, so the
+// release reads the disk again through the pod's launcher first (the Legion reviewer's point 2 on
+// R6), and a read that finds the same work keeps the pod as before. Only a pod made again — the
+// runtime answering another pod for the issue than the one the check read — takes the disk the
+// decline spoke of, and the pass releases it.
 func TestAnUnownedPodWhoseDeclineNamesUnpushedWorkIsKept(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	rig := newIdleRig(t)
+	// The launcher's decline tells the issue's architect, routed on the issue's Dispatch chain
+	// (record.OwningArchitect), so the rig writes the copy's row of the root, as a reading of
+	// Dispatch does; its architect is supervised by no daemon here, so the notice goes to the
+	// controller.
+	putCopyRow(t, rig.pool, rig.issue.Key, "", rig.issue.Status)
 	rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
 	rig.rt.ScriptWorkspaceWork(rig.issue.Key, idleRigUnpushed)
 	rig.passes(t, 1)
@@ -315,25 +322,27 @@ func TestAnUnownedPodWhoseDeclineNamesUnpushedWorkIsKept(t *testing.T) {
 	}
 
 	// A start of the implementer after the decline, whose relaunches ran out again, in the same
-	// pod: the disk the decline read is still the pod's.
+	// pod: its process can have pushed the work, so the pass has the launcher read the disk again,
+	// once, and the read finds the same work there, which keeps the pod.
 	if _, err := rig.pool.Exec(ctx, `update claims set last_start_row = $2, updated_at = now() - interval '30 minutes'
 		where token = $1`, string(rig.token), started+1); err != nil {
 		t.Fatalf("record a start of the implementer after the decline: %v", err)
 	}
-	rows := rig.sequenceValue(t, "outbox")
 	unownedPasses(idleRigPasses)
-	if after := rig.sequenceValue(t, "outbox"); after != rows {
-		t.Fatalf("the passes after a start in the same pod queued outbox rows (the sequence moved from %d to %d), want none: its disk still holds the work",
-			rows, after)
+	if reads := len(rig.rt.CallsOf("PodWorkspaceWork")); reads != 1 {
+		t.Fatalf("the launcher read the workspace %d times over the passes after a start in the same pod, want once: the start ends the decline's hold, and the read's own decline holds the pod again",
+			reads)
 	}
 	if asked := rig.rt.teardownsAsked(); len(asked) != 0 {
-		t.Fatalf("teardowns asked after a start in the same pod = %v, want none", asked)
+		t.Fatalf("teardowns asked after a start in the same pod = %v, want none: the read found the work still there", asked)
 	}
 
-	// A relaunch built pod-b in pod-a's place: the disk, and the work on it, went with pod-a.
+	// A relaunch built pod-b in pod-a's place: the disk, and the work on it, went with pod-a. The
+	// release reads pod-b's disk through its launcher first (R6), which holds nothing origin lacks.
 	rig.rt.ScriptIssuePod(rig.issue.Key, "pod-b")
-	if queued := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Equal(queued, []string{"issue_release"}) {
-		t.Fatalf("the pass after the pod was made again queued %v, want the unowned release's teardown alone", queued)
+	rig.rt.ScriptWorkspaceWork(rig.issue.Key, runtime.WorkspaceWork{Head: idleRigUnpushed.Head})
+	if queued := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Equal(queued, []string{"issue_bundle", "issue_release"}) {
+		t.Fatalf("the pass after the pod was made again queued %v, want the unowned release's launcher check and its teardown", queued)
 	}
 	rig.drain(t)
 	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue"}) {

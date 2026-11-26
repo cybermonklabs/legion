@@ -342,7 +342,7 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 			if err := g.r.ReplacePod(g.ctx, runtime.Known{Claim: childToken, Locator: &loc}, stillDue); err != nil {
 				t.Fatalf("ReplacePod: %v", err)
 			}
-			g.hold.Store(true)
+			g.setHold(true)
 			var timedOut atomic.Bool
 			apply := k8stesting.ObjectReaction(g.dyn.Tracker())
 			g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
@@ -365,7 +365,7 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 			if s := g.sandbox(name); s == nil || s.UID != uid || s.mode() != modeSuspended {
 				t.Fatalf("after the failed launch the issue's Sandbox is %+v, want %s kept, Suspended", s, uid)
 			}
-			g.hold.Store(false)
+			g.setHold(false)
 			loc = g.relaunchOnNewPod(loc, &spec)
 			keeps(t, g, "a launch that failed after its Running patch", loc, uid, template)
 
