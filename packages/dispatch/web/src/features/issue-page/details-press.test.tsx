@@ -57,10 +57,16 @@ let stubs: { mockRestore(): void }[] = [];
 let restoreViewport: () => void = () => {};
 /** Each read of `AskedRead` since the case began, in order. */
 let log: AskedRead[] = [];
+/** An answer the case holds until it settles it: what `Promise.withResolvers` gives. */
+interface Held<T> {
+  readonly promise: Promise<T>;
+  readonly reject: (reason?: unknown) => void;
+  readonly resolve: (value: T) => void;
+}
 /** The held answers of what waits on the issue and of the titles, each the first not answered
  *  yet first. */
-let blocks: PromiseWithResolvers<GraphReferences>[] = [];
-let titles: PromiseWithResolvers<ReferenceTargets>[] = [];
+let blocks: Held<GraphReferences>[] = [];
+let titles: Held<ReferenceTargets>[] = [];
 /** The projects read, which the header and Details both read on a root, held by the case. */
 let projects: Mock<typeof api.listProjects>;
 

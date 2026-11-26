@@ -87,14 +87,24 @@ const GATED: Project = {
 /** The fixtures' issue, a root of its project, with the question that waits on the reader and
  *  its two children. */
 function heldIssue(): IssueDetails {
-  return { ...issueDetails(), children: CHILDREN, open_asks: [WAITING_ASK] };
+  return {
+    ...issueDetails(),
+    children: CHILDREN,
+    open_asks: [{ ...WAITING_ASK, last_reply: null }],
+  };
 }
 
+/** A read the case holds until it settles it: what `Promise.withResolvers` gives. */
+interface Held<T> {
+  readonly promise: Promise<T>;
+  readonly reject: (reason?: unknown) => void;
+  readonly resolve: (value: T) => void;
+}
 /** The reads a case holds, each answered by the case: the tree read, the projects read and the
  *  reader's login. */
-let tree: PromiseWithResolvers<TreeAnswer>;
-let projects: PromiseWithResolvers<Project[]>;
-let whoami: PromiseWithResolvers<AuthenticatedUser>;
+let tree: Held<TreeAnswer>;
+let projects: Held<Project[]>;
+let whoami: Held<AuthenticatedUser>;
 
 let stubs: { mockRestore(): void }[] = [];
 let restoreViewport: () => void = () => {};
