@@ -34,12 +34,16 @@ import (
 // with, delivery/measure_rows.go); the deploys and failures of the record a failure measure counts
 // (`deploy`, `failure`, from production_events, as the failure rows count them,
 // evals.FailureRecordIn), each with its relation to the measure's numbers; the runs a CI eval times
-// (`run`) and, for pr-ci, each job's figures (`job`); and the open P0 issues with no owner
-// (`issue`, delivery.ListUnownedP0). A delivery or CI row is answered where the project's day rows
-// counted it (eval_day_members, evals.CountedIn), so the items are the rows the numbers fold, under
-// the attribution the day rows made (evals' delivery_days.go, "Attribution"). Every eval then
-// answers its readings (evals.ItemsIn, a reading logged under a computed eval's slug among them,
-// which its value never folds, R3) and last its day rows (evals.EvalDaysIn, `day`).
+// (`run`) and, for pr-ci, each job's figures (`job`); the open P0 issues with no owner (`issue`,
+// delivery.ListUnownedP0); and the changes and the pairs the two code evals count, and each reason
+// their range reads "no data" other than days still waiting (`change`, `pair`, `absent`, from the
+// code survival run's stored results, evals_items_code.go). A delivery or CI row is answered where
+// the project's day rows counted it (eval_day_members, evals.CountedIn), and a code eval's change
+// or pair where its day's status row says the day was measured, so the items are the rows the
+// numbers fold, under the attribution the day rows made (evals' delivery_days.go, "Attribution").
+// Every eval then answers its readings (evals.ItemsIn, a reading logged under a computed eval's
+// slug among them, which its value never folds, R3) and last its day rows (evals.EvalDaysIn,
+// `day`).
 //
 // A row of the compare range carries range `compare`. The page runs across the row kinds in the
 // order above, the compare range's rows after the window's, and a row kind's rows in its own
@@ -63,8 +67,10 @@ import (
 // and a CI run's start, which the deploy and CI measures count it by (delivery.ReadDeploys and
 // ReadCIRows read runs by start); a Legion issue's close and a filing's filing; a day row's day; a
 // job's figures the newest day of the day rows they fold; a failing job its latest failure, which
-// measures.FailingJobs counts by completion; and an open P0 issue with no owner the read itself,
-// since the count is of the present.
+// measures.FailingJobs counts by completion; a code eval's change its commit and a pair its adder's
+// commit, whose day the change's 30 days are counted from; a marked day its day and a blocking
+// commit the oldest day of the range it blocks; and an open P0 issue with no owner, and a setting
+// a code eval reads no data by, the read itself, since the count is of the present.
 type evalItemRow struct {
 	RowKey     string         `json:"row_key"`
 	RowKind    string         `json:"row_kind"`
@@ -96,6 +102,9 @@ const (
 	evalRowRun         = "run"
 	evalRowJob         = "job"
 	evalRowDay         = "day"
+	evalRowChange      = "change"
+	evalRowPair        = "pair"
+	evalRowAbsent      = "absent"
 )
 
 // The two orders `sort` names, each of which answers pr-ci's job rows alone: the slowest jobs
@@ -169,21 +178,24 @@ type evalItemsRead struct {
 
 // evalRequestReads is the reads of an items request its readers keep for every range, each made
 // once a request, since no range moves them: the rules of the deploy repositories its eval reads
-// (repoRules), whose delivery and CI rows each is read under, and the record behind a failure
-// measure (failureItemsOf), which each range filters.
+// (repoRules), whose delivery and CI rows each is read under, the record behind a failure measure
+// (failureItemsOf), which each range filters, and the project as a code eval's rows read it
+// (codeProjectOf).
 type evalRequestReads struct {
 	rules        []delivery.DeliverySettings
 	rulesRead    bool
 	failures     *evals.FailureRecord
 	failuresRead bool
+	code         *codeProject
 }
 
 // evalRangeReads is the reads of one range its readers keep, each made once a range: the items
 // each family's day rows of the range counted (counted), the eval's day rows of the range, which
-// pr-ci's jobs and its day rows both read, and the record's rows behind a failure measure, which
-// its deploys and its failures both read. failing is the pull-request checks runs pr-ci's failures
-// list of the range was read from (failingJobRows), which the items read answers beside its body
-// for the window (evalItemsAnswer).
+// pr-ci's jobs and its day rows both read, the record's rows behind a failure measure, which
+// its deploys and its failures both read, and a code eval's status rows and changes of the range
+// (codeRangeOf), which its changes or pairs and its absent rows both read. failing is the
+// pull-request checks runs pr-ci's failures list of the range was read from (failingJobRows), which
+// the items read answers beside its body for the window (evalItemsAnswer).
 type evalRangeReads struct {
 	counted      map[string]map[string]bool
 	days         []evals.DayRow
@@ -191,6 +203,7 @@ type evalRangeReads struct {
 	failures     []evals.FailureItem
 	failuresRead bool
 	failing      []delivery.DeliveryRun
+	code         *codeRange
 }
 
 // evalItemKind is one row kind a computed eval answers, and its reader: read answers the kind's
@@ -213,7 +226,8 @@ var (
 // evalComputedItems is the row kinds each computed eval answers beside its readings and its day
 // rows, by the source it names: the rows its fold counts. A failure is a fact about its deploy
 // (dispatch://INFRA-978, D7), so the three failure measures answer the deploys of the record they
-// count and the failures on them.
+// count and the failures on them; and a code eval answers, after the changes or the pairs it
+// counts, why its range reads no data where it does (absentItemRows).
 var evalComputedItems = map[string][]evalItemKind{
 	evals.SourceFoldDeployFrequency:  {deployItems},
 	evals.SourceFoldDeployRunSuccess: {deployItems},
@@ -230,6 +244,8 @@ var evalComputedItems = map[string][]evalItemKind{
 	evals.SourceFoldSlotWait:         {legionItems},
 	evals.SourceFoldRework:           {legionItems},
 	evals.SourceFoldSplitting:        {legionItems},
+	evals.SourceFoldSurvival:         {changeItems, absentItems},
+	evals.SourceFoldPostMergeRework:  {pairItems, absentItems},
 }
 
 // evalItemSource is one row kind of one range as the page reads it: the rows from skip on, at

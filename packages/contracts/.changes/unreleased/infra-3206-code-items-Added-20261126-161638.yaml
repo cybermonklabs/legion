@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  `GET /api/v1/projects/{key}/evals/{slug}/items` answers three more row kinds, each in the one
+  `EvalItemRow` shape. `code-survival-30d` answers its `change` rows: one change each, keyed
+  `<repo>@<sha>`, with `cols` `{sha, pr_number, group, issue, added, alive, share,
+  via_repository}`, its `href` the pull request and a `via` link to the commit, under the series
+  `survival:<g>` of its group. `post-merge-rework-30d` answers its `pair` rows: a change and a
+  later change that removed its lines, keyed `<repo>@<adder>><remover>`, with `cols`
+  `{adder_issue, remover_issue, kind, lines, days_between, adder_pr, remover_pr, group}`, its
+  `href` the remover's pull request, a `via` link to the remover's commit and a `related` link to
+  the adder's, under `rework:<g>`, `iteration:<g>`, `noissue:<g>` or `other:<g>`; a pair where
+  either change has no issue is under `noissue:<g>` alone, with that issue `null`. Both evals
+  answer `absent` rows, one for each reason the range reads no data other than days still
+  waiting, named by `cols.cause`: `marked`, `blocked`, `repo_unreadable`, `no_default_repo` and
+  `no_group`. No field of the answer is added, removed or renamed.
+time: 2026-11-26T16:16:38Z
+custom:
+    Issue: INFRA-3206
