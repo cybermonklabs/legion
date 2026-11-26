@@ -5,29 +5,31 @@
 # is in no job that builds code
 # (.github/ci-notes/ci-caches.md#what-the-refill-superseded-job-deletes-and-why-it-is-a-job-of-its-own).
 #
-#   commit <family>  refill-superseded: KEEP is the key a fill saved, the readers' key followed by
-#                    `-$SHA`. Deletes every other entry of REF whose key is the readers' key or
-#                    starts with it and a `-`. Its fills run one at a time, so none is newer.
-#   older <family>   ci-caches-changes.yaml's superseded job: KEEP as for commit, but deletes only
-#                    the entries of REF created before KEEP's, since that workflow runs once per
-#                    commit and a later commit's fill can save before this one.
+#   commit <family>  refill-superseded and ci-caches-changes.yaml's superseded job: KEEP is the key
+#                    a fill saved, the readers' key followed by `-$SHA`. Deletes every entry of REF
+#                    created before KEEP's whose key is the readers' key or starts with it and a
+#                    `-`. ci-caches.yaml's fills run one at a time, so there no entry is newer and
+#                    every other one goes. ci-caches-changes.yaml's runs can overlap, and there the
+#                    entry saved last stays, whichever commit it is: the one the readers' restore
+#                    picks, as it takes the newest entry by prefix.
 #   hash <family>    envoy-infra-superseded: KEEP is a key holding a 64-hex hash of module files.
 #                    Deletes every other entry of REF of the family whose key is KEEP but for that
-#                    hash: the same runner and Go, older module files, the hashless key included.
+#                    hash, whatever its age: the same runner and Go, other module files, the
+#                    hashless key included.
 #   build            dispatch-builds-superseded: KEEP is a Dispatch build's key, the build, the
 #                    runner's OS and architecture, the script's 64-hex hash and the 40-hex commit.
 #                    Deletes REF's entries of that build, OS and architecture created before
-#                    KEEP's, and every one of any other ref.
+#                    KEEP's, and every one of any other ref, whatever its age.
 #
 # Its environment: KEEP; REF, the ref whose new entry is kept (github.ref), whose entries alone the
-# commit, older and hash modes read, where build mode reads every ref's; SHA (commit and older
-# modes, github.sha); and GH_TOKEN and GH_REPO for gh. None is deleted unless KEEP is among REF's
-# entries, so a save that did not land leaves the old entries in place. A cache key is text any
-# build that saves on a ref chose, so no key is split or printed raw: the list stays JSON, jq selects
-# the numeric ids to delete, and each id is checked to be a number before `gh cache delete` gets it,
-# so a key holding a newline cannot add a line of its own, such as `--all`, to that list. Each gh call
-# waits out a spent API budget within the job's limit (JOB_TIMEOUT_MINUTES) and fails by name past
-# it (gh-read.sh). A mode it does not know, or one missing its family, exits 2 naming the usage.
+# commit and hash modes read, where build mode reads every ref's; SHA (commit mode, github.sha);
+# and GH_TOKEN and GH_REPO for gh. None is deleted unless KEEP is among REF's entries, so a save
+# that did not land leaves the old entries in place. A cache key is text any build that saves on a
+# ref chose, so no key is split or printed raw: the list stays JSON, jq selects the numeric ids to
+# delete, and each id is checked to be a number before `gh cache delete` gets it, so a key holding
+# a newline cannot add a line of its own, such as `--all`, to that list. Each gh call waits out a
+# spent API budget within the job's limit (JOB_TIMEOUT_MINUTES) and fails by name past it
+# (gh-read.sh). A mode it does not know, or one missing its family, exits 2 naming the usage.
 set -euo pipefail
 # shellcheck source=.github/scripts/gh-read.sh
 source "$(dirname "$0")/gh-read.sh"
@@ -35,9 +37,9 @@ source "$(dirname "$0")/gh-read.sh"
 mode=${1:-}
 family=${2:-}
 case "$mode:$family" in
-  commit:?* | older:?* | hash:?* | build:) ;;
+  commit:?* | hash:?* | build:) ;;
   *)
-    echo "::error::usage: cache-superseded.sh commit|older|hash <family>, or cache-superseded.sh build" >&2
+    echo "::error::usage: cache-superseded.sh commit|hash <family>, or cache-superseded.sh build" >&2
     exit 2
     ;;
 esac
@@ -62,12 +64,13 @@ kept() {
   return 1
 }
 
-# The entries listed before KEEP's in a list GitHub sorted newest first, by its own creation order:
-# the newer ones, which no mode but commit deletes.
-AFTER_KEPT='(map(.key == $keep and .ref == $ref) | index(true)) as $kept | to_entries[] | .key as $at | .value'
+# A jq program's head that yields each entry of a list GitHub sorted newest first, with $at its
+# place in the list and $kept the place of KEEP's entry, so `$at > $kept` holds for the entries
+# created before KEEP's.
+INDEXED='(map(.key == $keep and .ref == $ref) | index(true)) as $kept | to_entries[] | .key as $at | .value'
 
 case "$mode" in
-  commit | older)
+  commit)
     # The readers' key: the saved one without the commit the fill put at its end.
     base=${KEEP%"-${SHA:?SHA must name the commit the fill saved under}"}
     if [ "$base-$SHA" != "$KEEP" ]; then
@@ -78,12 +81,9 @@ case "$mode" in
     # however many older ones a failed run left behind.
     entries=$(gh_wait_reset gh cache list --ref "$REF" --key "$base" --sort created_at --order desc --limit 100 --json id,key,ref)
     kept "$entries" "$family" || exit 0
-    older='true'
-    [ "$mode" = older ] && older='$at > $kept'
     jq -r --arg keep "$KEEP" --arg base "$base" --arg ref "$REF" \
-      "$AFTER_KEPT | select(.ref == \$ref and .key != \$keep and ($older)
-                            and (.key == \$base or (.key | startswith(\$base + \"-\")))) | .id" <<<"$entries" |
-      delete "$family" "which the new entry supersedes"
+      "$INDEXED"' | select(.ref == $ref and $at > $kept and (.key == $base or (.key | startswith($base + "-")))) | .id' \
+      <<<"$entries" | delete "$family" "which the new entry supersedes"
     ;;
   hash)
     entries=$(gh_wait_reset gh cache list --ref "$REF" --key "$family-" --limit 100 --json id,key,ref)
@@ -107,7 +107,7 @@ case "$mode" in
     entries=$(gh_wait_reset gh cache list --key "$prefix" --sort created_at --order desc --limit 1000 --json id,key,ref)
     kept "$entries" "$prefix" || exit 0
     jq -r --arg keep "$KEEP" --arg ref "$REF" --arg prefix "$prefix" \
-      "$AFTER_KEPT | select((.key | startswith(\$prefix)) and (.ref != \$ref or \$at > \$kept)) | .id" <<<"$entries" |
-      delete "$prefix" "which this repository keeps no more"
+      "$INDEXED"' | select((.key | startswith($prefix)) and (.ref != $ref or $at > $kept)) | .id' \
+      <<<"$entries" | delete "$prefix" "which this repository keeps no more"
     ;;
 esac

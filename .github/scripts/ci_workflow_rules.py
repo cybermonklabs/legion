@@ -1,5 +1,5 @@
 """The rules about ci.yaml that stand on their own: what no `if:` of it may say, what every job's
-`if:` must say, what ci-caches.yaml must save
+`if:` must say, what the cache fill workflows (CACHE_WORKFLOWS) must save
 for the entries ci.yaml restores and which packages the daemon fill job's race build must compile, which workspaces
 ci_job_reads.py's WORKSPACES must name, and
 that no other workflow of this repository runs on a merge group.
@@ -20,7 +20,8 @@ the engine's names, never the data's, and the merge-group rule over the workflow
 it reads itself.
 
 It sits beside that engine (and workflow_paths.py, the path model) in the repository it checks,
-and imports the engine's names for the two workflow files, the repository root, the checks
+and imports the engine's names for ci.yaml, ci-caches.yaml and the fill workflows rule 11 reads,
+the repository root, the checks
 main's ruleset requires, the reader of a job's `uses:` and the three
 helpers that read an `if:`, and the path model's reader of a workflow's `on:`. main()
 imports this module rather than the other way round, so the one import of the engine here is of
@@ -67,7 +68,8 @@ def comparison(left: str, right: str) -> str:
 PUSH_CONDITION = re.compile("|".join((comparison(r"github\.event_name", "'push'"),
                                       comparison(r"github\.ref", r"'refs/heads/[^']*'"))))
 # Where the work such a condition used to gate lives now.
-PUSH_INSTEAD = (f"a cache that must be filled on a push to main belongs in {' or '.join(CACHE_WORKFLOWS)}, and a job that must "
+PUSH_INSTEAD = (f"a cache that must be filled on a push to main belongs in {CACHE_WORKFLOW}, and ci-caches-changes.yaml "
+                f"holds only the changes job's two entries, which must land once per commit; a job that must "
                 f"run at main's tip is started by the workflow_dispatch "
                 f".github/workflows/main-bypass-check.yaml sends")
 # The one `on:` a workflow this rule reads beyond ci.yaml may declare, and the directory and the
@@ -203,7 +205,7 @@ def check_rerun_guard(document: dict, problems: list) -> None:
 
 
 # ---------------------------------------------------------------- the cache round trip
-# The one suffix a save of ci-caches.yaml may add to its restores' key: the commit the fill built.
+# The one suffix a save of a fill workflow may add to its restores' key: the commit the fill built.
 # A family saved under it is filled again on every push, each entry under a key of its own, and a
 # restore of the bare key takes the newest of them by prefix.
 COMMIT_SUFFIX = "-${{ github.sha }}"
@@ -344,13 +346,14 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
     commit is a fill made again on every push: no entry then carries the restores' key itself, and
     GitHub gives each restore the newest entry whose key starts with it; any other suffix is
     drift, a restore key that itself names the commit is drift, and one family saved both ways is
-    refused, since its entry under the bare key would win every restore. A save's key is its own
+    refused, in one fill workflow or across two, since its entry under the bare key would win every
+    restore. A save's key is its own
     text, or the text of the restore step of its job whose computed key it names (saves_of says
     why a hashFiles() of its own is refused). A family is the key's text up to its first
     expression, and it is what
     pairs a save with the restores to hold it to; the keys are compared as text and the paths as
-    the ordered lists of lines they name. A family ci.yaml restores that this workflow does not
-    save is no fault when another workflow of the directory saves it: docs-site.yaml saves go-docs.
+    the ordered lists of lines they name. A family ci.yaml restores that no fill workflow saves is
+    no fault when another workflow of the directory saves it: docs-site.yaml saves go-docs.
     A family no save writes is one: its restore misses on every run and nothing fails, as a
     restore whose family name is misspelled does (`go-envoy-tests-` for go-envoy-test), so every
     restore of the directory names a family some save writes. The saves read for it are those of
@@ -359,13 +362,13 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
     no save writes the family, so the refusal then names each such save rather than saying none
     exists. The other way round is one too, a family nothing restores being a fill nobody reads.
 
-    This workflow's own restores of a family it saves under the commit are what the fill builds on,
-    and have one shape: no lookup-only at all (an expression can evaluate to true), so the newest
-    entry downloads, and exactly its key followed by `-` as restore-keys, which no entry of
-    another Go version starts with. Every other restore here is a lookup, which must be
-    `lookup-only: true` with no
+    A fill workflow's own restores of a family it saves under the commit are what the fill builds
+    on, and have one shape: no lookup-only at all (an expression can evaluate to true), so the
+    newest entry downloads, and exactly its key followed by `-` as restore-keys, which no entry of
+    another Go version starts with. Every other restore of a fill workflow is a lookup, which must
+    be `lookup-only: true` with no
     restore-keys: the question it asks is whether that exact key is already there, the entry it
-    would download is read by nothing in this workflow, and a prefix hit would answer for an older
+    would download is read by nothing in that workflow, and a prefix hit would answer for an older
     key and skip the build that fills this one. A fill workflow that is not in the repository saves
     nothing, and so has nothing to hold. Every refusal of a save or of a fill's restore names the
     fill workflow it is in.
@@ -376,7 +379,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
 
     The key and the paths are held for every other workflow of the directory too: a release
     build (release.yaml's go-daemon, release-envoy-infra.yaml's go-envoy-infra), the nightly
-    browser re-record (go-envoy) and this workflow's own restores read the entries it fills,
+    browser re-record (go-envoy) and the fill workflows' own restores read the entries they fill,
     and a restore there that drifts from the save misses as silently as one of ci.yaml's. Only
     the existence check above stays ci.yaml's: a fill is for ci.yaml's run, so a family only
     another workflow restores is still a fill ci.yaml does not read."""
@@ -386,7 +389,8 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
     restores = restores_of(documents)
     elsewhere = restores_of({path: document for path, document in directory_workflows().items()
                              if path not in documents})
-    saves = [(where, *save) for where, caches in fills.items() for save in saves_of(caches, where, problems)]
+    per_file = {where: saves_of(caches, where, problems) for where, caches in fills.items()}
+    saves = [(where, *save) for where, file_saves in per_file.items() for save in file_saves]
     saved_anywhere, unread = set(), []
     for path, document in {**directory_workflows(), **documents}.items():
         for job_id, job in (document.get("jobs") or {}).items():
@@ -412,13 +416,17 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
                        f"nothing what it meant to restore; name a family a save writes "
                        f"({', '.join(sorted(saved_anywhere))})")
             problems.append(error(path, f"job {job_id} restores cache family {family}, {why}"))
-    for where in fills:
-        refilled = {family for at, _, family, key, _ in saves if at == where and key.endswith(COMMIT_SUFFIX)}
-        bare = {family for at, _, family, key, _ in saves if at == where and not key.endswith(COMMIT_SUFFIX)}
-        for family in sorted(refilled & bare):
-            problems.append(error(where, f"this workflow saves family {family} both under `{COMMIT_SUFFIX}` and "
-                                         f"without it: the entry under the restores' own key wins every restore as an "
-                                         f"exact match, so the fills under the commit reach nobody"))
+    # One family saved both ways, in one fill workflow or across two: the hazard is the family's,
+    # whichever files hold the two saves.
+    refilled_in, bare_in = defaultdict(set), defaultdict(set)
+    for where, _, family, key, _ in saves:
+        (refilled_in if key.endswith(COMMIT_SUFFIX) else bare_in)[family].add(where)
+    for family in sorted(refilled_in.keys() & bare_in.keys()):
+        problems.append(error(sorted(bare_in[family])[0],
+                              f"family {family} is saved both under `{COMMIT_SUFFIX}` (in "
+                              f"{', '.join(sorted(refilled_in[family]))}) and without it (in "
+                              f"{', '.join(sorted(bare_in[family]))}): the entry under the restores' own key wins every "
+                              f"restore as an exact match, so the fills under the commit reach nobody"))
     for where, job_id, family, key, given in saves:
         paths = path_lines(given.get("path", ""))
         if family not in restores:
@@ -451,7 +459,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
                                              f"entry then holds other directories than the job reads, and the job rebuilds what "
                                              f"the fill already built"))
     for where, caches in fills.items():
-        refilled = {family for at, _, family, key, _ in saves if at == where and key.endswith(COMMIT_SUFFIX)}
+        refilled = {family for _, family, key, _ in per_file[where] if key.endswith(COMMIT_SUFFIX)}
         check_fill_restores(where, caches, refilled, problems)
 
 

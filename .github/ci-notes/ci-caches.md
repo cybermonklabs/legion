@@ -1,9 +1,10 @@
 # Notes for the cache fills
 
-The derivations and the history behind `.github/workflows/ci-caches.yaml`, the workflow that fills
-the Actions caches ci.yaml's jobs restore. A `# why:` line of that file that names this file names
-the section here that holds the derivation or the record its text rests on; its other `# why:`
-lines name sections of `.github/ci-notes/ci.md`.
+The derivations and the history behind `.github/workflows/ci-caches.yaml` and
+`.github/workflows/ci-caches-changes.yaml`, the workflows that fill the Actions caches ci.yaml's
+jobs restore. A `# why:` line of either file that names this file names the section here that
+holds the derivation or the record its text rests on; its other `# why:` lines name sections of
+`.github/ci-notes/ci.md`.
 
 ## Why each fill builds on the newest entry of its family
 
@@ -200,11 +201,14 @@ ci-caches.yaml runs one at a time and a newer push replaces its waiting run. The
 on one commit would land only after the whole run of the push before it, a median of 7.4 min (p90
 13.9) over main's 100 runs from 2026-11-25 12:00 UTC, and never for a replaced run, 12 of the 71
 push runs of that window. Replayed over the 147 pull-request changes jobs of 2026-11-26 03:31-05:30
-UTC, with an entry landing 47 s after its commit's push (the fill's own time to that save, demo job
-139786420141), the job's base commit had its entry when the job started in 135 of 147 runs, and in
-79 of the 85 that generate a base tree (133 and 79 with the merge commit's first parent as the
-base); 12 of the misses are bases no push to main made, such as a stacked branch's. The same replay
-with the fill queued behind ci-caches.yaml's runs gives 131 and 78 (127 and 76).
+UTC, with an entry landing a fixed time after its commit's push, the job's base commit had its
+entry when the job started in 135 of 147 runs, and in 79 of the 85 that generate a base tree, at 43
+s, and in 133 and 78 at 97 s. Those are the two fills of demo run 45781883565: attempt 1 (job
+139779073246) saved the entry 42.6 s after its run was created, its runner picked up in 4 s; attempt
+2 (job 139786420141) saved it 39 s after its runner started, which it waited 58 s for. The replay
+takes the delay from the push as a whole and models no pickup apart from it. 12 of the misses are
+bases no push to main made, such as a stacked branch's. With the fill queued behind
+ci-caches.yaml's runs instead, the same replay gives 131 and 78 at 43 s, and 130 and 77 at 97 s.
 
 changes-git-<os>-<arch>-<commit> is the `.git` of a one-commit checkout of the pushed commit. The
 changes job restores it before its checkout, by the key without the commit, which GitHub matches
@@ -218,11 +222,8 @@ actions/checkout removes a remote branch that conflicts with the ref it checks o
 saved from a detached checkout was fetched whole again (13 s in demo run 45781883565's first
 attempt), and one with a ref of that name in 0.3 s (its second attempt, job 139787204657).
 changes-git is saved under the key form of the refilled families, the readers' key and the commit,
-though its fill restores nothing to build on. The workflow's superseded job deletes this ref's
-changes-git entries created before the one its fill saved (cache-superseded.sh's older mode): runs
-of two commits can overlap, and a later commit's entry may be saved first, so it deletes none
-newer, and one entry stays once runs settle. A restore that misses, or an entry the checkout cannot
-use, leaves the checkout to fetch everything, as it did before.
+though its fill restores nothing to build on. A restore that misses, or an entry the checkout
+cannot use, leaves the checkout to fetch everything, as it did before.
 
 ci-filters-<os>-<arch>-<commit> is the filters the pushed commit's own `check-ci-filters.sh
 generate` writes, with a file naming the commit. When a change touches a file the filters are
@@ -238,3 +239,15 @@ computes nothing when the entry is there, as the lookups of ci-caches.yaml do. T
 the changes job's restore key word for word, its `steps.base.outputs.sha` this commit, which the
 fill's step of that id names, so rule 11 holds the two to one text. An entry is about 20 KB, and
 GitHub drops each after seven days unread, so they are not deleted.
+
+## Which changes-git entry stays
+
+ci-caches-changes.yaml's superseded job runs cache-superseded.sh's commit mode, as
+refill-superseded does: it deletes this ref's changes-git entries created before the one its fill
+saved, and none created after it. That workflow's runs of two commits can overlap, and a later
+commit's fill can save first; then the earlier commit's job, which saved last, deletes the later
+commit's entry. So the entry that stays is the one saved last, whichever commit it is. That is the
+one the changes job's restore picks, as it takes the newest entry by prefix, and the checkout fetches
+what that entry lacks, so a run that stays on an earlier commit's objects costs it only a larger
+fetch. ci-caches.yaml's fills run one at a time, so there no entry is newer than the kept one and
+the same mode deletes every other.

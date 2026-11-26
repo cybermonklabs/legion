@@ -22,11 +22,12 @@
 # the shell's case-sensitive `=`, and a PUSH_WORKFLOWS workflow's
 # on.push.paths must equal its filter, no if: condition of ci.yaml may test for a push event or compare
 # github.ref with a branch ref, every job's if: but those two jobs' must hold the term that skips
-# it on a re-run attempt of a merge-group run and theirs must not, ci-caches.yaml's save of a
-# cache family must carry
+# it on a re-run attempt of a merge-group run and theirs must not, a fill workflow's
+# (ci-caches.yaml's or ci-caches-changes.yaml's) save of a cache family must carry
 # the key and the paths every restore of that family names, ci.yaml's and any other workflow's,
 # or that key followed by the commit, its own restores being lookups but those of a family it
-# saves under the commit, which download the newest entry, every restore of any workflow must
+# saves under the commit, which download the newest entry, no family may be saved both under the
+# commit and without it, in one fill workflow or across two, every restore of any workflow must
 # name a family some workflow saves,
 # ci-caches.yaml's race build must compile exactly the packages ci_job_reads.py's
 # DAEMON_RACE_PACKAGES names,
@@ -4611,8 +4612,34 @@ cat >> "$root/.github/workflows/ci-caches.yaml" <<'YAML'
 YAML
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the family and what the bare entry does" \
-  "$(contains "$out" "this workflow saves family go-app both under \`-\\\${{ github.sha }}\` and without it: the entry under the restores' own key wins every restore")"
+check "names the family, the file of each save and what the bare entry does" \
+  "$(contains "$out" "family go-app is saved both under \`-\\\${{ github.sha }}\` (in .github/workflows/ci-caches.yaml) and without it (in .github/workflows/ci-caches.yaml): the entry under the restores' own key wins every restore")"
+
+# The same hazard with the two saves in two fill workflows: rule 11 reads the saves of every one
+# (CACHE_WORKFLOWS), and the bare entry wins every restore whichever file saved it.
+echo "case: a family ci-caches.yaml saves without the commit and ci-caches-changes.yaml saves under it"
+root=$(fixture cache-both-across-files)
+cache_workflow "$root"
+cat > "$root/.github/workflows/ci-caches-changes.yaml" <<'YAML'
+name: CI caches (changes job)
+on:
+  push:
+    branches: [main]
+jobs:
+  fill:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-app-${{ runner.os }}-${{ github.sha }}
+YAML
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the family and both files" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::family go-app is saved both under \`-\\\${{ github.sha }}\` (in .github/workflows/ci-caches-changes.yaml) and without it (in .github/workflows/ci-caches.yaml)")"
 
 echo "case: a save of ci-caches.yaml under the key ci.yaml restores and another suffix"
 root=$(fixture cache-refill-other-suffix)

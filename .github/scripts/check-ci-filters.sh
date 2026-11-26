@@ -150,8 +150,9 @@
 #      its job or step on what no run of it ever is, and the dead code reads as live - a step
 #      behind `if: github.event_name == 'push'`, or a job behind `if: github.ref ==
 #      'refs/heads/main'`, runs in no run of this workflow while its text says it runs on main.
-#      A cache that must be filled on a push to main belongs in .github/workflows/ci-caches.yaml;
-#      a job that must run at main's tip is reached by the workflow_dispatch the bypass check
+#      A cache that must be filled on a push to main belongs in .github/workflows/ci-caches.yaml,
+#      and ci-caches-changes.yaml holds only the changes job's two entries, which must land once
+#      per commit; a job that must run at main's tip is reached by the workflow_dispatch the bypass check
 #      (.github/workflows/main-bypass-check.yaml) sends. It reads ci.yaml, and with it every
 #      workflow ci.yaml calls that is ci.yaml's alone: no other workflow of .github/workflows
 #      names it in a `uses: ./.github/workflows/...` and its `on:` declares workflow_call and
@@ -165,31 +166,33 @@
 #      alone, since a merge_group run's github.ref really is a branch ref
 #      (refs/heads/gh-readonly-queue/...) and a startsWith on it is live. As everywhere here, the
 #      same test written as a function call is the review's to catch, not this check's.
-#  11. a cache family .github/workflows/ci-caches.yaml saves whose `key:` is neither exactly that
+#  11. a cache family a fill workflow saves (CACHE_WORKFLOWS: .github/workflows/ci-caches.yaml
+#      and ci-caches-changes.yaml) whose `key:` is neither exactly that
 #      of the matching actions/cache/restore nor that key followed by `-${{ github.sha }}`, or
 #      whose `path:` is not exactly that restore's, for a restore of ci.yaml or of a workflow
 #      ci.yaml calls - dispatch-browser.yaml's binaries, multiprocess, embedder and visual jobs
 #      restore go-envoy and go-envoy-test for the dispatch-browser job - or of any other workflow
 #      of .github/workflows that restores it (the release builds, the nightly browser re-record,
-#      ci-caches.yaml's own restores), since a drift there misses as silently (the keys compared
+#      the fill workflows' own restores), since a drift there misses as silently (the keys compared
 #      as text, trailing whitespace aside, the paths as ordered lists of stripped lines), naming
 #      the file the restore is in, or that none of ci.yaml's files restores; a family saved both
-#      under `-${{ github.sha }}` and without it; a save of ci-caches.yaml whose key holds
+#      under `-${{ github.sha }}` and without it, in one fill workflow or across two; a save of a
+#      fill workflow whose key holds
 #      hashFiles(), or names `steps.<id>.outputs.cache-primary-key` of no actions/cache/restore
 #      of its job (a save under that output takes that restore's key text); an
-#      actions/cache/restore of ci-caches.yaml of a family it saves under `-${{ github.sha }}`
+#      actions/cache/restore of a fill workflow of a family it saves under `-${{ github.sha }}`
 #      that sets lookup-only at all, or whose restore-keys are not exactly its key followed by
-#      `-`; any other actions/cache/restore of ci-caches.yaml that is not `lookup-only: true`
+#      `-`; any other actions/cache/restore of a fill workflow that is not `lookup-only: true`
 #      or that carries restore-keys; and an actions/cache/restore of any workflow of the
 #      directory whose family no actions/cache/save of a workflow or of a composite action of
 #      .github/actions writes (a save that names its restore's cache-primary-key writes that
 #      restore's family; one whose family cannot be read is named in the refusal, which then says
-#      that no save it can read writes the family). ci-caches.yaml fills
+#      that no save it can read writes the family). The fill workflows fill
 #      the entries ci.yaml restores, and a key or a path that drifts apart makes every restore
 #      miss silently: nothing fails, every job just rebuilds from nothing what the fill already
 #      built. A save is matched to a restore by
 #      family, the key's text up to its first `${{`, which is the Go version the entry is keyed
-#      on. A family ci.yaml restores that ci-caches.yaml does not save is no failure when another
+#      on. A family ci.yaml restores that no fill workflow saves is no failure when another
 #      workflow saves it: go-docs is saved by docs-site.yaml, the build job docs-pages.yaml shares
 #      with ci.yaml's docs job. A family no save writes is one, since a misspelled family name
 #      (go-envoy-tests- for go-envoy-test) would otherwise be a family of its own that nothing
@@ -201,7 +204,7 @@
 #      own; no entry carries the restores' key itself, so GitHub gives each restore the newest
 #      entry whose key starts with it. The fill builds on that newest entry, so its own restore
 #      must download it, and its restore-keys must hold its Go version. Every other restore of
-#      ci-caches.yaml is a lookup, which must download nothing: the workflow asks only whether
+#      a fill workflow is a lookup, which must download nothing: the workflow asks only whether
 #      that exact key is already there, no step of it reads a restored entry, and a prefix hit
 #      would answer for an older key and skip the build that fills this one, leaving it empty.
 #  12. a job of ci.yaml whose `if:` lacks `(github.event_name != 'merge_group' ||

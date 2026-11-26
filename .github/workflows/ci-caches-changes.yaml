@@ -4,9 +4,9 @@ name: CI caches (changes job)
 # this commit's `.git` one commit deep, which the job's checkout fetches only its own commit's
 # additions to, and ci-filters, this commit's filters, which its generation reads in place of
 # generating the base tree when a run is measured against this commit. A workflow of its own, beside
-# ci-caches.yaml, so that each commit's entries land within a minute of its push: ci-caches.yaml runs
-# one at a time and a newer push replaces its waiting run, so an entry there would wait for the Go
-# fills of the push before it and a replaced commit would never get one. Rule 11 of
+# ci-caches.yaml, so that each commit's entries land about 40 s after a runner picks the fill up:
+# ci-caches.yaml runs one at a time and a newer push replaces its waiting run, so an entry there
+# would wait for the Go fills of the push before it and a replaced commit would never get one. Rule 11 of
 # check-ci-filters.sh holds this file's saves to ci.yaml's restores as it holds ci-caches.yaml's.
 # why: .github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores
 on:
@@ -75,12 +75,12 @@ jobs:
           path: ${{ runner.temp }}/ci-filters-base
           key: ${{ steps.ci-filters.outputs.cache-primary-key }}
 
-  # The changes-git entries of this ref older than the one the fill saved, deleted once it has
-  # saved, so one 96 MB entry stays, as refill-superseded keeps one per Go family. Only older ones:
-  # runs of two commits can overlap here, and a later commit's entry may be saved first. A job of
-  # its own, so the token that may delete caches is in no job that builds code; it runs when the
-  # fill failed after its save too.
-  # why: .github/ci-notes/ci-caches.md#what-the-refill-superseded-job-deletes-and-why-it-is-a-job-of-its-own
+  # The changes-git entries of this ref created before the one the fill saved, deleted once it has
+  # saved, so one 96 MB entry stays. Runs of two commits can overlap here, so the entry that stays is
+  # the one saved last, whichever commit it is: the one the changes job's restore picks, as it takes
+  # the newest entry by prefix. A job of its own, so the token that may delete caches is in no job
+  # that builds code; it runs when the fill failed after its save too.
+  # why: .github/ci-notes/ci-caches.md#which-changes-git-entry-stays
   superseded:
     needs: fill
     if: ${{ !cancelled() && needs.fill.outputs.changes-git != '' }}
@@ -97,11 +97,11 @@ jobs:
         with:
           sparse-checkout: .github
           persist-credentials: false
-      - name: Delete this ref's changes-git entries older than the new one
+      - name: Delete this ref's changes-git entries created before the new one
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           KEEP: ${{ needs.fill.outputs.changes-git }}
           SHA: ${{ github.sha }}
           REF: ${{ github.ref }}
-        run: .github/scripts/cache-superseded.sh older changes-git
+        run: .github/scripts/cache-superseded.sh commit changes-git
