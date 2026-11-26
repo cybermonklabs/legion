@@ -5,7 +5,7 @@ import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import type { IssueDetails, IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
-import { chipWords } from "../web/src/features/issue-page/node-row-chip";
+import { chipName } from "../web/src/features/issue-page/issue-tree";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   CONTROL_LABELS,
@@ -13,6 +13,7 @@ import {
   NODE_STATE_WORDS,
 } from "../web/src/features/issue-page/page-words";
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { parseNodeReference } from "../web/src/features/refs/routes";
 import { listComments } from "./api";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";
 import { decisionNodesOf, decisionSum, decisionSumOf, readTree } from "./issue-layout-seed-support";
@@ -596,9 +597,13 @@ function rowOneSeed<S extends SeededIssue>(
 }
 
 /** Row 1's two seeds. On `seedDecisionsFilter` the parts are the ones the Decisions view's first
- *  row asserts (review `[D(5), D(0)]`, yours `[D(4), declined, optioned, answered]`), and the
- *  Spec column is the one the Spec column's row asserts on the same decisions; on `seedReviewList`
- *  the parts are the ones the Decisions view's review-list row asserts. */
+ *  row asserts (review `[D(5), D(0)]`, yours `[D(4), declined, optioned, answered]`, and the foot
+ *  `[D(1), D(2), D(3), D(6)]`), and the Spec column is the one the Spec column's row asserts on
+ *  the same decisions. The second decision, `D(1)`, settles the answered ask (`from_ask`), which
+ *  the tree places it under, and no `shaped` tie of it names a statement: by root R2 it stands at
+ *  the agents' foot, beside no statement in the Spec column, and in no count of what waits for
+ *  review. On `seedReviewList` the parts are the ones the Decisions view's review-list row
+ *  asserts. */
 const ROW_ONE_SEEDS = [
   rowOneSeed("seedDecisionsFilter", seedDecisionsFilter, (seeded, names) => {
     const block = (index: number) => seeded.decisions[index] ?? "";
@@ -617,15 +622,20 @@ const ROW_ONE_SEEDS = [
             statements: [r(3), r(4), r(5)],
           },
           { decision: "decision 0", names: decision(0), statements: [r(1), r(2)] },
+          {
+            decision: "decision 1, which settles the person's question",
+            names: decision(1),
+            statements: [],
+          },
           { decision: "decision 4", names: decision(4), statements: [r(4)] },
           { decision: "decision 5", names: decision(5), statements: [r(5)] },
           { decision: "the replaced decision", names: decision(6), statements: [] },
         ],
-        counts: { agents: "3", open_questions: "1", review: "2", yours: "4" },
+        counts: { agents: "4", open_questions: "1", review: "2", yours: "4" },
       },
       kept: names.decision(seeded.keptBlock),
       parts: {
-        agents: [D(2), D(3), D(6)],
+        agents: [D(1), D(2), D(3), D(6)],
         open_questions: names.openAsks,
         review: [D(5), D(0)],
         yours: [D(4), declined, names.ask(seeded.optionedAskId), answered],
@@ -798,22 +808,53 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
     await change.click();
     const field = olderRow.getByLabel(CONTROL_LABELS.your_change);
     await expect(field, `the Change draws its "${CONTROL_LABELS.your_change}" field`).toBeVisible();
-    // Read before Send: the form draws its quote as the rows draw their words (`RowText`), with
-    // `r1` drawn by its name, the words of a chip naming it, and no text of the page reads a raw
-    // `dispatch://` address (decision 448, root R22).
+    // Read before Send: the form's quote is #3125's plain-text projection of the decision's first
+    // paragraph (`DecisionActions.tsx`' `usePlainHeadline`, the reading list's
+    // `decision-change-quote`), its heading passed over, in which a reference reads as its
+    // target's current name in plain text, with no link: "Shapes", then `r1` by the name the page
+    // published for it, which is the name a link to `r1` reads (`refs/reference-names.tsx`), then
+    // a full stop. The projection cuts none of that name (`refs/plain-text.tsx`' `max`, which the
+    // form leaves whole). The row's own words draw `r1` as a chip by the same words, cut to a
+    // chip's room (`RowText.tsx`, `row-references.ts`' `rowReferenceWords`, by `issue-tree.ts`'
+    // `chipName`). So the quote's name, cut as a chip is cut, is the chip the row draws for `r1`;
+    // it is `r1`'s own words from their start, whole or cut where the projection's ellipsis
+    // stands; and it is longer than that chip, since `r1` holds more than a chip's room. No text
+    // of the page reads a raw `dispatch://` address (decision 448, root R22).
     const statement = specBlockRef(key, requirementBlockId(1));
-    const statementName = chipWords(requirementText(1));
+    const statementRoute = parseNodeReference(statement);
+    const statementWords = requirementText(1).replace(/\s+/g, " ").trim();
+    const statementChip = chipName(statementRoute, statementWords);
     const quote = olderRow.locator('[data-testid="decision-quote"]');
+    const chip = olderRow.locator(`[data-node-words] a[data-row-reference="${statement}"]`);
     await expect
       .poll(
-        async () => ({
-          name: await quote.locator(`a[data-row-reference="${statement}"]`).allInnerTexts(),
-          quote: (await quote.innerText()).replace(/\s+/g, " ").trim(),
-          raw: (await page.locator("body").innerText()).includes("dispatch://"),
-        }),
+        async () => {
+          const quoted = (await quote.innerText()).replace(/\s+/g, " ").trim();
+          const name = /^Shapes (.+)\.$/u.exec(quoted)?.[1] ?? "";
+          const opening = name.endsWith("…") ? name.slice(0, -1) : name;
+          return {
+            chip: await chip.allInnerTexts(),
+            heading: quoted.includes(SECOND_DECISION.heading),
+            name: {
+              chipped: chipName(statementRoute, name),
+              longer: name.length > statementChip.length,
+              words:
+                opening === statementWords ||
+                (opening !== name && statementWords.startsWith(opening)),
+            },
+            quote: quoted,
+            raw: (await page.locator("body").innerText()).includes("dispatch://"),
+          };
+        },
         { message: "the Change form draws no raw address" }
       )
-      .toEqual({ name: [statementName], quote: `Shapes ${statementName}.`, raw: false });
+      .toEqual({
+        chip: [statementChip],
+        heading: false,
+        name: { chipped: statementChip, longer: true, words: true },
+        quote: expect.stringMatching(/^Shapes .+\.$/u),
+        raw: false,
+      });
     await field.fill(CHANGE_WORDS);
     const send = olderRow.getByRole("button", { exact: true, name: CONTROL_LABELS.send_change });
     await expect(

@@ -289,11 +289,12 @@ function fromAnsweredAsk(node: TreeAnswerNode, lookup: Lookup): DecisionNode | u
 }
 
 /** Who decided `node` (`DecisionNode.decidedBy`): the far end of its `decided_by` tuple, read by
- *  the outline's one rule (`deciderOf`); none where the read answers no such tuple, or one that
- *  names neither a person nor a session. */
+ *  the outline's one rule (`deciderOf`), which reads a session's stamped title off its node in the
+ *  answer (`lookup.nodeOf`); none where the read answers no such tuple, or one that names neither
+ *  a person nor a session. */
 function deciderMember(node: TreeAnswerNode, lookup: Lookup): Pick<DecisionNode, "decidedBy"> {
   const decidedBy = lookup.tuplesFrom(node.id).find((tuple) => tuple.kind === "decided_by");
-  const decider = deciderOf(decidedBy?.to ?? null);
+  const decider = deciderOf(decidedBy?.to ?? null, lookup.nodeOf);
   return decider === undefined ? {} : { decidedBy: decider };
 }
 

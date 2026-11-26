@@ -639,10 +639,11 @@ function draftResult(
  * `shaped` tuples as chips, each stale where its link to that node is. Its time is its words'
  * last change (`changed_at`), as the page dates every decision. Its author is who decided it:
  * the person or the session its `decided_by` tuple names, which the read answers as context
- * (`deciderOf`), since the node's `decision` names no decider; none where the read answers no
- * such tuple. A person's Change the read hangs under it says it waits on its agent
- * (`decisionNodeChanges`), and names who asked for it: the first author of the newest Change
- * (`changedBy`), whose name the row draws after "Changed by".
+ * (`deciderOf`, a session by the title its node in the answer says it stamped), since the node's
+ * `decision` names no decider; none where the read answers no such tuple. A person's Change the
+ * read hangs under it says it waits on its agent (`decisionNodeChanges`), and names who asked
+ * for it: the first author of the newest Change (`changedBy`), whose name the row draws after
+ * "Changed by".
  *
  * Whether its agent was unsure and whether it waits on the reader are read off the decision as
  * every other reader of a decision reads it (`decisionNodes`), so the row, the header's count
@@ -665,7 +666,7 @@ function draftDecision(
   const decision: Partial<Decision> = node.decision ?? {};
   if (typeof decision.changed_at === "string") draft.at = decision.changed_at;
   const decidedBy = context.tuplesFrom(node.id).find((tuple) => tuple.kind === "decided_by");
-  const decider = deciderOf(decidedBy?.to ?? null);
+  const decider = deciderOf(decidedBy?.to ?? null, context.nodeOf);
   if (decider !== undefined) draft.author = decider;
   const links = decision.links ?? [];
   const stale = new Set(

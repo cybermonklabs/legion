@@ -349,6 +349,7 @@ export function nextEntries(page: Page, part: string): Locator {
  *  out: the page's own words in its heading (`[data-decisions-heading]`), the count being the
  *  author's text (`DecisionsFilterBody.tsx`). Null where the view draws no such part. */
 export async function decisionsPartHeading(page: Page, part: string): Promise<string | null> {
+  // One read per pass: the caller's expect.poll waits for the heading to settle.
   const [words] = await decisionsPart(page, part)
     .locator(`[data-decisions-heading] [${PAGE_CHROME_ATTRIBUTE}]`)
     .allTextContents();
