@@ -90,7 +90,8 @@ env:
   CI_OK_ALWAYS_RUN: |
     [
       "changes",
-      "lint"
+      "lint",
+      "test-reach"
     ]
   # why: .github/ci-notes/ci.md#the-jobs-outside-ci-oks-accounting
   CI_OK_EXEMPT: |
@@ -283,6 +284,35 @@ jobs:
       go_notices: ${{ needs.changes.outputs.go_notices }}
     secrets:
       PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+
+  # The test-reach search of dispatch://INFRA-3411/spec#b-r3: each test runs in a job ci-ok needs,
+  # or .github/test-reach-unhomed.yaml names it. It reads the tree and the workflows and runs no go,
+  # bun or build command, so it has no filter: it runs on every non-draft run, also when `changes`
+  # failed, in a job of its own so that lint, which an unlabelled pull request waits for, stays short.
+  test-reach:
+    needs: changes
+    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check every test reaches a job ci-ok needs
+        run: .github/scripts/check-test-reach.sh
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: test-reach
+          changes: ${{ toJSON(needs.changes) }}
+          job-status: ${{ job.status }}
 
   # why: .github/ci-notes/ci.md#what-the-ci-images-job-copies-and-why-the-order-is-the-point
   ci-images:
@@ -974,6 +1004,7 @@ jobs:
     needs:
       - changes
       - lint
+      - test-reach
       - ci-images
       - tool-fallback
       - tool-fallback-arm

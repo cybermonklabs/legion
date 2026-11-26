@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# legion: tool - measures which go test steps run a test twice; a person runs it by hand at two commits
 """The test functions each `go test` step of ci.yaml's router runs, which two run and which none.
 
 This is the tool check k1 of dispatch://INFRA-1408 asks for (its A1): it expands every `go test`
@@ -158,7 +159,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from ci_filter_coverage import called_workflows, script_lines, step_workdir
+import go_test_steps
+from go_test_steps import BACKEND_COUNT_TESTS, UNIT_SKIP, called_workflows, script_lines, step_workdir
 
 ROOT = Path(__file__).resolve().parents[2]
 # Repository-relative, as the documents below are keyed and as every message names them.
@@ -388,123 +390,16 @@ JOB_TOTAL = re.compile(r"\$\{\{\s*strategy\.job-total\s*\}\}")
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 
 
-@dataclass(frozen=True)
-class AuditedScript:
-    """A script a step runs, read by a person: the module it moves into before its tests, the one
-    `go test` it runs there for each argument list a step passes it (the run:'s text after the
-    script's path, "" for none), the one it runs for each argument list a legs step passes it
-    after `xargs <path>` (`xargs`, each the go test the packages xargs appends are appended to),
-    and the SHA-256 of the text that reading was of."""
-
-    module: str
-    commands: dict[str, str]
-    sha256: str
-    xargs: dict[str, str] = field(default_factory=dict)
-
-
-# The tests envoy-go's "Count the store-form rows on each backend" names, in the order its run:
-# passes them to backend-count.sh; ci_job_reads.BACKEND_COUNT_TESTS, which the unit step's skip of
-# them is built from, holds the same names by package.
-BACKEND_COUNT_TESTS = (
-    "TestEverySecretFormNamesTheSourceItUses",
-    "TestNoSecretFormAsksTheBrokerForACredential",
-    "TestUseCommandOutsideASessionReachesTheMachineSource",
-    "TestTheChainSkipsAbsenceAndStopsOnABrokenSource",
-    "TestSettingsNameTheGoogleExchangeAudienceOnEitherStore",
-)
-
-# envoy-go's unit step's -skip, as ci_job_reads.UNIT_TEST_SCRIPT writes it: the web display
-# fixture's two tests, BACKEND_COUNT_TESTS and the rows whose bound is on time, which
-# envoy-go-alone runs (ci_job_reads.UNIT_ALONE_TESTS). Which packages each leg runs is
-# go_legs.py's, which the legs step's lister runs.
-UNIT_SKIP = ("'^(TestABatchCutOffInFlightKeepsItsOrder|TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime|"
-             "TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestADeletedBucketFailsAWriteWithinTheBudget|"
-             "TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|"
-             "TestAProcessReportsASilentNATSCutWithinSeconds|"
-             "TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce|"
-             "TestAStalledListingFailsWithinTheReadTimeout|"
-             "TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|"
-             "TestAStandbyTakesAFreeHoldWithNoNotification|"
-             "TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAWriteIsEmbeddedOnItsNotification|"
-             "TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|"
-             "TestAnOutboxThatLosesNATSReleasesThePublisher|"
-             "TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|"
-             "TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|"
-             "TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|"
-             "TestEverySecretFormNamesTheSourceItUses|TestExecLearnsOfAGrantAfterAFullHold|"
-             "TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|"
-             "TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|"
-             "TestHealthzAnswersWhilePostgresStopsAnswering|TestHoldExpiryMatchesTheDatabaseClock|"
-             "TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail|TestIdentity|"
-             "TestNoSecretFormAsksTheBrokerForACredential|"
-             "TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds|TestOnlyOneOutboxPublishesAtATime|"
-             "TestReserveTokensSharesItsBudgetAcrossConnections|"
-             "TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|"
-             "TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|"
-             "TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget|"
-             "TestSamplerHeapReadDelaysNoSample|TestScanPassReturnsWhenThePendingRowsFallDue|"
-             "TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestSyncDeadlineIsRecordedOnTheRow|"
-             "TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds|"
-             "TestTheListenerReplacesAHalfOpenConnection|"
-             "TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle|"
-             "TestTheWebFixtureFindsItsFilesFromAnyDirectory|"
-             "TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'")
-
-# Each script a step of ci.yaml's router runs as its whole run: line, read by a person, with the
-# one `go test` it runs for each argument list a step passes it.
-AUDITED_SCRIPTS = {
-    # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
-    # -count=1` over its packages, then counts the skips in its report. With no package argument it
-    # counts its DEFAULT_PACKAGES, ./internal/cipher/..., ./cmd/cipherd/ and ./internal/holdrecord/,
-    # less the import paths its DEFAULT_EXCEPT takes out of `go list` of them with `grep -Ev`, none
-    # today since that pattern is empty (ci_job_reads.DATABASE_SKIPS_PATTERN, built from
-    # DATABASE_SKIPS_RACE_ONLY), with no -tags, -race, -run or -skip, under -timeout
-    # "${GO_TEST_TIMEOUT:-15m}". A package argument replaces those packages, `--race` adds -race,
-    # `--skip P` adds -skip P, `--timeout D` sets the -timeout, and `--var NAME` decides only
-    # whether it runs at all. `--count-table` runs every package its arguments name, in go list's
-    # order, and counts the table's among them; it changes what is counted, never what runs. With
-    # `--report FILE` it reads a report and runs no test. envoy-go-race-api's race step passes the
-    # argument list below, and envoy-go's unit legs the xargs one, each leg's packages after it.
-    "packages/envoy/scripts/database-skips.sh": AuditedScript(
-        module="packages/envoy",
-        commands={
-            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
-                "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
-        },
-        xargs={
-            f"--timeout 20m --skip {UNIT_SKIP} --count-table": f"go test -json -count=1 -skip {UNIT_SKIP} -timeout 20m",
-        },
-        sha256="066b9211ef37bd585062922ff9fc502f799d99dab645d3e98079de8ccfb8eb07",
-    ),
-    # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
-    # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
-    # `--`, the -run built from the test names after it, then counts each test's `aws` and `gcp`
-    # passes. GO_TEST_SKIP adds a -skip, which no step sets, and envoy-go's job sets neither
-    # variable. envoy-go's count step passes the argument list below.
-    "packages/envoy/scripts/backend-count.sh": AuditedScript(
-        module="packages/envoy",
-        commands={
-            "./cmd/cipher/ ./internal/cipher/api/ -- " + " ".join(BACKEND_COUNT_TESTS):
-                f"go test -json -count=1 -timeout 5m -run '^({'|'.join(BACKEND_COUNT_TESTS)})$' "
-                "./cmd/cipher/ ./internal/cipher/api/",
-        },
-        sha256="bea62eaf32791a70c86e0350053bda35bae7dfa81685ad3338022849f0587a0e",
-    ),
-    # It moves into packages/envoy/infra (`cd "$(dirname "$0")/.."`) and, given `run`, runs one
-    # `go test -count=1 -race` over the packages `go list ./...` prints less those its EXCLUDE,
-    # '/internal/textcheck$' (ci_job_reads.INFRA_PLAIN_PATTERN), matches, with no -tags, -run or
-    # -skip. envoy-infra-build's unit step passes `run`. Until this entry the reader skipped that
-    # step, so neither verdict saw the module's race run: every untagged test of infra/core,
-    # infra/seed and infra/gcp read as compiled by the natslive step and run by no step, and
-    # infra/host's untagged tests, which envoy-smoke's pulumilive step runs plain, as run once.
-    "packages/envoy/infra/scripts/race-unit.sh": AuditedScript(
-        module="packages/envoy/infra",
-        commands={
-            "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1 -race",
-        },
-        sha256="3e9946d3482859bdab444ee99341955f982e70e86cb6e93c2138040cd015753b",
-    ),
-}
+# The scripts a step runs as its whole run:, or as what a legs step pipes its packages into, each
+# read by a person with the one `go test` it runs for each argument list a step passes it, and
+# pinned by the SHA-256 of the text that reading was of: .github/scripts/go_test_steps.py's
+# AUDITED_SCRIPTS, the one table the test-reach search (.github/scripts/check-test-reach.sh) reads
+# too, so a script read again is read again in one place. Its entries for forced-order.sh and its
+# test are the search's alone: that script's `go test` builds -tags odatrace against the hooked
+# nats-server it builds first, so this script's `go test -list` could not compile it, and those
+# steps stay unread here, as they were before the table moved.
+NOT_LISTED = ("packages/envoy/scripts/forced-order.sh", "packages/envoy/scripts/forced-order.test.sh")
+AUDITED_SCRIPTS = {path: entry for path, entry in go_test_steps.AUDITED_SCRIPTS.items() if path not in NOT_LISTED}
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
 # A value holding `$` is left for the caller to refuse, since what it expands to is the shell's.
 ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")

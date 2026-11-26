@@ -1689,6 +1689,83 @@ run_check "$root"
 check "fails once they leave nothing" \
   "$(contains "$out" 'whose `!` globs leave none of the files its glob matches')"
 
+# Rule 25: a job gated on a filter needs a gate file that names it. Deleting one of two gate
+# files that declare one filter (tool-fallback-arm.py beside tool-fallback.py) passed every other
+# rule, while nothing held what the job left behind reads.
+echo "case: a job gated on a filter that only another job's gate file declares"
+root=$(fixture gate-claim)
+second_job=$(cat <<'YAML'
+  app2:
+    needs: changes
+    if: needs.changes.outputs.app == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Lint the app
+        run: echo app
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          changes: ${{ toJSON(needs.changes) }}
+          job-status: ${{ job.status }}
+  lint:
+YAML
+)
+replace "$root/.github/workflows/ci.yaml" $'\n  lint:\n' $'\n'"$second_job"$'\n'
+replace "$root/.github/workflows/ci.yaml" "'{\"app\": \"app\", \"image\": \"image\"}'" "'{\"app\": \"app\", \"app2\": \"app\", \"image\": \"image\"}'"
+replace "$root/.github/workflows/ci.yaml" "needs: [changes, app, image, lint]" "needs: [changes, app, app2, image, lint]"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job no gate file claims, and the job the filter's gate names" \
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::job app2 is gated on filter app, but no file of .github/ci-gates declares a gate of app for job app2 (the gates of app name app)')"
+cat > "$root/.github/ci-gates/app2.py" <<'PY'
+GATE = gate("app", "app2", reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")])
+PY
+run_check "$root"
+check "passes once a gate file of the filter names the job" "$(is "$status" 0)"
+
+# Rule 26: a test that reads a file outside its Go module through `..` names it in a //ci: line
+# of its own file. A line taken out (one of roles_test.go's three) passed every other rule while
+# the read left the filter, and a change to the file then started no job that runs the test.
+echo "case: a test that reads outside its module and no //ci: line of its file names the path"
+root=$(fixture declared-read)
+run_check "$root"
+check "the fixture's declared read passes" "$(is "$status" 0)"
+replace "$root/mod/lib/lib_test.go" $'//ci:reads fixtures/data.json TestData reads ../../fixtures/data.json\n' ""
+run_check "$root"
+check "fails once the line is taken out" "$(is "$status" 1)"
+check "names the test file, the path and the literal it read" \
+  "$(contains "$out" '::error file=mod/lib/lib_test.go::mod/lib/lib_test.go reads fixtures/data.json through "../../fixtures/data.json", outside its module mod, and no //ci:reads')"
+root=$(fixture declared-read-join)
+replace "$root/mod/lib/lib_test.go" $'\t"os"\n' $'\t"os"\n\t"path/filepath"\n'
+replace "$root/mod/lib/lib_test.go" 'os.ReadFile("../../fixtures/data.json")' 'os.ReadFile(filepath.Join("..", "..", "fixtures", name()))'
+printf '\nfunc name() string { return "data.json" }\n' >> "$root/mod/lib/lib_test.go"
+run_check "$root"
+check "a filepath.Join the line covers passes" "$(is "$status" 0)"
+replace "$root/mod/lib/lib_test.go" $'//ci:reads fixtures/data.json TestData reads ../../fixtures/data.json\n' ""
+run_check "$root"
+check "and fails without the line, naming the directory its literals reach" \
+  "$(contains "$out" 'mod/lib/lib_test.go reads fixtures through filepath.Join("..", "..", "fixtures"), outside its module mod')"
+root=$(fixture declared-read-made-up)
+cat > "$root/mod/lib/escape_test.go" <<'GO'
+package lib
+
+import (
+	"os"
+	"testing"
+)
+
+// TestEscapeRefused names a path outside the module that no file holds, as a test of a refusal
+// does; a comment's "../../fixtures/data.json" is no read either.
+func TestEscapeRefused(t *testing.T) {
+	if _, err := os.ReadFile("../../nowhere/secret.txt"); err == nil {
+		t.Fatal("read a file that is not there")
+	}
+}
+GO
+run_check "$root"
+check "a path no file holds, and one in a comment, are no reads" "$(is "$status" 0)"
+
 # Rule 22: a gate that reads a harness under .github/scripts reads every script that harness links
 # into its fixtures (through every `for linked in ...` loop of the harness, not the last one only),
 # runs or sources, every module it imports in any form, and what each script it reaches sources or

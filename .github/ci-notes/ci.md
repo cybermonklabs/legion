@@ -1523,8 +1523,10 @@ of this file at the commit the run checked out. check-ci-filters.sh holds both t
 The jobs that run on every change: no `changes` output gates one, so CI_OK_SELECTED_BY maps
 none of them, and ci-ok passes only when each of them succeeded — a skipped, cancelled or
 absent one fails the verdict, since nothing else says the job ran. `changes` is here because
-it selects every other job, `lint` because every change is linted. ci-ok.sh reads this list
-rather than knowing those two names, and check-ci-filters.sh holds every job of ci.yaml to
+it selects every other job, `lint` because every change is linted, and `test-reach` because its
+search (.github/scripts/check-test-reach.sh) reads every test of the tree against every job that
+ci-ok needs, so no filter can say which change it may skip. ci-ok.sh reads this list
+rather than knowing those names, and check-ci-filters.sh holds every job of ci.yaml to
 exactly one of ci-ok's three classes: mapped by CI_OK_SELECTED_BY, named by ci.yaml's
 CI_OK_ALWAYS_RUN, or named by ci.yaml's CI_OK_EXEMPT. The list is a JSON array written over
 lines rather than one long one, as ci.yaml's CI_OK_SELECTED_BY, a JSON object, is.

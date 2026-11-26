@@ -226,6 +226,7 @@ packages/envoy:
       - internal/cipher/wire
       - internal/ciphertoken/ciphertokentest
       - internal/holdrecord/holdrecordtest
+      - testprereq
     # Dispatch's commands and the lighter half of its packages.
     3:
       - cmd/dispatch                            # 316 s

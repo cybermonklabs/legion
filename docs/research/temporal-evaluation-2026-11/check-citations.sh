@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - resolves the citations of INFRA-1546's two research documents when a person reruns that evaluation
 #
 # check-citations.sh resolves the citations of the two documents of INFRA-1546 that
 # the grammar below reads, and prints how many resolved. It does not read every

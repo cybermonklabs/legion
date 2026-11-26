@@ -460,6 +460,12 @@ jobs:
       - name: Test the go test step expansion
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_test_step_expansion_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/go-test-step-expansion.test.sh .github/scripts/go-test-step-expansion.test.sh
+      # Beside the step reader's test above, and needing no Go and no Bun: its fixtures are
+      # miniature trees the real .github/scripts/check-test-reach.sh reads, one for each kind of
+      # finding it names, and the list of unhomed tests passing, failing and going stale.
+      - name: Test the test-reach search
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_test_reach_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-test-reach.test.sh .github/scripts/check-test-reach.test.sh
 
       # The label terms of ci.yaml's changes outputs, evaluated from ci.yaml itself: full-ci, the
       # lane labels and a label that names nothing. After the fetch above: the filter names are the

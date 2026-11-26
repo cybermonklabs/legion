@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - records the broker walkthrough's raw footage for the docs site when a person remakes that video
 # docs/site/media/broker/walkthrough.sh
 #
 # Records the broker walkthrough's raw footage: boots the rig (rig.sh), runs

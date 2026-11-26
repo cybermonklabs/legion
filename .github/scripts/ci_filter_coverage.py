@@ -1995,11 +1995,12 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
     # job gated on a filter that only another job's gate declares runs on a filter computed from
     # that other job's reads: it passes every other rule while nothing holds its own reads, which
     # is what deleting one of two gate files that declare one filter leaves (tool-fallback.py and
-    # tool-fallback-arm.py both declare tool_fallback). A step is held to a gate of its filter on
-    # its own job, not on itself: the steps that ready a gated step (a cache restore, a sysctl, a
-    # fetch) share its gate and read nothing the gated step's gate does not declare.
-    claimed_jobs = {(g.filter, g.job) for g in data.GATES if not g.step}
-    claimed_steps = {(g.filter, g.job, g.workflow) for g in data.GATES if g.step}
+    # tool-fallback-arm.py both declare tool_fallback). A gate of the filter names the job whether
+    # it holds the job or one step of it, and a step is held to a gate of its filter on its own job,
+    # not on itself: the steps that ready a gated step (a cache restore, a sysctl, a fetch) share
+    # its gate and read nothing the gated step's gate does not declare.
+    claimed_jobs = {(g.filter, g.job) for g in data.GATES}
+    claimed_steps = {(g.filter, g.job, g.workflow) for g in data.GATES}
     for own, path, job_id, _, job in units:
         for step, condition in conditions(job):
             resolved = resolve_condition(condition, inputs_of.get((path, own), {}))

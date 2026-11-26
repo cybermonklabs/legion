@@ -219,7 +219,11 @@ FORCED_ORDER = "go test -tags odatrace -race -count=1 -v -timeout 10m -run '^Tes
 # passes it. A step that runs any other script is read through the script's own lines where the
 # reader can read each of them (script_step); a script it cannot read whole - one that lists its
 # packages into an array, moves directory inside a function, or reads its arguments - is passed
-# over, and an entry here is how such a script is read.
+# over, and an entry here is how such a script is read. This is the one table of such readings:
+# go-test-step-expansion.py reads it from here too. A wrapper script a Go step calls in place of
+# `go test` (one that runs gotestsum for it) is read only once its command name is in
+# GOTESTSUM_COMMANDS above or it has an entry here; until then the tests its steps run read as run
+# by no step, and the search fails on each of them.
 AUDITED_SCRIPTS = {
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1` over its packages, then counts the skips in its report. With no package argument it
@@ -285,6 +289,16 @@ AUDITED_SCRIPTS = {
         },
         modules={"-C packages/daemon ./internal/testnats/": "packages/daemon"},
         sha256="f8f2270b63a9d3aab43a751f98402c89673dc5bc20e6c78bac99724899a92b38",
+    ),
+    # forced-order.sh's own test, which envoy-go-race's leg 5 runs from packages/envoy with no
+    # argument. Of its five cases one gets as far as a go test: forced-order.sh over the fixture
+    # package ./internal/testnats/hooktest/skiponly/, whose one forced-order test skips itself,
+    # the refusal that case holds; the other four are refused before anything is built
+    # (test-value-md 9.8). So the step runs that package's tests, under forced-order.sh's command.
+    "packages/envoy/scripts/forced-order.test.sh": AuditedScript(
+        module="packages/envoy",
+        commands={"": f"{FORCED_ORDER} ./internal/testnats/hooktest/skiponly/"},
+        sha256="7a00345dc6c667859f24c158b0ad58e58e7f6d58eb0b34fa4b23f6ea3b19abc1",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
