@@ -3989,8 +3989,9 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 // issues and its admission block hold, as the full state's is. The route reads the caller's plugin
 // contract from the claims, as it does for State, so the view and the contract it is cut to come
 // from one snapshot. It reads only what the view needs: the schema version, the boots, the state
-// publication and the project's claims here, and what projection.Observe reads there; it judges
-// nothing the view does not serve: no stranded claims, no stalled architects, no paced wakes.
+// publication, the project's claims and the P0 bound in force (`p0BoundView`) here, and what
+// projection.Observe reads there; it judges nothing the view does not serve: no stranded claims,
+// no stalled architects, no paced wakes.
 func (s *source) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
 	version, err := s.store.SchemaVersionTx(ctx, tx)
 	if err != nil {

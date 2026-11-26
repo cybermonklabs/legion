@@ -1741,8 +1741,9 @@ const legionStateChange = z
 const legionStateSeq = z.number().int().positive();
 
 /** One state event, one row of the project's state lane with the sequence its commit took: a
- * `change` names an issue and each field of it that one write moved; an `admission` is the whole
- * block the state route serves (`legionAdmission`) after a pass that changed it; a `boot` is the
+ * `change` names an issue and each field of it that one write moved; an `admission` is the
+ * judged admission block (`legionAdmission`, including `p0Holders` and without `p0Bound`, which
+ * the state route reads separately) after a pass that changed it; a `boot` is the
  * first event of a daemon's run, the settings the state route serves (`legionSettings`) and
  * `schemaVersion`, the highest migration version the daemon's store records once that boot's
  * migrations ran. A reader compares it with the version its starting point holds (the state

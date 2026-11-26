@@ -169,10 +169,10 @@ const (
 )
 
 // stateEvent is one state event, in the members of its three kinds Dispatch reads: a change names
-// its issue and the fields that moved; an admission event carries the whole admission block the
-// state route serves, of which Dispatch keeps its own members (Admission); a boot carries the
-// settings the state route serves and the schema version of the daemon's store once the boot's
-// migrations ran.
+// its issue and the fields that moved; an admission event carries the judged admission block
+// without `p0Bound`, of which Dispatch keeps its own members including `p0Holders` (Admission); a
+// boot carries the settings the state route serves and the schema version of the daemon's store
+// once the boot's migrations ran.
 type stateEvent struct {
 	Seq           int64                      `json:"seq"`
 	Kind          string                     `json:"kind"`

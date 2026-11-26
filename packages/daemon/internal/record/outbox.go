@@ -1826,9 +1826,11 @@ const (
 // StateFieldChange is one field a write moved (stateevent.FieldChange).
 type StateFieldChange = stateevent.FieldChange
 
-// StateAdmission is a state_admission row's payload, the whole admission block the state route
-// serves (stateevent.Admission). Its producer encodes AdmissionBlock, whose JSON is the route's own
-// (QueueAdmissionBlock). It is a type of its own over that shape for the reason StateChange is.
+// StateAdmission is a state_admission row's payload, the judged admission block
+// (stateevent.Admission, including `p0Holders` and without `p0Bound`, which the state route adds
+// separately). Its producer encodes AdmissionBlock, whose JSON is the route's own without
+// `p0Bound` (QueueAdmissionBlock). It is a type of its own over that shape for the reason
+// StateChange is.
 type StateAdmission stateevent.Admission
 
 func (StateAdmission) OutboxKind() OutboxKind { return OutboxKindStateAdmission }

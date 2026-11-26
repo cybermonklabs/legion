@@ -2660,7 +2660,8 @@ type stateMessage struct {
 // stateEvent is one event of a stateMessage: one state row's payload with its project and run taken
 // off, its sequence (OutboxRow.StateSeq) put on, and the kind the contract names it by. A change
 // (record.StateChange) names its issue and each field the write moved; an admission
-// (record.StateAdmission) carries the whole block the state route serves; a boot
+// (record.StateAdmission) carries the judged admission block (record.AdmissionBlock, including
+// `p0Holders` and without `p0Bound`, which the state route adds separately); a boot
 // (record.StateBoot) carries the settings and the schema version stateevent.Boot names.
 type stateEvent struct {
 	Seq           int64                     `json:"seq"`

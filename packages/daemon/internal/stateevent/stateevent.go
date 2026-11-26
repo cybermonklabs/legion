@@ -77,10 +77,11 @@ type FieldChange struct {
 	New   json.RawMessage `json:"new"`
 }
 
-// Admission is the whole admission block the state route serves (api.Admission), written when an
+// Admission is the judged admission block (record.AdmissionBlock, including `p0Holders` and
+// without `p0Bound`, which the state route adds separately on api.Admission), written when an
 // admission pass changed it. Project and Run are a Change's. The block is raw JSON because the
 // writer cannot import api: it encodes record.AdmissionBlock, whose JSON is the route's own
-// (record.Postgres.QueueAdmissionBlock).
+// without `p0Bound` (record.Postgres.QueueAdmissionBlock).
 type Admission struct {
 	Project   string          `json:"project"`
 	Run       string          `json:"run"`
