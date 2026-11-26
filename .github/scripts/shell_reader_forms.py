@@ -41,12 +41,15 @@ A later reviewer extends CONTEXTS, PAYLOADS or DERAILERS rather than planting fo
 check-log-guard.test.sh runs it with no base.
 """
 import fnmatch
+import itertools
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from shell_commands import INTERPRETERS, RUNNERS
 
 HERE = Path(__file__).resolve().parent
 MISSES = HERE.parent / "shell-reader-misses.tsv"
@@ -59,6 +62,9 @@ GUARD_LIBRARY = HERE / "ci-log-guard.sh"
 # The stand-in client's line on stdout, which reaches the log outside a block when the stderr
 # reader's call leaks it.
 STDOUT_MARK = "CLIENT-STDOUT-LINE"
+DEPENDENCY_PATH = re.compile(r"(^|/)(scripts|out)/")
+
+
 
 
 def sq(text: str) -> str:
@@ -125,6 +131,15 @@ CONTEXTS["same-line-brace-after-process-substitution"] = lambda x: "{ x=<(echo a
 CONTEXTS["same-line-group-redirected"] = lambda x: "{ " + x + "; } >/dev/null"
 # A `#` just after a substitution's `)` continues the word, so the redirect after it is the body's.
 CONTEXTS["same-line-hash-after-substitution-before-redirect"] = lambda x: x + " $(echo a)#b >/dev/null"
+# A full family, rather than examples, of paths whose last part happens to name a runner or an
+# interpreter.  The three system directories are the only paths the reader may unwrap; the other
+# four must remain scripts the release check names.
+PATH_PREFIXES = ("/usr/bin", "/bin", "/usr/local/bin", "scripts", "out", "./scripts", "packages/x/scripts")
+PATH_NAMES = tuple(name for name in sorted(set(INTERPRETERS) | set(RUNNERS)) if name != ".")
+# A `$((` that is not arithmetic still takes quotes, but never comments.  Cross these openers and
+# tails with every context below, so a later scanner change cannot cover only the planted case.
+NONARITH_OPENERS = (": $(( $((echo 1)", "(( $((echo 1)", "x=$(( $((echo 1)")
+NONARITH_TAILS = ("# '\n) ' ) ))", '# "\n) " ) ))', "#\n) ) ))")
 
 
 # Each payload: (text before the context, the body the context wraps, text after it). {c} is the
@@ -166,7 +181,26 @@ PAYLOADS = {
     "runner-path": ("", "/usr/bin/env {c}", ""),
     "interpreter-path": ("", "/bin/bash -c {q}", ""),
     "element-assignment-prefix": ("", "a[0]=x {c}", ""),
+    # These element assignments give the array's values without an `=(` assignment. The first is
+    # read; the other three are known limits in shell-reader-misses.tsv.
+    "array-elements-alone": ("", "a[0]={w0}\na[1]={rest}\n\"${{a[@]}}\"", ""),
+    "array-element-negative": ("", "a=(true {rest})\na[-2]={w0}\n\"${{a[@]}}\"", ""),
+    "array-element-arithmetic": ("", "a=(true {rest})\na[1-1]={w0}\n\"${{a[@]}}\"", ""),
+    "array-element-appended": ("", "a=({rest})\na[0]+={w0}\n\"${{a[@]}}\"", ""),
+    # The alias reader names simple, command-position aliases only. The other bash forms are
+    # known limits in shell-reader-misses.tsv.
+    "alias-compound-text": ("", "alias b='cd . && {c}'\nb", ""),
+    "alias-after-reserved": ("", "alias b={q}\nif b; then :; fi", ""),
 }
+
+
+def filled(before: str, wrap, body: str, after: str, client: str) -> str:
+    """One generated source text, with the client placed in its payload."""
+    words = client.split()
+    fill = lambda s: s.format(c=client, q=sq(client), w0=words[0], rest=" ".join(words[1:]),
+                              ix=" ".join(f"[{n}]={w}" for n, w in enumerate(words)))
+    parts = [fill(before), wrap(fill(body)), fill(after)]
+    return "\n".join(p for p in parts if p) + "\n"
 
 
 def forms() -> dict:
@@ -176,14 +210,36 @@ def forms() -> dict:
         for payload, (before, body, after) in PAYLOADS.items():
             if context.startswith("same-line") and "\n" in body:
                 continue
-            texts = {}
+            out[f"{context}/{payload}"] = {
+                reader: HEADERS[reader] + filled(before, wrap, body, after, client)
+                for reader, client in CLIENTS.items()
+            }
+    # The path family crosses every path prefix, every runner/interpreter name and every payload.
+    for prefix, name, (payload, (before, body, after)) in itertools.product(PATH_PREFIXES, PATH_NAMES,
+                                                                              PAYLOADS.items()):
+        def direct(x: str) -> str:
+            return x
+        for reader, raw_client in CLIENTS.items():
+            # The release reader needs a benign command behind a repository script: old code shed
+            # `scripts/env` and then passed that command, while the check itself must refuse the
+            # script path. The other readers have no path rule, so a client-less form is not run.
+            if not prefix.startswith("/") and reader == "release":
+                raw_client = "form-client"
+            elif not prefix.startswith("/"):
+                raw_client = "true"
+            client = (f"{prefix}/{name} -c {sq(raw_client)}" if name in INTERPRETERS
+                      else f"{prefix}/{name} {raw_client}")
+            out.setdefault(f"path/{prefix.lstrip('/')}/{name}/{payload}", {})[reader] = (
+                HEADERS[reader] + filled(before, direct, body, after, client)
+            )
+    # The non-arithmetic family crosses every opener, tail and context.  Its direct client is
+    # enough: each reader must retain the next line after the quote the tail opens.
+    for context, wrap in CONTEXTS.items():
+        for opener, tail in itertools.product(NONARITH_OPENERS, NONARITH_TAILS):
+            derailer = opener + " " + tail
             for reader, client in CLIENTS.items():
-                words = client.split()
-                fill = lambda s: s.format(c=client, q=sq(client), w0=words[0], rest=" ".join(words[1:]),
-                                          ix=" ".join(f"[{n}]={w}" for n, w in enumerate(words)))
-                parts = [fill(before), wrap(fill(body)), fill(after)]
-                texts[reader] = HEADERS[reader] + "\n".join(p for p in parts if p) + "\n"
-            out[f"{context}/{payload}"] = texts
+                out.setdefault(f"nonarithmetic/{context}/{NONARITH_OPENERS.index(opener)}/{NONARITH_TAILS.index(tail)}",
+                               {})[reader] = HEADERS[reader] + derailer + "\n" + wrap(client) + "\n"
     return out
 
 
@@ -210,9 +266,21 @@ def bash_runs(text: str, reader: str) -> bool:
         bin_dir = Path(work, "bin")
         bin_dir.mkdir()
         record = Path(work, "ran")
-        stand_in = bin_dir / word
-        stand_in.write_text(f'#!/bin/sh\necho {word} >>"{record}"\necho {STDOUT_MARK}\n')
-        stand_in.chmod(0o755)
+        for word in (word, "form-client"):
+            stand_in = bin_dir / word
+            stand_in.write_text(f'#!/bin/sh\necho {word} >>"{record}"\necho {STDOUT_MARK}\n')
+            stand_in.chmod(0o755)
+        # Repository paths in PATH_PREFIXES are deliberately scripts whose last part is a runner
+        # or interpreter name.  Make them execute their argument here, so bash distinguishes them
+        # from system paths while the reader must not unwrap them.
+        for prefix in PATH_PREFIXES:
+            if prefix.startswith("/"):
+                continue
+            for name in PATH_NAMES:
+                shim = Path(work, prefix, name)
+                shim.parent.mkdir(parents=True, exist_ok=True)
+                shim.write_text('#!/bin/sh\nif [ "$1" = -c ]; then shift; exec sh -c "$1"; fi\nexec "$@"\n')
+                shim.chmod(0o755)
         Path(work, "form.sh").write_text(text)
         env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", CI_LOG_GUARD=str(GUARD_LIBRARY))
         try:
@@ -221,7 +289,7 @@ def bash_runs(text: str, reader: str) -> bool:
             out, err = done.stdout, done.stderr
         except subprocess.TimeoutExpired:
             out = err = ""
-        ran = record.is_file() and word in record.read_text().split()
+        ran = record.is_file() and bool(record.read_text().split())
         if reader != "stderr":
             return ran
         return ran and (STDOUT_MARK in out.split("\n") or STDOUT_MARK in outside_blocks(err.split("\n")))
@@ -235,6 +303,12 @@ def read_with(directory: Path, texts: dict) -> dict:
     if result.returncode != 0:
         sys.exit(f"shell_reader_forms: reading with {directory} failed:\n{result.stderr}")
     return json.loads(result.stdout)
+
+
+def release_finds(found: list[list[str]]) -> bool:
+    """Whether check-release-credentials.sh would report this form's release reader command."""
+    return any(words and (words[0] == "bunx" or DEPENDENCY_PATH.search(words[0].lstrip("./")))
+               for words in found)
 
 
 def read_here(directory: str) -> None:
@@ -255,7 +329,7 @@ def read_here(directory: str) -> None:
         verdicts = {}
         text = texts["release"]
         found = shell_commands.commands_of(text, every_body=True) if takes_every_body else shell_commands.commands_of(text)
-        verdicts["release"] = any(words and words[0].rsplit("/", 1)[-1] == "bunx" for words in found)
+        verdicts["release"] = release_finds(found)
         if guard is not None:
             commands = guard["commands"](texts["guard"])
             verdicts["guard"] = any(not routed and guard["network_client"](words) == "curl" for routed, words in commands)
@@ -278,7 +352,7 @@ def listed_misses() -> tuple:
             continue
         fields = line.split("\t")
         if len(fields) != 3 or not fields[2].strip() or fields[1] not in CLIENTS:
-            problems.append(f"{MISSES.name}:{number}: not a form id, release or guard, and a reason, tab-separated")
+            problems.append(f"{MISSES.name}:{number}: not a form id, release, guard or stderr, and a reason, tab-separated")
             continue
         rows[(fields[0], fields[1])] = number
     return rows, problems

@@ -74,7 +74,7 @@ from pathlib import Path
 
 import yaml
 from shell_commands import (ASSIGNMENT, EXPRESSION, INTERPRETERS, RUNNERS, SKIP_WORDS, Scanner, command_of,
-                            quoted_line_starts, shed_prefix, strip_runner, without_heredocs)
+                            named_program, quoted_line_starts, shed_prefix, strip_runner, without_heredocs)
 
 MODE = sys.argv[1]
 ALLOW = Path(".github/log-guard-allow.tsv")
@@ -168,12 +168,12 @@ def _word_start(line: str, i: int) -> bool:
 
 @functools.lru_cache(maxsize=4096)
 def _word_starts(line: str) -> frozenset:
-    """The indexes of the line at which a word starts, as bash reads it: the line's start, and the
-    character after a blank or an unquoted operator (`;`, `&`, `|`, a subshell's `(` or `)`, a
-    group's `{` or `}`, the `(` that opens a substitution). Not the character after a quoted
-    string or after the `)` that closes a `$(…)`, `<(…)` or `>(…)`: the word goes on past it, so
-    `$(echo a)}` is one word that ends in a brace and `$(echo a)#b` one word that holds a hash, not
-    a brace or a comment."""
+    """The indexes of the line at which a word starts, as bash reads the constructs this reader
+    tracks: the line's start, and the character after a blank or an unquoted operator (`;`, `&`,
+    `|`, a subshell's `(` or `)`, a group's `{` or `}`, the `(` that opens a substitution). Not
+    the character after a quoted string, `${…}`, or the `)` that closes a `$(…)`, `<(…)` or
+    `>(…)`: the word goes on past it, so `$(echo a)}` is one word that ends in a brace and
+    `$(echo a)#b` one word that holds a hash, not a brace or a comment."""
     starts, opens, quote, i, at_start = set(), [], None, 0, True
     while i < len(line):
         if at_start:
@@ -197,6 +197,10 @@ def _word_starts(line: str) -> frozenset:
             quote = None
             i += 1
             after = True
+        elif ch == "$" and nxt == "{":
+            opens.append(("parameter", quote))
+            quote = None
+            i += 1
         elif quote == '"':
             quote = None if ch == '"' else quote
         elif ch in "'\"":
@@ -208,6 +212,8 @@ def _word_starts(line: str) -> frozenset:
         elif ch == "(":
             opens.append(("subshell", None))
             after = True
+        elif ch == "}" and opens and opens[-1][0] == "parameter":
+            _, quote = opens.pop()
         elif ch == ")" and opens:
             kind, quote = opens.pop()
             after = kind == "subshell"
@@ -314,11 +320,13 @@ def stdout_safe(line: str, start: int, frames: list) -> bool:
     `/dev/stdout`, and not into a `>(…)`): the command's stdout then goes where it goes while the
     block is open. After a pipe, the last stage writes after the block has closed, so only a
     redirection to a file does, not to a file descriptor, `/dev/stdout`, `/dev/stderr` or a
-    `>(…)`; a pipe starts the decision afresh, any stage naming one of LOG_TARGETS refuses the call
-    (`| tee /dev/stderr > f`), and a pipe into `ci_log_guard` is refused too, since its block and
-    this one interleave under one stop state. The command ends at an unquoted `;`, `&&`, `||`, a
-    lone `&`, a newline, a `#` at a word's start, or its frame's close; a command with no pipe and
-    no redirection of its own inside a `{ …; }` or `( … )` group is then read by the group's
+    `>(…)`; a pipe starts the decision afresh, and a stage naming a literal LOG_TARGET at its word
+    start refuses the call (`| tee /dev/stderr > f`). This reader does not read a target whose
+    leading text is a quote or substitution (`tee "$(x)"/dev/stderr`): as with `tee "$t"`, its
+    value is not text the reader can name. A pipe into `ci_log_guard` is refused too, since its
+    block and this one interleave under one stop state. The command ends at an unquoted `;`, `&&`,
+    `||`, a lone `&`, a newline, a `#` at a word's start, or its frame's close; a command with no
+    redirection of its own inside a `{ …; }` or `( … )` group is then read by the group's
     redirection the same way (a piped one is refused: the group's redirection would apply after the
     block has closed). Each character is read in the state _scan gives it, so a quote, a nested
     capture or an escape hides it."""
@@ -428,7 +436,7 @@ def run_commands(words: list) -> list:
     a shell's `-c` script or the script it is handed and eval's words (shell_commands' command_of
     reads through the interpreter and its flags), and behind find's -exec."""
     words = list(words)
-    while words and words[0].rsplit("/", 1)[-1] in RUNNERS:
+    while words and named_program(words[0], RUNNERS):
         if words[0].rsplit("/", 1)[-1] == "command" and words[1:2] and words[1] in ("-v", "-V"):
             return []
         runner = strip_runner(words)
@@ -444,7 +452,7 @@ def run_commands(words: list) -> list:
         if rest[:1] == ["--minutes"]:
             rest = rest[2:]
         return [words[:1]] + run_commands(rest[1:])
-    if words[0].rsplit("/", 1)[-1] in INTERPRETERS or words[0] == "eval":
+    if named_program(words[0], INTERPRETERS) or words[0] == "eval":
         return [run for inner in command_of(list(words)) if inner != words for run in run_commands(inner)]
     if words[0].rsplit("/", 1)[-1] == "find":
         return [run for i, word in enumerate(words) if word in FIND_EXEC for run in run_commands(words[i + 1:])]

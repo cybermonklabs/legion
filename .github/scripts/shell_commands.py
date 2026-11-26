@@ -48,11 +48,13 @@ function a `()` defines (`curl() {`).
 
 A command word a shell builds rather than one written is read as what it will be only where the
 text itself says what: `"${name[@]}"` of an array the text assigns is each list of values an
-assignment gives it, wherever the assignment stands (a `+=` is a list of its own too, an element
-assignment `name[N]=value` gives each list with that element set, and a value written `[N]=value`
-is its value); an alias the text defines is each text a definition gives it (whether or not
+assignment gives it, wherever the assignment stands (a `+=` is a list of its own too; a numeric
+element assignment `name[N]=value` gives each list with that element set; a value written
+`[N]=value` is its value; negative, arithmetic and `+=` element indexes are listed limits); an
+alias the text defines is each word-split text a definition gives it (whether or not
 expand_aliases is set), and the first word of that text is read as an alias again, as bash does
-(`alias c=b`); a `$'…'` word is decoded; env's `-S STRING` is STRING's words, and the `$@`, `$*`
+(`alias c=b`); compound alias text and an alias after a reserved word are listed limits; a
+`$'…'` word is decoded; env's `-S STRING` is STRING's words, and the `$@`, `$*`
 and `${name[@]}` words env is handed are arguments of env, and so are their slices (`"${@:2}"`,
 `"${a[@]:0}"`); `trap 'cmd' …` runs cmd; `function NAME {` and `coproc [NAME]` stand before the
 command. Every assignment and definition is kept, whether or not bash would run it where it stands
@@ -74,6 +76,7 @@ its `-c`, like the words behind `eval`, is scanned the same way (`sh -c 'bun ins
 install"` and `eval bun install` run `bun`).
 """
 
+import functools
 import itertools
 import re
 
@@ -83,6 +86,16 @@ ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=")
 ELEMENT_ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\[([0-9]+)\]=(.*)", re.S)
 # The `[N]=` or `[key]=` before a value of an array written with its index (`a=([0]=cmd)`).
 INDEXED_VALUE = re.compile(r"^\[[^]]*\]=")
+# A program invoked by path is a runner or interpreter only under a system executable directory.
+# A repository file named `scripts/env` or `out/sh` is its own command, not env or sh.
+SYSTEM_PROGRAMS = ("/bin/", "/usr/bin/", "/usr/local/bin/")
+
+
+def named_program(word: str, names: frozenset | set) -> bool:
+    """Whether `word` names one of `names`: exactly, or by its last path part under SYSTEM_PROGRAMS."""
+    return word in names or (word.startswith(SYSTEM_PROGRAMS) and word.rsplit("/", 1)[-1] in names)
+
+
 SKIP_WORDS = {
     "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for", "in",
     "time", "exec", "env", "!", "{", "}", "case", "esac",
@@ -435,7 +448,7 @@ class Scanner:
     def scan(self, text: str) -> list[list[str]]:
         if not self.prepared:
             self.prepared = True
-            if "=(" in text or "alias" in text:
+            if "=(" in text or "]=" in text or "alias" in text:
                 first = type(self)()
                 first.collecting = first.prepared = True
                 first.every_body = self.every_body
@@ -470,11 +483,15 @@ class Scanner:
                 else:
                     open_subs.append(("tick", quote, self.suspend("`")))
                     quote = None
-            elif char == "$" and text[i + 1:i + 3] == "((" and is_arithmetic(text, i + 1):
-                # Arithmetic, `$(( … ))`: a value, and its `<<` a shift; a substitution in it runs.
-                self.add(char)
+            elif char == "$" and text[i + 1:i + 3] == "((":
+                # `$((…))` always takes quotes but never a shell comment. A non-arithmetic form
+                # holds shell text, so a child reads the commands it runs.
                 end = arithmetic_end(text, i + 1)
-                self.scan_substitutions(text[i + 3:end - 2])
+                if is_arithmetic(text, i + 1):
+                    self.add(char)
+                    self.scan_substitutions(text[i + 3:end - 2])
+                else:
+                    self.commands += self.child().scan(text[i + 3:end - 2])
                 i = end
                 continue
             elif char == "$" and after == "(":
@@ -654,6 +671,7 @@ def printed_text(words: list[str]) -> str:
     return ""
 
 
+@functools.lru_cache(maxsize=4096)
 def is_arithmetic(text: str, i: int) -> bool:
     """Whether the `((` at `i` opens arithmetic, as bash decides it: the `)` that closes its inner
     `(` is followed at once by a `)`. Otherwise it is a subshell in a subshell, or a command
@@ -662,13 +680,14 @@ def is_arithmetic(text: str, i: int) -> bool:
     return text[inner:inner + 1] == ")"
 
 
+@functools.lru_cache(maxsize=4096)
 def arithmetic_end(text: str, i: int, commands: bool = False) -> int:
     """Just past the `)` that closes the `(` at `i` (for a `((`, past its `))`), counting the
     parentheses between as bash's matched-pair parse does: none inside a `'…'` or `"…"` string
     (double_quote_end) or after a backslash. With `commands`, the parentheses hold commands (a
     `$(…)`, or a subshell inside one), where a `#` at the start of a word starts a comment to the
     end of its line, as bash's parse of a command substitution reads it (`$(: # )` + newline +
-    `cmd)` is one substitution); a `$(` inside is read so too, wherever it stands."""
+    `cmd)` is one substitution); a `$((…))` always has `commands=False`, as bash reads it."""
     depth = 0
     # Whether the next character starts a word: after the `(` itself, a blank, a newline or an
     # operator (`;`, `&`, `|`, `<`, `>`, and a `(` or `)` that opens or closes a subshell). A
@@ -692,9 +711,9 @@ def arithmetic_end(text: str, i: int, commands: bool = False) -> int:
             word_start = False
             continue
         if char in "$<>" and text[i + 1:i + 2] == "(":
-            # An arithmetic expansion holds no commands, so no `#` in it starts a comment.
-            arithmetic = char == "$" and text[i + 2:i + 3] == "(" and is_arithmetic(text, i + 1)
-            i = arithmetic_end(text, i + 1, commands=not arithmetic)
+            # An arithmetic expansion holds no commands, so no `#` in it starts a comment. Read a
+            # non-arithmetic `$((` the same way to find its matching close; Scanner scans its text.
+            i = arithmetic_end(text, i + 1, commands=not (char == "$" and text[i + 2:i + 3] == "("))
             word_start = False
             continue
         if commands and char == "#" and word_start:
@@ -862,9 +881,9 @@ def feeds_shell(words: list[str]) -> bool:
     `bash /dev/stdin <<'EOT'`, `. /dev/stdin <<EOT` and `xargs -I{} bash -c '{}'`."""
     words = list(words)
     while words:
-        if words[0].rsplit("/", 1)[-1] == "xargs":
+        if named_program(words[0], {"xargs"}):
             return xargs_runs_lines(words)
-        if words[0].rsplit("/", 1)[-1] in RUNNERS:
+        if named_program(words[0], RUNNERS):
             strip_runner(words)
         elif ASSIGNMENT.match(words[0]) or words[0] in SKIP_WORDS:
             words.pop(0)
@@ -874,7 +893,7 @@ def feeds_shell(words: list[str]) -> bool:
         return False
     if words[0] in ("source", ".") and words[1:2] and words[1] in STDIN_PATHS:
         return True
-    if words[0].rsplit("/", 1)[-1] not in STDIN_SHELLS:
+    if not named_program(words[0], STDIN_SHELLS):
         return False
     rest, stdin = words[1:], False
     while rest:
@@ -940,7 +959,7 @@ def shed_prefix(words: list[str], keywords: frozenset | set = frozenset(), runne
     compound command after it takes."""
     keywords = keywords or SKIP_WORDS
     while words:
-        if words[0].rsplit("/", 1)[-1] in runners:
+        if named_program(words[0], runners):
             strip_runner(words)
         elif ASSIGNMENT.match(words[0]) or words[0] in keywords:
             words.pop(0)
@@ -976,7 +995,7 @@ def command_of(words: list[str], within: "Scanner | None" = None) -> list[list[s
         return commands_of(rest[0], within=within) if rest and not rest[0].startswith("-") else []
     if words[0] == "eval":
         return commands_of(" ".join(words[1:]), within=within)
-    if words[0].rsplit("/", 1)[-1] not in INTERPRETERS:
+    if not named_program(words[0], INTERPRETERS):
         return [words]
     words.pop(0)
     while words and words[0].startswith(("-", "+")):

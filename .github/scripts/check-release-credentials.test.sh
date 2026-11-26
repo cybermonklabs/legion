@@ -898,6 +898,14 @@ check "names the script behind bash" "$(contains "$out" "job 'pi_envoy_publish' 
 check "names the script behind sh" "$(contains "$out" "step 'Notices under sh' runs 'scripts/foo.sh'")"
 check "names the sourced script" "$(contains "$out" "step 'Source a helper' runs 'scripts/lib/helpers.sh'")"
 
+echo "case: a repository script named like a runner or interpreter in a credentialed job"
+root=$(fixture scripts-named-like-programs)
+add_publish_step "$root" $'      - name: Script named env\n        run: scripts/env bunx evil-package\n      - name: Output script named sh\n        run: out/sh build.sh\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names scripts/env as a script" "$(contains "$out" "step 'Script named env' runs 'scripts/env'")"
+check "names out/sh as a script" "$(contains "$out" "step 'Output script named sh' runs 'out/sh'")"
+
 echo "case: a step whose shell is an interpreter in a credentialed job"
 root=$(fixture shell-python)
 add_publish_step "$root" $'      - name: Helper\n        shell: python\n        run: |\n          import subprocess\n          subprocess.run(["bun", "install"], check=True)\n'
