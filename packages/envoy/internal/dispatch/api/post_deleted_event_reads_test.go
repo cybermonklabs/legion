@@ -138,18 +138,7 @@ func TestEveryKindOfADeletedPostsOwnEventReadsWithTheMarkAndNoBody(t *testing.T)
 	}
 	for index, row := range rows {
 		t.Run(row.kind, func(t *testing.T) {
-			// Each row's issue is created forced: the project's seeded evals-md (dispatch://INFRA-2916,
-			// R5) gives the words these titles and specs share a document frequency, so the near-copy
-			// gate would refuse every create after the first, and the gate is not what this test reads.
-			created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-				"project": "TEST", "title": "The events of " + row.kind, "spec": "The quick brown fox", "force": true,
-			}, "alice")
-			if created.Code != http.StatusCreated {
-				t.Fatalf("create the issue of %s: status=%d body=%s", row.kind, created.Code, created.Body.String())
-			}
-			issue := decodeBody[struct {
-				Key string `json:"key"`
-			}](t, created).Key
+			issue := createProjectIssue(t, handler, "TEST", "The events of "+row.kind, "The quick brown fox")
 			phrase := "zarquonkind" + string(rune('a'+index))
 			id, by, withdraw := row.write(t, issue, phrase)
 			written := 0

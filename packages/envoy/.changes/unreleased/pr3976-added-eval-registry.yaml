@@ -5,7 +5,9 @@ body: |-
   unit, direction, target, owner and the exported fold that computes it), with its series in
   `eval_series`, logged readings in `eval_readings`, and a section of the project's `evals-md`
   document holding its method. Every project is seeded with the catalogue when it is created and
-  by the day-row refresher's first pass in each process. `GET /api/v1/projects/{key}/evals` folds
+  by the day-row refresher's first pass in each process; the near-copy gate weighs a new issue's
+  words with `evals-md` left out of the project's term statistics, so a new project's first issues
+  meet the gate as they did before. `GET /api/v1/projects/{key}/evals` folds
   each eval's stored per-day rows (`eval_days`) for a window and an optional compare range, with
   the verdict against its target and the first day it has data; `GET .../evals/{slug}` answers
   its versions and its method text;
