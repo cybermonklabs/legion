@@ -13,7 +13,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { type BoundName, bounds, rowLimit, runBounded } from "./bounded-subprocess";
+import { bounds, rowLimit, runBounded, type StderrBound } from "./bounded-subprocess";
 import {
   copyLeg,
   type LegRun,
@@ -142,11 +142,8 @@ switch (command) {
 }
 `;
 
-/** One run of a copy of the public leg against the stand-ins, as `scenario` says, under `bound`. */
-async function publicStandInRun(
-  scenario: PublicScenario,
-  bound: BoundName = "publicRun"
-): Promise<LegRun> {
+/** Runs the public leg against the stand-ins under `publicRun`. The diagnostic row adds `after`. */
+async function publicStandInRun(scenario: PublicScenario, after?: StderrBound): Promise<LegRun> {
   const leg = copyLeg(scratch, publicLeg);
   const legDir = leg.slice(0, leg.lastIndexOf("/"));
   await Bun.write(join(legDir, "outside-agent-probe.ts"), standInProbe);
@@ -207,7 +204,8 @@ exit 0
   const origin = `http://127.0.0.1:${await closedPort()}`;
   const { code, stdout, stderr } = await runBounded({
     argv: ["bash", leg],
-    bound,
+    bound: "publicRun",
+    ...(after === undefined ? {} : { after }),
     cwd: scratch("cwd"),
     env: {
       PATH: bin,
@@ -326,14 +324,15 @@ describe.skipIf(skipWithout("bash", "bun"))(
       rowLimit("publicRun")
     );
 
-    // With no close code and no refused trade the stand-in's hold stays open for the T5 window
-    // (20 minutes). The 30-second publicT5Diagnostic bound covers the measured public-leg start to
-    // this hold under the row's parallel shape, so the forced hold names the T5 window and live
-    // processes.
+    // Every trade answers, so the stand-in leaves the relay open. Start the short bound at
+    // the T5 window line. The leg stays alive in that window, and the failure lists its processes.
     test(
       "a T5 relay hold that never closes leaves a named timeout diagnostic",
       async () => {
-        const failure = await publicStandInRun({ trades: [true] }, "publicT5Diagnostic").then(
+        const failure = await publicStandInRun(
+          { trades: [true] },
+          { line: "outside-agent-public: T5: window open for up to", bound: "publicT5Diagnostic" }
+        ).then(
           () => "the public leg ended before its deliberate held relay bound",
           (error: unknown) => (error instanceof Error ? error.message : String(error))
         );
@@ -344,7 +343,7 @@ describe.skipIf(skipWithout("bash", "bun"))(
           /still running when its bound passed:\n {2}pid=\d+ ppid=\d+ name=/
         );
       },
-      rowLimit("publicT5Diagnostic")
+      rowLimit("publicRun", "publicT5Diagnostic")
     );
   }
 );

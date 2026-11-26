@@ -282,6 +282,50 @@ test.skipIf(!commandLinesListed)(
   rowLimit("stuckOnPurpose", "short")
 );
 
+test(
+  "a stuck child that writes the stderr marker names the bound counted from it",
+  async () => {
+    const line = "ready for diagnostics";
+    // Keep the child alive beyond either bound. The test waits for runBounded's failure.
+    const wait = runBounded({
+      argv: ["sh", "-c", 'printf "child: %s\\n" "$1" >&2; exec sleep 600', "child", line],
+      bound: "short",
+      after: { line, bound: "stuckOnPurpose" },
+      from: import.meta.url,
+    });
+    const first = await wait.then(
+      () => "the child ended by itself",
+      (error: Error) => error.message.split("\n", 1)[0]
+    );
+    expect(first).toContain(
+      `did not end inside the stuckOnPurpose bound of ${bounds.stuckOnPurpose} ms ` +
+        `counted from stderr text "${line}": it and every process it started were killed`
+    );
+  },
+  rowLimit("short", "stuckOnPurpose")
+);
+
+test(
+  "a stuck child without the stderr marker names the start bound",
+  async () => {
+    const child = { argv: ["sleep", "600"], from: import.meta.url };
+    const wait = runBounded({
+      ...child,
+      bound: "stuckOnPurpose",
+      after: { line: "ready for diagnostics", bound: "publicT5Diagnostic" },
+    });
+    const first = await wait.then(
+      () => "the child ended by itself",
+      (error: Error) => error.message.split("\n", 1)[0]
+    );
+    expect(first).toStartWith(
+      `the bounded child ${named(child)} did not end inside the stuckOnPurpose bound of ` +
+        `${bounds.stuckOnPurpose} ms: it and every process it started were killed after `
+    );
+  },
+  rowLimit("stuckOnPurpose", "publicT5Diagnostic")
+);
+
 /** The pid, start and token of the child of every scripted kill below. A table lists its pid
  *  only in the rows about that pid, and lists this process only in the row about this process,
  *  which a kill never takes. */

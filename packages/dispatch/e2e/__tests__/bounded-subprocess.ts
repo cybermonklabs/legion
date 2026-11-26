@@ -55,7 +55,7 @@
  * than any correct one measured. A bound exists so that a child which will never end fails with a
  * name, before its job is killed from outside.
  *
- * The rule for each value: each bound is at least three times the largest reading of its kind.
+ * A start bound is at least three times the largest reading of its kind.
  * The readings behind `short`, `listing` and `generation` are the largest cost lines of the
  * five-run whole-lane checks recorded on the issue that set these bounds, at heads 32078f86 through
  * a691dbe5, each run `bun test --parallel --timeout 60000 e2e/__tests__` under nine busy loops,
@@ -106,8 +106,7 @@
  *   under it, the legs given no input or nothing behind their inputs too, which end in under a
  *   second; the shapes row runs its script under it as well, and `runLeg` runs
  *   `e2e/acceptance/outside-agent-grants.sh` under it for the browser gate's row that runs that
- *   script alone against its stand-in Dispatch. The one leg not under it is the run of the row of
- *   `outside-agent-public.test.ts` whose T5 hold never closes, which `publicT5Diagnostic` ends.
+ *   script alone against its stand-in Dispatch.
  * - `edgeRun`, against 175.0 s: the slowest of 30 runs, one after another, of
  *   `e2e/acceptance/outside-edge-refusals.sh` against one stand-in edge of its tests, with their
  *   lists and probe bounds, on a dev box of 288 CPUs at a 1-minute load of 1,024 to 1,892 on
@@ -160,6 +159,7 @@
  *   between two trades. Under `short` one such run was killed at 60.08 s in a whole-suite run at
  *   62602165bd9e the same day, while five others of the same file took 23.4 s to 33.2 s. Three
  *   times 67.59 s, rounded up to the minute, is 240 s: 3.55 times the larger maximum.
+ *   This is also the start bound for the T5 diagnostic row.
  * - `stuckOnPurpose`, against 309.8 ms: how long the child of the row of
  *   `bounded-subprocess.test.ts` that never ends by itself took from its start until both its
  *   pipes had carried what it writes before it sleeps, 252 lines to its stdout and one to its
@@ -170,20 +170,21 @@
  *   a time without them at most 18.0 ms. No harness lane ran beside them, and its load can be
  *   heavier than those loops. Three times 309.8 ms, rounded up to the next 5 s, is 5 s. Every run
  *   of the lane waits that row's whole bound, so the bound is seconds and not `short`'s minute.
- * - `publicT5Diagnostic`, against 9.905 s: the largest of 150 starts from the public leg's child
- *   spawn to its T5 relay hold, in 30 runs on a three-CPU gVisor build pod beside eight busy loops
- *   on 2026-11-26. Each run used the file's parallel P6 row and its browser row; the starts read
- *   6.018 s minimum, 9.1415 s median and 9.905 s maximum. Three times the maximum is 29.715 s,
- *   rounded up to 30 s.
+ * - `publicT5Diagnostic` starts when the public leg prints that its T5 window is open. The leg
+ *   has already told its peer. The shell stays listed as it trades during the 1200 s window.
+ *   The row checks for a live process, not for the first relay socket to open. There is no
+ *   delay to measure before a process is listed, so use the first 5 s step, as for
+ *   `stuckOnPurpose`. Every run of the lane waits the whole bound. `publicRun` covers the leg's
+ *   start separately.
  *
- * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
- * laptop as in CI: a `short` child after 60 s, a public T5 diagnostic child after 30 s, a stop
- * row's driver (`stoppedLeg`) after 90 s, a leg or the shapes script of the outside agent's
- * acceptance (`legRun`) after 4 minutes, a run of the public leg against its stand-ins
- * (`publicRun`) after 4 minutes, a listing after 6 minutes, the generation after 6.5 minutes, a
- * run of the Codex leg after 8 minutes, a run of the edge check after 9 minutes, and the two-stack
- * build after 30 minutes. The child of `bounded-subprocess.test.ts` that never ends by itself
- * (`stuckOnPurpose`) is killed after 5 s, as its row means it to be.
+ * Where a stuck child fails. The start bound stops a stuck child on a laptop as in CI.
+ * `short` gives it 60 s. A stop row's driver (`stoppedLeg`) gets 90 s. `legRun` gives an
+ * acceptance leg or its shapes script 4 minutes. `publicRun` gives the public leg against
+ * its stand-ins 4 minutes. A listing gets 6 minutes. Generation gets 6.5 minutes. The Codex
+ * leg gets 8 minutes. The edge check gets 9 minutes. The two-stack build gets 30 minutes.
+ * The deliberately stuck child (`stuckOnPurpose`) gets 5 s.
+ * The public T5 diagnostic child also gets 5 s from the T5 window line on stderr
+ * (`publicT5Diagnostic`). `publicRun` still stops it if that bound comes first.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
  * its own work, so the child's bound fires before the row's limit and the failure names the child.
  * The lane runs in the `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15
@@ -235,8 +236,8 @@ export const bounds = Object.freeze({
    *  writes to both pipes and then sleeps, so its bound passes on purpose and the row reads the
    *  failure. */
   stuckOnPurpose: 5_000,
-  /** The public leg's start through its T5 hold, measured under the row's parallel shape. */
-  publicT5Diagnostic: 30_000,
+  /** The public leg's open T5 window, counted from its line on stderr. */
+  publicT5Diagnostic: 5_000,
   /** One run of `e2e/acceptance/outside-agent-public.sh` against the stand-ins of its tests. */
   publicRun: 240_000,
 });
@@ -1184,9 +1185,16 @@ interface BoundedRun {
   readonly stdout: string;
 }
 
-interface BoundedOptions extends Child {
-  /** The bound this child is stopped at. */
+/** A second bound that starts when the given text first appears in a stderr line. */
+export interface StderrBound {
+  readonly line: string;
   readonly bound: BoundName;
+}
+
+interface BoundedOptions extends Child {
+  /** The bound counted from the start, even if the stderr text never appears. */
+  readonly bound: BoundName;
+  readonly after?: StderrBound;
   /** The working directory, or undefined for this process's. */
   readonly cwd?: string;
   /** Writes every cost line this child captured on to this process's stderr. One caller passes
@@ -1201,16 +1209,42 @@ interface BoundedOptions extends Child {
 const pipeGrace = 2_000;
 
 /** Reads one pipe to its end into `chunks`, decoding as it goes, so what arrived before a cancel
- *  is kept. A `cancel()` of the reader ends the loop the way the end of the stream does. */
+ *  is kept. A `cancel()` of the reader ends the loop the way the end of the stream does.
+ *  `onText` sees the decoded text as it arrives. */
 async function drain(
   reader: ReadableStreamDefaultReader<Uint8Array>,
-  chunks: string[]
+  chunks: string[],
+  onText?: (text: string) => void
 ): Promise<void> {
   const decoder = new TextDecoder();
   for (let read = await reader.read(); !read.done; read = await reader.read()) {
-    chunks.push(decoder.decode(read.value, { stream: true }));
+    const text = decoder.decode(read.value, { stream: true });
+    chunks.push(text);
+    onText?.(text);
   }
-  chunks.push(decoder.decode());
+  const text = decoder.decode();
+  chunks.push(text);
+  onText?.(text);
+}
+
+/** Records the first match. Keep only enough text to match across chunk boundaries. */
+function stderrArrival(line: string) {
+  if (line === "") throw new Error("runBounded: after.line must not be empty");
+  const { promise, resolve } = Promise.withResolvers<number>();
+  let tail: string | undefined = "";
+  return {
+    arrived: promise,
+    read: (chunk: string) => {
+      if (tail === undefined) return;
+      const text = tail + chunk;
+      if (text.includes(line)) {
+        tail = undefined;
+        resolve(performance.now());
+      } else {
+        tail = text.slice(Math.max(0, text.length - line.length + 1));
+      }
+    },
+  };
 }
 
 /** How many of the last lines of each pipe a stuck child's failure carries (`wroteTo`). The last
@@ -1258,20 +1292,17 @@ function wroteTo(pipe: "stderr" | "stdout", text: string): string {
  *  would fail every row of theirs that reads a refusal. A caller that does refuse a non-zero exit
  *  builds its message from `named`.
  *
- *  The bound covers the whole wait: the child's exit and the end of both pipes, so a process the
- *  child left holding a pipe is stuck as the child itself would be. It holds at any depth, since
- *  a child started inside another bounded child has a bound and a kill of its own, and its
- *  failure is named before its ancestor's bound fires. When the bound passes,
- *  `stopTreeYielding` kills the child and every process it started, the pipes get `pipeGrace` to
- *  end and are then cancelled, and this throws a message naming the file that started the child,
- *  the command with its arguments, the environment the caller gave it, the bound and the time
- *  waited. Below that first line the message names the processes the child still ran when its
- *  bound passed (`runningAtBound`), then carries what the child wrote before its kill: the last
- *  `tailLines` lines of its stdout and the last `tailLines` of its stderr, each under a heading of
- *  its own that names the pipe and how many lines the child wrote to it, and one line for a pipe
- *  it wrote nothing to (`wroteTo`), so the failure of a stuck child shows where it waited. */
+ *  The start bound covers the child's exit and the end of both pipes. A process the child
+ *  leaves holding a pipe can keep that wait from ending. If `after` is set, the first match
+ *  in stderr starts a second bound. The earlier deadline stops the wait.
+ *  `stopTreeYielding` kills the child and every process it started. The pipes get `pipeGrace`
+ *  to end before they are cancelled. The first line of the failure names the child, the bound
+ *  that fired and the time waited. If the second bound fired, it also gives the stderr text
+ *  the bound was counted from. `runningAtBound` lists the processes still running when the
+ *  bound passed. `wroteTo` gives the last `tailLines` lines of each pipe under its own
+ *  heading, or says that the pipe was empty. */
 export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
-  const { argv, bound, cwd, env, from, relaysLines = false } = options;
+  const { after, argv, bound, cwd, env, from, relaysLines = false } = options;
   const started = performance.now();
   const token = crypto.randomUUID();
   const ancestors = process.env[tokensVariable];
@@ -1297,17 +1328,28 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
   const stderrReader = child.stderr.getReader();
   const stdoutChunks: string[] = [];
   const stderrChunks: string[] = [];
+  const stderrLine = after === undefined ? undefined : stderrArrival(after.line);
   const whole = Promise.all([
     child.exited,
     drain(stdoutReader, stdoutChunks),
-    drain(stderrReader, stderrChunks),
+    drain(stderrReader, stderrChunks, stderrLine?.read),
   ]);
   let stuck = false;
+  let expiredAfter: StderrBound | undefined;
   let stuckProcesses = "";
   // Read once the child and its pipes ended, before its kill; a stuck child throws instead.
   let endedAt = Number.NaN;
   try {
-    const settled = await beforeDeadline(whole, performance.now() + bounds[bound]);
+    const deadline = performance.now() + bounds[bound];
+    let settled =
+      stderrLine === undefined
+        ? await beforeDeadline(whole, deadline)
+        : await beforeDeadline(Promise.race([whole, stderrLine.arrived]), deadline);
+    if (typeof settled === "number" && after !== undefined) {
+      const afterDeadline = settled + bounds[after.bound];
+      settled = await beforeDeadline(whole, Math.min(deadline, afterDeadline));
+      if (afterDeadline < deadline) expiredAfter = after;
+    }
     endedAt = Date.now();
     if (settled === pastDeadline) {
       stuck = true;
@@ -1354,8 +1396,13 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
           : ` | exit ${child.exitCode}`);
   process.stderr.write(`${marker} ${name} | ${ms} ms${ended}\n`);
   if (stuck) {
+    const expired = expiredAfter?.bound ?? bound;
+    const countedFrom =
+      expiredAfter === undefined
+        ? ""
+        : ` counted from stderr text ${JSON.stringify(masked(expiredAfter.line))}`;
     throw new Error(
-      `the bounded child ${name} did not end inside the ${bound} bound of ${bounds[bound]} ms: ` +
+      `the bounded child ${name} did not end inside the ${expired} bound of ${bounds[expired]} ms${countedFrom}: ` +
         `it and every process it started were killed after ${ms} ms\n` +
         `${stuckProcesses || "the process table was not read before the child was killed"}\n` +
         `${wroteTo("stdout", stdout)}\n${wroteTo("stderr", stderr)}`
