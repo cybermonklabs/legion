@@ -246,8 +246,7 @@ if [ "$event_name" = pull_request ]; then
   fi
   base=$(git -C "$repo" rev-parse --verify "$head^1")
   # The change as the queue will land it: the test merge's tree on its base, one commit.
-  change_commit=$(git -C "$repo" commit-tree -p "$base" -m "$change, squashed" "$head^{tree}") ||
-    fail "git could not write $change as one commit on its base, $unread"
+  change_commit=$head # CONTROL A: the test merge, not the squash the queue lands
 else
   git -C "$repo" merge-base --is-ancestor "$base" "$head" ||
     fail "merge_group.base_sha $base is not below the group's head $head, so this check cannot tell which commits $change holds"
@@ -477,7 +476,7 @@ judge() {
     fi
     [ "$attempt" = loose ] || cp "$work/caused" "$work/caused.first"
   done
-  cp "$work/caused.first" "$work/caused"
+  : # CONTROL B: a failed looser retry's paths stand
 }
 
 # In a merge group, the priority pull requests of the groups in front of this one, which land
