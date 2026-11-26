@@ -1,4 +1,12 @@
-import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   borderTransparent,
@@ -51,7 +59,8 @@ import { useShortcutHelpOpener } from "./shortcut-help-opener";
  * the word a voice user says - and beside it, outside the button and inside the same drawn box,
  * its signal, a `<label>` of the button, so a press on the count presses it too and the signal is
  * the button's description (`aria-describedby`), not a word drawn inside the button and missing
- * from its name (WCAG 2.5.3).
+ * from its name (WCAG 2.5.3). Each control holds its signal's place from its first drawing
+ * (`CountSlot`), so a count that arrives moves no control (R3).
  *
  * The row has two shapes and no third. From 1280 px it is the row of five, which is where R2
  * says the views are one row; below it - R2's 1024 px and every width between, where the five
@@ -78,8 +87,9 @@ export function IssuePresets({
   /** What each control draws after its name (`presets.ts`'s `filterSignals`). Undefined while
    *  the counts cannot be read yet (`slots/view-row.tsx` waits for the tree's reads and the
    *  reader's login): then no control draws a signal - no count, no unit word, no flag - and no
-   *  control's description or name points at one, so none names an element that is not drawn.
-   *  A control whose signal is undefined draws none either: Graph, which has no count (R10). */
+   *  control's description or name points at one, so none names an element that is not drawn;
+   *  each holds the empty place its signal is drawn into (`CountSlot`). A control whose signal
+   *  is undefined draws none either: Graph, which has no count (R10). */
   signals?: Readonly<Record<Preset, PresetSignal | undefined>>;
 }): ReactNode {
   const navigate = useNavigate();
@@ -253,9 +263,11 @@ export function IssuePresets({
               <span data-preset-name="" {...pageChrome}>
                 {PRESET_NAMES[active]}
               </span>
-              {signals?.[active] === undefined ? null : (
-                <Signal preset={active} signal={signals[active]} />
-              )}
+              <CountSlot
+                held="min-[761px]:min-w-[var(--preset-count-room)]"
+                preset={active}
+                signal={signals?.[active]}
+              />
             </span>
             <MenuMark />
           </button>
@@ -368,9 +380,12 @@ export function IssuePresets({
                 }}
                 onMouseDown={(event) => event.preventDefault()}
               >
-                {signals?.[preset] === undefined ? null : (
-                  <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
-                )}
+                <CountSlot
+                  held="min-w-[var(--preset-count-room)]"
+                  id={signalId(preset)}
+                  preset={preset}
+                  signal={signals?.[preset]}
+                />
               </label>
             </span>
           );
@@ -458,6 +473,58 @@ function Signal({
           <span {...authorText}>{flag.count}</span> {FILTER_SIGNAL_WORDS[flag.word]}
         </span>
       )}
+    </span>
+  );
+}
+
+/** The widest signal each control draws (`presets.ts`'s `filterSignals`, and Conversation's
+ *  count in `slots/view-row.tsx`), with each count of up to three digits and its "+" (R15); none
+ *  for Graph, which draws no signal (R10). */
+const WIDEST_SIGNAL: Readonly<Record<Preset, string | undefined>> = {
+  conversation: "000+",
+  decisions: `000+ · 000 ${FILTER_SIGNAL_WORDS.to_review}`,
+  graph: undefined,
+  plan: `000+ ${FILTER_SIGNAL_WORDS.steps}`,
+  spec: "000+",
+  verification: `000+ · 000 ${FILTER_SIGNAL_WORDS.failing}`,
+};
+
+/**
+ * The place a control holds for its signal from its first drawing (R3, decision 500 (1)), which
+ * the signal is drawn into once its read answers: the counts arrive after the controls, and a
+ * count drawn into no held place widened its control and moved every control after it, so a
+ * press on Decisions during a load opened Plan. The slot is as wide as the widest signal the
+ * control draws (`WIDEST_SIGNAL`): one `ch`, the width of a digit in the signal's size and
+ * weight, which the slot sets, for each of its characters. A word's letters, its spaces and the
+ * dot are mostly narrower than a digit, so that room holds the signal with some to spare. The
+ * width is the custom property `--preset-count-room`, which `held` makes the slot's `min-width`
+ * where the control's box is as wide as what it draws: the row of five, and the one control from
+ * 761 px. Below 761 px the one control fills the row (`max-[761px]:flex-1`), so its box is the
+ * row's whatever it draws, and `held` holds no width there. Empty, the slot holds no text, so a
+ * control is named and described by what it draws alone. Graph's control, which draws no signal,
+ * holds no slot.
+ */
+function CountSlot({
+  held,
+  id,
+  preset,
+  signal,
+}: {
+  held: string;
+  id?: string;
+  preset: Preset;
+  signal: PresetSignal | undefined;
+}): ReactNode {
+  const widest = WIDEST_SIGNAL[preset];
+  const drawn = signal === undefined ? null : <Signal id={id} preset={preset} signal={signal} />;
+  if (widest === undefined) return drawn;
+  return (
+    <span
+      className={`inline-block text-xs leading-4 font-medium ${held}`}
+      data-count-slot={preset}
+      style={{ "--preset-count-room": `${widest.length}ch` } as CSSProperties}
+    >
+      {drawn}
     </span>
   );
 }

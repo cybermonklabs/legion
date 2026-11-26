@@ -421,6 +421,13 @@ function scrolls(element: Element): boolean {
  *  sideways when the diagram is wider than the words (`styles.css`). */
 const DIAGRAM_PREVIEW = "dispatch-mermaid-preview";
 
+/** The elements of a drawn text whose overflow can let them scroll: the blocks `styles.css` and
+ *  the prose rules give `overflow-x: auto` (a code block's `pre`, a table, a drawn diagram's
+ *  preview) and any element whose own class or style sets an overflow. `scrolls` reads the
+ *  computed style of these alone, not of every element of the text. */
+const SCROLLER_CANDIDATES =
+  'pre, table, .dispatch-mermaid-preview, [class*="overflow-"], [style*="overflow"]';
+
 /** The mark a scroller carries while `useOutOfTabOrder` keeps its tab stop, so that a tree's keys
  *  can tell a kept scroller from the row's other controls. Its reader is part I's tree keys,
  *  which leave a key pressed on a kept scroller, or inside one, to the browser (decision 322);
@@ -496,7 +503,9 @@ export function useOutOfTabOrder(
     const untab = (): void => {
       // Every style and every size is read before any tab index is written, so the reads cost
       // one style pass and one layout.
-      const scrollers = [...element.querySelectorAll<HTMLElement>("*")].filter(scrolls);
+      const scrollers = [...element.querySelectorAll<HTMLElement>(SCROLLER_CANDIDATES)].filter(
+        scrolls
+      );
       const kept = new Map<HTMLElement, string>(
         keepScrollers
           ? scrollers

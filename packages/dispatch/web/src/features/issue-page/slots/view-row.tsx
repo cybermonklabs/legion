@@ -31,7 +31,8 @@ import { useIssueKeymap } from "../useIssueKeymap";
  * plan task's or a callout's words come from the names alone, so a count read before they are
  * held finds none of those nodes. With no filter on a count reads no words, and does not wait
  * on the names. A filter loaded cold with no outline read draws its own count from its view
- * answer alone (`viewRowSignals`).
+ * answer alone (`viewRowSignals`). Until its count is drawn, each control holds the place it is
+ * drawn into (`IssuePresets.tsx`'s `CountSlot`), so a count that arrives moves no control (R3).
  *
  * The row's rule runs the column's whole width, as the prototype's `#tabs` does, and its
  * controls keep the page's inset. At 760 px and below it stays at the top of the screen as the
