@@ -636,7 +636,9 @@ test("an address of a risk the answer does not hold reads as the word for a risk
 // body draws it; the same address outside code is named. A link to anything else that covers an
 // address keeps its own target, and the address in its words reads as the lens's name, as plain
 // words in that one link, which holds no second link. A reading that cites no store address is
-// the very reading the read sent.
+// the very reading the read sent. A check's chip, which names the check by its whole words, keeps
+// an address in a code span as written too, and reads the same address outside code by its kind's
+// word.
 test("an address in code stays as written", () => {
   const cited = `dispatch://lens/${FIRST}`;
   const tree: DisplayTree = {
@@ -660,15 +662,30 @@ test("an address in code stays as written", () => {
     type: "doc",
   };
   const quiet = reading("Nothing to name.");
+  const checked: DisplayTree = {
+    content: [
+      {
+        content: [
+          { text: "Run ", type: "text" },
+          { marks: [{ type: "inlineCode" }], text: `dispatch read ${cited}`, type: "text" },
+          { text: ` before ${cited}.`, type: "text" },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
   const { drafts, root } = drawn(
     answer(
       [
         block("r1", "requirement", KEY, SPEC, 0, { text: "Run it.", text_tree: tree }),
         block("r2", "requirement", KEY, SPEC, 1, { text: "Nothing to name.", text_tree: quiet }),
+        block("c1", "check", "r1", VERIFICATION, 0, { text: "Run it.", text_tree: checked }),
         lens(FIRST, "r1"),
+        bare("risk-1", "risk", FIRST, { attributes: { heading: "It drifts." } }),
         TRADE_OFF,
       ],
-      [tuple("has_kind", FIRST, TRADE_OFF.id)]
+      [tuple("has_kind", FIRST, TRADE_OFF.id), tuple("prevented_by", "risk-1", "c1")]
     )
   );
   const statement = rowOf(root, blockNodeId("spec", "r1"));
@@ -684,6 +701,9 @@ test("an address in code stays as written", () => {
     (tree.content as DisplayTree[])[1]
   );
   expect(drafts.get(blockNodeId("spec", "r2"))?.tree).toBe(quiet);
+  expect(factsOf(rowOf(root, "risk-1")).preventedBy.map((chip) => chip.words)).toEqual([
+    `Run dispatch read ${cited} before ${NODE_TYPE_NAMES.lens}.`,
+  ]);
 });
 
 /** The row of a statement whose words the server read as one paragraph holding `runs`, which
