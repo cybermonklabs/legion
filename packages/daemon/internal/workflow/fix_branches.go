@@ -239,12 +239,16 @@ func (e *Engine) toldBranch(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // queueBesideDelete queues the deletion of the branches beside fix of task in issue's generation,
-// or beside every fix of the task there where fix is 0 (record.BesideBranchesDelete), in the
-// caller's transaction: after the way of a fix whose own completion made commits (afterFix), and
-// where no step of the task can run again (the move into its retro, the release of an end hold
-// into it, a leave, a new generation, a version that removes the task). A task that never had a
-// fix writes nothing, and so does one whose branches cannot be named (besideBranchOf). It takes the
-// task's id, so it names a task a version removes.
+// or, where fix is 0, beside each fix the task holds now, through its latest
+// (record.BesideBranchesDelete's Through), in the caller's transaction: after the way of a fix
+// whose own completion made commits (afterFix), and where no step of the task can run again (the
+// move into its retro, the release of an end hold into it, a leave, a new generation, a version
+// that removes the task). The row names the latest fix and not the whole task, because the row
+// can wait on GitHub while the same task runs again in the generation: a later version adds it
+// again, or a move back takes it out of its retro. Each fix it opens then numbers above that latest
+// fix (record.Store.PutFix), so the row never deletes the branches of a fix it did not see. A task
+// that never had a fix writes nothing, and so does one whose branches cannot be named
+// (besideBranchOf). It takes the task's id, so it names a task a version removes.
 func (e *Engine) queueBesideDelete(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, fix int) error {
 	latest, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil || latest == nil {
@@ -255,17 +259,21 @@ func (e *Engine) queueBesideDelete(ctx context.Context, tx pgx.Tx, issue record.
 			"generation", issue.Generation, "task", task, "error", err)
 		return nil
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.BesideBranchesDelete{Generation: issue.Generation, Task: task, Fix: fix}); err != nil {
+	deletion := record.BesideBranchesDelete{Generation: issue.Generation, Task: task, Fix: fix}
+	if fix == 0 {
+		deletion.Through = latest.Fix
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, deletion); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: the branches beside a fix are to be deleted", "issue", issue.Key, "generation", issue.Generation,
-		"task", task, "fix", fix)
+		"task", task, "fix", fix, "through", deletion.Through)
 	return nil
 }
 
-// queueTaskEnd queues the deletion of the branches beside every fix of w's task (queueBesideDelete,
-// fix 0) where no step of the task can run again because it moves into its retro with no hold
-// (transition, startHeldRetro). The seam noEndBesideDelete takes these two out.
+// queueTaskEnd queues the deletion of the branches beside each fix w's task holds now
+// (queueBesideDelete, fix 0) where no step of the task can run again because it moves into its
+// retro with no hold (transition, startHeldRetro). The seam noEndBesideDelete takes these two out.
 func (e *Engine) queueTaskEnd(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
 	if !w.Stored || e.noEndBesideDelete {
 		return nil

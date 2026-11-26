@@ -2336,23 +2336,35 @@ func (r *outbox) ciNewsStale(ctx context.Context, key string, role claim.Role, p
 }
 
 // besideBranchesDelete deletes on GitHub the branches beside a fix of a task
-// (record.BesideBranchesDelete): those under claim.BesideFixPrefix of the row's fix, or under
-// claim.BesideTaskPrefix where the row names fix 0, every fix of the task at its generation. It
-// mints the implement App's token for the owner of the repository GitHub holds the issue's under
-// now, as createBranch does, lists the prefix (git/matching-refs) and deletes each branch it names.
-// A deletion logs the branch and the commit it stood at. GitHub answers 404 for a branch already
-// gone, which finishes that branch as absent with a line of its own; and 422 both for a branch
-// that is gone and for one it refuses to delete, so a 422 is read again by the branch's exact ref,
-// and only that read's 404 finishes it as absent. A branch still there, a read that failed, and
-// any other answer fail the row, which keeps it on its backoff, and log no deletion; its replay
-// lists the prefix again, so a branch deleted meanwhile is not asked for twice.
+// (record.BesideBranchesDelete): those under claim.BesideFixPrefix of the row's fix, or, where the
+// row names fix 0, under claim.BesideFixPrefix of each fix from 1 to the row's Through, the newest
+// fix the task held when the row was queued. It never lists the whole task's prefix: a later
+// version can add the task again in the generation, or a move back can take it out of its retro,
+// while the row waits on its retries, and the branches of each fix opened then stand under a
+// higher number. It mints the implement App's token for the owner of the repository GitHub holds
+// the issue's under now, as createBranch does, lists each prefix (git/matching-refs) and deletes
+// each branch it names. A deletion logs the branch and the commit it stood at. GitHub answers 404
+// for a branch already gone, which finishes that branch as absent with a line of its own; and 422
+// both for a branch that is gone and for one it refuses to delete, so a 422 is read again by the
+// branch's exact ref, and only that read's 404 finishes it as absent. A branch still there, a read
+// or a list that failed, and any other answer fail the row, which keeps it on its backoff, and log
+// no deletion; its replay lists each prefix again, so a branch deleted meanwhile is not asked for
+// twice.
 func (r *outbox) besideBranchesDelete(ctx context.Context, row record.OutboxRow, payload record.BesideBranchesDelete) error {
-	prefix, err := claim.BesideTaskPrefix(row.Issue, payload.Generation, payload.Task)
-	if payload.Fix > 0 {
-		prefix, err = claim.BesideFixPrefix(row.Issue, payload.Generation, payload.Task, payload.Fix)
+	fixes := []int{payload.Fix}
+	if payload.Fix == 0 {
+		fixes = make([]int, 0, payload.Through)
+		for fix := 1; fix <= payload.Through; fix++ {
+			fixes = append(fixes, fix)
+		}
 	}
-	if err != nil {
-		return fmt.Errorf("outbox row %d: %w", row.ID, err)
+	prefixes := make([]string, 0, len(fixes))
+	for _, fix := range fixes {
+		prefix, err := claim.BesideFixPrefix(row.Issue, payload.Generation, payload.Task, fix)
+		if err != nil {
+			return fmt.Errorf("outbox row %d: %w", row.ID, err)
+		}
+		prefixes = append(prefixes, prefix)
 	}
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
@@ -2375,47 +2387,51 @@ func (r *outbox) besideBranchesDelete(ctx context.Context, row record.OutboxRow,
 			SHA string `json:"sha"`
 		} `json:"object"`
 	}
-	listed, err := githubrest.GetPages[ref](ctx, github, "/git/matching-refs/heads/"+prefix)
-	if err != nil {
-		return fmt.Errorf("list the branches under %s of %s: %w", prefix, repo, err)
-	}
-	attributes := []any{"row", row.ID, "issue", row.Issue, "repo", repo.String(), "task", payload.Task, "fix", payload.Fix, "prefix", prefix}
 	var failed []error
-	for _, found := range listed {
-		branch := strings.TrimPrefix(found.Ref, "refs/heads/")
-		at := append(slices.Clone(attributes), "branch", branch, "commit", found.Object.SHA)
-		deleted := github.Delete(ctx, "/git/refs/heads/"+branch)
-		var answer *githubrest.Answer
-		switch {
-		case deleted == nil:
-			r.log.Info("outbox deleted a branch beside a fix", at...)
+	for i, prefix := range prefixes {
+		listed, err := githubrest.GetPages[ref](ctx, github, "/git/matching-refs/heads/"+prefix)
+		if err != nil {
+			failed = append(failed, fmt.Errorf("list the branches under %s of %s: %w", prefix, repo, err))
 			continue
-		case !errors.As(deleted, &answer):
-		case answer.Status == http.StatusNotFound:
-			r.log.Info("outbox found a branch beside a fix already absent: GitHub answered its delete 404", at...)
-			continue
-		case answer.Status == http.StatusUnprocessableEntity && r.delete422AsGone:
-			r.log.Info("outbox deleted a branch beside a fix", at...)
-			continue
-		case answer.Status == http.StatusUnprocessableEntity:
-			var still ref
-			read := github.Get(ctx, "/git/ref/heads/"+branch, &still)
-			var readAnswer *githubrest.Answer
-			if errors.As(read, &readAnswer) && readAnswer.Status == http.StatusNotFound {
-				r.log.Info("outbox found a branch beside a fix already absent: GitHub answered its delete 422 and its ref 404", at...)
-				continue
-			}
-			if read == nil {
-				deleted = fmt.Errorf("GitHub refused to delete %s, which still stands at %s: %w", branch, still.Object.SHA, deleted)
-			} else {
-				deleted = fmt.Errorf("GitHub answered the delete of %s 422, and the read of its ref failed: %w", branch, errors.Join(deleted, read))
-			}
 		}
-		r.log.Warn("outbox could not delete a branch beside a fix; the row keeps it for its retry", append(at, "error", deleted)...)
-		failed = append(failed, deleted)
+		attributes := []any{"row", row.ID, "issue", row.Issue, "repo", repo.String(), "task", payload.Task, "fix", fixes[i], "prefix", prefix}
+		for _, found := range listed {
+			branch := strings.TrimPrefix(found.Ref, "refs/heads/")
+			at := append(slices.Clone(attributes), "branch", branch, "commit", found.Object.SHA)
+			deleted := github.Delete(ctx, "/git/refs/heads/"+branch)
+			var answer *githubrest.Answer
+			switch {
+			case deleted == nil:
+				r.log.Info("outbox deleted a branch beside a fix", at...)
+				continue
+			case !errors.As(deleted, &answer):
+			case answer.Status == http.StatusNotFound:
+				r.log.Info("outbox found a branch beside a fix already absent: GitHub answered its delete 404", at...)
+				continue
+			case answer.Status == http.StatusUnprocessableEntity && r.delete422AsGone:
+				r.log.Info("outbox deleted a branch beside a fix", at...)
+				continue
+			case answer.Status == http.StatusUnprocessableEntity:
+				var still ref
+				read := github.Get(ctx, "/git/ref/heads/"+branch, &still)
+				var readAnswer *githubrest.Answer
+				if errors.As(read, &readAnswer) && readAnswer.Status == http.StatusNotFound {
+					r.log.Info("outbox found a branch beside a fix already absent: GitHub answered its delete 422 and its ref 404", at...)
+					continue
+				}
+				if read == nil {
+					deleted = fmt.Errorf("GitHub refused to delete %s, which still stands at %s: %w", branch, still.Object.SHA, deleted)
+				} else {
+					deleted = fmt.Errorf("GitHub answered the delete of %s 422, and the read of its ref failed: %w", branch, errors.Join(deleted, read))
+				}
+			}
+			r.log.Warn("outbox could not delete a branch beside a fix; the row keeps it for its retry", append(at, "error", deleted)...)
+			failed = append(failed, deleted)
+		}
 	}
 	if len(failed) > 0 {
-		return fmt.Errorf("delete the branches beside a fix of %s under %s: %w", row.Issue, prefix, errors.Join(failed...))
+		return fmt.Errorf("delete the branches beside fix %d through %d of task %s of %s: %w", fixes[0], fixes[len(fixes)-1], payload.Task, row.Issue,
+			errors.Join(failed...))
 	}
 	return nil
 }

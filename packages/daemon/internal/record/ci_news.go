@@ -355,10 +355,12 @@ func snapshotChecks(snapshots []CIStateSnapshot) []string {
 }
 
 // BesideBranchesDelete deletes on GitHub the branches beside fix Fix of task Task at Generation
-// (claim.BesideFixPrefix), or beside every fix of the task at that generation where Fix is 0
-// (claim.BesideTaskPrefix), once no step can push to them again or the fix took their commits
-// (OutboxKindBesideBranchesDelete). The daemon is its one writer, on the role-message lane, so no
-// start of the issue waits behind it.
+// (claim.BesideFixPrefix), or, where Fix is 0, beside each fix of the task at that generation from
+// fix 1 to fix Through, the newest the task held when the row was queued (claim.BesideFixPrefix of
+// each), once no step can push to them again or the fix took their commits
+// (OutboxKindBesideBranchesDelete). A fix the task opens after the row was queued keeps its
+// branches, whatever the row's retries. The daemon is its one writer, on the role-message lane, so
+// no start of the issue waits behind it.
 type BesideBranchesDelete struct {
 	Generation uint64 `json:"generation"`
 	Task       string `json:"task"`
