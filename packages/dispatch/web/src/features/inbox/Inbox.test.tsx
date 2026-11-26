@@ -4399,14 +4399,20 @@ test("after a refused bulk Snooze, Clear selection lands on the row marked last 
   }
 });
 
-// The same refusal under the bar's Dismiss: its optimistic apply takes the rows out before its
-// request is sent, so the landing is made on the row now at their place before Dispatch answers,
-// and the refusal that puts the rows back then moves nothing: the focus stays where the landing
-// put it, and a wheel of the reader's moves no focus either.
-test("after a refused bulk Dismiss, the focus stays on the row its landing chose and nothing moves it", async () => {
+// The same refusal under the bar's Dismiss, whose optimistic apply takes the rows out before its
+// request is sent: the landing is made on the row now at their place before Dispatch answers, and
+// the refusal that puts the rows back moves no focus. It ends the name of each row it put back
+// (`useInboxSelection`'s `dismissedHere`), so a row that came back is an ordinary row again: when
+// the reader marks one of them and clears the selection, nothing is leaving, the landing is made
+// at once on that row's mark, and nothing is owed after it, so a wheel of theirs moves no focus. A
+// name that outlived its refusal would owe that landing instead, and the wheel would take the
+// focus off the mark the hand-off parked it on.
+test("after a refused bulk Dismiss, Clear selection lands on a row that came back and owes nothing", async () => {
   const user = userEvent.setup();
   const reads = listThreads(12);
-  answerInboxDismisses().mockRejectedValue(new ApiError(409, { error: "conflict" }));
+  // Held, so the landing after the press is made while the write is out.
+  const refusal = Promise.withResolvers<{ dismissed: number }>();
+  answerInboxDismisses().mockReturnValue(refusal.promise);
   const laidOut = layRowsDown(0);
   const { unmount } = renderInbox("/?group=none");
   try {
@@ -4416,13 +4422,29 @@ test("after a refused bulk Dismiss, the focus stays on the row its landing chose
     for (const id of [...marked].reverse()) await user.click(markOf(id));
     await screen.findByText("2 selected");
     await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
-    await screen.findByText(/could not dismiss/iu);
-    await waitFor(() => expect(rowIds()).toEqual(order));
+    await waitFor(() => expect(rowIds()).toEqual(order.filter((id) => !marked.includes(id))));
     const landing = shortRow(order[4] as string);
     await waitFor(() => expect(landing).toHaveFocus());
+
+    await act(async () => {
+      refusal.reject(new ApiError(409, { error: "conflict" }));
+    });
+    await screen.findByText(/could not dismiss/iu);
+    await waitFor(() => expect(rowIds()).toEqual(order));
+    expect(landing).toHaveFocus();
+
+    // The lower of the two rows that came back, which the press had not marked last.
+    const back = marked[1] as string;
+    await user.click(markOf(back));
+    await screen.findByText("1 selected");
+    await user.click(screen.getByRole("button", { name: "Clear selection" }));
+    // The landing waits for the foot's own pass alone (`hooks/useFootInset.ts`), not for a name.
+    await afterFrameAndTasks();
+    expect(screen.queryByText("1 selected")).toBeNull();
+    expect(markOf(back)).toHaveFocus();
     document.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
     await afterFrameAndTasks();
-    expect(landing).toHaveFocus();
+    expect(markOf(back)).toHaveFocus();
   } finally {
     unmount();
     laidOut();

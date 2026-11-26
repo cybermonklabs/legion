@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, renderHook, screen } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { createRef, type ReactNode, useRef, useState } from "react";
 
@@ -892,73 +892,71 @@ const PLACED_KEYS = Array.from({ length: 20 }, (_, index) => `CORE-${index + 1}`
 
 /** Rows, each an `<li>` with its mark, in a list, and the bar over them with one action: the
  *  page the hand-off where the row marked last cannot take the focus is read on
- *  (`useLastMarkedPlace`). `listed` names the rows the list draws, `leaving` the drawn ones a
- *  press is taking away, `headings` the rows a group's heading is drawn right before, and `last`
- *  the row marked last, null where no row is marked. With `cards`, each row draws a card of its
- *  own after its mark, an `<article>` and so a row nested in it, as an Inbox row draws an ask
- *  card. `head` is the list's sticky head, as the List names its table's. Its `returnFocus` ends
- *  at the list's own stop where the hand-off moves nothing, as the Inbox's does. */
+ *  (`useLastMarkedPlace`). `listed` names the rows the list holds, `undrawn` any of them its
+ *  window has not drawn, `leaving` the drawn ones a press is taking away, `headings` the rows a
+ *  group's heading is drawn right before, and `last` the row marked last, null where no row is
+ *  marked. With `cards`, each row draws a card of its own after its mark, an `<article>` and so a
+ *  row nested in it, as an Inbox row draws an ask card. `head` is the list's sticky head, as the
+ *  List names its table's. Its `returnFocus` ends at the list's own stop where the hand-off moves
+ *  nothing, as the Inbox's does. */
 function PlacedList({
   cards = false,
   count,
+  drawRow,
   head = null,
   headings = [],
   last,
   leaving = [],
   listed,
-  own,
+  undrawn = [],
 }: {
   cards?: boolean;
   count: number;
+  /** Draws a listed, undrawn row and lands on its mark once drawn (`MarkedList`'s `drawRow`). */
+  drawRow?: (id: string) => () => void;
   head?: Element | null;
   headings?: readonly string[];
   last: string | null;
   leaving?: readonly string[];
   listed: readonly string[];
-  /** Where given, the page lands the row marked last with its own table, as the List does where
-   *  its window has not drawn that row, and this takes that landing back (`own`). */
-  own?: () => void;
+  undrawn?: readonly string[];
 }): ReactNode {
   const list = useRef<HTMLUListElement>(null);
   const markOf = (key: string) =>
     list.current?.querySelector<HTMLElement>(`[data-row="${key}"] input`) ?? null;
   const landAtPlace = useLastMarkedPlace({
     control: markOf,
+    drawRow,
     head: () => head,
     lastMarked: () => last,
     leaving: (key) => leaving.includes(key),
     list: () => list.current,
-    order: () =>
-      [...(list.current?.querySelectorAll<HTMLElement>("[data-row]") ?? [])].map(
-        (row) => row.dataset.row ?? ""
-      ),
+    order: () => listed,
     shown: count > 0,
   });
   return (
     <>
       <ul aria-label="Rows" ref={list}>
-        {listed.flatMap((key) => [
-          headings.includes(key) ? (
-            <li data-heading={key} key={`heading-${key}`}>
-              Group
-            </li>
-          ) : null,
-          <li data-row={key} key={key}>
-            <input aria-label={`Select ${key}`} type="checkbox" />
-            {cards ? <article aria-label={`Card of ${key}`} /> : null}
-          </li>,
-        ])}
+        {listed.flatMap((key) =>
+          undrawn.includes(key)
+            ? []
+            : [
+                headings.includes(key) ? (
+                  <li data-heading={key} key={`heading-${key}`}>
+                    Group
+                  </li>
+                ) : null,
+                <li data-row={key} key={key}>
+                  <input aria-label={`Select ${key}`} type="checkbox" />
+                  {cards ? <article aria-label={`Card of ${key}`} /> : null}
+                </li>,
+              ]
+        )}
       </ul>
       <SelectionBar
         count={count}
         label="Selected rows"
-        returnFocus={() => {
-          if (own !== undefined) {
-            landAtPlace.own(own);
-            return null;
-          }
-          return landAtPlace.land() ? null : focusListStop(list.current);
-        }}
+        returnFocus={() => (landAtPlace.land() ? null : focusListStop(list.current))}
       >
         <button type="button">Dismiss</button>
       </SelectionBar>
@@ -1251,6 +1249,187 @@ test("j from the parked mark of a leaving row moves the focus to the next row, n
   }
 });
 
+// INFRA-3135, round 29 (N2a): a modifier pressed alone acts on nothing - it only changes the key
+// pressed with it - so it is none of the reader's acts. Shift on the parked mark of a leaving row
+// moves nothing and ends nothing: the landing is still owed, and the commit that takes the press's
+// rows away makes it.
+test("Shift alone on the parked mark of a leaving row moves nothing, and the landing is still made once the rows go", async () => {
+  const user = userEvent.setup();
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(
+    <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+  );
+  const moves = watchMoves();
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+    );
+    expect(rowBox("CORE-13")).toHaveFocus();
+    const from = moves.focused.length;
+    await user.keyboard("{Shift}");
+    await act(afterTask);
+    expect(moves.focused.slice(from).map((move) => move.target.getAttribute("aria-label"))).toEqual(
+      []
+    );
+    expect(focusedName()).toBe("Select CORE-13");
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    expect(focusedName()).toBe("Select CORE-14");
+  } finally {
+    moves.restore();
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// The same rule, for the Tab of Shift+Tab: it is the reader's act, and it starts from the parked
+// mark, so the focus goes to the row before it. The reader has moved on, so the rows going then
+// land nothing. The reader holds Shift a moment before the Tab, as a hand does.
+test("Shift+Tab from the parked mark of a leaving row goes to the row before it, and its Tab is the reader's act", async () => {
+  const user = userEvent.setup();
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(
+    <PlacedList count={1} last="CORE-13" leaving={["CORE-13"]} listed={PLACED_KEYS} />
+  );
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" leaving={["CORE-13"]} listed={PLACED_KEYS} />
+    );
+    expect(rowBox("CORE-13")).toHaveFocus();
+    await user.keyboard("{Shift>}");
+    await act(afterTask);
+    expect(focusedName()).toBe("Select CORE-13");
+    await user.keyboard("{Tab}{/Shift}");
+    await act(afterTask);
+    expect(focusedName()).toBe("Select CORE-12");
+    view.rerender(<PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-13")} />);
+    expect(focusedName()).toBe("Select CORE-12");
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// INFRA-3135, round 29 (N2b): Space ticks a checkbox at its keyup, when the reader lets the key go,
+// a task or more after its keydown. Where the focus stands after a key is read once that key's own
+// keyup has been answered, so Space on the parked mark of a leaving row ticks that mark, and only
+// then does the list's own stop take the focus, with no scroll.
+test("Space on the parked mark of a leaving row ticks it, and only then does the list's own stop take the focus", async () => {
+  const user = userEvent.setup();
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(
+    <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+  );
+  const moves = watchMoves();
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+    );
+    const mark = rowBox("CORE-13");
+    expect(mark).toHaveFocus();
+    // What held the focus as the mark was ticked.
+    const tickedOn: (string | null)[] = [];
+    mark.addEventListener("change", () => tickedOn.push(focusedName()));
+    await user.keyboard("[Space>]");
+    await act(afterTask);
+    await user.keyboard("[/Space]");
+    await act(afterTask);
+    expect(mark).toBeChecked();
+    expect(tickedOn).toEqual(["Select CORE-13"]);
+    expect(focusedName()).toBe("Rows");
+    expect(moves.focused.at(-1)?.target.getAttribute("aria-label")).toBe("Rows");
+    expect(moves.focused.at(-1)?.options).toEqual({ preventScroll: true });
+    expect(moves.scrolled.length).toBe(0);
+  } finally {
+    moves.restore();
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// INFRA-3135, round 29 (N4): the read of where the reader's act left the focus is still to come a
+// task after a wheel, and until its keyup after a key, which never comes where the window loses the
+// focus first. A settle before it - the hook's unmount, or a new landing owed - ends it unmade, so
+// nothing moves the focus after it. The hook runs here without its host and over a list drawn
+// apart from it, so the list outlives the hook and a read left behind would move the focus there.
+test.each([
+  ["a wheel", "the hook's unmount"],
+  ["a key", "the hook's unmount"],
+  ["a wheel", "a new landing owed"],
+  ["a key", "a new landing owed"],
+] as const)("%s's read of the focus, ended by %s before it runs, moves nothing", async (what, ending) => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const rows = render(
+    <ul aria-label="Rows">
+      {PLACED_KEYS.map((key) => (
+        <li data-row={key} key={key}>
+          <input aria-label={`Select ${key}`} type="checkbox" />
+        </li>
+      ))}
+    </ul>
+  );
+  const stop = screen.getByRole("list", { name: "Rows" });
+  const hand = renderHook(() =>
+    useLastMarkedPlace({
+      control: (key) => stop.querySelector<HTMLElement>(`[data-row="${key}"] input`),
+      lastMarked: () => "CORE-13",
+      leaving: (key) => key === "CORE-13",
+      list: () => stop,
+      order: () => PLACED_KEYS,
+      shown: false,
+    })
+  );
+  let mounted = true;
+  try {
+    // The bar has gone and left the focus on the body: the landing is owed, and parked on the mark.
+    act(() => {
+      hand.result.current.land();
+    });
+    const mark = rowBox("CORE-13");
+    expect(mark).toHaveFocus();
+    if (what === "a wheel") document.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+    else
+      mark.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, code: "Enter", key: "Enter" })
+      );
+    if (ending === "the hook's unmount") {
+      hand.unmount();
+      mounted = false;
+    } else {
+      act(() => {
+        hand.result.current.land();
+      });
+    }
+    if (what === "a key") {
+      mark.dispatchEvent(
+        new KeyboardEvent("keyup", { bubbles: true, code: "Enter", key: "Enter" })
+      );
+    }
+    await act(afterTask);
+    expect(focusedName()).toBe("Select CORE-13");
+  } finally {
+    if (mounted) hand.unmount();
+    rows.unmount();
+    laidOut();
+  }
+});
+
 // INFRA-3135, round 29 (F8): with nothing leaving, the hand-off lands at once and parks nothing,
 // so the focus moves once, onto the mark the landing chose, and never to the list's stop and
 // back.
@@ -1328,32 +1507,133 @@ test("with no row marked, a press still taking away the first row in sight owes 
   }
 });
 
-// INFRA-3135, round 29 (F3): where the page's table lands the row itself (`own`), the reader's
-// own act takes that landing back, and once the table has landed, an act takes nothing back.
+// INFRA-3135, round 29 (F3): where a windowed table draws the row marked last itself (`drawRow`),
+// the reader's own act takes that landing back, and once the table has landed, an act takes
+// nothing back.
 test("the reader's own act takes back the landing the page's table owes, and nothing once it has landed", () => {
   const laidOut = layRowsOut("[data-row]", 9);
+  const asked: string[] = [];
   let abandoned = 0;
-  const own = () => {
-    abandoned += 1;
+  const drawRow = (id: string) => {
+    asked.push(id);
+    return () => {
+      abandoned += 1;
+    };
   };
-  const view = render(<PlacedList count={1} last="CORE-14" listed={PLACED_KEYS} own={own} />);
+  const view = render(
+    <PlacedList
+      count={1}
+      drawRow={drawRow}
+      last="CORE-14"
+      listed={PLACED_KEYS}
+      undrawn={["CORE-14"]}
+    />
+  );
   try {
     pressInBar("Dismiss");
-    view.rerender(<PlacedList count={0} last="CORE-14" listed={PLACED_KEYS} own={own} />);
+    view.rerender(
+      <PlacedList
+        count={0}
+        drawRow={drawRow}
+        last="CORE-14"
+        listed={PLACED_KEYS}
+        undrawn={["CORE-14"]}
+      />
+    );
+    expect(asked).toEqual(["CORE-14"]);
     // The list's own stop holds the focus until the table lands.
     expect(screen.getByRole("list", { name: "Rows" })).toHaveFocus();
     document.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
     expect(abandoned).toBe(1);
 
-    // A second press, whose landing the table makes: a later act takes nothing back.
-    view.rerender(<PlacedList count={1} last="CORE-14" listed={PLACED_KEYS} own={own} />);
+    // A second press, whose landing the table makes once it draws the row: a later act takes
+    // nothing back.
+    view.rerender(
+      <PlacedList
+        count={1}
+        drawRow={drawRow}
+        last="CORE-14"
+        listed={PLACED_KEYS}
+        undrawn={["CORE-14"]}
+      />
+    );
     pressInBar("Dismiss");
-    view.rerender(<PlacedList count={0} last="CORE-14" listed={PLACED_KEYS} own={own} />);
+    view.rerender(
+      <PlacedList
+        count={0}
+        drawRow={drawRow}
+        last="CORE-14"
+        listed={PLACED_KEYS}
+        undrawn={["CORE-14"]}
+      />
+    );
+    view.rerender(<PlacedList count={0} drawRow={drawRow} last="CORE-14" listed={PLACED_KEYS} />);
     act(() => rowBox("CORE-14").focus());
-    view.rerender(<PlacedList count={0} last="CORE-14" listed={PLACED_KEYS} own={own} />);
+    view.rerender(<PlacedList count={0} drawRow={drawRow} last="CORE-14" listed={PLACED_KEYS} />);
     document.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
     expect(abandoned).toBe(1);
   } finally {
+    view.unmount();
+    laidOut();
+  }
+});
+
+// INFRA-3135, round 29 (N1): when a landing is made after a wait (Owed -> Landed) and the row
+// marked last is still listed but outside the table's drawn window, the delayed landing asks
+// `drawRow` the same way an immediate landing does, rather than falling back to the list's stop.
+test("a delayed landing whose row marked last is listed but undrawn asks drawRow and owes its cancellation", () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const asked: string[] = [];
+  let abandoned = 0;
+  const drawRow = (id: string) => {
+    asked.push(id);
+    return () => {
+      abandoned += 1;
+    };
+  };
+  const view = render(
+    <PlacedList
+      count={1}
+      drawRow={drawRow}
+      last="CORE-14"
+      leaving={["CORE-14"]}
+      listed={PLACED_KEYS}
+      undrawn={["CORE-14"]}
+    />
+  );
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <PlacedList
+        count={0}
+        drawRow={drawRow}
+        last="CORE-14"
+        leaving={["CORE-14"]}
+        listed={PLACED_KEYS}
+        undrawn={["CORE-14"]}
+      />
+    );
+    expect(asked).toEqual([]);
+    expect(screen.getByRole("list", { name: "Rows" })).toHaveFocus();
+    // The action settles with CORE-14 still listed and still undrawn: `landNow` calls `drawRow`.
+    view.rerender(
+      <PlacedList
+        count={0}
+        drawRow={drawRow}
+        last="CORE-14"
+        listed={PLACED_KEYS}
+        undrawn={["CORE-14"]}
+      />
+    );
+    expect(asked).toEqual(["CORE-14"]);
+    expect(screen.getByRole("list", { name: "Rows" })).toHaveFocus();
+    document.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+    expect(abandoned).toBe(1);
+  } finally {
+    answered();
+    disarm();
     view.unmount();
     laidOut();
   }
