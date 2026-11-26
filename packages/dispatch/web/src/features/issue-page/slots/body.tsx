@@ -10,6 +10,7 @@ import {
 import { Link, Navigate, useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
+import { abortOnReaderAct } from "../../../lib/reader-acts";
 import {
   primaryButtonBg,
   primaryButtonHoverBg,
@@ -39,7 +40,6 @@ import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
 import { focusIsLoose } from "../tree-focus";
-import { abortOnReaderAct } from "../useNodeEditing";
 import { FailedReadLine } from "./failed-read-line";
 import { useFollowing } from "./following";
 

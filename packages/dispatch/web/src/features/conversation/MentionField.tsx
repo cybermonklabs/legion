@@ -15,6 +15,7 @@ import {
   useState,
 } from "react";
 
+import { abortOnReaderAct } from "../../lib/reader-acts";
 import { textPrimaryOnSurface } from "../../theme/classes";
 import {
   inputClasses,
@@ -218,7 +219,17 @@ export function MentionField({
     const after = applyInsertion(current, insertion);
     setCaret(after.caret);
     onChange({ body: after.text });
+    // The caret goes after the pick a frame on, once the host has drawn the pick's text into the
+    // box: set now, it would be set in the old text, which the host's render of the new one
+    // replaces. A reader who acts before that frame (`READER_ACTS`) - a key typed straight after
+    // the pick, or a press elsewhere - has put the focus and the caret where they want them, and
+    // the words they typed meanwhile are there; a late frame that put the caret back after the
+    // pick would split them, so it does nothing. The pick's own act - its Enter, or the press and
+    // click on its row - reached the window before the guard is made, so it does not end it.
+    const acted = abortOnReaderAct();
     requestAnimationFrame(() => {
+      if (acted.signal.aborted) return;
+      acted.abort();
       element.current?.focus();
       element.current?.setSelectionRange(after.caret, after.caret);
     });

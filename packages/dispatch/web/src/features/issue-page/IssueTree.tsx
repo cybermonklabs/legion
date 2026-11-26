@@ -12,6 +12,7 @@ import { useNavigate } from "react-router-dom";
 
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
+import { abortOnReaderAct } from "../../lib/reader-acts";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { isViewer } from "../refs/actor";
 import { EditedMark } from "../refs/PostMarks";
@@ -48,7 +49,7 @@ import {
   zoomBreadcrumb,
 } from "./tree-fold";
 import { everythingOpened, nodesInOrder, rowKeyOf } from "./tree-keys";
-import { abortOnReaderAct, type OnEditing, useNodeEditing } from "./useNodeEditing";
+import { type OnEditing, useNodeEditing } from "./useNodeEditing";
 import { moveToRow, useTreeKeymap } from "./useTreeKeymap";
 
 /**
