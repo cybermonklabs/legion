@@ -4863,7 +4863,7 @@ func branchLeftNotice(issue string, from record.BranchFrom, result ghbranch.Resu
 			result.Head, result.Base)
 	}
 	return record.Notice{Kind: "next-change-workspace", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("Legion left branch %s where it stands, at %s. %s Merge %s into %s before the next change's first task.",
+		Reason: fmt.Sprintf("Legion left branch %s where it stands, at %s. %s The next change's first task is told to merge %s into %s.",
 			branch, result.Tip, why, result.Base, branch)}
 }
 

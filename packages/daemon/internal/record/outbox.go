@@ -1941,9 +1941,11 @@ type BranchFrom struct {
 	MergedHead string `json:"mergedHead,omitempty"`
 }
 
-// IssueBranchOf is the one constructor of an issue's branch row: the row of the issue's
-// generation, with From set from its merge snapshot where that generation is a next change
-// (Issue.NextChange is the generation) and a merge stands, and nil for any other generation.
+// IssueBranchOf builds an issue's branch row: the row of the issue's generation, with From set
+// from its merge snapshot where that generation is a next change (Issue.NextChange is the
+// generation) and a merge stands, and nil for any other generation. Task 6 routes the branch's
+// construction sites through it; until then admit and the engine build IssueBranch directly, with
+// no From.
 func IssueBranchOf(issue Issue) IssueBranch {
 	row := IssueBranch{Generation: issue.Generation}
 	if issue.NextChange != 0 && issue.NextChange == issue.Generation && issue.Merge.Merged() {
