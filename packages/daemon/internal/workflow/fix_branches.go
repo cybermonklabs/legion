@@ -235,7 +235,7 @@ func (e *Engine) queueBesideDelete(ctx context.Context, tx pgx.Tx, issue record.
 // (queueBesideDelete) where no step of the task can run again because it moves into its retro with
 // no hold (transition, startHeldRetro).
 func (e *Engine) queueTaskEnd(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
-	if !w.Stored {
+	if !w.Stored || true {
 		return nil
 	}
 	return e.queueBesideDelete(ctx, tx, issue, w.Task)
