@@ -145,7 +145,8 @@ func TestASecretFileThatCannotBeReadIsNamedBySetting(t *testing.T) {
 // TestARefusedSettingIsNamedAndNotEchoed: a value this package refuses from the environment - an
 // identity kind it does not know, a project list that is not one - is where a credential pasted
 // into the wrong variable shows up, so the refusal names the setting and what it takes, and not
-// the value. A value it accepts is read.
+// the value. A value it accepts is read. An identity missing one of its variables names that one,
+// and none of the values of those that are set.
 func TestARefusedSettingIsNamedAndNotEchoed(t *testing.T) {
 	env := map[string]string{IdentityVar: printedSecret}
 	getenv := func(name string) string { return env[name] }
@@ -154,7 +155,28 @@ func TestARefusedSettingIsNamedAndNotEchoed(t *testing.T) {
 		t.Fatal("MachineIdentity took an identity kind it does not know")
 	}
 	holdsNoSecret(t, "MachineIdentity's error", err.Error())
-	namesAll(t, "MachineIdentity's error", err.Error(), IdentityVar, IdentityKubernetes, IdentityMetadata, IdentityPool)
+	namesAll(t, "MachineIdentity's error", err.Error(), IdentityVar, IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
+
+	run := map[string]string{
+		ActionsIDTokenRequestURLVar:   "https://token.actions.example/idtoken?api-version=" + printedSecret,
+		ActionsIDTokenRequestTokenVar: printedSecret,
+		MachineAudienceVar:            "https://cipher.example/" + printedSecret,
+	}
+	for _, missing := range []string{ActionsIDTokenRequestURLVar, ActionsIDTokenRequestTokenVar, MachineAudienceVar} {
+		t.Run(IdentityGitHubActions+" without "+missing, func(t *testing.T) {
+			env := map[string]string{IdentityVar: IdentityGitHubActions}
+			for name, value := range run {
+				if name != missing {
+					env[name] = value
+				}
+			}
+			source, err := MachineIdentity(func(name string) string { return env[name] })
+			want := missing + " is required by " + IdentityVar + "=" + IdentityGitHubActions
+			if err == nil || err.Error() != want {
+				t.Fatalf("MachineIdentity = %v, %v; want %q", source, err, want)
+			}
+		})
+	}
 
 	for _, projects := range []string{"lower-" + printedSecret, "HUNTER2 HUNTER2"} {
 		env[ProjectsVar] = projects
@@ -189,7 +211,35 @@ func TestADeviceLoginIsRefusedByName(t *testing.T) {
 		t.Fatalf("MachineIdentity = %#v, %v; want device-login refused", source, err)
 	}
 	namesAll(t, "MachineIdentity's error", err.Error(), IdentityVar, "device-login", "TypeScript",
-		IdentityKubernetes, IdentityMetadata, IdentityPool)
+		IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
+}
+
+// TestGitHubActionsDescribePrintsNeitherTheRequestURLNorItsToken: GitHub gives a job its request
+// URL and its request token, and either can carry what lets another ask for the job's tokens, so
+// Describe, which every trade's log line and error carries, names each by its variable alone. The
+// audience prints as written where it is a plain URL, and by its variable otherwise.
+func TestGitHubActionsDescribePrintsNeitherTheRequestURLNorItsToken(t *testing.T) {
+	env := map[string]string{
+		IdentityVar:                   IdentityGitHubActions,
+		ActionsIDTokenRequestURLVar:   "https://tokuser9f3:" + printedSecret + "@token.actions.example/idtoken?api-version=2.0",
+		ActionsIDTokenRequestTokenVar: printedSecret,
+		MachineAudienceVar:            "https://cipher.example",
+	}
+	getenv := func(name string) string { return env[name] }
+	source, err := MachineIdentity(getenv)
+	if err != nil {
+		t.Fatalf("MachineIdentity: %v", err)
+	}
+	holdsNoSecret(t, "Describe", source.Describe())
+	namesAll(t, "Describe", source.Describe(), "GitHub Actions", ActionsIDTokenRequestURLVar, ActionsIDTokenRequestTokenVar, MachineAudienceVar, "https://cipher.example")
+
+	env[MachineAudienceVar] = "https://cipher.example/?token=" + printedSecret
+	source, err = MachineIdentity(getenv)
+	if err != nil {
+		t.Fatalf("MachineIdentity: %v", err)
+	}
+	holdsNoSecret(t, "Describe", source.Describe())
+	namesAll(t, "Describe", source.Describe(), ActionsIDTokenRequestURLVar, ActionsIDTokenRequestTokenVar, MachineAudienceVar)
 }
 
 // TestAnIssuerThatCarriesACredentialIsNotPrinted: AGENT_SECRETS_SIGNIN_ISSUER is a URL, and every

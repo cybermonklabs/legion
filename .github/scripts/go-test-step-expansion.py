@@ -711,10 +711,10 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
         piped = XARGS.match(line)
         if piped:
             lister = expand(piped.group("lister"), variables)
-            packages = shell(lister, step.directory, f"{step.label}: {lister}").split()
-            if not packages:
+            printed = shell(lister, step.directory, f"{step.label}: {lister}").split()
+            if not printed:
                 raise Refused(f"{step.label}: `{lister}` printed no package")
-            found.append(parse_go_test(step, expand(piped.group("test"), variables), packages))
+            found.append(parse_go_test(step, expand(piped.group("test"), variables), printed))
             continue
 
         words, command = go_command(line)
@@ -776,10 +776,12 @@ def skip_names(pattern: str) -> list[str] | None:
     return names if all(NAME.match(name) for name in names) else None
 
 
-def parse_go_test(step: Step, text: str, packages: list[str]) -> GoTest:
-    """The packages, -tags, -race, -run and -skip of one `go test` command."""
-    command = GoTest(step=step, text=text, packages=list(packages))
-    words = shlex.split(text)
+def parse_go_test(step: Step, text: str, appended: list[str]) -> GoTest:
+    """The packages, -tags, -race, -run and -skip of one `go test` command, read with the words
+    `appended` after its own, as xargs appends what its lister printed: a packages list, and, for
+    a leg that runs a group of a package's tests, an anchored `-run=^(…)$` before the package."""
+    command = GoTest(step=step, text=text, packages=[])
+    words = shlex.split(text) + list(appended)
     position = words.index("test") + 1
     while position < len(words):
         word = words[position]

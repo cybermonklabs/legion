@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The case beside TestAFlapDuringTheEnsuresRequestRunsTheSecondDisconnectHookAtOnce: the run of
@@ -44,12 +45,7 @@ func TestASecondReconnectRunsItsHooksWithoutWaitingOutTheFirstRunsRequest(t *tes
 	})
 
 	proxy.cutAndArm(time.Second)
-	var dropped time.Time
-	select {
-	case dropped = <-proxy.dropped:
-	case <-time.After(30 * time.Second):
-		t.Fatal("no stream request reached the proxy within 30s of the first outage")
-	}
+	dropped := testwait.Receive(t, "a stream request to reach the proxy after the first outage", proxy.dropped)
 	// The connection is back once the proxy's 3 s refusal ends and nats.go reconnects.
 	var back time.Time
 	deadline := time.Now().Add(20 * time.Second)
