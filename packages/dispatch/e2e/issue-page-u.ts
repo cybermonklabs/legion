@@ -15,7 +15,6 @@ import {
 import {
   answerAsk,
   createIssue,
-  createIssueArtifact,
   createProject,
   editArtifact,
   getIssue,
@@ -25,6 +24,7 @@ import {
 import {
   asPlanner,
   awaitBlockAsk,
+  awaitBlockAsks,
   blockNodeIn,
   PROJECT,
   pause,
@@ -108,9 +108,10 @@ import type { ApiRequests } from "./traffic";
  *   planner, `FOOT_DECISIONS` `:::decision` blocks that no `shaped` pointer ties to a statement,
  *   each with words that run past six lines at 1440 px.
  * - **Row 6's issue.** `seedPagedDecisions` writes an issue whose Conversation read pages before
- *   its decisions: the checks of its Verification document, which stand under one statement of
- *   its spec, weigh more than a page of the read holds, and the spec's question, the decision
- *   under it and a decision that waits stand after that statement.
+ *   its decisions: the read answers the issue's conversation first, in the order it was written,
+ *   and twenty open questions of its spec, written before the question alice answers, weigh more
+ *   than a page of the read holds, so that question, the decision under it and a decision that
+ *   waits stand past that page.
  */
 
 /** The nodes the read of issue `key`'s view `view` answers, every page its cursor names. */
@@ -124,7 +125,6 @@ export async function viewNodesOf(key: string, view: TreeView): Promise<IssueTre
  * none - the page sends its view read only once Decisions is pressed - the read of the Decisions
  * view the row sends itself, so the gate reads what the server holds and not whether the page
  * asked. A row whose server may serve no such view gates on `decisionsViewServedGate` first.
- * `partUGate` reads no read: it checks the code under test (`issue-page-t-tree.ts`).
  */
 export async function heldDecisionsRead(
   key: string,
@@ -680,13 +680,12 @@ export async function writeFootDecisions(key: string): Promise<string[]> {
   return blocks;
 }
 
-/** The blocks `seedPagedDecisions` writes in the spec beside its six statements and its open
- *  question, by block id: the agent's decision tied to the first statement, the statement every
- *  check of the Verification document serves, the agent's decision tied to the second statement,
- *  and the agent's decision under the answered question, tied to the sixth. */
+/** The decisions `seedPagedDecisions` writes in the spec beside its six statements and its open
+ *  questions, by block id: the agent's decision tied to the first statement, the agent's decision
+ *  tied to the second statement, and the agent's decision under the answered question, tied to
+ *  the sixth. */
 const PAGED_BLOCKS = {
-  checked: "r-checked",
-  first: "d-first-page",
+  first: "d-first-statement",
   underAsk: "d-under-question",
   waiting: "d-past-page",
 } as const;
@@ -695,21 +694,24 @@ const PAGED_BLOCKS = {
  *  as her decision (`spec-decided-by.ts`' `answerDecision`). */
 const PAGED_ANSWER = "Every address the old page answered, the paged ones as well.";
 
-/** How many checks the Verification document holds, each serving `PAGED_BLOCKS.checked`. */
-const LONG_CHECKS = 24;
+/** How many open questions `seedPagedDecisions` writes in the spec before the question alice
+ *  answers, each of `PAGE_QUESTION_WORDS`: the questions that fill Conversation's first page. */
+const PAGE_QUESTIONS = 20;
 
 /**
- * The words each check says after its opening sentence: an `&` and a space, 14,000 times, so a
- * check holds some 28,300 characters, within the 32,000 a block holds, and the document some
- * 680 KB, within the 1 MiB a markdown document holds (`pmdoc.MaxDocumentBytes`). An `&` that
- * opens no character reference is stored as it is written (`pmdoc/escape.go`'
- * `entityReference`), and the tree read writes each as `\u0026` in its JSON, as `json.Marshal`
- * does (`issue_tree_json.go`' `appendTreeString`): six bytes for each in a check node's `text`,
- * some 98 KB a check and some 2.4 MB for the 24, past the 2,000,000 bytes a page of the read
- * holds (`issueTreePageBytes`), and more in the page's own read, which carries each node's
- * display tree beside its text (`Dispatch-Trees: 1`).
+ * The words each of the `PAGE_QUESTIONS` questions says after its opening sentence: an `&` and a
+ * space, 5,000 times, so a question holds some 10,050 characters, within the 32,000 an ask's
+ * wording holds (`docs/ask_wording.go`' `askWordingTooLong`), and the twenty some 200 KB of the
+ * spec, within the 1 MiB a markdown document holds (`pmdoc.MaxDocumentBytes`). An `&` that opens
+ * no character reference is stored as it is written (`pmdoc/escape.go`' `entityReference`), and
+ * the tree read writes each as `\u0026` in its JSON, as `json.Marshal` does
+ * (`issue_tree_json.go`' `appendTreeString`): six bytes for each, so a node whose text is a
+ * question holds some 35 KB of it, and as much again in the display tree the page's own read
+ * carries beside each node's text (`Dispatch-Trees: 1`), some 70 KB a node on that read. A check
+ * of 28,000 characters of the same words weighed some 196 KB a node there, nine or ten of them to
+ * the 2,000,000 bytes of a page (`issueTreePageBytes`), as row 6's `PAGED-ROW` line measured.
  */
-const CHECK_WORDS = "& ".repeat(14_000).trimEnd();
+const PAGE_QUESTION_WORDS = "& ".repeat(5_000).trimEnd();
 
 /** What `seedPagedDecisions` wrote, each block by its id. */
 export interface PagedDecisionsSeed {
@@ -717,13 +719,14 @@ export interface PagedDecisionsSeed {
    *  fifth statements (`answeredQuestionBlock`), a person's decision past Conversation's first
    *  page. */
   readonly answeredAskId: string;
-  /** The checks of the Verification document, by block id, which row 6's `PAGED-ROW` line
-   *  counts on Conversation's first page. */
-  readonly checks: readonly string[];
-  /** The agent's decision tied to the first statement, which waits for alice's review, on
-   *  Conversation's first page, as row 6's `PAGED-ROW` line says. */
+  /** The agent's decision tied to the first statement, which waits for alice's review, written
+   *  before the answered question and past Conversation's first page as every block of the spec
+   *  is, as row 6's `PAGED-ROW` line says. */
   readonly firstBlock: string;
   readonly key: string;
+  /** The open questions written before the answered one (`PAGE_QUESTIONS`), by ask id, which
+   *  fill Conversation's first page, as row 6's `PAGED-ROW` line counts them on it. */
+  readonly pageQuestions: readonly string[];
   /** The agent's decision under the answered question (`from_ask`), tied to the sixth statement,
    *  which the question did not shape, so it waits for review (INFRA-1196's decision 521), past
    *  Conversation's first page. */
@@ -763,25 +766,28 @@ async function awaitTreeBlocks(key: string, blocks: readonly string[]): Promise<
 /**
  * An issue whose Conversation read pages before its decisions, for row 6. The spec is alice's:
  * six statements and an open question, which waits on her as the issue's assignee
- * (`specDocument`). After them the planner writes a decision tied to the first statement, the
- * statement every check of the Verification document serves (`PAGED_BLOCKS.checked`), and the
- * question whose answer shaped the third to the fifth statements (`answeredQuestionBlock`), which
- * alice answers (`PAGED_ANSWER`); then a decision tied to the second statement, and a decision
- * under the answered question (`from_ask`) tied to the sixth, which the question did not shape.
- * Last comes the Verification document: `LONG_CHECKS` checks of `CHECK_WORDS`, each serving
- * `PAGED_BLOCKS.checked`.
+ * (`specDocument`). The planner then writes `PAGE_QUESTIONS` open questions of
+ * `PAGE_QUESTION_WORDS`, which wait on her too, and the seed waits until each is an ask
+ * (`awaitBlockAsks`). Only then does the planner write a decision tied to the first statement and
+ * the question whose answer shaped the third to the fifth statements (`answeredQuestionBlock`),
+ * which alice answers (`PAGED_ANSWER`); then a decision tied to the second statement, and a
+ * decision under the answered question (`from_ask`) tied to the sixth, which the question did
+ * not shape.
  *
- * Why the question, the decision under it and the second decision fall past the first page of
- * Conversation's read: the read walks each node before its children, and a node's ranked
- * children in their order, which for the spec's blocks is the spec's own order
- * (`docs.WalkIssueTree`, `refs.RankBandSpec`); a check stands under the statement it serves
- * (refs' `placeAuthored`, as `issue_tree_skeleton_test.go` says of one), so the checks stand
- * right after that statement and before every block the spec holds after it; and the checks
- * weigh more than a page of the read holds (`CHECK_WORDS`), so the page ends among them. The six
- * statements, the open question and the first decision stand before the checks, on the first
- * page. Neither view row 6 reads holds a check: the Spec view takes the statements and the
- * Decisions view the questions and the decisions (`graphstore.QueryTakes`), so each answers one
- * page. Answers once the tree read holds a node of each block written (`awaitTreeBlocks`).
+ * Why the answered question, the decision under it and the second decision fall past the first
+ * page of Conversation's read: the read walks each node before its children, and a node's
+ * conversation first, by when each item of it was made, then its ranked children
+ * (`refs.CompareSiblings`). An ask of the spec is conversation of the issue, so under the issue
+ * the read answers every ask before any block of the spec, and the open questions before the
+ * answered one, which was made after them. The read with `kind` answers an ask with its own
+ * blocks, the first its question (`refs.AskParts`, `issue_tree_kinds.go`' `kindOrder`), so each
+ * open question's words stand there twice, some 140 KB a question on the page's read and some
+ * 2.8 MB for the twenty, past the 2,000,000 bytes a page holds (`issueTreePageBytes`): the page
+ * ends among them. The decisions are blocks of the spec, after the asks. The Decisions view takes
+ * an ask's own node and no block of it (`docs/query_record.go`' `decisionsTakes`), so it holds
+ * each question's words once, some 1.4 MB for the twenty on the page's read, and answers one
+ * page, as the Spec view does, which takes no ask (`graphstore.QueryTakes`). Answers once the
+ * tree read holds a node of each decision written (`awaitTreeBlocks`).
  */
 export async function seedPagedDecisions(): Promise<PagedDecisionsSeed> {
   await createProject({ key: PROJECT, name: "Issue layout" });
@@ -795,18 +801,39 @@ export async function seedPagedDecisions(): Promise<PagedDecisionsSeed> {
   const spec = issue.primary_artifact_id ?? "";
   await patchIssue(key, { assignee: "alice" });
   const ref = (index: number) => specBlockRef(key, requirementBlockId(index));
+  const questionBlocks = Array.from(
+    { length: PAGE_QUESTIONS },
+    (_unused, at) => `q-page-${at + 1}`
+  );
+  const questions = questionBlocks.map(
+    (block, at) =>
+      `:::ask{#${block} urgency="med"}\n` +
+      `Which words does question ${at + 1} of the first page say? ${PAGE_QUESTION_WORDS}\n:::`
+  );
+  await editArtifact(
+    spec,
+    {
+      ops: [
+        {
+          after: "end",
+          markdown: `${["## Questions on the first page", ...questions].join("\n\n")}\n`,
+          op: "insert",
+        },
+      ],
+    },
+    asPlanner
+  );
+  // Every question is an ask before the answered question is written, so each was made before
+  // it and stands before it in Conversation's read.
+  const pageQuestions = await awaitBlockAsks(key, questionBlocks);
   const beforeTheAnswer = [
     "## Decisions",
     pagedDecision(
       PAGED_BLOCKS.first,
-      "Draw the first statement on the first page",
+      "Draw the first statement first",
       `shaped="${ref(1)}"`,
       `Shapes ${ref(1)}.`
     ),
-    "## Checked at length",
-    `:::requirement{#${PAGED_BLOCKS.checked}}\n` +
-      "Every check of the Verification document serves this statement, in words that fill " +
-      "pages of the tree read.\n:::",
     "## Past the first page",
     answeredQuestionBlock(key),
   ];
@@ -837,26 +864,13 @@ export async function seedPagedDecisions(): Promise<PagedDecisionsSeed> {
     { ops: [{ after: "end", markdown: `${afterTheAnswer.join("\n\n")}\n`, op: "insert" }] },
     asPlanner
   );
-  const checked = specBlockRef(key, PAGED_BLOCKS.checked);
-  const checks = Array.from({ length: LONG_CHECKS }, (_unused, at) => `c-long-${at + 1}`);
-  const verification = checks.map(
-    (block, at) =>
-      `:::check{#${block} serves="${checked}" surface="browser"` +
-      ` run="bun run e2e -- e2e/issue-page-u.e2e.ts" when="before_merge"` +
-      ` negative_control="Draw the page from its first page alone and the row fails."}\n` +
-      `Check ${at + 1} reads the page past the first page of its tree read: ${CHECK_WORDS}\n:::`
-  );
-  await createIssueArtifact(key, {
-    content: `How the paged issue is proved.\n\n${verification.join("\n\n")}\n`,
-    name: "verification.md",
-  });
   await awaitBlockAsk(key, OPEN_QUESTION_BLOCK_ID);
-  await awaitTreeBlocks(key, [...Object.values(PAGED_BLOCKS), ...checks]);
+  await awaitTreeBlocks(key, Object.values(PAGED_BLOCKS));
   return {
     answeredAskId,
-    checks,
     firstBlock: PAGED_BLOCKS.first,
     key,
+    pageQuestions,
     underAskBlock: PAGED_BLOCKS.underAsk,
     waitingBlock: PAGED_BLOCKS.waiting,
   };

@@ -412,6 +412,9 @@ interface OutlineChoice {
   /** The outline whose read the page holds, or undefined where the view the address draws holds
    *  neither. */
   readonly outline: Outline | undefined;
+  /** The view the address draws (`presetOf`): Conversation's where the issue page does not read
+   *  the route. */
+  readonly preset: Preset;
   /** Whether a reader sends that read with the load: Graph's in Graph, and Conversation's in
    *  every view that holds it but Spec, whose own view read holds the memo and the statements the
    *  view draws. On Spec the stage sends it from 1024 px up, where the Contents pane beside the
@@ -430,6 +433,7 @@ function useOutlineChoice(): OutlineChoice {
   return {
     filter: TREE_FILTERS.find((filter) => filter === preset),
     outline,
+    preset,
     sends: outline === "graph" || (outline === "conversation" && preset !== "spec"),
   };
 }
@@ -601,12 +605,19 @@ export function useBlocksRunning(key: string, role: TreeFilter): boolean {
   return role === choice.filter ? view.isFetching : read.isFetching;
 }
 
-/** The answer of the outline read the page holds (`OutlineChoice`) of issue `key`, watched and
- *  never sent, since `useTreeRead` sends it: for a surface that holds the issue's key and not its
- *  read, as a decision's Keep and Change do (`DecisionActions.tsx`), which look for their
- *  decision in it first in every view but Decisions, whose rows are drawn from its view read. */
-export function useOutlineAnswer(key: string): TreeAnswer | undefined {
-  return useQuery({ ...observedOutline(key, useOutlineChoice()), enabled: false }).data;
+/** The two reads of issue `key` a decision's Keep and Change look for their decision in
+ *  (`DecisionActions.tsx`), in the order they look: first the read its row is drawn from - on the
+ *  Decisions view the decisions view read, and in every other view the outline read the page
+ *  holds (`OutlineChoice`) - then the other. Both are watched and never sent, since `useTreeRead`
+ *  sends the outline read and `ViewReadProvider` the view: for a surface that holds the issue's
+ *  key and not its reads. */
+export function useDecisionReads(
+  key: string
+): readonly [TreeAnswer | undefined, TreeAnswer | undefined] {
+  const choice = useOutlineChoice();
+  const outline = useQuery({ ...observedOutline(key, choice), enabled: false }).data;
+  const view = useQuery({ ...viewQuery(key, "decisions"), enabled: false }).data;
+  return choice.preset === "decisions" ? [view, outline] : [outline, view];
 }
 
 /** Whether the outline read the page holds answers older comments it has not read
