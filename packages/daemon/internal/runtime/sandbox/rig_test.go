@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -504,6 +505,9 @@ type rig struct {
 	// feeds, when set, are the informers' feeds withBreakableFeeds serves.
 	feeds *breakableFeeds
 	uids  atomic.Int64
+	// watches counts the watches the rig's fakes opened, by resource (countWatches).
+	watchMu sync.Mutex
+	watches map[string]int
 
 	// hold stops the controller creating pods, set through setHold; autoStart makes a pod it
 	// creates scheduled on a node, past workspace-init, and Running at once. started counts the
@@ -803,6 +807,8 @@ func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *ri
 		dyn, kube = limitedDynamic{dyn, g.limit}, limitedKube{kube, g.limit, g.askedSecret}
 	}
 	g.clients = runtimeClients{informers: kubeClients{dyn: g.dyn, kube: g.kube}, requests: kubeClients{dyn: dyn, kube: kube}}
+	g.countWatches(&g.dyn.Fake, &g.kube.Fake)
+	opened := g.openedWatches()
 	if g.prober {
 		p, err := newProber(ctx, g.clients, opts)
 		if err != nil {
@@ -819,10 +825,77 @@ func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *ri
 		}
 		g.r = r
 	}
+	g.awaitWatches(opened)
 	if !g.noController {
 		go g.control()
 	}
 	return g
+}
+
+// informerResources are the resources every runtime's informers watch (startInformers).
+var informerResources = []string{"sandboxes", "pods", "services"}
+
+// countWatches has each of fakes count every watch it opens, under the resource the watch is of
+// (openedWatches). The fake tracker opens a watch at the present and replays nothing an informer's
+// list saw before it, so a change made between an informer's list and its watch never reaches the
+// runtime's store: a Sandbox a test deleted there stayed in it for ever
+// (TestAConfirmingReadTheReplacementsDeleteOvertakesIsUncertain, which waited 638 s). So every
+// runtime started on the rig's fakes is waited for until its informers have opened their watches
+// (awaitWatches). A watch reactor a test adds after newRig runs before this count, which then sees
+// nothing of the watches it answers.
+func (g *rig) countWatches(fakes ...*k8stesting.Fake) {
+	for _, fake := range fakes {
+		rest := slices.Clone(fake.WatchReactionChain)
+		fake.PrependWatchReactor("*", func(a k8stesting.Action) (bool, watch.Interface, error) {
+			for _, reactor := range rest {
+				if !reactor.Handles(a) {
+					continue
+				}
+				handled, w, err := reactor.React(a)
+				if !handled {
+					continue
+				}
+				if err == nil {
+					g.watchMu.Lock()
+					if g.watches == nil {
+						g.watches = map[string]int{}
+					}
+					g.watches[a.GetResource().Resource]++
+					g.watchMu.Unlock()
+				}
+				return true, w, err
+			}
+			return false, nil, nil
+		})
+	}
+}
+
+// openedWatches is how many watches the rig's fakes have opened so far, by resource.
+func (g *rig) openedWatches() map[string]int {
+	g.watchMu.Lock()
+	defer g.watchMu.Unlock()
+	return maps.Clone(g.watches)
+}
+
+// awaitWatches waits until the rig's fakes have opened a watch of each of informerResources more
+// than before counted: the watches of a runtime started since.
+func (g *rig) awaitWatches(before map[string]int) {
+	g.t.Helper()
+	testwait.Eventually(g.t, "the runtime's informers to open their watches", func() bool {
+		now := g.openedWatches()
+		return !slices.ContainsFunc(informerResources, func(resource string) bool { return now[resource] <= before[resource] })
+	})
+}
+
+// startWatched runs start, which starts a runtime's informers on the rig's fakes, failing the test on
+// its error, and waits until those informers have opened their watches (countWatches).
+func (g *rig) startWatched(start func() error) {
+	g.t.Helper()
+	before := g.openedWatches()
+	if err := start(); err != nil {
+		g.t.Fatal(err)
+	}
+	g.awaitWatches(before)
 }
 
 // newDynamic is the dynamic fake holding objects, each under the resource an API server serves
