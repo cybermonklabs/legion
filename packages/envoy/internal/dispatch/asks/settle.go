@@ -533,8 +533,12 @@ func NodeAnswerTuplesIn(table, id string) string {
 	return graphstore.CurrentTupleReadIn(table,
 		`t.kind, t.to_kind, case when t.to_kind = '`+graphstore.KindValue+`' then '' else t.to_id end`,
 		`t.kind, t.to_kind, t.to_id, t.asserted`,
-		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = `+id+` and t.kind in ('`+strings.Join(AnswerKinds(), `', '`)+`')`)
+		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = `+id+` and t.kind in (`+answerKindsList+`)`)
 }
+
+// answerKindsList is AnswerKinds as the SQL list NodeAnswerTuplesIn reads, each quoted, built once:
+// every ask read that selects NodeAnswerColumn splices it in.
+var answerKindsList = `'` + strings.Join(AnswerKinds(), `', '`) + `'`
 
 // NodeAnswer is what an ask's node holds of its answer state, read off the facts of AnswerKinds
 // that stand on it (Read): the answer state, "" where the node holds none; the answer's words,
