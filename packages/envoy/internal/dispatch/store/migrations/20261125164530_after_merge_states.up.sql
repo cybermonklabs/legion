@@ -1,4 +1,4 @@
--- 20261124124112_after_merge_states.up.sql
+-- 20261125164530_after_merge_states.up.sql
 --
 -- What the results read needs to say whether a result's commit holds the merge of the work, which
 -- of two merges is the newer, and which deploy a check that reads a live system counts results of.
@@ -57,7 +57,7 @@
 -- migrations"). The census answers 0.
 --
 -- The way back is an image rollback alone. By hand, with no process of this release serving, the
--- block below, which is 20261124124112_after_merge_states.down.sql, also takes the schema back: it
+-- block below, which is 20261125164530_after_merge_states.down.sql, also takes the schema back: it
 -- loses every stored hold, deploy, merge commit, merge time and mark, and its last statement makes
 -- the next boot of this release apply this migration again, which then reads each hold from GitHub
 -- again, refreshes each merge it must order, and holds no deploy until the next one is recorded.
@@ -69,7 +69,7 @@
 -- drop index pull_request_heads_merged_head_ref;
 -- alter table pull_request_heads drop column merged_at, drop column merge_commit_sha;
 -- alter table delivery_runs drop column run_attempt;
--- delete from schema_migrations where version = 20261124124112;
+-- delete from schema_migrations where version = 20261125164530;
 alter table pull_request_heads add column merge_commit_sha text not null default '';
 alter table pull_request_heads add column merged_at timestamptz;
 alter table delivery_runs add column run_attempt integer;

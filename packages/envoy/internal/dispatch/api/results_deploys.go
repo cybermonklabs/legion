@@ -56,6 +56,13 @@ func (s *server) deployRepository(value string) (string, error) {
 }
 
 func (s *server) createDeploy(w http.ResponseWriter, r *http.Request) {
+	// The caller is resolved before the body is read, so a request with no credential is refused
+	// whatever it sends.
+	actor, _, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return
+	}
 	var input deployInput
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, "DEPLOY_INPUT", http.StatusBadRequest, err.Error())
@@ -77,11 +84,6 @@ func (s *server) createDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	if deployedAt.After(now.Add(5 * time.Minute)) {
 		writeError(w, "DEPLOY_INPUT", http.StatusBadRequest, "deployed_at must not be more than five minutes in the future")
-		return
-	}
-	actor, _, err := s.optionalActor(r)
-	if err != nil {
-		s.writeHandlerError(w, err)
 		return
 	}
 	held, readErr := delivery.RepositoryHoldsCommit(r.Context(), s.deps.GitHub, repo, input.Commit)
@@ -118,6 +120,9 @@ func (s *server) createDeploy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) listDeploys(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) {
+		return
+	}
 	repo, err := s.deployRepository(r.URL.Query().Get("repo"))
 	if err != nil {
 		s.writeHandlerError(w, err)

@@ -5,12 +5,12 @@
 // default branch, where it merged into another branch, the merge commit of the pull request that
 // landed that branch there. A merge Dispatch does not hold is read from GitHub once, and one it
 // cannot learn leaves the answer not known. The tests read the route's answer as JSON into the
-// types of results_after_merge_rig_test.go, so they build at a commit before the rule and fail
-// there on their own assertions.
+// types of results_after_merge_rig_test.go.
 package api
 
 import (
 	"context"
+	"net/http"
 	"slices"
 	"testing"
 	"time"
@@ -70,7 +70,7 @@ func branchBasis(branch, merge string) afterMergeBasis {
 	return afterMergeBasis{Kind: "branch", Branch: branch, MergeCommit: merge}
 }
 
-// TestAnAfterMergeResultCountsOnlyAtACommitThatHoldsTheMerge: v-after-merge, cases 1 and 3. An
+// TestAnAfterMergeResultCountsOnlyAtACommitThatHoldsTheMerge: v-after-merge, cases 1, 2 and 3. An
 // `after_merge` check counts a result only at a commit of the branch that holds the merge, and the
 // newest that counts decides; a `default_branch` check of an issue with no merged pull request
 // counts any commit of the default branch. It is serial: its live case raises the block schema's
@@ -105,6 +105,17 @@ func TestAnAfterMergeResultCountsOnlyAtACommitThatHoldsTheMerge(t *testing.T) {
 	wantStands(t, "a pass at C1 after that fail", k5().PassStands, "unknown", "pass_and_fail", []string{passAtC1, failAtC1}, afterMergeC1)
 	secondAtC1 := rig.record(t, issue, "k5", "reviewer", "pass", afterMergeC1)
 	wantStands(t, "a second pass at C1", k5().PassStands, "unknown", "pass_and_fail", []string{secondAtC1, failAtC1}, afterMergeC1)
+
+	// Case 2: a late observation names an old commit, not the program's current deploy.
+	restore := useTheNextReleasesManifest(t)
+	liveIssue := rig.issue(t, "A live observation after its deploy", ":::check{#live when=\"after_merge\" subject=\"production\" program=\"renderer\"}\nThe running program answers.\n:::\n")
+	restore()
+	writeKnownMergeOnBase(t, rig.database, "acme/widgets", 71, afterMergeH1, liveIssue, "main", afterMergeM)
+	current := postDeploy(t, rig.handler, deployBody("renderer", afterMergeC1), http.StatusCreated)
+	latePass := rig.record(t, liveIssue, "live", "tester", "pass", afterMergeC0)
+	live := readLiveCheck(t, rig.handler, liveIssue, "")
+	requireNotCounted(t, live, latePass, "it names a commit that the current deploy of the program this check reads does not run")
+	requireLiveDecision(t, "a late pass at an old commit", live, "unknown", "no_result_from_deploy", "", &current)
 
 	// Case 3: an issue with no pull request at all. Its `default_branch` check names main with no
 	// merge to hold, so a pass at a commit of main counts.

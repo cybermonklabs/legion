@@ -1461,7 +1461,8 @@ So for each surface the two builds share, this is what build N+1 may change whil
   A new element is readable one release before it is creatable, unless the page admission below gates it: `legion-envoy-v29.1.0` first declares `requirement`, `plan_task` and `check`, at manifest version 3, and this build gives them `since` 3 and `creatable_since` 3 (Generations and holds, below).
   A server-side write (an agent's edit, a settlement, an import) is bound by this build's manifest alone, so one can still add such an element during a roll; a build of this manifest at an earlier version then answers `409 DOC_NEWER_CONTENT` for that document (the release before the manifest: Generations and holds, below).
   Every write path refuses an element this build reads but may not create yet (`pmdoc`, `refuseUncreatable`), unless the document already holds it, and the editor offers only the elements it may create.
-  `check`'s `subject` and `program` are the first elements read one release before they are created: this build reads them from manifest version 6 and creates them from version 7, so it refuses a write that puts either into a document that holds none.
+  This build reads `check`'s `subject` and `program` from manifest version 6 and creates them from version 7.
+  It refuses a write that adds either attribute to a document not already holding that attribute.
   An element stays readable while stored documents may hold it: no release removes a readable element from the manifest.
   A build that still meets an element it does not know answers `409 DOC_NEWER_CONTENT` for that document, and its document socket closes with `4425` (Document errors, below).
   No route repairs, replaces or rebuilds such a document, since each of those would delete the element;
@@ -1687,7 +1688,10 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   Migration `20261113230000` is the first type change after `20261109051232` seeded the types: it adds `check`'s `ci_check` attribute node and moves every block type to version 4, the version `pmdoc/schema/blocks.json` declares.
   Migration `20261123080000` adds `plan_task`'s `steps` attribute node and moves every block type to version 5, the version `pmdoc/schema/blocks.json` declares since #4611.
   It is the first type change written after the store's backfill (`backfill-graph-store`), which the releases from legion-envoy v34.11.0 on may have run over `graph_nodes` and `graph_tuples`, so it writes both tables by bounded writes alone (below): literal rows, and each block type's supertag node by its primary key, to the whole attributes the earlier type migrations left with the version moved (`TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema`).
-  Migration `20261124124111` adds `check`'s `subject` and `program` attribute nodes, each read from version 6 and created from version 7, and moves every block type to version 6, the version `pmdoc/schema/blocks.json` declares; it writes the way `20261123080000` does, by bounded writes alone.
+  Migration `20261125164529` adds `check`'s `subject` and `program` attribute nodes.
+  Each is read from version 6 and created from version 7.
+  It moves every block type to version 6, which `pmdoc/schema/blocks.json` declares.
+  Like `20261123080000`, it uses bounded writes alone.
   Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.
   A store schema above the version this binary was built for is a store the next release migrated: the process installs it at its own version, with the elements whose `since` is at or below that version and nothing else, and keeps serving, its boot and `/healthz` unaffected, so a release that ships a type migration takes no process of the previous build out of service.
   A read that moved the schema the process serves first writes the numbers it serves now into its registry row (`processes.Registration.RefreshSchema`), then closes every document socket it holds (`docs.Service.CloseDocumentSockets`); the browser connects again presenting the schema its own build compiled, and that admission decides against the schema installed now.
@@ -2912,33 +2916,54 @@ Such a repository is one with an open or merged linked pull request that GitHub 
 The results read compares an `after_merge` or `default_branch` result with that repository's branches where the column names one, and reads a `before_merge` result's pull requests through it.
 A nullable column with no default rewrites no row; the ALTER holds ACCESS EXCLUSIVE on `check_results` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
 
-Migration `20261124124112_after_merge_states` adds what the results read needs to say whether a result's commit holds the merge of the work, which of two merges is the newer, and which deploy a check of a live system counts results of.
-It gives `pull_request_heads` the column `merge_commit_sha`, not null and defaulted `''`, and the nullable `merged_at`: the commit that merged the pull request and the time GitHub merged it.
-A write stores both for a merged row alone, from the `pull_request` envelope or from GitHub's answer for the pull request, and a write that carries neither keeps what the row holds (`delivery.UpsertPullRequestHead`); an open row stores neither, since GitHub's `merge_commit_sha` of an open pull request is its test merge.
-A read orders an issue's merges by `merged_at`, newest first and a row with no time last (`delivery.Attributor.MergeOfIssue`, `MergeIn`, `delivery.LandingOf`), and not by `event_at`, which a later edit of an older pull request moves.
-`delivery.AttributionRuleVersion` is 6, so the reconcile's rule arm offers each stored merged row once more, at most `delivery.RejudgedHeadsPerPass` a pass, and its refresh writes both columns from GitHub's answer.
-`pull_request_heads_merged_head_ref`, partial on `state = 'merged'` and keyed `(lower(repo), head_ref)`, answers which merged pull requests had one branch as their head, which is how a merge into an integration branch is followed to the default branch.
-`commit_holds` keeps GitHub's answer whether one commit's history holds one merge commit, keyed `(repo, commit_sha, merge_sha)` under the lowercased repository (`delivery.Branches.CommitHolds`).
-Two commits never change, so a no is kept for good as a yes is, and a read that failed is kept nowhere.
-`deploys` is the record of deploys: the commit (`commit_sha`) of a repository (`repo`, lowercased) that a program (`program`, 1 to 64 characters of `a-z0-9-`) runs since `deployed_at`, with `recorded_by` naming who wrote it.
-A row's `source` is `delivery_run`, one row for each production run of the delivery timeline (`deploys_run`, unique on `source` and `run_id`), or `route`, a deploy posted to Dispatch.
-The current deploy of a program is its row of the latest `deployed_at`, then the higher `id` (`deploys_newest`).
+Migration `20261125164530_after_merge_states` stores merge metadata, commit ancestry answers and deploys for result comparison.
+`pull_request_heads.merge_commit_sha` defaults to `''`, and `merged_at` is nullable.
+They hold the merge commit and GitHub's merge time.
+A merged row takes both from its `pull_request` envelope or GitHub's answer.
+A write without merge fields keeps their stored values (`delivery.UpsertPullRequestHead`).
+An open row stores neither, because GitHub's open-pull-request `merge_commit_sha` is a test merge.
+Stored merges sort by `merged_at`, newest first, then number (`delivery.Attributor.MergeOfIssue`, `MergeIn`, `delivery.LandingOf`).
+The results reader fills missing times before choosing a merge.
+If a needed time remains unknown, the merged set stays unordered.
+`event_at` records an attribution update, not a merge time.
+`delivery.AttributionRuleVersion` is 6, so reconciliation offers each stored merged row once more.
+Each pass offers at most `delivery.RejudgedHeadsPerPass` rows, whose refresh reads both columns from GitHub.
+`pull_request_heads_merged_head_ref` indexes `(lower(repo), head_ref)` for merged rows.
+It finds merged pull requests whose head was an integration branch, so the reader can follow its recorded landing.
+`commit_holds` records whether a commit holds a merge, keyed by lowercased `(repo, commit_sha, merge_sha)` (`delivery.Branches.CommitHolds`).
+Commits cannot change, so both yes and no persist.
+A failed read is never stored.
+`deploys` records each program's build and deploy time.
+Each row names `commit_sha`, lowercased `repo`, `deployed_at`, and its writer in `recorded_by`.
+`program` is 1 to 64 characters of `a-z0-9-`.
+`source` is `delivery_run` or `route`.
+`deploys_run` allows one delivery row per run, unique on `(source, run_id)`.
+A route row is a deploy posted to Dispatch.
+A program's current row has the latest `deployed_at`, then the highest `id` (`deploys_newest`).
 `delivery_runs.run_attempt` is nullable and stores GitHub's actual attempt.
 Existing rows remain unknown until a later GitHub event or listing supplies it.
 Regular reconciliation repeats its last hour (`reconcileOverlap`).
 The existing backfill progress keys do not restart for this column.
 An older row outside those reads can remain unknown indefinitely.
-A GitHub answer that omits the attempt also leaves it unknown. Dispatch never substitutes attempt 1.
-`deploys.run_completed_at` remembers the source completion already processed.
-A same-build rerun advances this marker without moving `deployed_at`, so its replay cannot replace a later build.
-`check_results` gains `check_subject` and `check_program`, not null and defaulted `''`: the check's `subject` and `program` as the record route read them.
-They decide no answer; they bound which open issues a recorded deploy is announced on, and `check_results_live` holds the rows that name a subject.
-No build of this release lets an author write either attribute, so no stored result names one and nothing is backfilled.
+A GitHub answer that omits the attempt also leaves it unknown.
+Dispatch never substitutes attempt 1.
+`deploys.run_completed_at` remembers the delivery completion already processed.
+A same-build delivery rerun advances this marker without moving `deployed_at`, so replay cannot replace a later build.
+`check_results.check_subject` and `check_program` default to `''` and retain the check attributes read during recording.
+They determine which open issues receive deploy events, not the check verdict.
+`check_results_live` indexes rows naming a subject.
+This build refuses writes introducing either attribute to a document without it.
+It backfills nothing.
 The rename pass writes `commit_holds.repo` and `deploys.repo` (below).
-Each new column has a constant default or none, so it rewrites no row, and each ALTER holds ACCESS EXCLUSIVE on its table for the catalog write alone; each `create index` on an existing table holds `SHARE` on it while it reads it, inside the runner's one transaction.
-The release before it neither reads nor writes any of it and names its columns in each insert, so it rolls beside this one; its census answers `0`.
-Rolling Dispatch back past it is an image rollback alone.
-`20261124124112_after_merge_states.down.sql` is the by-hand script that also takes the schema back, run with no process of this release serving: it loses every stored hold, deploy, merge commit, merge time and mark, and deletes the migration's version row, so the next boot of this release applies it again.
+New columns have constant defaults or none, so they rewrite no rows.
+Each ALTER holds ACCESS EXCLUSIVE for its catalog write alone.
+Each index on an existing table holds SHARE while reading it inside the migration transaction.
+The previous release names insert columns and ignores these fields, so both builds can run together.
+Its census answers `0`.
+An image rollback leaves these tables and columns intact.
+`20261125164530_after_merge_states.down.sql` removes them by hand, with no process of this release serving.
+It loses stored holds, deploys, merge commits, merge times and marks.
+It deletes the migration's version row, so the next boot of this release applies it again.
 
 Migration `20261116163813_issue_role_holders` creates `issue_role_holders`, the session that holds each Legion role of an issue, which the Legion daemon publishes (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
 The key is `(issue_key, role)`, and a unique index on `(issue_key, session)` keeps a session to one role of an issue.
@@ -5654,20 +5679,27 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/deploys` (POST; cookie, trusted header, or bearer)
 
   Record `{repo, program, commit, deployed_at?, url?}` through `dispatch deploy` or the API.
-  `repo` is lowercased `owner/repo`. `program` matches `^[a-z0-9-]{1,64}$`. `commit` is 40 lowercase hexadecimal characters.
-  An omitted `deployed_at` uses the server's clock. A time over five minutes ahead is `400 DEPLOY_INPUT`.
-  A repository proved not to hold the commit gives `400 DEPLOY_COMMIT_UNKNOWN`. An unsuccessful GitHub read proves no absence.
-  The caller needs deployment-wide write access. A project-scoped credential cannot record a deploy, even for its own project's repository.
+  `repo` is lowercased `owner/repo`.
+  `program` matches `^[a-z0-9-]{1,64}$`.
+  `commit` is 40 lowercase hexadecimal characters.
+  An omitted `deployed_at` uses the server's clock.
+  A time over five minutes ahead is `400 DEPLOY_INPUT`.
+  A repository proved not to hold the commit gives `400 DEPLOY_COMMIT_UNKNOWN`.
+  An unsuccessful GitHub read proves no absence.
+  The caller needs deployment-wide write access.
+  A project-scoped credential cannot record a deploy, even for its own project's repository.
   `recorded_by` names the credential's writer, never an actor chosen in the body.
   An unbound personal token names its proved account, with the token's ID, name and scopes in `act`.
   A credential-proved nonempty session keeps that session's identity.
   This is audit attribution, not person-scope authority.
-  `201` carries `{deploy}` for the new build. Recording the current commit again gives `200` with that unchanged row.
+  `201` carries `{deploy}` for the new build.
+  Recording the current commit again gives `200` with that unchanged row.
   A different build whose time precedes the current deploy gives `409 DEPLOY_NOT_NEWEST`.
   The delivery timeline also records program `delivery` after its configured production job succeeds.
   The run's overall conclusion alone cannot establish that job's success.
   Each record publishes `deploy.recorded` to the affected open recording issues and check-owning issues, once per issue.
-  Its payload is `{repo, program, commit, deployed_at, source}`. It promises no check verdict.
+  Its payload is `{repo, program, commit, deployed_at, source}`.
+  It promises no check verdict.
   Recipients have an unretracted stored live result for that repository and either that program or no named program.
 
 - `/api/v1/deploys?repo=owner/repo` (GET; cookie, trusted header, or bearer)
@@ -5678,25 +5710,37 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/results` (GET; cookie, trusted header, or bearer)
 
-  GET lists the `check` blocks of the issue's Verification document in document order:
-  `{issue, verification_artifact_id, checks}`, each check with its attributes (`when`, `surface`, `run`, `negative_control`, `ci_check`, `subject`, `program`), the version its words last changed in, their digest, and every result recorded against it from any issue, newest first.
+  GET lists the Verification document's `check` blocks in document order as `{issue, verification_artifact_id, checks}`.
+  Each check carries its attributes (`when`, `surface`, `run`, `negative_control`, `ci_check`, `subject`, `program`).
+  It also carries the version its words last changed in, their digest, and every recorded result, newest first.
 
   - A check's results come newest first by `created_at`, the time the recording transaction began, with `id` descending breaking a tie, and a client that reads one result per check reads the first of them;
     `dispatch results` prints every one of them, each with the reading its role recorded.
     Two results recorded in transactions that overlapped can come back in either order.
 
   - `?at=<40-hex commit>` compares every check of the issue with that one commit and nothing else.
-    CI checks still read each selected pull request head. A derived result counts at the named commit only where that head matches it.
+    CI checks still read the heads an unnamed read would select.
+    A derived result counts at the named commit only where its head matches that commit.
+    A named read has no required heads.
+    A `before_merge` check there still needs a standing pass at the named commit, with no fail there.
 
   Each check carries `compared_with`, every commit and branch its results are compared with in the order they are asked about, `compared_nothing` where it has none, and `pass_stands`.
-  Each basis is `{kind, repo?, commit?, branch?, merge_commit?, pull_request?, learned_at?}`. Its `kind` is `named`, `pull_request` or `branch`.
-  A linked basis names its repository in `repo`. An own basis omits it. A branch's `merge_commit` names the merge a result there must hold.
+  Each basis is `{kind, repo?, commit?, branch?, merge_commit?, pull_request?, learned_at?}`.
+  Its `kind` is `named`, `pull_request` or `branch`.
+  A linked basis names its repository in `repo`.
+  An own basis omits it.
+  A branch's `merge_commit` names the merge a result there must hold.
   Each result carries `commit_stands`, where its own commit stands against those, `check_words_moved`, and `retracted` where a retraction stands against it.
 
-  - A `before_merge` check names every open pull request head attributed to its issue in its own repository.
-    With none open, it names the final head of the pull request that merged last. `merged_at` and then number decide the order, not the last attribution event.
-    An unordered set names its heads without choosing one, and the check reads unknown. The read fills missing merge times it needs through GitHub, once per pull request in that read. A failed fill or a row still without a time is not ordered last.
-    Linked repositories choose their heads by the same rule.
+  - A `before_merge` check compares results with every open or merged head attributed or linked to its issue.
+    Each result can stand only at a head in its own repository.
+    Required heads are selected globally, not separately for each repository.
+    If any pull request is open, every open head is required.
+    With none open, only the final head of the pull request that merged last is required.
+    Merged heads remain comparison bases while open heads exist, but are not required.
+    Merge time and then pull-request number determine the last merge.
+    The read fills missing merge times through GitHub once per pull request.
+    If needed merge times remain unknown, the merged set is unordered and the check reads unknown.
 
     A pull request that the issue's external links name (`https://github.com/<owner>/<repo>/pull/<n>`) in a repository the issue does not resolve to counts as one attributed to it, since the attribution holds an issue to its own repository and can never give it that pull request (`delivery.Attributor.HeadsAttributedTo`, `linkedPullRequestTerms`); its basis names that repository in `repo`.
     The link is matched to the stored row by repository and number, so a push that moves that pull request's head moves the basis, and one that closed without a merge is no basis.
@@ -5704,58 +5748,90 @@ Each item below names a path with its method and identity, then its purpose.
     A link to a pull request of the issue's own repository adds nothing: the attribution alone decides which pull requests of that repository are the issue's.
 
   - An `after_merge` check compares with nothing (`not_merged`) until its issue has a merge of its own or linked work.
-    In each repository it names the last merge's base branch. It names the default branch only where the work's merge reached that branch. That can be a direct merge or a recorded landing of the integration branch. Each branch names the merge there.
+    In each repository it names the last merge's base branch.
+    It names the default branch with a merge only where the work's merge reached that branch.
+    That can be a direct merge or a recorded landing of the integration branch.
+    It chooses the newest recorded landing whose final head holds the work's merge.
+    Each branch names the merge there.
 
-    Where only linked work merged, the own default branch is still named without a merge. No own result can count there.
-    An unordered set names its possible branches without guessing a merge. A result carried there is unknown.
+    Where only linked work merged, the own default branch is still named without a merge.
+    No own result can count there.
+    An unordered set names its possible branches without guessing a merge.
+    A result on one of those branches reads unknown.
 
-  - A `default_branch` check names each repository's default branch alone. With no merge of the work anywhere, any commit on that branch can count. No merge is required.
+  - A `default_branch` check names each repository's default branch alone.
+    With no merge of the work anywhere, any commit on that branch can count.
+    No merge is required.
     Once any own or linked work merged, the result must hold the work's merge on its repository's default branch.
-    A known absence of that merge cannot count. An unknown merge leaves a carried result unknown.
+    A known absence of that merge cannot count.
+    An unknown merge leaves a result on that branch unknown.
 
-  - A branch check serves the union of its own bases and those of repositories in which it links merged work (`delivery.Attributor.MergeIn`). It serves these before any result names a linked commit. Each linked basis names its repository in `repo`.
-    A result walks only the bases of its own repository, never that served union. The record route keeps a linked result's repository in `check_results.commit_repo` (POST below). A result with no stored repository is compared in the issue's own repository.
+  - A branch check serves the union of its own bases and those of repositories in which it links merged work (`delivery.Attributor.MergeIn`).
+    It serves these before any result names a linked commit.
+    Each linked basis names its repository in `repo`.
+    A result walks only the bases of its own repository, never that served union.
+    The record route keeps a linked result's repository in `check_results.commit_repo` (POST below).
+    A result with no stored repository is compared in the issue's own repository.
 
-    A linked commit is not asked of the issue's own repository, which would answer `404`. A `before_merge` result uses its stored linked repository for the same reason.
+    A linked commit is not asked of the issue's own repository, which would answer `404`.
+    A `before_merge` result uses its stored linked repository for the same reason.
 
-  - A check compared with nothing says why in `compared_nothing`:
-    `no_pull_request_or_branch` where the issue resolves to no repository, and where a `before_merge` check's issue holds no pull request at all;
-    `repository_unreadable` where the App cannot read that repository and Dispatch can name no branch of it to ask a stored answer about;
-    `read_failed` where a read of Dispatch's own did not answer;
-    `not_merged` where an `after_merge` check's issue has no own or linked merge.
+  - A check compared with nothing explains why in `compared_nothing`.
+    `no_pull_request_or_branch` means the issue names no compared pull request or branch.
+    `repository_unreadable` means the App cannot read the repository, and no branch with usable stored answers is known.
+    `read_failed` means a read of Dispatch's own did not answer.
+    `not_merged` means an `after_merge` check's issue has no own or linked merge.
 
-  - `commit_stands` is `{answer: "at_basis", basis}` at a compared commit. It also answers this on a compared branch that carries the result and whose merge requirement it meets.
+  - `commit_stands` is `{answer: "at_basis", basis}` at a compared commit.
+    It also answers this on a compared branch that carries the result and whose merge requirement it meets.
     It is `{answer: "other_commit"}` where the result cannot count at any basis, and `{answer: "unknown", reason}` where Dispatch cannot say.
-    Commit C holds merge M where M is an ancestor of C, including equality. Equality asks GitHub nothing.
+    Commit C holds merge M where M is an ancestor of C, including equality.
+    Equality asks GitHub nothing.
     Branch membership alone cannot place a result whose required merge is unknown or not held.
 
-    A stored `branch_commits` yes and a stored `commit_holds` yes stand for good. They remain usable when the App cannot read the repository. A failed read is never stored as no.
+    A stored `branch_commits` yes and a stored `commit_holds` yes stand for good.
+    They remain usable when the App cannot read the repository.
+    A failed read is never stored as no.
     A commit that still needs a repository read is unknown when that read cannot answer.
     No repository read is needed to reject a known absent merge or an `after_merge` check with no merge anywhere.
-    An earlier branch of an `after_merge` check is the one exception, and only where GitHub refused the read of it — a 403 or a 404, which a base branch GitHub no longer holds answers with: that says the branch does not carry the commit, and the default branch decides.
+    An earlier branch of an `after_merge` check is the one exception, and only where GitHub refused the read of it
+    — a 403 or a 404, which a base branch GitHub no longer holds answers with: that says the branch does not carry the commit, and the default branch decides.
     Every other failure of that read, a rate limit, a 5xx, a timeout or a request whose caller went away, leaves the answer `unknown` wherever no branch carries the commit, and never `other_commit`.
-    An issue that resolves to no repository is never unknown, since Dispatch holds every head such an issue will ever have, so a commit none of them names is another commit; the one exception is a `before_merge` result whose `check_results.commit_repo` names a linked repository, which that repository decides, as the next sentence says.
-    A result whose commit is taken to be of a repository the issue links a pull request in (`check_results.commit_repo`) is decided by that repository: a `before_merge` one is `unknown` where Dispatch cannot read it and `other_commit` where no compared head is its commit, and a branch check's walks that repository's branches.
-    Such an `other_commit` or `unknown` answer carries that repository as `repo` (`owner/name`), so a reader names it rather than the issue's own repository; an answer about the issue's own repository carries none, and an `at_basis` answer names a linked repository in its `basis`.
+    An issue that resolves to no repository is never unknown, since Dispatch holds every head such an issue will ever have, so a commit none of them names is another commit;
+    the one exception is a `before_merge` result whose `check_results.commit_repo` names a linked repository, which that repository decides, as the next sentence says.
+    A result whose commit is taken to be of a repository the issue links a pull request in (`check_results.commit_repo`) is decided by that repository:
+    a `before_merge` one is `unknown` where Dispatch cannot read it and `other_commit` where no compared head is its commit, and a branch check's walks that repository's branches.
+    Such an `other_commit` or `unknown` answer carries that repository as `repo` (`owner/name`), so a reader names it rather than the issue's own repository;
+    an answer about the issue's own repository carries none, and an `at_basis` answer names a linked repository in its `basis`.
 
   - `check_words_moved` is whether the check's words changed after the result was recorded, which the digest the result kept decides against the block's digest now.
     It is a second fact and a second field: a result at a compared commit whose check has been reworded since is both, and one word for both would hide which.
 
-  - `pass_stands` names the deciding answer, roles, result IDs, commit and reason. A retracted or reworded result does not decide it.
-    A `before_merge` pass must stand for every selected head, with no fail at any of those heads. A pass on one head cannot erase a fail on another.
+  - `pass_stands` names the deciding answer, roles, result IDs, commit and reason.
+    A retracted or reworded result does not decide it.
+    A `before_merge` check needs a standing pass at every required head, with no fail at any of those heads.
+    A pass on one head cannot erase a fail on another.
+    A required head with both verdicts reads `unknown/pass_and_fail` until one is retracted.
     An unreadable head or CI read that could still change the answer leaves it unknown.
+    Where `compared_nothing` is `no_pull_request_or_branch`, the check reads `no`.
 
     For `after_merge` and `default_branch`, the first result that counts in newest-first order decides at its commit X.
-    Passes and fails together at X give `unknown/pass_and_fail`, naming the newest of each. A fail alone gives `no/fail`. Passes alone give `yes` and their distinct roles.
+    Passes and fails together at X give `unknown/pass_and_fail`, naming the newest of each.
+    A fail alone gives `no/fail`.
+    Passes alone give `yes` and their distinct roles.
     A newer result that could not be placed gives `unknown/not_placed` rather than reviving an older pass.
-    A result known to be at another commit is skipped. With none left, the answer is `no/no_result`.
+    A result known to be at another commit is skipped.
+    With none left, the answer is `no/no_result`.
 
     A live check (`subject` `production` or `graph`) counts only observations of its program's current build, recorded since that deploy.
-    A named `program` selects that program alone. With one deployed program, an unnamed check reads it.
-    With several programs and none named, the answer is `unknown/program_not_named`. An absent current deploy gives `unknown/no_deploy`.
+    A named `program` selects that program alone.
+    With one deployed program, an unnamed check reads it.
+    With several programs and none named, the answer is `unknown/program_not_named`.
+    An absent current deploy gives `unknown/no_deploy`.
     A deploy that does not hold the required merge gives `unknown/deploy_not_merged`.
     With no observation of the current deploy, the answer is `unknown/no_result_from_deploy`.
-    `pass_stands.deploy` names the program, commit and deploy time. `not_counted` explains why an excluded result counts for nothing.
+    `pass_stands.deploy` names the program, commit and deploy time.
+    `not_counted` explains why an excluded result counts for nothing.
     A named historical read leaves today's deploy out and judges the named commit's code alone.
 
   - `currency` is a compatibility field for `dispatch` clients older than pi-envoy 17.1.0, which print it beside each result and read none of the fields above (`api/results_currency.go`).
@@ -5779,13 +5855,16 @@ Each item below names a path with its method and identity, then its purpose.
     or a read has already been told of a pull request whose head is another commit, which answers about this commit for now and holds the pair off for `delivery.CommitPullSettledFor` (one hour, `delivery.CommitPullReads`), after which it is read through again, since a pull request opened later can have its head at that commit.
 
   A check CI proves is one whose `ci_check` names a GitHub check run, with `when` `before_merge`, no `run`, a `negative_control`, and no result recorded against it (`validCICheck`, `docs.CICheckRuleIn`).
-  No role records its result (POST below refuses one), and nothing is stored for it:
-  Each read checks every open head. With none open, it checks the final head of the last pull request to merge.
-  A merged set without an order reads unknown. Each distinct head's check runs share one ten-second deadline (`deriveCIResults`).
+  No role records its result (POST below refuses one), and nothing is stored for it: Each read checks every open head.
+  With none open, it checks the final head of the last pull request to merge.
+  A merged set without an order reads unknown.
+  The read asks every distinct head's check runs, on every page, within one shared ten-second deadline (`api/results_ci.go`, `deriveCIResults`).
   Of the runs named exactly as `ci_check` says, the one of the highest id decides.
   An issue holding no such check makes no read of check runs at all.
 
   - Such a check carries `ci`, `{run, state, case, detail, line}`.
+    With several required heads, the top-level `ci` describes the first selected head, not all head verdicts.
+    Each required head keeps its own CI reading among the check's subjects.
     `state` is `pass`, `fail`, `no_result` or `unread`.
     `case` is the conclusion that decided it — `success` passes, and `failure`, `timed_out`, `action_required`, `startup_failure`, `stale` and a conclusion this list does not name, as GitHub wrote it, fail — or one of the cases of no result:
     `neutral`, `skipped`, `cancelled`, `not_completed`, `absent` (no run of that name at the head) and `no_head` (Dispatch holds no open or merged pull request head of the issue), each `no_result`, and `github_unreadable` (`unread`: no App key, a token GitHub would not mint, an HTTP error, a rate limit or the deadline).
@@ -5793,7 +5872,7 @@ Each item below names a path with its method and identity, then its purpose.
     `line` is the pull-request body line for the check: `- Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <the check's words>` for a pass or a fail, and `- Check <id> (before_merge): CI run <name> has no result (<case>)` for every other state; the check's words are kept, and the words cut, as a recorded line's reading is (POST below), so `text` keeps an issue key the line leaves out.
     The run's name is written word for word, its blanks as one, only when the line keeps every word of it; a name holding a word the line drops, such as an issue key or a word holding `_`, reads `the CI run the check names`, and `ci_check` and `run` keep it whole.
 
-  - For a pass or a fail its `results` hold the one result derived from that run, and nothing else:
+  - Each passing or failing head contributes the result derived from its own run:
     `id` `ci-run:<check run id>`, `role` `ci`, `actor` `{kind: "github_app", id: <the slug of the App that made the run>}`, `session` `""`, `run` the run's name, `surface` and `negative_control` the check's, `commit_sha` the head read, `created_at` the run's `completed_at`, `observed` the conclusion, then the run's output title and summary cut together to 2,000 runes, then its URL, one a line, `check_sha256` the check's own digest, the counts 0, `screenshots` `[]`, and no `event_seq`.
     It is judged as a recorded result is (`comparisonReader`), so its `commit_stands` and the check's `pass_stands` read as a recorded result's would.
 
@@ -5817,8 +5896,11 @@ Each item below names a path with its method and identity, then its purpose.
   - `role` is at most 32 characters of `[a-z-]`, `verdict` is `pass` or `fail`, `commit` is 40 lowercase hex, and absent counts are 0;
     a `pass` counting any failed, skipped or excluded case is `400 RESULT_CONTRADICTS`, and any other malformed field `400 RESULT_INPUT`.
 
-  - Dispatch asks GitHub whether the repository the check's issue resolves to holds that commit, before it writes anything.
-    When GitHub does not say it does — it says that repository does not hold it, or its read did not answer — Dispatch reads the external links of the check's issue: each link of the form `https://github.com/<owner>/<repo>/pull/<n>` names that repository, and the repository counts when GitHub says one of those pull requests is open or merged (`delivery.PullRequestOpenOrMerged`).
+  - A stored open or merged head fixes its commit's repository without a GitHub read.
+    Otherwise Dispatch asks the issue's repository, then its other attributed-head repositories in name order, stopping at the first proved hold.
+    It then reads eligible linked repositories, each once.
+    A link names a repository through `https://github.com/<owner>/<repo>/pull/<n>`.
+    It counts when GitHub says that pull request is open or merged (`delivery.PullRequestOpenOrMerged`).
     A pull request that closed without a merge does not make its repository count, and neither does one GitHub answers `404` or `410` for (a mistyped link, or a pull request since deleted), nor a repository the App is not installed on, nor one it cannot read (GitHub's `403` that is no rate limit, as `githubapp.RateLimit` reads one): each is GitHub's answer, not a failed read, and no retry changes it until someone gives the App the repository.
     One record reads at most 10 linked pull requests, one after another, and each distinct repository once, until one of its pull requests counts (`linkedPullRequestReads`); a link past the bound is left unread.
     A link names a pull request only where the pattern the links are read by takes it (`delivery.Attributor.LinkedPullRequests`): an owner that is a login GitHub serves, and a name of letters, digits, `.`, `-` and `_` that is neither `.` nor `..`; any other link, such as one whose owner is `-acme` or `my.org`, spends no read, and no refusal names it.
