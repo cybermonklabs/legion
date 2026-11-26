@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -280,9 +281,10 @@ func (e *fixEnd) refuseRoles(refused bool, roles ...claim.Role) {
 // conflictsInTesting is the setup of an issue whose pull request opens at X conflicting with its
 // base: the plan and the gate, the stand-in answering X dirty, the implementer taking its task, the
 // pull request opening at X, and the implementer completing there; then the tester takes its task
-// in testing, and its turn stays open. The daemon reads X conflicting at the opening and reads it
-// again a minute later (conflict_confirm), when the issue stands in testing; the base's rules it
-// cannot read (the stand-in answers 404), so it asks the implementer to merge the base forward.
+// in testing, and its turn stays open. The daemon reads X conflicting at the opening and queues its
+// second read of X for a minute later (conflict_confirm), which the test makes due at once
+// (secondReadNow); the issue stands in testing then, and the base's rules the daemon cannot read
+// (the stand-in answers 404), so it asks the implementer to merge the base forward.
 func (e *fixEnd) conflictsInTesting() {
 	e.r.t.Helper()
 	e.planAndGate(phase.Implementing, "implementer", "tester", "reviewer")
@@ -292,9 +294,90 @@ func (e *fixEnd) conflictsInTesting() {
 	e.worker(claim.RoleTester).take()
 }
 
-// awaitAsk waits for the record's merge forward of X asked of the implementer, which the daemon
-// writes at its second read of X, and answers it.
+// secondReadNow makes the daemon's second read of X due now, as though its first read had been
+// made the daemon's wait earlier. The daemon reads X conflicting when the pull request opens at X:
+// it records that first read (record.PullRequest.ConflictRead) and queues the second read
+// (record.ConflictConfirm) due the wait after it (workflow's conflictConfirmWait, a minute), the
+// time GitHub is given to compute mergeability, and only a read made that wait or more after the
+// first confirms the conflict. Once the record holds the first read, the test moves the read's
+// time, the time the row names it by and the row's due time back by the row's due time less the
+// first read's time, which is that wait. It writes under the lock every apply of a fact takes
+// (serializedTx), so no apply writes the pull request between this read of it and this write, and
+// then wakes the row's lane, as the commit of a row the workflow writes does. The second read then
+// runs at once, reads GitHub, and the workflow decides on its answer as it would have a minute
+// later. next_at keeps microseconds, so the wait read back can fall short of the daemon's by less
+// than one, and the second read, made after this write, comes far later than that after the first.
+// A row already due, or a first read a later read confirmed or released, is left to the daemon.
+func (e *fixEnd) secondReadNow() {
+	r := e.at()
+	r.t.Helper()
+	r.await(e.key+"'s first conflicting read of X, or its conflict confirmed", func() bool {
+		pr := r.pullRequest()
+		return pr != nil && (pr.ConflictRead != nil && pr.ConflictRead.Head == e.x || pr.MergeForward != nil && pr.MergeForward.Head == e.x)
+	})
+	var id int64
+	var moved time.Duration
+	if err := serializedTx(context.Background(), r.st.Pool(), "make the second read due now", func(ctx context.Context, tx pgx.Tx) error {
+		pr, err := r.records.PullRequest(ctx, tx, e.key)
+		if err != nil || pr == nil || pr.ConflictRead == nil || pr.ConflictRead.Head != e.x {
+			return err
+		}
+		first := *pr.ConflictRead
+		rows, err := tx.Query(ctx, `select id, next_at, payload::text from outbox where issue = $1 and kind = $2`,
+			e.key, string(record.OutboxKindConflictConfirm))
+		if err != nil {
+			return err
+		}
+		var read record.ConflictConfirm
+		var due time.Time
+		var rowID int64
+		var payload string
+		if _, err := pgx.ForEachRow(rows, []any{&rowID, &due, &payload}, func() error {
+			decoded, err := record.DecodeOutboxPayload(record.OutboxRow{ID: rowID, Kind: record.OutboxKindConflictConfirm, Payload: []byte(payload)})
+			if err != nil {
+				return err
+			}
+			if of := decoded.(record.ConflictConfirm); of.Head == first.Head && of.FirstReadAt.Equal(first.At) && due.After(time.Now()) {
+				id, read, moved = rowID, of, due.Sub(of.FirstReadAt)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		if id == 0 {
+			return nil
+		}
+		first.At = first.At.Add(-moved)
+		encoded, err := json.Marshal(first)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `update pull_requests set conflict_read = $2 where issue = $1`, e.key, encoded); err != nil {
+			return err
+		}
+		read.FirstReadAt = first.At
+		row, err := record.NewOutboxRow(e.key, read, due.Add(-moved))
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `update outbox set payload = $2, next_at = $3 where id = $1`, id, row.Payload, row.NextAt)
+		return err
+	}); err != nil {
+		r.t.Fatalf("make %s's second read of X due now: %v", e.key, err)
+	}
+	if id == 0 {
+		r.fact("second-read", "%s's second read of X was due or had run when the test came to it; the daemon runs it as it stands", e.key)
+		return
+	}
+	r.fact("second-read", "%s's first read of X and its second read, row %d, moved %s back; the row is due now", e.key, id, moved)
+	r.wake(e.key, record.OutboxKindConflictConfirm)
+}
+
+// awaitAsk makes the daemon's second read of X due now (secondReadNow), waits for the record's
+// merge forward of X asked of the implementer, which the daemon writes at that read, and answers
+// it.
 func (e *fixEnd) awaitAsk() record.MergeForward {
+	e.secondReadNow()
 	r := e.at()
 	r.t.Helper()
 	var asked record.MergeForward
@@ -407,8 +490,9 @@ func (e *fixEnd) k1PassesAt(commit string) {
 //     with one return and no other merge message. Its control (issue 5): the implementer's own
 //     merge of X into Y, which no fix took, and the tester's completion at X is refused.
 //
-// The issues of the merge forward are set up first: the daemon confirms a conflict at its second
-// read, a minute after the first, and the walk of the other issues runs in that minute.
+// The issues of the merge forward are set up first. The daemon queues its second read of each
+// one's X for a minute after the first; the test makes it due at once when its check begins
+// (secondReadNow), so no check waits out that minute.
 func TestFixBesideReviewThroughDispatch(t *testing.T) {
 	t.Parallel()
 	r := newFixRig(t, nil, fixBesideIssues...)
