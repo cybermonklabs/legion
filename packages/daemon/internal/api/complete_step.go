@@ -14,18 +14,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// completeStepContract is the daemon contract that added the owner's report of a step of its own,
-// `POST /legion/v1/steps/complete` (version.go's 302), the reviewer's verdict where no review on
-// GitHub decides its step, and each issue's `placeRole` in the state, the role of the claim that
-// works its task's place. A plugin below it never calls the route, and is served each issue
-// without `placeRole` (shaping.go's withoutPlaceRole).
-//
-// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract this route arrived at stays where it is. It moves only with this
-// change's own number, and it is the last number of answers.go's SupportedContracts, which names
-// the constant rather than its number for that reason.
-const completeStepContract = 302
-
 // CompleteStepRequest is the owner's report of a step that is its own: a step whose key is owner,
 // or the retro of a task whose retro is the owner's. Step is the step's place in the task, from 1,
 // and 0 for the retro. The other members are what a worker's completion of that place reports

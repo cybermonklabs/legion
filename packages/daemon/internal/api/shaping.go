@@ -631,7 +631,6 @@ var stateNarrowings = []stateNarrowing{
 	{contract: startWaitTokenContract, issue: withoutStartWaitTokens,
 		dropped: "the claim tokens of the issues' startWaitsForPod, " +
 			"served as the roles of its starts, each once"},
-	{contract: completeStepContract, issue: withoutPlaceRole, dropped: "the issues' placeRole"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
