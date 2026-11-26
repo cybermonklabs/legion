@@ -176,11 +176,12 @@ func readEvalShape(t *testing.T, served *server, projects []string, now time.Tim
 // them), the list read of every shape a page asks for answers byte for byte what the read of the
 // day rows answers, folded in day order: each preset with and without its compare range, as a GET
 // and as the live view's L+1 days, a repository's rows, and ranges that start before a series'
-// first day. The read of the day rows is the same server's once no project's figures stand built
-// (eval_figures_built), which a range of a length the tab does not offer and a read of two
-// repositories read anyway. The negative control breaks the stored figures of one eval, every cut
-// of them: every shape the stored figures answer then answers otherwise, and the two the day rows
-// answer do not.
+// first day, the per-day arrays of the window and of the compare range (days, compare_days) among
+// them, which hold days of their own. The read of the day rows is the same server's once no
+// project's figures stand built (eval_figures_built), which a range of a length the tab does not
+// offer and a read of two repositories read anyway. The negative control breaks the stored
+// figures of one eval, every cut of them: every shape the stored figures answer then answers
+// otherwise, and the two the day rows answer do not.
 func TestTheStoredFiguresAnswerWhatTheDayRowsAnswer(t *testing.T) {
 	r, exec := newStoredEvalsRig(t)
 	shapes := storedEvalShapes(r.today, r.repos[0], r.repos[1])
@@ -190,13 +191,21 @@ func TestTheStoredFiguresAnswerWhatTheDayRowsAnswer(t *testing.T) {
 		}
 	}
 	stored := map[string][]byte{}
-	figures := 0
+	figures, compareDays := 0, 0
 	for _, shape := range shapes {
 		answer, body := r.read(t, shape)
 		stored[shape.name] = body
 		for _, item := range answer.Items {
 			figures += len(item.Series)
+			for _, series := range item.Series {
+				if shape.offered {
+					compareDays += len(series.CompareDays)
+				}
+			}
 		}
+	}
+	if compareDays == 0 {
+		t.Fatal("no shape the stored figures answer holds a day of its compare range, so their compare_days are compared with nothing")
 	}
 	marks := r.figuresBuilt(t)
 	if len(marks) != len(r.projects) {
@@ -211,7 +220,8 @@ func TestTheStoredFiguresAnswerWhatTheDayRowsAnswer(t *testing.T) {
 				len(stored[shape.name]), len(sample[shape.name]), firstDifference(stored[shape.name], sample[shape.name]))
 		}
 	}
-	t.Logf("%d shapes over %d projects, %d series in all, answered alike by the stored figures and the day rows", len(shapes), len(r.projects), figures)
+	t.Logf("%d shapes over %d projects, %d series in all, %d days of compare ranges among the stored figures' answers, answered alike by the stored figures and the day rows",
+		len(shapes), len(r.projects), figures, compareDays)
 
 	for project, through := range marks {
 		exec(`insert into eval_figures_built (project_key, through, built_by) values ($1, $2, $3)`, project, through, testServerBuild)

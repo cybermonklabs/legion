@@ -253,6 +253,11 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 		"description": "refused whenever present (400 INVALID_JSON): a broadcast's idempotency " +
 			"key is the Idempotency-Key header and never a body member",
 	}},
+	// The register write's charts (decodeEvalRegistration): the handler holds the bytes as the
+	// body sent them, since the validator reads them as the eval platform's own reader does
+	// (evals/charts: an integer apart from a float, a lone surrogate escape kept). Absent carries
+	// the newest version's charts forward; null is a value the validator refuses as no list.
+	{reflect.TypeOf(evalRegisterInput{}), "charts"}: rawField{Fragment: openAPIEvalCharts},
 	// The delivery settings' targets (project_settings_delivery.go): each named eval's target, a
 	// number or "off". A save's leaves a target it does not name as it is (parseDeliveryTargets),
 	// and the answer names each eval the project holds.
@@ -287,6 +292,12 @@ var (
 	openAPIRepository = map[string]any{
 		"type":        "string",
 		"description": `a GitHub repository as "owner/name"`,
+	}
+	openAPIEvalCharts = map[string]any{
+		"type": "array", "maxItems": 16,
+		"items": map[string]any{"type": "object", "additionalProperties": map[string]any{}},
+		"description": "an eval's whole list of declared charts, each the declaration of one chart " +
+			"as the eval platform's validate_charts rules take it",
 	}
 	// openAPIDeliveryTargets is the delivery settings' targets: an object of the slugs of
 	// deliverySettingsTargetSlugs, each a number or "off" (deliveryTargetOff), and no other key.

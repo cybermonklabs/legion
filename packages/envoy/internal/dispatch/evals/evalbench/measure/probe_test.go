@@ -6,7 +6,7 @@ import (
 )
 
 // The statements of a list read as the statement log holds them: evals.ReadStoredFiguresIn's
-// range-figures read with a compare range and its day-figures read, the read of how far the
+// range-figures read and day-figures read, each with a compare range, the read of how far the
 // figures are built beside them, and evals.DayWindowIn's union of the day rows, which the list
 // read before the stored figures.
 const (
@@ -17,11 +17,13 @@ const (
 		select days, end_day, eval_id, fold_key, figures, oldest_updated_at from eval_range_figures
 		where project_key = any($1::text[]) and repo = $2 and eval_id = any($3::text[]) and days = $8 and end_day = $9::date
 			and deploy_repo = case when eval_id = any($4::text[]) then $5::text else '' end`
-	dayFiguresRead = `
-				select eval_id, day, fold_key, figures from eval_day_figures
-				where project_key = any($1::text[]) and repo = $2 and day >= $3::date and day < $4::date and eval_id = any($5::text[])
-					and deploy_repo = case when eval_id = any($6::text[]) then $7::text else '' end
-			`
+	dayFiguresRead = `select true, eval_id, day, fold_key, figures from eval_day_figures
+		where project_key = any($1::text[]) and repo = $2 and day >= $6::date and day < $7::date and eval_id = any($3::text[])
+			and deploy_repo = case when eval_id = any($4::text[]) then $5::text else '' end
+		union all
+		select false, eval_id, day, fold_key, figures from eval_day_figures
+		where project_key = any($1::text[]) and repo = $2 and day >= $8::date and day < $9::date and eval_id = any($3::text[])
+			and deploy_repo = case when eval_id = any($4::text[]) then $5::text else '' end`
 	figuresBuiltRead = `
 		select b.project_key, b.through, s.project_key is not null, s.evals, s.ready_through, s.next_day from eval_figures_built b
 		left join eval_figure_cuts_stale s on s.project_key = b.project_key and s.repo = $2
@@ -52,11 +54,11 @@ func listRead(statements map[int64]string, params map[int64][]string) measuredCa
 // whose list stopped reading the stored figures exits 1, and a probe that looked for the day rows'
 // union alone would fail every run of the head.
 func TestTheProbeMeasuresTheListsStoredFiguresReads(t *testing.T) {
-	window, compare := "'2026-11-22 00:00:00+00'", "'2026-08-30 00:00:00+00'"
+	window, compare, earlier := "'2026-11-22 00:00:00+00'", "'2026-08-30 00:00:00+00'", "'2026-06-07 00:00:00+00'"
 	read := listRead(map[int64]string{11: rangeFiguresRead, 12: figuresBuiltRead, 13: dayFiguresRead}, map[int64][]string{
 		11: {"'{INFRA}'", "''", "'{INFRA/a,INFRA/b}'", "'{INFRA/b}'", "'owner/deploy'", "'84'", window, "'84'", compare},
 		12: {"'{INFRA}'", "''"},
-		13: {"'{INFRA}'", "''", compare, window, "'{INFRA/a}'", "'{INFRA/b}'", "'owner/deploy'"},
+		13: {"'{INFRA}'", "''", "'{INFRA/a}'", "'{INFRA/b}'", "'owner/deploy'", compare, window, earlier, compare},
 	})
 	rangeBranch := func(columns, end string) string {
 		return "select " + columns + " from eval_range_figures where project_key = any('{INFRA}'::text[]) and repo = '' " +
@@ -66,10 +68,13 @@ func TestTheProbeMeasuresTheListsStoredFiguresReads(t *testing.T) {
 	rangeRead := func(columns string) string {
 		return rangeBranch(columns, window) + " union all " + rangeBranch(columns, compare)
 	}
-	dayRead := func(columns string) string {
+	dayBranch := func(columns, from, to string) string {
 		return "select " + columns + " from eval_day_figures where project_key = any('{INFRA}'::text[]) and repo = '' " +
-			"and day >= " + compare + "::date and day < " + window + "::date and eval_id = any('{INFRA/a}'::text[]) " +
+			"and day >= " + from + "::date and day < " + to + "::date and eval_id = any('{INFRA/a}'::text[]) " +
 			"and deploy_repo = case when eval_id = any('{INFRA/b}'::text[]) then 'owner/deploy'::text else '' end"
+	}
+	dayRead := func(columns string) string {
+		return dayBranch("true, "+columns, compare, window) + " union all " + dayBranch("false, "+columns, earlier, compare)
 	}
 	want := []struct {
 		name            string

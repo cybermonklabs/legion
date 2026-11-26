@@ -137,11 +137,12 @@ func entriesOf(ctx context.Context, q delivery.Querier, definitions []Definition
 }
 
 // EvalVersionsIn reads in tx one eval as EvalIn does and one page of the versions of its definition,
-// newest first, with how many versions it holds, all in tx's one snapshot (BeginSnapshot), as
-// CurrentIn reads its statements: a register write committing between the reads would otherwise
-// answer a newest version that is not the definition read, which the eval's read states the
-// window's values for. The count and the page are one round trip, and the page reads the versions
-// it answers alone. found is false where no version holds evalID.
+// newest first, each with its declared charts (Definition.Charts), with how many versions it
+// holds, all in tx's one snapshot (BeginSnapshot), as CurrentIn reads its statements: a register
+// write committing between the reads would otherwise answer a newest version that is not the
+// definition read, which the eval's read states the window's values for. The count and the page
+// are one round trip, and the page reads the versions it answers alone. found is false where no
+// version holds evalID.
 func EvalVersionsIn(ctx context.Context, tx pgx.Tx, evalID string, limit, offset int) (Entry, Page[Definition], bool, error) {
 	if err := checkPage(limit, offset); err != nil {
 		return Entry{}, Page[Definition]{}, false, err
@@ -156,9 +157,9 @@ func EvalVersionsIn(ctx context.Context, tx pgx.Tx, evalID string, limit, offset
 		return row.Scan(&versions.Total)
 	})
 	batch.Queue(`
-		select `+definitionColumns+` from eval_versions where eval_id = $1 order by version desc limit $2 offset $3
+		select `+definitionChartsColumns+` from eval_versions where eval_id = $1 order by version desc limit $2 offset $3
 	`, evalID, limit, offset).Query(func(rows pgx.Rows) error {
-		page, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Definition, error) { return scanDefinition(row) })
+		page, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Definition, error) { return scanDefinitionCharts(row) })
 		versions.Items = append(versions.Items, page...)
 		return err
 	})

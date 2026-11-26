@@ -20,6 +20,7 @@
 package evals
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -137,6 +138,18 @@ type Definition struct {
 	WrittenVia      string      `json:"written_via"`
 	WrittenBy       model.Actor `json:"written_by"`
 	CreatedAt       time.Time   `json:"created_at"`
+	// Charts is the version's declared charts (R20): the list of chart declarations the Evals tab
+	// draws the eval's readings by, which evals/charts accepted before a register write stored it,
+	// `[]` where the eval declares none, in the store's own spelling of it (jsonb's text, so two
+	// lists that store alike compare alike). It is nil where the read that made the definition
+	// did not read it: only the detail read (EvalVersionsIn) and a register write that sets charts
+	// (Register) read the column, so no list read carries it, and a version written from a
+	// definition whose Charts is nil carries the newest version's forward (definitionInsert). No
+	// route answers it in the definition: the detail read answers it beside each version.
+	Charts json.RawMessage `json:"-"`
+	// Answer is a short text that answers the eval's question, which a page draws beside its
+	// number, "" for none.
+	Answer string `json:"answer"`
 	// SetByPerson is every field of the eval a person's register write has named, sorted and
 	// each once, as a body spells it (Registration.personFields): the record that the field is a
 	// person's choice, written whether or not the write moved its value, and carried forward by
@@ -455,6 +468,15 @@ const (
 	// write's first version of its eval (`actor`), or of a row's new series, whose unit is the
 	// row's (`unit`).
 	CodeVersionTooLarge = "EVAL_VERSION_TOO_LARGE"
+	// CodeChartSpecInvalid: a register write's charts are refused by the eval platform's
+	// validate_charts rules, as evals/charts ports them (R20): a kind it does not take, module
+	// among them, a field missing, unknown or out of its bounds. Field names the first refusal's
+	// field, as the validator spells it (`charts[2].y.series`).
+	CodeChartSpecInvalid = "CHART_SPEC_INVALID"
+	// CodeInvalidJSON: a register write's charts are bytes that are no JSON value the
+	// platform's reader takes (text that is no UTF-8, an integer of more than 4,300 digits),
+	// the code every route answers a malformed body with.
+	CodeInvalidJSON = "INVALID_JSON"
 )
 
 // Error is a write the registry refused before it wrote anything: a stable code, the reason in

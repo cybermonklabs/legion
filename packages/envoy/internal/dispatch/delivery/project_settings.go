@@ -206,6 +206,13 @@ func newSourceRules(rules []DeliverySettings, population Population, defaults ma
 	return &SourceRules{rules: rules, byRepo: byRepo, population: population, defaults: defaults}
 }
 
+// SourceRulesOf is the SourceRules of rules alone, each found by its DeployRepo, with no
+// population and no default repositories: what judges runs and pull requests by rules read
+// elsewhere, such as those the eval registry's day rows stand built under (api's evalNarrowing).
+func SourceRulesOf(rules []DeliverySettings) *SourceRules {
+	return newSourceRules(rules, Population{}, nil)
+}
+
 // ReadSourceRules reads every project's delivery settings in q (ListProjectSettings) and answers
 // their SourceRules.
 func ReadSourceRules(ctx context.Context, q Querier) (*SourceRules, error) {

@@ -4,7 +4,12 @@ import { Link } from "react-router-dom";
 
 import { agentSession } from "../../api/agent-session";
 import { api, apiErrorMessage } from "../../api/client";
-import { projectDeliverySettingsQuery, whoAmIQuery } from "../../api/queries";
+import {
+  evalsAcrossProjectsQueryKey,
+  evalsProjectKey,
+  projectDeliverySettingsQuery,
+  whoAmIQuery,
+} from "../../api/queries";
 import { isLiveQuery } from "../../api/query-refresh";
 import type {
   AuthenticatedUser,
@@ -408,6 +413,14 @@ export function DeliverySettingsSection({
         queryKey: ["delivery"],
         predicate: (query) => !isLiveQuery(query),
       });
+      // Each target the save changed is a new version of the project's eval, which the Evals
+      // tab's reads and the cross-project read hold; the tab's live views learn of it from
+      // Dispatch, as a delta.
+      void queryClient.invalidateQueries({
+        queryKey: evalsProjectKey(project),
+        predicate: (query) => !isLiveQuery(query),
+      });
+      void queryClient.invalidateQueries({ queryKey: evalsAcrossProjectsQueryKey });
     },
   });
 

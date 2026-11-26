@@ -3,6 +3,7 @@ package evalbench
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"slices"
@@ -158,6 +159,8 @@ func between(rng *rand.Rand, low, high time.Duration) time.Duration {
 // planPullRequests draws the pull requests: spread over the last runDays days, three in five into
 // the deploy repository, each open about seventy minutes, one in five a rework, and most naming an
 // INFRA issue whose life holds the pull request, with that issue's implementer as its session.
+// Under OneProject each is the same draw in the deploy repository or the second of Repos alone
+// (oneProjectRepo), so the one-project fixture's pull requests are the full fixture's.
 func planPullRequests(spec Spec, history infraHistory) []plannedPR {
 	rng := newRand(spec.Seed, "pull requests")
 	count := spec.scaled(pullRequests, 3)
@@ -198,6 +201,9 @@ func planPullRequests(spec Spec, history infraHistory) []plannedPR {
 					break
 				}
 			}
+		}
+		if spec.OneProject {
+			pr.repo = oneProjectRepo(pr.repo, pr.issue)
 		}
 	}
 	// Numbers rise with creation within each repository, as GitHub's do.
@@ -433,9 +439,8 @@ func (s *jobSource) Values() ([]any, error) {
 
 func (s *jobSource) Err() error { return nil }
 
-// writeDelivery writes INFRA's delivery settings (evalfixture.PutDeliverySettings: one source
-// reading its default repository, the first of Repos, under Settings' rule), the pull requests,
-// the runs and their jobs.
+// writeDelivery writes INFRA's delivery settings (putDeliverySettings), the pull requests, the
+// runs and their jobs.
 //
 // The three tables' triggers log each row into delivery_changes, the 24-hour feed of what changed
 // that the refresher and the live views read from their cursors. The history is no change any
@@ -444,8 +449,8 @@ func (s *jobSource) Err() error { return nil }
 // own length (a DDL Postgres rolls back with the transaction, so a load that fails leaves them on),
 // rather than logging millions of rows no reader reads before the retention prunes them.
 func writeDelivery(ctx context.Context, pool *store.Pool, spec Spec, history infraHistory) error {
-	if _, err := evalfixture.PutDeliverySettings(ctx, pool, Project, Settings(), actor); err != nil {
-		return fmt.Errorf("write the delivery settings: %w", err)
+	if err := putDeliverySettings(ctx, pool); err != nil {
+		return err
 	}
 	prs := planPullRequests(spec, history)
 	runs := planRuns(spec, prs)
@@ -510,6 +515,47 @@ func writeDelivery(ctx context.Context, pool *store.Pool, spec Spec, history inf
 	}
 	return nil
 }
+
+// putDeliverySettings writes Settings in the shape the database holds: at this head INFRA's own
+// settings (evalfixture.PutDeliverySettings: one source reading its default repository, the first
+// of Repos), and in a database with no project_delivery_settings, a base head's, the one
+// delivery_settings row its routes read (baseSettingsStatement).
+func putDeliverySettings(ctx context.Context, pool *store.Pool) error {
+	held, err := evalfixture.ExistingTables(ctx, pool, []string{"project_delivery_settings"})
+	if err != nil {
+		return err
+	}
+	if len(held) > 0 {
+		if _, err := evalfixture.PutDeliverySettings(ctx, pool, Project, Settings(), actor); err != nil {
+			return fmt.Errorf("write the delivery settings: %w", err)
+		}
+		return nil
+	}
+	settings := Settings()
+	by, err := json.Marshal(actor)
+	if err != nil {
+		return fmt.Errorf("encode the delivery settings' author: %w", err)
+	}
+	if _, err := pool.Exec(ctx, baseSettingsStatement, settings.DeployRepo, settings.DeployWorkflowPath,
+		settings.ProductionJobNames, settings.ProductionApplyStepName, settings.PRChecksWorkflowPath,
+		settings.PopulationAuthors, settings.ExcludedRepos, settings.StagingE2EJobName, settings.StagingApplyJobName,
+		settings.PRChecksRollupJobName, by); err != nil {
+		return fmt.Errorf("write the base head's delivery_settings row: %w", err)
+	}
+	return nil
+}
+
+// baseSettingsStatement is the base head 82380570f8's delivery.PutSettings (delivery/store.go
+// there) on an empty store: the one delivery_settings row, which that head's delivery routes read
+// (delivery.GetSettings), written here as a statement so the load does not rest on a writer this
+// head drops with the table.
+const baseSettingsStatement = `
+	insert into delivery_settings (
+		singleton, deploy_repo, deploy_workflow_path, production_job_names, production_apply_step_name,
+		pr_checks_workflow_path, population_authors, excluded_repos,
+		staging_e2e_job_name, staging_apply_job_name, pr_checks_rollup_job_name, updated_by
+	)
+	values (true, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
 
 // earlier is the earlier of two moments.
 func earlier(a, b time.Time) time.Time {

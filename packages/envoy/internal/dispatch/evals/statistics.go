@@ -139,8 +139,13 @@ func writable(folded map[string]Statistics) map[string]Statistics {
 // either has no value; null with no compare range); data_since, the first day the series holds a
 // day row (YYYY-MM-DD, null for a series with none), before which a range reads "no data", every
 // statistic null; via_repository, how many of the rows the window's day rows count reached the
-// project through a repository rather than an issue; and days, the window's per-day array of a
-// headline series, one point per day that holds a row of it ([] for a control series).
+// project through a repository rather than an issue; days, the window's per-day array of a
+// headline series, one point per day that holds a row of it ([] for a control series);
+// compare_days, the compare range's per-day array in the same shape, which a page draws as a second
+// series beside days (null with no compare range); and narrowed, the filters the read narrowed the
+// series by beyond its window and its repositories, by key: the delivery timeline's facets and its
+// search (dispatch://INFRA-2918, R21), a series so narrowed built from the stored single records
+// when it was read (ComputeAtRead), and null for a series folded from the stored rows.
 type SeriesValues struct {
 	Series
 	Window        Statistics `json:"window"`
@@ -149,6 +154,8 @@ type SeriesValues struct {
 	DataSince     *string    `json:"data_since"`
 	ViaRepository int        `json:"via_repository"`
 	Days          []DayPoint `json:"days"`
+	CompareDays   []DayPoint `json:"compare_days"`
+	Narrowed      []string   `json:"narrowed"`
 }
 
 // DayPoint is one day of a headline series' per-day array: the day (YYYY-MM-DD, UTC) and the
@@ -162,7 +169,7 @@ type DayPoint struct {
 // window and of compare, the compare range, nil for none (DayWindowIn), and firsts, each series'
 // first day (FirstDaysIn). A range that starts before a series' first day, or a series with no first
 // day at all, reads "no data": every statistic of that range null, whatever rows the range holds;
-// the per-day array still answers each day that holds a row (R12).
+// each range's per-day array still answers each day that holds a row (R12).
 //
 // It folds the rows in the one order every fold of them takes (sortWindowRows), which it sorts rows
 // into in place, as the stored figures are folded (figures.go, newFigureGroup), so a fold whose
@@ -173,16 +180,17 @@ func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, 
 	listed, headline := listedAndHeadline(entry)
 	sortWindowRows(rows)
 	var windowParts, compareParts []measures.DayPart
-	byDay := map[time.Time][]measures.DayPart{}
+	windowDays, compareDays := map[time.Time][]measures.DayPart{}, map[time.Time][]measures.DayPart{}
 	via := map[string]int{}
 	for _, row := range rows {
 		part := row.Part
 		if row.Range == RangeCompare {
 			compareParts = append(compareParts, part)
+			compareDays[part.Day] = append(compareDays[part.Day], part)
 			continue
 		}
 		windowParts = append(windowParts, part)
-		byDay[part.Day] = append(byDay[part.Day], part)
+		windowDays[part.Day] = append(windowDays[part.Day], part)
 		via[part.Series] += part.ViaRepository
 	}
 	definition := entry.Definition
@@ -191,13 +199,19 @@ func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, 
 	if compare != nil {
 		compared = FoldStatistics(definition, listed, compareParts, *compare)
 	}
-	// Each day of the window folded alone, by the same fold, for the headline series' arrays.
+	return valuesOf(listed, windowed, via, compared, dailyFolds(definition, headline, windowDays),
+		dailyFolds(definition, headline, compareDays), firsts, window, compare)
+}
+
+// dailyFolds is each day of byDay, one range's parts of definition's eval by day, folded alone by
+// the same fold as the range (foldDay), for its headline series' per-day arrays, in day order.
+func dailyFolds(definition Definition, headline []Series, byDay map[time.Time][]measures.DayPart) []dayFold {
 	days := slices.SortedFunc(maps.Keys(byDay), func(a, b time.Time) int { return a.Compare(b) })
 	daily := make([]dayFold, len(days))
 	for index, day := range days {
 		daily[index] = dayFold{day: day, folded: foldDay(definition, headline, byDay[day], day)}
 	}
-	return valuesOf(listed, windowed, via, compared, daily, firsts, window, compare)
+	return daily
 }
 
 // sortWindowRows sorts rows in place into the one order a read of the day rows (SeriesValuesOf),
@@ -237,7 +251,7 @@ func foldDay(definition Definition, headline []Series, parts []measures.DayPart,
 	return kept
 }
 
-// dayFold is one day of a window that holds a row of the eval: the fold of that day's rows alone of
+// dayFold is one day of a range that holds a row of the eval: the fold of that day's rows alone of
 // each headline series that holds a row that day (foldDay).
 type dayFold struct {
 	day    time.Time
@@ -246,12 +260,12 @@ type dayFold struct {
 
 // valuesOf is each of listed, an eval's listed series, with its values: windowed and compared, the
 // folds of the window's rows and the compare range's (nil with no compare range), via, the
-// via-repository counts of the window's rows, and daily, the window's days that hold a row of the
-// eval, in day order; read against firsts, each series' first day, as SeriesValuesOf says. It is
-// the statement both reads make of their folds, SeriesValuesOf's of the day rows and
-// StoredFigures.SeriesValues' of the stored figures.
-func valuesOf(listed []Series, windowed map[string]Statistics, via map[string]int, compared map[string]Statistics, daily []dayFold,
-	firsts map[string]time.Time, window Range, compare *Range) []SeriesValues {
+// via-repository counts of the window's rows, and daily and compareDaily, the window's and the
+// compare range's days that hold a row of the eval, each in day order; read against firsts, each
+// series' first day, as SeriesValuesOf says. It is the statement both reads make of their folds,
+// SeriesValuesOf's of the day rows and StoredFigures.SeriesValues' of the stored figures.
+func valuesOf(listed []Series, windowed map[string]Statistics, via map[string]int, compared map[string]Statistics,
+	daily, compareDaily []dayFold, firsts map[string]time.Time, window Range, compare *Range) []SeriesValues {
 	values := make([]SeriesValues, len(listed))
 	for index, series := range listed {
 		first, held := firsts[series.Series]
@@ -268,17 +282,28 @@ func valuesOf(listed []Series, windowed map[string]Statistics, via map[string]in
 				value.Compare = noData(value.Compare)
 			}
 			value.Change = changeOf(value.Window, value.Compare)
+			value.CompareDays = []DayPoint{}
 		}
 		if series.Role == RoleHeadline {
-			for _, day := range daily {
-				if stats, found := day.folded[series.Series]; found {
-					value.Days = append(value.Days, DayPoint{Day: day.day.Format(time.DateOnly), Statistics: stats})
-				}
+			value.Days = dayPoints(value.Days, series.Series, daily)
+			if compare != nil {
+				value.CompareDays = dayPoints(value.CompareDays, series.Series, compareDaily)
 			}
 		}
 		values[index] = value
 	}
 	return values
+}
+
+// dayPoints is points with each day of daily that holds a fold of series appended, in daily's
+// order: one range's per-day array of a headline series.
+func dayPoints(points []DayPoint, series string, daily []dayFold) []DayPoint {
+	for _, day := range daily {
+		if stats, found := day.folded[series]; found {
+			points = append(points, DayPoint{Day: day.day.Format(time.DateOnly), Statistics: stats})
+		}
+	}
+	return points
 }
 
 // noData is stats with every statistic null: a range the series has no data for.

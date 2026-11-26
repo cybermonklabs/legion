@@ -378,23 +378,36 @@ type deliverySub struct {
 }
 
 // deliveryLiveSpec is a subscribed view, resolved: its kind, its window (a preset's length in days,
-// or a custom range), its query without from and to, a pipeline view's pinned at, a Legion or
-// evals view's project, a legion_issue view's issue, and the canonical key identical views share.
+// or a custom range), its query without from and to, a pipeline view's pinned at, a Legion, evals
+// or items view's project, a legion_issue view's issue, an items view's eval, and the canonical key
+// identical views share.
 type deliveryLiveSpec struct {
 	kind     string
 	preset   int
 	from, to time.Time
 	query    url.Values
 	at       *time.Time
-	// project is the project whose daemon a Legion view (viewReadsLegion) reads, or whose evals an
-	// evals view lists: the one a legion view's board shows, the one a legion_issue view's key
-	// names (parseLegionIssueLiveView), and the one an evals view names. A delivery view names
-	// none.
+	// project is the project whose daemon a Legion view (viewReadsLegion) reads, whose evals an
+	// evals view lists, or whose eval an items view's rows are of: the one a legion view's board
+	// shows, the one a legion_issue view's key names (parseLegionIssueLiveView), the one an evals
+	// view names and the one an items view's eval is of. A delivery view names none.
 	project string
 	// issue is the issue a legion_issue view shows (DeliveryLiveView.Issue), which a write of one
 	// of its runs marks (dirtyLegionIssue); every other kind names none.
 	issue string
-	key   string
+	// slug is the eval, of project, whose rows an items view shows; every other kind names none.
+	slug string
+	// narrowed is whether an evals view's query sets a facet of the delivery timeline but the
+	// repository, or its search (parseEvalNarrowing): its evals that count pull requests are
+	// built from the delivery rows when it is read, so a change of one marks it
+	// (touchedByDeliveryRow). Every other view is not narrowed.
+	narrowed bool
+	// freshness is whether an evals view's answer carries its project's deploy sources'
+	// freshness (delivery_freshness: its query keeps the delivery kind, readProjectEvalList), which
+	// a write of one of those sources' bookkeeping moves, and the change log does not carry: the
+	// write's delivery_freshness notification marks it (applyFreshness). Every other view does not.
+	freshness bool
+	key       string
 }
 
 // deliveryFreshnessHeard is the freshness of the delivery reads' sources as the hub last heard it,
@@ -403,7 +416,7 @@ type deliveryLiveSpec struct {
 // rules, and moved by each delivery_freshness notification of a source the rules hold; rules is the
 // last read's, by which a notification of a source that names no repository is found under its
 // project's default repository. lastEventAt, lastReconcileAt and lastError are the sources' together
-// (deliveryFreshnessOf), what the verdict and its frame state.
+// (delivery.FreshnessOf), what the verdict and its frame state.
 type deliveryFreshnessHeard struct {
 	lastEventAt, lastReconcileAt *time.Time
 	lastError                    *string
@@ -429,13 +442,13 @@ func (f *deliveryFreshnessHeard) heardRules(rules *delivery.SourceRules) {
 	f.combine()
 }
 
-// combine states the sources' freshness together (deliveryFreshnessOf), in repository order.
+// combine states the sources' freshness together (delivery.FreshnessOf), in repository order.
 func (f *deliveryFreshnessHeard) combine() {
 	all := make([]delivery.DeliverySettings, 0, len(f.sources))
 	for _, key := range slices.Sorted(maps.Keys(f.sources)) {
 		all = append(all, f.sources[key])
 	}
-	freshness := deliveryFreshnessOf(all, f.unfetchable)
+	freshness := delivery.FreshnessOf(all, f.unfetchable)
 	f.lastEventAt, f.lastReconcileAt, f.lastError = freshness.LastEventAt, freshness.LastReconcileAt, freshness.LastError
 }
 

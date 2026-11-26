@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# The eval registry's measurement (dispatch://INFRA-2916, T15: k2, k8, k13, k16) over a built
-# envoy-dispatch and a database the evalbench fixture is loaded into.
+# The eval registry's measurement (dispatch://INFRA-2916, T15: k2, k8, k13, k16) and the Evals
+# tab's (dispatch://INFRA-2918, T27: k4, k19, k22) over a built envoy-dispatch and a database the
+# evalbench fixture is loaded into.
 #
 #   run.sh migrate <database-url> <envoy-dispatch>
 #   run.sh measure <database-url> <envoy-dispatch> <head|failure-day|base>
+#   run.sh tab <database-url> <envoy-dispatch> <stated|ten>
+#   run.sh capture-base <database-url> <envoy-dispatch>
+#   run.sh pages <database-url> <envoy-dispatch>
 #
 # migrate boots the server once on an empty database, which migrates it, and stops it.
 #
@@ -25,15 +29,30 @@
 # With EVALBENCH_PG_RESTART set it measures the first paint once more after a Postgres restart, for
 # information, judging no budget.
 #
-# The server runs with no NATS (DISPATCH_NATS_DISABLED=1), no GitHub App and the header identity
-# the Go tests use, and is reached with its agent token. Its build must be stamped
+# tab is the Evals tab in Chromium (evalbench/tab, through the Playwright packages/dispatch locks),
+# at the run rate its last argument names, which its lines carry: once the consumers have caught
+# up, for each of the paint's three cases (84 days with a compare range, 28 days with none, and 84
+# days from an address that sets the author facet) the server starts again and the tab's first
+# reader is timed (tab/paint.ts); then the server starts once more and INFRA-2916's write drive,
+# phases A to D, runs with the tab open on two pages and the merge timeline open on each
+# (tab/recompute.ts). The server serves the built web app (EVALBENCH_WEB_DIST) and signs its
+# readers in through dev sign-in, with the cookie identity a deployment uses.
+#
+# capture-base is k22's capture at the base head (legion/INFRA-978 82380570f8) over the
+# one-project fixture: once the consumers have caught up, GET /api/v1/delivery/timeline for the 84
+# days before EVALBENCH_NOW, written to EVALBENCH_BASE_TIMELINE. pages is k22's read at this head
+# over the same fixture: once the consumers have caught up, evalbench/timelinepages reads the
+# project's timeline page by page and compares the union with that capture.
+#
+# The server runs with no NATS (DISPATCH_NATS_DISABLED=1), no GitHub App and, but for tab, the
+# header identity the Go tests use, and is reached with its agent token. Its build must be stamped
 # (-ldflags "-X main.buildCommit=<commit>"): an unstamped binary is a new build at every start, and
 # its restart would rebuild every family the measurement waits for. The database URL is a
 # superuser's: the instrument resets pg_stat_statements and turns the statement log on and off.
 #
 # Environment:
 #   EVALBENCH_WORK        where the server's home, its logs and the measurement's output go (required)
-#   EVALBENCH_MEASURE     the built measure command (required by measure)
+#   EVALBENCH_MEASURE     the built measure command (required by every command but migrate)
 #   EVALBENCH_PG_LOG      Postgres's jsonlog file, with log_destination jsonlog (required by measure)
 #   EVALBENCH_PORT        the port the server serves on (58111)
 #   EVALBENCH_SOURCE      the checkout the server was built from, whose read path k13 greps
@@ -42,13 +61,21 @@
 #   EVALBENCH_QUIET, EVALBENCH_CATALOG   measure paint's -quiet and -catalog (30s, 65s)
 #   EVALBENCH_PAINT_RUNS  how many times this head's first paint is measured (8; fewer for a smoke
 #                         run)
+#   EVALBENCH_TAB_QUIET, EVALBENCH_TAB_CATALOG   tab/paint.ts's --quiet and --catalog, seconds (30, 65)
+#   EVALBENCH_TAB, EVALBENCH_DISPATCH_DIR, EVALBENCH_WEB_DIST   tab: the evalbench/tab directory,
+#                         packages/dispatch, and the built web app the server serves
+#   EVALBENCH_RECOMPUTE_ARGS  tab: more flags for tab/recompute.ts (its phases' sizes)
+#   EVALBENCH_NOW, EVALBENCH_BASE_TIMELINE   capture-base and pages: the history's end, and the
+#                         capture's file
+#   EVALBENCH_PAGES       pages: the built timelinepages command
 #
 # Every measurement prints a RESULT line, and every one that misses its budget or its rule a FAIL
 # line; the script exits 1 when any step failed.
 set -euo pipefail
 
 usage() {
-  echo "usage: run.sh migrate <database-url> <envoy-dispatch> | run.sh measure <database-url> <envoy-dispatch> <head|failure-day|base>" >&2
+  echo "usage: run.sh migrate <database-url> <envoy-dispatch> | run.sh measure <database-url> <envoy-dispatch> <head|failure-day|base>" \
+    "| run.sh tab <database-url> <envoy-dispatch> <stated|ten> | run.sh capture-base|pages <database-url> <envoy-dispatch>" >&2
   exit 2
 }
 [ $# -ge 3 ] || usage
@@ -71,6 +98,20 @@ case "$command" in
       esac
     fi
     ;;
+  tab)
+    [ $# -eq 4 ] || usage
+    case "$mode" in stated | ten) ;; *) usage ;; esac
+    : "${EVALBENCH_MEASURE:?EVALBENCH_MEASURE must name the built measure command}"
+    : "${EVALBENCH_TAB:?EVALBENCH_TAB must name the evalbench/tab directory}"
+    : "${EVALBENCH_WEB_DIST:?EVALBENCH_WEB_DIST must name the built web app}"
+    ;;
+  capture-base | pages)
+    [ $# -eq 3 ] || usage
+    : "${EVALBENCH_MEASURE:?EVALBENCH_MEASURE must name the built measure command}"
+    : "${EVALBENCH_NOW:?EVALBENCH_NOW must name the history's end}"
+    : "${EVALBENCH_BASE_TIMELINE:?EVALBENCH_BASE_TIMELINE must name the base capture's file}"
+    if [ "$command" = pages ]; then : "${EVALBENCH_PAGES:?EVALBENCH_PAGES must name the built timelinepages command}"; fi
+    ;;
   *) usage ;;
 esac
 : "${EVALBENCH_WORK:?EVALBENCH_WORK must name a directory for the server home and the logs}"
@@ -85,14 +126,21 @@ token=evalbench-token
 mkdir -p "$work/home" "$work/web"
 server_pid=""
 status=0
+# The identity the server reads people by: the Go tests' trusted header, or, for the tab, the
+# cookie a deployment uses, signed by dev sign-in (which serves a loopback origin alone).
+identity=(DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1)
+web_dist=$work/web
+if [ "$command" = tab ]; then
+  identity=(DISPATCH_IDENTITY=cookie DISPATCH_INSECURE_COOKIE=1 DISPATCH_DEV_SIGNIN=1 DISPATCH_SERVER_URL="$url")
+  web_dist=$EVALBENCH_WEB_DIST
+fi
 
 # start_server boots the server with its stderr in $1 and waits until /healthz answers.
 start_server() {
   local log=$1
   (cd "$work/home" && exec env -i PATH="$PATH" HOME="$work/home" XDG_CONFIG_HOME="$work/home" XDG_DATA_HOME="$work/home" \
-    DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$token" DISPATCH_IDENTITY=header:X-Dispatch-User \
-    DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$port" \
-    DISPATCH_WEB_DIST="$work/web" DISPATCH_NATS_DISABLED=1 "$server_bin" >>"$log" 2>&1) &
+    DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$token" "${identity[@]}" DISPATCH_LISTEN_HOST=127.0.0.1 \
+    DISPATCH_PORT="$port" DISPATCH_WEB_DIST="$web_dist" DISPATCH_NATS_DISABLED=1 "$server_bin" >>"$log" 2>&1) &
   server_pid=$!
   local started=$SECONDS
   until curl -fsS "$url/healthz" >/dev/null 2>&1; do
@@ -133,11 +181,18 @@ if [ "$command" = migrate ]; then
   exit "$status"
 fi
 
-# measure runs one subcommand of the measure command against the running server.
+# measure runs one subcommand of the measure command against the running server, in the mode of
+# the head the server is: measure's own, this head's for tab and pages, the base's for
+# capture-base, whose consumers hold no day rows of this head's to wait for.
+case "$command" in
+  measure) measure_mode=$mode ;;
+  capture-base) measure_mode=base ;;
+  *) measure_mode=head ;;
+esac
 measure() {
   local subcommand=$1
   shift
-  "$EVALBENCH_MEASURE" "$subcommand" -mode "$mode" -database "$database_url" -url "$url" "$@" || status=1
+  "$EVALBENCH_MEASURE" "$subcommand" -mode "$measure_mode" -database "$database_url" -url "$url" "$@" || status=1
 }
 
 start_server "$work/server-catchup.log"
@@ -146,12 +201,50 @@ measure wait -timeout "${EVALBENCH_CATCHUP:-1h}"
 waited=$status
 stop_server
 if [ "$waited" -ne 0 ]; then
-  echo "FAIL run.sh: the consumers did not catch up, so no first paint is measured"
+  echo "FAIL run.sh: the consumers did not catch up, so nothing is measured"
   exit 1
 fi
 if [ "$status" -ne 0 ]; then
-  echo "FAIL run.sh: the server did not stop cleanly after the catch-up, so no first paint is measured"
+  echo "FAIL run.sh: the server did not stop cleanly after the catch-up, so nothing is measured"
   exit 1
+fi
+
+if [ "$command" = tab ]; then
+  for paint_case in 84d-compare 28d 84d-author; do
+    start_server "$work/server-paint-$paint_case.log"
+    bun "$EVALBENCH_TAB/paint.ts" --url "$url" --database "$database_url" --project INFRA --case "$paint_case" --rate "$mode" \
+      --quiet "${EVALBENCH_TAB_QUIET:-30}" --catalog "${EVALBENCH_TAB_CATALOG:-65}" || status=1
+    stop_server
+  done
+  start_server "$work/server-recompute.log"
+  # shellcheck disable=SC2086 # EVALBENCH_RECOMPUTE_ARGS is flags, split on purpose.
+  bun "$EVALBENCH_TAB/recompute.ts" --url "$url" --database "$database_url" --project INFRA --rate "$mode" --token "$token" \
+    ${EVALBENCH_RECOMPUTE_ARGS:-} || status=1
+  stop_server
+  echo "MARK $(date -u +%FT%TZ) run.sh tab $mode exits $status"
+  exit "$status"
+fi
+
+if [ "$command" = capture-base ] || [ "$command" = pages ]; then
+  start_server "$work/server-$command.log"
+  if [ "$command" = capture-base ]; then
+    window=$(python3 -c 'import datetime, sys; end = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")); print((end - datetime.timedelta(days=84)).strftime("%Y-%m-%dT%H:%M:%SZ"), end.strftime("%Y-%m-%dT%H:%M:%SZ"))' "$EVALBENCH_NOW")
+    read -r from to <<<"$window"
+    if curl -fsS -H "Authorization: Bearer $token" "$url/api/v1/delivery/timeline?from=$from&to=$to" -o "$EVALBENCH_BASE_TIMELINE"; then
+      echo "RESULT k22 capture from=$from to=$to file=$EVALBENCH_BASE_TIMELINE bytes=$(wc -c <"$EVALBENCH_BASE_TIMELINE") $(python3 -c 'import json, sys; body = json.load(open(sys.argv[1])); print("prs=%d runs=%d waiting=%d" % (len(body.get("prs") or []), len(body.get("runs") or []), len(body.get("waiting") or [])))' "$EVALBENCH_BASE_TIMELINE")"
+    else
+      echo "FAIL k22 capture: GET /api/v1/delivery/timeline for $from..$to failed at the base head"
+      status=1
+    fi
+  else
+    token_file=$work/token
+    (umask 077 && printf '%s' "$token" >"$token_file")
+    "$EVALBENCH_PAGES" --url "$url" --token-file "$token_file" --project INFRA --window 84d --limit 200 \
+      --compare "$EVALBENCH_BASE_TIMELINE" || status=1
+  fi
+  stop_server
+  echo "MARK $(date -u +%FT%TZ) run.sh $command exits $status"
+  exit "$status"
 fi
 
 # The first paint: at this head $runs times (EVALBENCH_PAINT_RUNS), each as the first requests

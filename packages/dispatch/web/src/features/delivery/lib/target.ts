@@ -1,4 +1,4 @@
-// A delivery answer's target as the measures panel and the Pipeline page state it and judge their
+// A delivery eval's target as the Evals tab's cards and charts state it and judge their
 // figures by it. The answer carries each target as its eval holds it: its value, whether the value
 // itself meets it, the eval's direction, and the statistics its verdict judges (`judges`, each
 // `<series>.<stat>`), or null where a person turned the target off. A card's badge is the server's
@@ -8,24 +8,10 @@
 // (`ownVerdict`, dispatch://INFRA-2916, R5), and a toned figure is written on its value's side of
 // the target (`judgeFigure`). Pure.
 
-import type { DeliveryLeadTimeCell, DeliveryTargets } from "../../../api/types";
+import type { DeliveryTargets } from "../../../api/types";
 
 /** One measure's target, or null where it is off. */
 export type Target = DeliveryTargets["deploys_per_day"];
-
-/** One of the six delivery measures a target belongs to, as an answer's `targets` keys it. */
-export type Measure = keyof DeliveryTargets;
-
-/** Each measure's eval, by its slug in the eval register (envoy's evals.Slug*): every element a
- *  page tones by a target names it (`data-eval`), so a reader can tell which target judges it. */
-export const EVAL_SLUGS: Readonly<Record<Measure, string>> = {
-  deploys_per_day: "deploy-frequency",
-  change_failure_rate: "change-fail-rate",
-  merge_to_production_minutes: "merge-to-production",
-  opened_to_merge_median_minutes: "pr-open-to-merge",
-  deploy_run_success_rate: "deploy-run-success",
-  unowned_p0: "unowned-p0",
-};
 
 /** One statistic a target may judge, `<series>.<stat>`: every judge the server's register write
  *  takes of the six delivery evals, as the contract types it. */
@@ -129,20 +115,13 @@ export function shownJudges(target: Target): readonly string[] {
   });
 }
 
-/** A judge's word as a sentence starts it, "Longest". */
-export function judgeWord(judge: string): string {
-  const { word } = statistic(judge);
-  return word.charAt(0).toUpperCase() + word.slice(1);
-}
-
-/** How a target reads, as a sign or in words: at least (≥) or above (>) for an eval better
- *  higher, at most (≤) or under (<) for one better lower, by whether the target's own value meets
- *  it. One shown judge that reads alone (`Statistic.alone`) is the sign and the value as it
- *  writes it; otherwise every shown judge's word comes first, joined by "and", and the value is
- *  written as the first of them writes one (every judge is held to one value). Every measure
- *  better lower counts or times something and none goes below 0, so at most 0 is 0 itself, which
- *  reads as the value alone. */
-function phrase(target: NonNullable<Target>, words: boolean): string {
+/** How a target reads as a sign: at least (≥) or above (>) for an eval better higher, at most (≤)
+ *  or under (<) for one better lower, by whether the target's own value meets it. One shown judge
+ *  that reads alone (`Statistic.alone`) is the sign and the value as it writes it; otherwise every
+ *  shown judge's word comes first, joined by "and", and the value is written as the first of them
+ *  writes one (every judge is held to one value). Every measure better lower counts or times
+ *  something and none goes below 0, so at most 0 is 0 itself, which reads as the value alone. */
+function phrase(target: NonNullable<Target>): string {
   const judges = shownJudges(target);
   const [first] = judges;
   const alone = judges.length === 1 && first !== undefined ? statistic(first).alone : undefined;
@@ -153,27 +132,21 @@ function phrase(target: NonNullable<Target>, words: boolean): string {
   if (target.direction === "lower_better" && target.inclusive && target.value === 0) {
     return `${lead}${format(0)}`;
   }
-  const [sign, word] =
+  const sign =
     target.direction === "higher_better"
       ? target.inclusive
-        ? ["\u2265", "at least"]
-        : [">", "above"]
+        ? "\u2265"
+        : ">"
       : target.inclusive
-        ? ["\u2264", "at most"]
-        : ["<", "under"];
-  return `${lead}${words ? word : sign} ${format(target.value)}`;
+        ? "\u2264"
+        : "<";
+  return `${lead}${sign} ${format(target.value)}`;
 }
 
 /** A target as a card's caption names it: "≥ 20/day", "p90 ≤ 720m", "< 45m for every change",
  *  or "off" where it is off. */
 export function targetLabel(target: Target): string {
-  return target === null ? "off" : phrase(target, false);
-}
-
-/** A target as a chart's caption names it, in words: "median under 60m", or "off" where it is
- *  off. */
-export function targetWords(target: Target): string {
-  return target === null ? "off" : phrase(target, true);
+  return target === null ? "off" : phrase(target);
 }
 
 /** Whether value meets target in its eval's direction: at or past an inclusive target, past a
@@ -279,12 +252,6 @@ const MAX_EXTRA_DECIMALS = 17;
  *  target from its own value (`judgeFigure`). */
 export type WriteFigure = (extra: number) => string;
 
-/** An exact count's `WriteFigure`: a count takes no decimals, so it is written the same whatever
- *  it is offered. */
-export function count(n: number): WriteFigure {
-  return () => `${n}`;
-}
-
 /** A figure's own verdict (`ownVerdict`) and its text (dispatch://INFRA-2916, R3-C1): a toned
  *  figure's text lies on the same side of its target as its value. Its usual text, `write(0)`,
  *  stands unless, read back in the target's unit (`readFigure`), it lies on the target itself or
@@ -310,21 +277,4 @@ export function judgeFigure(
     text = write(extra);
   }
   return { met, text };
-}
-
-/** A Pipeline lead-time cell's value of a lead-time eval's judge, a day's or the seven days',
- *  null where it states none. */
-export function leadTimeValue(cell: DeliveryLeadTimeCell, judge: string): number | null {
-  switch (judge) {
-    case "minutes.n":
-      return cell.n;
-    case "minutes.median":
-      return cell.median_minutes;
-    case "minutes.p90":
-      return cell.p90_minutes;
-    case "minutes.max":
-      return cell.max_minutes;
-    default:
-      return null;
-  }
 }

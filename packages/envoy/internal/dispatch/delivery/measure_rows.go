@@ -28,12 +28,13 @@ import (
 // The reads an answer makes from the evals' day rows (api's evals items) take q, the pool or a
 // read-only transaction whose one snapshot the answer reads (evals.Store.BeginSnapshot). A read of
 // several statements runs them side by side on the pool and one after the other in a transaction
-// (readAll).
+// (ReadAll).
 
-// readAll runs reads, the reads of one answer in q: on the pool side by side, each on a connection
+// ReadAll runs reads, the reads of one answer in q: on the pool side by side, each on a connection
 // of its own (store.ReadSideBySide), and in a transaction one after the other, since its one
-// connection runs one statement at a time and every read then reads its one snapshot.
-func readAll(ctx context.Context, q Querier, reads ...func(ctx context.Context) error) error {
+// connection runs one statement at a time and every read then reads its one snapshot. The eval
+// registry's reads of a day's rows take it too (evals' readAttribution, ComputeAtRead).
+func ReadAll(ctx context.Context, q Querier, reads ...func(ctx context.Context) error) error {
 	if _, pooled := q.(*store.Pool); pooled {
 		return store.ReadSideBySide(ctx, reads...)
 	}
@@ -65,7 +66,7 @@ type MergedRows struct {
 }
 
 // ReadMergedRows reads MergedRows for [from, to) in q: the pull requests, and every apply run
-// followed by their production jobs, side by side on the pool (readAll).
+// followed by their production jobs, side by side on the pool (ReadAll).
 func ReadMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time) (MergedRows, error) {
 	return readMergedRows(ctx, q, settings, from, to, nil)
 }
@@ -74,7 +75,7 @@ func ReadMergedRows(ctx context.Context, q Querier, settings DeliverySettings, f
 // before it.
 func readMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time, createdBefore *time.Time) (MergedRows, error) {
 	var rows MergedRows
-	err := readAll(ctx, q,
+	err := ReadAll(ctx, q,
 		func(ctx context.Context) (err error) {
 			rows.PullRequests, err = ListPullRequestsInWindow(ctx, q, from, to)
 			return err
@@ -222,7 +223,7 @@ func (a ApplyRows) Since(from time.Time) (ApplyRows, error) {
 // push runs are all among those runs, so a reader that builds every day at once (the day-row
 // refresher's rewrite of a settings change, evals' rewriteSettings) gives each day its part, where
 // a read of each day would read every deploy run created from that day on again. No limit bounds
-// it, as one bounds a window's reads (maxPullRequestsPerWindow, maxRunsPerWindow): the whole
+// it, as one bounds a window's reads (MaxPullRequestsPerWindow, MaxRunsPerWindow): the whole
 // history is what such a reader builds, and a limit would cut it short without a word.
 type HistoryRows struct {
 	PullRequests []DeliveryPullRequest
@@ -356,10 +357,10 @@ type CIRows struct {
 }
 
 // ReadCIRows reads CIRows for [from, to) of the deploy repository in q, the two reads side by side
-// on the pool (readAll); deployJobNames is every job name the deploy cards follow.
+// on the pool (ReadAll); deployJobNames is every job name the deploy cards follow.
 func ReadCIRows(ctx context.Context, q Querier, deployRepo string, from, to time.Time, deployJobNames []string) (CIRows, error) {
 	var rows CIRows
-	err := readAll(ctx, q,
+	err := ReadAll(ctx, q,
 		func(ctx context.Context) (err error) {
 			rows.Checks, err = listRunsWithEveryJobStartedIn(ctx, q, deployRepo, DeliveryRunKindPRChecks, "", "pull_request", from, to)
 			return err
@@ -445,7 +446,7 @@ func ListPullRequestsOnDays(ctx context.Context, q Querier, days []time.Time) ([
 
 // listPullRequestsInWindows lists, for each window [from[i], to[i]), what ListPullRequestsInWindow
 // lists of it, in one statement, a pull request of two windows in each, up to
-// maxPullRequestsPerWindow pull requests a window.
+// MaxPullRequestsPerWindow pull requests a window.
 func listPullRequestsInWindows(ctx context.Context, q Querier, from, to []time.Time) ([][]DeliveryPullRequest, error) {
 	listed := make([][]DeliveryPullRequest, len(from))
 	for i := range listed {
@@ -460,7 +461,7 @@ func listPullRequestsInWindows(ctx context.Context, q Querier, from, to []time.T
 		join delivery_pull_requests p on p.merged_at >= d.from_at and p.merged_at < d.to_at
 		order by p.merged_at, (p.repo || '#' || p.number) collate "C"
 		limit $3
-	`, from, to, maxPullRequestsPerWindow*len(from))
+	`, from, to, MaxPullRequestsPerWindow*len(from))
 	if err != nil {
 		return nil, err
 	}
@@ -493,7 +494,7 @@ func listRunsStartedOnDays(ctx context.Context, q Querier, repo string, kind Del
 		where ($5 = '' or r.head_branch = $5) and ($6 = '' or r.event = $6)
 		order by r.started_at, r.run_id
 		limit $7
-	`, repo, string(kind), from, to, branch, event, maxRunsPerWindow*len(from))
+	`, repo, string(kind), from, to, branch, event, MaxRunsPerWindow*len(from))
 	if err != nil {
 		return nil, err
 	}
@@ -526,7 +527,7 @@ func listDeployRunsCreatedInWindows(ctx context.Context, q Querier, repo string,
 			and `+runCreatedAt+` >= d.from_at and `+runCreatedAt+` < d.to_at
 		order by d.i, `+runCreatedAt+`, r.run_id
 		limit $4
-	`, repo, from, to, maxRunsPerWindow*len(from))
+	`, repo, from, to, MaxRunsPerWindow*len(from))
 	if err != nil {
 		return nil, err
 	}
@@ -598,7 +599,7 @@ func ReadDaysDeploys(ctx context.Context, pool *store.Pool, settings DeliverySet
 	names := production.JudgedJobNames()
 	var runs []DeliveryRun
 	if applies {
-		rows, err := pool.Query(ctx, daysRunsQuery, repo, from, to, production.JobNames, production.ApplyStep, maxRunsPerWindow*len(days))
+		rows, err := pool.Query(ctx, daysRunsQuery, repo, from, to, production.JobNames, production.ApplyStep, MaxRunsPerWindow*len(days))
 		if err != nil {
 			return DaysDeploys{}, fmt.Errorf("read the deploy runs of %d days: %w", len(days), err)
 		}
@@ -786,4 +787,56 @@ func ReadCIDays(ctx context.Context, pool *store.Pool, deployRepo string, days [
 		return nil, err
 	}
 	return read, nil
+}
+
+// prChecksCompletedInQuery is ReadPRChecksCompletedIn's read of the runs: the PR-checks runs of a
+// window as listRunsStartedIn lists them (kind $2, event $3, started in [$4, $5)), of those the
+// ones completed in [$6, $7], oldest start first and those started in one instant by run id. The
+// runs are read by their completion alone, one range of delivery_runs_kind_completed_at (migration
+// 20261123042253), (repo, kind, completed_at), in a materialized CTE that names no start, so the
+// read reads the runs of those hours alone; the start is checked on the runs it answers, which are
+// then ordered and bounded. Named beside the completion, the start's range and the order by it let
+// the planner read delivery_runs_kind_started_at's range of every run started in the window
+// instead, in the order asked for, and test each run's completion on the way: the plan it takes
+// where it holds no statistics of the two ranges, as under a generic plan, which reads every run
+// of 84 days to answer a day's (dispatch://INFRA-2918, R12; api's
+// TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues).
+const prChecksCompletedInQuery = `
+		with completed as materialized (
+			select ` + RunColumns + `
+			from delivery_runs
+			where repo = $1 and kind = $2 and event = $3 and completed_at >= $6 and completed_at <= $7
+		)
+		select ` + RunColumns + `
+		from completed
+		where started_at >= $4 and started_at < $5
+		order by started_at, run_id
+		limit $8`
+
+// ReadPRChecksCompletedIn reads the PR-checks workflow's pull_request runs of the deploy repository
+// in q that started in [from, to), the runs ReadCIRows reads of that window, and completed in
+// [completedFrom, completedTo], both ends counted as measures.FailingJobs counts a completion, each
+// with every job it ran: the runs of a window whose jobs the failing-jobs tally reads, read by their
+// completion rather than as every run of the window (dispatch://INFRA-2918, D9), so the read of
+// their jobs reads the jobs of a day's runs, never those of every run of an 84-day window.
+// Bounded by MaxRunsPerWindow, as listRunsStartedIn is.
+func ReadPRChecksCompletedIn(ctx context.Context, q Querier, deployRepo string, from, to, completedFrom, completedTo time.Time) (RunsWithJobs, error) {
+	rows, err := q.Query(ctx, prChecksCompletedInQuery, deployRepo, string(DeliveryRunKindPRChecks), "pull_request",
+		from, to, completedFrom, completedTo, MaxRunsPerWindow)
+	if err != nil {
+		return RunsWithJobs{}, err
+	}
+	runs, err := collectRuns(rows)
+	if err != nil {
+		return RunsWithJobs{}, err
+	}
+	runIDs := make([]int64, len(runs))
+	for i, run := range runs {
+		runIDs[i] = run.RunID
+	}
+	jobs, err := listEveryRunJobForRuns(ctx, q, deployRepo, runIDs)
+	if err != nil {
+		return RunsWithJobs{}, err
+	}
+	return RunsWithJobs{Runs: runs, Jobs: jobs}, nil
 }

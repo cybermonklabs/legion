@@ -13,6 +13,7 @@ import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
+import { installFakeLiveSockets } from "../../__tests__/live-socket-harness";
 import { answerRequests } from "../../__tests__/network";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -298,6 +299,54 @@ test("renders header, tabs, and the Issues panel; /documents selects Documents",
     expect(screen.getByRole("tab", { name: "Documents" })).toHaveAttribute("aria-selected", "true");
   } finally {
     documents.restore();
+  }
+});
+
+test("the Evals tab shows on a project with no source, and /evals selects it", async () => {
+  const user = userEvent.setup();
+  // The tab subscribes its evals views over the live socket and reads the project's Legion
+  // daemon and its delivery settings; this project has neither.
+  const sockets = installFakeLiveSockets();
+  const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
+  const getProjectDeliverySettings = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(
+    null
+  );
+  try {
+    const issues = renderPage("/projects/CORE/issues");
+    try {
+      await screen.findByRole("heading", { name: "Core" });
+      expect(screen.queryByRole("tab", { name: "Architecture" })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("tab", { name: "Evals" }));
+      expect(screen.getByTestId("location").textContent).toBe("/projects/CORE/evals");
+    } finally {
+      issues.restore();
+    }
+
+    const evals = renderPage("/projects/CORE/evals");
+    try {
+      await screen.findByRole("heading", { name: "Core" });
+      expect(screen.getByRole("tab", { name: "Evals" })).toHaveAttribute("aria-selected", "true");
+      const panel = screen.getByRole("tabpanel", { name: "Evals" });
+      // With no source, the tab holds the one line naming both settings, and no section.
+      expect(await within(panel).findByRole("link", { name: "Legion daemon" })).toHaveAttribute(
+        "href",
+        "/settings"
+      );
+      expect(within(panel).getByRole("link", { name: "delivery settings" })).toHaveAttribute(
+        "href",
+        "/projects/CORE/settings"
+      );
+      expect(panel.querySelector("[data-section]")).toBeNull();
+      expect(screen.queryByRole("tabpanel", { name: "Issues" })).not.toBeInTheDocument();
+      expect(getLegionDaemon).toHaveBeenCalledWith("CORE");
+      expect(getProjectDeliverySettings).toHaveBeenCalledWith("CORE");
+    } finally {
+      evals.restore();
+    }
+  } finally {
+    getLegionDaemon.mockRestore();
+    getProjectDeliverySettings.mockRestore();
+    sockets.restore();
   }
 });
 

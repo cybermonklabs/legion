@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -700,7 +702,7 @@ func TestAnEvalsVersionsAreAnsweredNewestFirst(t *testing.T) {
 		t.Fatalf("%d versions stored, the read answers %d: versions %v, targets %v; want 4 newest first, targets 20 20 30 30", stored, detail.Total, numbers, targets)
 	}
 	newest := detail.Items[0]
-	minutes := seriesValues(t, newest, "minutes")
+	minutes := seriesValues(t, newest.evalItem, "minutes")
 	if newest.Verdict == nil || newest.Verdict.Met == nil || !*newest.Verdict.Met || minutes.Window["median"] == nil || *minutes.Window["median"] != 15 {
 		t.Errorf("the newest version reads %+v with the verdict %+v, want the median 15 under the target 20, met", minutes.Window, newest.Verdict)
 	}
@@ -1184,7 +1186,7 @@ func TestAnEvalWhoseSourceTurnsComputedFoldsNoReadingLoggedWhileItWasLogged(t *t
 			t.Fatalf("the read of %s answers no item", slug)
 		}
 		days := evalGet[evalItemsResponse](t, handler, "/api/v1/projects/SQL/evals/"+slug+"/items?row_kind=day&"+window)
-		return seriesValues(t, detail.Items[0], measures.SeriesDeploys), days.Total
+		return seriesValues(t, detail.Items[0].evalItem, measures.SeriesDeploys), days.Total
 	}
 
 	logged(evals.SlugDeployFrequency, "seeded-reading")
@@ -1276,6 +1278,139 @@ func TestARegisterWriteOfNoTargetHoldsThroughTheSeed(t *testing.T) {
 		t.Errorf("%s, whose target a register write set to none, holds target %s after the seed; want none, not the catalogue's %v",
 			evals.SlugDeployFrequency, showFigure(after), catalogued)
 	}
+}
+
+// TestAListReadWithACompareRangeAnswersItsDays (dispatch://INFRA-2918, D6): a list read that names
+// a compare range answers, beside each headline series' per-day array of the window (days), the
+// compare range's (compare_days), each day folded alone as a day of days is: over a window and a
+// compare range of seven days each, with three readings of a logged eval in each, compare_days
+// holds a point for each day of the compare range that holds a day row of the series (the
+// readings' days, and the zero rows the refresher writes from the first reading on), each reading's
+// day stating its value, and days the window's, on the project read and the cross-project read
+// alike. The stored figures, which answer the read once the refresher has built them, answer the
+// compare range's days the read of the day rows answers, bit for bit, and they are what that read
+// reads: with the compare range's stored day rows blanked, the read answers no day of it. A read
+// that names no compare range answers none (null), as it answers no compare figures.
+func TestAListReadWithACompareRangeAnswersItsDays(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	createTestProject(t, handler, "EVL")
+	ctx := t.Context()
+	now := time.Now().UTC()
+	today := measures.Midnight(now)
+	window, compare := evalDaysEnding(7, today), evalDaysEnding(7, today.AddDate(0, 0, -7))
+	windowDays, compareDays := []int{-7, -5, -3}, []int{-14, -12, -10}
+	values := map[string]float64{}
+	var readings []any
+	for index, offset := range slices.Concat(windowDays, compareDays) {
+		day := today.AddDate(0, 0, offset)
+		values[day.Format(time.DateOnly)] = float64(10 + index)
+		readings = append(readings, reading("lines", float64(10+index), day.Add(12*time.Hour)))
+	}
+	if written := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals/pr-size/readings",
+		map[string]any{"readings": readings}, "compare-days"); written.Code != http.StatusCreated {
+		t.Fatalf("log the readings: status %d, body %s", written.Code, written.Body.String())
+	}
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
+	refreshEvalDays(t, registry, database, now)
+	if built := figuresBuiltOf(t, database.Pool, []string{"EVL"}); built["EVL"].Before(window.To) {
+		t.Fatalf("EVL's figures stand built through %v, so the read would not read them", built["EVL"])
+	}
+	if !evals.FiguresOffered(nil, window, &compare) {
+		t.Fatal("the stored figures do not answer a read of seven days with a compare range of seven")
+	}
+
+	ranges := func(compared bool) string {
+		query := url.Values{"from": {window.From.Format(time.RFC3339)}, "to": {window.To.Format(time.RFC3339)}}
+		if compared {
+			query.Set("compare_from", compare.From.Format(time.RFC3339))
+			query.Set("compare_to", compare.To.Format(time.RFC3339))
+		}
+		return query.Encode()
+	}
+	// read answers pr-size's lines series as the project read and the cross-project read state it,
+	// failing where the two differ, and its compare_days as the body spells them.
+	read := func(what string, compared bool) (evals.SeriesValues, string) {
+		t.Helper()
+		project := evalGet[evalListResponse](t, handler, "/api/v1/projects/EVL/evals?"+ranges(compared))
+		across := evalGet[evalListResponse](t, handler, "/api/v1/evals?project=EVL&"+ranges(compared))
+		series := seriesValues(t, findEval(t, project.Items, "EVL", "pr-size"), "lines")
+		if got, want := mustJSON(t, seriesValues(t, findEval(t, across.Items, "EVL", "pr-size"), "lines")), mustJSON(t, series); got != want {
+			t.Fatalf("%s: the cross-project read states pr-size's lines %s, the project read %s", what, got, want)
+		}
+		return series, mustJSON(t, series.CompareDays)
+	}
+	daysOf := func(points []evals.DayPoint) []string {
+		days := make([]string, len(points))
+		for index, point := range points {
+			days[index] = point.Day
+		}
+		return days
+	}
+	// rowDays is the days of r that hold a listed day row of pr-size's lines series of the project.
+	rowDays := func(r evals.Range) []string {
+		t.Helper()
+		rows, err := database.Pool.Query(ctx, `
+			select to_char(day, 'YYYY-MM-DD') from eval_days
+			where eval_id = $1 and series = 'lines' and repo = '' and listed and day >= $2::date and day < $3::date order by day
+		`, evals.EvalID("EVL", "pr-size"), r.From, r.To)
+		if err != nil {
+			t.Fatalf("read the day rows of %s..%s: %v", r.From.Format(time.DateOnly), r.To.Format(time.DateOnly), err)
+		}
+		days, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the day rows of %s..%s: %v", r.From.Format(time.DateOnly), r.To.Format(time.DateOnly), err)
+		}
+		return days
+	}
+
+	stored, storedDays := read("the stored figures", true)
+	for _, held := range []struct {
+		what    string
+		points  []evals.DayPoint
+		r       evals.Range
+		offsets []int
+	}{{"compare_days", stored.CompareDays, compare, compareDays}, {"days", stored.Days, window, windowDays}} {
+		if got, want := daysOf(held.points), rowDays(held.r); len(want) < len(held.offsets) || !slices.Equal(got, want) {
+			t.Fatalf("%s answers the days %v, want the %d days of %s..%s that hold a day row, %v", held.what, got, len(want),
+				held.r.From.Format(time.DateOnly), held.r.To.Format(time.DateOnly), want)
+		}
+		for _, offset := range held.offsets {
+			day := today.AddDate(0, 0, offset).Format(time.DateOnly)
+			index := slices.IndexFunc(held.points, func(point evals.DayPoint) bool { return point.Day == day })
+			if index < 0 {
+				t.Errorf("%s answers no point of %s, which holds a reading", held.what, day)
+				continue
+			}
+			if value := held.points[index].Statistics["value"]; value == nil || *value != values[day] {
+				t.Errorf("%s' %s states value %s, want the day's reading %v", held.what, day, showFigure(value), values[day])
+			}
+		}
+	}
+	none, _ := read("no compare range", false)
+	if none.CompareDays != nil || none.Compare != nil {
+		t.Errorf("a read with no compare range answers compare_days %v and compare %v, want null for both", none.CompareDays, none.Compare)
+	}
+	body := string(getBody(t, handler, "/api/v1/projects/EVL/evals?"+ranges(false)))
+	if !strings.Contains(body, `"compare_days":null`) {
+		t.Errorf("a read with no compare range spells no compare_days null: %.400s", body)
+	}
+
+	if _, err := database.Pool.Exec(ctx, `update eval_day_figures set figures = '\x0000'::bytea where eval_id = $1 and day >= $2 and day < $3`,
+		evals.EvalID("EVL", "pr-size"), compare.From, compare.To); err != nil {
+		t.Fatalf("blank the compare range's stored day rows: %v", err)
+	}
+	blanked, _ := read("the stored figures with the compare range's days blanked", true)
+	if len(blanked.CompareDays) != 0 || !slices.Equal(daysOf(blanked.Days), daysOf(stored.Days)) {
+		t.Errorf("with the compare range's stored day rows blanked the read answers compare_days %v and days %v, want none and the window's",
+			daysOf(blanked.CompareDays), daysOf(blanked.Days))
+	}
+	if _, err := database.Pool.Exec(ctx, `delete from eval_figures_built where project_key = 'EVL'`); err != nil {
+		t.Fatalf("forget how far EVL's figures are built: %v", err)
+	}
+	if _, dayRows := read("the day rows", true); dayRows != storedDays {
+		t.Errorf("the day rows answer compare_days %s, the stored figures %s", dayRows, storedDays)
+	}
+	t.Logf("the stored figures and the day rows answer compare_days %s", storedDays)
 }
 
 // showFigure is a statistic for a failure message.

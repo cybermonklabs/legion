@@ -172,6 +172,36 @@ func readersOf(ctx context.Context, q delivery.Querier, owners []string) (map[st
 	return readers, nil
 }
 
+// projectOwner is one key whose rows a project's reads fold (eval_project_owners): the key, and
+// whether the project reads its rows through the repository (via, viaAsRead).
+type projectOwner struct {
+	key string
+	via bool
+}
+
+// ownersIn reads in q the keys whose rows each of projects' reads fold (eval_project_owners): the
+// project's own, the plain owner keys of the repository it publishes as its default, less those it
+// shares, and the owner keys carrying lists whose readers hold it (eval_owner_readers), each with
+// its via, each project's in key order. The read-time path builds each of them (ComputeAtRead).
+func ownersIn(ctx context.Context, q delivery.Querier, projects []string) (map[string][]projectOwner, error) {
+	rows, err := q.Query(ctx, `
+		select project_key, owner, via from eval_project_owners where project_key = any($1::text[])
+		order by project_key, owner collate "C"`, projects)
+	if err != nil {
+		return nil, fmt.Errorf("read the owners of the day rows of %v: %w", projects, err)
+	}
+	owners := map[string][]projectOwner{}
+	var project string
+	var owner projectOwner
+	if _, err := pgx.ForEachRow(rows, []any{&project, &owner.key, &owner.via}, func() error {
+		owners[project] = append(owners[project], owner)
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the owners of the day rows of %v: %w", projects, err)
+	}
+	return owners, nil
+}
+
 // PublishedDefaultIn is the repository project publishes as its default, read in q
 // (eval_project_repos, the one seam a read takes its repositories from), "" where it publishes
 // none yet. A Legion row stored under legionfacts.DefaultRepo is a row of that repository, which

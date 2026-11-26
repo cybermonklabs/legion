@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -323,6 +324,48 @@ type DeliveryFreshnessView struct {
 	UnfetchableCount int        `json:"unfetchable_count"`
 }
 
+// FreshnessOf is the freshness of sources, each a deploy source's rule with its bookkeeping, in
+// the order given, and unfetchable, the pull requests the reader counts that can no longer be
+// fetched: one source's own intake and reconcile times and last error; of several, the latest
+// event, the earliest reconcile (none while any source has none, since that source's runs have not
+// been reconciled yet), so the line shows the least fresh source, and the last error of each
+// source that has one, naming its repository, in the order given; and none of them for no source.
+// The deployment-wide delivery reads fold every delivery-on project's sources by repository (their
+// timeline's freshness, the live hub's verdict), and the list read of one project's delivery evals
+// that project's sources in their order (its delivery_freshness, dispatch://INFRA-2918 D2).
+func FreshnessOf(sources []DeliverySettings, unfetchable int) DeliveryFreshnessView {
+	freshness := DeliveryFreshnessView{UnfetchableCount: unfetchable}
+	switch len(sources) {
+	case 0:
+		return freshness
+	case 1:
+		freshness.LastEventAt, freshness.LastReconcileAt, freshness.LastError = sources[0].LastEventAt, sources[0].LastReconcileAt, sources[0].LastError
+		return freshness
+	}
+	reconciled := true
+	var lastErrors []string
+	for _, source := range sources {
+		if source.LastEventAt != nil && (freshness.LastEventAt == nil || source.LastEventAt.After(*freshness.LastEventAt)) {
+			freshness.LastEventAt = source.LastEventAt
+		}
+		if source.LastReconcileAt == nil {
+			reconciled = false
+		} else if freshness.LastReconcileAt == nil || source.LastReconcileAt.Before(*freshness.LastReconcileAt) {
+			freshness.LastReconcileAt = source.LastReconcileAt
+		}
+		if source.LastError != nil {
+			lastErrors = append(lastErrors, source.DeployRepo+": "+*source.LastError)
+		}
+	}
+	if !reconciled {
+		freshness.LastReconcileAt = nil
+	}
+	if len(lastErrors) > 0 {
+		freshness.LastError = new(strings.Join(lastErrors, "; "))
+	}
+	return freshness
+}
+
 // DeliveryWindowView is the [from, to) window a DeliveryTimelineResponse answers for.
 type DeliveryWindowView struct {
 	From time.Time `json:"from"`
@@ -373,8 +416,9 @@ type DeliveryTimelineResponse struct {
 	SessionPRCounts map[string]int                   `json:"session_pr_counts"`
 }
 
-// DeliveryRunJobDetailView is one job of `GET /api/v1/delivery/runs/{id}`: the drill-down's job
-// list, with each job's result and timings.
+// DeliveryRunJobDetailView is one job of `GET /api/v1/delivery/runs/{id}` and
+// `GET /api/v1/projects/{key}/deploy-runs/{id}`: the drill-down's job list, with each job's result
+// and timings.
 type DeliveryRunJobDetailView struct {
 	Name        string                 `json:"name"`
 	StartedAt   *time.Time             `json:"started_at"`
@@ -382,8 +426,9 @@ type DeliveryRunJobDetailView struct {
 	Conclusion  *DeliveryJobConclusion `json:"conclusion"`
 }
 
-// DeliveryRunDetailView is `GET /api/v1/delivery/runs/{id}`: one run of the deploy repository with
-// every job it ran, ordered by when each started (a job that never started last, then by name).
+// DeliveryRunDetailView is `GET /api/v1/delivery/runs/{id}`, one run of the deploy repository, and
+// `GET /api/v1/projects/{key}/deploy-runs/{id}`, one run of a deploy source's repository: the run
+// with every job it ran, ordered by when each started (a job that never started last, then by name).
 type DeliveryRunDetailView struct {
 	ID   int64                      `json:"id"`
 	URL  string                     `json:"url"`

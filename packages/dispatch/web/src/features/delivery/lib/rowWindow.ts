@@ -16,7 +16,7 @@
  * of it that is drawn.
  */
 
-/** Rows drawn past each edge of the window, as the uniform list draws (`prList.ts`). */
+/** Rows drawn past each edge of the window. */
 export const OVERSCAN_ROWS = 12;
 
 /** What the list measured each row to be, by the key the list names that row with. */

@@ -12,7 +12,8 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { type LayoutColumns, useTableLayout } from "../features/project/issues-table-layout";
 import { tableStorageKey } from "../features/project/issues-table-storage";
-import { DataTable, DataTableGroupRow, useDataTable } from "./DataTable";
+import { appKeymap } from "../features/shell/keymap";
+import { DataTable, DataTableGroupRow, SORT_MARK_WIDTH, useDataTable } from "./DataTable";
 
 /** A row that is not an issue: the core knows nothing of what its rows are. */
 interface Deploy {
@@ -65,7 +66,9 @@ const DEPLOYS: Deploy[] = [
 
 const NO_COUNTS: ReadonlyMap<string, number> = new Map();
 
-/** A caller of the core: it holds the view itself, as the issue table holds it in the URL. */
+/** A caller of the core: it holds the view itself, as the issue table holds it in the URL. A
+ *  `plain` caller's rows are no issues: they carry `data-row`, every one is drawn, and the table
+ *  has no pager and no row keys. */
 function Deploys({
   columns = COLUMNS,
   grouping: initialGrouping = [],
@@ -73,6 +76,7 @@ function Deploys({
   layoutColumns = LAYOUT_COLUMNS,
   layoutKey = "deploys",
   pageSize = 25,
+  plain = false,
   rows = DEPLOYS,
   stackedHeader,
 }: {
@@ -82,6 +86,7 @@ function Deploys({
   layoutColumns?: LayoutColumns;
   layoutKey?: string;
   pageSize?: number;
+  plain?: boolean;
   rows?: Deploy[];
   stackedHeader?: string;
 }): ReactNode {
@@ -110,9 +115,11 @@ function Deploys({
     onGroupingChange: setGrouping,
     onPaginationChange: setPagination,
     onSortingChange: setSorting,
+    rowKeys: !plain,
     rows,
     state,
     viewKey: JSON.stringify(state),
+    virtual: !plain,
   });
   return (
     <section aria-label={layoutKey}>
@@ -124,6 +131,7 @@ function Deploys({
         noun={{ many: "deploys", one: "deploy" }}
         onOpenFilterChange={setOpenFilter}
         openFilter={openFilter}
+        pager={!plain}
         renderGroup={({ entry: { row }, index, measure }) => (
           <DataTableGroupRow
             columns={model.table.getVisibleLeafColumns().length}
@@ -138,12 +146,18 @@ function Deploys({
           />
         )}
         renderRow={({ row, index, measure }) => (
-          <tr data-index={index} data-issue-row={row.id} ref={measure} tabIndex={-1}>
+          <tr
+            data-index={index}
+            {...{ [plain ? "data-row" : "data-issue-row"]: row.id }}
+            ref={measure}
+            tabIndex={-1}
+          >
             {row.getVisibleCells().map((cell) => (
               <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
             ))}
           </tr>
         )}
+        rowAttribute={plain ? "data-row" : undefined}
         scrollTestId={`${layoutKey}-scroll`}
         stackedHeader={stackedHeader}
       />
@@ -244,6 +258,39 @@ test("pages its rows and moves to the next page", async () => {
 
   expect(listed(table)).toEqual(["d11", "d12"]);
   expect(screen.getByText("Page 2 of 2")).toBeInTheDocument();
+});
+
+/** Sixty deploys: more rows than a 600 px box draws at once. */
+const MANY = Array.from({ length: 60 }, (_, index) => ({
+  id: `d${index + 1}`,
+  minutes: index,
+  region: "eu",
+  service: `service ${index + 1}`,
+  state: "live",
+}));
+
+test("by default it draws the issue tables' rows: the ones in view, each with data-issue-row, the pager under them and the row keys bound", async () => {
+  draw(<Deploys pageSize={100} rows={MANY} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  expect(listed(table).length).toBeGreaterThan(0);
+  expect(listed(table).length).toBeLessThan(MANY.length);
+  expect(screen.getByTestId("issues-table-pager")).toBeInTheDocument();
+  expect(appKeymap.describe().map((binding) => binding.id)).toContain("list-next");
+});
+
+test("a table whose rows are no issues draws every row under its own attribute, with no pager and no row keys", async () => {
+  draw(<Deploys pageSize={100} plain rows={MANY} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  expect(table.querySelectorAll("[data-issue-row]")).toHaveLength(0);
+  expect(
+    [...table.querySelectorAll("[data-row]")].map((row) => row.getAttribute("data-row"))
+  ).toEqual(MANY.map((row) => row.id));
+  expect(screen.queryByTestId("issues-table-pager")).toBeNull();
+  expect(appKeymap.describe().map((binding) => binding.id)).not.toContain("list-next");
+  // As tall as its rows: the box takes no height of its own.
+  expect(screen.getByTestId("deploys-scroll").style.height).toBe("");
 });
 
 test("groups its rows with the headings in the caller's order", async () => {
@@ -386,4 +433,80 @@ test("a view change scrolls the box to its top and a data change keeps it where 
 
   await user.click(within(table).getByRole("button", { name: "Minutes" }));
   expect(box.scrollTop).toBe(0);
+});
+
+// dispatch://INFRA-2918/spec#b-r7: every header holds its label, its filter button and, while
+// its column is sorted, its sort mark, with nothing cut. A column is never narrower than the
+// larger of its declared minimum and what its header draws, the mark's slot counted sorted or
+// not, so a sort neither widens a column nor takes room from a label. happy-dom lays nothing out:
+// each label and the filter button are given a width where the header cell reads them, a range
+// over what each holds.
+test("a column's minimum width is at least its header's label, filter and sort mark", async () => {
+  const user = userEvent.setup();
+  const labels: Readonly<Record<string, number>> = {
+    Deploy: 60,
+    Minutes: 120,
+    Region: 50,
+    Service: 70,
+    State: 30,
+  };
+  const filter = 32;
+  const range = spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Range
+  ) {
+    const holder = this.startContainer;
+    const width =
+      holder instanceof Element && holder.querySelector("button") !== null
+        ? filter
+        : (labels[holder.textContent ?? ""] ?? 0);
+    return new DOMRect(0, 0, width, 16);
+  });
+  restores.push(() => range.mockRestore());
+  // Every starting width but State's is under its header, Region's declared minimum is over its
+  // header, and the reader dragged Minutes under its header.
+  localStorage.setItem(
+    tableStorageKey("headers"),
+    JSON.stringify({ order: [], sizing: { minutes: 30 }, visibility: {} })
+  );
+  const narrow: LayoutColumns = {
+    ids: LAYOUT_COLUMNS.ids,
+    minimums: { region: 90 },
+    sizes: { deploy: 40, minutes: 50, region: 40, service: 50, state: 200 },
+  };
+  draw(<Deploys layoutColumns={narrow} layoutKey="headers" />);
+
+  const table = await screen.findByRole("table", { name: "Deploys headers" });
+  const widths = () =>
+    within(table)
+      .getAllByRole("columnheader")
+      .map((header) => header.style.width);
+  const minutes = () => within(table).getByRole("columnheader", { name: /^Minutes/ });
+  const mark = () => minutes().querySelector("button")?.lastElementChild;
+  const drawn = [
+    `${60 + SORT_MARK_WIDTH}px`,
+    `${70 + SORT_MARK_WIDTH + filter}px`,
+    "200px",
+    `${120 + SORT_MARK_WIDTH}px`,
+    "90px",
+  ];
+  expect(widths()).toEqual(drawn);
+  expect(mark()?.textContent).toBe("");
+  expect(mark()).toHaveStyle({ width: `${SORT_MARK_WIDTH}px` });
+
+  await user.click(within(table).getByRole("button", { name: /^Minutes/ }));
+  expect(minutes()).toHaveAttribute("aria-sort", "ascending");
+  expect(mark()?.textContent).toBe("▲");
+  expect(mark()).toHaveStyle({ width: `${SORT_MARK_WIDTH}px` });
+  expect(widths()).toEqual(drawn);
+
+  await user.click(within(table).getByRole("button", { name: /^Minutes/ }));
+  expect(minutes()).toHaveAttribute("aria-sort", "descending");
+  expect(widths()).toEqual(drawn);
+
+  await user.click(within(table).getByRole("button", { name: /^Service/ }));
+  expect(within(table).getByRole("columnheader", { name: /^Service/ })).toHaveAttribute(
+    "aria-sort",
+    "ascending"
+  );
+  expect(widths()).toEqual(drawn);
 });

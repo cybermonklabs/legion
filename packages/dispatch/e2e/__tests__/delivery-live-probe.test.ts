@@ -4,31 +4,37 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  type FakeDispatchCall,
   type FakeDispatchServer,
   startFakeDispatch,
 } from "@legion/envoy-client/test/fake-dispatch";
 import type { ServerWebSocket } from "bun";
 
-import after from "../../../contracts/fixtures/live/after.json";
-import delta from "../../../contracts/fixtures/live/delta.json";
 import error from "../../../contracts/fixtures/live/error.json";
 import evalsAfter from "../../../contracts/fixtures/live/evals_after.json";
 import evalsDelta from "../../../contracts/fixtures/live/evals_delta.json";
 import evalsSnapshot from "../../../contracts/fixtures/live/evals_snapshot.json";
 import heartbeat from "../../../contracts/fixtures/live/heartbeat.json";
-import snapshot from "../../../contracts/fixtures/live/snapshot.json";
+import itemsAfter from "../../../contracts/fixtures/live/items_after.json";
+import itemsDelta from "../../../contracts/fixtures/live/items_delta.json";
+import itemsSnapshot from "../../../contracts/fixtures/live/items_snapshot.json";
+import after from "../../../contracts/fixtures/live/project_timeline_after.json";
+import delta from "../../../contracts/fixtures/live/project_timeline_delta.json";
+import snapshot from "../../../contracts/fixtures/live/project_timeline_snapshot.json";
 import { REQUEST_DEADLINE_MS } from "../../web/src/api/client";
 import { RECONNECT_SPREAD_MS, reconnectDelayMs } from "../../web/src/api/live-socket";
 import type {
   DeliveryLiveDelta,
   DeliveryLiveSnapshot,
   DeliveryLiveView,
-  DeliveryTimelineWithMeasures,
+  EvalItemsResponse,
   EvalListResponse,
   LiveClientFrame,
+  ProjectTimelineResponse,
 } from "../../web/src/api/types";
 import {
   MAX_TIMER_DELAY_MS,
+  PROJECT_TIMELINE_PAGE_MAX,
   type ProbeCloseLine,
   type ProbeCompareLine,
   type ProbeEndLine,
@@ -50,22 +56,26 @@ import {
 
 // The probe runs as an agent runs it, a process of its own, against a stand-in for Dispatch that
 // replays the frames Dispatch's own diff writes (packages/contracts/fixtures/live): a
-// timeline snapshot, the delta of a deploy, a merge and two pull requests leaving the window, a
-// heartbeat, an error, and the snapshot a page subscribing after the delta gets; and an evals
-// view's snapshot, delta and later snapshot.
+// project-timeline view's snapshot of its two newest rows, the delta that grows it by the two
+// merges it lacked, and the snapshot a page subscribing after the delta gets; a heartbeat and an
+// error; and an evals view's and an items view's snapshot, delta and later snapshot.
 
 const held = snapshot as unknown as DeliveryLiveSnapshot;
 const change = delta as unknown as DeliveryLiveDelta;
 const next = after as unknown as DeliveryLiveSnapshot;
-const heldBody = held.body as DeliveryTimelineWithMeasures;
-const nextBody = next.body as DeliveryTimelineWithMeasures;
+const heldBody = held.body as ProjectTimelineResponse;
+const nextBody = next.body as ProjectTimelineResponse;
+
+/** The route the project-timeline view mirrors, for the project the view names. */
+const TIMELINE_ROUTE = "/api/v1/projects/ACME/timeline";
 
 const TOKEN = "probe-token";
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const probe = fileURLToPath(new URL("../delivery-live-probe.ts", import.meta.url));
 const view: DeliveryLiveView = {
-  kind: "timeline",
-  query: "repo=acme%2Fwidgets",
+  kind: "project-timeline",
+  project: "ACME",
+  query: `author=octocat&limit=${nextBody.limit}`,
   window: { preset: 28 },
 };
 
@@ -74,6 +84,8 @@ interface Script {
   readonly onSubscribe: (socket: ServerWebSocket<undefined>, sub: string, count: number) => void;
   /** Each GET route's body, by path. */
   readonly routes?: Readonly<Record<string, unknown>>;
+  /** Every GET's answer, in place of `routes`, where the answer reads the request's query. */
+  readonly handler?: (call: FakeDispatchCall) => Response;
 }
 
 interface Run {
@@ -116,6 +128,7 @@ function probeDispatch(script: Script): FakeDispatchServer<LiveClientFrame> {
     live: (socket, frame, nth) => {
       if (frame.type === "subscribe") script.onSubscribe(socket, frame.sub, nth);
     },
+    handler: script.handler,
     routes: script.routes,
     token: TOKEN,
   });
@@ -139,7 +152,7 @@ async function readLines(
   if (pending !== "") onLine(pending);
 }
 
-/** The probe as the nine rows that drive it start it: a process of its own, which the row reads
+/** The probe as the eleven rows that drive it start it: a process of its own, which the row reads
  *  line by line and signals itself, so it is no bounded child, since a bound would kill a process
  *  the row still uses. Each of those rows waits for the line it needs through `lineBy` and for the
  *  probe's exit through `exitAfter`, and each of those waits ends at the short bound, failing with
@@ -281,12 +294,12 @@ const nothing = {
   counts: null,
   items: null,
   maps: null,
-  prs: null,
-  runs: null,
   seq: null,
   session_groups: null,
   set: null,
 };
+const same = { equal: true, extra: [], missing: [] };
+const allEqual = { differ: [], equal: true };
 
 test(
   "the probe writes one line per frame and holds what the page would after them",
@@ -304,10 +317,7 @@ test(
           socket.send(text);
         }
       },
-      routes: {
-        "/api/v1/delivery/measures": nextBody.measures,
-        "/api/v1/delivery/timeline": nextBody,
-      },
+      routes: { [TIMELINE_ROUTE]: nextBody },
     });
     const bodyFile = join(scratch(), "body.json");
     const run = runProbe([...args(dispatch), "--compare", "--body-file", bodyFile]);
@@ -317,10 +327,9 @@ test(
     expect(dispatch.upgrades).toEqual([`Bearer ${TOKEN}`]);
     expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view }]);
     const bytes = sent.map((text) => Buffer.byteLength(text));
-    const prsChange = change.items.prs;
-    const runsChange = change.items.runs;
-    if (prsChange === undefined || runsChange === undefined) {
-      throw new Error("delta.json changes the pull requests and the runs");
+    const rowsChange = change.items.items;
+    if (rowsChange === undefined) {
+      throw new Error("project_timeline_delta.json grows the view's rows");
     }
     expect(
       run.lines.filter((line) => line.type !== "compare").map(({ at: _at, ...line }) => line)
@@ -334,14 +343,13 @@ test(
           color_counts: sizes(heldBody.color_counts ?? {}),
           facet_counts: sizes(heldBody.facet_counts ?? {}),
         },
+        items: (heldBody.items ?? []).length,
         maps: {
           components: Object.keys(heldBody.components ?? {}).length,
           issue_titles: Object.keys(heldBody.issue_titles ?? {}).length,
           session_pr_counts: Object.keys(heldBody.session_pr_counts ?? {}).length,
           session_titles: Object.keys(heldBody.session_titles ?? {}).length,
         },
-        prs: (heldBody.prs ?? []).length,
-        runs: (heldBody.runs ?? []).length,
         seq: held.seq,
         session_groups: (heldBody.session_groups ?? []).length,
         type: "snapshot",
@@ -350,13 +358,11 @@ test(
         ...nothing,
         bytes: bytes[1],
         changed_at: change.changed_at,
-        counts: {
-          color_counts: names(change.counts.color_counts ?? {}),
-          facet_counts: names(change.counts.facet_counts ?? {}),
-        },
+        counts: Object.fromEntries(
+          Object.entries(change.counts).map(([family, facets]) => [family, names(facets ?? {})])
+        ),
+        items: { remove: rowsChange.remove, upsert: ids(rowsChange.upsert) },
         maps: names(change.maps),
-        prs: { remove: prsChange.remove, upsert: ids(prsChange.upsert) },
-        runs: { remove: runsChange.remove, upsert: ids(runsChange.upsert) },
         seq: change.seq,
         set: Object.keys(change.set),
         type: "delta",
@@ -370,34 +376,41 @@ test(
         type: "error",
       },
     ]);
-    // The delta names the deploy's run, the merge and the two pull requests that left.
-    expect(prsChange.remove).toEqual(["acme/widgets#1", "acme/widgets#2"]);
-    expect(ids(runsChange.upsert)).toEqual([42]);
+    // The delta grows the view by the two merges it lacked, and takes no row away.
+    expect(ids(rowsChange.upsert)).toEqual(["acme/widgets#2", "acme/widgets#1"]);
+    expect(rowsChange.remove).toEqual([]);
 
     // What the probe holds is the snapshot a page subscribing afterwards gets. A delta never
     // carries freshness, which has its own frame, so it is the one field the two may differ in.
     const applied = (await Bun.file(bodyFile).json()) as ProbeHeld;
-    const { freshness: _applied, ...appliedBody } = applied.body as DeliveryTimelineWithMeasures;
+    const { freshness: _applied, ...appliedBody } = applied.body as ProjectTimelineResponse;
     const { freshness: _next, ...expectedBody } = nextBody;
     expect(appliedBody).toEqual(expectedBody);
     expect(applied.revs).toEqual(next.revs);
     expect(applied.seq).toBe(change.seq);
     expect(applied.changed_at).toBe(change.changed_at);
 
-    // --compare reads both routes for the window the delta moved to, with the view's own query.
+    // --compare reads the project's timeline route over the window the body last applied, with
+    // the view's own query, as one page of the rows the view holds.
     expect(
       dispatch.reads.map((url) => [
         url.pathname,
         url.searchParams.get("from"),
         url.searchParams.get("to"),
-        url.searchParams.get("repo"),
+        url.searchParams.get("author"),
+        url.searchParams.get("limit"),
+        url.searchParams.get("offset"),
       ])
     ).toEqual([
-      ["/api/v1/delivery/timeline", nextBody.window.from, nextBody.window.to, "acme/widgets"],
-      ["/api/v1/delivery/measures", nextBody.window.from, nextBody.window.to, "acme/widgets"],
+      [
+        TIMELINE_ROUTE,
+        nextBody.window.from,
+        nextBody.window.to,
+        "octocat",
+        String(nextBody.limit),
+        "0",
+      ],
     ]);
-    const same = { equal: true, extra: [], missing: [] };
-    const allEqual = { differ: [], equal: true };
     expect(
       comparisons(run.lines).map(({ at: _at, route, ...line }) => ({
         ...line,
@@ -406,19 +419,9 @@ test(
     ).toEqual([
       {
         equal: true,
-        measures: allEqual,
-        prs: same,
-        route: "/api/v1/delivery/timeline",
-        runs: same,
-        status: 200,
-        type: "compare",
-      },
-      {
-        equal: true,
-        measures: allEqual,
-        prs: null,
-        route: "/api/v1/delivery/measures",
-        runs: null,
+        fields: allEqual,
+        route: TIMELINE_ROUTE,
+        rows: same,
         status: 200,
         type: "compare",
       },
@@ -429,12 +432,12 @@ test(
 );
 
 test(
-  "--compare names each pull request, run and measure a GET answer differs in, and exits 1",
+  "--compare names each row and each field a GET answer differs in, and exits 1",
   async () => {
-    const [firstPR] = nextBody.prs ?? [];
-    const [firstRun] = nextBody.runs ?? [];
-    if (firstPR === undefined || firstRun === undefined) {
-      throw new Error("after.json holds a pull request and a run");
+    const [firstRow, ...laterRows] = nextBody.items ?? [];
+    const firstRun = laterRows.find((row) => row.kind !== "merge");
+    if (firstRow === undefined || firstRun === undefined) {
+      throw new Error("project_timeline_after.json holds a row and a run after it");
     }
     const dispatch = probeDispatch({
       onSubscribe(socket, sub) {
@@ -442,15 +445,10 @@ test(
         socket.send(forSub(delta, sub));
       },
       routes: {
-        "/api/v1/delivery/measures": nextBody.measures,
-        "/api/v1/delivery/timeline": {
+        [TIMELINE_ROUTE]: {
           ...nextBody,
-          measures: {
-            ...nextBody.measures,
-            measures: { ...nextBody.measures.measures, rework_share: 0.99 },
-          },
-          prs: (nextBody.prs ?? []).slice(1),
-          runs: [...(nextBody.runs ?? []), { ...firstRun, id: 99 }],
+          items: [...laterRows, { ...firstRun, id: 99 }],
+          total: nextBody.total + 1,
         },
       },
     });
@@ -459,23 +457,87 @@ test(
     expect(await exitAfter(run, "SIGINT")).toBe(1);
 
     expect(
-      comparisons(run.lines).map(({ equal, measures, prs, runs }) => ({
-        equal,
-        measures,
-        prs,
-        runs,
-      }))
+      comparisons(run.lines).map(({ equal, fields, rows }) => ({ equal, fields, rows }))
     ).toEqual([
       {
         equal: false,
-        measures: { differ: ["measures.rework_share"], equal: false },
-        prs: { equal: false, extra: [firstPR.id], missing: [] },
-        runs: { equal: false, extra: [], missing: ["99"] },
+        fields: { differ: ["total"], equal: false },
+        rows: { equal: false, extra: [String(firstRow.id)], missing: ["99"] },
       },
-      { equal: true, measures: { differ: [], equal: true }, prs: null, runs: null },
     ]);
   },
   // The wait for the delta line, then the wait for the exit after SIGINT.
+  rowLimit("short", "short")
+);
+
+// A view grows past the route's largest page (PROJECT_TIMELINE_PAGE_MAX), so --compare reads the
+// rows it holds a page at a time: each page's rows against the rows the body holds at that
+// offset, the whole window's counts on every page, the titles and session groups on the first
+// page alone, and the waiting pull requests on the page that reaches the window's start.
+test(
+  "--compare reads a project-timeline view of more rows than a route page holds a page at a time",
+  async () => {
+    const [template] = (nextBody.items ?? []).filter((row) => row.kind === "merge");
+    if (template === undefined) throw new Error("project_timeline_after.json holds a merge");
+    const rows = Array.from({ length: PROJECT_TIMELINE_PAGE_MAX + 1 }, (_, index) => ({
+      ...template,
+      id: `acme/widgets#${1000 + index}`,
+      number: 1000 + index,
+    }));
+    const limit = PROJECT_TIMELINE_PAGE_MAX + 100;
+    const grown = { ...nextBody, items: rows, limit, total: rows.length };
+    // The route's own paging (`projectTimelinePage`): the rows from offset, the members only the
+    // first page carries, and the waiting pull requests on the page that reaches the window's
+    // start.
+    const page = ({ url }: FakeDispatchCall) => {
+      const from = Number(url.searchParams.get("offset"));
+      const size = Number(url.searchParams.get("limit"));
+      const first = from === 0;
+      return Response.json({
+        ...grown,
+        components: first ? grown.components : null,
+        issue_titles: first ? grown.issue_titles : null,
+        items: rows.slice(from, from + size),
+        limit: size,
+        offset: from,
+        session_groups: first ? grown.session_groups : null,
+        session_pr_counts: first ? grown.session_pr_counts : null,
+        session_titles: first ? grown.session_titles : null,
+        waiting: size >= rows.length - from ? grown.waiting : null,
+      });
+    };
+    const dispatch = probeDispatch({
+      handler: page,
+      onSubscribe(socket, sub) {
+        socket.send(forSub({ ...next, body: grown }, sub));
+      },
+    });
+    const run = runProbe([...args(dispatch), "--compare"]);
+    await lineBy(run, "snapshot line", () => run.lines.some((line) => line.type === "snapshot"));
+    expect(await exitAfter(run, "SIGINT"), run.stderr.join("\n")).toBe(0);
+
+    expect(
+      dispatch.reads.map((url) => [
+        url.pathname,
+        url.searchParams.get("limit"),
+        url.searchParams.get("offset"),
+      ])
+    ).toEqual([
+      [TIMELINE_ROUTE, String(PROJECT_TIMELINE_PAGE_MAX), "0"],
+      [
+        TIMELINE_ROUTE,
+        String(limit - PROJECT_TIMELINE_PAGE_MAX),
+        String(PROJECT_TIMELINE_PAGE_MAX),
+      ],
+    ]);
+    expect(
+      comparisons(run.lines).map(({ equal, fields, rows }) => ({ equal, fields, rows }))
+    ).toEqual([
+      { equal: true, fields: allEqual, rows: same },
+      { equal: true, fields: allEqual, rows: same },
+    ]);
+  },
+  // The wait for the snapshot line, then the wait for the exit after SIGINT.
   rowLimit("short", "short")
 );
 
@@ -565,14 +627,99 @@ test(
       ["/api/v1/projects/ACME/evals", nextList.window.from, nextList.window.to, "experiment"],
     ]);
     expect(comparisons(run.lines).map(({ at: _at, route: _route, ...line }) => line)).toEqual([
-      {
-        equal: true,
-        measures: { differ: [], equal: true },
-        prs: null,
-        runs: null,
-        status: 200,
-        type: "compare",
+      { equal: true, fields: allEqual, rows: null, status: 200, type: "compare" },
+    ]);
+  },
+  // The wait for the delta line, then the wait for the exit after SIGINT.
+  rowLimit("short", "short")
+);
+
+test(
+  "an items view's rows are counted and sent whole, and --compare reads its eval's items route",
+  async () => {
+    // The frames Dispatch's own diff writes for an items view of pr-ci's failing jobs: a run's
+    // failure moved build / unit's counts and listed lint, every row sent whole in `set`.
+    const itemsHeld = itemsSnapshot as unknown as DeliveryLiveSnapshot;
+    const itemsChange = itemsDelta as unknown as DeliveryLiveDelta;
+    const itemsNext = itemsAfter as unknown as DeliveryLiveSnapshot;
+    const nextRows = itemsNext.body as EvalItemsResponse;
+    const itemsView: DeliveryLiveView = {
+      kind: "items",
+      project: "ACME",
+      query: "sort=failures",
+      slug: "pr-ci",
+      window: { from: nextRows.window.from, to: nextRows.window.to },
+    };
+    const sent: string[] = [];
+    const dispatch = probeDispatch({
+      onSubscribe(socket, sub) {
+        for (const text of [forSub(itemsHeld, sub), forSub(itemsChange, sub)]) {
+          sent.push(text);
+          socket.send(text);
+        }
       },
+      routes: { "/api/v1/projects/ACME/evals/pr-ci/items": nextRows },
+    });
+    const bodyFile = join(scratch(), "body.json");
+    const run = runProbe([
+      ...args(dispatch, TOKEN, WATCH_MINUTES, itemsView),
+      "--compare",
+      "--body-file",
+      bodyFile,
+    ]);
+    await lineBy(run, "delta line", () => run.lines.some((line) => line.type === "delta"));
+    expect(await exitAfter(run, "SIGINT")).toBe(0);
+
+    expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view: itemsView }]);
+    const bytes = sent.map((text) => Buffer.byteLength(text));
+    expect(
+      run.lines.filter((line) => line.type !== "compare").map(({ at: _at, ...line }) => line)
+    ).toEqual([
+      { resume: null, type: "open" },
+      {
+        ...nothing,
+        bytes: bytes[0],
+        changed_at: itemsHeld.changed_at,
+        items: ((itemsHeld.body as EvalItemsResponse).items ?? []).length,
+        seq: itemsHeld.seq,
+        type: "snapshot",
+      },
+      {
+        ...nothing,
+        bytes: bytes[1],
+        changed_at: itemsChange.changed_at,
+        counts: {},
+        maps: {},
+        seq: itemsChange.seq,
+        set: ["items", "total"],
+        type: "delta",
+      },
+    ]);
+
+    // What the probe holds is the snapshot a page subscribing afterwards gets, every field.
+    const applied = (await Bun.file(bodyFile).json()) as ProbeHeld;
+    expect(applied.body).toEqual(itemsNext.body);
+    expect(applied.revs).toEqual(itemsNext.revs);
+
+    // --compare reads the eval's items route over the view's own window, with the view's own
+    // query, and finds every row and every field equal.
+    expect(
+      dispatch.reads.map((url) => [
+        url.pathname,
+        url.searchParams.get("from"),
+        url.searchParams.get("to"),
+        url.searchParams.get("sort"),
+      ])
+    ).toEqual([
+      [
+        "/api/v1/projects/ACME/evals/pr-ci/items",
+        nextRows.window.from,
+        nextRows.window.to,
+        "failures",
+      ],
+    ]);
+    expect(comparisons(run.lines).map(({ at: _at, route: _route, ...line }) => line)).toEqual([
+      { equal: true, fields: allEqual, rows: null, status: 200, type: "compare" },
     ]);
   },
   // The wait for the delta line, then the wait for the exit after SIGINT.
@@ -627,8 +774,8 @@ test(
     expect(to - from).toBe(84 * 24 * 60 * 60 * 1000);
     expect(to).toBeGreaterThanOrEqual(startedAt);
     expect(to).toBeLessThanOrEqual(endedAt);
-    expect(comparisons(run.lines).map(({ equal, measures }) => ({ equal, measures }))).toEqual([
-      { equal: true, measures: { differ: [], equal: true } },
+    expect(comparisons(run.lines).map(({ equal, fields }) => ({ equal, fields }))).toEqual([
+      { equal: true, fields: allEqual },
     ]);
   },
   // The wait for the delta line, then the wait for the exit after SIGINT.
@@ -1055,9 +1202,9 @@ test(
     const run = runProbe(compareArgs(dispatch.url, "1"));
     await lineBy(run, "snapshot line", () => run.lines.some((line) => line.type === "snapshot"));
     expect(await exitAfter(run, "SIGINT")).toBe(1);
-    expect(dispatch.reads).toEqual(["/api/v1/delivery/timeline"]);
+    expect(dispatch.reads).toEqual([TIMELINE_ROUTE]);
     const stderr = run.stderr.join("\n");
-    expect(stderr).toContain("the read of /api/v1/delivery/timeline?");
+    expect(stderr).toContain(`the read of ${TIMELINE_ROUTE}?`);
     expect(stderr).toContain("received nothing for 1 s (--read-within)");
   },
   // The wait for the snapshot line, then the wait for the exit after SIGINT.
@@ -1076,8 +1223,7 @@ test(
     const pieces = Array.from({ length: count }, (_, index) =>
       text.slice((index * text.length) / count, ((index + 1) * text.length) / count)
     );
-    const dispatch = slowDispatch((url) => {
-      if (url.pathname === "/api/v1/delivery/measures") return Response.json(heldBody.measures);
+    const dispatch = slowDispatch(() => {
       let sent = 0;
       const encoder = new TextEncoder();
       const body = new ReadableStream<Uint8Array>({
@@ -1095,10 +1241,9 @@ test(
     const run = runProbe(compareArgs(dispatch.url, String(REQUEST_DEADLINE_MS / 1000)));
     await lineBy(run, "snapshot line", () => run.lines.some((line) => line.type === "snapshot"));
     expect(await exitAfter(run, "SIGINT"), run.stderr.join("\n")).toBe(0);
-    expect(dispatch.reads).toEqual(["/api/v1/delivery/timeline", "/api/v1/delivery/measures"]);
+    expect(dispatch.reads).toEqual([TIMELINE_ROUTE]);
     expect(comparisons(run.lines).map((line) => [line.route.split("?")[0], line.equal])).toEqual([
-      ["/api/v1/delivery/timeline", true],
-      ["/api/v1/delivery/measures", true],
+      [TIMELINE_ROUTE, true],
     ]);
   },
   // The wait for the snapshot line, then the wait for the exit after SIGINT, which covers the

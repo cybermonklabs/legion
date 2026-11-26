@@ -187,7 +187,7 @@ func (s *Store) DeployRepoEvals(ctx context.Context, deployRepo string, slugs []
 			return nil, fmt.Errorf("begin the read of %s's evals %v: %w", deployRepo, slugs, err)
 		}
 		defer tx.Rollback(ctx)
-		projects, err := publishedSettingsIn(ctx, tx)
+		projects, _, err := publishedSettingsIn(ctx, tx)
 		if err != nil {
 			return nil, fmt.Errorf("read the project whose deploy source reads %s: %w", deployRepo, err)
 		}
@@ -213,16 +213,17 @@ func (s *Store) DeployRepoEvals(ctx context.Context, deployRepo string, slugs []
 
 // publishedSettingsIn is every project's delivery settings read in q (delivery.ListProjectSettings)
 // with each project's default repository its published one (eval_project_repos), none where it
-// publishes none yet: the settings a source that names no repository is read under by a reader of
-// the published state (DeployRepoEvals).
-func publishedSettingsIn(ctx context.Context, q delivery.Querier) ([]delivery.ProjectSettings, error) {
+// publishes none yet, and the published default repositories themselves, by project, those of the
+// projects with no delivery settings among them: the settings a source that names no repository
+// is read under by a reader of the published state (DeployRepoEvals, ReadAttribution).
+func publishedSettingsIn(ctx context.Context, q delivery.Querier) ([]delivery.ProjectSettings, map[string]string, error) {
 	projects, err := delivery.ListProjectSettings(ctx, q)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	rows, err := q.Query(ctx, `select project_key, repo from eval_project_repos`)
 	if err != nil {
-		return nil, fmt.Errorf("read the published default repositories: %w", err)
+		return nil, nil, fmt.Errorf("read the published default repositories: %w", err)
 	}
 	published := map[string]string{}
 	var project, repo string
@@ -230,7 +231,7 @@ func publishedSettingsIn(ctx context.Context, q delivery.Querier) ([]delivery.Pr
 		published[project] = repo
 		return nil
 	}); err != nil {
-		return nil, fmt.Errorf("read the published default repositories: %w", err)
+		return nil, nil, fmt.Errorf("read the published default repositories: %w", err)
 	}
 	for i := range projects {
 		projects[i].DefaultRepo = nil
@@ -238,7 +239,7 @@ func publishedSettingsIn(ctx context.Context, q delivery.Querier) ([]delivery.Pr
 			projects[i].DefaultRepo = new(repo)
 		}
 	}
-	return projects, nil
+	return projects, published, nil
 }
 
 // ProjectEvals reads the current definition and series of each of slugs project holds, by slug,

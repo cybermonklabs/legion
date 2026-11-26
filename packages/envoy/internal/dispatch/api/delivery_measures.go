@@ -110,7 +110,7 @@ func deliveryMeasuresOver(rules *delivery.SourceRules, pop deliveryPopulation, d
 	for i, run := range pop.windowRuns {
 		runs[i] = measures.Run{
 			ID: run.RunID, StartedAt: run.StartedAt, Conclusion: run.Conclusion,
-			ReachedProduction: reached[run.RunID], ShippedPRs: pop.windowShipped[run.RunID],
+			ReachedProduction: reached[run.RunID], ShippedPRs: len(pop.windowShipped[run.RunID]),
 		}
 	}
 	unowned := pop.unownedP0

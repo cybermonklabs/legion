@@ -170,6 +170,50 @@ type deliveryWindowQuery struct {
 	Deployed []string `query:"deployed"`
 }
 
+// projectTimelineQuery is GET /api/v1/projects/{key}/timeline's query: the delivery timeline's
+// window, search and repeatable facets (deliveryWindowQuery's keys), and the page. The `session`
+// facet is read with the others and named here by no field, as deliveryWindowQuery names none.
+type projectTimelineQuery struct {
+	// From is the window's start, RFC3339; absent it is seven days before To.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now.
+	To string `query:"to"`
+	// Q keeps the merges whose pull request's title or id holds it; like every facet, it keeps
+	// every run.
+	Q string `query:"q"`
+	// Repo selects pull requests of these repositories.
+	Repo []string `query:"repo"`
+	// ParentAgent selects pull requests whose first session belongs to these parents;
+	// __no_session__ selects those whose commits name no session.
+	ParentAgent []string `query:"parent_agent"`
+	// Issue selects pull requests of these issues; __no_issue__ selects those naming none.
+	Issue []string `query:"issue"`
+	// Priority selects P0-P3; __no_priority__ selects an issue with none.
+	Priority []string `query:"priority"`
+	// Component selects these components, a parent including its children;
+	// __no_component__ selects an issue with none.
+	Component []string `query:"component"`
+	// Author selects these pull-request authors.
+	Author []string `query:"author"`
+	// Rework selects by whether the work was rework.
+	Rework []string `query:"rework"`
+	// Deployed selects by deployed_status: deployed, waiting or not_tracked.
+	Deployed []string `query:"deployed"`
+	// Limit is the page size, 1 to 500, default 200.
+	Limit int `query:"limit"`
+	// Offset is where the page starts, from the newest row.
+	Offset int `query:"offset"`
+}
+
+// projectDeployRunQuery is GET /api/v1/projects/{key}/deploy-runs/{id}'s query: the repository the
+// run is in, which the run id alone does not name, since a project's deploy sources read several.
+type projectDeployRunQuery struct {
+	// Repo is the owner/name of the repository the run is in, as the project timeline's deploy and
+	// failed_run rows name it: the repository of a github_workflow deploy source of a project with
+	// delivery on. It is required.
+	Repo string `query:"repo"`
+}
+
 // issueResultsQuery is GET /api/v1/issues/{key}/results's query.
 type issueResultsQuery struct {
 	// At replaces what every check of the issue is compared with by this one commit, 40
@@ -186,7 +230,10 @@ type deliveryPipelineQuery struct {
 }
 
 // evalListQuery is GET /api/v1/projects/{key}/evals's query: the window and the compare range,
-// which kind of eval, which repositories' day rows, and the page (parseEvalListQuery).
+// which kind of eval, which repositories' day rows, the delivery timeline's search and repeatable
+// facets, which narrow the evals that count pull requests (dispatch://INFRA-2918, R21), and the
+// page (parseEvalListQuery). The `session` facet is read with the others and named here by no
+// field, as deliveryWindowQuery names none.
 type evalListQuery struct {
 	// From is the window's start, RFC3339; absent it is seven days before To. The window is the
 	// UTC days [from, to) covers.
@@ -201,8 +248,31 @@ type evalListQuery struct {
 	CompareTo string `query:"compare_to"`
 	// Kind keeps the evals of one kind.
 	Kind string `query:"kind" enum:"delivery,legion,ci,experiment"`
-	// Repo, repeatable, folds these repositories' day rows in place of the project's own.
+	// Repo, repeatable, folds these repositories' day rows in place of the project's own; with a
+	// facet or the search it narrows the pull requests counted to these repositories too.
 	Repo []string `query:"repo"`
+	// Q, as the delivery timeline reads it, keeps the pull requests whose title or id holds it:
+	// the evals that count pull requests are then computed when read, from the pull requests it
+	// keeps, and name it in `narrowed`.
+	Q string `query:"q"`
+	// ParentAgent narrows the pull-request evals to pull requests whose first session belongs to
+	// these parents; __no_session__ to those whose commits name no session.
+	ParentAgent []string `query:"parent_agent"`
+	// Issue narrows the pull-request evals to pull requests of these issues.
+	Issue []string `query:"issue"`
+	// Priority narrows the pull-request evals to issues of P0-P3; __no_priority__ to an issue with
+	// none, __no_issue__ to a pull request naming none.
+	Priority []string `query:"priority"`
+	// Component narrows the pull-request evals to these components, a parent including its
+	// children; __no_component__ to an issue with none, __no_issue__ to a pull request naming none.
+	Component []string `query:"component"`
+	// Author narrows the pull-request evals to these pull-request authors.
+	Author []string `query:"author"`
+	// Rework narrows the pull-request evals by whether the work was rework.
+	Rework []string `query:"rework"`
+	// Deployed narrows the pull-request evals by deployed_status: deployed, waiting or
+	// not_tracked.
+	Deployed []string `query:"deployed"`
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
 	// Offset is where the page starts.
@@ -210,7 +280,7 @@ type evalListQuery struct {
 }
 
 // evalsQuery is GET /api/v1/evals's query: the projects read, and every key the project read
-// takes.
+// takes, the `session` facet among them.
 type evalsQuery struct {
 	// Project, repeatable, names the projects read, in the order named; absent, every project is
 	// read, by key. A key no project holds is 404 PROJECT_NOT_FOUND.
@@ -225,8 +295,25 @@ type evalsQuery struct {
 	CompareTo string `query:"compare_to"`
 	// Kind keeps the evals of one kind.
 	Kind string `query:"kind" enum:"delivery,legion,ci,experiment"`
-	// Repo, repeatable, folds these repositories' day rows in place of each project's own.
+	// Repo, repeatable, folds these repositories' day rows in place of each project's own; with a
+	// facet or the search it narrows the pull requests counted to these repositories too.
 	Repo []string `query:"repo"`
+	// Q keeps the pull requests whose title or id holds it, as the project read takes it.
+	Q string `query:"q"`
+	// ParentAgent narrows the pull-request evals by parent agent, as the project read does.
+	ParentAgent []string `query:"parent_agent"`
+	// Issue narrows the pull-request evals by issue, as the project read does.
+	Issue []string `query:"issue"`
+	// Priority narrows the pull-request evals by priority, as the project read does.
+	Priority []string `query:"priority"`
+	// Component narrows the pull-request evals by component, as the project read does.
+	Component []string `query:"component"`
+	// Author narrows the pull-request evals by author, as the project read does.
+	Author []string `query:"author"`
+	// Rework narrows the pull-request evals by rework, as the project read does.
+	Rework []string `query:"rework"`
+	// Deployed narrows the pull-request evals by deployed_status, as the project read does.
+	Deployed []string `query:"deployed"`
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
 	// Offset is where the page starts, counted across the projects.
@@ -879,6 +966,12 @@ var routeShapes = map[string]routeShape{
 	"DELETE /api/v1/projects/{key}/legion/daemon": {Status: http.StatusNoContent},
 	"GET /api/v1/projects/{key}/legion/board": {
 		Status: http.StatusOK, Response: legionBoardResponse{},
+	},
+	"GET /api/v1/projects/{key}/timeline": {
+		Status: http.StatusOK, Response: projectTimelineResponse{}, Params: projectTimelineQuery{},
+	},
+	"GET /api/v1/projects/{key}/deploy-runs/{id}": {
+		Status: http.StatusOK, Response: projectDeployRunView{}, Params: projectDeployRunQuery{},
 	},
 	"GET /api/v1/delivery/timeline": {
 		Status: http.StatusOK, Response: deliveryTimelineWithMeasures{}, Params: deliveryWindowQuery{},

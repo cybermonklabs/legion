@@ -428,7 +428,8 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // touchedBy is whether a delivery change can move the view's answer (plan v4 Task 7 Step 7's
 // table), by the change's kind: a write of the stored facts, of an eval's rows or of a filing is
 // answered by its own arm, and every other kind is a delivery row, which moves only a view that
-// reads the delivery rows (touchedByDeliveryRow, behind that test).
+// reads the delivery rows (touchedByDeliveryRow, behind that test) and pr-ci's items views
+// (touchedByItemsRun).
 //
 // The rows the named kinds write are rows no delivery view reads, but for two: the timeline, the
 // measures and the Pipeline read the current versions of the evals that judge or rank their
@@ -436,21 +437,22 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // measures' day rows (deliveryLiveClasses.evalDays), so a version of one of those evals, or a
 // write of those rows, marks them here.
 //
-// A change of the delivery settings row marks no evals view. Such a view reads the settings and
-// the day rows together: the deploy repository recorded with the rows chooses the rows of the
-// evals that read it (evals.DeployRepoIn, evals.DeployRepoOf), the one setting the list read
-// takes, and the judged names are what the refresher built the rows under. A recompute at the
-// settings change would answer the new settings over rows the refresher has not rewritten yet, a
-// state the inputs never had where one save moves the deploy repository and a judged name
+// A change of the delivery settings row marks no evals or items view. Such a view reads the
+// settings and the day rows together: the deploy repository recorded with the rows chooses the
+// rows of the evals that read it (evals.DeployRepoIn, evals.DeployRepoOf), the one setting the
+// list read takes, and the judged names are what the refresher built the rows under. A recompute
+// at the settings change would answer the new settings over rows the refresher has not rewritten
+// yet, a state the inputs never had where one save moves the deploy repository and a judged name
 // together. The refresher's commit that brings the rows to the settings marks what it moved: its
 // rewrite's eval_days changes, one of each eval whose rows moved under that eval's project, mark
-// the evals views of the projects whose rows moved, and, where the recorded deploy repository
-// moved, the commit that records it (the rewrite's, or the page's where no row moved) logs one
-// eval_days change of no eval (delivery.SettingsApplied), which marks every evals view. Each marks
-// at once (markChangesLocked). A change that moves no row and not the deploy repository moves
-// nothing an evals view reads, and marks none. A delivery view reads the saved settings row
-// itself (delivery.GetSettings), so the row's change marks every one (touchedByDeliveryRow), and
-// neither the rewrite's eval_days changes nor the settings applied marks any.
+// the evals views of the projects whose rows moved and the items views of those evals, and, where
+// the recorded deploy repository moved, the commit that records it (the rewrite's, or the page's
+// where no row moved) logs one eval_days change of no eval (delivery.SettingsApplied), which marks
+// every evals and items view. Each marks at once (markChangesLocked). A change that moves no row
+// and not the deploy repository moves nothing an evals or items view reads, and marks none. A
+// delivery view reads the saved settings row itself (delivery.GetSettings), so the row's change
+// marks every one (touchedByDeliveryRow), and neither the rewrite's eval_days changes nor the
+// settings applied marks any.
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
 	switch change.Kind {
 	case delivery.ChangeKindIssueFacts:
@@ -468,7 +470,9 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		return view.spec.kind == legionBoardView && view.spec.project == change.Repo
 	case delivery.ChangeKindEvalReadings, delivery.ChangeKindEvalVersions, delivery.ChangeKindEvalDays:
 		// One eval's readings, a new version of its definition, or its day rows: what the evals
-		// view of the eval's project reads (readEvalList). The change's repo holds that project
+		// view of the eval's project reads (readEvalList), and the items view of that eval
+		// (readEvalItems), whose rows its readings and day rows are and whose definition names its
+		// series and its min_n. The change's repo holds that project and its ref the eval
 		// (migrations 20261117100012 to 20261117100014).
 		//
 		// No other kind marks an evals view. A computed eval's value moves when the refresher
@@ -477,7 +481,7 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// rows before the rewrite, and the eval_days change of the rewrite is what wakes it. The
 		// eval_days change of no eval is the refresher's word that the rows stand at the delivery
 		// settings under a deploy repository that moved (delivery.SettingsApplied), which every
-		// evals view reads, whatever its project.
+		// evals and items view reads, whatever its project.
 		//
 		// A new version of an eval a delivery view reads (its definition or one of its series)
 		// marks every view of that kind too, and readings mark none: the timeline's and the
@@ -493,8 +497,23 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// where its answer folds them: the timeline's and the measures' failure measures are the
 		// three failure evals' day rows of the delivery-on project (evals.Store.DeploymentFailures),
 		// which no view names either, so a write of them in any project marks those views.
-		if view.spec.kind == evalsView {
+		//
+		// A project timeline counts a row no issue attributes for the project whose published
+		// default repository holds it, and a deploy that ships nothing for the project whose deploy
+		// source reads its repository under the published defaults (evals.Attribution). The
+		// refresher's commit that publishes the defaults logs each project whose default it moved,
+		// which marks that project's timeline views, and each deploy repository whose judging
+		// project (the one whose source reads it) it moved, which marks every timeline view, since
+		// the change names the repository and not the projects it moved between
+		// (delivery.EvalDaysWrittenByDefaults).
+		switch view.spec.classes().reads {
+		case viewReadsEvals:
 			return view.spec.project == change.Repo || delivery.SettingsApplied(change)
+		case viewReadsEvalItems:
+			return change.Ref == evals.EvalID(view.spec.project, view.spec.slug) || delivery.SettingsApplied(change)
+		}
+		if view.spec.kind == deliveryLiveProjectTimeline {
+			return change.RunKind == delivery.EvalDaysWrittenByDefaults && (change.Repo == view.spec.project || delivery.JudgingMoved(change))
 		}
 		if delivery.JudgingMoved(change) {
 			return len(view.spec.classes().evalVersions) > 0
@@ -523,9 +542,60 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// A delivery row. A view that reads none moves by other things: a Legion board by a read
 		// of its daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked),
 		// a legion_issue view by a read of its project's daemon or a write of one of its runs
-		// (workflowstore.RunsChannel), and an evals view by the eval kinds above.
-		return view.spec.classes().reads == viewReadsDelivery && view.touchedByDeliveryRow(change, now)
+		// (workflowstore.RunsChannel), and an evals view by the eval kinds above; an items view
+		// reads pr-ci's runs and their jobs themselves besides (touchedByItemsRun), and a narrowed
+		// evals view the pull requests and deploy runs its evals that count pull requests are built
+		// from when it is read (deliveryLiveSpec.narrowed), which a delivery row's change marks as
+		// it marks a measures view (touchedByDeliveryRow), so it is answered within R14's 2 s.
+		switch view.spec.classes().reads {
+		case viewReadsDelivery:
+			return view.touchedByDeliveryRow(change, now)
+		case viewReadsEvalItems:
+			return view.touchedByItemsRun(change, now)
+		case viewReadsEvals:
+			return view.spec.narrowed && view.touchedByDeliveryRow(change, now)
+		}
+		return false
 	}
+}
+
+// touchedByItemsRun is whether a change of a delivery row can move the answer of an items view:
+// pr-ci's run and job rows are read from the pull-request checks runs and their jobs themselves
+// (runItemRows, jobItemRows, failingJobRows), not only from the day rows the refresher rewrites
+// after them, so a change of such a run or of one of its jobs marks a view of pr-ci that keeps
+// either kind of row where the change's time, the run's start or its head commit's time where that
+// is later (migration 0100), falls on a day of one of the view's ranges as it reads them at now,
+// and where the change carries no time. The other evals' delivery rows (a delivery eval's pull
+// requests and deploys, a deploy card's runs) mark nothing here: what a change of one moves in
+// them moves the day rows the refresher rewrites after it, whose eval_days change marks the view.
+func (view *deliveryView) touchedByItemsRun(change delivery.Change, now time.Time) bool {
+	if change.Kind != delivery.ChangeKindRun && change.Kind != delivery.ChangeKindRunJob ||
+		change.RunKind != string(delivery.DeliveryRunKindPRChecks) || view.spec.slug != evals.SlugPRCI {
+		return false
+	}
+	request, err := parseEvalItemsQuery(view.spec.evalsQuery(now))
+	if err != nil {
+		// The view's query was read as the route reads it when it was subscribed
+		// (parseEvalItemsLiveView), and only a preset's window moves with now, so this is no
+		// view the hub holds; its read would refuse it all the same.
+		return true
+	}
+	if !request.keeps(evalRowRun) && !request.keeps(evalRowJob) {
+		return false
+	}
+	ranges := []evals.Range{request.ranges.window}
+	if request.ranges.compare != nil {
+		ranges = append(ranges, *request.ranges.compare)
+	}
+	var times []time.Time
+	for _, t := range []*time.Time{change.TOld, change.TNew} {
+		if t != nil {
+			times = append(times, *t)
+		}
+	}
+	return len(times) == 0 || slices.ContainsFunc(times, func(t time.Time) bool {
+		return slices.ContainsFunc(ranges, func(r evals.Range) bool { return !t.Before(r.From) && t.Before(r.To) })
+	})
 }
 
 // touchedByDeliveryRow is whether a change of a delivery row can move the answer of a view that
@@ -533,7 +603,10 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 // the present; a change whose rows carry no time at all (a pull request never merged, a job of a
 // run not stored) is taken as touching timeline and measures views. Pipeline lead times read only
 // merged pull requests (ListPullRequestsInWindow), so an unmerged pull request cannot move a
-// Pipeline view. A kind no arm names is taken as touching every such view.
+// Pipeline view. A narrowed evals view (deliveryLiveSpec.narrowed) builds its evals that count
+// pull requests from the pull requests merged on the days of its window and compare range and
+// the deploy runs that ship them, and is marked as a measures view is, up to the end of the later
+// of its two ranges' days (evalsEnd). A kind no arm names is taken as touching every such view.
 func (view *deliveryView) touchedByDeliveryRow(change delivery.Change, now time.Time) bool {
 	var times []time.Time
 	for _, t := range []*time.Time{change.TOld, change.TNew} {
@@ -542,17 +615,26 @@ func (view *deliveryView) touchedByDeliveryRow(change delivery.Change, now time.
 		}
 	}
 	from, to := view.window(now)
+	if view.spec.kind == evalsView {
+		to = view.spec.evalsEnd(now, to)
+	}
 	some := func(in func(time.Time) bool) bool { return slices.ContainsFunc(times, in) }
 	atOrAfterFrom := func(t time.Time) bool { return !t.Before(from) }
 	switch change.Kind {
-	case delivery.ChangeKindSessionGroup, delivery.ChangeKindSettings:
+	case delivery.ChangeKindSessionGroup:
 		return true
+	case delivery.ChangeKindSettings:
+		// A narrowed evals view builds its rows under the settings the stored rows stand built
+		// under, as its stored evals read them (evals.BuiltSettingsIn), so the refresher's word
+		// that the rows stand at the settings marks it (touchedBy), and the save does not.
+		return view.spec.kind != evalsView
 	case delivery.ChangeKindPullRequest:
 		switch view.spec.kind {
-		case deliveryLiveTimeline, deliveryLiveMeasures:
+		case deliveryLiveTimeline, deliveryLiveMeasures, deliveryLiveProjectTimeline, evalsView:
 			// The timeline's waiting line reads merges before the window, and the measures'
 			// deploys_with_prs counts a deploy of the window that ships a pull request merged before
-			// it (delivery.Deploys.ShippedBy), so every merge before the window's end can move either.
+			// it (delivery.Deploys.ShippedBy), which also decides the projects a project timeline's
+			// deploy counts for, so every merge before the window's end can move any of them.
 			return len(times) == 0 || some(func(t time.Time) bool { return t.Before(to) })
 		default:
 			return some(atOrAfterFrom)
@@ -563,11 +645,13 @@ func (view *deliveryView) touchedByDeliveryRow(change delivery.Change, now time.
 			return view.spec.kind == deliveryLivePipeline && (len(times) == 0 || some(atOrAfterFrom))
 		case string(delivery.DeliveryRunKindDeploy):
 			switch view.spec.kind {
-			case deliveryLiveTimeline, deliveryLiveMeasures:
+			case deliveryLiveTimeline, deliveryLiveMeasures, deliveryLiveProjectTimeline, evalsView:
 				// The timeline's waiting line at the window's start reads deploy runs of any age,
 				// and the measures' deploys_with_prs reads the runs created before the window too:
 				// a run of any age whose production job lands late can ship a pull request a deploy
-				// of the window shipped first until then (pop.windowShipped).
+				// of the window shipped first until then (pop.windowShipped), and so move the
+				// project a project timeline's deploy counts for, or the deploy a narrowed evals
+				// view's lead times to production time a pull request to.
 				return true
 			default:
 				return len(times) == 0 || some(atOrAfterFrom)
@@ -575,6 +659,23 @@ func (view *deliveryView) touchedByDeliveryRow(change delivery.Change, now time.
 		}
 	}
 	return true
+}
+
+// evalsEnd is the end of the days an evals view reads at now, the later of its window's and its
+// compare range's (parseEvalRanges, the midnight after each range's last day), or to where its
+// query names no compare range ending later; its query was read as the route reads it when it was
+// subscribed (parseEvalsLiveView), so it parses.
+func (spec deliveryLiveSpec) evalsEnd(now, to time.Time) time.Time {
+	ranges, err := parseEvalRanges(spec.evalsQuery(now))
+	if err != nil {
+		return to
+	}
+	for _, days := range []*evals.Range{&ranges.window, ranges.compare} {
+		if days != nil && days.To.After(to) {
+			to = days.To
+		}
+	}
+	return to
 }
 
 // window is the view's window as its last answer resolved it: a custom range as named, a preset

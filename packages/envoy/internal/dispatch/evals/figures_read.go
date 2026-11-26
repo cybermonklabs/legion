@@ -59,13 +59,13 @@ type storedDay struct {
 // StoredFigures is what a read of the stored figures read for one window, compare range and cut
 // (ReadStoredFiguresIn): the evals the stored figures of the cut serve over both ranges, each
 // eval's stored row of the window and of the compare range, each eval's stored day rows of the
-// window, and the evals whose stored rows the read found of more than one deploy repository
-// (several), whose fold no stored row holds.
+// window and of the compare range, and the evals whose stored rows the read found of more than one
+// deploy repository (several), whose fold no stored row holds.
 type StoredFigures struct {
-	served          map[string]bool
-	window, compare map[string]storedRange
-	days            map[string][]storedDay
-	several         map[string]bool
+	served            map[string]bool
+	window, compare   map[string]storedRange
+	days, compareDays map[string][]storedDay
+	several           map[string]bool
 }
 
 // ReadStoredFiguresIn reads in q the stored figures a read of window and compare (nil for none) of
@@ -84,16 +84,17 @@ type StoredFigures struct {
 // both ranges and which the stored rows of the cut this read reads answer (builtCut.serves); then
 // of those evals alone, which it serves, the range rows of the window and of the compare range, the
 // `union all` of two ranges of eval_range_figures' primary key for each deploy repository, and the
-// day rows of the window of those with a headline series, one range of eval_day_figures' primary
-// key for each project. Every other eval the caller folds from the day rows: those of a project not
+// day rows of the window and of the compare range of those with a headline series, the `union all`
+// of one range of eval_day_figures' primary key for each project and range, each row tagged with
+// the range it is of. Every other eval the caller folds from the day rows: those of a project not
 // built yet, and those a move of a default repository moved rows of in the cut, until the
 // refresher or the boot has folded again the stored rows this read reads of them: a first paint's
 // from its first-paint batch on, and those of an older window and compare range once the refold,
 // newest end day first, has come down past them. A refresher pass rewrites the stored rows and the
 // marks in one transaction, so in one answer's snapshot (BeginSnapshot), as the eval list reads
-// them, an eval's window figures are the fold of the days read beside them, and an eval read as
-// served is one no move has marked since the figures it reads were folded; on the pool each
-// statement reads the rows that stand when it runs.
+// them, an eval's figures are the fold of the days read beside them, and an eval read as served is
+// one no move has marked since the figures it reads were folded; on the pool each statement reads
+// the rows that stand when it runs.
 func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepos *DeployRepos, repos []string, window Range, compare *Range) (StoredFigures, error) {
 	repo := ""
 	if len(repos) == 1 {
@@ -103,7 +104,10 @@ func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []str
 	if err != nil {
 		return StoredFigures{}, err
 	}
-	read := StoredFigures{served: map[string]bool{}, window: map[string]storedRange{}, compare: map[string]storedRange{}, days: map[string][]storedDay{}, several: map[string]bool{}}
+	read := StoredFigures{
+		served: map[string]bool{}, window: map[string]storedRange{}, compare: map[string]storedRange{}, days: map[string][]storedDay{},
+		compareDays: map[string][]storedDay{}, several: map[string]bool{},
+	}
 	var served []Entry
 	var servedProjects, evalIDs, headlined []string
 	for _, entry := range entries {
@@ -170,24 +174,34 @@ func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []str
 	if len(headlined) == 0 {
 		return read, nil
 	}
-	days, err := q.Query(ctx, `
-		select eval_id, deploy_repo, day, fold_key, figures from eval_day_figures
-		where project_key = any($1::text[]) and repo = $2 and day >= $3::date and day < $4::date and eval_id = any($5::text[])
-			and `+deployRepoCase("deploy_repo", "$6", "$7", "$8")+`
-	`, servedProjects, repo, window.From, window.To, headlined, keyed, pairProjects, pairRepos)
+	dayRows := `select %s, eval_id, deploy_repo, day, fold_key, figures from eval_day_figures
+		where project_key = any($1::text[]) and repo = $2 and day >= $%d::date and day < $%d::date and eval_id = any($3::text[])
+			and ` + deployRepoCase("deploy_repo", "$4", "$5", "$6")
+	query = fmt.Sprintf(dayRows, "true", 7, 8)
+	args = []any{servedProjects, repo, headlined, keyed, pairProjects, pairRepos, window.From, window.To}
+	if compare != nil {
+		query += "\n\t\tunion all\n\t\t" + fmt.Sprintf(dayRows, "false", 9, 10)
+		args = append(args, compare.From, compare.To)
+	}
+	days, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return StoredFigures{}, fmt.Errorf("read the stored day figures of %v: %w", servedProjects, err)
 	}
 	defer days.Close()
 	for days.Next() {
+		var inWindow bool
 		var evalID, deployRepo string
 		var row storedDay
-		if err := days.Scan(&evalID, &deployRepo, &row.day, &row.key, &row.figures); err != nil {
+		if err := days.Scan(&inWindow, &evalID, &deployRepo, &row.day, &row.key, &row.figures); err != nil {
 			return StoredFigures{}, fmt.Errorf("read the stored day figures of %v: %w", servedProjects, err)
 		}
 		row.day = row.day.UTC()
 		note(evalID, deployRepo)
-		read.days[evalID] = append(read.days[evalID], row)
+		if inWindow {
+			read.days[evalID] = append(read.days[evalID], row)
+		} else {
+			read.compareDays[evalID] = append(read.compareDays[evalID], row)
+		}
 	}
 	if err := days.Err(); err != nil {
 		return StoredFigures{}, fmt.Errorf("read the stored day figures of %v: %w", servedProjects, err)
@@ -248,17 +262,33 @@ func (f StoredFigures) SeriesValues(entry Entry, firsts map[string]time.Time, wi
 			return nil, nil, false
 		}
 	}
-	stored := slices.SortedFunc(slices.Values(f.days[definition.EvalID]), func(a, b storedDay) int { return a.day.Compare(b.day) })
-	daily := make([]dayFold, len(stored))
-	for index, day := range stored {
-		if day.key != key {
+	daily, ok := storedDailyOf(f.days[definition.EvalID], key)
+	if !ok {
+		return nil, nil, false
+	}
+	var compareDaily []dayFold
+	if compare != nil {
+		if compareDaily, ok = storedDailyOf(f.compareDays[definition.EvalID], key); !ok {
 			return nil, nil, false
+		}
+	}
+	return valuesOf(listed, windowed, via, compared, daily, compareDaily, firsts, window, compare), oldest, true
+}
+
+// storedDailyOf is stored, an eval's stored day rows of one range, as the day folds they hold, in
+// day order; false where one was folded under another fold key than key, or does not decode.
+func storedDailyOf(stored []storedDay, key int64) ([]dayFold, bool) {
+	sorted := slices.SortedFunc(slices.Values(stored), func(a, b storedDay) int { return a.day.Compare(b.day) })
+	daily := make([]dayFold, len(sorted))
+	for index, day := range sorted {
+		if day.key != key {
+			return nil, false
 		}
 		folded, _, err := decodeFigures(day.figures)
 		if err != nil {
-			return nil, nil, false
+			return nil, false
 		}
 		daily[index] = dayFold{day: day.day, folded: folded}
 	}
-	return valuesOf(listed, windowed, via, compared, daily, firsts, window, compare), oldest, true
+	return daily, true
 }

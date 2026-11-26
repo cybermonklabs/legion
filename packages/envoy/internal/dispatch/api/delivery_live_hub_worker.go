@@ -56,7 +56,10 @@ func (h *deliveryHub) work(g *hubGeneration) {
 
 // runDue recomputes, or narrows, the view that is due earliest, and is false when none is due or
 // when g ended while an evals view waited for a slot. An evals view is set computing before the
-// lock is let go, so no later pass picks it while its recompute waits for a slot or runs.
+// lock is let go, so no later pass picks it while its recompute waits for a slot or runs. A
+// delivery view's expiry narrows the population it holds without a read (expire); any other view
+// holds no population, so its expiry reads it again: pr-ci's failures items view, whose list loses
+// a job as the job's failure leaves the 24 hours (readEvalItemsView).
 func (h *deliveryHub) runDue(g *hubGeneration) bool {
 	now := h.clock.Now()
 	h.mu.Lock()
@@ -77,7 +80,7 @@ func (h *deliveryHub) runDue(g *hubGeneration) bool {
 	switch {
 	case due == nil:
 		return false
-	case cause == deliveryCauseExpiry:
+	case cause == deliveryCauseExpiry && due.spec.classes().reads == viewReadsDelivery:
 		h.expire(g, due)
 	case aside:
 		return h.recomputeAside(g, due, cause)
@@ -339,17 +342,55 @@ func (h *deliveryHub) readLegionIssueView(ctx context.Context, spec deliveryLive
 // and message, and stay open, since the project's creation seeds its evals and the change rows of
 // those versions mark the view, whose next read answers it.
 //
-// It names no issue and no session, and reads no delivery settings: what moves it is a write of
-// its project's readings, versions or day rows, each of which the change log carries (touchedBy).
-// It sets no expiry, so no expire narrows it: a window is whole UTC days, which move at midnight,
-// and the refresher's pass at midnight writes every project's rows of the new day, its
-// unowned-p0 row at least, whatever its inputs (evals' walkDaily), whose change marks the view.
+// It reads no delivery settings, and sets no expiry, so no expire narrows it: a window is whole
+// UTC days, which move at midnight, and the refresher's pass at midnight writes every project's
+// rows of the new day, its unowned-p0 row at least, whatever its inputs (evals' walkDaily), whose
+// change marks the view. What moves it is a write of its project's readings, versions or day rows,
+// each of which the change log carries (touchedBy). A narrowed view (deliveryLiveSpec.narrowed)
+// builds its evals that count pull requests from the delivery rows themselves, so a change of one
+// marks it too (touchedByDeliveryRow), and it names, as a timeline does (nameShown), each issue
+// those pull requests name, with the ancestors of each, and each session with the title it shows,
+// whose write can move what a facet selects. An unnarrowed view names no issue and no session.
 func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
-	answer, err := h.server.readProjectEvalList(ctx, spec.evalsQuery(now), spec.project, now)
+	answer, narrowing, err := h.server.readProjectEvalList(ctx, spec.evalsQuery(now), spec.project, now)
 	if err != nil {
 		return nil, err
 	}
+	if narrowing != nil && narrowing.issues != nil {
+		read.issues, read.sessions = narrowing.issues, narrowing.sessions
+		if read.ancestors, err = delivery.IssueAncestors(ctx, h.server.deps.Store.Pool, slices.Sorted(maps.Keys(read.issues)), parentDepthCap); err != nil {
+			return nil, err
+		}
+	}
 	return answer, nil
+}
+
+// readEvalItemsView is an items view's read: the items read of
+// GET /api/v1/projects/{key}/evals/{slug}/items, through the function the route answers with
+// (readProjectEvalItems), from the query the route would be sent (evalsQuery). So the body is the
+// route's for the same query, byte for byte. A project or an eval no row holds is the route's
+// PROJECT_NOT_FOUND or EVAL_NOT_FOUND, which the view refuses as the route answers it
+// (viewReads.refusal): its subscribers are told so once and stay open, and the version change of
+// the eval's registration marks the view, whose next read answers it.
+//
+// It names no issue and no session, and reads the settings its rows stand built under in the items
+// read's own snapshot: what moves it is a write of its eval's readings, versions or day rows and,
+// for pr-ci's run and job rows, a change of a pull-request checks run of its ranges, each of which
+// the change log carries (touchedBy). The one list the clock moves is pr-ci's failures
+// (sort=failures), which counts the jobs that failed in the 24 hours before the range's end, and a
+// preset's range ends at now: a preset failures view expires by the Pipeline's failing-jobs rule
+// (failingJobsNextExpiry) over the runs the window's list was read from, of every deploy
+// repository it reads, and its expiry reads it again (runDue). Every other items view sets no
+// expiry.
+func (h *deliveryHub) readEvalItemsView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	answer, err := h.server.readProjectEvalItems(ctx, spec.evalsQuery(now), spec.project, spec.slug)
+	if err != nil {
+		return nil, err
+	}
+	if spec.preset > 0 && spec.query.Get("sort") == evalSortFailures {
+		read.expiry = failingJobsNextExpiry(answer.failing, now)
+	}
+	return answer.body, nil
 }
 
 // readPipelineView is a pipeline view's read: the delivery rules and the runs, jobs and merges of
@@ -371,7 +412,7 @@ func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpe
 	}
 	body := deliveryPipelineCompute(read.rules, read.pipe, read.at, now)
 	if spec.at == nil {
-		read.expiry = pipelineNextExpiry(read.pipe, now)
+		read.expiry = failingJobsNextExpiry(read.pipe.checks.Runs, now)
 	}
 	read.from = measures.WindowStart(read.at)
 	read.prs, read.runs = len(read.pipe.leadTimes.prs), len(read.pipe.checks.Runs)+len(read.pipe.deploys.Runs)
@@ -394,15 +435,31 @@ func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpe
 	if read.pop, err = h.server.readDeliveryPopulation(ctx, read.rules, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
 		return nil, err
 	}
+	if err := h.nameShown(ctx, read); err != nil {
+		return nil, err
+	}
+	body := deliveryLiveCompute(spec, read.rules, read.pop, from, to, now)
+	if spec.preset > 0 {
+		read.expiry = nextExpiry(read.pop, spec.days(), now)
+	}
+	read.from = from
+	read.prs, read.runs = len(read.pop.prs), len(read.pop.applyRuns)+len(read.pop.windowRuns)
+	read.unfetchable = read.pop.unfetchable
+	return body, nil
+}
+
+// nameShown records on read what its population shows that an event can move: each issue its pull
+// requests and waiting entries name, with the ancestors of each, and each session they name with
+// the title it shows. A population read without its labels (a measures view selecting nothing)
+// shows no fact of the issues its pull requests name and no session by its title, so no write of
+// those issues, of their ancestors or of a session's title moves its answer: it records none of
+// them, and so reads no ancestors. The one issue fact it shows, the unowned P0 list, moves with a
+// P0's write, which showsIssue's p0 rule marks every view showing that list for.
+func (h *deliveryHub) nameShown(ctx context.Context, read *deliveryViewRead) error {
 	read.issues = map[string]struct{}{}
 	read.sessions = map[string]string{}
 	labeled := read.pop.labeled()
 	name := func(issue *string, sessions []string) {
-		// A population read without its labels (a measures view selecting nothing) shows no fact
-		// of the issues its pull requests name and no session by its title, so no write of those
-		// issues, of their ancestors or of a session's title moves its answer: it records none of
-		// them, and so reads no ancestors. The one issue fact it shows, the unowned P0 list, moves
-		// with a P0's write, which showsIssue's p0 rule marks every view showing that list for.
 		if !labeled {
 			return
 		}
@@ -419,17 +476,9 @@ func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpe
 	for _, pr := range read.pop.waiting {
 		name(pr.IssueKey, pr.Sessions)
 	}
-	if read.ancestors, err = delivery.IssueAncestors(ctx, pool, slices.Sorted(maps.Keys(read.issues)), parentDepthCap); err != nil {
-		return nil, err
-	}
-	body := deliveryLiveCompute(spec.kind, read.rules, read.pop, from, to, now)
-	if spec.preset > 0 {
-		read.expiry = nextExpiry(read.pop, spec.days(), now)
-	}
-	read.from = from
-	read.prs, read.runs = len(read.pop.prs), len(read.pop.applyRuns)+len(read.pop.windowRuns)
-	read.unfetchable = read.pop.unfetchable
-	return body, nil
+	var err error
+	read.ancestors, err = delivery.IssueAncestors(ctx, h.server.deps.Store.Pool, slices.Sorted(maps.Keys(read.issues)), parentDepthCap)
+	return err
 }
 
 // expire answers a view whose preset window, or whose pipeline day, moved past something it holds,
@@ -452,13 +501,13 @@ func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 		at = now
 		narrowed := pipe.narrowedTo(rules, at)
 		body = deliveryPipelineCompute(rules, narrowed, at, now)
-		expiry = pipelineNextExpiry(narrowed, now)
+		expiry = failingJobsNextExpiry(narrowed.checks.Runs, now)
 		from = measures.WindowStart(at)
 		prs, runs = len(narrowed.leadTimes.prs), len(narrowed.checks.Runs)+len(narrowed.deploys.Runs)
 	} else {
 		from = now.Add(-spec.days())
 		narrowed := pop.narrowedTo(rules, from)
-		body = deliveryLiveCompute(spec.kind, rules, narrowed, from, now, now)
+		body = deliveryLiveCompute(spec, rules, narrowed, from, now, now)
 		expiry = nextExpiry(narrowed, spec.days(), now)
 		prs, runs = len(narrowed.prs), len(narrowed.applyRuns)+len(narrowed.windowRuns)
 	}
@@ -488,10 +537,16 @@ func (h *deliveryHub) finishRecompute(spec deliveryLiveSpec, cause string, start
 	h.note(deliveryHubNote{what: "recompute end", view: spec.key, cause: cause, sent: sent})
 }
 
-// deliveryLiveCompute is the timeline's or the measures' body for [from, to).
-func deliveryLiveCompute(kind string, rules *delivery.SourceRules, pop deliveryPopulation, from, to, now time.Time) any {
-	if kind == deliveryLiveTimeline {
+// deliveryLiveCompute is a timeline's, a measures' or a project timeline's body for [from, to),
+// from a population read for that window or narrowed to it, each source repository's runs judged
+// by its own rule of rules: a project timeline's population is its project's
+// (projectTimelinePopulation), cut to the view's limit from its newest row.
+func deliveryLiveCompute(spec deliveryLiveSpec, rules *delivery.SourceRules, pop deliveryPopulation, from, to, now time.Time) any {
+	switch spec.kind {
+	case deliveryLiveTimeline:
 		return deliveryTimelineCompute(rules, pop, from, to, now)
+	case deliveryLiveProjectTimeline:
+		return projectTimelineCompute(rules, pop, from, to, spec.projectTimelineLimit(), 0)
 	}
 	return deliveryMeasuresCompute(rules, pop, from, to, now)
 }

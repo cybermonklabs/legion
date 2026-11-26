@@ -599,7 +599,7 @@ func (c *Client) RepositoryTokenWithStatuses(ctx context.Context, owner, repo st
 const installationRepositoriesPerPage = 100
 
 // maxInstallationRepositories bounds ListInstallationRepositoriesByID the same way
-// delivery.maxDeliveryWindow/maxRunsPerWindow/maxPullRequestsPerWindow bound their own queries:
+// delivery.maxDeliveryWindow/MaxRunsPerWindow/MaxPullRequestsPerWindow bound their own queries:
 // an installation covering a very large org should fail loudly past this rather than build an
 // ever-growing, unbounded `repo:` qualifier list on every 5-minute reconcile pass.
 const maxInstallationRepositories = 2000

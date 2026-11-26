@@ -3,6 +3,7 @@ import { INBOX_THREAD_KINDS } from "@legion/contracts";
 import {
   infiniteQueryOptions,
   keepPreviousData,
+  type QueryClient,
   type QueryFunctionContext,
   queryOptions,
   replaceEqualDeep,
@@ -17,12 +18,13 @@ import { api, REFERENCE_TARGETS_MAX, REFERENCE_TARGETS_MAX_QUERY_CHARS } from ".
 import { liveSocketFor } from "./live-socket";
 import type {
   DeliveryLiveView,
-  DeliveryMeasuresResponse,
-  DeliveryPipelineResponse,
-  DeliveryTimelineWithMeasures,
+  DeliveryLiveWindow,
+  EvalItemsResponse,
+  EvalListResponse,
   InboxRow,
   IssueDetails,
   MyRepliesResponse,
+  ProjectTimelineResponse,
   ReferenceTarget,
 } from "./types";
 
@@ -479,12 +481,12 @@ export const priorityHistoryQuery = (id: string) =>
     queryFn: () => api.getPriorityHistory(id),
   });
 
-/** What every live-owned delivery query shares (LEGION-690): its first load subscribes its view
- *  over the page's one live socket (`api/live-socket.ts`), which writes the snapshot and every
- *  later change into the cache, so nothing here reads again. `meta.live` keeps the event feed's
- *  refresh paths away from it (`api/query-refresh.ts`); `gcTime` 0 drops the subscription with the
- *  last observer; the page keeps the previous answer on screen while a new view's snapshot is out,
- *  as a filter change in the prototype it ports never blanks it. */
+/** What every live-owned query of the Evals tab shares (LEGION-690): its first load subscribes
+ *  its view over the page's one live socket (`api/live-socket.ts`), which writes the snapshot and
+ *  every later change into the cache, so nothing here reads again. `meta.live` keeps the event
+ *  feed's refresh paths away from it (`api/query-refresh.ts`); `gcTime` 0 drops the subscription
+ *  with the last observer; the page keeps the previous answer on screen while a new view's
+ *  snapshot is out, as a filter change in the prototype it ports never blanks it. */
 const LIVE = {
   gcTime: 0,
   meta: { live: true },
@@ -493,16 +495,16 @@ const LIVE = {
   staleTime: Number.POSITIVE_INFINITY,
 } as const;
 
-/** The body each delivery view's kind is answered with: the GET route's it mirrors. */
+/** The body each live view's kind is answered with: the GET route's it mirrors. */
 interface DeliveryLiveBodies {
-  readonly timeline: DeliveryTimelineWithMeasures;
-  readonly measures: DeliveryMeasuresResponse;
-  readonly pipeline: DeliveryPipelineResponse;
+  readonly evals: EvalListResponse;
+  readonly items: EvalItemsResponse;
+  readonly "project-timeline": ProjectTimelineResponse;
 }
 
 /** The live view's answer, which is the body of the GET route its kind mirrors. Only the views
- *  this page subscribes — timeline, measures and pipeline — are keyed here; the socket serves
- *  other kinds this page does not read. */
+ *  the Evals tab subscribes - evals, items and project-timeline - are keyed here; the socket
+ *  serves other kinds no page reads. */
 function subscribeLive<K extends keyof DeliveryLiveBodies>(
   context: QueryFunctionContext,
   view: DeliveryLiveView & { readonly kind: K }
@@ -514,44 +516,228 @@ function subscribeLive<K extends keyof DeliveryLiveBodies>(
   >;
 }
 
-/** The delivery timeline, live: the window, the search and every facet, applied by Dispatch
- *  (LEGION-567's plan, "API"), keyed by the view so a filter change subscribes its own entry. */
-export const deliveryTimelineQuery = (view: DeliveryLiveView & { kind: "timeline" }) =>
+/** One run of a project's deploy source with every job it ran and its record (deploy row and
+ *  failures), read by GET from the repository its timeline row names (dispatch://INFRA-2918,
+ *  D14). A project-timeline delta that changes the run's row invalidates this key, so an open
+ *  drill-down reads it again, as each write of its record does. */
+export const projectDeployRunQuery = (project: string, repo: string, id: number) =>
+  queryOptions({
+    queryKey: ["project-deploy-run", project, repo, id],
+    queryFn: () => api.getProjectDeployRun(project, id, repo),
+  });
+
+/** The kinds of eval, each read by a view of its own on the Evals tab. */
+export type EvalKind = "delivery" | "legion" | "ci" | "experiment";
+
+/** How many evals one evals view answers: the eval list's most (`evalPageMax`, api/evals.go). A
+ *  kind with more is read by a second view at the next offset. */
+export const EVALS_VIEW_LIMIT = 200;
+
+/** One evals view of a project's Evals tab: its window, the compare range (null for none), the
+ *  repositories whose day rows every number folds (none: the project's own), the merge timeline's
+ *  facets but the repository and its search (`narrowing`), the kind it keeps, and the offset of its
+ *  page. */
+export interface EvalsViewParams {
+  readonly project: string;
+  readonly window: DeliveryLiveWindow;
+  readonly compare: { readonly from: string; readonly to: string } | null;
+  readonly repos: readonly string[];
+  /** The facets but the repository and the search that narrow the evals counting pull requests
+   *  (dispatch://INFRA-2918/artifact/plan-md, D7a), as the timeline's query names them: `q`, then
+   *  each facet's key once per value. Empty or absent: none, and every number reads the stored
+   *  day rows. */
+  readonly narrowing?: string;
+  readonly kind: EvalKind;
+  readonly offset: number;
+}
+
+/** The prefix of every read of one project's evals on its Evals tab (its evals, items and
+ *  project-timeline views and its evals' detail reads), which a write of the project's eval rows
+ *  invalidates: a delivery settings save writes each target it changes as a new version of that
+ *  project's eval. */
+export const evalsProjectKey = (project: string) => ["evals", project] as const;
+
+/** One project's evals of one kind, live (dispatch://INFRA-2918/artifact/plan-md, D3): the body of
+ *  `GET /api/v1/projects/{key}/evals` for the window, sent as the view's window, and the rest of
+ *  its query, sent as the view's query, a page of EVALS_VIEW_LIMIT at `offset`. Keyed under the
+ *  project's evals (`evalsProjectKey`) by the view, so a change of the window, the compare
+ *  range, the repositories or the narrowing subscribes its own entry. Only a delivery view carries
+ *  the narrowing: the evals it narrows are delivery evals (D7a), so a view of another kind answers
+ *  the same with or without it, and a facet change subscribes no such view again. */
+export const evalsViewQuery = (params: EvalsViewParams) => {
+  const query = new URLSearchParams();
+  if (params.compare !== null) {
+    query.set("compare_from", params.compare.from);
+    query.set("compare_to", params.compare.to);
+  }
+  for (const repo of params.repos) query.append("repo", repo);
+  if (params.kind === "delivery") {
+    for (const [key, value] of new URLSearchParams(params.narrowing)) query.append(key, value);
+  }
+  query.set("kind", params.kind);
+  query.set("limit", String(EVALS_VIEW_LIMIT));
+  if (params.offset > 0) query.set("offset", String(params.offset));
+  const view = {
+    kind: "evals",
+    project: params.project,
+    window: params.window,
+    query: query.toString(),
+  } as const;
+  return queryOptions({
+    ...LIVE,
+    queryKey: [...evalsProjectKey(params.project), "view", view],
+    queryFn: (context) => subscribeLive(context, view),
+  });
+};
+
+/** One items view of a project's Evals tab: the eval whose rows it shows (`slug`), its window and
+ *  compare range (null for none), the repositories, and what of the rows it keeps: one series,
+ *  one row kind, one row, pr-ci's jobs in one order (`sort`), and the page, `limit` rows at
+ *  `offset`. */
+export interface ItemsViewParams {
+  readonly project: string;
+  readonly slug: string;
+  readonly window: DeliveryLiveWindow;
+  readonly compare: { readonly from: string; readonly to: string } | null;
+  readonly repos: readonly string[];
+  readonly series?: string;
+  readonly rowKind?: string;
+  readonly row?: string;
+  readonly sort?: "median" | "failures";
+  readonly limit: number;
+  readonly offset?: number;
+}
+
+/** The rows behind one eval's numbers, live (dispatch://INFRA-2918/artifact/plan-md, D9): the body
+ *  of `GET /api/v1/projects/{key}/evals/{slug}/items` for the window, sent as the view's window, and
+ *  the rest of its query, sent as the view's query. Keyed under the project's evals by the view,
+ *  as `evalsViewQuery` is, so a change of any of them subscribes its own entry. */
+export const itemsViewQuery = (params: ItemsViewParams) => {
+  const query = new URLSearchParams();
+  if (params.compare !== null) {
+    query.set("compare_from", params.compare.from);
+    query.set("compare_to", params.compare.to);
+  }
+  if (params.series !== undefined) query.set("series", params.series);
+  if (params.rowKind !== undefined) query.set("row_kind", params.rowKind);
+  if (params.row !== undefined) query.set("row", params.row);
+  for (const repo of params.repos) query.append("repo", repo);
+  if (params.sort !== undefined) query.set("sort", params.sort);
+  query.set("limit", String(params.limit));
+  if (params.offset !== undefined && params.offset > 0) query.set("offset", String(params.offset));
+  const view = {
+    kind: "items",
+    project: params.project,
+    slug: params.slug,
+    window: params.window,
+    query: query.toString(),
+  } as const;
+  return queryOptions({
+    ...LIVE,
+    queryKey: [...evalsProjectKey(params.project), "items", view],
+    queryFn: (context) => subscribeLive(context, view),
+  });
+};
+
+/** How many rows a project-timeline view holds when it is opened, and how many more each growth
+ *  asks for (dispatch://INFRA-2918/artifact/plan-md, D8). */
+export const PROJECT_TIMELINE_PAGE = 200;
+
+/** One project-timeline view of a project's Evals tab: its window, and its facets and search as
+ *  `GET /api/v1/projects/{key}/timeline` takes them (`q` and each facet's key), without the
+ *  window and the limit, which the view names apart. */
+export interface ProjectTimelineViewParams {
+  readonly project: string;
+  readonly window: DeliveryLiveWindow;
+  readonly query: string;
+}
+
+/** The project-timeline view of `params` that holds its `limit` newest rows. */
+function projectTimelineView(params: ProjectTimelineViewParams, limit: number) {
+  const query = new URLSearchParams(params.query);
+  query.set("limit", String(limit));
+  return {
+    kind: "project-timeline",
+    project: params.project,
+    window: params.window,
+    query: query.toString(),
+  } as const;
+}
+
+/** A project's merge timeline, live (plan D8): the body of `GET /api/v1/projects/{key}/timeline`
+ *  for the window, its facets and search, holding the PROJECT_TIMELINE_PAGE newest rows when it
+ *  opens. Keyed under the project's evals by the view without its limit, so a growth
+ *  (`growProjectTimelineView`) keeps the one entry and its rows, and a change of the window, a
+ *  facet or the search subscribes its own; the rows on screen stay while its snapshot is out, as
+ *  the Delivery page's timeline kept them. */
+export const projectTimelineViewQuery = (params: ProjectTimelineViewParams) =>
   queryOptions({
     ...LIVE,
     placeholderData: keepPreviousData,
-    queryKey: ["delivery", "timeline", view],
-    queryFn: (context) => subscribeLive(context, view),
+    queryKey: [...evalsProjectKey(params.project), "timeline", params],
+    queryFn: (context) =>
+      subscribeLive(context, projectTimelineView(params, PROJECT_TIMELINE_PAGE)),
   });
 
-/** The measures panel's own read for a brushed window, live, under `["delivery"]` beside the
- *  timeline and by the same search and facets. */
-export const deliveryMeasuresQuery = (view: DeliveryLiveView & { kind: "measures" }) =>
+/** Grows the project-timeline view of `params` to its `limit` newest rows: its one subscription
+ *  sent again with that limit and a resume of what it holds, so Dispatch sends only the rows it
+ *  lacks (`LiveSocket.grow`). False where the view has not answered yet. */
+export function growProjectTimelineView(
+  client: QueryClient,
+  params: ProjectTimelineViewParams,
+  limit: number
+): boolean {
+  return liveSocketFor(client).grow(
+    projectTimelineViewQuery(params).queryKey,
+    projectTimelineView(params, limit)
+  );
+}
+
+/** One eval's detail read at its `version` (`GET /api/v1/projects/{key}/evals/{slug}`, the newest
+ *  version alone): its method (`doc_text`), its declared charts and its answer. Keyed under the
+ *  project's evals by the version the evals view answers, so a register write that writes a new
+ *  version, which the view's delta carries, reads it again (plan D11a). */
+export const evalDetailQuery = (project: string, slug: string, version: number) =>
   queryOptions({
-    ...LIVE,
-    placeholderData: keepPreviousData,
-    queryKey: ["delivery", "measures", view],
-    queryFn: (context) => subscribeLive(context, view),
+    queryKey: [...evalsProjectKey(project), "detail", slug, version],
+    queryFn: () => api.getEval(project, slug, { limit: 1 }),
   });
 
-/** One deploy-repository run with every job it ran, read by GET. A live delta that changes the
- *  run invalidates this key, so an open drill-down reads it again. */
-export const deliveryRunQuery = (id: number) =>
-  queryOptions({
-    queryKey: ["delivery", "run", id],
-    queryFn: () => api.getDeliveryRun(id),
-  });
+/** One page of the cross-project read: its window and compare range (null for none) as whole UTC
+ *  days, the repositories, and the offset of its page. */
+export interface EvalsAcrossProjectsParams {
+  readonly window: { readonly from: string; readonly to: string };
+  readonly compare: { readonly from: string; readonly to: string } | null;
+  readonly repos: readonly string[];
+  readonly offset: number;
+}
 
-/** The Pipeline page, live, by `at` so a pinned day is its own subscription. */
-export const deliveryPipelineQuery = (view: DeliveryLiveView & { kind: "pipeline" }) =>
+/** The prefix of every page of the cross-project read, which a delivery settings save invalidates
+ *  beside the project's own evals (`evalsProjectKey`), since the targets it writes are evals that
+ *  read lists. No project key is lowercase, so no project's prefix holds it. */
+export const evalsAcrossProjectsQueryKey = ["evals", "across"] as const;
+
+/** Every project's evals (dispatch://INFRA-2918/artifact/plan-md, D11; spec R11): `GET
+ *  /api/v1/evals` with no project named, so one request reads every project the reader may read,
+ *  in the item shape a project's evals view answers, a page of EVALS_VIEW_LIMIT at `offset`. */
+export const evalsAcrossProjectsQuery = (params: EvalsAcrossProjectsParams) =>
   queryOptions({
-    ...LIVE,
-    queryKey: ["delivery", "pipeline", view],
-    queryFn: (context) => subscribeLive(context, view),
+    queryKey: [...evalsAcrossProjectsQueryKey, params],
+    queryFn: () =>
+      api.listEvals({
+        compare_from: params.compare?.from,
+        compare_to: params.compare?.to,
+        from: params.window.from,
+        limit: EVALS_VIEW_LIMIT,
+        offset: params.offset > 0 ? params.offset : undefined,
+        repo: [...params.repos],
+        to: params.window.to,
+      }),
   });
 
 /** One project's delivery settings, or `null` for a project that has none: its settings tab's
- *  delivery section reads and edits them (`DeliverySettingsSection`). */
+ *  delivery section reads and edits them (`DeliverySettingsSection`), the Evals tab reads them to
+ *  decide its delivery and CI sections, and `/delivery` its default project. */
 export const projectDeliverySettingsQuery = (project: string) =>
   queryOptions({
     queryKey: ["project-delivery-settings", project],

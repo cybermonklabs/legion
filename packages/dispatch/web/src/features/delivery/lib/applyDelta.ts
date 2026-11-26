@@ -12,6 +12,7 @@ import type {
   DeliveryRun,
   DeliverySessionGroup,
   EvalListItem,
+  ProjectTimelineRow,
 } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 
@@ -20,16 +21,49 @@ type Item = { readonly id: string | number };
 /** The order Dispatch lists each live list in, ties broken by id so a merge of upserts always
  *  lands in one order: pull requests by merge time (`ListPullRequestsInWindow`), runs by their head
  *  commit's time, then id (`deliveryTimelineCompute`'s sort of `runs`), session groups by name,
- *  case aside (`ListSessionGroups`, `order by lower(g.name), g.id`), and an evals view's evals,
- *  which are one project's, by slug (`evals.Store.Current`'s `order by slug`). */
+ *  case aside (`ListSessionGroups`, `order by lower(g.name), g.id`), and `items`, which an evals
+ *  view and a project-timeline view each send (`compareItems`). */
 const ORDERS = {
   prs: (a: DeliveryPR, b: DeliveryPR) =>
     compareNullableTimestamps(a.merged_at, b.merged_at) || compareText(a.id, b.id),
   runs: (a: DeliveryRun, b: DeliveryRun) => compareTimestamps(a.head_at, b.head_at) || a.id - b.id,
   session_groups: (a: DeliverySessionGroup, b: DeliverySessionGroup) =>
     compareText(a.name.toLowerCase(), b.name.toLowerCase()) || compareText(a.id, b.id),
-  items: (a: EvalListItem, b: EvalListItem) => compareText(a.definition.slug, b.definition.slug),
+  items: compareItems,
 } as const;
+
+/** The kinds of a project-timeline row, in the order the rows of one moment are listed
+ *  (`projectTimelineKinds`, api/project_timeline.go). */
+const TIMELINE_KINDS: Readonly<Record<ProjectTimelineRow["kind"], number>> = {
+  merge: 0,
+  deploy: 1,
+  failed_run: 2,
+};
+
+/** The order of one list's items: an evals view's evals, which are one project's, by slug
+ *  (`evals.Store.Current`'s `order by slug`), and a project-timeline view's rows newest first by
+ *  their time (a merge's merge, a run's creation), then by kind, then by id
+ *  (`compareProjectTimelineEntries`, api/project_timeline.go). A list holds one view's items,
+ *  never both kinds. */
+function compareItems(
+  a: EvalListItem | ProjectTimelineRow,
+  b: EvalListItem | ProjectTimelineRow
+): number {
+  if ("definition" in a && "definition" in b) {
+    return compareText(a.definition.slug, b.definition.slug);
+  }
+  if (!("kind" in a) || !("kind" in b)) return 0;
+  return (
+    compareNullableTimestamps(
+      b.kind === "merge" ? b.merged_at : b.created_at,
+      a.kind === "merge" ? a.merged_at : a.created_at
+    ) ||
+    TIMELINE_KINDS[a.kind] - TIMELINE_KINDS[b.kind] ||
+    (a.kind === "merge" && b.kind === "merge"
+      ? compareText(a.id, b.id)
+      : Number(a.id) - Number(b.id))
+  );
+}
 
 function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;

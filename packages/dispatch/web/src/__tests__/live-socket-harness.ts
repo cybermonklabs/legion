@@ -2,13 +2,10 @@ import { spyOn } from "bun:test";
 import type { QueryClient } from "@tanstack/react-query";
 
 import { RECONNECT_SPREAD_MS } from "../api/live-socket";
-import { deliveryRunQuery, deliveryTimelineQuery } from "../api/queries";
 import type {
   DeliveryLiveBody,
   DeliveryLiveRevs,
   DeliveryLiveSnapshot,
-  DeliveryRunDetail,
-  DeliveryTimelineWithMeasures,
   LiveClientFrame,
   LiveError,
   LiveServerFrame,
@@ -177,24 +174,24 @@ export function errorFrame(sub: string, code: string, message: string): LiveErro
   return { type: "error", sub, code, message };
 }
 
-/** A live-owned timeline query and an ordinary run read, both held in `queryClient`'s cache with
- *  data and no observer, keyed and marked (`meta`) by the page's own query options, so a test reads
- *  which of them a write invalidates. The live one is kept past its `gcTime` of 0. */
+/** A live-owned read and an ordinary one under `["delivery"]`, the key the session-group editor
+ *  and the delivery settings save invalidate, both held in `queryClient`'s cache with data and no
+ *  observer, so a test reads which of them a write invalidates. The live one is marked live
+ *  (`meta.live`), as every live view's query is, and kept past its `gcTime` of 0. */
 export function seedDeliveryReads(queryClient: QueryClient): {
   live: readonly unknown[];
   run: readonly unknown[];
 } {
-  const timeline = deliveryTimelineQuery({ kind: "timeline", window: { preset: 28 }, query: "" });
-  const live: readonly unknown[] = timeline.queryKey;
-  const run: readonly unknown[] = deliveryRunQuery(42).queryKey;
+  const live: readonly unknown[] = ["delivery", "live"];
+  const run: readonly unknown[] = ["delivery", "run", 42];
   const cache = queryClient.getQueryCache();
   cache.build(queryClient, {
     queryKey: live,
-    meta: timeline.meta,
+    meta: { live: true },
     gcTime: Number.POSITIVE_INFINITY,
   });
   cache.build(queryClient, { queryKey: run });
-  queryClient.setQueryData(live, {} as DeliveryTimelineWithMeasures);
-  queryClient.setQueryData(run, { id: 42, jobs: [] } as unknown as DeliveryRunDetail);
+  queryClient.setQueryData(live, {});
+  queryClient.setQueryData(run, { id: 42, jobs: [] });
   return { live, run };
 }

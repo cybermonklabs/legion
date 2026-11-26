@@ -1111,7 +1111,7 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 	}
 	prs := history.PullRequests
 	prsByDay := prsByMergeDay(prs)
-	attribute, err := readAttribution(ctx, r.store, prs, nil)
+	attribute, err := readAttribution(ctx, pool, r.store.attributor, prs, nil)
 	if err != nil {
 		return spanInput{}, err
 	}
@@ -1163,7 +1163,7 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 				if err != nil {
 					return nil, fmt.Errorf("read the CI runs of %s on %s: %w", name, day.Format(time.DateOnly), err)
 				}
-				checkAttribute, err := readAttribution(ctx, r.store, nil, checks.Runs)
+				checkAttribute, err := readAttribution(ctx, pool, r.store.attributor, nil, checks.Runs)
 				if err != nil {
 					return nil, err
 				}

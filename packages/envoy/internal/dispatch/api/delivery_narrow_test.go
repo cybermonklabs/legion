@@ -311,9 +311,9 @@ func TestNextExpiryIsMidnightWhenNothingLeavesSooner(t *testing.T) {
 	}
 }
 
-// TestPipelineNextExpiryIsTheFailingWindowEdge: the Pipeline's next expiry is just past the
-// earliest timed PR-checks result's completion plus FailingWindow when that comes before the next
-// UTC midnight, and the midnight otherwise.
+// TestPipelineNextExpiryIsTheFailingWindowEdge: the Pipeline's next expiry (failingJobsNextExpiry
+// over its PR-checks runs) is just past the earliest timed PR-checks result's completion plus
+// FailingWindow when that comes before the next UTC midnight, and the midnight otherwise.
 func TestPipelineNextExpiryIsTheFailingWindowEdge(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
@@ -323,11 +323,11 @@ func TestPipelineNextExpiryIsTheFailingWindowEdge(t *testing.T) {
 		{RunID: 2, StartedAt: now.Add(-time.Hour), CompletedAt: new(now.Add(-30 * time.Minute)), Conclusion: new(delivery.DeliveryRunConclusionSuccess)},
 	}}}
 	want := completed.Add(measures.FailingWindow).Add(time.Nanosecond)
-	if got := pipelineNextExpiry(pop, now); !got.Equal(want) {
-		t.Fatalf("pipelineNextExpiry = %v, want %v (run 1 leaving the failing window)", got, want)
+	if got := failingJobsNextExpiry(pop.checks.Runs, now); !got.Equal(want) {
+		t.Fatalf("failingJobsNextExpiry = %v, want %v (run 1 leaving the failing window)", got, want)
 	}
 	late := time.Date(2026, 9, 10, 22, 0, 0, 0, time.UTC)
-	if got, midnight := pipelineNextExpiry(pop, late), time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC); !got.Equal(midnight) {
-		t.Fatalf("pipelineNextExpiry at 22:00 = %v, want the next UTC midnight %v", got, midnight)
+	if got, midnight := failingJobsNextExpiry(pop.checks.Runs, late), time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC); !got.Equal(midnight) {
+		t.Fatalf("failingJobsNextExpiry at 22:00 = %v, want the next UTC midnight %v", got, midnight)
 	}
 }

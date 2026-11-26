@@ -1,0 +1,70 @@
+{
+  "type": "snapshot",
+  "sub": "items-1",
+  "seq": "46",
+  "changed_at": "2026-10-28T23:00:00Z",
+  "body": {
+    "items": [
+      {
+        "row_key": "acme/widgets/build / unit",
+        "row_kind": "job",
+        "cols": {
+          "failures": 2,
+          "last_failed_at": "2026-10-28T23:00:00Z",
+          "last_run_url": "https://github.com/acme/widgets/actions/runs/52",
+          "name": "build / unit",
+          "repo": "acme/widgets",
+          "results": 4
+        },
+        "measured_at": "2026-10-28T23:00:00Z",
+        "source": "measures.FailingJobs",
+        "href": "https://github.com/acme/widgets/actions/runs/52",
+        "links": [],
+        "range": "window"
+      },
+      {
+        "row_key": "acme/widgets/lint",
+        "row_kind": "job",
+        "cols": {
+          "failures": 1,
+          "last_failed_at": "2026-10-28T23:00:00Z",
+          "last_run_url": "https://github.com/acme/widgets/actions/runs/52",
+          "name": "lint",
+          "repo": "acme/widgets",
+          "results": 4
+        },
+        "measured_at": "2026-10-28T23:00:00Z",
+        "source": "measures.FailingJobs",
+        "href": "https://github.com/acme/widgets/actions/runs/52",
+        "links": [],
+        "range": "window"
+      }
+    ],
+    "total": 2,
+    "limit": 200,
+    "offset": 0,
+    "window": {
+      "from": "2026-10-01T00:00:00Z",
+      "to": "2026-10-29T00:00:00Z",
+      "days": 28
+    },
+    "compare": {
+      "from": "2026-09-03T00:00:00Z",
+      "to": "2026-10-01T00:00:00Z",
+      "days": 28
+    }
+  },
+  "revs": {
+    "items": {},
+    "maps": {},
+    "counts": {},
+    "fields": {
+      "compare": "ae7a4d6dcdc7266b",
+      "items": "a7e0d88fd43b6278",
+      "limit": "603ec818278d901d",
+      "offset": "af63ad4c86019caf",
+      "total": "af63af4c8601a015",
+      "window": "04ae088b7addef8d"
+    }
+  }
+}

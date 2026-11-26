@@ -1,0 +1,523 @@
+{
+  "comment": "Synthetic items-view rows for runs.test.ts, as GET /api/v1/projects/{key}/evals/{slug}/items answers them (readingItemRow): three runs, each a row_key, with their final numbers (no col) and their numbers at steps (col a whole number) of the series loss and usd, and their settings and tags in attributes. run-c started in the compare range; run-b's step 2 was not measured and its step 3 corrected (b3c replaces b3); accuracy is a series the spec names nowhere, and n1 a reading of no run.",
+  "window": {
+    "days": 3,
+    "from": "2026-11-01T00:00:00Z",
+    "to": "2026-11-04T00:00:00Z"
+  },
+  "compare": {
+    "days": 3,
+    "from": "2026-10-29T00:00:00Z",
+    "to": "2026-11-01T00:00:00Z"
+  },
+  "items": [
+    {
+      "row_key": "run-c",
+      "row_kind": "run",
+      "cols": {
+        "id": "c1",
+        "series": "loss",
+        "col": "1",
+        "value": 1.0,
+        "value_absent_reason": "",
+        "unit": "nats",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {
+          "settings": {
+            "lr": "auto",
+            "batch": "16"
+          }
+        },
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-10-30T08:00:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-10-30T08:00:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "compare"
+    },
+    {
+      "row_key": "run-c",
+      "row_kind": "run",
+      "cols": {
+        "id": "c2",
+        "series": "loss",
+        "col": "2",
+        "value": 0.7,
+        "value_absent_reason": "",
+        "unit": "nats",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-10-30T08:10:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-10-30T08:10:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "compare"
+    },
+    {
+      "row_key": "run-c",
+      "row_kind": "run",
+      "cols": {
+        "id": "cf",
+        "series": "loss",
+        "col": "",
+        "value": 0.7,
+        "value_absent_reason": "",
+        "unit": "nats",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-10-30T08:20:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-10-30T08:20:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "compare"
+    },
+    {
+      "row_key": "run-c",
+      "row_kind": "run",
+      "cols": {
+        "id": "cu",
+        "series": "usd",
+        "col": "",
+        "value": 9,
+        "value_absent_reason": "",
+        "unit": "usd",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-10-30T08:20:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-10-30T08:20:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "compare"
+    },
+    {
+      "row_key": "run-a",
+      "row_kind": "run",
+      "cols": {
+        "id": "a1",
+        "series": "loss",
+        "col": "1",
+        "value": 0.9,
+        "value_absent_reason": "",
+        "unit": "nats",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {
+          "settings": {
+            "lr": "0.002",
+            "batch": "32"
+          }
+        },
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-01T10:00:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-11-01T10:00:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "run-a",
+      "row_kind": "run",
+      "cols": {
+        "id": "a2",
+        "series": "loss",
+        "col": "2",
+        "value": 0.6,
+        "value_absent_reason": "",
+        "unit": "nats",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-01T10:10:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-11-01T10:10:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "run-a",
+      "row_kind": "run",
+      "cols": {
+        "id": "a3",
+        "series": "loss",
+        "col": "3",
+        "value": 0.4,
+        "value_absent_reason": "",
+        "unit": "nats",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-01T10:20:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-11-01T10:20:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "run-a",
+      "row_kind": "run",
+      "cols": {
+        "id": "af",
+        "series": "loss",
+        "col": "",
+        "value": 0.4,
+        "value_absent_reason": "",
+        "unit": "nats",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {
+          "settings": {
+            "lr": "0.001",
+            "model": "m-small"
+          },
+          "tags": {
+            "arm": "a",
+            "void": "no"
+          }
+        },
+        "note": "early stop",
+        "replaces": "",
+        "recorded_at": "2026-11-01T10:30:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-11-01T10:30:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "run-a",
+      "row_kind": "run",
+      "cols": {
+        "id": "au",
+        "series": "usd",
+        "col": "",
+        "value": 12.5,
+        "value_absent_reason": "",
+        "unit": "usd",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-01T10:30:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-11-01T10:30:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "run-a",
+      "row_kind": "run",
+      "cols": {
+        "id": "ax",
+        "series": "accuracy",
+        "col": "1",
+        "value": 0.5,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-01T10:00:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-11-01T10:00:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "",
+      "row_kind": "row",
+      "cols": {
+        "id": "n1",
+        "series": "loss",
+        "col": "",
+        "value": 0.3,
+        "value_absent_reason": "",
+        "unit": "nats",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-01T12:00:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-11-01T12:00:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "run-b",
+      "row_kind": "run",
+      "cols": {
+        "id": "b1",
+        "series": "loss",
+        "col": "1",
+        "value": 0.8,
+        "value_absent_reason": "",
+        "unit": "nats",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {
+          "settings": {
+            "lr": "0.01",
+            "batch": 64,
+            "model": "m-small"
+          },
+          "tags": {
+            "arm": "b"
+          }
+        },
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-02T09:00:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-11-02T09:00:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "run-b",
+      "row_kind": "run",
+      "cols": {
+        "id": "b2",
+        "series": "loss",
+        "col": "2",
+        "value": null,
+        "value_absent_reason": "diverged",
+        "unit": "nats",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-02T09:10:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-11-02T09:10:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "run-b",
+      "row_kind": "run",
+      "cols": {
+        "id": "b3",
+        "series": "loss",
+        "col": "3",
+        "value": 0.55,
+        "value_absent_reason": "",
+        "unit": "nats",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-02T09:20:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-11-02T09:20:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "run-b",
+      "row_kind": "run",
+      "cols": {
+        "id": "b3c",
+        "series": "loss",
+        "col": "3",
+        "value": 0.5,
+        "value_absent_reason": "",
+        "unit": "nats",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "b3",
+        "recorded_at": "2026-11-02T09:20:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-11-02T09:20:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "run-b",
+      "row_kind": "run",
+      "cols": {
+        "id": "bf",
+        "series": "loss",
+        "col": "",
+        "value": 0.5,
+        "value_absent_reason": "",
+        "unit": "nats",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-02T09:30:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-11-02T09:30:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "window"
+    }
+  ]
+}

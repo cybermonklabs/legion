@@ -188,6 +188,7 @@ POST /api/v1/projects/{key}/artifacts/{slug}/versions any
 GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number} any
 PUT /api/v1/projects/{key}/default-assignee any
 PUT /api/v1/projects/{key}/default-repository any
+GET /api/v1/projects/{key}/deploy-runs/{id} any
 GET /api/v1/projects/{key}/evals any
 POST /api/v1/projects/{key}/evals any
 GET /api/v1/projects/{key}/evals/{slug} any
@@ -210,6 +211,7 @@ GET /api/v1/projects/{key}/related any
 POST /api/v1/projects/{key}/related any
 GET /api/v1/projects/{key}/settings/delivery any
 PUT /api/v1/projects/{key}/settings/delivery any
+GET /api/v1/projects/{key}/timeline any
 GET /api/v1/reference-targets any
 GET /api/v1/references any
 GET /api/v1/references/questions any

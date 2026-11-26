@@ -378,16 +378,22 @@ func (s *Store) subtreeCloseDays(ctx context.Context, keys []string) ([]projectD
 	return days, nil
 }
 
-// firstDays is, for each project of zeros, the first day of its all-repositories rows of each eval
-// its rows name, by eval and deploy repository (evalKey), among the computation's rows before
-// before (every row, where before is nil): the earliest over the series the project's rows name
-// of the eval and deploy repository (a zero day's rows, which name each series an eval's builder
-// writes on every day it has input, for each deploy repository whose rows are kept), each the
-// first entry of one range of the primary key, which the bound ends. An eval with no such row has
-// no entry, and a project with none an empty map. One read for every project, the rows in
-// statements of at most statementBytes (statementChunks): a project's rows of one eval and deploy
-// repository that two statements share are the earliest of both.
+// firstDays is firstDaysIn on the pool.
 func (s *Store) firstDays(ctx context.Context, zeros map[string][]DayRow, before *time.Time) (map[string]map[evalKey]time.Time, error) {
+	return firstDaysIn(ctx, s.database.Pool, zeros, before)
+}
+
+// firstDaysIn reads in q, for each project of zeros, the first day of its all-repositories rows of
+// each eval its rows name, by eval and deploy repository (evalKey), among the computation's rows
+// before before (every row, where before is nil): the earliest over the series the project's rows
+// name of the eval and deploy repository (a zero day's rows, which name each series an eval's
+// builder writes on every day it has input, for each deploy repository whose rows are kept), each
+// the first entry of one range of the primary key, which the bound ends. An eval with no such row
+// has no entry, and a project with none an empty map. One read for every project, the rows in
+// statements of at most statementBytes (statementChunks): a project's rows of one eval and deploy
+// repository that two statements share are the earliest of both. The refresher reads it on the
+// pool (firstDays), and the read-time path in its read's snapshot (ComputeAtRead).
+func firstDaysIn(ctx context.Context, q delivery.Querier, zeros map[string][]DayRow, before *time.Time) (map[string]map[evalKey]time.Time, error) {
 	type given struct {
 		project string
 		row     *DayRow
@@ -408,7 +414,7 @@ func (s *Store) firstDays(ctx context.Context, zeros map[string][]DayRow, before
 		for i, one := range chunk {
 			projects[i], evals[i], deployRepos[i], series[i] = one.project, one.row.EvalID, one.row.DeployRepo, one.row.Series
 		}
-		read, err := s.database.Pool.Query(ctx, `
+		read, err := q.Query(ctx, `
 			select given.project_key, given.eval_id, given.deploy_repo, min(stored.day)
 			from unnest($1::text[], $2::text[], $5::text[], $3::text[]) as given(project_key, eval_id, deploy_repo, series)
 			cross join lateral (

@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -28,13 +29,17 @@ import (
 // written here.
 //
 //   - GET /api/v1/projects/{key}/evals and GET /api/v1/evals read the list: each eval's current
-//     definition with each listed series' statistics over a window of days and a compare range,
-//     folded from the stored day rows of those days (evals.FoldStatistics, the one fold each
-//     source names), never from the population again (R12). The cross-project read takes
-//     `project` repeatably and reads every project when it names none: no read here picks a
-//     project for its caller (R11, R14).
-//   - GET /api/v1/projects/{key}/evals/{slug} reads one eval's versions, newest first, the newest
-//     with the window's values, and the method its section of the project's `evals-md` holds (R5).
+//     definition, its answer among its fields and never its declared charts, with each listed
+//     series' statistics over a window of days and a compare range, folded from the stored day
+//     rows of those days (evals.FoldStatistics, the one fold each source names), never from the
+//     population again (R12). The cross-project read takes `project` repeatably and reads every
+//     project when it names none: no read here picks a project for its caller (R11, R14). Both
+//     take the delivery timeline's facets and its search, under which the evals that count pull
+//     requests are built when read from the stored single records (dispatch://INFRA-2918, R21;
+//     evals_narrowed.go).
+//   - GET /api/v1/projects/{key}/evals/{slug} reads one eval's versions, newest first, each with
+//     its declared charts (dispatch://INFRA-2918, R20), the newest with the window's values, and
+//     the method its section of the project's `evals-md` holds (R5).
 //   - GET /api/v1/projects/{key}/evals/{slug}/items reads the rows behind the numbers, one shape
 //     for every row kind (evals_items.go).
 //   - POST /api/v1/projects/{key}/evals/{slug}/readings logs one batch of readings, which the
@@ -91,11 +96,21 @@ func evalQueryKeysOf(params any) evalQueryKeys {
 	return evalQueryKeys{declared: queryKeysOf(params), oneValue: oneValue}
 }
 
+// evalFacetQueryKeysOf is evalQueryKeysOf of a list read's query struct, which takes the delivery
+// timeline's facets (parseEvalNarrowing): `session` there is the session facet too, which the
+// timeline takes any number of values of (deliveryFacets), so it is no key the read takes one value
+// of.
+func evalFacetQueryKeysOf(params any) evalQueryKeys {
+	keys := evalQueryKeysOf(params)
+	keys.oneValue = slices.DeleteFunc(keys.oneValue, func(key string) bool { return key == evalSessionQueryKey })
+	return keys
+}
+
 // The query keys each eval read takes (evalQueryKeysOf), read once when the package starts. A
 // readings write declares none.
 var (
-	evalListQueryKeys   = evalQueryKeysOf(evalListQuery{})
-	evalsQueryKeys      = evalQueryKeysOf(evalsQuery{})
+	evalListQueryKeys   = evalFacetQueryKeysOf(evalListQuery{})
+	evalsQueryKeys      = evalFacetQueryKeysOf(evalsQuery{})
 	evalDetailQueryKeys = evalQueryKeysOf(evalDetailQuery{})
 	evalItemsQueryKeys  = evalQueryKeysOf(evalItemsQuery{})
 )
@@ -306,9 +321,10 @@ type evalOwner struct {
 }
 
 // evalItem is one eval as the list read states it, and one version of one as the detail read
-// does: the definition (every field of eval_versions, R1), its owner, each listed series with its
-// values, and the verdict of its target (null where the target is off). The detail read states
-// the series and the verdict of the newest version alone; an older version's are null.
+// does: the definition (every field of eval_versions but its charts, which the detail read alone
+// answers, evalVersionItem), its owner, each listed series with its values, and the verdict of
+// its target (null where the target is off). The detail read states the series and the verdict of
+// the newest version alone; an older version's are null.
 type evalItem struct {
 	Definition evals.Definition     `json:"definition"`
 	Owner      evalOwner            `json:"owner"`
@@ -327,29 +343,42 @@ type evalListItem struct {
 
 // evalListResponse is GET /api/v1/projects/{key}/evals and GET /api/v1/evals: one page of evals,
 // by project and then by slug, with the window and the compare range they were folded over and
-// how fresh the folded rows are.
+// how fresh the folded rows are. DeliveryFreshness is the freshness of the project's deploy
+// sources (projectDeliveryFreshness) on the project read of its delivery evals (kind=delivery), and
+// null on every other read: another kind or none, a project with no deploy source, and the read
+// across projects.
 type evalListResponse struct {
-	Items     []evalListItem `json:"items"`
-	Total     int            `json:"total"`
-	Limit     int            `json:"limit"`
-	Offset    int            `json:"offset"`
-	Window    evalRange      `json:"window"`
-	Compare   *evalRange     `json:"compare"`
-	Freshness evalFreshness  `json:"freshness"`
+	Items             []evalListItem                  `json:"items"`
+	Total             int                             `json:"total"`
+	Limit             int                             `json:"limit"`
+	Offset            int                             `json:"offset"`
+	Window            evalRange                       `json:"window"`
+	Compare           *evalRange                      `json:"compare"`
+	Freshness         evalFreshness                   `json:"freshness"`
+	DeliveryFreshness *delivery.DeliveryFreshnessView `json:"delivery_freshness"`
+}
+
+// evalVersionItem is one version of an eval as the detail read answers it: the eval as evalItem
+// states it, and the version's declared charts (R20), `[]` where it declares none. Only this read
+// answers them, so no list read, and no first paint, carries a chart's declaration.
+type evalVersionItem struct {
+	evalItem
+	Charts json.RawMessage `json:"charts"`
 }
 
 // evalDetailResponse is GET /api/v1/projects/{key}/evals/{slug}: one page of the eval's versions,
-// newest first, the newest carrying the window's values, and doc_text, the method its section of
-// the project's `evals-md` holds (null where the document holds no section for it).
+// newest first, the newest carrying the window's values, each its declared charts, and doc_text,
+// the method its section of the project's `evals-md` holds (null where the document holds no
+// section for it).
 type evalDetailResponse struct {
-	Items     []evalItem    `json:"items"`
-	Total     int           `json:"total"`
-	Limit     int           `json:"limit"`
-	Offset    int           `json:"offset"`
-	Window    evalRange     `json:"window"`
-	Compare   *evalRange    `json:"compare"`
-	Freshness evalFreshness `json:"freshness"`
-	DocText   *string       `json:"doc_text"`
+	Items     []evalVersionItem `json:"items"`
+	Total     int               `json:"total"`
+	Limit     int               `json:"limit"`
+	Offset    int               `json:"offset"`
+	Window    evalRange         `json:"window"`
+	Compare   *evalRange        `json:"compare"`
+	Freshness evalFreshness     `json:"freshness"`
+	DocText   *string           `json:"doc_text"`
 }
 
 // evalLinkInput is one link a write gives: its relation, its absolute address and its label. The
@@ -435,7 +464,9 @@ type evalSeriesInput struct {
 // the write sets. A field the body leaves out keeps the newest version's value, or the default of
 // an eval registered here first (evals.Registration); a field the body names sets it, `target:
 // null` turning the target off. doc_text, when given, is the eval's new method, written into its
-// section of the project's `evals-md`.
+// section of the project's `evals-md`. charts, when given, is the eval's whole list of declared
+// charts, held as the bytes the body sent, since the validator reads them as the eval platform's
+// reader does (evals/charts); answer is the short text that answers the eval's question.
 type evalRegisterInput struct {
 	Actor           *model.Actor        `json:"actor"`
 	Slug            string              `json:"slug" required:"true"`
@@ -459,6 +490,8 @@ type evalRegisterInput struct {
 	State           string              `json:"state"`
 	ReplacedBy      string              `json:"replaced_by"`
 	Links           []evalLinkInput     `json:"links"`
+	Charts          json.RawMessage     `json:"charts"`
+	Answer          string              `json:"answer"`
 	Series          []evalSeriesInput   `json:"series"`
 }
 
@@ -677,12 +710,14 @@ func parseEvalRepos(query url.Values) ([]string, error) {
 }
 
 // evalListRequest is one read of the eval list: what every eval read reads of its query, the kind
-// it keeps, "" for every kind, and projectsIn, which reads in the answer's snapshot the projects it
-// reads, in order: the project route's project, found (loadProject), and the cross-project read's
-// (evalProjectsIn).
+// it keeps, "" for every kind, what it narrows the evals that count pull requests by, nil for
+// nothing (parseEvalNarrowing), and projectsIn, which reads in the answer's snapshot the projects
+// it reads, in order: the project route's project, found (loadProject), and the cross-project
+// read's (evalProjectsIn).
 type evalListRequest struct {
 	evalReadQuery
 	kind       string
+	narrowing  *evalNarrowing
 	projectsIn func(ctx context.Context, tx pgx.Tx) ([]string, error)
 }
 
@@ -699,7 +734,7 @@ func parseEvalListQuery(query url.Values, keys evalQueryKeys) (evalListRequest, 
 	if kind != "" && !slices.Contains(evals.Kinds, kind) {
 		return evalListRequest{}, invalidEvalQuery(fmt.Errorf("kind %q is not one of %s", kind, strings.Join(evals.Kinds, ", ")))
 	}
-	return evalListRequest{evalReadQuery: read, kind: kind}, nil
+	return evalListRequest{evalReadQuery: read, kind: kind, narrowing: parseEvalNarrowing(query)}, nil
 }
 
 // listProjectEvals answers GET /api/v1/projects/{key}/evals: one page of the project's evals
@@ -708,7 +743,7 @@ func (s *server) listProjectEvals(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	answer, err := s.readProjectEvalList(r.Context(), r.URL.Query(), r.PathValue("key"), time.Now().UTC())
+	answer, _, err := s.readProjectEvalList(r.Context(), r.URL.Query(), r.PathValue("key"), time.Now().UTC())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -719,12 +754,14 @@ func (s *server) listProjectEvals(w http.ResponseWriter, r *http.Request) {
 // readProjectEvalList is the body of GET /api/v1/projects/{key}/evals for query, as of now: the
 // list read of project's evals (readEvalList), after the query is read (parseEvalListQuery), the
 // project found in the answer's snapshot, 404 PROJECT_NOT_FOUND for a project no row holds
-// (loadProject). The live hub's evals view reads its body through this too, so the two answer one
-// query alike.
-func (s *server) readProjectEvalList(ctx context.Context, query url.Values, project string, now time.Time) (evalListResponse, error) {
+// (loadProject), and, for its delivery evals (kind=delivery), the freshness of its deploy sources
+// (projectDeliveryFreshness). The live hub's evals view reads its body through this too, so the
+// two answer one query alike, and takes the narrowing the read narrowed by (nil for none), which
+// names the issues and sessions an event can move it by.
+func (s *server) readProjectEvalList(ctx context.Context, query url.Values, project string, now time.Time) (evalListResponse, *evalNarrowing, error) {
 	request, err := parseEvalListQuery(query, evalListQueryKeys)
 	if err != nil {
-		return evalListResponse{}, err
+		return evalListResponse{}, nil, err
 	}
 	request.projectsIn = func(ctx context.Context, tx pgx.Tx) ([]string, error) {
 		if _, err := s.loadProject(ctx, tx, project); err != nil {
@@ -732,7 +769,58 @@ func (s *server) readProjectEvalList(ctx context.Context, query url.Values, proj
 		}
 		return []string{project}, nil
 	}
-	return s.readEvalList(ctx, request, now)
+	answer, err := s.readEvalList(ctx, request, now)
+	if err != nil {
+		return evalListResponse{}, nil, err
+	}
+	if request.kind == evals.KindDelivery {
+		if answer.DeliveryFreshness, err = s.projectDeliveryFreshness(ctx, project); err != nil {
+			return evalListResponse{}, nil, err
+		}
+	}
+	return answer, request.narrowing, nil
+}
+
+// projectDeliveryFreshness is the freshness of project's deploy sources, the delivery_freshness of
+// the list read of its delivery evals (dispatch://INFRA-2918, D2): each github_workflow source of
+// the project whose repository resolves, while delivery is on (delivery.ProjectSettings.Rules), in
+// its position, folded by the one function the delivery timeline's freshness is folded by
+// (delivery.FreshnessOf), with the unfetchable pull requests the project counts by root R27, by the
+// rule its day rows count a pull request by (evals.Attribution.CountsPullRequest). It is nil where
+// the project has no such source: no settings row, delivery off, or no source whose repository
+// resolves. It is read after the list read's snapshot ends: the line says how fresh the sources'
+// intake is, and no figure of the answer is folded from it.
+func (s *server) projectDeliveryFreshness(ctx context.Context, project string) (*delivery.DeliveryFreshnessView, error) {
+	pool := s.deps.Store.Pool
+	settings, err := delivery.GetProjectSettings(ctx, pool, project)
+	if errors.Is(err, delivery.ErrNoSettings) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sources := settings.Rules()
+	if len(sources) == 0 {
+		return nil, nil
+	}
+	unfetchable, err := delivery.ListUnfetchablePullRequests(ctx, pool)
+	if err != nil {
+		return nil, fmt.Errorf("read the unfetchable pull requests: %w", err)
+	}
+	counted := 0
+	if len(unfetchable) > 0 {
+		attribution, err := s.registry().ReadAttribution(ctx, unfetchable)
+		if err != nil {
+			return nil, fmt.Errorf("read the projects the unfetchable pull requests count for: %w", err)
+		}
+		for _, pr := range unfetchable {
+			if attribution.CountsPullRequest(pr, project) {
+				counted++
+			}
+		}
+	}
+	freshness := delivery.FreshnessOf(sources, counted)
+	return &freshness, nil
 }
 
 // listEvals answers GET /api/v1/evals: the list read across projects, each item the shape the
@@ -824,7 +912,7 @@ func (s *server) readEvalList(ctx context.Context, request evalListRequest, now 
 	if err != nil {
 		return evalListResponse{}, err
 	}
-	values, err := readEvalValues(ctx, tx, page.Items, deployRepos, request.repos, request.ranges, now)
+	values, err := s.readEvalValues(ctx, tx, page.Items, deployRepos, request.repos, request.ranges, request.narrowing, now)
 	if err != nil {
 		return evalListResponse{}, err
 	}
@@ -845,13 +933,18 @@ func (s *server) readEvalList(ctx context.Context, request evalListRequest, now 
 // evalValues is what one answer states its evals' values from, read in its snapshot
 // (readEvalValues): each eval's values where the stored figures answer it, the indexes of those
 // they do not (unstated) with the day rows and the first days their values are folded from, the
-// oldest updated_at of the stored rows read, and the refresher's age.
+// indexes of those a narrowing builds at read time (narrowed) with the rows built for them
+// (atRead) and the keys of the filters they were narrowed by (applied), the oldest updated_at of
+// the stored rows read, and the refresher's age.
 type evalValues struct {
 	entries  []evals.Entry
 	ranges   evalRanges
 	values   [][]evals.SeriesValues
 	unstated []int
 	rows     []evals.WindowRow
+	narrowed []int
+	atRead   []evals.WindowRow
+	applied  []string
 	firsts   map[string]map[string]time.Time
 	oldest   *time.Time
 	age      time.Duration
@@ -863,12 +956,15 @@ type evalValues struct {
 // that reads the deploy repository is stated from the rows kept for its project's repositories in
 // deployRepos, those recorded with the stored rows (evals.DeployRepoOf, evals.DeployReposIn), so a
 // move of a project's repositories is this selection. It reads each series' first day
-// (evals.FirstDaysIn), and for an offered range (evals.FiguresOffered: a window and a compare range
-// each of a length the Evals tab offers, of the projects' own rows or of the one repository named)
-// the stored figures of that cut (evals.ReadStoredFiguresIn: the read of how far each project is
-// built and which of its evals a stale mark of the cut names, then two primary-key reads of the
-// evals they serve), from which it states each eval they answer. An eval they cannot answer (an
-// eval of a project whose figures are not built yet, one whose rows in the cut a move of a default
+// (evals.FirstDaysIn). With a narrowing (evalNarrowing), each eval that counts pull requests
+// (evals.CountsPullRequests) has its rows of the ranges built at read time from the pull requests
+// the narrowing keeps, of repos where it names any (evals.Store.ComputeAtRead), and every other
+// eval is stated from its stored rows. For an offered range (evals.FiguresOffered: a window and a
+// compare range each of a length the Evals tab offers, of the projects' own rows or of the one
+// repository named) the stored figures of that cut (evals.ReadStoredFiguresIn: the read of how far
+// each project is built and which of its evals a stale mark of the cut names, then two primary-key
+// reads of the evals they serve) state each eval they answer. An eval they cannot answer (an eval
+// of a project whose figures are not built yet, one whose rows in the cut a move of a default
 // repository moved and the refresher has not folded again, or one whose stored row was folded
 // under another fold key than the eval's) and every eval of any other read, one that names two or
 // more repositories among them, is stated from one read of the day rows of the window and the
@@ -876,7 +972,8 @@ type evalValues struct {
 // folded once the snapshot is committed (evalValues.items). Both answer the same bits
 // (evals.StoredFigures.SeriesValues). Each read reads every project the entries it reads are evals
 // of at once.
-func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deployRepos *evals.DeployRepos, repos []string, ranges evalRanges, now time.Time) (evalValues, error) {
+func (s *server) readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deployRepos *evals.DeployRepos, repos []string,
+	ranges evalRanges, narrowing *evalNarrowing, now time.Time) (evalValues, error) {
 	read := evalValues{entries: entries, ranges: ranges, values: make([][]evals.SeriesValues, len(entries))}
 	var err error
 	if read.age, read.aged, err = evals.RefresherAgeIn(ctx, tx, now); err != nil {
@@ -888,13 +985,34 @@ func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deplo
 	if read.firsts, err = evals.FirstDaysIn(ctx, tx, entries, deployRepos); err != nil {
 		return evalValues{}, err
 	}
+	var narrowed, stored []evals.Entry
+	var storedAt []int
+	for index, entry := range entries {
+		if narrowing != nil && evals.CountsPullRequests(entry.Definition) {
+			read.narrowed, narrowed = append(read.narrowed, index), append(narrowed, entry)
+			continue
+		}
+		storedAt, stored = append(storedAt, index), append(stored, entry)
+	}
+	if len(narrowed) > 0 {
+		read.applied = narrowing.applied
+		if read.atRead, err = s.registry().ComputeAtRead(ctx, tx, evals.AtRead{
+			Entries: narrowed, DeployRepos: deployRepos, Repos: repos, Window: ranges.window, Compare: ranges.compare, Narrow: narrowing.keep, Now: now,
+		}); err != nil {
+			return evalValues{}, err
+		}
+	}
+	if len(stored) == 0 {
+		return read, nil
+	}
 	if evals.FiguresOffered(repos, ranges.window, ranges.compare) {
-		stored, err := evals.ReadStoredFiguresIn(ctx, tx, evalProjects(entries), entries, deployRepos, repos, ranges.window, ranges.compare)
+		figures, err := evals.ReadStoredFiguresIn(ctx, tx, evalProjects(stored), stored, deployRepos, repos, ranges.window, ranges.compare)
 		if err != nil {
 			return evalValues{}, err
 		}
-		for index, entry := range entries {
-			series, at, ok := stored.SeriesValues(entry, read.firsts[entry.Definition.EvalID], ranges.window, ranges.compare)
+		for position, entry := range stored {
+			index := storedAt[position]
+			series, at, ok := figures.SeriesValues(entry, read.firsts[entry.Definition.EvalID], ranges.window, ranges.compare)
 			if !ok {
 				read.unstated = append(read.unstated, index)
 				continue
@@ -905,9 +1023,7 @@ func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deplo
 			}
 		}
 	} else {
-		for index := range entries {
-			read.unstated = append(read.unstated, index)
-		}
+		read.unstated = storedAt
 	}
 	if len(read.unstated) == 0 {
 		return read, nil
@@ -930,9 +1046,11 @@ func (v *evalValues) earliest(at time.Time) {
 }
 
 // items is each of v's evals with its values, in the order read, and the answer's freshness: the
-// oldest updated_at of the rows its values fold, and the refresher's age. It folds the day rows of
-// the evals the stored figures did not answer (evals.SeriesValuesOf) and reads nothing, so it runs
-// once the snapshot v was read in is committed.
+// oldest updated_at of the stored rows its values fold, and the refresher's age. It folds the day
+// rows of the evals the stored figures did not answer and the rows built at read time of those a
+// narrowing narrowed, each such series naming the filters it was narrowed by, through the one
+// fold of the day rows (evals.SeriesValuesOf), and reads nothing, so it runs once the snapshot v
+// was read in is committed.
 func (v *evalValues) items() ([]evalItem, evalFreshness) {
 	byEval := map[string][]evals.WindowRow{}
 	for _, row := range v.rows {
@@ -942,6 +1060,18 @@ func (v *evalValues) items() ([]evalItem, evalFreshness) {
 	for _, index := range v.unstated {
 		id := v.entries[index].Definition.EvalID
 		v.values[index] = evals.SeriesValuesOf(v.entries[index], byEval[id], v.firsts[id], v.ranges.window, v.ranges.compare)
+	}
+	atRead := map[string][]evals.WindowRow{}
+	for _, row := range v.atRead {
+		atRead[row.EvalID] = append(atRead[row.EvalID], row)
+	}
+	for _, index := range v.narrowed {
+		id := v.entries[index].Definition.EvalID
+		values := evals.SeriesValuesOf(v.entries[index], atRead[id], v.firsts[id], v.ranges.window, v.ranges.compare)
+		for position := range values {
+			values[position].Narrowed = v.applied
+		}
+		v.values[index] = values
 	}
 	items := make([]evalItem, len(v.entries))
 	for index, entry := range v.entries {
@@ -1029,7 +1159,7 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	answer := evalDetailResponse{
-		Items: []evalItem{}, Total: versions.Total, Limit: read.limit, Offset: read.offset,
+		Items: []evalVersionItem{}, Total: versions.Total, Limit: read.limit, Offset: read.offset,
 		Window: newEvalRange(read.ranges.window), Compare: evalCompareRange(read.ranges.compare),
 	}
 	// The newest version states the window's values where the page holds it.
@@ -1042,7 +1172,7 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	var held bool
 	if err := store.ReadSideBySide(ctx,
 		func(context.Context) (err error) {
-			if values, err = readEvalValues(snapshot, tx, stated, deployRepos, read.repos, read.ranges, time.Now().UTC()); err != nil {
+			if values, err = s.readEvalValues(snapshot, tx, stated, deployRepos, read.repos, read.ranges, nil, time.Now().UTC()); err != nil {
 				return err
 			}
 			if err := tx.Commit(snapshot); err != nil {
@@ -1060,12 +1190,16 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	}
 	newest, freshness := values.items()
 	answer.Freshness = freshness
+	// Each version's charts are its own row's, the newest's among them: the newest's item holds
+	// the definition the eval's own read made (evals.EvalIn), which reads no charts.
 	for _, version := range versions.Items {
 		if version.Version != entry.Definition.Version {
-			answer.Items = append(answer.Items, evalItem{Definition: version, Owner: evalOwnerOf(version)})
+			answer.Items = append(answer.Items, evalVersionItem{evalItem: evalItem{Definition: version, Owner: evalOwnerOf(version)}, Charts: version.Charts})
 			continue
 		}
-		answer.Items = append(answer.Items, newest...)
+		for _, item := range newest {
+			answer.Items = append(answer.Items, evalVersionItem{evalItem: item, Charts: version.Charts})
+		}
 	}
 	if held {
 		answer.DocText = &method
@@ -1185,7 +1319,10 @@ func (s *server) refuseReadingChange(w http.ResponseWriter, r *http.Request) {
 // all (evalRegistered, answerPrefix). A field the body names that no earlier write of the eval
 // named is a change of the version's record of what a person set, so `target: null` on an eval
 // whose target is already off is answered 201, and sent again 200 (evals.Definition's
-// SetByPerson).
+// SetByPerson). charts the eval platform's validate_charts rules refuse are 400
+// CHART_SPEC_INVALID naming the first refusal's field, and charts that are no JSON value its
+// reader takes 400 INVALID_JSON, each before anything is written; a credential of another project
+// is refused 403 PROJECT_SCOPE before the handler runs (withinProjectScope).
 func (s *server) registerEval(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -1254,7 +1391,8 @@ func answerPrefix[T any](answer any, items []T) ([]T, error) {
 // field the body names is set, `null` included (a null target is off), and each it leaves out is
 // left unset, so the registry copies it forward. The body is decoded twice, once into its type,
 // which refuses a key no field spells exactly (decodeEvalBody), and once by key, which says which
-// keys it named.
+// keys it named. charts is the value the body sent, byte for byte, which the registry validates
+// (evals.Registration.Charts): `null` among them, which it refuses as no list.
 func decodeEvalRegistration(r *http.Request) (evals.Registration, *model.Actor, error) {
 	var input evalRegisterInput
 	raw, err := decodeEvalBody(r, &input, evalRegisterBodyKeys)
@@ -1287,6 +1425,8 @@ func decodeEvalRegistration(r *http.Request) (evals.Registration, *model.Actor, 
 		State:           fieldOf(named, "state", input.State),
 		ReplacedBy:      fieldOf(named, "replaced_by", input.ReplacedBy),
 		Links:           fieldOf(named, "links", evalLinks(input.Links)),
+		Charts:          fieldOf(named, "charts", named["charts"]),
+		Answer:          fieldOf(named, "answer", input.Answer),
 	}
 	if len(input.Series) > 0 {
 		var namedSeries []map[string]json.RawMessage

@@ -210,23 +210,49 @@ func lockEvals(ctx context.Context, tx pgx.Tx, evalIDs []string) error {
 }
 
 // definitionColumns is the column list scanDefinition reads from eval_versions or evals_current,
-// its nullable text columns read as "".
+// its nullable text columns read as "". It leaves out charts, which only the detail read answers
+// (definitionChartsColumns), so a list read never reads a declaration it does not answer.
 const definitionColumns = `eval_id, version, project_key, slug, name, question, number_rule, decision, doc_block,
 	failure_modes, unit, coalesce(direction, ''), target, target_inclusive, target_judges, owner_role, person,
 	coalesce(issue_key, ''), kind, source, state, coalesce(replaced_by, ''), links, written_via, written_by, created_at,
-	set_by_person`
+	set_by_person, answer`
+
+// definitionChartsColumns is definitionColumns and charts, the column list scanDefinitionCharts
+// reads: the read of a version whose declared charts its reader answers.
+const definitionChartsColumns = definitionColumns + `, charts`
 
 func scanDefinition(row pgx.Row) (Definition, error) {
+	return scanDefinitionOf(row, nil)
+}
+
+// scanDefinitionCharts reads a row of definitionChartsColumns.
+func scanDefinitionCharts(row pgx.Row) (Definition, error) {
+	var charts []byte
+	definition, err := scanDefinitionOf(row, &charts)
+	if err != nil {
+		return Definition{}, err
+	}
+	definition.Charts = charts
+	return definition, nil
+}
+
+// scanDefinitionOf reads a row of definitionColumns into a definition, and into charts, where it
+// is not nil, the column after them.
+func scanDefinitionOf(row pgx.Row, charts *[]byte) (Definition, error) {
 	var definition Definition
 	var failureModes, links, writtenBy []byte
-	if err := row.Scan(
+	columns := []any{
 		&definition.EvalID, &definition.Version, &definition.ProjectKey, &definition.Slug, &definition.Name,
 		&definition.Question, &definition.NumberRule, &definition.Decision, &definition.DocBlock,
 		&failureModes, &definition.Unit, &definition.Direction, &definition.Target, &definition.TargetInclusive,
 		&definition.TargetJudges, &definition.OwnerRole, &definition.Person, &definition.IssueKey,
 		&definition.Kind, &definition.Source, &definition.State, &definition.ReplacedBy, &links,
-		&definition.WrittenVia, &writtenBy, &definition.CreatedAt, &definition.SetByPerson,
-	); err != nil {
+		&definition.WrittenVia, &writtenBy, &definition.CreatedAt, &definition.SetByPerson, &definition.Answer,
+	}
+	if charts != nil {
+		columns = append(columns, charts)
+	}
+	if err := row.Scan(columns...); err != nil {
 		return Definition{}, err
 	}
 	if err := json.Unmarshal(failureModes, &definition.FailureModes); err != nil {
@@ -431,6 +457,11 @@ func insertDefinition(ctx context.Context, tx pgx.Tx, definition Definition) (De
 }
 
 // definitionInsert is the statement that writes definition as a new version, and its arguments.
+// A definition whose Charts is nil, one made by a read that did not read them (the seed's, a
+// register write's that sets no charts, a readings write's first registration), sends a null
+// charts, which the table's trigger before each insert sets to the charts of the eval's newest
+// version, or `[]` for its first (eval_versions_carry_forward, migration 20261123024730): its
+// writer holds the eval's lock, so that version is the one it read.
 func definitionInsert(definition Definition) (string, []any, error) {
 	failureModes, err := json.Marshal(nonNil(definition.FailureModes))
 	if err != nil {
@@ -444,18 +475,22 @@ func definitionInsert(definition Definition) (string, []any, error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("encode the writer: %w", err)
 	}
+	var charts *string
+	if definition.Charts != nil {
+		charts = new(string(definition.Charts))
+	}
 	return `
 		insert into eval_versions (eval_id, version, project_key, slug, name, question, number_rule, decision,
 			doc_block, failure_modes, unit, direction, target, target_inclusive, target_judges, owner_role, person,
-			issue_key, kind, source, state, replaced_by, links, written_via, written_by, set_by_person)
+			issue_key, kind, source, state, replaced_by, links, written_via, written_by, set_by_person, answer, charts)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, nullif($12, ''), $13, $14, $15, $16, $17,
-			nullif($18, ''), $19, $20, $21, nullif($22, ''), $23, $24, $25, $26)`, []any{
+			nullif($18, ''), $19, $20, $21, nullif($22, ''), $23, $24, $25, $26, $27, $28)`, []any{
 		definition.EvalID, definition.Version, definition.ProjectKey, definition.Slug, definition.Name,
 		definition.Question, definition.NumberRule, definition.Decision, definition.DocBlock, failureModes,
 		definition.Unit, definition.Direction, definition.Target, definition.TargetInclusive,
 		nonNil(definition.TargetJudges), definition.OwnerRole, definition.Person, definition.IssueKey,
 		definition.Kind, definition.Source, definition.State, definition.ReplacedBy, links,
-		definition.WrittenVia, writtenBy, nonNil(definition.SetByPerson),
+		definition.WrittenVia, writtenBy, nonNil(definition.SetByPerson), definition.Answer, charts,
 	}, nil
 }
 

@@ -789,6 +789,15 @@ test("parses and builds project, documents, and document routes with version and
   ).toBe("/projects/CORE/documents/design-notes?version=2&ask=ask-1");
 });
 
+test("parses and builds the Evals tab, whose window and filters are no part of the route", () => {
+  expect(parseProjectPath("/projects/CORE/evals")).toEqual({ kind: "evals", project: "CORE" });
+  expect(
+    parseProjectPath("/projects/CORE/evals", "?window=84d&compare=off&repo=acme%2Fwidgets")
+  ).toEqual({ kind: "evals", project: "CORE" });
+  expect(buildProjectPath({ kind: "evals", project: "CORE" })).toBe("/projects/CORE/evals");
+  expect(parseProjectPath("/projects/CORE/evals/deploy-frequency")).toBeUndefined();
+});
+
 test("maps dispatch project artifact references onto the document path and back", () => {
   const route = parseDispatchReference("dispatch://CORE/artifact/design-notes@v3/comment/note-1");
 

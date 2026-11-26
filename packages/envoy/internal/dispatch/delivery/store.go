@@ -411,7 +411,7 @@ type WaitingPullRequest struct {
 
 // ListPullRequestsWaitingAt lists the deploy repository's pull requests merged before at that had
 // not shipped by then, oldest merge first and those merged in one instant by id (as
-// ListPullRequestsInWindow orders them), up to maxPullRequestsPerWindow, each with the run that
+// ListPullRequestsInWindow orders them), up to MaxPullRequestsPerWindow, each with the run that
 // shipped it afterwards: what the timeline's waiting line starts its window from. A pull request
 // ships by shippingRunJoin's rule. One merged before the latest creation among the runs whose job
 // finished before at had shipped by then, and every one merged at or after it had not: that
@@ -419,7 +419,7 @@ type WaitingPullRequest struct {
 // bound this needs. The shipping run is read here rather than from the window's own runs, which
 // start at the window and so can miss a run created before it.
 func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, deployRepo string, production Production, at time.Time) ([]WaitingPullRequest, error) {
-	rows, err := pool.Query(ctx, pullRequestsWaitingAtQuery, deployRepo, production.JobNames, at, maxPullRequestsPerWindow, production.ApplyStep)
+	rows, err := pool.Query(ctx, pullRequestsWaitingAtQuery, deployRepo, production.JobNames, at, MaxPullRequestsPerWindow, production.ApplyStep)
 	if err != nil {
 		return nil, err
 	}
@@ -577,6 +577,19 @@ func CountUnfetchablePullRequests(ctx context.Context, pool *store.Pool) (int, e
 	var count int
 	err := pool.QueryRow(ctx, `select count(*) from delivery_pull_requests where unfetchable_at is not null`).Scan(&count)
 	return count, err
+}
+
+// ListUnfetchablePullRequests lists every row MarkPullRequestUnfetchable has marked, by repository
+// and number, through delivery_pull_requests_unfetchable: the rows one project's freshness counts
+// those of that project among (api's projectDeliveryFreshness), where CountUnfetchablePullRequests
+// counts them all.
+func ListUnfetchablePullRequests(ctx context.Context, pool *store.Pool) ([]DeliveryPullRequest, error) {
+	return listPullRequests(ctx, pool, `
+		select `+PullRequestColumns+`
+		from delivery_pull_requests
+		where unfetchable_at is not null
+		order by repo, number
+	`)
 }
 
 // ListPartialPullRequests lists every partial=true row, oldest merge first: the reconcile's cheap
@@ -1091,9 +1104,10 @@ func collectJobsByRun(ctx context.Context, q Querier, runs int, query string, ar
 	return byRun, nil
 }
 
-// maxRunsPerWindow bounds listRuns' read for the same reason ListPullRequestsInWindow is bounded:
-// an unbounded caller should fail loudly rather than exhaust memory.
-const maxRunsPerWindow = 50_000
+// MaxRunsPerWindow bounds listRuns' read for the same reason ListPullRequestsInWindow is bounded:
+// an unbounded caller should fail loudly rather than exhaust memory. The project timeline's live
+// view holds at most this many runs of a window with its pull requests (api's project_timeline.go).
+const MaxRunsPerWindow = 50_000
 
 // listRuns lists every run of kind on repo that GitHub created at since or later (runCreatedAt),
 // and with until set only those created before it, oldest creation first, narrowed to one head
@@ -1108,7 +1122,7 @@ const maxRunsPerWindow = 50_000
 // filter/order. The bound is written into the statement only when it is set, so the plan of the
 // read with no bound keeps no test of an empty parameter.
 func listRuns(ctx context.Context, q Querier, repo string, kind DeliveryRunKind, branch string, since time.Time, until *time.Time) ([]DeliveryRun, error) {
-	bound, arguments := "", []any{repo, string(kind), since, branch, maxRunsPerWindow}
+	bound, arguments := "", []any{repo, string(kind), since, branch, MaxRunsPerWindow}
 	if until != nil {
 		bound, arguments = ` and `+runCreatedAt+` < $6`, append(arguments, *until)
 	}
@@ -1183,13 +1197,13 @@ var windowRunsQuery = `
 // the bound. With started it lists the window's deploys too, the runs listRunsStartedIn lists of
 // it on main, oldest start first and those started in one instant by run id: one read of both,
 // whose runs are nearly all one list's and the other's, rather than two. production is the rule
-// the bound judges a deploy by. Bounded by maxRunsPerWindow, as listRuns is.
+// the bound judges a deploy by. Bounded by MaxRunsPerWindow, as listRuns is.
 func listWindowRuns(ctx context.Context, pool *store.Pool, repo string, production Production, from, to time.Time, started bool) (windowRuns, error) {
 	query := windowApplyRunsQuery
 	if started {
 		query = windowRunsQuery
 	}
-	rows, err := pool.Query(ctx, query, repo, from, to, production.JobNames, production.ApplyStep, maxRunsPerWindow)
+	rows, err := pool.Query(ctx, query, repo, from, to, production.JobNames, production.ApplyStep, MaxRunsPerWindow)
 	if err != nil {
 		return windowRuns{}, err
 	}
@@ -1231,7 +1245,7 @@ type windowRuns struct {
 // matches a non-empty filter: it is a row the backfill has not rewritten yet). The measures'
 // deploy population is ("main", ""), the Pipeline's deploy cards ("main", "push"), PR checks ("",
 // "pull_request"): the prototype's `withinWindow(run.started_at)`, `branch=main` and
-// `event=pull_request` listings. Bounded by maxRunsPerWindow, as listRuns is;
+// `event=pull_request` listings. Bounded by MaxRunsPerWindow, as listRuns is;
 // delivery_runs_kind_started_at serves the filter and order.
 func listRunsStartedIn(ctx context.Context, q Querier, repo string, kind DeliveryRunKind, branch, event string, from, to time.Time) ([]DeliveryRun, error) {
 	rows, err := q.Query(ctx, `
@@ -1241,7 +1255,7 @@ func listRunsStartedIn(ctx context.Context, q Querier, repo string, kind Deliver
 			and ($5 = '' or head_branch = $5) and ($6 = '' or event = $6)
 		order by started_at, run_id
 		limit $7
-	`, repo, string(kind), from, to, branch, event, maxRunsPerWindow)
+	`, repo, string(kind), from, to, branch, event, MaxRunsPerWindow)
 	if err != nil {
 		return nil, err
 	}
@@ -1330,16 +1344,16 @@ func runsWithJobsStartedIn(ctx context.Context, q Querier, repo string, kind Del
 	return RunsWithJobs{Runs: runs, Jobs: byRun}, nil
 }
 
-// maxPullRequestsPerWindow bounds ListPullRequestsInWindow: a window a caller (the API, a future
+// MaxPullRequestsPerWindow bounds ListPullRequestsInWindow: a window a caller (the API, a future
 // script) opens too wide should fail loudly against this limit rather than return an unbounded
 // result set that could exhaust memory -- 28 days of this population is on the order of a few
 // thousand rows (CONTRACT.md: "28 days is roughly 3,500 PRs"), so this is generous headroom, not
 // a tight production ceiling.
-const maxPullRequestsPerWindow = 50_000
+const MaxPullRequestsPerWindow = 50_000
 
 // ListPullRequestsInWindow lists every population pull request merged in [from, to), oldest
 // merge first and those merged in one instant by id ("owner/repo#N" in byte order, the order the
-// page's live merge keeps: applyDelta.ts's ORDERS.prs), up to maxPullRequestsPerWindow: the API's
+// page's live merge keeps: applyDelta.ts's ORDERS.prs), up to MaxPullRequestsPerWindow: the API's
 // timeline window and the facet computations that run over it. A partial row (merged_at still
 // null) is never in range and so never appears here — exactly right, since its lead time and
 // shipped status are not yet knowable.
@@ -1350,7 +1364,7 @@ func ListPullRequestsInWindow(ctx context.Context, q Querier, from, to time.Time
 		where merged_at >= $1 and merged_at < $2
 		order by merged_at, (repo || '#' || number) collate "C"
 		limit $3
-	`, from, to, maxPullRequestsPerWindow)
+	`, from, to, MaxPullRequestsPerWindow)
 	if err != nil {
 		return nil, err
 	}

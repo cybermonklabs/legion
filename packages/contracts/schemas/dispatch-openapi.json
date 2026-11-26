@@ -5009,7 +5009,7 @@
     },
     "/api/v1/evals": {
       "get": {
-        "description": "The evals of several projects in the project read's item shape and envelope {items, total, limit, offset}, by project in the order named and then by slug, the page running across them: ?project=, repeated, names the projects read, and with none named every project the store holds is read, by key, with no project picked for the caller. The window, compare range, kind, repo and page keys are the project read's, their bounds included. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project.",
+        "description": "The evals of several projects in the project read's item shape and envelope {items, total, limit, offset}, by project in the order named and then by slug, the page running across them, delivery_freshness always null: ?project=, repeated, names the projects read, and with none named every project the store holds is read, by key, with no project picked for the caller. The window, compare range, kind, repo and page keys are the project read's, their bounds included. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project.",
         "operationId": "getApiV1Evals",
         "parameters": [
           {
@@ -5065,6 +5065,83 @@
           },
           {
             "name": "repo",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "parent_agent",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "issue",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "priority",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "component",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "author",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "rework",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "deployed",
             "in": "query",
             "schema": {
               "items": {
@@ -11966,9 +12043,71 @@
         "x-write-scope": "deployment"
       }
     },
+    "/api/v1/projects/{key}/deploy-runs/{id}": {
+      "get": {
+        "description": "One run of a deploy source's repository with every job it ran, by start, each with its result and timings, as GET /api/v1/delivery/runs/{id} answers a run, for the project its path names: ?repo= (required) names the repository the run is in, as the project timeline's deploy and failed_run rows do, and must be the repository of a github_workflow deploy source of a project with delivery on; the run is answered where it counts for the project as the project timeline's rows are kept (a deploy run on main counts for the projects the pull requests it ships first count for, or, shipping none, for the project whose deploy source reads its repository). Beside its jobs it answers its record: deploy, the deploy row the GitHub adapter wrote for the run under the project that owns its repository (null where it wrote none), and failures, every failure of any project and in any state that blames that row, oldest detection first, each with its signal, its state with that state's reason and writer, its restore and its note. 400 INVALID_PROJECT for a key that is no project key, 400 RUN_ID_INPUT for an id that is not a positive integer, 400 INVALID_QUERY for no repo or repo named twice, 404 PROJECT_NOT_FOUND, 404 NOT_FOUND for a repository no delivery-on project's source reads, no such run of it, or a run that counts for no project with this key.",
+        "operationId": "getApiV1ProjectsByKeyDeployRunsById",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDeployRunView"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/projects/{key}/evals": {
       "get": {
-        "description": "The project's evals, one page {items, total, limit, offset} by slug (limit 1-200, default 50), each its current definition (every field of eval_versions, read through evals_current), its owner, each listed series with its statistics over the window [from, to) (RFC3339, a moment of the UTC years 1 to 9999, default the last 7 days, at most 84) and over compare_from..compare_to (both or neither, at most 84 days; the two need not be of one length), the change between them, data_since (the series' first day; a range that starts before it reads every statistic null, \"no data\", never 0), the count of rows that reached the project through a repository, and for a headline series a per-day array; and the verdict of its target (null where the target is off). Every figure is folded from the stored day rows of the UTC days the range covers, which end by 9999-12-31, through the one fold the eval's source names, or its series' agg for a logged eval; a figure past what a float holds is null; window and compare state those days, freshness the oldest row folded and the day-row refresher's age. ?kind= (delivery, legion, ci, experiment) keeps one kind; ?repo=, repeated, folds those repositories' rows in place of the project's: at most 100 repositories, a repeated one counted once, each name of at most 512 bytes. 400 INVALID_QUERY names a malformed key, a repo list or name past its bound, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project.",
+        "description": "The project's evals, one page {items, total, limit, offset} by slug (limit 1-200, default 50), each its current definition (every field of eval_versions but charts, which the eval's own read answers, read through evals_current; answer, the short text that answers the eval's question, among them), its owner, each listed series with its statistics over the window [from, to) (RFC3339, a moment of the UTC years 1 to 9999, default the last 7 days, at most 84) and over compare_from..compare_to (both or neither, at most 84 days; the two need not be of one length), the change between them, data_since (the series' first day; a range that starts before it reads every statistic null, \"no data\", never 0), the count of rows that reached the project through a repository, and for a headline series a per-day array; and the verdict of its target (null where the target is off). Every figure is folded from the stored day rows of the UTC days the range covers, which end by 9999-12-31, through the one fold the eval's source names, or its series' agg for a logged eval; a figure past what a float holds is null; window and compare state those days, freshness the oldest row folded and the day-row refresher's age. ?kind= (delivery, legion, ci, experiment) keeps one kind; ?repo=, repeated, folds those repositories' rows in place of the project's: at most 100 repositories, a repeated one counted once, each name of at most 512 bytes. With kind=delivery, delivery_freshness is the freshness of the project's deploy sources {last_event_at, last_reconcile_at, last_error, unfetchable_count}, the delivery timeline's freshness folded over the project's sources in their order (the newest event, the oldest reconcile, null while any source never reconciled, each failing source's error prefixed with its repository) with the unfetchable pull requests that count for the project; null for any other kind or none and for a project with no deploy source. 400 INVALID_QUERY names a malformed key, a repo list or name past its bound, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project.",
         "operationId": "getApiV1ProjectsByKeyEvals",
         "parameters": [
           {
@@ -12031,6 +12170,83 @@
             }
           },
           {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "parent_agent",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "issue",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "priority",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "component",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "author",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "rework",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "deployed",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "schema": {
@@ -12078,7 +12294,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Register an eval or change its definition {slug, actor?, name?, question?, number_rule?, decision?, doc_block?, doc_text?, failure_modes?, unit?, direction?, target?, target_inclusive?, target_judges?, owner_role?, person?, issue_key?, kind?, source?, state?, replaced_by?, links?, series?}: the next version, written in one transaction with every field the body leaves out copied from the newest version (target: null turns the target off); a series named in series is registered or changed the same way, and a version that lists or unlists a logged eval's series lists or unlists its stored day rows with it. doc_text replaces the eval's method in its section of the project's evals-md document (not with doc_block) unless that section holds it already. Each link {rel, href, label}, its href an absolute http or https URL, is stored with the server's recorded_at, and its far side is never fetched. A slug and a series' name hold at most 512 bytes. An eval holds at most 234 series, listed or not, so that each of its stored rows is written in one statement of at most 256 KiB: a write that names more, or that would leave a logged eval holding more, is refused EVAL_SERIES_LIMIT naming the first series past the bound. A version of the definition, or of one series, takes at most 32768 bytes as JSON once the fields the body leaves out are copied forward: a write that would store a larger one is refused EVAL_VERSION_TOO_LARGE naming the version's largest field as the body spells it (question, series[3].links, actor for the writer the body names), so no run of writes each within the bound leaves a version past it. source is logged: only the seeded catalogue makes an eval computed, and a write naming another source is refused EVAL_FIELD_INVALID. A series' min_n is the fewest timed results a job needs before pr-ci ranks it among its slowest jobs, so it is taken on pr-ci's job series (job:*) alone and refused EVAL_FIELD_INVALID on any other series, which no read ranks by one. On a computed eval the write sets only how the number is judged and who answers for it: target, target_inclusive, target_judges, the min_n of pr-ci's job series, owner_role, person, issue_key, links, state, replaced_by and its method (doc_text or doc_block); its code defines the rest, and a write naming any other field, or a series the eval does not hold, is refused EVAL_FIELD_COMPUTED. Answers 201 {items, total, limit, offset} where it wrote a version of the definition or of a series, and 200 where the body changed nothing, its one item {definition, series, series_total, wrote} the versions that stand: series lists the eval's series by name, as many as keep the answer within 258048 bytes, the most the Idempotency-Key keeps in one statement, so that a repeat under the key is answered this answer, and at least one of an eval that holds any; series_total counts every series the eval holds. 400 {code, error, field} with a stable code and the one field it refuses (EVAL_SLUG_INVALID, EVAL_KEY_TOO_LONG, EVAL_FIELD_INVALID, EVAL_FIELD_COMPUTED, EVAL_SERIES_INVALID, EVAL_SERIES_LIMIT, EVAL_VERSION_TOO_LARGE, EVAL_DOC_TEXT_EMPTY, LINK_HREF_NOT_ABSOLUTE, LINK_HREF_NOT_HTTP, LINK_REL_MISSING), its error at most 1,024 bytes and its field 128 as JSON encodes them, a value of the body it names cut to fit, so the answer the Idempotency-Key keeps stays small whatever the body; 404 PROJECT_NOT_FOUND, 409 EVALS_DOCUMENT_NOT_A_DOCUMENT where the project's evals-md slug names a file.",
+        "description": "Register an eval or change its definition {slug, actor?, name?, question?, number_rule?, decision?, doc_block?, doc_text?, failure_modes?, unit?, direction?, target?, target_inclusive?, target_judges?, owner_role?, person?, issue_key?, kind?, source?, state?, replaced_by?, links?, charts?, answer?, series?}: the next version, written in one transaction with every field the body leaves out copied from the newest version (target: null turns the target off); a series named in series is registered or changed the same way, and a version that lists or unlists a logged eval's series lists or unlists its stored day rows with it. doc_text replaces the eval's method in its section of the project's evals-md document (not with doc_block) unless that section holds it already. Each link {rel, href, label}, its href an absolute http or https URL, is stored with the server's recorded_at, and its far side is never fetched. charts is the eval's whole list of declared charts, which the eval's own read answers and no list read does, and answer the short text that answers its question: a write that changes either writes a version, and one that names neither carries both forward. Before anything is written, charts are held to the eval platform's validate_charts rules at its commit 4f9223b9, with three differences (no kind requires approved, and approved and kept stand in any order; a network or architecture chart needs no graph; kind module is refused): a list those rules refuse is 400 CHART_SPEC_INVALID, its field the first refusal's path (charts[2].y.series) and its error every refusal's message, one a line, and charts that are no JSON value the platform's reader takes (text that is no UTF-8, an integer of more than 4,300 digits) are 400 INVALID_JSON naming charts. A slug and a series' name hold at most 512 bytes. An eval holds at most 234 series, listed or not, so that each of its stored rows is written in one statement of at most 256 KiB: a write that names more, or that would leave a logged eval holding more, is refused EVAL_SERIES_LIMIT naming the first series past the bound. A version of the definition, or of one series, takes at most 32768 bytes as JSON once the fields the body leaves out are copied forward: a write that would store a larger one is refused EVAL_VERSION_TOO_LARGE naming the version's largest field as the body spells it (question, series[3].links, actor for the writer the body names), so no run of writes each within the bound leaves a version past it. source is logged: only the seeded catalogue makes an eval computed, and a write naming another source is refused EVAL_FIELD_INVALID. A series' min_n is the fewest timed results a job needs before pr-ci ranks it among its slowest jobs, so it is taken on pr-ci's job series (job:*) alone and refused EVAL_FIELD_INVALID on any other series, which no read ranks by one. On a computed eval the write sets only how the number is judged, drawn and answered and who answers for it: target, target_inclusive, target_judges, the min_n of pr-ci's job series, owner_role, person, issue_key, links, state, replaced_by, its method (doc_text or doc_block), charts and answer; its code defines the rest, and a write naming any other field, or a series the eval does not hold, is refused EVAL_FIELD_COMPUTED. Answers 201 {items, total, limit, offset} where it wrote a version of the definition or of a series, and 200 where the body changed nothing, its one item {definition, series, series_total, wrote} the versions that stand: series lists the eval's series by name, as many as keep the answer within 258048 bytes, the most the Idempotency-Key keeps in one statement, so that a repeat under the key is answered this answer, and at least one of an eval that holds any; series_total counts every series the eval holds. 400 {code, error, field} with a stable code and the one field it refuses (EVAL_SLUG_INVALID, EVAL_KEY_TOO_LONG, EVAL_FIELD_INVALID, EVAL_FIELD_COMPUTED, EVAL_SERIES_INVALID, EVAL_SERIES_LIMIT, EVAL_VERSION_TOO_LARGE, EVAL_DOC_TEXT_EMPTY, LINK_HREF_NOT_ABSOLUTE, LINK_HREF_NOT_HTTP, LINK_REL_MISSING, CHART_SPEC_INVALID, INVALID_JSON), its error at most 1,024 bytes and its field 128 as JSON encodes them, a value of the body it names cut to fit, so the answer the Idempotency-Key keeps stays small whatever the body; 404 PROJECT_NOT_FOUND, 409 EVALS_DOCUMENT_NOT_A_DOCUMENT where the project's evals-md slug names a file.",
         "operationId": "postApiV1ProjectsByKeyEvals",
         "parameters": [
           {
@@ -12197,7 +12413,7 @@
     },
     "/api/v1/projects/{key}/evals/{slug}": {
       "get": {
-        "description": "One eval's versions, newest first, one page {items, total, limit, offset} of the list's item shape: the newest states the window's values as the list read does (the same window, compare range, repo and freshness, repo held to the list read's bounds), every older version its definition alone; and doc_text, the method the eval's section of the project's evals-md document holds (null where the document holds none). 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project and EVAL_NOT_FOUND a slug no eval of it holds.",
+        "description": "One eval's versions, newest first, one page {items, total, limit, offset} of the list's item shape, each with charts, the version's declared charts ([] for none), which no list read answers: the newest states the window's values as the list read does (the same window, compare range, repo and freshness, repo held to the list read's bounds), every older version its definition alone; and doc_text, the method the eval's section of the project's evals-md document holds (null where the document holds none). 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project and EVAL_NOT_FOUND a slug no eval of it holds.",
         "operationId": "getApiV1ProjectsByKeyEvalsBySlug",
         "parameters": [
           {
@@ -13610,6 +13826,168 @@
         },
         "x-auth": "any",
         "x-write-scope": "deployment"
+      }
+    },
+    "/api/v1/projects/{key}/timeline": {
+      "get": {
+        "description": "One page of the delivery timeline's rows the project its path names counts, newest first, {items, total, limit, offset} (limit 1-500, default 200; offset from 0), within [from, to) (default the last 7 days), the search q and the facets the delivery timeline takes (repeatable repo, parent_agent, session, issue, priority, component, author, rework, deployed): each row a merge (kind merge, every field of the delivery timeline's prs[]) or a deploy run started in the window (kind deploy, or failed_run for a run with a failed job or a failed production job, every field of its runs[], with repo, the repository the run is in, and created_at), in one order: by the row's time (a merge's merged_at, a run's created_at), newest first, then by kind (merge, deploy, failed_run), then by id. The rows are those the project counts as the eval registry's day rows count them, under the published default repositories: a pull request for its issue's project, or, naming none, for each project whose default repository holds it; a deploy run for the projects the pull requests it ships first count for, or, shipping none (every failed run among them), for the project whose deploy source reads its repository. Beside them facet_counts and color_counts over the whole window on every page; waiting, the project's pull requests waiting at the window's start, on the page that reaches that start and null on every other; issue_titles, session_titles, session_pr_counts, components and session_groups over the whole window on the first page and null on every other; window and freshness. No measures: the eval routes answer those. The /ws/live project-timeline view carries the same body for its limit of rows from the newest. 400 INVALID_PROJECT for a key that is no project key, 400 INVALID_QUERY for a malformed query, 404 PROJECT_NOT_FOUND, 404 DELIVERY_NOT_CONFIGURED.",
+        "operationId": "getApiV1ProjectsByKeyTimeline",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "parent_agent",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "issue",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "priority",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "component",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "author",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "rework",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "deployed",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTimelineResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
       }
     },
     "/api/v1/reference-targets": {
@@ -22961,6 +23339,9 @@
       },
       "EvalDefinition": {
         "properties": {
+          "answer": {
+            "type": "string"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -23088,7 +23469,8 @@
           "links",
           "written_via",
           "written_by",
-          "created_at"
+          "created_at",
+          "answer"
         ],
         "type": "object"
       },
@@ -23115,7 +23497,7 @@
           },
           "items": {
             "items": {
-              "$ref": "#/components/schemas/EvalItem"
+              "$ref": "#/components/schemas/EvalVersionItem"
             },
             "type": [
               "array",
@@ -23181,42 +23563,6 @@
         "required": [
           "rows_updated_at",
           "refresher_age_seconds"
-        ],
-        "type": "object"
-      },
-      "EvalItem": {
-        "properties": {
-          "definition": {
-            "$ref": "#/components/schemas/EvalDefinition"
-          },
-          "owner": {
-            "$ref": "#/components/schemas/EvalOwner"
-          },
-          "series": {
-            "items": {
-              "$ref": "#/components/schemas/EvalSeriesValues"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "verdict": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/EvalVerdict"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "definition",
-          "owner",
-          "series",
-          "verdict"
         ],
         "type": "object"
       },
@@ -23437,6 +23783,16 @@
               }
             ]
           },
+          "delivery_freshness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryFreshnessView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "freshness": {
             "$ref": "#/components/schemas/EvalFreshness"
           },
@@ -23469,7 +23825,8 @@
           "offset",
           "window",
           "compare",
-          "freshness"
+          "freshness",
+          "delivery_freshness"
         ],
         "type": "object"
       },
@@ -23836,6 +24193,18 @@
               }
             ]
           },
+          "answer": {
+            "type": "string"
+          },
+          "charts": {
+            "description": "an eval's whole list of declared charts, each the declaration of one chart as the eval platform's validate_charts rules take it",
+            "items": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "maxItems": 16,
+            "type": "array"
+          },
           "decision": {
             "type": "string"
           },
@@ -24142,6 +24511,15 @@
               }
             ]
           },
+          "compare_days": {
+            "items": {
+              "$ref": "#/components/schemas/EvalDayPoint"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -24183,6 +24561,15 @@
             "type": [
               "null",
               "integer"
+            ]
+          },
+          "narrowed": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
             ]
           },
           "role": {
@@ -24228,7 +24615,9 @@
           "change",
           "data_since",
           "via_repository",
-          "days"
+          "days",
+          "compare_days",
+          "narrowed"
         ],
         "type": "object"
       },
@@ -24275,6 +24664,44 @@
           "inclusive",
           "met",
           "judges"
+        ],
+        "type": "object"
+      },
+      "EvalVersionItem": {
+        "properties": {
+          "charts": {},
+          "definition": {
+            "$ref": "#/components/schemas/EvalDefinition"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/EvalOwner"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/EvalSeriesValues"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvalVerdict"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "definition",
+          "owner",
+          "series",
+          "verdict",
+          "charts"
         ],
         "type": "object"
       },
@@ -31355,6 +31782,53 @@
         ],
         "type": "object"
       },
+      "ProjectDeployRunView": {
+        "properties": {
+          "deploy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductionEvent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "failures": {
+            "items": {
+              "$ref": "#/components/schemas/ProductionEvent"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryRunJobDetail"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "url",
+          "jobs",
+          "deploy",
+          "failures"
+        ],
+        "type": "object"
+      },
       "ProjectDeploySource": {
         "properties": {
           "deploy_workflow_path": {
@@ -31608,6 +32082,402 @@
         "required": [
           "project",
           "issues"
+        ],
+        "type": "object"
+      },
+      "ProjectTimelineMergeRow": {
+        "properties": {
+          "additions": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "author": {
+            "type": "string"
+          },
+          "components": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deletions": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "deploy_run": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "deployed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deployed_status": {
+            "type": "string"
+          },
+          "first_commit_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "issue_title": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "merge"
+            ],
+            "type": "string"
+          },
+          "merged_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "number": {
+            "type": "integer"
+          },
+          "parent_agent": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "partial": {
+            "type": "boolean"
+          },
+          "priority": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "repo": {
+            "type": "string"
+          },
+          "rework": {
+            "type": "boolean"
+          },
+          "sessions": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "unfetchable_reason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "repo",
+          "number",
+          "title",
+          "url",
+          "author",
+          "created_at",
+          "merged_at",
+          "first_commit_at",
+          "additions",
+          "deletions",
+          "partial",
+          "rework",
+          "issue",
+          "issue_title",
+          "priority",
+          "components",
+          "sessions",
+          "parent_agent",
+          "deploy_run",
+          "deployed_at",
+          "deployed_status",
+          "unfetchable_reason"
+        ],
+        "type": "object"
+      },
+      "ProjectTimelineResponse": {
+        "properties": {
+          "color_counts": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "components": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DeliveryComponent"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "facet_counts": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/DeliveryFreshnessView"
+          },
+          "issue_titles": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectTimelineRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "session_groups": {
+            "items": {
+              "$ref": "#/components/schemas/DeliverySessionGroup"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "session_pr_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "session_titles": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer"
+          },
+          "waiting": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryWaitingPR"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "window": {
+            "$ref": "#/components/schemas/DeliveryWindowView"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset",
+          "window",
+          "waiting",
+          "facet_counts",
+          "color_counts",
+          "components",
+          "issue_titles",
+          "session_groups",
+          "session_titles",
+          "session_pr_counts",
+          "freshness"
+        ],
+        "type": "object"
+      },
+      "ProjectTimelineRow": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ProjectTimelineMergeRow"
+          },
+          {
+            "$ref": "#/components/schemas/ProjectTimelineRunRow"
+          }
+        ],
+        "type": "object"
+      },
+      "ProjectTimelineRunRow": {
+        "properties": {
+          "completed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "conclusion": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "failed_jobs": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryRunJob"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "head_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "head_sha": {
+            "type": "string"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "deploy",
+              "failed_run"
+            ],
+            "type": "string"
+          },
+          "production": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryRunProduction"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prs": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryShippedPRView"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "repo": {
+            "type": "string"
+          },
+          "root_failing_job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryRunJob"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "url",
+          "head_sha",
+          "head_at",
+          "started_at",
+          "completed_at",
+          "conclusion",
+          "production",
+          "failed_jobs",
+          "root_failing_job",
+          "prs",
+          "repo",
+          "created_at"
         ],
         "type": "object"
       },

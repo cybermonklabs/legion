@@ -1215,8 +1215,9 @@ export const switchThumbBg = "bg-white";
 export const brushBand = "border-sky-400/70 bg-sky-400/15";
 
 /** The delivery charts' bar fills: neutral where no target exists, met/missed against one, the
- *  faint p90 behind a median, the stub drawn on a day with nothing to measure, and the dashed
- *  target line. One token per role so the panel and the Pipeline page share one scale. */
+ *  faint p90 behind a median, the stub drawn on a day with nothing to measure, the dashed
+ *  target line, and the compare range's muted bar behind a day's (the Evals tab's charts). One
+ *  token per role so the panel and the Pipeline page share one scale. */
 export const chartBar = {
   neutral: "fill-sky-500 dark:fill-sky-400",
   met: "fill-emerald-500 dark:fill-emerald-400",
@@ -1226,6 +1227,183 @@ export const chartBar = {
   missedFaint: "fill-rose-200 dark:fill-rose-900",
   empty: "fill-slate-300 dark:fill-slate-600",
   targetLine: "stroke-slate-500 dark:stroke-slate-300",
+  compare: "fill-slate-200 dark:fill-slate-700",
+} as const;
+
+/** The Evals tab's per-day line: the window's line and points, and the compare range's muted
+ *  line and points drawn under them. */
+export const chartLine = {
+  stroke: "stroke-sky-500 dark:stroke-sky-400",
+  point: "fill-sky-500 dark:fill-sky-400",
+  compareStroke: "stroke-slate-300 dark:stroke-slate-600",
+  comparePoint: "fill-slate-300 dark:fill-slate-600",
+} as const;
+
+/** The Evals tab's phase-time bars: the fill of each of the five segments a role's hours split
+ *  into, by the segment's name (legion-phase-time), one hue each so the legend reads them apart. */
+export const chartSegment = {
+  in_a_turn: "fill-sky-500 dark:fill-sky-400",
+  ci_wait: "fill-violet-500 dark:fill-violet-400",
+  waiting_on_person: "fill-amber-500 dark:fill-amber-400",
+  waiting_on_children: "fill-teal-500 dark:fill-teal-400",
+  idle: "fill-slate-400 dark:fill-slate-500",
+} as const;
+
+/** A declared chart's groups (dispatch://INFRA-2918/artifact/plan-md, D10): ten hues, one for each
+ *  group by its place among the chart's groups, each with the stroke of its line, the fill of its
+ *  marks, the faint fill of its band and the swatch of its key. A group past the tenth draws in
+ *  `chartGroupOther`, a grey that means no state. Decorative marks: each value's number is in the
+ *  chart's table and its title, so no contrast check applies. */
+export const chartGroup = [
+  {
+    stroke: "stroke-sky-700 dark:stroke-sky-400",
+    fill: "fill-sky-700 dark:fill-sky-400",
+    band: "fill-sky-700/20 dark:fill-sky-400/25",
+    swatch: "bg-sky-700 dark:bg-sky-400",
+  },
+  {
+    stroke: "stroke-amber-700 dark:stroke-amber-400",
+    fill: "fill-amber-700 dark:fill-amber-400",
+    band: "fill-amber-700/20 dark:fill-amber-400/25",
+    swatch: "bg-amber-700 dark:bg-amber-400",
+  },
+  {
+    stroke: "stroke-green-700 dark:stroke-green-400",
+    fill: "fill-green-700 dark:fill-green-400",
+    band: "fill-green-700/20 dark:fill-green-400/25",
+    swatch: "bg-green-700 dark:bg-green-400",
+  },
+  {
+    stroke: "stroke-violet-700 dark:stroke-violet-400",
+    fill: "fill-violet-700 dark:fill-violet-400",
+    band: "fill-violet-700/20 dark:fill-violet-400/25",
+    swatch: "bg-violet-700 dark:bg-violet-400",
+  },
+  {
+    stroke: "stroke-teal-700 dark:stroke-teal-400",
+    fill: "fill-teal-700 dark:fill-teal-400",
+    band: "fill-teal-700/20 dark:fill-teal-400/25",
+    swatch: "bg-teal-700 dark:bg-teal-400",
+  },
+  {
+    stroke: "stroke-orange-800 dark:stroke-orange-400",
+    fill: "fill-orange-800 dark:fill-orange-400",
+    band: "fill-orange-800/20 dark:fill-orange-400/25",
+    swatch: "bg-orange-800 dark:bg-orange-400",
+  },
+  {
+    stroke: "stroke-pink-700 dark:stroke-pink-400",
+    fill: "fill-pink-700 dark:fill-pink-400",
+    band: "fill-pink-700/20 dark:fill-pink-400/25",
+    swatch: "bg-pink-700 dark:bg-pink-400",
+  },
+  {
+    stroke: "stroke-slate-600 dark:stroke-slate-300",
+    fill: "fill-slate-600 dark:fill-slate-300",
+    band: "fill-slate-600/20 dark:fill-slate-300/25",
+    swatch: "bg-slate-600 dark:bg-slate-300",
+  },
+  {
+    stroke: "stroke-cyan-600 dark:stroke-cyan-300",
+    fill: "fill-cyan-600 dark:fill-cyan-300",
+    band: "fill-cyan-600/20 dark:fill-cyan-300/25",
+    swatch: "bg-cyan-600 dark:bg-cyan-300",
+  },
+  {
+    stroke: "stroke-fuchsia-700 dark:stroke-fuchsia-400",
+    fill: "fill-fuchsia-700 dark:fill-fuchsia-400",
+    band: "fill-fuchsia-700/20 dark:fill-fuchsia-400/25",
+    swatch: "bg-fuchsia-700 dark:bg-fuchsia-400",
+  },
+] as const;
+
+/** A declared chart's group past the tenth, and every group but the one `highlight` names. */
+export const chartGroupOther = {
+  stroke: "stroke-slate-400 dark:stroke-slate-500",
+  fill: "fill-slate-400 dark:fill-slate-500",
+  band: "fill-slate-400/20 dark:fill-slate-500/25",
+  swatch: "bg-slate-400 dark:bg-slate-500",
+} as const;
+
+/** The five states a declared chart colours a group, a rule or an annotation with, the same on
+ *  every chart: `partial` and `context` marks carry an outline, and a `not-started` mark is an
+ *  outline alone, blue, or grey where the chart asks (`chartNotStartedGrey`). `overall` is the
+ *  near black of the median over every run (`medians.overall`). Decorative, as `chartGroup` is. */
+export const chartState = {
+  proved: {
+    stroke: "stroke-blue-600 dark:stroke-blue-400",
+    fill: "fill-blue-600 dark:fill-blue-400",
+    band: "fill-blue-600/20 dark:fill-blue-400/25",
+    swatch: "bg-blue-600 dark:bg-blue-400",
+  },
+  partial: {
+    stroke: "stroke-slate-500 dark:stroke-slate-400",
+    fill: "fill-blue-300 dark:fill-blue-300",
+    band: "fill-blue-300/30 dark:fill-blue-300/25",
+    swatch: "bg-blue-300 dark:bg-blue-300",
+  },
+  attention: {
+    stroke: "stroke-orange-700 dark:stroke-orange-400",
+    fill: "fill-orange-700 dark:fill-orange-400",
+    band: "fill-orange-700/20 dark:fill-orange-400/25",
+    swatch: "bg-orange-700 dark:bg-orange-400",
+  },
+  context: {
+    stroke: "stroke-slate-500 dark:stroke-slate-400",
+    fill: "fill-slate-400 dark:fill-slate-500",
+    band: "fill-slate-400/20 dark:fill-slate-500/25",
+    swatch: "bg-slate-400 dark:bg-slate-500",
+  },
+  "not-started": {
+    stroke: "stroke-blue-600 dark:stroke-blue-400",
+    fill: "fill-white dark:fill-slate-900",
+    band: "fill-transparent",
+    swatch: "bg-white dark:bg-slate-900",
+  },
+  overall: {
+    stroke: "stroke-slate-900 dark:stroke-slate-100",
+    fill: "fill-slate-900 dark:fill-slate-100",
+    band: "fill-slate-900/10 dark:fill-slate-100/15",
+    swatch: "bg-slate-900 dark:bg-slate-100",
+  },
+} as const;
+
+/** A `not-started` mark's outline where its chart sets `not_started_outline: "grey"`. */
+export const chartNotStartedGrey = "stroke-slate-400 dark:stroke-slate-500";
+
+/** A declared chart's state as the colour of the text that states it, as the eval platform
+ *  colours it: a grid's cell, a lane's end text and a number's tile (the marks draw in
+ *  `chartState`). Text that a chart draws on the surface, so each is registered against it;
+ *  `not-started` is the muted text of a number not yet begun. */
+export const CHART_STATE_PROVED_TEXT = pair(P.BLUE_700, P.BLUE_400);
+export const CHART_STATE_PARTIAL_TEXT = pair(P.BLUE_600, P.BLUE_300);
+export const CHART_STATE_ATTENTION_TEXT = pair(P.ORANGE_700, P.ORANGE_400);
+export const CHART_STATE_CONTEXT_TEXT = pair(P.SLATE_600, P.SLATE_400);
+export const CHART_STATE_NOT_STARTED_TEXT = TEXT_MUTED;
+export const chartStateProvedText = "text-blue-700 dark:text-blue-400";
+export const chartStatePartialText = "text-blue-600 dark:text-blue-300";
+export const chartStateAttentionText = "text-orange-700 dark:text-orange-400";
+export const chartStateContextText = "text-slate-600 dark:text-slate-400";
+export const chartStateNotStartedText = "text-slate-500 dark:text-slate-400";
+registerText("proved chart state text on surface", CHART_STATE_PROVED_TEXT, SURFACE);
+registerText("partial chart state text on surface", CHART_STATE_PARTIAL_TEXT, SURFACE);
+registerText("attention chart state text on surface", CHART_STATE_ATTENTION_TEXT, SURFACE);
+registerText("context chart state text on surface", CHART_STATE_CONTEXT_TEXT, SURFACE);
+registerText("not-started chart state text on surface", CHART_STATE_NOT_STARTED_TEXT, SURFACE);
+
+/** A declared chart's plot: its axes' ticks and titles, its gridlines, its reference rules and
+ *  bands, an annotation's span, a mock-up's hatching and the brush that zooms it. */
+export const chartPlot = {
+  text: "fill-slate-600 dark:fill-slate-300",
+  grid: "stroke-slate-200 dark:stroke-slate-800",
+  axis: "stroke-slate-400 dark:stroke-slate-600",
+  rule: "stroke-slate-500 dark:stroke-slate-400",
+  band: "fill-slate-100 dark:fill-slate-800",
+  span: "fill-slate-200/60 dark:fill-slate-700/50",
+  mockup: "stroke-slate-300 dark:stroke-slate-600",
+  brush: "fill-sky-400/15 stroke-sky-400/70",
+  /** The inside of a hollow point: a ring's group, the compare range's point, a bound. */
+  hollow: "fill-white dark:fill-slate-900",
 } as const;
 
 // ---------------------------------------------------------------------------------------------

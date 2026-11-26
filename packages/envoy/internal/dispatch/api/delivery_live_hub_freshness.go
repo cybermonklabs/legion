@@ -12,10 +12,13 @@ import (
 // applyFreshness applies one delivery_freshness payload to g, reading nothing: a deploy source's
 // bookkeeping as the trigger of project_deploy_sources writes it (migration 20261123010254), its
 // project, the repository it names (null for one reading the project's default repository) and
-// its times and last error. It moves the source repository it names, as the last read's rules find
-// it (deliveryFreshnessHeard.rules), and the sources' freshness together. A payload of no source
-// the rules hold (an events source, a project with delivery off, the release before's singleton
-// row) moves nothing: the next read takes the sources as they stand.
+// its times and last error. It marks every evals view of the source's project that carries the
+// project's deploy sources' freshness (deliveryLiveSpec.freshness), whose next read answers it:
+// the bookkeeping logs no change, so nothing else marks them. It moves the source repository it
+// names, as the last read's rules find it (deliveryFreshnessHeard.rules), and the sources'
+// freshness together. A payload of no source the rules hold (an events source, a project with
+// delivery off, the release before's singleton row) moves nothing of that: the next read takes the
+// sources as they stand.
 func (h *deliveryHub) applyFreshness(g *hubGeneration, payload string) {
 	var row struct {
 		Project         string     `json:"project"`
@@ -31,6 +34,11 @@ func (h *deliveryHub) applyFreshness(g *hubGeneration, payload string) {
 	now := h.clock.Now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	for _, view := range g.views {
+		if view.spec.freshness && view.spec.project == row.Project {
+			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+		}
+	}
 	repo := row.Repo
 	if repo == nil {
 		if defaulted, ok := g.fresh.rules.DefaultRepo(row.Project); ok {

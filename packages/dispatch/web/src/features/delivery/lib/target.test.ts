@@ -1,19 +1,15 @@
 import { expect, test } from "bun:test";
-import type { DeliveryLeadTimeCell } from "../../../api/types";
 import { formatDuration, formatMinutes, pct } from "./format";
 import {
   type Judge,
   judgeFigure,
   judgesStatistic,
-  judgeWord,
-  leadTimeValue,
   meetsTarget,
   ownVerdict,
   shownJudges,
   type Target,
   targetLabel,
   targetLine,
-  targetWords,
 } from "./target";
 
 /** The statistics each chart's bars draw a day's value of: the deploys chart's deploys a day, the
@@ -49,24 +45,12 @@ test("targetLabel: the target's own direction phrases it, at least or above for 
   expect(targetLabel(null)).toBe("off");
 });
 
-test("targetWords: the same targets in words, as a chart's caption names them", () => {
-  expect(targetWords(deploys())).toBe("at least 20/day");
-  expect(targetWords(deploys({ inclusive: false }))).toBe("above 20/day");
-  expect(targetWords(minutes(["minutes.median"], { inclusive: true }))).toBe("median at most 45m");
-  expect(targetWords(minutes(["minutes.median"]))).toBe("median under 45m");
-  expect(targetWords(minutes(["minutes.median"], { direction: "higher_better" }))).toBe(
-    "median above 45m"
-  );
-  expect(targetWords(null)).toBe("off");
-});
-
 test("a caption names the statistics the target judges, in the order the server judges them, each value in its statistic's unit", () => {
   expect(targetLabel(minutes(["minutes.p90"], { value: 720, inclusive: true }))).toBe(
     "p90 \u2264 720m"
   );
   // Two statistics neither of which implies the other are both named.
   expect(targetLabel(minutes(["minutes.median", "minutes.p90"]))).toBe("median and p90 < 45m");
-  expect(targetWords(minutes(["minutes.n", "minutes.max"]))).toBe("count and longest under 45");
   // A count is no duration, and a deploy with a PR is no deploy.
   expect(targetLabel(minutes(["minutes.n"], { value: 5, direction: "higher_better" }))).toBe(
     "count > 5"
@@ -112,8 +96,6 @@ test("a judge this page has no word for reads as the server wrote it, and a targ
   expect(targetLabel(deploys({ judges: null }))).toBe("\u2265 20");
   expect(shownJudges(deploys({ judges: null }))).toEqual([]);
   expect(shownJudges(null)).toEqual([]);
-  expect(judgeWord("minutes.max")).toBe("Longest");
-  expect(judgeWord("latency.p99")).toBe("Latency.p99");
 });
 
 // Under lower_better a series' longest value meeting the target means its median and p90 meet it,
@@ -145,7 +127,6 @@ test("a judged max implies the same series' median and p90 under lower_better, a
   // The caption follows the reduced list; the dashed line, as every tone, the whole list: the
   // median bars a target of the longest change and the median judges carry its line.
   expect(targetLabel(both)).toBe("< 45m for every change");
-  expect(targetWords(both)).toBe("under 45m for every change");
   expect(targetLine(both, ["minutes.median"])).toBe(45);
 });
 
@@ -170,21 +151,11 @@ test("the catalogue's six targets read as the page wrote them before targets car
     "\u2265 90%",
     "0",
   ]);
-  // The Pipeline's two lead-time cards: `target … (the dashed line)` and one line a judge.
-  expect([targetWords(merge), targetWords(opened)]).toEqual([
-    "under 45m for every change",
-    "median under 60m",
-  ]);
-  expect([shownJudges(merge), shownJudges(opened)].map((judges) => judges.map(judgeWord))).toEqual([
-    ["Longest"],
-    ["Median"],
-  ]);
 });
 
 test("an inclusive target of 0 on an eval better lower reads as the value alone, since none goes below 0", () => {
   const unowned = deploys({ value: 0, direction: "lower_better", judges: ["issues.value"] });
   expect(targetLabel(unowned)).toBe("0");
-  expect(targetWords(minutes(["minutes.median"], { value: 0, inclusive: true }))).toBe("median 0m");
   expect(targetLabel({ ...unowned, inclusive: false })).toBe("< 0");
   expect(targetLabel({ ...unowned, direction: "higher_better" })).toBe("\u2265 0");
 });
@@ -196,7 +167,6 @@ test("a caption writes its target exactly: a rate as its percentage, 0.755 as 75
   const success = (value: number, inclusive = true) =>
     deploys({ value, inclusive, judges: ["runs.rate"] });
   expect(targetLabel(success(0.755, false))).toBe("> 75.5%");
-  expect(targetWords(success(0.755, false))).toBe("above 75.5%");
   expect(targetLabel(success(0.7602))).toBe("\u2265 76.02%");
   expect(targetLabel(success(0.9))).toBe("\u2265 90%");
   const failures = (value: number, judges: Judge[]) =>
@@ -207,12 +177,8 @@ test("a caption writes its target exactly: a rate as its percentage, 0.755 as 75
   expect(targetLabel(failures(0.07, ["per_deploy.rate", "per_deploy.total"]))).toBe(
     "failure rate and deploys < 7% per deploy"
   );
-  expect(targetWords(failures(0.035, ["per_deploy.rate"]))).toBe("under 3.5% per deploy");
   // Minutes, deploys a day and counts are written as the number the target holds, exact already.
   expect(targetLabel(minutes(["minutes.median"], { value: 44.5 }))).toBe("median < 44.5m");
-  expect(targetWords(minutes(["minutes.max"], { value: 44.5 }))).toBe(
-    "under 44.5m for every change"
-  );
   expect(targetLabel(deploys({ value: 0.25 }))).toBe("\u2265 0.25/day");
   expect(targetLabel(minutes(["minutes.n"], { value: 3, direction: "higher_better" }))).toBe(
     "count > 3"
@@ -524,18 +490,4 @@ test("judgeFigure: every tenth of 0-100.0%, of 0-240.0h and of 0-240.0d reads ba
   sweep(2400, "h", (tenth) => tenth * 6, "minutes.median");
   sweep(2400, "d", (tenth) => tenth * 144, "minutes.median");
   expect(misread).toEqual([]);
-});
-
-test("leadTimeValue reads a lead-time cell's value of a judge, null where the cell states none", () => {
-  const cell: DeliveryLeadTimeCell = {
-    n: 2,
-    median_minutes: 45,
-    p90_minutes: 50.6,
-    max_minutes: 52,
-  };
-  expect(
-    ["minutes.n", "minutes.median", "minutes.p90", "minutes.max", "runs.rate"].map((judge) =>
-      leadTimeValue(cell, judge)
-    )
-  ).toEqual([2, 45, 50.6, 52, null]);
 });

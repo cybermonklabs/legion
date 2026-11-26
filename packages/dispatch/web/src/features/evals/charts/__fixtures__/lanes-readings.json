@@ -1,0 +1,705 @@
+{
+  "comment": "Synthetic items-view rows for lanes.test.ts, as GET /api/v1/projects/{key}/evals/{slug}/items answers them (readingItemRow): enrolment, one lane for each project over a fourteen-day window and the fourteen days before it, its number the state value_states maps it to; events, the dated marks of the lanes; first-reply-hours and owner, the lanes' row columns. m3 and m4 are measured at one time, m4 written later; curl's k1 has no value; zlib is read only in the compare range, and elsewhere's mark is in no lane.",
+  "window": {
+    "days": 14,
+    "from": "2026-11-01T00:00:00Z",
+    "to": "2026-11-15T00:00:00Z"
+  },
+  "compare": {
+    "days": 14,
+    "from": "2026-10-18T00:00:00Z",
+    "to": "2026-11-01T00:00:00Z"
+  },
+  "items": [
+    {
+      "row_key": "sqlpage",
+      "row_kind": "row",
+      "cols": {
+        "id": "e1",
+        "series": "enrolment",
+        "col": "",
+        "value": 1,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-02T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-02T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "sqlpage",
+      "row_kind": "row",
+      "cols": {
+        "id": "e2",
+        "series": "enrolment",
+        "col": "",
+        "value": 1,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-04T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-04T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "sqlpage",
+      "row_kind": "row",
+      "cols": {
+        "id": "e3",
+        "series": "enrolment",
+        "col": "",
+        "value": 2,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-06T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-06T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "sqlpage",
+      "row_kind": "row",
+      "cols": {
+        "id": "e4",
+        "series": "enrolment",
+        "col": "",
+        "value": 3,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "proved in CI",
+        "replaces": "",
+        "recorded_at": "2026-11-10T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-10T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "mod-host",
+      "row_kind": "row",
+      "cols": {
+        "id": "m1",
+        "series": "enrolment",
+        "col": "",
+        "value": 0,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-03T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-03T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "mod-host",
+      "row_kind": "row",
+      "cols": {
+        "id": "m2",
+        "series": "enrolment",
+        "col": "",
+        "value": 1,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-08T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-08T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "mod-host",
+      "row_kind": "row",
+      "cols": {
+        "id": "m3",
+        "series": "enrolment",
+        "col": "",
+        "value": 0,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-12T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-12T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "mod-host",
+      "row_kind": "row",
+      "cols": {
+        "id": "m4",
+        "series": "enrolment",
+        "col": "",
+        "value": 1,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-12T10:00:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-12T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "libreac",
+      "row_kind": "row",
+      "cols": {
+        "id": "l1",
+        "series": "enrolment",
+        "col": "",
+        "value": 2,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-05T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-05T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "curl",
+      "row_kind": "row",
+      "cols": {
+        "id": "k1",
+        "series": "enrolment",
+        "col": "",
+        "value": null,
+        "value_absent_reason": "not checked",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-06T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-06T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "curl",
+      "row_kind": "row",
+      "cols": {
+        "id": "k2",
+        "series": "enrolment",
+        "col": "",
+        "value": 0,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-07T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-07T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "sqlpage",
+      "row_kind": "row",
+      "cols": {
+        "id": "ce1",
+        "series": "enrolment",
+        "col": "",
+        "value": 0,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-10-20T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-10-20T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "compare"
+    },
+    {
+      "row_key": "sqlpage",
+      "row_kind": "row",
+      "cols": {
+        "id": "ce2",
+        "series": "enrolment",
+        "col": "",
+        "value": 1,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-10-25T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-10-25T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "compare"
+    },
+    {
+      "row_key": "mod-host",
+      "row_kind": "row",
+      "cols": {
+        "id": "cm1",
+        "series": "enrolment",
+        "col": "",
+        "value": 0,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-10-22T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-10-22T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "compare"
+    },
+    {
+      "row_key": "zlib",
+      "row_kind": "row",
+      "cols": {
+        "id": "cz1",
+        "series": "enrolment",
+        "col": "",
+        "value": 3,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-10-21T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-10-21T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "compare"
+    },
+    {
+      "row_key": "sqlpage",
+      "row_kind": "row",
+      "cols": {
+        "id": "ev1",
+        "series": "events",
+        "col": "",
+        "value": 1,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "first reply",
+        "replaces": "",
+        "recorded_at": "2026-11-05T12:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-05T12:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "mod-host",
+      "row_kind": "row",
+      "cols": {
+        "id": "ev2",
+        "series": "events",
+        "col": "",
+        "value": 1,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "invited",
+        "replaces": "",
+        "recorded_at": "2026-11-09T12:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-09T12:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "elsewhere",
+      "row_kind": "row",
+      "cols": {
+        "id": "ev3",
+        "series": "events",
+        "col": "",
+        "value": 1,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "no lane",
+        "replaces": "",
+        "recorded_at": "2026-11-09T12:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-09T12:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "sqlpage",
+      "row_kind": "row",
+      "cols": {
+        "id": "cev1",
+        "series": "events",
+        "col": "",
+        "value": 1,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "old reply",
+        "replaces": "",
+        "recorded_at": "2026-10-24T12:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-10-24T12:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "compare"
+    },
+    {
+      "row_key": "sqlpage",
+      "row_kind": "row",
+      "cols": {
+        "id": "fr1",
+        "series": "first-reply-hours",
+        "col": "",
+        "value": 13.7,
+        "value_absent_reason": "",
+        "unit": "hours",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-05T12:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-05T12:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "sqlpage",
+      "row_kind": "row",
+      "cols": {
+        "id": "cfr1",
+        "series": "first-reply-hours",
+        "col": "",
+        "value": 20.2,
+        "value_absent_reason": "",
+        "unit": "hours",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-10-24T12:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-10-24T12:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "compare"
+    },
+    {
+      "row_key": "sqlpage",
+      "row_kind": "row",
+      "cols": {
+        "id": "o1",
+        "series": "owner",
+        "col": "",
+        "value": 1,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "lerdorf",
+        "replaces": "",
+        "recorded_at": "2026-11-02T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-02T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "mod-host",
+      "row_kind": "row",
+      "cols": {
+        "id": "o2",
+        "series": "owner",
+        "col": "",
+        "value": 1,
+        "value_absent_reason": "",
+        "unit": "",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "falkTX",
+        "replaces": "",
+        "recorded_at": "2026-11-03T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "enrolments"
+        }
+      },
+      "measured_at": "2026-11-03T09:00:00Z",
+      "source": "enrolments",
+      "href": "",
+      "links": [],
+      "range": "window"
+    }
+  ]
+}

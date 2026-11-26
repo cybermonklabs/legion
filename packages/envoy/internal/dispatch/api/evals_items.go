@@ -132,6 +132,15 @@ func parseEvalItemsQuery(query url.Values) (evalItemsRequest, error) {
 	return request, nil
 }
 
+// keeps is whether request keeps the rows of kind: the kind row_kind names, every kind where it
+// names none, and pr-ci's job rows alone where it names a sort.
+func (request evalItemsRequest) keeps(kind string) bool {
+	if request.sort != "" {
+		return kind == evalRowJob
+	}
+	return request.rowKind == "" || request.rowKind == kind
+}
+
 // evalItemsRange is one range an items read reads: its days, the instants it was asked for,
 // [start, end), and its name in the answer (evals.RangeWindow, evals.RangeCompare).
 type evalItemsRange struct {
@@ -169,13 +178,16 @@ type evalRequestReads struct {
 // evalRangeReads is the reads of one range its readers keep, each made once a range: the items
 // each family's day rows of the range counted (counted), the eval's day rows of the range, which
 // pr-ci's jobs and its day rows both read, and the record's rows behind a failure measure, which
-// its deploys and its failures both read.
+// its deploys and its failures both read. failing is the pull-request checks runs pr-ci's failures
+// list of the range was read from (failingJobRows), which the items read answers beside its body
+// for the window (evalItemsAnswer).
 type evalRangeReads struct {
 	counted      map[string]map[string]bool
 	days         []evals.DayRow
 	read         bool
 	failures     []evals.FailureItem
 	failuresRead bool
+	failing      []delivery.DeliveryRun
 }
 
 // evalItemKind is one row kind a computed eval answers, and its reader: read answers the kind's
@@ -230,24 +242,40 @@ func listedSource(rows []evalItemRow) evalItemSource {
 }
 
 // listProjectEvalItems answers GET /api/v1/projects/{key}/evals/{slug}/items: one page of the rows
-// behind the eval's numbers over the window and the compare range, filtered by series, row_kind,
-// row and repo, and for pr-ci's jobs ranked by sort (readEvalItems). 404 PROJECT_NOT_FOUND and
-// EVAL_NOT_FOUND as the detail read answers them.
+// behind the eval's numbers (readProjectEvalItems).
 func (s *server) listProjectEvalItems(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	request, err := parseEvalItemsQuery(r.URL.Query())
+	answer, err := s.readProjectEvalItems(r.Context(), r.URL.Query(), r.PathValue("key"), r.PathValue("slug"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	answer, err := s.readEvalItems(r.Context(), r.PathValue("key"), r.PathValue("slug"), request)
+	WriteJSON(w, http.StatusOK, answer.body)
+}
+
+// evalItemsAnswer is one items read: the body of GET /api/v1/projects/{key}/evals/{slug}/items, and
+// the pull-request checks runs its window's failures list was read from, none where it read no
+// such list. The live hub's items view expires by those runs as the Pipeline's failing-jobs table
+// does (readEvalItemsView, failingJobsNextExpiry).
+type evalItemsAnswer struct {
+	body    evalItemsResponse
+	failing []delivery.DeliveryRun
+}
+
+// readProjectEvalItems is the body of GET /api/v1/projects/{key}/evals/{slug}/items for query: one
+// page of the rows behind the eval's numbers over the window and the compare range, filtered by
+// series, row_kind, row and repo, and for pr-ci's jobs ranked by sort (readEvalItems), after the
+// query is read (parseEvalItemsQuery). 404 PROJECT_NOT_FOUND and EVAL_NOT_FOUND as the detail read
+// answers them. The live hub's items view reads its body through this too, so the two answer one
+// query alike.
+func (s *server) readProjectEvalItems(ctx context.Context, query url.Values, project, slug string) (evalItemsAnswer, error) {
+	request, err := parseEvalItemsQuery(query)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return evalItemsAnswer{}, err
 	}
-	WriteJSON(w, http.StatusOK, answer)
+	return s.readEvalItems(ctx, project, slug, request)
 }
 
 // readEvalItems is one items answer of slug's eval of project for request, read in one snapshot
@@ -258,26 +286,27 @@ func (s *server) listProjectEvalItems(w http.ResponseWriter, r *http.Request) {
 // them: the readings' page and the Legion issues' repositories and titles are read for the rows
 // the page holds of them, which the totals of the sources before them place, so no read can wait
 // for the builds. It commits before the answer is encoded.
-func (s *server) readEvalItems(ctx context.Context, project, slug string, request evalItemsRequest) (evalItemsResponse, error) {
+func (s *server) readEvalItems(ctx context.Context, project, slug string, request evalItemsRequest) (evalItemsAnswer, error) {
 	evalID := evals.EvalID(project, slug)
 	tx, err := s.registry().BeginSnapshot(ctx)
 	if err != nil {
-		return evalItemsResponse{}, fmt.Errorf("begin the read of the items of eval %s: %w", evalID, err)
+		return evalItemsAnswer{}, fmt.Errorf("begin the read of the items of eval %s: %w", evalID, err)
 	}
 	defer tx.Rollback(ctx)
 	if _, err := s.loadProject(ctx, tx, project); err != nil {
-		return evalItemsResponse{}, err
+		return evalItemsAnswer{}, err
 	}
 	entry, found, err := evals.EvalIn(ctx, tx, evalID)
 	if err != nil {
-		return evalItemsResponse{}, err
+		return evalItemsAnswer{}, err
 	}
 	if !found {
-		return evalItemsResponse{}, evalNotFound(project, slug)
+		return evalItemsAnswer{}, evalNotFound(project, slug)
 	}
-	sources, err := s.evalItemSources(ctx, tx, project, entry, request)
+	window := &evalRangeReads{}
+	sources, err := s.evalItemSources(ctx, tx, project, entry, request, window)
 	if err != nil {
-		return evalItemsResponse{}, err
+		return evalItemsAnswer{}, err
 	}
 	answer := evalItemsResponse{
 		Items: []evalItemRow{}, Limit: request.limit, Offset: request.offset,
@@ -287,7 +316,7 @@ func (s *server) readEvalItems(ctx context.Context, project, slug string, reques
 	for _, source := range sources {
 		rows, total, err := source(ctx, skip, want)
 		if err != nil {
-			return evalItemsResponse{}, err
+			return evalItemsAnswer{}, err
 		}
 		answer.Total += total
 		skip = max(0, skip-total)
@@ -295,16 +324,17 @@ func (s *server) readEvalItems(ctx context.Context, project, slug string, reques
 		answer.Items, want = append(answer.Items, rows...), want-len(rows)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return evalItemsResponse{}, fmt.Errorf("end the read of the items of eval %s: %w", evalID, err)
+		return evalItemsAnswer{}, fmt.Errorf("end the read of the items of eval %s: %w", evalID, err)
 	}
-	return answer, nil
+	return evalItemsAnswer{body: answer, failing: window.failing}, nil
 }
 
 // evalItemSources is the sources of one items read in tx, the answer's snapshot, in the order its
 // page runs across them: for the window and then the compare range, the computed rows of each
 // kind the eval's source answers (evalComputedItems), its readings and its day rows, each kept
-// where row_kind names it or names none. A request naming sort reads pr-ci's job rows alone.
-func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string, entry evals.Entry, request evalItemsRequest) ([]evalItemSource, error) {
+// where row_kind names it or names none. A request naming sort reads pr-ci's job rows alone. The
+// window's readers share window, the caller's, which holds what they read once they have read it.
+func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string, entry evals.Entry, request evalItemsRequest, window *evalRangeReads) ([]evalItemSource, error) {
 	ranges := []evalItemsRange{{days: request.ranges.window, start: request.ranges.from, end: request.ranges.to, label: evals.RangeWindow}}
 	if request.ranges.compare != nil {
 		ranges = append(ranges, evalItemsRange{
@@ -315,20 +345,18 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 	if err != nil {
 		return nil, err
 	}
-	kept := func(kind string) bool {
-		if request.sort != "" {
-			return kind == evalRowJob
-		}
-		return request.rowKind == "" || request.rowKind == kind
-	}
 	definition := entry.Definition
 	var sources []evalItemSource
 	once := &evalRequestReads{}
 	for _, rng := range ranges {
-		read := evalItemsRead{project: project, entry: entry, request: request, rng: rng, deployRepos: deployRepos, once: once, shared: &evalRangeReads{}, tx: tx}
+		shared := window
+		if rng.label != evals.RangeWindow {
+			shared = &evalRangeReads{}
+		}
+		read := evalItemsRead{project: project, entry: entry, request: request, rng: rng, deployRepos: deployRepos, once: once, shared: shared, tx: tx}
 		if definition.Computed() {
 			for _, kind := range evalComputedItems[definition.Source] {
-				if !kept(kind.kind) {
+				if !request.keeps(kind.kind) {
 					continue
 				}
 				if kind.source != nil {
@@ -365,7 +393,7 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 			}
 			return rows, page.Total, nil
 		})
-		if kept(evalRowDay) {
+		if request.keeps(evalRowDay) {
 			days, err := s.evalDaysOf(ctx, read)
 			if err != nil {
 				return nil, err
@@ -1011,24 +1039,51 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 }
 
 // failingJobRows is pr-ci's jobs that failed in the measures.FailingWindow before the range's end:
-// of each deploy repository (repoRules), the pull-request checks runs started on the range's days
-// (delivery.ReadCIRows over read.rng.days, which hold every run that can finish a job in those 24
-// hours however long before them it started within the range), those the project's CI day rows
-// counted, through measures.FailingJobs under that repository's roll-up job. A job belongs to its
-// repository's workflow, so each repository's jobs are rows of their own, keyed `<repo>/<name>`
-// and naming their repository, each with its failures, its results and its latest failed run,
-// which it links to; most failures first. Of one repository they are the list the Pipeline route's
-// failing-jobs table answers for an `at` at the range's end when the range starts on the first of
-// the seven days that at shows; the Pipeline tallies the jobs of one name of every repository as
-// one.
+// of each deploy repository the eval reads (repoRules), of the pull-request checks runs started on
+// the range's days, the runs measures.FailingJobs picks, those that completed in the FailingWindow
+// up to the end (delivery.ReadPRChecksCompletedIn, which reads them by their completion and every
+// job of each, rather than every run of the range with every job), those the project's CI day rows
+// counted, through measures.FailingJobs under that repository's roll-up job. The day rows count a
+// run on the day it started, so the items they counted are read on the days the runs read started
+// on alone. A job belongs to its repository's workflow, so each repository's jobs are rows of their
+// own, each keyed by its repository and its name (failingJobKey) and naming both, with its
+// failures, its results and its latest failed run, which it links to; most failures first. Of one
+// repository they are the list the Pipeline route's failing-jobs table answers for an `at` at the
+// range's end when the range starts on the first of the seven days that at shows; the Pipeline
+// tallies the jobs of one name of every repository as one. The runs it counts, of every
+// repository, are kept for the range (evalRangeReads.failing), so the live view of the list
+// expires as each run's failures leave the 24 hours (failingJobsNextExpiry).
 func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	end := read.rng.end
 	span := read.rng.days
-	members, err := s.counted(ctx, read, evals.KindCI, span)
+	rules, err := s.repoRules(ctx, read)
 	if err != nil {
 		return nil, err
 	}
-	rules, err := s.repoRules(ctx, read)
+	type repoChecks struct {
+		rule   delivery.DeliverySettings
+		checks delivery.RunsWithJobs
+	}
+	var repos []repoChecks
+	first := span.To
+	for _, rule := range rules {
+		checks, err := delivery.ReadPRChecksCompletedIn(ctx, read.tx, rule.DeployRepo, span.From, span.To, end.Add(-measures.FailingWindow), end)
+		if err != nil {
+			return nil, err
+		}
+		if len(checks.Runs) == 0 {
+			continue
+		}
+		// The runs come oldest start first, so the first started on the first day any of them did.
+		if day := measures.Midnight(checks.Runs[0].StartedAt); day.Before(first) {
+			first = day
+		}
+		repos = append(repos, repoChecks{rule: rule, checks: checks})
+	}
+	if len(repos) == 0 {
+		return nil, nil
+	}
+	members, err := s.counted(ctx, read, evals.KindCI, evals.Range{From: first, To: span.To})
 	if err != nil {
 		return nil, err
 	}
@@ -1037,17 +1092,15 @@ func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]eval
 		job  measures.FailingJob
 	}
 	var failing []repoJob
-	for _, rule := range rules {
-		ci, err := delivery.ReadCIRows(ctx, read.tx, rule.DeployRepo, span.From, span.To,
-			measures.DeployCardJobNames(measures.DeployCards(rule)))
-		if err != nil {
-			return nil, err
-		}
-		runs := slices.DeleteFunc(ci.Checks.Runs, func(run delivery.DeliveryRun) bool { return !members[evals.RunMember(run.Repo, run.RunID)] })
-		for _, job := range measures.FailingJobs(runs, ci.Checks.Jobs, end, deref(rule.PRChecksRollupJobName)) {
-			failing = append(failing, repoJob{repo: rule.DeployRepo, job: job})
+	var counted []delivery.DeliveryRun
+	for _, one := range repos {
+		runs := slices.DeleteFunc(one.checks.Runs, func(run delivery.DeliveryRun) bool { return !members[evals.RunMember(run.Repo, run.RunID)] })
+		counted = append(counted, runs...)
+		for _, job := range measures.FailingJobs(runs, one.checks.Jobs, end, deref(one.rule.PRChecksRollupJobName)) {
+			failing = append(failing, repoJob{repo: one.rule.DeployRepo, job: job})
 		}
 	}
+	read.shared.failing = counted
 	slices.SortStableFunc(failing, func(a, b repoJob) int { return b.job.Failures - a.job.Failures })
 	var rows []evalItemRow
 	for _, one := range failing {
@@ -1056,7 +1109,7 @@ func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]eval
 			continue
 		}
 		rows = append(rows, evalItemRow{
-			RowKey:  one.repo + "/" + job.Name,
+			RowKey:  failingJobKey(one.repo, job.Name),
 			RowKind: evalRowJob,
 			Cols: map[string]any{
 				"name": job.Name, "repo": one.repo, "failures": job.Failures, "results": job.Results,
@@ -1070,4 +1123,10 @@ func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]eval
 		})
 	}
 	return rows, nil
+}
+
+// failingJobKey is the row key of a failing job of repo's workflow named name: `<repo>/<name>`, as
+// a run row is `<repo>/<run id>`, since two repositories' workflows can name a job alike.
+func failingJobKey(repo, name string) string {
+	return repo + "/" + name
 }

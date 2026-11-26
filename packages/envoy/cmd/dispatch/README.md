@@ -2719,6 +2719,13 @@ Migration `20261117100006_eval_days` also creates `eval_day_owners`, one row per
 No project key starts with `:` (`projects_key_check`, `^[A-Z][A-Z0-9]{1,9}$`, `0001`), so an owner key never names a project.
 The boot's rename pass rewrites the repository inside the owner keys of the three tables, in `eval_day_owners` and in `eval_days_defaults` (`store/repo_rename_pass.go`).
 
+Migration `20261123024730_eval_charts_answer` gives `eval_versions` two columns of the versioned definition (dispatch://INFRA-2918, R20): `charts`, the eval's declared charts, a JSON list that `eval_versions_charts_array` holds to a list, `'[]'` for none; and `answer`, the short text that answers the eval's question, `''` for none.
+A register write that changes either writes a version, and one that names neither carries both forward (`evals.Register`); `charts` are held to the eval platform's `validate_charts` rules before anything is written (`internal/dispatch/evals/charts`, Routes below).
+It states `evals_current` again, whose `*` was expanded when `20261117100005` created it, with `create or replace view`, which keeps every column the view had in its place and appends the two, so the release before it, which names the columns it reads, reads the view as before.
+Each column is added with a constant default, which Postgres writes into the catalog alone and every existing version reads, and the default is then dropped, which changes only what a later insert writes; the check is a statement of its own, added `not valid`, so it reads no existing row and still refuses every row written after it.
+A trigger before each insert, `eval_versions_carry_forward`, sets a null `charts` or `answer` from the newest earlier version of the same eval, or to `'[]'` and `''` for its first, ahead of the `not null` check: the release before it names neither column in its insert, so a version it writes during the roll, or after a rollback, keeps the eval's charts and answer, and this release sends a null `charts` on a version whose write sets none (`evals.definitionInsert`).
+It takes `eval_versions` and `evals_current` `ACCESS EXCLUSIVE` for its short transaction, so a registry write and read wait behind it; it refuses and rewrites no row, and its census answers `0`.
+
 Migration `20261120111107_delivery_settings_bookkeeping` replaces the body of `delivery_settings_changed` (`0100`, `0156`) so that it ignores `updated_by` as it ignores the freshness columns and `updated_at`:
 a save of the delivery settings with the same values by another person logs no settings change and sends nothing on `dispatch_delivery_settings`, since no day row, delivery window or intake reads who saved them.
 Every other column logs and announces as before, and every insert and update still sends `delivery_freshness`.
@@ -5190,10 +5197,31 @@ Each item below names a path with its method and identity, then its purpose.
   The cursor age is of the deployment's one consumer and not of the project, so it says how fresh the facts are and is null on a deployment whose consumer has never run.
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
 
-- `/api/v1/projects/{key}/evals?from=&to=&compare_from=&compare_to=&kind=&repo=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/projects/{key}/timeline?from=&to=&q=&<facets>&limit=&offset=` (GET; cookie, trusted header, or bearer)
+
+  One page of the delivery timeline's rows that the project its path names counts, newest first, in the envelope `{items, total, limit, offset}`: `limit` is 1 to 500 (default 200), `offset` from 0, and the window, the search and the facets are the delivery timeline's.
+  A row is a merge (`kind` `merge`, every field of the delivery timeline's `prs[]`) or a deploy run started in the window (`kind` `deploy`, or `failed_run` for a run with a failed job or a failed production job, every field of its `runs[]`, with `repo`, the repository the run is in, and `created_at`).
+  The rows are in one order: by the row's time (a merge's `merged_at`, a run's `created_at`), newest first, then by kind (`merge`, `deploy`, `failed_run`), then by id.
+  The rows are those the project counts as the eval registry's day rows count them (`evals.Attribution`), under the default repositories the refresher has published: a pull request for its issue's project, or, naming none, for each project whose default repository holds it; a deploy run for the projects the pull requests it ships first count for, or, where it ships none (every failed run among them), for the project whose deploy source reads its repository.
+  Beside them, `facet_counts` and `color_counts` over the whole window on every page; `waiting`, the project's pull requests waiting at the window's start, on the page that reaches that start and `null` on every other; `issue_titles`, `session_titles`, `session_pr_counts`, `components` and `session_groups` on the first page and `null` on every other; `window` and `freshness`.
+  It carries no measures: the eval routes answer those.
+  The `/ws/live` `project-timeline` view (project, window, query: the search, the facets and `limit`, 1 up to the most rows a window holds, and no `offset`) carries the same body for its limit of rows from the newest; a page grows it by subscribing the same `sub` again with a higher `limit` and a resume holding its rows, and is sent only the rows it lacks.
+  `400 INVALID_PROJECT` for a key that is not a project key, `400 INVALID_QUERY` for a malformed query, `404 PROJECT_NOT_FOUND`, `404 DELIVERY_NOT_CONFIGURED` without a `delivery_settings` row.
+
+- `/api/v1/projects/{key}/deploy-runs/{id}?repo=` (GET; cookie, trusted header, or bearer)
+
+  One run with every job it ran, by start, each with its result and timings, `{id, url, jobs}` as `GET /api/v1/delivery/runs/{id}` answers a run: the drill-down of a run row of the project's timeline.
+  A run id is one repository's, so `repo` (required) names the repository the run is in, as the timeline's `deploy` and `failed_run` rows do; it must be the repository of a `github_workflow` deploy source of a project with delivery on.
+  The run is answered where it counts for the project its path names as the timeline's rows are kept (`evals.Attribution`): a deploy run on main counts for the projects the pull requests it ships first count for, whichever project's source the repository is, so a deploy in another project's repository that shipped this project's pull request opens here, and one that ships none counts for the project whose deploy source reads its repository.
+  Beside `id`, `url` and `jobs` it answers the run's record (`production_events`): `deploy`, the deploy row the GitHub adapter wrote for the run, under the project that owns its repository, or `null` where it wrote none, and `failures`, every failure that blames that row, of any project and in any state, oldest detection first, each with its `signal`, its `state` with `state_reason`, `state_by` and `state_at`, its `restored_at`, `restored_by` and `restored_by_deploy`, and its `note`.
+  These are the rows the drill-down's Flag (`POST /api/v1/projects/{deploy's project_key}/production-events`), Mark restored and Reject (`PUT …/production-events/{id}/state`) write; the drill-down reads the run again after each write.
+  `400 INVALID_PROJECT` for a key that is not a project key, `400 RUN_ID_INPUT` for an id that is not a positive integer, `400 INVALID_QUERY` for no `repo` or `repo` named twice, `404 PROJECT_NOT_FOUND`, `404 NOT_FOUND` for a repository no delivery-on project's source reads, for no such run of it, and for a run that counts for no project with this key.
+
+- `/api/v1/projects/{key}/evals?from=&to=&compare_from=&compare_to=&kind=&repo=&q=&parent_agent=&session=&issue=&priority=&component=&author=&rework=&deployed=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
   GET reads one page of the project's evals, `{items, total, limit, offset}` by slug, `limit` 1 to 200 (default 50).
-  Each item is an eval's current definition (every field of `eval_versions`, read through `evals_current`), its owner, each listed series with its statistics over the window and over the compare range, the change between them, `data_since`, the via-repository count and, for a headline series, a per-day array, and the verdict of its target (null where the target is off).
+  Each item is an eval's current definition (every field of `eval_versions` but `charts`, read through `evals_current`: `answer`, the short text that answers the eval's question, among them), its owner, each listed series with its statistics over the window and over the compare range, the change between them, `data_since`, the via-repository count and, for a headline series, a per-day array of the window (`days`) and, with a compare range, one of the compare range (`compare_days`, the shape of `days`; `null` with no compare range), `narrowed` (below; `null` for a series of the stored rows), and the verdict of its target (null where the target is off).
+  No list read reads or answers an eval's `charts`, so no first paint carries a chart's declaration: the eval's own read (below) answers them.
   The window is `[from, to)` as the delivery routes read it (RFC3339, a moment of the UTC years 1 to 9999, the last 7 days by default, at most 84 days); `compare_from` and `compare_to` come together or not at all, each range at most 84 days and the two of any length; each range is the UTC days it covers, which the answer's `window` and `compare` state, and which end by 9999-12-31, since no JSON answer writes a later time.
   Every statistic is folded from the stored day rows of those days (`eval_days`), never from the population again: a computed eval through the one fold its `source` names (`evals.FoldStatistics`, `internal/dispatch/evals/statistics.go`), which the delivery routes fold their stored day parts through too, a logged eval through its series' `agg`.
 
@@ -5208,16 +5236,23 @@ Each item below names a path with its method and identity, then its purpose.
 
   - `kind` keeps one kind (`delivery`, `ci`, `legion` or `experiment`:
     the Legion numbers, which `legion/metrics` computes, are the evals of kind `legion`, of one project here and across projects through `GET /api/v1/evals?kind=legion`), and `repo`, repeated, folds those repositories' rows in place of the project's own;
-    `freshness` is the oldest `updated_at` of the rows folded and the day-row refresher's age.
+    `freshness` is the oldest `updated_at` of the stored rows folded and the day-row refresher's age.
     Every statement of the read sends the `repo` list, so a read names at most 100 repositories, a repeated one counted once, each of at most 512 bytes (the bound of a reading's `attributes.repo`):
     about 50 KiB of the 256 KiB a statement sends.
     A longer list or name is `400 INVALID_QUERY` naming the bound, on the eval's own read and its items as on the list.
+
+  - With `kind=delivery`, `delivery_freshness` is the freshness of the project's deploy sources, `{last_event_at, last_reconcile_at, last_error, unfetchable_count}` as the delivery timeline's `freshness` states it, folded by the one function that folds that one (`delivery.FreshnessOf`) over each `github_workflow` source of the project whose repository resolves, in the sources' order, while delivery is on: the newest event, the oldest reconcile (`null` while any source has never reconciled), the last error of each source that has one, prefixed with its repository and joined with `; ` (one source's error bare), and the unfetchable pull requests that count for the project as its day rows count a pull request (through its issue, or with none through the project's published default repository).
+    It is `null` for any other kind or none, for a project with no such source, and on `GET /api/v1/evals`.
+    It is read after the answer's transaction, since no figure is folded from it; the live evals view of the project's delivery evals sends it whole when it moves, and a write of one of the project's sources' bookkeeping, which logs no change, marks that view.
+
+  - The delivery timeline's search (`q`) and facets (`parent_agent`, `session`, `issue`, `priority`, `component`, `author`, `rework` and `deployed`, each repeatable, as `GET /api/v1/delivery/timeline` takes them) narrow the evals that count pull requests, as they narrow the base's measures: with any of them set, `merge-to-production`, `first-commit-to-production`, `open-to-production`, `pr-open-to-merge` and `rework-share` are built when the list is read (`evals.Store.ComputeAtRead`, `internal/dispatch/evals/at_read.go`), each day of the window and of the compare range from that day's stored pull requests and deploy runs, by the day builders the refresher writes the stored rows with, over the pull requests the timeline keeps under them (its one rule of what a facet selects, `deliveryRow.matches`) and of `repo`'s repositories where it names any, and folded by the fold of the stored rows; each of their series names the keys it was narrowed by in `narrowed` (`["author"]`, in the timeline's facet order and then `q`), and every other eval keeps its stored answer, `narrowed: null`.
+    With none set, or `repo` alone, every number is folded from the stored rows, and no pull request, deploy or run row is read.
 
   - A `last` series answers the value measured last, and of two rows' values measured at one moment (the rows of two repositories on one day) the one written later, by the write that began later and then the later reading of one write (`eval_days.last_recorded_at`, `last_reading`), the order the project's own row breaks a tie of its readings by, so a read of repositories breaks the tie as the project's read does.
 
   - The read of the day rows names each eval and, for each series whose samples or last write it reads, the pair (eval, series): a page of 200 evals of 234 series of 512-byte names would name about 49 MB of pairs, so it goes in one statement where its parameters take at most 256 KiB and otherwise in one for each run of evals that does (`evals.DayWindowIn`), the rows of each eval coming from its own run's statement; the list read runs every one of them in its one repeatable-read snapshot (below), so all of them read the moment its other reads read.
 
-  - `400 INVALID_QUERY` names a malformed key, and a key the route does not take (any but those above and the global `session` parameter, so a caller still sending the old `scope=` is told rather than answered every issue), `404 PROJECT_NOT_FOUND` an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`.
+  - `400 INVALID_QUERY` names a malformed key, and a key the route does not take (any but those above, so a caller still sending the old `scope=` is told rather than answered every issue), `404 PROJECT_NOT_FOUND` an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`. `session` is the timeline's session facet here, taken any number of times, beside being the global `session` parameter.
 
   - One answer is one database moment: the project, the page, the deploy repository its rows are recorded under and every read its values are stated from run in one read-only repeatable-read transaction, so a refresher pass that commits while it reads is in the whole answer or in none of it; the eval's detail and its items (below) read the same way.
 
@@ -5232,7 +5267,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   - A series' `min_n` is the fewest timed results a job needs before pr-ci ranks it among its slowest jobs (`sort=median`, and the Pipeline's table), the one read that reads a `min_n`, so it is taken on pr-ci's job series (`job:*`) alone and is `400 EVAL_FIELD_INVALID` naming `series[i].min_n` on any other series, a logged eval's included, rather than stored and ignored.
 
-  - On a computed eval the write sets only how the number is judged and who answers for it: `target`, `target_inclusive` and `target_judges`, the `min_n` of pr-ci's job series, `owner_role`, `person`, `issue_key`, `links`, `state`, `replaced_by` and the method (`doc_text`, or `doc_block`), each of which the seed carries forward rather than reverts.
+  - On a computed eval the write sets only how the number is judged, drawn and answered and who answers for it: `target`, `target_inclusive` and `target_judges`, the `min_n` of pr-ci's job series, `owner_role`, `person`, `issue_key`, `links`, `state`, `replaced_by`, the method (`doc_text`, or `doc_block`), `charts` and `answer`, each of which the seed carries forward rather than reverts.
 
   - A write that names one of those fields records on the version it writes that a person set that field (`eval_versions.set_by_person`, a series' `min_n` in `eval_series.set_by_person`), whether or not it moves the field's value, and every version after it carries the record forward:
 
@@ -5243,6 +5278,12 @@ Each item below names a path with its method and identity, then its purpose.
   - A link `{rel, href, label}` takes the server's `recorded_at`; an `href` that is not an absolute URL is `400 LINK_HREF_NOT_ABSOLUTE`, and one whose scheme is not `http` or `https` (`javascript:`, `data:`, `mailto:`, `urn:` among them) `400 LINK_HREF_NOT_HTTP`, since a page draws the link for a person to click; the server never fetches it.
 
   - A slug or a series' name holds at most 512 bytes (`400 EVAL_KEY_TOO_LONG`), which keeps every index entry of the registry well inside what Postgres holds (`evals.maxKeyBytes`); each refusal of the write names its field in `field`.
+
+  - `charts` is the eval's whole list of declared charts (dispatch://INFRA-2918, R20) and `answer` the short text that answers its question, each a field of the versioned definition: a write that changes either writes a version, one that names neither carries both forward, and a list sent again, spaced or keyed otherwise, is compared as the store spells it (`jsonb`) and writes nothing.
+
+  - Before anything is written, `charts` is held to the eval platform's `validate_charts` rules at its commit 4f9223b9 (`internal/dispatch/evals/charts`), which differ from the platform's in three ways alone: no kind requires `approved`, and `approved` and `kept` stand in any order; a `network` or `architecture` chart needs no `graph`, since Dispatch draws its parts and edges from readings; and kind `module` is refused, naming `charts[i].kind`.
+
+  - A list those rules refuse is `400 CHART_SPEC_INVALID`, its `field` the first refusal's path (`charts[2].y.series`) and its `error` every refusal's message in the order the rules find them, one a line; `null` and anything else that is no list is refused naming `charts`, and charts that are no JSON value the platform's reader takes (text that is no UTF-8, an integer of more than 4,300 digits) are `400 INVALID_JSON` naming `charts`.
 
   - A refusal's body is `{code, error, field}`, its `error` at most 1,024 bytes and its `field` 128 as JSON encodes them, a value of the body it names (a slug, a key) cut to fit with a trailing `…`, so the answer the write's `Idempotency-Key` keeps stays small whatever the body (`evals.boundText`).
 
@@ -5259,7 +5300,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects/{key}/evals/{slug}` (GET; cookie, trusted header, or bearer)
 
-  One eval's versions, newest first, in the list read's envelope and item shape: the newest carries the window's values (the same window, compare range and `repo` keys), every older version its definition alone.
+  One eval's versions, newest first, in the list read's envelope and item shape, each item with `charts`, its version's declared charts (`[]` for none), which no list read answers: the newest carries the window's values (the same window, compare range and `repo` keys), every older version its definition alone.
   `doc_text` is the method the eval's section of the project's `evals-md` holds, read by the version's `doc_block`.
   `400 INVALID_QUERY` names a malformed key or one the route does not take, as the list read does; `404 EVAL_NOT_FOUND` for a slug no eval of the project holds.
   The project, the eval, its versions and its values are read in one snapshot, as the list read's are; `doc_text`, the document's text, is read beside them from the document, which an open room holds.
@@ -5268,10 +5309,11 @@ Each item below names a path with its method and identity, then its purpose.
 
   The rows behind an eval's numbers, `{items, total, limit, offset}`, every row `{row_key, row_kind, cols, measured_at, source, href, links, range}` whatever its kind, `range: compare` for a row of the compare range.
   Every eval answers its readings (a reading logged under a computed eval's slug among them) and its stored day rows (`day`); a computed eval answers the rows its numbers count, as its project's day rows counted them: a Legion eval's issues closed in the range and `legion-splitting`'s filings (`issue`, with the issue's title and priority), a delivery eval's pull requests and deploy runs (`pull_request`, `deploy`), a CI eval's runs (`run`) and `pr-ci`'s jobs (`job`), and `unowned-p0`'s open P0 issues with no owner (`issue`).
-  `series` narrows to a series (a Legion series' `:roots` or `:children` cut, `filed:<class>`, `job:<name>`), `row_kind` and `row` to a row kind and a row key, `repo` to those repositories; `sort=median` answers `pr-ci`'s jobs with their series' `min_n` timed results, slowest first, and `sort=failures` the jobs that failed in the 24 hours before the range's end.
+  `series` narrows to a series (a Legion series' `:roots` or `:children` cut, `filed:<class>`, `job:<name>`), `row_kind` and `row` to a row kind and a row key, `repo` to those repositories; `sort=median` answers `pr-ci`'s jobs with their series' `min_n` timed results, slowest first, and `sort=failures` the jobs that failed in the 24 hours before the range's end, read from the pull-request checks runs of the range that completed in those 24 hours alone, through `delivery_runs_kind_completed_at` (`20261123042253`), with every job of each (`delivery.ReadPRChecksCompletedIn`), the runs that list counts, rather than from every run of the range.
   Each row's `measured_at` is when its value was measured, the moment its eval dates it by: a reading's own, a pull request's merge, a deploy run's and a CI run's start, a Legion issue's close, a filing's filing, a day row's day, a job's newest day and a failing job's latest failure; an open P0 issue with no owner is measured at the read.
   `400 INVALID_QUERY` names a malformed key or one the route does not take, as the list read does.
   Every read of one answer, the project, the eval, the settings the rows stand built under, its day rows, the items they counted and the pull requests, runs, issues and readings behind them, runs in one read-only repeatable-read transaction, so a refresher pass that commits while the answer reads is in the whole answer or in none of it.
+  The `/ws/live` `items` view (its `project`, the eval's `slug`, its window and the rest of this query) carries the same body, every field of it sent whole, since a row carries no id; a write of the eval's readings, versions or day rows moves it, and so does, for `pr-ci`'s run and job rows, which are read from the runs themselves, a change of a pull-request checks run or job on a day of its window or compare range.
 
 - `/api/v1/projects/{key}/evals/{slug}/readings` (POST; cookie, trusted header, or bearer)
 
@@ -5307,9 +5349,10 @@ Each item below names a path with its method and identity, then its purpose.
 
   - The day rows of a logged eval are kept in the write's own transaction, recording the server's build (`main.buildCommit`, or the process's own build name where the image build stamped none) as the build that wrote them: a day the batch replaces a reading of is folded again from the readings that stand, and any other day the batch reaches has the batch's readings added to it.
 
-- `/api/v1/evals?project=&from=&to=&compare_from=&compare_to=&kind=&repo=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/evals?project=&from=&to=&compare_from=&compare_to=&kind=&repo=&q=&parent_agent=&session=&issue=&priority=&component=&author=&rework=&deployed=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
-  The project read across projects, in its envelope and item shape: `project`, repeated, names the projects read in the order named, and with none named every project the store holds is read, by key; no project is picked for the caller.
+  The project read across projects, in its envelope and item shape, `delivery_freshness` always `null`: `project`, repeated, names the projects read in the order named, and with none named every project the store holds is read, by key; no project is picked for the caller.
+  The search and the facets narrow each project's evals that count pull requests as the project read's do.
   The page runs across the projects.
   `400 INVALID_QUERY` names a malformed key or one the route does not take, as the project read does; `404 PROJECT_NOT_FOUND` names a project no row holds.
 

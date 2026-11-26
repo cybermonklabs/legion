@@ -23,18 +23,22 @@ import (
 // key, counts two levels deep, and the other fields whole. The events view is the event feed,
 // event by event, and the agent view one session's live conversation.
 
-// The six delivery-hub views a page can subscribe to, by the GET route each mirrors. The first
+// The eight delivery-hub views a page can subscribe to, by the GET route each mirrors. The first
 // three answer the Delivery and Pipeline pages' bodies; the fourth is the Legion board of one
 // project (legion_board.go), and the fifth one issue's Legion state (legion_issue.go). Neither
 // Legion view has a window: each shows what the daemon's state says now. The sixth is one
-// project's evals (evals.go), the list read over a window and a compare range.
+// project's evals (evals.go), the list read over a window and a compare range; the seventh is the
+// rows behind one eval's numbers (evals_items.go), the items read over the same; the eighth is one
+// project's timeline rows (project_timeline.go), newest first, as many as its limit.
 const (
-	deliveryLiveTimeline = "timeline"
-	deliveryLiveMeasures = "measures"
-	deliveryLivePipeline = "pipeline"
-	legionBoardView      = "legion"
-	legionIssueView      = "legion_issue"
-	evalsView            = "evals"
+	deliveryLiveTimeline        = "timeline"
+	deliveryLiveMeasures        = "measures"
+	deliveryLivePipeline        = "pipeline"
+	legionBoardView             = "legion"
+	legionIssueView             = "legion_issue"
+	evalsView                   = "evals"
+	evalItemsView               = "items"
+	deliveryLiveProjectTimeline = "project-timeline"
 )
 
 // The two views beside the delivery views: the event feed, and one session's live conversation.
@@ -55,15 +59,22 @@ type DeliveryLiveWindow struct {
 // Query, the query string the page would send to the GET route without from/to (search and every
 // facet); a pipeline view names at most an At; a legion view names its Project and nothing else,
 // since the board has no window; a legion_issue view names its Issue and nothing else, which is
-// all GET /api/v1/issues/{key}/legion reads; and an evals view names its Project, its Window and
-// its Query, the query string the page would send to GET /api/v1/projects/{key}/evals without
-// from/to (the compare range, the repositories, the kind and the page).
+// all GET /api/v1/issues/{key}/legion reads; an evals view names its Project, its Window and its
+// Query, the query string the page would send to GET /api/v1/projects/{key}/evals without from/to
+// (the compare range, the repositories, the kind and the page); an items view names its Project,
+// the Slug of the eval whose rows it shows, its Window and its Query, what the page would send to
+// GET /api/v1/projects/{key}/evals/{slug}/items without from/to (the compare range, the series, the
+// row kind and row, the repositories, the sort and the page); and a project-timeline view names its
+// Project, its Window and its Query, the query string the page would send to
+// GET /api/v1/projects/{key}/timeline without from/to and offset (the search, every facet and the
+// limit).
 type DeliveryLiveView struct {
 	Kind    string              `json:"kind"`
 	Window  *DeliveryLiveWindow `json:"window,omitempty"`
 	Query   *string             `json:"query,omitempty"`
 	At      *string             `json:"at,omitempty"`
 	Project *string             `json:"project,omitempty"`
+	Slug    *string             `json:"slug,omitempty"`
 	// Issue is the one issue a legion_issue view names, the key GET /api/v1/issues/{key}/legion
 	// reads (dispatch://INFRA-4869), held as the frame's raw JSON. The socket's decode is a plain
 	// json.Unmarshal (decodeSocketClientFrame), which type-checks every member its struct declares,
@@ -230,9 +241,10 @@ func liveEnded(sub, reason string) LiveEnded {
 
 // LiveError refuses a frame or a subscription, by the code the matching GET route would answer
 // (INVALID_QUERY, DELIVERY_NOT_CONFIGURED, the board's INVALID_PROJECT, PROJECT_NOT_FOUND and
-// LEGION_NOT_CONFIGURED, one issue's NOT_FOUND, and the evals view's INVALID_QUERY, for a project
-// that is no project key as for a query its route refuses, and PROJECT_NOT_FOUND for a project no
-// row holds), the socket's own (INVALID_FRAME, TOO_MANY_SUBSCRIPTIONS) or an agent view's
+// LEGION_NOT_CONFIGURED, one issue's NOT_FOUND, the evals and items views' INVALID_QUERY, for a
+// project that is no project key as for a query its route refuses, and PROJECT_NOT_FOUND for a
+// project no row holds, and the items view's EVAL_NOT_FOUND for a slug no eval of the project
+// holds), the socket's own (INVALID_FRAME, TOO_MANY_SUBSCRIPTIONS) or an agent view's
 // (OAUTH_SCOPE_REQUIRED, SESSION_ID_INPUT, STREAM_UNAVAILABLE). Sub names the subscription it
 // refuses, and is empty for a frame Dispatch could not read a sub from.
 type LiveError struct {
@@ -274,18 +286,38 @@ const (
 	// configured false body (readLegionIssue), so a legion_issue view is never refused it.
 	viewReadsLegion
 	// viewReadsEvals is one project's eval registry rows: the view names that project, the
-	// changes that touch it are its project's readings, versions and day rows (touchedBy), it
-	// judges no freshness, and a project no row holds is the read's PROJECT_NOT_FOUND.
+	// changes that touch it are its project's readings, versions and day rows (touchedBy), and a
+	// delivery view (deliveryLiveSpec.freshness) is marked too by a write of its project's deploy
+	// sources' bookkeeping (applyFreshness); it judges no freshness, and a project no row holds is
+	// the read's PROJECT_NOT_FOUND.
 	viewReadsEvals
+	// viewReadsEvalItems is the rows behind one eval's numbers: its registry rows and the
+	// delivery, CI, Legion and readings rows they count. The view names the eval's project and
+	// the eval, the changes that touch it are its eval's readings, versions and day rows and, for
+	// pr-ci's run and job rows, which it reads from the pull-request checks runs themselves, a
+	// change of such a run of its ranges (touchedBy), it judges no freshness, and a project or an
+	// eval no row holds is the read's PROJECT_NOT_FOUND or EVAL_NOT_FOUND.
+	viewReadsEvalItems
 )
 
-// namesProject is whether a view that reads r is one project's, so its spec holds that project
-// and the shared gate (parseDeliveryLiveView) lets a frame's project through to its parse: the
-// Legion board, one issue's Legion state and the evals list are each one project's (a
-// legion_issue view's project is its key's, and its parse refuses one the frame names), and the
-// delivery views are the deployment's.
-func (r viewReads) namesProject() bool {
-	return r == viewReadsLegion || r == viewReadsEvals
+// namesProject is whether a subscribed view of these classes is one project's, so its spec holds
+// that project and the shared gate (parseDeliveryLiveView) lets a frame's project through to its
+// parse: the Legion board, one issue's Legion state, the evals list and an eval's items are each
+// one project's by what they read (a legion_issue view's project is its key's, and its parse
+// refuses one the frame names), the project timeline is one project's rows of the deployment's
+// delivery rows (oneProject), and every other delivery view is the deployment's.
+func (c deliveryLiveClasses) namesProject() bool {
+	switch c.reads {
+	case viewReadsLegion, viewReadsEvals, viewReadsEvalItems:
+		return true
+	}
+	return c.oneProject
+}
+
+// namesEval is whether a subscribed view that reads r names, by its slug, the eval whose rows it
+// shows: an eval's items alone.
+func (r viewReads) namesEval() bool {
+	return r == viewReadsEvalItems
 }
 
 // refusal is the code and message a view's subscribers are refused with when its read answered
@@ -315,7 +347,7 @@ func (r viewReads) refusal(err error) (code, message string, refused bool) {
 // hub's shared code branches on no kind's name and a new kind is one entry rather than a line in
 // each of its files. What a view names beside its kind is its parse's to read and refuse, but for
 // a project: the shared gate (parseDeliveryLiveView) refuses one on every kind that reads no one
-// project (viewReads.namesProject: the timeline, measures and pipeline) before that kind's parse
+// project (namesProject: the timeline, measures and pipeline) before that kind's parse
 // runs. An existing kind's parse ignores an `issue` member of any type, as it always did, and
 // only legion_issue's reads one.
 type deliveryLiveClasses struct {
@@ -340,6 +372,9 @@ type deliveryLiveClasses struct {
 
 	// reads is what the view's answer is read from (viewReads).
 	reads viewReads
+	// oneProject is whether a view that reads the deployment's delivery rows shows one
+	// project's rows of them, and names that project (namesProject): the project timeline.
+	oneProject bool
 	// unownedP0 is whether the view shows the unowned P0 list, so a write of a P0 issue moves it
 	// even where its own population does not name the issue.
 	unownedP0 bool
@@ -470,7 +505,9 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	// preset move only when a day turns, so a page holding it is sent it only then; the compare
 	// range is the one the view's query names, which never moves. The freshness's refresher age is
 	// measured at the moment of the read, so its revision leaves that age out: it goes with the
-	// freshness when the folded rows' own age moves.
+	// freshness when the folded rows' own age moves. A delivery view's delivery_freshness, its
+	// project's deploy sources' freshness, goes whole when it moves: a write of a source's
+	// bookkeeping marks the view (applyFreshness), which the change log does not carry.
 	//
 	// It shows the unowned-p0 eval, whose count the list reads from the project's stored row of
 	// today alone, so a P0 issue's event, which moves no stored row, marks no evals view: the
@@ -481,11 +518,51 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		lists: []string{"items"},
 		whole: map[string][]string{
 			"total": nil, "limit": nil, "offset": nil, "window": nil, "compare": nil,
-			"freshness": {"refresher_age_seconds"},
+			"freshness": {"refresher_age_seconds"}, "delivery_freshness": nil,
 		},
 		reads: viewReadsEvals,
 		parse: parseEvalsLiveView,
 		read:  (*deliveryHub).readEvalsView,
+	},
+	// One eval's rows: the body of GET /api/v1/projects/{key}/evals/{slug}/items, read by the
+	// route's own function (readProjectEvalItems). Its rows carry no id, and one row key can stand
+	// in both ranges, or for a reading and a day row alike, so its items are sent whole, as every
+	// other field is: a page of at most 200 rows, which a change of one eval's rows moves at once.
+	// The CI section's job lists, an eval's rows and the readings a declared chart draws come
+	// through it (dispatch://INFRA-2918, D9).
+	evalItemsView: {
+		body: reflect.TypeFor[evalItemsResponse](),
+		whole: map[string][]string{
+			"items": nil, "total": nil, "limit": nil, "offset": nil, "window": nil, "compare": nil,
+		},
+		reads: viewReadsEvalItems,
+		parse: parseEvalItemsLiveView,
+		read:  (*deliveryHub).readEvalItemsView,
+	},
+	// One project's timeline rows: the body of GET /api/v1/projects/{key}/timeline from its first
+	// row, as many as the view's limit, read by the route's own function (readProjectTimeline). A
+	// page grows by subscribing its sub again with a higher limit and a resume holding the rows it
+	// has, so the growth's delta carries only the rows it lacks: its rows are sent row by row, by
+	// id (a merge's pull request id, a run's id). The maps, counts, session groups, window and
+	// freshness are a timeline view's, and sent as its are; the envelope's numbers and the waiting
+	// line, which is null until the view's limit reaches the window's total, are sent whole. It
+	// carries no measures, so it shows no unowned P0 list and judges by no eval's target; a delivery
+	// change marks it as it marks a timeline view (touchedByDeliveryRow), and so does the
+	// refresher's publishing of the default repositories its rows are counted under (touchedBy).
+	deliveryLiveProjectTimeline: {
+		body:  reflect.TypeFor[projectTimelineResponse](),
+		lists: []string{"items", "session_groups"},
+		maps: map[string][]string{
+			"issue_titles": nil, "session_titles": nil, "session_pr_counts": nil, "components": nil,
+		},
+		counts:      []string{"facet_counts", "color_counts"},
+		whole:       map[string][]string{"total": nil, "limit": nil, "offset": nil, "waiting": nil},
+		withChanges: []string{"window"},
+		out:         []string{"freshness"},
+		reads:       viewReadsDelivery,
+		oneProject:  true,
+		parse:       parseProjectTimelineLiveView,
+		read:        (*deliveryHub).readProjectTimelineView,
 	},
 }
 

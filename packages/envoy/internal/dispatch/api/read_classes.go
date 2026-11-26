@@ -70,6 +70,7 @@ const docsCompactionNote = "Writes nothing itself. A cold read of a document who
 // The entries are grouped by class, each group in the order of the table.
 var readClasses = map[string]readEntry{
 	// The GETs that write.
+	"GET /api/v1/projects/{key}/timeline":    {Writes: readWritesState, WriteNote: "As the delivery timeline's, whose population it reads (readDeliveryPopulation): an insert into delivery_run_warnings for a deploy run with no matching production job or apply step, on the request's context, once per process for each run and configuration (firstToWarn)."},
 	"GET /api/v1/delivery/timeline":          {Writes: readWritesState, WriteNote: "When a deploy run has no configured production job, or its production job has no configured apply step, the read inserts a delivery_run_warnings row on the request's context (firstToWarn, on conflict doing nothing), once per process for each run and configuration."},
 	"GET /api/v1/delivery/measures":          {Writes: readWritesState, WriteNote: "As the timeline's: an insert into delivery_run_warnings for a deploy run with no matching production job or apply step, on the request's context, once per process for each run and configuration (firstToWarn)."},
 	"GET /api/v1/delivery/pipeline":          {Writes: readWritesState, WriteNote: "As the timeline's, for the deploy runs on main since the first day it shows: an insert into delivery_run_warnings for a run with no matching production job or apply step, on the request's context, once per process for each run and configuration (firstToWarn)."},
@@ -117,6 +118,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/settings/delivery":                                      {Writes: readWritesNothing},
 	"GET /api/v1/projects/{key}/legion/daemon":                           {Writes: readWritesNothing},
 	"GET /api/v1/projects/{key}/legion/board":                            {Writes: readWritesNothing},
+	"GET /api/v1/projects/{key}/deploy-runs/{id}":                        {Writes: readWritesNothing},
 	"GET /api/v1/delivery/runs/{id}":                                     {Writes: readWritesNothing},
 	"GET /api/v1/ci-reconcile/passes":                                    {Writes: readWritesNothing},
 	"GET /api/v1/me/agent-tokens":                                        {Writes: readWritesNothing},

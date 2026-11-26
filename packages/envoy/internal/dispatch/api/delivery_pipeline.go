@@ -283,18 +283,21 @@ func (p pipelinePopulation) narrowedTo(rules *delivery.SourceRules, at time.Time
 	return narrowed
 }
 
-// pipelineNextExpiry is the next UTC midnight (measures.ShownDays, pipeline.go:154) or the earliest
-// failing-jobs edge, whichever comes first: just past a timed PR-checks run's completion +
-// measures.FailingWindow (pipeline.go:46), when it leaves the 24 hours the table counts, or a timed
-// run's completion itself when that is after now (a clock ahead of Dispatch's), when it enters them.
-func pipelineNextExpiry(pop pipelinePopulation, now time.Time) time.Time {
+// failingJobsNextExpiry is the next moment a failing-jobs list read at now from checks, the
+// PR-checks runs it counts, moves by the clock alone: the next UTC midnight (measures.ShownDays,
+// pipeline.go:154) or the earliest failing-jobs edge, whichever comes first: just past a timed run's
+// completion + measures.FailingWindow (pipeline.go:46), when it leaves the 24 hours the list counts,
+// or a timed run's completion itself when that is after now (a clock ahead of Dispatch's), when it
+// enters them. The Pipeline's failing-jobs table and pr-ci's failures items list (failingJobRows)
+// both expire by it.
+func failingJobsNextExpiry(checks []delivery.DeliveryRun, now time.Time) time.Time {
 	next := nextUTCMidnight(now)
 	consider := func(at time.Time) {
 		if at.After(now) && at.Before(next) {
 			next = at
 		}
 	}
-	for _, run := range pop.checks.Runs {
+	for _, run := range checks {
 		outcome, ok := measures.OutcomeOf(run.Conclusion)
 		if !ok || (outcome != measures.OutcomeSuccess && outcome != measures.OutcomeFailure) || run.CompletedAt == nil {
 			continue

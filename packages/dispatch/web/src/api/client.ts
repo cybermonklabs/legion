@@ -416,8 +416,8 @@ export function isCredentialFeatureOff(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404 && error.code === "FEATURE_OFF";
 }
 
-// The delivery timeline answers this 404 until someone sets its configuration: definitive like the
-// two above, since retrying changes nothing until the settings form is saved.
+// The merge timeline's live view answers this 404 while no project has delivery on: definitive
+// like the two above, since retrying changes nothing until a project's delivery settings are saved.
 export function isDeliveryNotConfigured(error: unknown): boolean {
   return (
     error instanceof ApiError && error.status === 404 && error.code === "DELIVERY_NOT_CONFIGURED"
@@ -1850,9 +1850,48 @@ export class DispatchApiClient {
     return this.read("/api/v1/references/questions", {}, { id, kind });
   }
 
-  /** One deploy-repository run with every job it ran, for the drill-down's job lists. */
-  getDeliveryRun(id: number) {
-    return this.read("/api/v1/delivery/runs/{id}", { id: String(id) });
+  /** One run of a project's deploy source with every job it ran, and its record: the deploy row
+   *  written for it (`deploy`, null where none was) and every failure that blames that row
+   *  (`failures`), for the drill-down. `repo` is the repository the run is in, which the project
+   *  timeline's deploy and failed_run rows name; a run that counts for no project with this key
+   *  is `404 NOT_FOUND`. */
+  getProjectDeployRun(project: string, id: number, repo: string) {
+    return this.read(
+      "/api/v1/projects/{key}/deploy-runs/{id}",
+      { key: project, id: String(id) },
+      { repo }
+    );
+  }
+
+  /** One eval's versions, newest first, `{items, total, limit, offset}` with `doc_text`, the method
+   *  its section of the project's evals document holds (null for none); `limit` 1 reads the
+   *  newest version alone. */
+  getEval(
+    project: string,
+    slug: string,
+    query: Query<"/api/v1/projects/{key}/evals/{slug}", "get"> = {}
+  ) {
+    return this.read("/api/v1/projects/{key}/evals/{slug}", { key: project, slug }, query);
+  }
+
+  /** One page of every project's evals in the project read's item shape and envelope `{items,
+   *  total, limit, offset}`, by project and then by slug, the page running across projects:
+   *  `project`, repeated, names the projects read, and with none named every project the reader
+   *  may read is read. The window, compare range, kind, repo and page keys are the project
+   *  read's. */
+  listEvals(query: Query<"/api/v1/evals", "get"> = {}) {
+    return this.read("/api/v1/evals", {}, query);
+  }
+
+  /** One page of the rows behind an eval's numbers over a window and a compare range, `{items,
+   *  total, limit, offset}`: each row's `row_key`, `row_kind`, `cols` and `href`. `row_kind` keeps
+   *  one kind (`issue` for unowned-p0's open P0 issues with no owner); `limit` is 1 to 200. */
+  listEvalItems(
+    project: string,
+    slug: string,
+    query: Query<"/api/v1/projects/{key}/evals/{slug}/items", "get"> = {}
+  ) {
+    return this.read("/api/v1/projects/{key}/evals/{slug}/items", { key: project, slug }, query);
   }
 
   /** One page of the project's deploys and failed changes, newest first, `{items, total, limit,

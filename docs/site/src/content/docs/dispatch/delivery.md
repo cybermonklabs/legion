@@ -349,7 +349,7 @@ Every client message is one JSON object:
 
 `sub` identifies that subscription in every response.
 `unsubscribe` with the same `sub` ends it.
-A delivery view is `timeline` or `measures` with its window and GET-route query; `pipeline` with an optional `at`; `legion` with the `project` whose Legion board it shows (the body of `GET /api/v1/projects/{key}/legion/board`) and nothing else; or `evals` with the `project` whose evals it shows, its window, and the query `GET /api/v1/projects/{key}/evals` would be sent without `from` and `to` (`compare_from` and `compare_to`, `repo`, `kind`, `limit`, `offset`).
+A delivery view is `timeline` or `measures` with its window and GET-route query; `pipeline` with an optional `at`; `legion` with the `project` whose Legion board it shows (the body of `GET /api/v1/projects/{key}/legion/board`) and nothing else; `evals` with the `project` whose evals it shows, its window, and the query `GET /api/v1/projects/{key}/evals` would be sent without `from` and `to` (`compare_from` and `compare_to`, `repo`, `kind`, `limit`, `offset`); or `items` with the `project` and the `slug` of the eval whose rows it shows, its window, and the query `GET /api/v1/projects/{key}/evals/{slug}/items` would be sent without `from` and `to` (`compare_from` and `compare_to`, `series`, `row_kind`, `row`, `repo`, `sort`, `limit`, `offset`).
 A delivery view may resume with `{"seq":"…","revs":{…}}`.
 An event-feed view is `{"kind":"events"}` and resumes with `{"since":"<event id>"}`.
 An agent view is `{"kind":"agent","session_id":"<uuid>"}` and never has a resume.
@@ -360,12 +360,12 @@ Dispatch answers a delivery view with:
 
 - a `snapshot`: the matching GET route's body for the window resolved now, the change it reflects (`seq`), when that change was recorded (`changed_at`), and a revision for every key it holds;
 
-- then only `delta` frames: the list items that changed (`items`, each list's `upsert` and the ids it `remove`s: the timeline's pull requests, runs and session groups, and an evals view's evals, by eval id), the map entries and counts that changed (`maps` and `counts`, a legion view's issues by key among the maps, null for a key that left), and the fields replaced whole (`set`, which carries `window` whenever it moved, never alone).
+- then only `delta` frames: the list items that changed (`items`, each list's `upsert` and the ids it `remove`s: the timeline's pull requests, runs and session groups, and an evals view's evals, by eval id), the map entries and counts that changed (`maps` and `counts`, a legion view's issues by key among the maps, null for a key that left), and the fields replaced whole (`set`, which carries `window` whenever it moved, never alone; an items view's rows, which carry no id, among them).
   A legion view sends an issue's entry only when its stored row moved, not each time an open issue's hours grow: an entry with a value that grows carries `as_of` and `growth`, so a page gives each growing value at its own clock as value plus rate times the hours since `as_of`, as the GET route does at its read, and an entry none of whose values grows carries null for both;
 
 - `freshness`, the whole freshness verdict - the `freshness` object a timeline, measures or pipeline snapshot carries (the last event, the last reconcile, its error and how many pull requests cannot be fetched) and the `stale` source list - sent right after a subscription's first answer when Dispatch holds one, so a socket opened or resumed after the verdict changed still gets it, and to every subscriber whenever it changes;
 
-- `error`, with the code the matching GET route would answer (`INVALID_QUERY`, `DELIVERY_NOT_CONFIGURED`; `LEGION_NOT_CONFIGURED` for a legion view of a project with no Legion daemon, `PROJECT_NOT_FOUND` for an evals view of a project that does not exist) or `INVALID_FRAME`; and
+- `error`, with the code the matching GET route would answer (`INVALID_QUERY`, `DELIVERY_NOT_CONFIGURED`; `LEGION_NOT_CONFIGURED` for a legion view of a project with no Legion daemon, `PROJECT_NOT_FOUND` for an evals or items view of a project that does not exist, `EVAL_NOT_FOUND` for an items view of an eval the project does not hold) or `INVALID_FRAME`; and
 
 - `heartbeat`, every 15 seconds.
   While nothing the view shows changes, the heartbeat is the only frame sent.

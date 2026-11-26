@@ -167,8 +167,8 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
       .evaluateAll((all) => all.map((link) => link.getAttribute("aria-label") ?? ""));
     expect(
       [links[0], ...links.slice(2)],
-      "the rail's links are not Dispatch, Inbox, Agents, Priorities, Delivery, Pipeline, the project and Settings"
-    ).toEqual(["Dispatch", "Agents", "Priorities", "Delivery", "Pipeline", "FRM", "Settings"]);
+      "the rail's links are not Dispatch, Inbox, Agents, Priorities, Evals, the project and Settings"
+    ).toEqual(["Dispatch", "Agents", "Priorities", "Evals", "FRM", "Settings"]);
     await expect(iconRail(page).getByRole("link", { exact: true, name: "FRM" })).toHaveAttribute(
       "aria-current",
       "true"

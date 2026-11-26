@@ -83,8 +83,11 @@ export const EMERALD_950 = swatch("emerald-950", 0.262, 0.051, 172.552);
 export const STONE_300 = swatch("stone-300", 0.869, 0.005, 56.366);
 export const STONE_800 = swatch("stone-800", 0.268, 0.007, 34.298);
 
+export const BLUE_300 = swatch("blue-300", 0.809, 0.105, 251.813);
 // biome-ignore lint/suspicious/noApproximativeNumericConstant: Tailwind's own lightness, not √½.
 export const BLUE_400 = swatch("blue-400", 0.707, 0.165, 254.624);
+export const BLUE_600 = swatch("blue-600", 0.546, 0.245, 262.881);
+export const BLUE_700 = swatch("blue-700", 0.488, 0.243, 264.376);
 export const BLUE_950 = swatch("blue-950", 0.282, 0.091, 267.935);
 export const VIOLET_400 = swatch("violet-400", 0.702, 0.183, 293.541);
 export const VIOLET_950 = swatch("violet-950", 0.283, 0.141, 291.089);
@@ -99,6 +102,7 @@ export const FUCHSIA_400 = swatch("fuchsia-400", 0.74, 0.238, 322.16);
 export const FUCHSIA_950 = swatch("fuchsia-950", 0.293, 0.136, 325.661);
 export const ORANGE_300 = swatch("orange-300", 0.837, 0.128, 66.29);
 export const ORANGE_400 = swatch("orange-400", 0.75, 0.183, 55.934);
+export const ORANGE_700 = swatch("orange-700", 0.553, 0.195, 38.402);
 export const ORANGE_950 = swatch("orange-950", 0.266, 0.079, 36.259);
 export const GREEN_400 = swatch("green-400", 0.792, 0.209, 151.711);
 export const RED_400 = swatch("red-400", 0.704, 0.191, 22.216);

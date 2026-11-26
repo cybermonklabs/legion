@@ -19,6 +19,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { ArchitecturePage } from "../architecture/ArchitecturePage";
+import { EvalsTab } from "../evals/EvalsTab";
 import { BlockedOnYou } from "../inbox/BlockedOnYou";
 import { buildProjectPath, parseProjectPath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
@@ -31,12 +32,14 @@ import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";
 import { IssuesTable } from "./IssuesTable";
 
-type ProjectTab = "architecture" | "issues" | "documents" | "settings";
+type ProjectTab = "architecture" | "issues" | "documents" | "evals" | "settings";
 
 const architectureTab: TabDefinition<ProjectTab> = { id: "architecture", label: "Architecture" };
+// Evals is every project's: its numbers need no source to have a page (dispatch://INFRA-2918 R1).
 const tabs: readonly TabDefinition<ProjectTab>[] = [
   { id: "issues", label: "Issues" },
   { id: "documents", label: "Documents" },
+  { id: "evals", label: "Evals" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -298,6 +301,16 @@ export function ProjectPage(): ReactNode {
         role="tabpanel"
       >
         {activeTab === "documents" ? <DocumentList project={route.project} /> : null}
+      </div>
+      <div
+        aria-hidden={activeTab !== "evals"}
+        aria-labelledby="project-evals-tab"
+        className="mt-3"
+        hidden={activeTab !== "evals"}
+        id="project-evals-panel"
+        role="tabpanel"
+      >
+        {activeTab === "evals" ? <EvalsTab key={route.project} project={route.project} /> : null}
       </div>
       <div
         aria-hidden={activeTab !== "settings"}
