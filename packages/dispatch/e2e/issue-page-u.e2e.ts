@@ -28,6 +28,7 @@ import {
   rowWords,
   unfoldEveryBranch,
 } from "./issue-page-g";
+import { rowReference } from "./issue-page-i";
 import { withIssuePage } from "./issue-page-option";
 import { waitingCount } from "./issue-page-p";
 import {
@@ -825,7 +826,7 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
     const statementWords = requirementText(1).replace(/\s+/g, " ").trim();
     const statementChip = chipName(statementRoute, statementWords);
     const quote = olderRow.locator('[data-testid="decision-quote"]');
-    const chip = olderRow.locator(`[data-node-words] a[data-row-reference="${statement}"]`);
+    const chip = rowReference(olderRow, statement);
     await expect
       .poll(
         async () => {
@@ -1442,20 +1443,6 @@ test("a decision another person made stands under Decided by others @owed", asyn
       askRowId(reads, seeded.declinedAskId),
       ...answered,
     ];
-    // What a reader's Decisions view draws, as it holds still: the parts it draws in order, the
-    // rows of the reader's own part and of what others decided, that part's heading, and who
-    // each of alice's answers names.
-    const viewOf = async (reader: Page) => {
-      const parts = await decisionsPartsDrawn(reader);
-      const rows = await drawnRows(reader);
-      return {
-        authors: answered.map((id) => rowOf(rows, id)?.answerAuthor ?? null),
-        heading: await decisionsPartHeading(reader, "others"),
-        others: parts.find((one) => one.part === "others")?.rows ?? [],
-        parts: parts.map((one) => one.part),
-        yours: parts.find((one) => one.part === "yours")?.rows ?? [],
-      };
-    };
 
     const bob = await asUser(browser, "bob");
     try {
@@ -1465,11 +1452,24 @@ test("a decision another person made stands under Decided by others @owed", asyn
       const bobTraffic = watchApiRequests(bobPage);
       await gotoIssue(bobPage, presetPath(key, "decisions"));
       await expectIssuePageDrawn(bobPage);
+      // What bob's Decisions view draws, as it holds still: the parts it draws in order, the rows
+      // of his own part and of what others decided, that part's heading, and who each of alice's
+      // answers names.
       const bobs = await steadily(
         bobPage,
         bobTraffic,
         `${key}'s Decisions view as bob reads it`,
-        () => viewOf(bobPage)
+        async () => {
+          const parts = await decisionsPartsDrawn(bobPage);
+          const rows = await drawnRows(bobPage);
+          return {
+            authors: answered.map((id) => rowOf(rows, id)?.answerAuthor ?? null),
+            heading: await decisionsPartHeading(bobPage, "others"),
+            others: parts.find((one) => one.part === "others")?.rows ?? [],
+            parts: parts.map((one) => one.part),
+            yours: parts.find((one) => one.part === "yours")?.rows ?? [],
+          };
+        }
       );
 
       // (1) bob made none of the seed's decisions: his view draws no part of his own, or one
@@ -1503,12 +1503,13 @@ test("a decision another person made stands under Decided by others @owed", asyn
     // (3) alice's own view of the same issue still draws her decisions under "Your decisions",
     // and draws no part for what others decided.
     const alices = await steadily(page, traffic, `${key}'s Decisions view as alice reads it`, () =>
-      viewOf(page)
+      decisionsPartsDrawn(page)
     );
+    const yours = alices.find((one) => one.part === "yours")?.rows ?? [];
     expect(
       {
-        missing: hers.filter((id) => !alices.yours.includes(id)),
-        others: alices.parts.includes("others"),
+        missing: hers.filter((id) => !yours.includes(id)),
+        others: alices.some((one) => one.part === "others"),
       },
       "alice's own view draws her decisions under Your decisions, and no part for others"
     ).toEqual({ missing: [], others: false });

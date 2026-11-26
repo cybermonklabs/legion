@@ -88,7 +88,7 @@ import type { DecisionsAsk } from "./decisions-parts";
 /**
  * What the Decisions filter's body draws, read as a reader reads it (dispatch://INFRA-1196 R2,
  * R9, R22, R35). Which entry stands in which part is the model's, read in
- * `decisions-parts.test.ts`; these rows read the drawing: the four parts under their headings,
+ * `decisions-parts.test.ts`; these rows read the drawing: the parts under their headings,
  * the words each state reads, Keep and Change on the review list alone, the person's answer
  * paragraph by paragraph as the store holds it, and where the focus goes. How a row is laid out
  * is the browser's to say, which no DOM of a unit test lays out, so the browser suite's c-row,

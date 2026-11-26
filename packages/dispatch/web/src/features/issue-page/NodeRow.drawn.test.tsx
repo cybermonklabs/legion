@@ -345,22 +345,20 @@ function TreeRow({ node: drawn }: { node: TreeNode }): ReactNode {
 
 /** What the tree draws of each of the spec's `decision` blocks `blocks`: each row drawn by
  *  `TreeRow`, its body open, from the node the tree model builds out of a tree read that holds
- *  those blocks, a context node for each session of `sessions` carrying the title `titles` gives
- *  it where it gives one (`title`, the newest title the session stamped), and `tuples`, under an
- *  agents registry that lists `registered` and no other session. A decision is read as who
- *  decided it on its row (`row`) and in its opened body (`body`), the whole title that body gives
+ *  those blocks, a context node for each session of `sessions` carrying that session's `title`
+ *  where it has one (the newest title the session stamped), and `tuples`, under an agents
+ *  registry that lists `registered` and no other session. A decision is read as who decided it
+ *  on its row (`row`) and in its opened body (`body`), the whole title that body gives
  *  (`title`), the author's kind (`kind`), and the row's node type (`type`). */
 function decisionsDrawn({
   blocks,
   registered,
   sessions,
-  titles = {},
   tuples,
 }: {
   blocks: readonly string[];
   registered: Agent[];
-  sessions: readonly string[];
-  titles?: Readonly<Partial<Record<string, string>>>;
+  sessions: readonly { readonly id: string; readonly title?: string }[];
   tuples: readonly TreeTuple[];
 }) {
   const root = buildIssueTree({
@@ -372,13 +370,12 @@ function decisionsDrawn({
             document: { artifact_id: SPEC_DOCUMENT.id, position, slug: SPEC_SLUG },
           })
         ),
-        ...sessions.map((session) => {
-          const title = titles[session];
-          return treeNode(session, "session", null, {
+        ...sessions.map(({ id, title }) =>
+          treeNode(id, "session", null, {
             role: "context",
             ...(title === undefined ? {} : { title }),
-          });
-        }),
+          })
+        ),
       ],
       tuples
     ),
@@ -441,7 +438,7 @@ test("an agent's decision draws the session its entry names as its decider, by t
   const drawn = decisionsDrawn({
     blocks: [named, unnamed],
     registered: [registered],
-    sessions: [AGENT.id],
+    sessions: [{ id: AGENT.id }],
     tuples: [treeTuple("decided_by", named, AGENT.id)],
   });
   expect(drawn(named)).toEqual({
@@ -476,8 +473,7 @@ test("a decider no registry lists is drawn by the title it stamped", () => {
   const drawn = decisionsDrawn({
     blocks: [stored],
     registered: [],
-    sessions: [gone],
-    titles: { [gone]: storedTitle },
+    sessions: [{ id: gone, title: storedTitle }],
     tuples: [treeTuple("decided_by", stored, gone)],
   });
   expect(drawn(stored)).toEqual({

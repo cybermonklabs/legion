@@ -336,28 +336,18 @@ export function DecisionsFilterBody({
   // The rows in the order the page draws them, which is the order the outline's keys walk: the
   // node the address names first, then the parts, then the foot's rows while it is unfolded,
   // each part's drawn pages alone.
-  const drawn = useMemo<readonly (DecisionsEntry | NamedEntry)[]>(
+  const drawn = useMemo(
     () => [
       ...parts.named,
-      ...shown.open_questions,
-      ...shown.review,
-      ...shown.yours,
-      ...shown.others,
+      ...HEADED.flatMap<DecisionsEntry | NamedEntry>((part) => shown[part]),
       ...(footShown ? shown.agents : []),
     ],
     [footShown, parts.named, shown]
   );
   // Every entry the list draws, in the order it draws them, whether its page is drawn or not
   // and whether the foot is folded or not: the entries an address may name.
-  const every = useMemo<readonly (DecisionsEntry | NamedEntry)[]>(
-    () => [
-      ...parts.named,
-      ...parts.open_questions,
-      ...parts.review,
-      ...parts.yours,
-      ...parts.others,
-      ...parts.agents,
-    ],
+  const every = useMemo(
+    () => DECISIONS_PART_ORDER.flatMap<DecisionsEntry | NamedEntry>((part) => parts[part]),
     [parts]
   );
   // The rows as the outline's keys read them: the nth node row is the nth row drawn. Each sits
@@ -1111,12 +1101,7 @@ export function DecisionsFilterBody({
           (`decisions-entries.ts`), a list with nothing in it may be one whose entries have not
           arrived, or whose read was refused and says so in its own line, so no line says the
           issue holds nothing, as the outline draws none then (`slots/body.tsx`). */}
-      {readsHeld &&
-      parts.open_questions.length === 0 &&
-      parts.review.length === 0 &&
-      parts.yours.length === 0 &&
-      parts.others.length === 0 &&
-      parts.agents.length === 0 ? (
+      {readsHeld && [...HEADED, "agents" as const].every((part) => parts[part].length === 0) ? (
         <p className={`py-1 text-sm ${textMutedOnCanvas}`} {...pageChrome}>
           {emptyLine}
         </p>
