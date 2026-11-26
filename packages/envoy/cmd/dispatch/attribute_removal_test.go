@@ -222,7 +222,7 @@ func versionHashOf(t *testing.T, ctx context.Context, database *pgx.Conn, docume
 // person approves them and an agent requests approval of one; this head writes a document holding
 // a reading; the base release serves again beside this head and leaves that document be; while
 // both serve, the roll window keeps the attributes; once the base release is gone, the first write
-// to each document cuts them to the form R10 keeps and carries its approval, an answer keeps an
+// to each document cuts them to the form R5 keeps and carries its approval, an answer keeps an
 // approval request's turn, a copy of an open ask keeps every carry and every turn, and every wider
 // write supersedes.
 func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testing.T) {
@@ -546,7 +546,7 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 	})
 
 	// The fleet is this head alone: the first accepted write to each of the two documents - for the
-	// first, the agent's upload above - cuts the attributes to the form R10 keeps and carries the
+	// first, the agent's upload above - cuts the attributes to the form R5 keeps and carries the
 	// approval.
 	sourceAddress := "dispatch://" + issue + "/artifact/" + sourceSlug
 	keptBlocks := map[string][]keptBlock{
@@ -565,7 +565,7 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 		}
 		settledDocument(t, ctx, current, database, document.id)
 		number, rendering := latestMarkdown(t, current, document.id)
-		// Every ask block, the blocks nobody edited included, holds the form R10 keeps, each value
+		// Every ask block, the blocks nobody edited included, holds the form R5 keeps, each value
 		// as its ask's node holds it, and none holds the answer's words or selection. Each document
 		// holds a block of a resolved ask, so the form's `state` is read where the ask is resolved
 		// as well as where it is answered.
@@ -576,10 +576,10 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 			}
 		}
 		if resolved == 0 {
-			t.Errorf("%s's version %d holds no block of a resolved ask, so the form R10 keeps where an ask is resolved was never read:\n%s",
+			t.Errorf("%s's version %d holds no block of a resolved ask, so the form R5 keeps where an ask is resolved was never read:\n%s",
 				document.name, number, rendering)
 		}
-		t.Logf("%s's version %d: %d blocks of resolved asks hold the form R10 keeps", document.name, number, resolved)
+		t.Logf("%s's version %d: %d blocks of resolved asks hold the form R5 keeps", document.name, number, resolved)
 		requireNoAnswerWords(t, document.name+"'s version "+strconv.Itoa(number), rendering)
 		approval := approvalOf(t, current, document.id)
 		carried := newestReviewOf(t, current, document.id)
@@ -643,7 +643,7 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 		t.Errorf("the fourth document reads %s and its request %s once the person approved through it, want approved at version %d, its latest, and the request answered", approvalState(approval), request, fourthAnswered)
 	}
 
-	// A copy of an open ask keeps every carry, and every turn R10's turn rule keeps. The fifth
+	// A copy of an open ask keeps every carry, and every turn R5's turn rule keeps. The fifth
 	// document's first accepted write on one build is an agent's upload of the text its text route
 	// serves: it renders the copy with its source and no state, and carries the approval, and so
 	// does the version a person's answer to one of its own asks settles into.
@@ -842,7 +842,7 @@ type keptBlock struct {
 var serverOwnedAskAttributes = []string{"state", "answered_by", "answered_at", "selected", "answer", "invalid", "copied_from", "copied_from_document"}
 
 // requireKeptForm fails t unless the ask block kept.block of markdown, a version written once the
-// fleet is one build, holds of the eight server-owned attributes exactly the form R10 keeps, each
+// fleet is one build, holds of the eight server-owned attributes exactly the form R5 keeps, each
 // value as the node of kept.ask holds it: state where the ask is answered or resolved and none
 // where it is open, answered_by and answered_at where it is answered, and, for a copy,
 // copied_from naming kept.ask and copied_from_document naming kept.copied, whatever the source's
@@ -875,12 +875,12 @@ func requireKeptForm(t *testing.T, ctx context.Context, database *pgx.Conn, what
 		same := isHeld == isWanted && (!isWanted || value == wanted || name == "answered_at" && sameInstant(value, wanted))
 		if !same {
 			differs = true
-			t.Errorf("%s: the block %s holds %s=%s (held %t), want %q (held %t): the form R10 keeps, from the node of ask %s, which holds %q",
+			t.Errorf("%s: the block %s holds %s=%s (held %t), want %q (held %t): the form R5 keeps, from the node of ask %s, which holds %q",
 				what, kept.block, name, mustJSON(t, got), isHeld, wanted, isWanted, kept.ask, state)
 		}
 	}
 	if differs {
-		t.Errorf("%s: the ask block %s, which differs from the form R10 keeps:\n%s", what, kept.block, askBlockText(markdown, kept.block))
+		t.Errorf("%s: the ask block %s, which differs from the form R5 keeps:\n%s", what, kept.block, askBlockText(markdown, kept.block))
 	}
 	return state
 }

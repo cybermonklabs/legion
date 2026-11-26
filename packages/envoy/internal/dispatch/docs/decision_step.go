@@ -35,10 +35,10 @@ import (
 //     and never from the row.
 //
 // It runs at boot, before the server serves, where only phase 1 runs and a failure stops the boot
-// (Boot), as FillDocumentSearch does: the readers of this release that take an ask's answer from
-// its node - a reading's check of its ask (askAnswers) and this step's own count - read an ask
-// phase 1 has not stated yet as open, and the release before keeps serving through a roll until
-// this process serves. The boot reads only what phase 1 needs - whether a row stands unmarked
+// (Boot), as FillDocumentSearch does: the reader of this release that takes an ask's answer from
+// its node alone - the text routes' asks member (askNodeAnswers) - reads an ask phase 1 has not
+// stated yet as open, and the release before keeps serving through a roll until this process
+// serves. The boot reads only what phase 1 needs - whether a row stands unmarked
 // (graphcensus.AsksOwed), and the rows the backfill states - and nothing else: a table no phase 1
 // statement reads, held by another transaction, must not keep the process from serving. It then
 // runs on a tick of its own (Run) every BlockIndexReconcileInterval for as long as the process

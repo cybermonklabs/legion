@@ -354,7 +354,7 @@ func (op heavyOp) prepare() (call func() heavyOutcome, err error) {
 	case "whole write":
 		// ParseWritten's steps, on a budget that counts no elements.
 		return write(func() (*Node, error) {
-			tree, err := parseForWrite(body, nil, true, "", wholeWriteBudget())
+			tree, err := parseForWrite(body, nil, true, wholeWriteBudget())
 			if err != nil {
 				return nil, err
 			}

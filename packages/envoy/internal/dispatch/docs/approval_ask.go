@@ -112,7 +112,7 @@ func openApprovalAsk(ctx context.Context, tx pgx.Tx, artifactID string) (*model.
 // tells apart (FollowClosedIssueVersions). Only then, when the document waits on the human (its
 // requested_version is the version the request names), and markdown either is byte for byte the
 // stored text of that version (restoresApprovedText) or differs from it in the server-owned
-// attributes of its ask blocks alone, every ask block agreeing with its node (R10's test,
+// attributes of its ask blocks alone, every ask block agreeing with its node (R5's test,
 // changesAskAttributesAlone), does its requested_version move with its version, quietly: a
 // settlement saves what the room already holds - the blocks a close and a reopen wrote back, or
 // the state a person's answer, resolve or decline wrote into the ask's block - so the text the

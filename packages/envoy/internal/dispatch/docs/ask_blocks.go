@@ -59,7 +59,7 @@ type settlementReconciliation struct {
 	indexedAskBlocks []string
 	// invalid is the reason each ask whose block settlement could not read fails the strict read
 	// for (readAskBlockStrictly), by ask id, where the block has an ask row; readable is each ask
-	// whose block reads again. stateInvalidReasons writes both on the asks' nodes (G1).
+	// whose block reads again. stateInvalidReasons writes both on the asks' nodes.
 	invalid  map[string]string
 	readable []string
 	// follows are the follows of the asks this settlement opened, each beside the ask it follows:
@@ -301,7 +301,7 @@ func (r *settlementReconciliation) repairAsk(node *pmdoc.Node, blockID string, s
 // weigh. A block that already held the words its write leaves - one whose repair cleared its
 // `invalid` or moved a copy's provenance - keeps them: they are in the document settlement read
 // and add nothing to it, and the release before weighed only a repair that wrote an answer. The
-// write stays, settlement's one write to a block of an ask (G1); the record of the words it wrote
+// write stays, settlement's one write to a block of an ask; the record of the words it wrote
 // goes with the roll window.
 func (r *settlementReconciliation) repairAskInStep(node *pmdoc.Node, blockID string, twoBuilds bool, ask model.Ask, copied string, event *model.Event) bool {
 	// kept for one release: roll-window-attributes
@@ -580,7 +580,7 @@ func closeWithdrawn(ask model.Ask) bool {
 // settlement cannot read keeps whatever a browser wrote onto it - a forged state or answerer
 // among them - so once the fleet is one build it is given its row's kept state where a row
 // indexes it, and none of the seven where none does. `invalid` is written into the live tree
-// either way (G1): onto a block that fails the strict read, and off one that reads again, and
+// either way: onto a block that fails the strict read, and off one that reads again, and
 // where the block has an ask row its node holds the reason too, until the block reads again
 // (stateInvalidReasons).
 //
@@ -632,19 +632,18 @@ func (s *Service) reconcileAskBlocks(
 		readable = append(readable, block)
 	}
 	blocks = readable
-	rows, err := loadAskBlocks(ctx, tx, artifactID)
+	// The rows and the copies' sources through the one read of which ask each block has, which
+	// takes the project's copy lock right before it reads the sources (copiedAskSources).
+	read, err := readBlockAsks(ctx, tx, artifactID, &owner, blocks, copiedAskSources)
 	if err != nil {
 		return settlementReconciliation{}, err
 	}
+	rows, sources := read.rows, read.sources
 	credit.askSources.recorded, err = transactionRecordedAskAuthors(ctx, tx, artifactID)
 	if err != nil {
 		return settlementReconciliation{}, err
 	}
 	restoredDecided, err := s.restoreDocumentDecidedWordings(ctx, tx, rows)
-	if err != nil {
-		return settlementReconciliation{}, err
-	}
-	sources, err := copiedAskSources(ctx, tx, artifactID, owner, blocks, rows)
 	if err != nil {
 		return settlementReconciliation{}, err
 	}
@@ -665,29 +664,12 @@ func (s *Service) reconcileAskBlocks(
 	}
 	// Once the fleet is one build, the attributes a version keeps are written from each ask's node,
 	// each one its node holds no value of taken off, or from its row where the node is behind it,
-	// before the decisions step's catch-up (keptAskState, keptFromItsNode); an ask whose state this
+	// before the decisions step's catch-up (keptAskState, shownAsks); an ask whose state this
 	// settlement writes - one it restores - is written as it states it.
 	// kept for one release: stored-ask-state
-	var nodes map[string]askNodeAnswer
-	// kept for one release: stored-ask-state
-	if !twoBuilds && len(rows)+len(sources) > 0 {
-		ids := make([]string, 0, len(rows)+len(sources))
-		for _, ask := range rows {
-			ids = append(ids, ask.ID)
-		}
-		for _, source := range sources {
-			ids = append(ids, source.ask.ID)
-		}
-		if nodes, err = askNodeAnswers(ctx, tx, ids); err != nil {
-			return settlementReconciliation{}, err
-		}
-	}
-	// kept for one release: stored-ask-state
-	shown := func(ask model.Ask) model.Ask {
-		if twoBuilds {
-			return ask
-		}
-		return keptFromItsNode(ask, nodes)
+	shown, err := shownAsks(ctx, tx, twoBuilds, read)
+	if err != nil {
+		return settlementReconciliation{}, err
 	}
 	reconciled := settlementReconciliation{}
 	if len(blocks)+len(invalidBlocks) != 0 {
@@ -721,7 +703,7 @@ func (s *Service) reconcileAskBlocks(
 			))
 		}
 		// Once the fleet is one build, an invalid block keeps none of the attributes a version can
-		// store where it has no ask row (R10), which stays, and an indexed one what a version keeps
+		// store where it has no ask row (R5), which stays, and an indexed one what a version keeps
 		// of its ask, which goes with that form; the roll window's branch goes with it.
 		// kept for one release: roll-window-attributes
 		if twoBuilds {
@@ -1499,7 +1481,7 @@ func askInvalidAttribute(reason string) func(*pmdoc.Node) bool {
 }
 
 // clearAskInvalidAttribute takes `invalid` off node, an ask block settlement reads again, and
-// reports whether it held one, so a repaired block shows no old reason (G1).
+// reports whether it held one, so a repaired block shows no old reason.
 func clearAskInvalidAttribute(node *pmdoc.Node) bool {
 	if _, present := node.Attrs["invalid"]; !present {
 		return false
@@ -1512,7 +1494,7 @@ func clearAskInvalidAttribute(node *pmdoc.Node) bool {
 // that no row indexes: resolved while another build serves (resolveUnindexedAskBlock), and none
 // of the seven attributes a version can store once the fleet is one build, as the close's sweep
 // leaves such a block (unindexedAskResolution). The block reads, so it carries no `invalid`
-// either way. The one-build write is R10's and stays; the roll window's branch is
+// either way. The one-build write is R5's and stays; the roll window's branch is
 // unindexedAskResolution's and goes with it.
 func unindexedAskWrite(twoBuilds bool) func(*pmdoc.Node) bool {
 	resolve := unindexedAskResolution(twoBuilds)

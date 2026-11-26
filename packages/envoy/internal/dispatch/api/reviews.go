@@ -32,7 +32,7 @@ import (
 // version. When the answer, resolve, decline, close or reopen is that version's whole change
 // (docs' changesAskAttributesAlone: text a person was editing in the browser can settle into the
 // same version), the version changes only the server-owned attributes of the ask's block -
-// `state`, and `answered_by` and `answered_at` where the ask is answered - and R10's carry
+// `state`, and `answered_by` and `answered_at` where the ask is answered - and R5's carry
 // carries a standing approval across it.
 // A request for approval is an ask of kind "approval" with fixed options, so it reaches the
 // human through the Inbox like any question; one opened on a document with an

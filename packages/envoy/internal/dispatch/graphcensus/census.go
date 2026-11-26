@@ -453,8 +453,8 @@ func provedSessionOwner(actor string) string {
 // answer a reopen took off the row is still the person that answer named: every person an ask's
 // answered_by or decided_by ever named, asserted or retracted since, is read here off the store's
 // own log (answeredHistory). The census's whole reading of the writers the store names, the
-// authors of decisions and readings beside the asks' read once for a run (storedAuthors), comes
-// with the decision and reading nodes (slice 5 of cybermonklabs/legion#4173).
+// authors of decisions and readings beside the asks', comes with the decision and reading nodes
+// (slice 5 of cybermonklabs/legion#4173).
 var commentPeople = `
 	select distinct user_threads_login(author.login) as login
 	from (

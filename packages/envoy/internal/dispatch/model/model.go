@@ -2034,9 +2034,9 @@ type ArtifactBlock struct {
 // TextAsk is one entry of the asks member the text routes answer (GET
 // /api/v1/artifacts/{id}/text and its issue and project slug variants): an ask block of the
 // markdown they serve, in document order, with its answer as the ask's node holds it - its
-// answer_state, answered_by, answered_at, selected and answer tuples, read as the Decisions read's
-// entries read them - and the asks row saying only which ask indexes the block. A person's answer
-// is held once, on the ask's node, so that markdown holds none of it; each field carries the name
+// answer_state, answered_by, answered_at, selected and answer tuples - and the asks row saying only
+// which ask indexes the block. A person's answer is held once, on the ask's node, so that markdown
+// holds none of it; each field carries the name
 // and the value the server-owned attribute of the block carried in the release before. State is
 // the block's ask's state, open where its node holds none; for a copy of an ask of another
 // document of the same owner, the source's, with CopiedFrom the source's id and

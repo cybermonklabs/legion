@@ -1246,7 +1246,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 // unchanged: every reader of this build that reads asks sends it, `dispatch doc-read` and the
 // dashboard among them. A request without it, which is every reader of a release before this one,
 // is served the kept form (docs.KeptText), from which that reader reads which asks are answered or
-// resolved, and by whom (R10). Both forms answer the same token.
+// resolved, and by whom (R5). Both forms answer the same token.
 const asksHeader = "Dispatch-Asks"
 
 // readsAsks reports whether this request said that it reads the asks member (asksHeader).

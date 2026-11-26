@@ -1,4 +1,9 @@
-import { askOpenerLines, askOpeners, parseBlockPointerValue } from "@legion/contracts";
+import {
+  askOpenerAttributes,
+  askOpenerLines,
+  askOpeners,
+  parseBlockPointerValue,
+} from "@legion/contracts";
 import type { DOMOutputSpec, Node as ProseMirrorNode } from "prosemirror-model";
 
 import type { Ask, AskOption, AskUrgency, BlockTypeSchema, TextAsk } from "../../api/types";
@@ -343,18 +348,6 @@ export function servedAskOf(
     : { ask: source, copiedFrom: `dispatch://${owner}/${place}` };
 }
 
-/** The character references the renderer writes in a directive attribute's value
- *  (pmdoc's escapeDirectiveAttribute), each with the character it stands for. */
-// kept for one release: release-before-text
-const ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
-  "&#x22;": '"',
-  "&#xA;": "\n",
-  "&#xD;": "\r",
-  "&amp;": "&",
-  "&gt;": ">",
-  "&lt;": "<",
-};
-
 /**
  * The ask the block `blockId` shows, as `markdown`, a document's live text (`GET
  * /api/v1/artifacts/{id}/text`) from a Dispatch of the release before, renders it on the block's
@@ -362,9 +355,10 @@ const ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
  * the block's own ask, or of the ask on another document of the owner the block is a copy of,
  * with that ask's id and document (`copied_from`, `copied_from_document`). A Dispatch of this
  * release writes none of them into the text and answers them in its `asks` (`liveAskOf`). Only a
- * real opener of the block counts, as the CLI reads one (`askOpenerLines`, `askOpeners`): a line
- * that quotes the opener in fenced code or in front matter is the document's own text. Undefined
- * where the text renders the block no state, or holds no real opener of it, or more than one.
+ * real opener of the block counts, as the CLI reads one (`askOpenerLines`, `askOpeners`), and its
+ * attributes are read as the CLI reads them (`askOpenerAttributes`): a line that quotes the opener
+ * in fenced code or in front matter is the document's own text. Undefined where the text renders
+ * the block no state, or holds no real opener of it, or more than one.
  */
 // kept for one release: release-before-text
 export function renderedAskOf(
@@ -372,25 +366,8 @@ export function renderedAskOf(
   blockId: string
 ): ServedAsk | undefined {
   const openers = markdown === undefined ? [] : askOpeners(askOpenerLines(markdown), blockId);
-  if (openers.length !== 1) {
-    return undefined;
-  }
-  const attributes: Record<string, unknown> = {};
-  for (const [, name, value] of openers[0].matchAll(/([\w-]+)="([^"]*)"/g)) {
-    attributes[name] = value.replace(
-      /&(?:#x22|#xA|#xD|amp|gt|lt);/g,
-      (reference) => ATTRIBUTE_REFERENCES[reference] ?? reference
-    );
-  }
-  // A list of strings is written as its JSON (pmdoc's encodeTypedAttribute).
-  if (typeof attributes.selected === "string") {
-    try {
-      attributes.selected = JSON.parse(attributes.selected);
-    } catch {
-      attributes.selected = undefined;
-    }
-  }
-  return attributes.state === undefined ? undefined : { rendered: recordedAnswer(attributes) };
+  const ask = openers.length === 1 ? askOpenerAttributes(openers[0]) : undefined;
+  return ask?.state === undefined ? undefined : { rendered: recordedAnswer(ask) };
 }
 
 /**

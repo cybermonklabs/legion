@@ -719,31 +719,6 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event, ca
 	})
 }
 
-// stateCopiesAndReadability queues the copy relations and ask readability under the version's
-// event, after the block index has planned the nodes. A settlement without a version uses NoEvent.
-func (st *settlement) stateCopiesAndReadability(ctx context.Context, at time.Time, cause int64) error {
-	who := st.credit.versionActor()
-	copies, err := st.reconciliation.claimCopies(ctx, st.tx, st.room, who, at)
-	if err != nil {
-		return err
-	}
-	readability, err := st.reconciliation.stateInvalidReasons(ctx, st.tx, who, at)
-	if err != nil || copies == nil && readability == nil {
-		return err
-	}
-	return write(ctx, st.tx, func(b *store.WriteBatch) error {
-		if copies != nil {
-			if err := copies(b, cause); err != nil {
-				return err
-			}
-		}
-		if readability != nil {
-			return readability(b, cause)
-		}
-		return nil
-	})
-}
-
 // commitVersion renders the document the settlement settled, writes its version when the document
 // now reads differently from the latest one, and commits the transaction all of that and the
 // settlement's stored updates are in.

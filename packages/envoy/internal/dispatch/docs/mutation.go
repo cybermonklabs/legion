@@ -2008,13 +2008,10 @@ func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor m
 	if err != nil {
 		return err
 	}
-	keep := rollWindowAskAttributes(twoBuilds, ask, "")
-	if keep == nil {
-		// ask holds what the route states on the ask's node in this transaction, its writes queued
-		// behind this one, so the block is written from the node as the commit leaves it.
-		// kept for one release: stored-ask-state
-		keep = keptAskState(ask, "")
-	}
+	// Once the fleet is one build, ask holds what the route states on the ask's node in this
+	// transaction, its writes queued behind this one, so the block is written from the node as the
+	// commit leaves it.
+	keep := fleetAskAttributes(twoBuilds, ask, "")
 	err = s.applyLive(ctx, *ask.BlockArtifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		valid, err := startTree(current, doc)
 		if err != nil {
@@ -2314,7 +2311,7 @@ func (s *Service) captureLiveTextAndAuthors(ctx context.Context, room string, ac
 // and captureWrite), as a version stores it: once the fleet is one build (anotherBuildServes), each
 // ask block that has no ask row and is no copy of an ask has every attribute a version can store
 // taken off (withoutStoredAskAttributes), as settlement takes them off it
-// (unindexedAskResolution): it keeps none of the eight (R10), whatever state its live tree gives
+// (unindexedAskResolution): it keeps none of the eight (R5), whatever state its live tree gives
 // it, the state="resolved" a closed issue's settlement or the close's sweep wrote while another
 // build served among them. Each ask block that has an ask (keptAskBlocks) has only what no version
 // written then holds taken off, the answer's words and selection and an open state
@@ -2327,7 +2324,7 @@ func (s *Service) captureLiveTextAndAuthors(ctx context.Context, room string, ac
 // build serves, whose pages read the attributes, which settlement keeps in step with each ask
 // meanwhile. The fleet is read only for a tree holding one (holdsStoredAskAttribute).
 //
-// The strip is R10's and stays. The roll window's read of the fleet goes with it, and the lighter
+// The strip is R5's and stays. The roll window's read of the fleet goes with it, and the lighter
 // strip of a block that has an ask goes with the form a version keeps.
 func storableVersionTree(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) (*pmdoc.Node, error) {
 	// kept for one release: roll-window-attributes

@@ -171,15 +171,11 @@ export function blockPointerRefusal(
 /**
  * Why a typed block of `type` holding the attribute values `attrs` may not stand in the document
  * `documentRef` (its unversioned reference), or undefined when it may: it names something of
- * another issue than the document's own. The document service refuses such a tie on every write
- * that takes markdown - an upload, an editor operation, an issue's first document, a rebuild -
- * quoting the attribute and the value (pmdoc.CheckIssueTies); a browser's write it never refuses,
- * and settlement stores the block with no tuple and no row for the tie to the other issue, while
- * a tie of the same block inside the issue stands. A `block[]` attribute with no `targets` (a
- * decision's or an ask's `shaped`) points at a block of any document of the document's own issue,
- * and an `ask` attribute (a decision's `from_ask`) names an ask of that issue. A command and a
- * paste are both held to it, so neither builds a document the service refuses or a tie it drops.
- * Without `documentRef`, or for a document no issue owns, nothing is refused here.
+ * another issue than the document's own. A `block[]` attribute with no `targets` (a decision's or
+ * an ask's `shaped`) points at a block of any document of the document's own issue, and an `ask`
+ * attribute (a decision's `from_ask`) names an ask of that issue. A command and a paste are both
+ * held to it, so neither builds a tie to another issue. Without `documentRef`, or for a document
+ * no issue owns, nothing is refused here.
  */
 export function otherIssueRefusal(
   type: BlockTypeSchema,

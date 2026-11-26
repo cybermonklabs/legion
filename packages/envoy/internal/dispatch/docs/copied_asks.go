@@ -18,7 +18,7 @@ import (
 )
 
 // copiedAskSources finds the ask each block of blocks was copied from, keyed by block id, among the
-// blocks no ask of this document indexes (rows). Block ids are unique per document only
+// blocks no ask of this document indexes (unindexed). Block ids are unique per document only
 // (asks_block_id_unique is on block_artifact_id and block_id), so a document copied from another
 // carries its ask blocks' ids, and an id an author chose, such as `decision`, can name unrelated
 // questions on two documents. A block is therefore a copy only of an ask on another document of
@@ -46,19 +46,15 @@ import (
 // settlement holds this document's owner lock and room lock, and a source's answer route takes the
 // source's owner lock before its own document's room. A project document's settlement also takes
 // its project's copy lock first (lockProjectCopies), and then reads the sources
-// (readCopiedAskSources).
+// (readCopiedAskSources). Settlement reads its blocks' sources through it (readBlockAsks).
 func copiedAskSources(
 	ctx context.Context,
 	tx pgx.Tx,
 	artifactID string,
 	owner artifactOwner,
 	blocks []askBlock,
-	rows map[string]model.Ask,
+	unindexed []string,
 ) (map[string]copiedSource, error) {
-	unindexed := unindexedAskBlockIDs(blocks, rows)
-	if len(unindexed) == 0 {
-		return nil, nil
-	}
 	if err := lockProjectCopies(ctx, tx, owner); err != nil {
 		return nil, err
 	}
@@ -78,8 +74,8 @@ func unindexedAskBlockIDs(blocks []askBlock, rows map[string]model.Ask) []string
 
 // readCopiedAskSources is copiedAskSources for the blocks of blocks under the ids unindexed, which
 // takes no copy lock: its caller has taken the one owner needs, or owner is an issue, whose
-// documents need none (lockProjectCopies), or its caller opens no ask from what it reads (a write's
-// refusal of a reading, refuseReadingsWithoutAnswers).
+// documents need none (lockProjectCopies), or its caller opens no ask from what it reads
+// (readBlockAsks for every reader but settlement).
 func readCopiedAskSources(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -152,6 +148,80 @@ func readCopiedAskSources(
 		}
 	}
 	return sources, nil
+}
+
+// blockAsks is the ask each ask block of a document has, as readBlockAsks reads it: rows, each ask
+// of the document that indexes a block (loadAskBlocks), by block id; sources, the ask on another
+// document of its owner that each block no row indexes is a copy of, by block id; and owner, the
+// document's owner where a block no row indexes made the read need it, nil otherwise.
+type blockAsks struct {
+	rows    map[string]model.Ask
+	sources map[string]copiedSource
+	owner   *artifactOwner
+}
+
+// copySourcesRead is how readBlockAsks reads the asks the blocks no row indexes are copies of:
+// copiedAskSources, which takes the owner's copy lock first, or readCopiedAskSources, which takes
+// none.
+type copySourcesRead func(
+	ctx context.Context,
+	tx pgx.Tx,
+	artifactID string,
+	owner artifactOwner,
+	blocks []askBlock,
+	unindexed []string,
+) (map[string]copiedSource, error)
+
+// readBlockAsks reads, in tx, the ask each of blocks, ask blocks of the document artifactID, has
+// (blockAsks): the rows first, as the caller's transaction, which holds the document owner's lock,
+// reads them; then the asks the blocks no row indexes are copies of, through copies:
+// copiedAskSources for settlement, which opens an ask from what it reads, and readCopiedAskSources
+// for every other reader, which opens none and so takes no copy lock. owner is the document's
+// owner, nil where the caller does not hold it, and then read only where a block no row indexes
+// is left to read the copies of (documentOwner). It is the one read of which ask a document's
+// blocks have, so every reader finds a copy as settlement finds it.
+func readBlockAsks(
+	ctx context.Context,
+	tx pgx.Tx,
+	artifactID string,
+	owner *artifactOwner,
+	blocks []askBlock,
+	copies copySourcesRead,
+) (blockAsks, error) {
+	rows, err := loadAskBlocks(ctx, tx, artifactID)
+	if err != nil {
+		return blockAsks{}, err
+	}
+	read := blockAsks{rows: rows}
+	unindexed := unindexedAskBlockIDs(blocks, rows)
+	if len(unindexed) == 0 {
+		return read, nil
+	}
+	if owner == nil {
+		found, err := documentOwner(ctx, tx, artifactID)
+		if err != nil {
+			return blockAsks{}, err
+		}
+		owner = &found
+	}
+	read.owner = owner
+	if read.sources, err = copies(ctx, tx, artifactID, *owner, blocks, unindexed); err != nil {
+		return blockAsks{}, err
+	}
+	return read, nil
+}
+
+// askIDs is the id of each ask read holds, each row's and each source's: the asks whose nodes
+// askNodeAnswers reads for the blocks.
+func (read blockAsks) askIDs() []string {
+	ids := make([]string, 0, len(read.rows)+len(read.sources))
+	for _, ask := range read.rows {
+		ids = append(ids, ask.ID)
+	}
+	for _, source := range read.sources {
+		ids = append(ids, source.ask.ID)
+	}
+	return ids
 }
 
 // copiedSource is the ask a copied block was copied from and the address of the document it is
@@ -425,9 +495,9 @@ func copiesOf(ctx context.Context, tx pgx.Tx, document documentAsks) ([]string, 
 // documentOwner reads the owner of the document artifactID without locking it: the owner this
 // transaction recorded for an artifacts row it is creating (Ledger.RegisterPendingArtifact), whose
 // insert is queued and which no read of the transaction finds before its write phase, else the
-// stored row's. A new document's own checks run before that insert - an upload's refusal of a
-// reading in a copy of an answered ask reads the owner whose documents the copy's source is
-// looked for among (shownAskAnswers) - as addressOfDocument answers for its address.
+// stored row's. A read of which ask a new document's blocks have (readBlockAsks) can run before
+// that insert, and reads the owner whose documents a copy's source is looked for among, as
+// addressOfDocument answers for its address.
 func documentOwner(ctx context.Context, tx pgx.Tx, artifactID string) (artifactOwner, error) {
 	if address, pending := pendingArtifact(ctx, artifactID); pending {
 		owner := artifactOwner{Project: address.Project}

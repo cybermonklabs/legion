@@ -1,3 +1,4 @@
+import type { TextAsk } from "./dispatch-api";
 import { readAskBlocks } from "./dispatch-block-reader";
 import { hasControlCharacter } from "./dispatch-href";
 import { referenceTargetFits, utf8Bytes } from "./dispatch-text-rules";
@@ -508,7 +509,7 @@ const TYPED_OPENER = /^(:{3,})([A-Za-z0-9_-]+)\{.*\}$/s;
  * The web's reader of a live text of the release before, and the CLI's reader of a live text and
  * its check of a version for open ask blocks before an approval request, all read openers here.
  * So none takes a line that a document's writer quoted for a state or an answer that Dispatch
- * recorded. Go's twin is refs.questionBlocks.
+ * recorded. Go's twin is pmdoc.QuestionBlocks.
  */
 export function askOpenerLines(markdown: string): string[] {
   const lines = markdown.split("\n").map((line) => line.replace(/\r$/, ""));
@@ -522,13 +523,29 @@ export function askOpenerLines(markdown: string): string[] {
   );
 }
 
-/** The character references `typedBlockIdAttribute` writes in a quoted id, each with its character. */
-const ID_REFERENCES: Readonly<Record<string, string>> = {
+/**
+ * The character references the renderer writes in a directive attribute's value (pmdoc's
+ * escapeDirectiveAttribute), each with the character it stands for. A quoted id holds the four
+ * `typedBlockIdAttribute` writes. It is the one table every reader of an ask opener's attributes
+ * reads them back by (`askOpenerBlockId`, `askOpenerAttributes`).
+ */
+const ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
   "&amp;": "&",
   "&#x22;": '"',
+  "&lt;": "<",
+  "&gt;": ">",
   "&#xA;": "\n",
   "&#xD;": "\r",
 };
+
+/** `raw`, a quoted attribute value, with the character references the renderer writes in it
+ *  (ATTRIBUTE_REFERENCES) read back. */
+function attributeValue(raw: string): string {
+  return raw.replace(
+    /&(?:amp|#x22|lt|gt|#xA|#xD);/g,
+    (reference) => ATTRIBUTE_REFERENCES[reference] ?? reference
+  );
+}
 
 /**
  * The block id that `line`, an ask block's opener as `askOpenerLines` gives it, names: the
@@ -536,9 +553,9 @@ const ID_REFERENCES: Readonly<Record<string, string>> = {
  * a space or the closing brace. A `#id` runs to the first TYPED_BLOCK_ID_SHORTCUT_EXCLUDED
  * character, so a no-break space, a line separator (U+2028) or an ideographic space stays in the
  * id. An `id="…"` names the id that its `&amp;`, `&#x22;`, `&#xA;` and `&#xD;` read back to, where
- * the renderer writes that id so. Undefined where the line writes its id in no spelling that the
- * renderer writes. `askOpeners` reads ids here, and so does the CLI's reader of an opener's
- * attributes.
+ * the renderer writes that id so (attributeValue, whose other references no id the renderer writes
+ * holds). Undefined where the line writes its id in no spelling that the renderer writes.
+ * `askOpeners` reads ids here, and so does `askOpenerAttributes`.
  */
 export function askOpenerBlockId(line: string): string | undefined {
   // Each line opens the directive (`:::ask{`), so its first brace is the directive's.
@@ -557,15 +574,68 @@ export function askOpenerBlockId(line: string): string | undefined {
   } else if (attributes.startsWith('id="')) {
     end = attributes.indexOf('"', 'id="'.length) + 1;
     if (end === 0) return undefined;
-    id = attributes
-      .slice('id="'.length, end - 1)
-      .replace(/&(?:amp|#x22|#xA|#xD);/g, (reference) => ID_REFERENCES[reference] ?? reference);
+    id = attributeValue(attributes.slice('id="'.length, end - 1));
   } else {
     return undefined;
   }
   const after = attributes.charAt(end);
   if (after !== " " && after !== "}") return undefined;
   return typedBlockIdAttribute(id) === attributes.slice(0, end) ? id : undefined;
+}
+
+/**
+ * The ask that `line`, an ask block's opener as `askOpenerLines` gives it, carries on it, as a
+ * Dispatch of the release before writes it there: the block id (`askOpenerBlockId`) and each of
+ * the block's server-owned attributes the line holds, its value with the character references the
+ * renderer writes read back (attributeValue), and `selected` read as the JSON list of strings it
+ * is written as. An attribute the line does not hold, or a `selected` that holds no such list, is
+ * absent. Undefined where the line names no block id. The CLI's reader of a live text and its check
+ * of a version for open ask blocks, and the web's reader of a live text of the release before, all
+ * read an opener's attributes here, so they read one line one way.
+ */
+// kept for one release: release-before-text
+export function askOpenerAttributes(line: string): TextAsk | undefined {
+  const end = line.lastIndexOf("}");
+  const start = line.indexOf("ask{");
+  if (end <= start) return undefined;
+  const attributes = line.slice(start + "ask{".length, end);
+  const values = new Map<string, string>();
+  for (const [, name = "", raw = ""] of attributes.matchAll(/([\w-]+)="([^"]*)"/g)) {
+    values.set(name, attributeValue(raw));
+  }
+  const id = askOpenerBlockId(line);
+  if (id === undefined) return undefined;
+  return {
+    block_id: id,
+    ...optional("state", values.get("state") as TextAsk["state"]),
+    ...optional("answered_by", values.get("answered_by")),
+    ...optional("answered_at", values.get("answered_at")),
+    ...optional("selected", selectionOf(values.get("selected"))),
+    ...optional("answer", values.get("answer")),
+    ...optional("copied_from", values.get("copied_from")),
+    ...optional("copied_from_document", values.get("copied_from_document")),
+  };
+}
+
+/** `{ [name]: value }`, or nothing where value is undefined. */
+// kept for one release: release-before-text
+function optional<K extends string, V>(name: K, value: V | undefined): { [key in K]?: V } {
+  return value === undefined ? {} : ({ [name]: value } as { [key in K]?: V });
+}
+
+/** The options a `selected` attribute names, a JSON list of strings, or undefined where it holds
+ *  none or no such list. */
+// kept for one release: release-before-text
+function selectionOf(value: string | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === "string")
+      ? parsed
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The lines of `openers`, a version's ask block openers as `askOpenerLines` gives them, that

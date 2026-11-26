@@ -37,7 +37,7 @@ func withAskQuestion(t *testing.T, blockID, question string) func(*pmdoc.Node) *
 	}
 }
 
-// Settlement keeps writing `invalid` into the live tree (G1), and where the block has an ask row
+// Settlement keeps writing `invalid` into the live tree, and where the block has an ask row
 // the reason is a value of the ask's node too. A block that fails the strict read is flagged in the
 // live tree and its node holds the reason; once the block reads again the live tree's attribute is
 // gone, so the repaired block shows no old reason, and the node's value is retracted. A block with
@@ -116,7 +116,7 @@ func TestTheInvalidReasonIsWrittenAndClearedOnTheAskNode(t *testing.T) {
 }
 
 // On a fleet of one build a block that fails the strict read keeps of the seven attributes a
-// version can store only what a version keeps of its ask as the ask's node holds it (R10,
+// version can store only what a version keeps of its ask as the ask's node holds it (R5,
 // keptAskState): an answered ask's block a browser empties and forges another answerer onto keeps
 // its node's state, answerer and time, and the forged answerer does not come back; a block no ask
 // row backs keeps none of the seven, whatever it claims.

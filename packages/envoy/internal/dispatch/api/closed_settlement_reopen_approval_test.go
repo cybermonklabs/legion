@@ -22,7 +22,7 @@ import (
 // (prepareRestoration, recordRestoredAsksTx). The settlements the closed period and the reopen
 // leave owed each write one version, whose only change is the server-owned attributes of the
 // withdrawn and restored asks' blocks (R3): neither is a change the request's agent made to the
-// text it handed the person, so R10's turn rule keeps the request with the person across both
+// text it handed the person, so R5's turn rule keeps the request with the person across both
 // (docs.MoveApprovalAsk). So after both have run, the request still waits on the person, the spec
 // still reads awaiting approval from the person, and the request is still in the person's Inbox.
 // The browser suite drives the same path (e2e/close-withdraws-asks.e2e.ts, whose "Waiting on you
@@ -373,7 +373,7 @@ func TestAReopenKeepsTheRequestWithThePersonWhenAClosedSettlementWroteBackItsTex
 
 // A reopen keeps a restored request with the person when the version its settlement writes differs
 // from the version the request names in the server-owned attributes of its ask blocks alone, each
-// block agreeing with its node (R10's turn rule, docs.MoveApprovalAsk): the request names a version
+// block agreeing with its node (R5's turn rule, docs.MoveApprovalAsk): the request names a version
 // written while the release before served, whose open ask's block holds `state="open"`; on a fleet
 // of one build the close withdraws the request and its settlement writes the ask resolved, and the
 // reopen restores both, so the reopen's settlement writes the open ask's block with no state, the
@@ -662,13 +662,13 @@ const reopenDecisionSpec = "Context\n\n" +
 // reopen leaves owed has run, still stands once that settlement has run. The spec holds a
 // decision; the close withdraws it and the reopen restores it, on the ask's node and its row, and
 // on a fleet of one build each also writes the block's state, which a version keeps for the
-// release before's readers (R3, R10's stored-ask-state): the settlement on the closed issue
+// release before's readers (R3, R5's stored-ask-state): the settlement on the closed issue
 // writes one version showing the decision resolved. The reopen through PATCH writes it open
 // again and leaves the spec owed the settlement that versions that write
 // (docs.MarkReopenOwedAskDocuments), and alice approves the spec from its header before that
 // settlement runs: there is no approval request, and her review pins the closed issue's version,
 // still the latest. That settlement writes one version, whose only change is the block's state,
-// and R10's case carries her approval to it, so the spec reads approved by alice at it. While two
+// and R5's case carries her approval to it, so the spec reads approved by alice at it. While two
 // builds serve the same holds with the roll window's attributes
 // (TestWhileTwoBuildsServeAReopenThatRestoresAnAskKeepsTheApprovalCurrent). The settle delay is an
 // hour, so the test runs each settlement itself (SettleIssueDocuments), and nothing settles between

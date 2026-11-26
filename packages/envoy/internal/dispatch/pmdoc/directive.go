@@ -98,7 +98,7 @@ func (p *typedDirectiveParser) Continue(node ast.Node, reader gmtext.Reader, _ p
 	// A line of at least the fence's colons indented less than four columns past where the typed
 	// block's lines start closes it, as the browser editor's parser closes it, whatever block inside
 	// it the line would otherwise continue.
-	if indent < 4 && offset < len(line) && FenceColons(string(line[offset:])) >= directive.fence {
+	if indent < 4 && offset < len(line) && fenceColons(string(line[offset:])) >= directive.fence {
 		directive.Closed = true
 		directive.closer = segment.Start
 		reader.AdvanceToEOL()
@@ -118,7 +118,7 @@ func (p *typedDirectiveParser) Close(_ ast.Node, _ gmtext.Reader, _ parser.Conte
 
 // closingColons is the longest line of colons written inside typed block n, whose own lines start
 // at column on the written line, that the browser editor's parser could read as a fence closing n:
-// a line of three or more colons (FenceColons) whose text starts at most three columns past
+// a line of three or more colons (fenceColons) whose text starts at most three columns past
 // column, even inside fenced code. Columns are the written line's: a list marker adds its width, and a tab
 // advances to the next multiple of four from the column it stands at, so in a typed block two
 // columns in, a tab reaches only two past it. A line in a blockquote begins with its `>` and closes
@@ -140,7 +140,7 @@ func closingColons(n *Node, column int) int {
 		case "code_block":
 			for _, text := range node.Children {
 				for _, line := range strings.Split(text.Text, "\n") {
-					if colons := FenceColons(line); colons >= 3 && textColumn(line, at)-column <= 3 {
+					if colons := fenceColons(line); colons >= 3 && textColumn(line, at)-column <= 3 {
 						longest = max(longest, colons)
 					}
 				}
@@ -185,10 +185,9 @@ func textColumn(line string, column int) int {
 	return column
 }
 
-// FenceColons is the number of colons in line when they are all it holds but spaces, tabs and a
-// line feed, and 0 otherwise. refs.questionBlocks reads a typed block's closing fence with it, as
-// the parser does (typedDirectiveParser.Continue).
-func FenceColons(line string) int {
+// fenceColons is the number of colons in line when they are all it holds but spaces, tabs and a
+// line feed, and 0 otherwise.
+func fenceColons(line string) int {
 	return colonLine(strings.Trim(line, " \t\n"))
 }
 
@@ -257,7 +256,7 @@ func (p *unsupportedDirectiveParser) CanAcceptIndentedLine() bool {
 // refused where its attributes are, since the browser editor's parser refuses it too. The line
 // is passed past its indentation and its containers' markers and without its line ending, as
 // the parser passes it (typedDirectiveParser.Open), and this is the one reader of the grammar:
-// a caller outside the document parser - refs.questionBlocks, which scans a stored version's
+// a caller outside the document parser - QuestionBlocks, which scans a stored version's
 // lines for its question blocks - reads a line with it rather than with a grammar of its own.
 func ParseTypedDirectiveOpen(line string) (string, Attrs, bool) {
 	colons := colonRun([]byte(line))
@@ -266,7 +265,7 @@ func ParseTypedDirectiveOpen(line string) (string, Attrs, bool) {
 	}
 	rest := line[colons:]
 	nameEnd := 0
-	for nameEnd < len(rest) && DirectiveNameByte(rest[nameEnd]) {
+	for nameEnd < len(rest) && directiveNameByte(rest[nameEnd]) {
 		nameEnd++
 	}
 	if nameEnd == 0 || nameEnd == len(rest) || rest[nameEnd] != '{' || !strings.HasSuffix(rest, "}") {
@@ -307,7 +306,7 @@ func parseDirectiveAttributes(value string) (Attrs, error) {
 		case '.':
 			start := offset + 1
 			offset = start
-			for offset < len(value) && DirectiveNameByte(value[offset]) {
+			for offset < len(value) && directiveNameByte(value[offset]) {
 				offset++
 			}
 			if start == offset {
@@ -321,7 +320,7 @@ func parseDirectiveAttributes(value string) (Attrs, error) {
 			}
 		default:
 			start := offset
-			for offset < len(value) && DirectiveNameByte(value[offset]) {
+			for offset < len(value) && directiveNameByte(value[offset]) {
 				offset++
 			}
 			if start == offset {
@@ -448,9 +447,7 @@ func directiveName(name string) bool {
 	return true
 }
 
-// DirectiveNameByte reports whether char can stand in a directive's name: an ASCII letter or
-// digit, `_` or `-`.
-func DirectiveNameByte(char byte) bool {
+func directiveNameByte(char byte) bool {
 	return char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '_' || char == '-'
 }
 
@@ -531,10 +528,10 @@ func unsupportedDirectiveReason(line string) (string, bool) {
 		}
 		return "", false
 	}
-	if strings.HasPrefix(line, "::") && len(line) > 2 && DirectiveNameByte(line[2]) {
+	if strings.HasPrefix(line, "::") && len(line) > 2 && directiveNameByte(line[2]) {
 		return "leaf directives (::name) are not supported", true
 	}
-	if strings.HasPrefix(line, ":") && len(line) > 1 && DirectiveNameByte(line[1]) && strings.Contains(line, "{") {
+	if strings.HasPrefix(line, ":") && len(line) > 1 && directiveNameByte(line[1]) && strings.Contains(line, "{") {
 		return "text directives (:name{...}) are not supported", true
 	}
 	return "", false

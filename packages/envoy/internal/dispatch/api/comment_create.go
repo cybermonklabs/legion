@@ -1387,7 +1387,7 @@ func (s *server) queueCommentCreated(
 	// takes the author's person node and their session node in one statement in ascending (kind,
 	// id): a follow before it would take the session first and leave the person to that
 	// statement, which is the pair in the other order, and two such writes racing over a session
-	// and an owner the store holds neither of would deadlock (R17). The follow is planned here,
+	// and an owner the store holds neither of would deadlock. The follow is planned here,
 	// in the read phase, under the owner lock the comment's write holds over the ask's thread
 	// (asks.PlanFollowAuthor), and queued in that step.
 	var follow asks.PlannedFollow

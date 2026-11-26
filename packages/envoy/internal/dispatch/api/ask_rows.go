@@ -203,12 +203,12 @@ var askNodeAnswerKinds = []string{
 // askNodeAnswerColumn is the answer state of the ask aliased a as its node holds it: each value
 // and relation of askNodeAnswerKinds that stands, as a JSON list of nodeFact, read through the
 // store's one reading of the log (graphstore.CurrentTupleRead), as docs' askNodeAnswers reads the
-// text routes' asks and the Decisions read's entries read theirs (decisionEntriesRead). It is null
-// for a row that names no node (asks.node_kind): the one writer of an answer state writes the
-// answer on the node only once the row names it (asks.Settle), so the row of an ask a process of
-// the release before wrote, until the boot step's backfill marks it, and of an ask whose relations
-// are past the store's bound (graphstore.AskFacts) is its answer's only record.
-// readAskNodeAnswer decodes it; askNodeAnswerOf writes it for an ask of another alias.
+// text routes' asks. It is null for a row that names no node (asks.node_kind): the one writer of
+// an answer state writes the answer on the node only once the row names it (asks.Settle), so the
+// row of an ask a process of the release before wrote, until the boot step's backfill marks it,
+// and of an ask whose relations are past the store's bound (graphstore.AskFacts) is its answer's
+// only record. readAskNodeAnswer decodes it; askNodeAnswerOf writes it for an ask of another
+// alias.
 var askNodeAnswerColumn = askNodeAnswerOf("a")
 
 // askNodeAnswerOf is askNodeAnswerColumn for the ask aliased ask.

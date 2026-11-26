@@ -189,7 +189,7 @@ func TestThePreviousReleasesCLIRequestsApprovalOverDecidedAsksOnceTheFleetIsOneB
 // stops and leaves the fleet; through this build an agent changes one word of the spec's prose,
 // the spec's first accepted write on a fleet of one build.
 // In both cases the version that write settles into keeps on the ask's opening line the state, the
-// answerer and the time the previous build's own version stored (R10), and none of selected,
+// answerer and the time the previous build's own version stored (R5), and none of selected,
 // answer and invalid; and the previous build's CLI then requests approval of the spec against this
 // build's server and is refused nothing.
 func TestThePreviousReleasesCLIRequestsApprovalOverAnAskItAnsweredBeforeTheCatchUp(t *testing.T) {

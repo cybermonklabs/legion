@@ -1,5 +1,5 @@
 import type { TextAsk } from "@legion/contracts";
-import { askOpenerBlockId, askOpenerLines } from "@legion/contracts";
+import { askOpenerAttributes, askOpenerLines } from "@legion/contracts";
 
 /**
  * A document's live text as `GET /api/v1/artifacts/{id}/text` answers it. A Dispatch of this
@@ -30,77 +30,14 @@ export function liveTextAsks(text: LiveText): readonly TextAsk[] {
 }
 
 /** The asks that `lines`, opening lines of ask blocks as `askOpenerLines` gives them, carry on
- *  them, as the release before writes them: one per line that names a block id. */
+ *  them, as the release before writes them (`askOpenerAttributes` in packages/contracts, which the
+ *  web reads them by too): one per line that names a block id. */
 // kept for one release: release-before-text
 export function openerAsks(lines: readonly string[]): readonly TextAsk[] {
   return lines.flatMap((line) => {
-    const opener = openerOf(line);
+    const opener = askOpenerAttributes(line);
     return opener === undefined ? [] : [opener];
   });
-}
-
-/** The ask block `line`, a line past its containers' markers that opens the directive, opens, its
- *  attributes read as the release before wrote them, or undefined where it names no block id. Its
- *  id is read as `askOpeners` reads it (`askOpenerBlockId`). */
-// kept for one release: release-before-text
-function openerOf(line: string): TextAsk | undefined {
-  const end = line.lastIndexOf("}");
-  const start = line.indexOf("ask{");
-  if (end <= start) return undefined;
-  const attributes = line.slice(start + "ask{".length, end);
-  const values = new Map<string, string>();
-  for (const [, name = "", raw = ""] of attributes.matchAll(/([\w-]+)="([^"]*)"/g)) {
-    values.set(name, attributeValue(raw));
-  }
-  const id = askOpenerBlockId(line);
-  if (id === undefined) return undefined;
-  const selected = selectionOf(values.get("selected"));
-  const words = values.get("answer");
-  return {
-    block_id: id,
-    ...optional("state", values.get("state") as TextAsk["state"]),
-    ...optional("answered_by", values.get("answered_by")),
-    ...optional("answered_at", values.get("answered_at")),
-    ...optional("selected", selected),
-    ...optional("answer", words),
-    ...optional("copied_from", values.get("copied_from")),
-    ...optional("copied_from_document", values.get("copied_from_document")),
-  };
-}
-
-/** `{ [name]: value }`, or nothing where value is undefined. */
-// kept for one release: release-before-text
-function optional<K extends string, V>(name: K, value: V | undefined): { [key in K]?: V } {
-  return value === undefined ? {} : ({ [name]: value } as { [key in K]?: V });
-}
-
-/** A quoted attribute value with its character references read back: the renderer writes `"`
- *  as `&#x22;`, `&` as `&amp;`, and a line break as `&#xA;`. */
-// kept for one release: release-before-text
-function attributeValue(raw: string): string {
-  const named: Record<string, string> = { amp: "&", quot: '"', lt: "<", gt: ">", apos: "'" };
-  return raw.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-z]+);/g, (whole, reference: string) => {
-    if (reference.startsWith("#x"))
-      return String.fromCodePoint(Number.parseInt(reference.slice(2), 16));
-    if (reference.startsWith("#"))
-      return String.fromCodePoint(Number.parseInt(reference.slice(1), 10));
-    return named[reference] ?? whole;
-  });
-}
-
-/** The options a `selected` attribute names, a JSON list of strings, or undefined where it holds
- *  none or no such list. */
-// kept for one release: release-before-text
-function selectionOf(value: string | undefined): string[] | undefined {
-  if (value === undefined) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return Array.isArray(parsed) && parsed.every((item) => typeof item === "string")
-      ? parsed
-      : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /**

@@ -718,69 +718,6 @@ func (d ValidDocument) MoveBlock(blockID string, target Range, after bool) (*Nod
 	return out, nil
 }
 
-// ErrHoldsNoBlocks is an insert into a block whose type holds no blocks of its own
-// (typeHoldsBlocks).
-var ErrHoldsNoBlocks = errors.New("holds no blocks")
-
-// typeHoldsBlocks reports whether a block of type typeName holds blocks as its children: a quote,
-// a list item, a footnote's definition and every typed block do. A textblock holds inline content,
-// a list its items, a table its rows, and a rule or an image nothing.
-func typeHoldsBlocks(typeName string) bool {
-	switch typeName {
-	case "blockquote", "list_item", "footnote_definition":
-		return true
-	}
-	_, typed := typedBlock(typeName)
-	return typed
-}
-
-// InsertInto is a copy of d's tree in which the blocks a caller writes inside the block carrying
-// blockID close it, after its last child, and those blocks as parse read them (fragment). parse
-// reads the caller's markdown as content of the block's type, which it is handed
-// (ParseFragmentInto). The block is held to its content rule as markdown written in whole is
-// (typedContentError), since the caller wrote its new end, so a reading the insert leaves before
-// another block, or a block the type does not hold, is refused (ErrSchema). A block whose type
-// holds no blocks is ErrHoldsNoBlocks, naming it, and an id the tree does not carry
-// ErrTargetNotFound. The zero ValidDocument wants a document.
-func (d ValidDocument) InsertInto(blockID string, parse func(parent string) (*Node, error)) (out, fragment *Node, err error) {
-	if d.doc == nil {
-		return nil, nil, wantsDocument("InsertInto")
-	}
-	path, _, ok := findBlock(d.doc, blockID)
-	if !ok {
-		return nil, nil, fmt.Errorf("%w: block %q", ErrTargetNotFound, blockID)
-	}
-	holder := nodeAtPath(d.doc, path)
-	if !typeHoldsBlocks(holder.Type) {
-		return nil, nil, fmt.Errorf("block %q is %s, which %w", blockID, blockName(holder.Type), ErrHoldsNoBlocks)
-	}
-	fragment, err = parse(holder.Type)
-	if err != nil {
-		return nil, nil, err
-	}
-	if fragment == nil || fragment.Type != "doc" {
-		return nil, nil, fmt.Errorf("%w: invalid insert into block %q", ErrSchema, blockID)
-	}
-	if err := refuseUncreatable(fragment.Children, func() *Node { return d.doc }); err != nil {
-		return nil, nil, err
-	}
-	out = cloneNode(d.doc)
-	block := nodeAtPath(out, path)
-	for _, child := range fragment.Children {
-		block.Children = append(block.Children, cloneNode(child))
-	}
-	// Only the block changed, so only it is validated again, at the depth it stands at.
-	if err := validateNode(block, len(path)); err != nil {
-		return nil, nil, err
-	}
-	if typ, typed := typedBlock(block.Type); typed && keepsAnyOrder(block.Type) {
-		if err := typedContentError(block, typ); err != nil {
-			return nil, nil, err
-		}
-	}
-	return out, fragment, nil
-}
-
 // moveListItem relocates a list item to the boundary inside the list holding target, the boundary
 // an insert of list content takes there (ListBoundary): the item becomes a sibling of the item
 // holding target, or, where target is a list's own block, that list's first or last item. It

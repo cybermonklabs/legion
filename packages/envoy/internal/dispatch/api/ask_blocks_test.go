@@ -56,7 +56,7 @@ func TestAnAnsweredBlockAskReadsAnsweredInTheAsksOfItsDocumentsText(t *testing.T
 	}
 }
 
-// The text routes serve each reader the form it reads (R10): a reader that reads the asks member
+// The text routes serve each reader the form it reads (R5): a reader that reads the asks member
 // sends `Dispatch-Asks: 1` (asksHeader) and is served markdown with none of an ask block's
 // server-owned attributes, and a request without it, as every reader of a release before this one
 // sends, is served the kept form: the answered ask's state, answerer and time as the document holds

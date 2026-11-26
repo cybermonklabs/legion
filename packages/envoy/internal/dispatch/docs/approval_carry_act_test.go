@@ -20,10 +20,10 @@ import (
 // version. When the answer is that version's whole change (changesAskAttributesAlone: text a
 // person was editing in the browser can settle into the same version), the version changes only
 // the server-owned attributes of the ask's block that a version keeps (keptAskState: the state,
-// who answered and when), so R10's case carries the person's approval across it, whatever the act
+// who answered and when), so R5's case carries the person's approval across it, whatever the act
 // holds. The release before carried an approval to the
 // version an answer wrote, and read the act's scopes to decide whether it could; that carry is
-// gone, and no carry reads an act: R10's case compares the two renderings and each ask with its
+// gone, and no carry reads an act: R5's case compares the two renderings and each ask with its
 // node alone (carryVerdict, TestCarryVerdictOverTheApprovedAndTheNewVersion).
 
 // actAnswerSpec is the two-block document these tests decide: region, the block an agent answers,
@@ -69,11 +69,11 @@ func answerWithAct(login string, selected []string, act *model.ActorAct) model.A
 
 // An answer an agent made for its person carries the approval only as any answer does, whatever
 // its act holds: the answers write one version, which changes only the server-owned attributes of
-// the ask blocks a version keeps (keptAskState), never the answers' words, and R10's case carries
+// the ask blocks a version keeps (keptAskState), never the answers' words, and R5's case carries
 // the approval the person gave to it. That holds for an act holding the person scope alone, for
 // one holding approve, and for a narrow agent's answer beside the person's own, so no act's scopes
 // decide anything here. The release before carried an approval to the version an answer wrote,
-// and only where the act held approve; that carry is gone, and the version is carried by R10's
+// and only where the act held approve; that carry is gone, and the version is carried by R5's
 // case, whoever answered (TestCarryVerdictOverTheApprovedAndTheNewVersion, api's
 // TestWhileTwoBuildsServeAnAnswerKeepsTheApprovalCurrent).
 func TestNoActDecidesTheCarryOfTheVersionAnAnswerWrites(t *testing.T) {
@@ -132,7 +132,7 @@ func TestNoActDecidesTheCarryOfTheVersionAnAnswerWrites(t *testing.T) {
 
 // renderedWithoutAskServerAttributes reports whether a and b, two markdown renderings of a
 // document, are the same once every ask block of each has its server-owned attributes taken off
-// (withoutAskServerAttributes), as R10's case compares two versions.
+// (withoutAskServerAttributes), as R5's case compares two versions.
 func renderedWithoutAskServerAttributes(a, b string) (bool, error) {
 	trees := make([]*pmdoc.Node, 2)
 	for index, markdown := range []string{a, b} {

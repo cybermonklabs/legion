@@ -57,7 +57,7 @@ func (s *Service) TextWithAsks(ctx context.Context, artifactID string, withBlock
 }
 
 // KeptText is TextWithAsks for a reader that reads no asks member, which is every reader of a
-// release before this one (R10): its markdown keeps on each ask block the state, the answerer, the
+// release before this one (R5): its markdown keeps on each ask block the state, the answerer, the
 // time and a copy's provenance as the document holds them, and takes off the answer's words, its
 // selection and invalid (keptTextTakesOff), so that reader still reads which asks are answered or
 // resolved, and by whom, and no answer's words, which R3 holds on the ask's node alone. Its token
@@ -177,18 +177,18 @@ func (s *Service) storedAskedText(ctx context.Context, artifactID string, stored
 // textAsks is the asks member of tree, a tree of document artifactID with no server-owned
 // attribute on any ask block: one entry per ask block, in document order, its answer read off the
 // node of the ask that answers for it (askNodeAnswers, textAskOf). A block an ask of the document
-// indexes reads that ask; a copy of an ask of another document of its owner
-// (readCopiedAskSources) reads its source, and names it and its document; on a closed issue's
-// document, a readable block that neither has an ask nor copies one - a block no settlement has
+// indexes reads that ask; a copy of an ask of another document of its owner (readBlockAsks) reads
+// its source, and names it and its document; on a closed issue's document, a readable block that
+// neither has an ask nor copies one - a block no settlement has
 // indexed yet, which opens no ask while the issue is closed - reads resolved, since the close
 // withdrew every ask of its issue; and every other block reads no state, a question nobody has
 // opened yet, which the text routes showed with no state before they took the attributes off, and
 // so does every block of a tree that repeats an ask block's id, which settlement reads no block
 // under (askNodes). The asks rows say which ask indexes which block, and the node holds the
-// answer, as the Decisions read's entries read it (R3): while a process of the release before
-// answers an ask whose node the decisions step's catch-up has not stated that answer on yet, both
-// read the ask as its node holds it. Everything is read in a transaction of the read's own that
-// writes nothing and locks no row.
+// answer (R3): while a process of the release before answers an ask whose node the decisions
+// step's catch-up has not stated that answer on yet, the asks member reads the ask as its node
+// holds it. Everything is read in a transaction of the read's own that writes nothing and locks no
+// row.
 func (s *Service) textAsks(ctx context.Context, artifactID string, tree *pmdoc.Node) ([]model.TextAsk, error) {
 	var blocks []*pmdoc.Node
 	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
@@ -210,67 +210,27 @@ func (s *Service) textAsks(ctx context.Context, artifactID string, tree *pmdoc.N
 		return entries, nil
 	}
 	err := pgx.BeginTxFunc(ctx, s.store.Pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `
-			select `+AskColumns+`
-			from asks a where a.block_artifact_id = $1 and a.block_id is not null
-		`, artifactID)
-		if err != nil {
-			return fmt.Errorf("read the asks of the document's blocks: %w", err)
-		}
-		indexed := map[string]model.Ask{}
-		for rows.Next() {
-			ask, err := ScanAsk(rows)
-			if err != nil {
-				rows.Close()
-				return fmt.Errorf("read an ask of the document's blocks: %w", err)
-			}
-			if ask.BlockID != nil {
-				indexed[*ask.BlockID] = ask
-			}
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("read the asks of the document's blocks: %w", err)
-		}
-		var unindexed []askBlock
-		var ids []string
+		parsedBlocks := make([]askBlock, 0, len(nodes))
+		parsed := make(map[string]bool, len(nodes))
 		for id, node := range nodes {
-			if _, held := indexed[id]; held {
-				continue
-			}
 			if block, err := parseAskBlock(node); err == nil {
-				unindexed, ids = append(unindexed, block), append(ids, id)
+				parsedBlocks, parsed[id] = append(parsedBlocks, block), true
 			}
 		}
-		var sources map[string]copiedSource
-		closed := false
-		if len(unindexed) > 0 {
-			owner, err := documentOwner(ctx, tx, artifactID)
-			if err != nil {
-				return err
-			}
-			if sources, err = readCopiedAskSources(ctx, tx, artifactID, owner, unindexed, ids); err != nil {
-				return err
-			}
-			if closed, err = ownerIssueClosed(ctx, tx, owner); err != nil {
-				return err
-			}
-		}
-		shown := make([]string, 0, len(entries))
-		for _, entry := range entries {
-			if ask, held := indexed[entry.BlockID]; held {
-				shown = append(shown, ask.ID)
-			} else if source, copied := sources[entry.BlockID]; copied {
-				shown = append(shown, source.ask.ID)
-			}
-		}
-		answers, err := askNodeAnswers(ctx, tx, shown)
+		read, err := readBlockAsks(ctx, tx, artifactID, nil, parsedBlocks, readCopiedAskSources)
 		if err != nil {
 			return err
 		}
-		parsed := make(map[string]bool, len(ids))
-		for _, id := range ids {
-			parsed[id] = true
+		indexed, sources := read.rows, read.sources
+		closed := false
+		if read.owner != nil {
+			if closed, err = ownerIssueClosed(ctx, tx, *read.owner); err != nil {
+				return err
+			}
+		}
+		answers, err := askNodeAnswers(ctx, tx, read.askIDs())
+		if err != nil {
+			return err
 		}
 		for index := range entries {
 			id := entries[index].BlockID
@@ -312,10 +272,10 @@ var askNodeAnswerKinds = []string{
 }
 
 // askNodeAnswers reads, in tx, what the node of each ask ids names holds of its answer, by ask
-// id, from the node's tuples as they stand now (graphstore.CurrentTupleRead), as the Decisions
-// read's entries read them (api's decisionEntriesRead). An ask whose node holds no answer_state -
-// one a process of the release before wrote, before the decisions step states it - is absent, and
-// reads open (textAskOf), as an entry does. An ask whose answer state the ledger that queues tx's
+// id, from the node's tuples as they stand now (graphstore.CurrentTupleRead), as a read of an
+// ask's row reads them (api's askNodeAnswerColumn). An ask whose node holds no answer_state - one
+// a process of the release before wrote, before the decisions step states it - is absent, and
+// reads open (textAskOf). An ask whose answer state the ledger that queues tx's
 // writes has planned a change of (Ledger.PlanSettle) - a reopen's restore, planned before the
 // reopen writes its asks' blocks (WriteRestoredAsks, WriteIssueAskStates) - reads as that change
 // leaves its node (plannedAskNodeAnswer): a block written in the same transaction shows the node

@@ -190,7 +190,7 @@ func TestSettlementWithholdsOnlyTheAnswerWordsItsRepairsWrite(t *testing.T) {
 // answer state; or one the step's backfill stated open on its node at this build's boot. A change
 // of the document's prose settles into a version whose opener of ship keeps the state, the
 // answerer and the time of the row, which that release's CLI and pages read off the version
-// (R10), and neither the options nor the words; and the write states nothing on the node, which
+// (R5), and neither the options nor the words; and the write states nothing on the node, which
 // only the catch-up brings up to the row (R3).
 func TestAVersionWrittenBeforeTheCatchUpKeepsTheAnswerTheReleaseBeforeWroteIntoTheRow(t *testing.T) {
 	words := "Ship it on Monday."

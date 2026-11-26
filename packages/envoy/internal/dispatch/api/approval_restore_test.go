@@ -206,7 +206,7 @@ func TestAnUploadOfTheApprovedTextCarriesTheApproval(t *testing.T) {
 
 // approveThenOthersAnswer writes restoreSpec and waveAsk into a new issue's spec, has alice approve
 // version 1 while the block is open, and has bob answer the block, which writes version 2, its
-// block's kept state alone (R3): the block's row now holds bob's decision, and R10's case carries
+// block's kept state alone (R3): the block's row now holds bob's decision, and R5's case carries
 // alice's approval to version 2. The agent then deletes the block, which writes version 3 and
 // stales the approval.
 func approveThenOthersAnswer(t *testing.T, handler http.Handler, database *store.Store, title string) approvedDocument {
@@ -226,7 +226,7 @@ func approveThenOthersAnswer(t *testing.T, handler http.Handler, database *store
 // version 4, version 1's text byte for byte - the block as an agent writes it, with none of the
 // server-owned attributes - and the settlement after it wrote version 5, version 2's text byte for
 // byte, with the block's kept state from its ask's node, which bob answered (docs.keptAskState),
-// and R10's case carried alice's approval to both.
+// and R5's case carried alice's approval to both.
 func requireApprovedTextRestored(t *testing.T, handler http.Handler, database *store.Store, document approvedDocument) {
 	t.Helper()
 	waitForArtifactVersion(t, handler, document.artifactID, 4)
@@ -244,10 +244,10 @@ func requireApprovedTextRestored(t *testing.T, handler http.Handler, database *s
 }
 
 // The approved text over a block decided since is still the approved text: bob answered the block
-// alice approved open, whose state that writes into the block (R3), which R10's case carries her
+// alice approved open, whose state that writes into the block (R3), which R5's case carries her
 // approval across; the agent deleted the block and inserts its approved markdown again.
 // Version 4 is version 1 byte for byte, and its block agrees with its row and its node - it shows
-// no answer state, and asks the wording the row was decided on - so R10's case carries alice's
+// no answer state, and asks the wording the row was decided on - so R5's case carries alice's
 // approval to it, and answers the approval request the agent opened at version 3; the settlement
 // after it writes the block's kept state back, and her approval is carried to that version too.
 func TestTheApprovedTextOverABlockDecidedSinceCarriesTheApproval(t *testing.T) {
@@ -321,7 +321,7 @@ func TestARestoredTextAroundADecisionBlockTheAgentRewordedLeavesTheApprovalStale
 // (c) Text restored around the approver's own answer: alice answers the open block while the
 // paragraph is still changed, which writes version 3, the block's kept state alone (R3), and the
 // agent then restores the paragraph. Version 4 is version 1's text but for what a version keeps of
-// her answer - the block's state, answerer and time - so R10's case carries her approval to it.
+// her answer - the block's state, answerer and time - so R5's case carries her approval to it.
 func TestARestoredTextAroundTheApproversOwnAnswerIsTheApprovedText(t *testing.T) {
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	document := approveThenChange(t, handler, "Restore around her answer", "\n"+waveAsk, waveBlock)
