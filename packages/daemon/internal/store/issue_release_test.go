@@ -408,11 +408,18 @@ func TestTheReleasesBoundaryCancelsOnWorkThePodWasGivenAfterTheMark(t *testing.T
 // is its boundary, and the teardown.
 func releaseThroughTheStore(t *testing.T, st *Store, issue string) (first, boundary, last int64) {
 	t.Helper()
+	return releaseRoleThroughTheStore(t, st, issue, claim.RoleArchitect)
+}
+
+// releaseRoleThroughTheStore is releaseThroughTheStore for a pod whose one live role is role: the
+// check reads the workspace through it, and its stop is the boundary.
+func releaseRoleThroughTheStore(t *testing.T, st *Store, issue string, role claim.Role) (first, boundary, last int64) {
+	t.Helper()
 	ctx := context.Background()
 	marked, err := st.ReleaseIdleIssue(ctx, "legion", issue, func(pods.IdleView) (IdleReleaseMark, error) {
-		return IdleReleaseMark{Generation: 1, Role: claim.RoleArchitect, Rows: []IdleReleaseRow{
-			{Kind: "issue_bundle", Payload: []byte(fmt.Sprintf(`{"tree":%q,"generation":1,"treeGeneration":1,"role":"architect"}`, issue))},
-			{Kind: "supervise", Payload: []byte(fmt.Sprintf(`{"op":"release","tree":%q,"role":"architect","generation":1}`, issue)), Boundary: true},
+		return IdleReleaseMark{Generation: 1, Role: role, Rows: []IdleReleaseRow{
+			{Kind: "issue_bundle", Payload: []byte(fmt.Sprintf(`{"tree":%q,"generation":1,"treeGeneration":1,"role":%q}`, issue, role))},
+			{Kind: "supervise", Payload: []byte(fmt.Sprintf(`{"op":"release","tree":%q,"role":%q,"generation":1}`, issue, role)), Boundary: true},
 			{Kind: "issue_release", Payload: []byte(fmt.Sprintf(`{"tree":%q,"generation":1,"treeGeneration":1}`, issue))},
 		}}, nil
 	})

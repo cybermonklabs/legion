@@ -56,7 +56,7 @@ every session it enrolled ends, and the box signs in again to work on.
 A Kubernetes pod trades its own projected ServiceAccount token at the same exchange for a Dispatch
 access token alone: that trade mints no machine login and enrols nothing. The entry that lists the
 pod's account decides what the token is. An entry of `BROKER_EXCHANGE_ACCOUNTS` gives it a person
-and the one Dispatch project it may write, or no project for an entry that names none
+and the one Dispatch project its token names, or no project for an entry that names none
 (`<service account>==<person>`), or neither a person nor a project for an entry that names
 neither (`<service account>==`): such a token acts as the account itself, names the account as its
 service, and Dispatch records its writes under that account. An entry of that setting that names a
@@ -1650,7 +1650,20 @@ string that names another kind than the source's tag is refused (`proxy-kind-con
 that names the same kind is served with one warning line at each full load. The string goes once
 every source it is written for carries its `proxy` tag. And a `proxy` object of kind `dpop` alone
 (below) is kept until a `dispatch` kind with the `dpop` way serves the broker's minted Dispatch
-tokens. Every other `proxy` object is refused, naming `kinds`.
+tokens. In a file that declares a kind, every other `proxy` object is refused, naming `kinds`.
+
+A profiles file that declares no kind, as every deployment's file did before the kinds, is read as
+the broker before the kinds read it, so a broker of this release starts against it. Each `proxy`
+object of no kind, of kind `aws` or of kind `azure` serves its profile's name behind the object's
+`hosts`, `headers` and `allow`, in the way its kind took: no kind swaps a stored value or a minted
+token in, `aws` signs with a stored key pair, and `azure` exchanges an `azure-login` token. The
+name is behind a kind of its own, named for the profile (`DEEL_API_KEY`'s is `deelxapixkey`). No
+`proxy` tag can name that kind, so a secret tagged `proxy` under such a file is refused as naming no
+kind (`proxy-kind-unknown`). The name's fingerprint is the one the broker before the kinds gave it,
+the whole object with its source's `judge` seconds, so it does not move at the upgrade, and a change
+of the object's `kind`, `hosts`, `headers` or `allow` ends the name's live grants. A `judge` or
+`guidance` in such an object is refused, naming the source's tag that holds it now. This reading is
+transitional: it goes once every deployment's file declares kinds.
 
 Who decides a request for a value is no part of a kind: that is the secret's own `judge` and
 `guidance` tags ([The model judge](#the-model-judge)), and a profiles file that still sets `judge`
@@ -1774,7 +1787,30 @@ Each grant records a digest of its block and the destination, and a broker whose
 serves none of it. The policy never serves a dpop profile as a secret, whatever the store holds,
 and a stored secret of its name is not served through it, so nothing of it can be requested or
 approved; it is no refusal either, so it writes no refused line and counts in no unservable series. A grant of the capability is made by the broker
-itself, for a kind it names in code, and this release names none yet.
+itself, for a kind it names in code. This release names one, the approve capability, below.
+
+The approve capability is a person's approvals in Dispatch from a box they signed in on. A dpop
+block named `DISPATCH_APPROVE_TOKEN`, binding Dispatch's host, turns it on, and the broker logs it
+at start (`broker: the approve capability`, with the host and the grant digest, or `state=off`).
+A session on such a box trades the person's sign-in, asking for
+`requested_token_type=urn:envoy:params:oauth:token-type:proxy-placeholder`, and is answered a
+placeholder (`agent-secrets-placeholder-approve-…`) of a grant of that person and session that
+lasts 15 minutes, with the proxy's URL, its authority and the one host under `proxy`. Nobody
+approves the grant: the sign-in is its authority, and revoking the sign-in ends it. Only a person's
+sign-in is granted the placeholder. The proxy mints a token for the grant on each broker pod, of
+the scope `approve` and the project scope person and bound to that pod's key, at the grant's first
+allowed request on the pod, and again on that pod after the broker's policy version moves, and puts
+the token it holds into every later allowed request while the grant lives; it never releases the
+token. The broker logs each such token's SHA-256 and the thumbprint of the key it is bound to
+(`broker: minted a grant's token`), one line per token it mints, never the token.
+Dispatch holds that token to its approve
+routes, and to the answer of an approval request among the asks, and answers every other route
+`403 APPROVE_ONLY_TOKEN` before it runs, the mint and the change of a personal token among them.
+The block's `allow` list narrows what reaches Dispatch by method and path prefix alone (`POST
+/api/v1/artifacts/`, `POST /api/v1/asks/` and the like), so a request under one of those prefixes
+that is no approve route, a document's comment or an ask's decline among them, reaches Dispatch,
+and Dispatch refuses it; a request under no prefix, an issue's comment or any `GET`, is refused at
+the proxy before any token is minted for it. `dispatch review` sends a person's review this way.
 
 What the command gets is the placeholder and the way to spend it. `agent-secrets NAME -- command`
 puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port with that grant's

@@ -425,7 +425,7 @@ func TestAnAccountEntryMayNameNoPerson(t *testing.T) {
 
 // TestAPersonlessEntryNamesNoProject: of the entries that name no job list, only an account entry
 // that names no project may name no person: an account entry that names a project names its
-// person, so no account entry's token held to a project is personless. An account entry naming a
+// person, so no account entry's token that names a project is personless. An account entry naming a
 // project and no person is refused, naming the entry and that rule; a person that is blank without
 // being empty is refused whatever the project; and a workflow entry still needs a person, whether
 // or not it names a project.

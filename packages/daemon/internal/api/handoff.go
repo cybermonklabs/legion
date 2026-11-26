@@ -475,9 +475,9 @@ func returnToRefusal(req HandoffCompleteRequest, failsAStep bool, what string) *
 //     completes again once Dispatch answers.
 //   - HANDOFF_RECORD_MISMATCH: the record is another issue's, another phase's, or another version.
 //   - HANDOFF_SESSION_MISMATCH: another session wrote it, or no session did. A record carried
-//     from before handoffs moved to the Dispatch issue is under the daemon's own session
-//     (dispatch.DaemonSession), so it is refused this way too, and the refusal says to read it
-//     and write it again from the worker's session.
+//     from before handoffs moved to the Dispatch issue is under the daemon's own session, the
+//     session of its own Dispatch project (dispatch.DaemonSession), so it is refused this way too,
+//     and the refusal says to read it and write it again from the worker's session.
 //
 // The claim holds session as the store keeps it (supervise's register), so the record Dispatch
 // answers is compared as the store would keep it (storetext.Strings).
@@ -518,7 +518,7 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 	if handoff.Author.IsSession(session) {
 		return true
 	}
-	if handoff.Author.IsSession(dispatch.DaemonSession(issue.Key)) {
+	if handoff.Author.IsSession(dispatch.DaemonSession(s.dispatchProject)) {
 		s.writeFailure(w, r, http.StatusForbidden, "HANDOFF_SESSION_MISMATCH", fmt.Sprintf(
 			"handoff record %s (%s version %d) was written by the daemon's own session %s, as a record carried from before handoffs moved to the Dispatch issue is, not by this claim's session %s: read it with %s, write it again with %s from this session, then complete naming the new record; this completion changed nothing",
 			req.HandoffID, word, handoff.Version, handoff.Author.ID, session, read, write))

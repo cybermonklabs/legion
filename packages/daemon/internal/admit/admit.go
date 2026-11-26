@@ -2429,7 +2429,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// releaseUnslotted takes out of the workflow on this same pass. Its links hold
 				// nothing here: a root waiting on a person keeps its row through a wait
 				// (blockers.waitsOf).
-				reason, err := workflow.Unresumable(ctx, a.store, tx, issue)
+				reason, err := workflow.Unresumable(ctx, a.store, tx, a.project, issue)
 				if err != nil {
 					return admitted, released, fmt.Errorf("check whether answered root %s can resume: %w", issue.Key, err)
 				}
@@ -2958,7 +2958,7 @@ func (a *Admission) awaitingUnresumable(ctx context.Context, tx pgx.Tx, issue re
 	if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() || !record.InWorkflow(issue) || !issue.AwaitingPerson() {
 		return "", false, nil
 	}
-	reason, err := workflow.Unresumable(ctx, a.store, tx, issue)
+	reason, err := workflow.Unresumable(ctx, a.store, tx, a.project, issue)
 	return reason, reason != "", err
 }
 
@@ -4132,7 +4132,10 @@ func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
 // step (record.Issue.HoldsQueued, the outbox's own rule). The outbox applies those fences when it
 // runs a row, but a row waiting for a slot may never be run at all, and one that could never act
 // would keep its issue in the waiting line for ever and take a slot from work that could use it.
-// Finishing the row deletes it, exactly as the outbox's own fence would.
+// Finishing the row deletes it, exactly as the outbox's own fence would. The daemon's store reads
+// the same phase and generation fence where a waiting start silences a backstop
+// (store.PodRecords.WaitsForItsSlot), since a row this repair will finish brings no worker back: a
+// change to this fence changes that one too.
 //
 // A tree that lingers is read by the absence of its root rather than by its root's deadline: a
 // lingering root is in phase done at a status that is not todo, which is exactly what the
