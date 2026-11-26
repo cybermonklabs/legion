@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/volumestat"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -509,7 +510,7 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 		}
 	} else if err := c.narrow(ctx, false, interrupted); err != nil {
 		if !errors.Is(err, errCacheHeadMissing) {
-			return time.Time{}, first, fmt.Errorf("narrow the cache before its fetch: %w", err)
+			return time.Time{}, first, fmt.Errorf("narrow the cache before its fetch: %w", c.removeCloneAfterNarrowingOutOfSpace(err))
 		}
 		headMissing = true
 	} else if previous, err = c.defaultBranchHead(ctx); err != nil {
@@ -545,7 +546,7 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 			rewritten = rewritten || changed
 		}
 		if err := c.narrow(ctx, first, rewritten); err != nil {
-			return time.Time{}, first, fmt.Errorf("narrow the cache after its fetch: %w", err)
+			return time.Time{}, first, fmt.Errorf("narrow the cache after its fetch: %w", c.removeCloneAfterNarrowingOutOfSpace(err))
 		}
 	} else {
 		c.narrowed = false
@@ -562,14 +563,29 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 	return fetched, first, c.publishLocked(ctx, fetched)
 }
 
+// removeCloneAfterNarrowingOutOfSpace removes a clone whose narrowing repack could not fit, so the
+// next fetch replaces its old packs with a fresh clone of the default branch. Other narrowing
+// failures keep the clone unavailable for diagnosis and retry.
+func (c *cache) removeCloneAfterNarrowingOutOfSpace(err error) error {
+	if !errors.Is(err, errNarrowingOutOfSpace) {
+		return err
+	}
+	if removeErr := rolefile.RemoveTree(c.dir); removeErr != nil {
+		return fmt.Errorf("%w; remove the cache clone after its narrowing repack ran out of space: %w", err, removeErr)
+	}
+	c.opts.Log("removed the cache clone after its narrowing repack ran out of space; the next fetch clones it afresh")
+	return err
+}
+
 const (
 	defaultBranchOnlyFile  = ".legion-default-branch-only"
 	defaultBranchFetchFile = ".legion-default-branch-fetching"
 )
 
 var (
-	errDefaultBranchOnly = errors.New("the repository cache clone is not narrowed to its default branch")
-	errCacheHeadMissing  = errors.New("the repository cache's HEAD branch is missing")
+	errDefaultBranchOnly   = errors.New("the repository cache clone is not narrowed to its default branch")
+	errCacheHeadMissing    = errors.New("the repository cache's HEAD branch is missing")
+	errNarrowingOutOfSpace = errors.New("the narrowing repack ran out of space")
 )
 
 func (c *cache) narrow(ctx context.Context, freshClone, rewritten bool) (err error) {
@@ -631,8 +647,13 @@ func (c *cache) narrow(ctx context.Context, freshClone, rewritten bool) (err err
 		}
 	}
 	if err := c.runRepack(ctx); err != nil {
+		outOfSpace := c.outOfSpace(err)
 		c.removePartialPacks()
-		return fmt.Errorf("repack the narrowed cache: %w", err)
+		err = fmt.Errorf("repack the narrowed cache: %w", err)
+		if outOfSpace {
+			return fmt.Errorf("%w: %w", errNarrowingOutOfSpace, err)
+		}
+		return err
 	}
 	after, err := c.objectBytes()
 	if err != nil {

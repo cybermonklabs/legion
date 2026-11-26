@@ -2580,6 +2580,73 @@ func TestCacheKeepsAnUnnarrowableOldVolumeUnavailable(t *testing.T) {
 	}
 }
 
+// An old volume's narrowing repack can fail because its volume has no room: git says so, or less
+// than 1 GiB is available when it fails. Removing that clone makes the next refresh clone the
+// default branch afresh instead of leaving the cache unready for every retry of the same repack.
+// Another narrowing failure, with room left, keeps the clone for the next retry.
+func TestCacheRemovesAnOldVolumeWhenNarrowingRunsOutOfSpace(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		gitNoSpace  bool
+		available   uint64
+		wantRemoved bool
+	}{
+		{"git reports no space", true, 5 << 30, true},
+		{"the volume has under 1 GiB", false, 512 << 20, true},
+		{"another failure with room left", false, 5 << 30, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remote := fullRemote(t)
+			run := newTestRunner(t, remote)
+			opts := testOptions(t, run)
+			log := &syncLog{}
+			opts.Log = log.log
+			seamVolume(t, opts.Root, 20<<30, tc.available)
+			oldCache(t, opts, remote)
+			c := cacheOn(t, opts)
+			stderr := "fatal: the narrowing repack failed"
+			if tc.gitNoSpace {
+				stderr = repackOutOfSpace(c.dir)
+			}
+			run.instead("repack", func(context.Context, workspace.Command) (workspace.Result, error) {
+				return workspace.Result{ExitCode: 128, Stderr: stderr + "\n"}, nil
+			})
+
+			if err := c.refresh(context.Background()); err == nil {
+				t.Fatal("narrowing an old volume answered nil, want its repack failure")
+			}
+			_, statErr := os.Stat(c.dir)
+			removedLine := logged(log.all(), "removed the cache clone after its narrowing repack ran out of space; the next fetch clones it afresh")
+			if !tc.wantRemoved {
+				if statErr != nil || removedLine {
+					t.Fatalf("the clone after a narrowing failure with room left is %v, removal logged %t; want it kept: %q", statErr, removedLine, log.all())
+				}
+				return
+			}
+			if !errors.Is(statErr, os.ErrNotExist) {
+				t.Errorf("the clone after its out-of-space narrowing repack is %v, want removed", statErr)
+			}
+			if !removedLine {
+				t.Errorf("the out-of-space narrowing did not log the clone removal: %q", log.all())
+			}
+
+			if err := c.refresh(context.Background()); err != nil {
+				t.Fatalf("refreshing after the out-of-space clone removal: %v", err)
+			}
+			assertDefaultBranchOnly(t, c.dir)
+			if _, err := os.Stat(filepath.Join(opts.Root, defaultBranchOnlyFile)); err != nil {
+				t.Errorf("the fresh default-branch clone has no marker: %v", err)
+			}
+			if got := run.repacks(); got != 1 {
+				t.Errorf("the cache ran %d repacks, want only the failed narrowing repack", got)
+			}
+			if !slices.Contains(run.transfers(), "clone --bare") {
+				t.Errorf("the cache did not clone after removing the old volume: %q", run.transfers())
+			}
+		})
+	}
+}
+
 func fullRemote(t *testing.T) string {
 	t.Helper()
 	remote := newRemote(t)
