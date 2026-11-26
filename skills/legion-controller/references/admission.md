@@ -2,8 +2,7 @@
 
 Read this when you need to know where an issue stands in admission, what an `admission.held` word means, or which trees are live, and before you move an issue to `todo`.
 An issue's `phase` alone does not say it: read its key against the `admission` lists and the root its `tree` names.
-The `read_state` summary prints `admission.active`, `admission.waiting` and `admission.blocked` as its `active`, `waiting` and `blocked` lines;
-no read prints `admission.trees` or `admission.held`.
+The `read_state` summary prints `admission.active`, `admission.waiting`, `admission.blocked` and `admission.trees` as its `active`, `waiting`, `blocked` and `trees` lines, and each entry of `admission.held` as a `held` line.
 The rules behind them: [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label).
 
 ## The lists
