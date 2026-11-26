@@ -5128,6 +5128,92 @@ The configuration, the store and its migrations, the HTTP API, the claim supervi
 `BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, each pane's output and the driver's output, and with `--base-commit` the base run's and the negative control's own transcript;
 the run's work directory, the driver binary among it, is under `TMPDIR` too.
 
+## texts-folder.sh
+
+```sh
+LEGION_OMP_PATH=/opt/omp/bin/omp \
+  LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [TEXTS_FOLDER_CASES=<case>[,<case>…]] bash scripts/e2e/texts-folder.sh     # → "texts folder e2e: PASS in <n>s", exit 0
+LEGION_OMP_PATH=/opt/omp/bin/omp LEGION_TEST_PG_DSN=… \
+  bash scripts/e2e/texts-folder.sh --control [--base-commit <rev>]     # → "texts folder negative control: BITES at reviewer-request against <sha> in <n>s", exit 0
+```
+
+dispatch://INFRA-5590's live proof that an experiment arm's folder of texts replaces Legion's own texts for the roles its experiment reaches, and that a folder that fails a check is run as no arm at all: its checks e0e84423 (A1) and e0b617c0 (A2).
+The unit tests hold each part on its own: `internal/daemon/texts_launch_test.go` the spec a launch is built from, `internal/runtime/tmux/texts_test.go` the root a pane loads first, and `TestATextsRootOnTheRealOhMyPi` what one real Oh My Pi offers its model from such a root.
+None of them runs a daemon, a workflow and the panes it launches together, and that is what this proof is for.
+It runs on any Linux host, as a user other than root, with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no Claude Code, no GitHub and no tmux, so a Legion pod, a devbox and a build Job all run it.
+It refuses to run as root with exit 2, since root reads a folder of mode 000 and the `unreadable` case would prove nothing.
+`LEGION_OMP_PATH` is required and means what it means for [`claim-compaction.sh`](#claim-compactionsh).
+`LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`late-completion.sh`](#late-completionsh), the driver also creates Dispatch's own database on that server, so the DSN's role must be allowed to create databases and the server must offer `pgvector`.
+The broker is the run's own.
+The driver's deadline is ten minutes for each case the run makes and ten more.
+Measured in Kubernetes build Jobs of 8 CPUs under gVisor, at the pinned Oh My Pi (omp/18.18.6), with the Go build cache cold: the `accepted` case took 31 s of a 52 s driver run and the script 128 s, building the driver 61 s of that;
+the seven fallback cases took 17 s to 29 s each, 162 s of driver and 239 s of script;
+and `--control` took 113 s, its base tree's archive, install and driver build 63 s of that.
+Each pane was ready within seconds, and no step waits on a clock of its own beyond the 3 s it watches after a notice for a second one.
+The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+before them the script refuses a host with no `git`, `jj` or `tar`, and the lib's `require_dispatch_cli` one with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | what [`claim-compaction.sh`](#claim-compactionsh)'s holds, in the same words and with the same refusals |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestTextsFolderLive` (`internal/daemon/texts_folder_live_test.go` over `texts_folder_arm_live_test.go`, `-tags e2e`) |
+| `proof` | each case `TEXTS_FOLDER_CASES` names, a subtest of its own, each step printing what it drove and what it read back between its own `== <name>` and `ok <name>`, or `FAIL <name>: <why>` |
+
+Each case boots the whole daemon through `run`, the function `legion start` calls, over a database of its own and the real Dispatch server this checkout builds, run as [`handoff-records.sh`](#handoff-recordssh) runs it, with `dispatch_url` at it and its token in every pane.
+Each pane is a real `omp --mode rpc` under the real `legion worker-shim`, started by the package's own local runtime (`internal/daemon/localruntime_live_test.go`), which prepares a launch of a folder through the tmux runtime's own helper (`tmux.PrepareTexts`), with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` installed in an Oh My Pi profile of the run's own.
+A replaced runtime runs no plugin gate, so the driver gives the boot the real pane-lane gate over that profile, which reads the agents and skills the profile ships as a production boot does, and the first step holds the boot's line that it read them, before any launch.
+Each pane's model is a stand-in of the driver's own, one per claim, which records each request and answers each turn with a `WAITING` line unless the step scripts a tool call.
+
+The case's project declares one experiment, `texts`, at mode `on`, reaching the architect and the reviewer and leaving the planner out on purpose.
+Its arm `folder` names the folder the driver cuts from the checkout's own texts, and its arm `control` names nothing.
+The folder holds `roles/architect-root.md`, `roles/architect.md`, `go/architect-common.md` and `go/reviewer.md`, each with a marker after it;
+`roles/reviewer.md` with the sentence "because the change is reviewed against the plan as it stands then" taken out and a marker after it, the run failing first where the checkout's text lacks that sentence;
+`agents/goal-red-team.md` with a marker opening its description;
+`skills/legion-worker/references/plan-tests.md` with a marker under its heading, and no `SKILL.md` beside it;
+`skills/dispatch-first/SKILL.md` with a marker after it;
+and the manifest, which records for each file the digest of Legion's text at its path: the daemon's own part, and, for an agent or a skill, the file of the plugin the profile installed.
+Each marker carries the run's own suffix.
+
+Each case admits one tree through the workflow, so the draw records the arm against the tree's root: its root is created on Dispatch with the `legion` label at `todo` before the daemon boots, and the boot's listing admits it and launches its architect, since an operator's spawn of a tree draws nothing.
+The design gate is off, so nothing holds the tree.
+Once the root's architect is ready, the driver records the root's child in the store, as [`role-prompt-rule.sh`](#role-prompt-rulesh)'s driver records its child: a child of the root in the root's tree, in `planning` on a slot of its own, with Dispatch showing it in progress under the `legion` label as a started child shows.
+The child's own architect, the child's reviewer and the root's planner are then the operator's spawns of claims in that drawn tree, each with a task, and each launch reads the arm the tree's root was drawn into, as the workflow's own starts read it (`experiment.Launch.Arms` over the tree's recorded assignment).
+The child is not its tree's root, so its architect's launch composes the sub-architect's part, `roles/architect.md`.
+Neither the child nor its reviewer is started by the workflow, for two reasons outside the folder.
+A release by the root architect's `legion` tool needs GitHub Apps, a webhook App and a repository answer that this proof has none of: the daemon holds the run's repository as one whose answer was bad (`GITHUB_APP_UNCONFIGURED`) and starts no child of it.
+A workflow start of `reviewing` needs an implementer's pushed round on an open pull request (`plan.Validate` refuses a reviewer step with no implementer step before it).
+Every launch is built by the same spec builder whichever starts it (`specs.armTexts`).
+The reviewer's stand-in answers its first turn with two `read` calls in one message, of `skill://legion-worker/references/plan-tests.md` and `skill://legion-worker/references/tools.md`, and the next request carries both results.
+Each request is read with `omprequest.Read`, the reader the real Oh My Pi's captured requests hold (`internal/texts/omprequest`): the system prompt, the skill list, the `task` tool's agent list and the `<dispatch-first-skill>` blocks.
+The arms a pane's model calls name are read from its own Oh My Pi's `OTEL_RESOURCE_ATTRIBUTES` (`/proc/<pid>/environ`, the pid as `ompChildOf` finds it, `internal/daemon/omp_child_live_test.go`), the notices from the real Dispatch, and the daemon's decisions from its own log.
+
+| case | the folder | read back as |
+| :--- | :--- | :--- |
+| `accepted` | as cut | the reviewer's first request holds the markers of `roles/reviewer.md` and `go/reviewer.md` and not the sentence taken out, offers `goal-red-team` once with its marker, offers `legion-worker` once and no `<namespace>/legion-worker` or `<namespace>/dispatch-first` skill, and carries the folder's `dispatch-first` once; its second request carries the folder's `plan-tests.md` and Legion's untouched `tools.md`; its Oh My Pi names `legion.arms` `texts:folder`; the root architect's request holds the markers of `roles/architect-root.md` and `go/architect-common.md`, and the child's architect's those of `roles/architect.md` and `go/architect-common.md`; the root's planner reads Legion's texts; the local runtime ran no fallback; then the daemon is stopped, every pane ended, a second tree handed to Legion and the daemon booted again with `on_variant` at `control`, and that tree's architect and its planner read Legion's texts with no marker in any request, the architect's Oh My Pi naming no `texts:folder` |
+| `digest` | the manifest's digest of `roles/reviewer.md` changed by one character | cause `digest`, file `roles/reviewer.md`; the child's architect, a claim of its own, meets the same cause, since the daemon holds every role part of the folder to Legion's text at each launch of a role the experiment reaches, whichever role launches (`texts.CheckRoleParts`), so the one changed digest is that launch's first fault too, at the same fingerprint, file and reason; its own one notice stands beside the reviewer's; then the driver ends the reviewer's process group, the daemon relaunches the claim over the same folder and logs `applied no second notice`, and the issue still holds one notice of the reviewer's claim |
+| `no-legion-text` | `roles/no-such-part.md` listed in the manifest | cause `no-legion-text`, file `roles/no-such-part.md` |
+| `unknown-agent` | `goal-red-team`'s body names a task call's agent as today's texts write one, ``task(agent="no-such-agent")`` | cause `unknown-agent`, file `agents/goal-red-team.md` |
+| `unknown-skill` | `go/reviewer.md` names `skill://no-such-skill` | cause `unknown-skill`, file `go/reviewer.md` |
+| `manifest-deleted` | the manifest deleted once the root architect's launch accepted the folder | cause `no-manifest`, file `manifest.json` |
+| `unreadable` | the folder's mode set to 000 then | cause `unreadable`, the folder as a whole |
+| `unreached-part` | `roles/planner.md` added then, to the folder and the manifest, with the digest of Legion's text | cause `unread`, file `roles/planner.md` |
+
+In each case after `accepted` the reviewer's requests hold Legion's texts and no marker, its Oh My Pi names no arm of `texts`, the daemon's warning names the reviewer's claim, its generation, the experiment, the arm, the folder, the file (`none` for the folder as a whole) and the cause, and the child's issue holds one notice of the reviewer's claim naming that cause, the file, the arm, the experiment and the folder.
+The daemon's boot refuses the last three folders (R3), which is why each starts as cut and changes on disk only after the root architect's launch read and accepted it.
+
+`--control` runs the `accepted` case over the tree of `main`, or of the commit `--base-commit` names, taken with `git archive` into a directory of the run's own under `TMPDIR`, with the driver's files laid over it: the driver, `omp_child_live_test.go`, the non-test files of `internal/texts/omprequest`, which import nothing the folder of texts added, and `texts_folder_arm_control_live_test.go` in place of `texts_folder_arm_live_test.go`.
+That file gives the folder's `roles/reviewer.md` as the arm's instructions file, builds no folder and sets no gate, and the tag `textscontrol` keeps it out of this checkout's own build.
+The tree gets node_modules of its own with `bun install --frozen-lockfile`, and the driver is built there with `-tags 'e2e textscontrol'`, so the daemon, `legion`, Dispatch and both plugins are that tree's.
+There the reviewer's first request holds the folder's marker beside the sentence the folder takes out, and the control bites only when the run failed at `reviewer-request`, past every setup step, on that check, in its own words;
+a pass, a failure in an earlier step or at another check, a build failure and a killed driver are each no control, and the last line says which.
+A `TEXTS_FOLDER_CASES` naming any other case is refused with exit 2, an empty `<rev>` is refused with exit 2, the DSN is read with the same loopback guard before the tree is taken, and a refusal of the base run (exit 2) is the script's own exit 2.
+
+What the proof stands in for lies outside the folder: the broker is a native `nats-server`, GitHub is the REST stand-in of the blockers proof (`blockersGitHub`), which answers each repository with default branch `main` and takes each issue branch the workflow creates, Envoy's listener is the package's `noticeListener` for what the daemon publishes and a consumer-answering stand-in for what a pane registers, the two Apps' tokens are placeholders, and each pane's provider is a stand-in of the driver's own.
+`TEXTS_FOLDER_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`), each pane's (`panes/`) and the driver's output, and with `--control` the negative control's own transcript and the base tree's install and driver build logs;
+the run's work directory, the driver binary among it, is under `TMPDIR` too.
+
 ## refusal-fallback-omp.sh
 
 ```sh

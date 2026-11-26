@@ -366,6 +366,10 @@
       "needs": "a deployed Dispatch and the operator's own credential: the dispatch command on PATH, run in the operator's own shell with its session (DISPATCH_HOST and DISPATCH_SESSION_ID) and the deployed Dispatch and token its envoy.json or DISPATCH_URL and DISPATCH_TOKEN name, and the key of one issue a deployed Legion ran to done after the release that records each step; it reads that issue's step records and its project's plans, and starts nothing"
     },
     {
+      "script": "texts-folder.sh",
+      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL carrying pgvector whose role may create databases (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, tar, awk, python3 and bun with this repository's node_modules, a user other than root (root reads the folder its unreadable case sets to mode 000), and, for its negative control (`--control`), a commit of this repository's history to take the base tree from with `git archive` (`main`, or the commit `--base-commit` names), which a shallow CI checkout carries none of"
+    },
+    {
       "script": "verifiers-staging-token.sh",
       "needs": "a projected service-account token the staging EKS cluster minted, and its own Postgres and NATS containers"
     },

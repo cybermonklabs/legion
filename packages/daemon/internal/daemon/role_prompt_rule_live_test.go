@@ -526,46 +526,12 @@ func (r *rolePromptRuleLive) launchedPromptOf(token claim.Token) launchedPrompt 
 	return launchedPrompt{}
 }
 
-// ompChildOf is the pid of the Oh My Pi the shim at pid shim started: the live process whose
-// PPid is that shim and whose argv[0] is the binary LEGION_OMP_PATH names. /proc is walked
-// rather than /proc/<pid>/task/<tid>/children read, because that file lists only the children
-// one thread of the process forked, and the Go shim forks from whichever of its threads runs
-// exec.Command: measured in a gVisor pod, the shim's main thread listed no child while another
-// of its threads listed its Oh My Pi. A process that ends between the two reads is passed over,
-// as a walk of /proc must do.
+// ompChildOf is the pid of the Oh My Pi the shim at pid shim started, the binary LEGION_OMP_PATH
+// names, which the free ompChildOf (omp_child_live_test.go) finds by a walk of /proc and fails
+// the proof without.
 func (r *rolePromptRuleLive) ompChildOf(token claim.Token, shim int) int {
-	t := r.t
-	t.Helper()
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		t.Fatalf("read /proc to find the Oh My Pi %s's shim (pid %d) started: %v", token, shim, err)
-	}
-	var ofTheShim []string
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid == shim {
-			continue
-		}
-		status, err := os.ReadFile("/proc/" + entry.Name() + "/status")
-		if err != nil || parentOf(string(status)) != shim {
-			continue
-		}
-		raw, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
-		if err != nil {
-			continue
-		}
-		argv := strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
-		if len(argv) == 0 {
-			continue
-		}
-		if argv[0] == r.omp {
-			return pid
-		}
-		ofTheShim = append(ofTheShim, fmt.Sprintf("%d %s", pid, argv[0]))
-	}
-	t.Fatalf("the shim of %s (pid %d) has no live child whose argv[0] is %s, the Oh My Pi this run launches; its children are %v, and that pane's own output is under %s",
-		token, shim, r.omp, ofTheShim, r.rt.paneLogs)
-	return 0
+	r.t.Helper()
+	return ompChildOf(r.t, r.omp, r.rt.paneLogs, token, shim)
 }
 
 // parentOf is the PPid a /proc/<pid>/status holds, or 0 when it holds none.
