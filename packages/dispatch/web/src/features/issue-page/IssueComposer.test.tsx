@@ -2284,24 +2284,28 @@ test("the current point is the question that waits on the reader, then the newes
 
 // R12: while the point's row is folded away, each row above it on its path carries the path's
 // mark and the lighter ring - outside the halo on a folded branch's bullet - and no row carries
-// `aria-current`; unfolded, the point's own row alone is marked, with the quiet ring. The reply's
-// Fold, pressed by hand, puts the path back, and its Unfold the point.
+// `aria-current`; unfolded, the point's own row alone is marked, with the quiet ring. Every
+// branch opens unfolded. Fold each branch to see where the path ends.
 test("the rows above a folded-away point carry the path's ring, and its own row the point's", async () => {
   const user = userEvent.setup();
   renderPage({}, branchOutline());
-  // The page opens with bob's comment folded, the newest act two levels under it.
-  expect(drawnPoint()).toEqual(pathThrough("comment-1"));
+  const toggle = (name: string) =>
+    user.click(within(rowOf("comment-1a")).getByRole("button", { name }));
+  expect(drawnPoint()).toEqual(pointOn("comment-1b"));
+  expect(dotOf("comment-1b")).toHaveClass(pagePointRing);
+
+  await user.click(within(rowOf("comment-1")).getByRole("button", { name: CONTROL_LABELS.fold }));
+  await waitFor(() => expect(drawnPoint()).toEqual(pathThrough("comment-1")));
   expect(dotOf("comment-1")).toHaveClass(pagePathRingFolded);
 
-  // Bob's comment unfolded and his reply still folded: both are on the path, each ringed as its
+  // Bob's comment unfolded and his reply folded: both are on the path, each ringed as its
   // bullet is drawn.
   await user.click(within(rowOf("comment-1")).getByRole("button", { name: CONTROL_LABELS.unfold }));
+  await toggle(CONTROL_LABELS.fold);
   await waitFor(() => expect(drawnPoint()).toEqual(pathThrough("comment-1", "comment-1a")));
   expect(dotOf("comment-1")).toHaveClass(pagePathRing);
   expect(dotOf("comment-1a")).toHaveClass(pagePathRingFolded);
 
-  const toggle = (name: string) =>
-    user.click(within(rowOf("comment-1a")).getByRole("button", { name }));
   await toggle(CONTROL_LABELS.unfold);
   await waitFor(() => expect(drawnPoint()).toEqual(pointOn("comment-1b")));
   expect(dotOf("comment-1b")).toHaveClass(pagePointRing);

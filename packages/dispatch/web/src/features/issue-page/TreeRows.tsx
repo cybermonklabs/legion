@@ -133,7 +133,13 @@ export function TreeRows({
           const key = rowKeyOf(row);
           if (row.kind === "page") {
             return (
-              <PageControl key={key} kind="page" level={row.level} onPress={() => onPage(row)}>
+              <PageControl
+                current={points.get(key)}
+                key={key}
+                kind="page"
+                level={row.level}
+                onPress={() => onPage(row)}
+              >
                 {/* One run of text: below 1280 px a button is a flex box (`styles.css`), which
                   lays the count's own span and the words after it out as two boxes side by
                   side, the space that opens the words dropped at the start of theirs. */}
@@ -239,11 +245,16 @@ const PAGE_CONTROL_MARKS = {
  */
 function PageControl({
   children,
+  current,
   kind,
   level,
   onPress,
 }: {
   children: ReactNode;
+  /** The conversation's current point where it stands among the rows this control draws: `path`
+   *  on the row that pages a node's children (`current-point.ts`'s `pointMarks`, R12), drawn as
+   *  the mark a node's row carries; undefined on every other control. */
+  current?: PointMark;
   /** Which of the three it is, by the mark it carries (`PAGE_CONTROL_MARKS`). */
   kind: keyof typeof PAGE_CONTROL_MARKS;
   level: number;
@@ -257,6 +268,7 @@ function PageControl({
       role="treeitem"
       style={{ "--row-depth": depth } as CSSProperties}
       tabIndex={-1}
+      data-current-point={current}
       {...{ [PAGE_CONTROL_MARKS[kind]]: "" }}
     >
       <IndentGuides depth={depth} />

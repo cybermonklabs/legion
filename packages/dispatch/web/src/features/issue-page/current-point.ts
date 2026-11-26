@@ -4,7 +4,7 @@ import { compareTimestamps } from "../../lib/timestamps";
 import type { TreeNode } from "./issue-tree";
 import { conversationItem, type OutlineWriter, useOutlineWriter } from "./outline-writer";
 import type { NodeType } from "./page-words";
-import type { DrawnRow } from "./tree-fold";
+import type { DrawnRow, PageRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
 
 /**
@@ -28,9 +28,10 @@ import { rowKeyOf } from "./tree-keys";
  * found once and its path ends at its edited place: the mark is on one row, never on a copy.
  */
 
-/** How a drawn row carries the current point: its own row, or a row above it on its path while
- *  its own row is folded away. A folded branch still says where the conversation is, so the
- *  reader can open their way down to it. */
+/** How a drawn row carries the current point: its own row (`here`), or, while its own row is
+ *  folded away or stands past its parent's first page of children, a row above it on its path or
+ *  the row that pages those children (`path`). A folded branch or a page still says where the
+ *  conversation is, so the reader can open or page their way down to it. */
 export type PointMark = "here" | "path";
 
 /** The writer's two targets as `OutlineWriter` holds them (outline-writer.tsx): the entry the
@@ -134,8 +135,8 @@ export function currentPath(root: TreeNode, aim: PointAim): readonly string[] | 
  * The depth on `path` of the node `row` stands for: its own id at that depth, and the ids it sits
  * under the path's ids above it, since one node is drawn under several parents and only its edited
  * placement is on the path. Undefined for a row that stands for none of them: a row of another
- * branch, a transcluded placement of a node on the path, and a row standing for a branch below the
- * drawn levels, which is no node's own row.
+ * branch, a transcluded placement of a node on the path, and the row that pages a node's
+ * children, which is no node's own row (`pagesPoint`).
  */
 function depthOnPath(row: DrawnRow, path: readonly string[]): number | undefined {
   if (row.kind !== "node") return undefined;
@@ -144,11 +145,25 @@ function depthOnPath(row: DrawnRow, path: readonly string[]): number | undefined
   return row.trail.every((id, index) => id === path[index]) ? depth : undefined;
 }
 
+/** Whether the point stands among the rows `row` pages: its node is on `path` at the placement
+ *  the path runs through, as `depthOnPath` matches a node's row, and the path's next id is one of
+ *  the children no row draws yet, so the point is that child or under it. */
+function pagesPoint(row: PageRow, path: readonly string[]): boolean {
+  const depth = row.trail.length;
+  if (row.of.id !== path[depth] || !row.trail.every((id, index) => id === path[index])) {
+    return false;
+  }
+  const { children } = row.of;
+  return children.slice(children.length - row.left).some((child) => child.id === path[depth + 1]);
+}
+
 /**
  * Each drawn row that carries the mark, by its row key (`rowKeyOf` of tree-keys.ts). The point's
  * own row, where it is drawn, carries `here` and is the only row marked. Where it is folded away
- * or not drawn, every drawn row above it on its path carries `path` instead, so the reader sees
- * which branch to open; a row of the path that is not drawn carries nothing.
+ * or not drawn, every drawn row above it on its path carries `path` instead, and so does the row
+ * that pages its parent's children where the point stands among them (`pagesPoint`), so the
+ * reader sees which branch to open or which page to draw; a row of the path that is not drawn
+ * carries nothing.
  *
  * The rows are matched by their trails, never by their place in the list, so the rows of a zoomed
  * outline match as the whole tree's do and the issue's own row may be missing (`IssueTree.tsx`
@@ -163,7 +178,9 @@ export function pointMarks(
   const point = rows.find((row) => depthOnPath(row, path) === path.length - 1);
   if (point !== undefined) return marks.set(rowKeyOf(point), "here");
   for (const row of rows) {
-    if (depthOnPath(row, path) !== undefined) marks.set(rowKeyOf(row), "path");
+    const marked =
+      row.kind === "page" ? pagesPoint(row, path) : depthOnPath(row, path) !== undefined;
+    if (marked) marks.set(rowKeyOf(row), "path");
   }
   return marks;
 }

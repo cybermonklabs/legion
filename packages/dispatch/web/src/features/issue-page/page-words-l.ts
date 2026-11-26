@@ -149,5 +149,7 @@ export default {
     },
   },
   unasked: [],
-  answers: [ADDRESS_FALLBACK_WORDS],
+  // Widened to the type every part's list has: two parts' tuples of tables of their own leave
+  // `WORD_FILES.flatMap` (`page-words-parts.ts`) no one element type to infer.
+  answers: [ADDRESS_FALLBACK_WORDS] as PartWords["answers"],
 } as const satisfies PartWords;

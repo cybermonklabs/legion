@@ -14,7 +14,7 @@ import {
 import type { TreeNode } from "./issue-tree";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import type { NodeType } from "./page-words";
-import { NARROW_LEVELS, NOTHING_OPENED, type OpenedBranches, treeRows } from "./tree-fold";
+import { CHILD_PAGE, NOTHING_OPENED, type OpenedBranches, treeRows } from "./tree-fold";
 
 /**
  * The conversation's current point: the node the reader's next turn answers, and the drawn rows
@@ -342,7 +342,7 @@ test("the rows of a zoomed outline are marked by their trails", () => {
   const path = currentPath(root, NOTHING_AIMED);
   const [zoom] = root.children;
   if (zoom === undefined) throw new Error("the issue holds no comment to zoom into");
-  const zoomed = (opened: OpenedBranches) => treeRows(zoom, opened, [KEY], NARROW_LEVELS);
+  const zoomed = (opened: OpenedBranches) => treeRows(zoom, opened, [KEY]);
   expect(Object.fromEntries(pointMarks(zoomed(NOTHING_OPENED), path))).toEqual({
     "CORE-1>c1>c2>a1": "here",
   });
@@ -371,19 +371,42 @@ test("a transcluded placement's rows are never marked", () => {
   });
 });
 
-// A branch opened below the drawn levels folds to one row standing for it, which is no node's
-// own row and is never marked, though the point is inside it.
-test("a row standing for a deeper branch is never marked", () => {
-  const root = issue([comment("c1", at(1), [comment("c2", at(2), [comment("c3", at(3))])])]);
-  const path = currentPath(root, NOTHING_AIMED);
-  expect(path).toEqual([KEY, "c1", "c2", "c3"]);
-  const opened = { ...NOTHING_OPENED, branches: new Set(["c1"]) };
-  const rows = treeRows(root, opened, [], NARROW_LEVELS);
-  expect(rows.map((row) => row.kind)).toEqual(["node", "node", "deeper"]);
-  expect(Object.fromEntries(pointMarks(rows, path))).toEqual({
+// A node's children past its first page draw one row that pages them, which is no node's own
+// row. Where the point stands among the children it stands for, or under one of them, that row
+// carries the path's mark beside each drawn row above it on the path, and no row is marked here,
+// so the reader finds the page that holds the point. Another node's row that pages its own
+// children carries nothing. The control: the same tree with the point among the first page's
+// children, whose own row is drawn and marked here, gives the row that pages the rest no mark.
+test("a row that pages a node's children is marked path where the point stands among them, and not where the point is drawn", () => {
+  const older = Array.from({ length: CHILD_PAGE + 1 }, (_, index) =>
+    comment(`o${index + 1}`, at(0))
+  );
+  // The last reply, past the first page, holds the newest act.
+  const last = `r${CHILD_PAGE + 1}`;
+  const replies = Array.from({ length: CHILD_PAGE + 1 }, (_, index) =>
+    index < CHILD_PAGE
+      ? comment(`r${index + 1}`, at(index + 1))
+      : comment(last, at(index + 1), [comment("deep", at(index + 2))])
+  );
+  const root = issue([comment("c0", at(0), older), comment("c1", at(0), replies)]);
+  const rows = treeRows(root);
+  expect(rows.flatMap((row) => (row.kind === "page" ? [row.of.id] : []))).toEqual(["c0", "c1"]);
+  const behind: Readonly<Record<string, PointMark>> = {
     "CORE-1": "path",
     "CORE-1>c1": "path",
-  });
+    "page:CORE-1>c1": "path",
+  };
+  const under = currentPath(root, NOTHING_AIMED);
+  expect(under).toEqual([KEY, "c1", last, "deep"]);
+  expect(Object.fromEntries(pointMarks(rows, under))).toEqual(behind);
+  const among = currentPath(root, replyingTo(last, "comment"));
+  expect(among).toEqual([KEY, "c1", last]);
+  expect(Object.fromEntries(pointMarks(rows, among))).toEqual(behind);
+
+  // The control: the point among the first page's children.
+  const drawn = currentPath(root, replyingTo("r1", "comment"));
+  expect(drawn).toEqual([KEY, "c1", "r1"]);
+  expect(Object.fromEntries(pointMarks(rows, drawn))).toEqual({ "CORE-1>c1>r1": "here" });
 });
 
 /** The page's writer and the point it holds over `root`, every read the writer makes answered
@@ -392,7 +415,8 @@ function renderPoint(root: TreeNode) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  for (const read of ["asks", "comments", "issue-messages"]) client.setQueryData([read, KEY], []);
+  client.setQueryData(["asks", KEY, "thread"], []);
+  for (const read of ["comments", "issue-messages"]) client.setQueryData([read, KEY], []);
   client.setQueryData(["agents"], []);
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(

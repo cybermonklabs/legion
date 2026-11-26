@@ -295,10 +295,12 @@ const HELD = treeAnswer([], [], { converted: true, issue: KEY, tree: TREE, view_
 function roomFactsOf(client: QueryClient, issue: string | undefined = KEY) {
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client }, children);
-  return renderHook(({ key }: { key: string | undefined }) => useRoomFacts(key), {
-    initialProps: { key: issue },
-    wrapper,
-  });
+  // The props' type is named here: inferred from `initialProps`, it takes the issue's default
+  // and refuses the `undefined` a case rerenders with.
+  return renderHook<RoomFacts | undefined, { key: string | undefined }>(
+    ({ key }) => useRoomFacts(key),
+    { initialProps: { key: issue }, wrapper }
+  );
 }
 
 test("the room facts are those of the tree read the cache holds, one object while they stand", () => {

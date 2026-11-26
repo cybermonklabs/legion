@@ -15,7 +15,7 @@ import {
   searchResponse,
 } from "../../__tests__/search-fixture";
 import { api } from "../../api/client";
-import type { Actor, CommentWithTrees, IssueAskRow } from "../../api/types";
+import type { Actor, CommentWithTrees, IssueAskRow, IssueAskThreadRow } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -95,6 +95,25 @@ export function askRecord(id: string, fields: Partial<IssueAskRow> = {}): IssueA
     urgency: "med",
     ...fields,
   };
+}
+
+/** `asks` as the outline's asks read sends them (`issueAskThreadsQuery`), each with its thread:
+ *  none of its own yet, as a card the reader has not opened. */
+function askThreadRows(asks: readonly IssueAskRow[]): IssueAskThreadRow[] {
+  return asks.map((ask) => ({
+    ...ask,
+    thread: {
+      answers: [],
+      claimant: null,
+      edits: [],
+      followers: [],
+      replies: [],
+      route: null,
+      route_holder: null,
+      route_status: null,
+      route_status_reason: null,
+    },
+  }));
 }
 
 /** Comment `id` by `author` as the issue's comments read sends it. */
@@ -293,7 +312,6 @@ function Page({
           artifacts={new Map()}
           context={new Set()}
           emptyLine="Nothing here."
-          filtering={false}
           focusReveal={false}
           holdsEscape={false}
           isClosed={place.closed === true}
@@ -342,7 +360,7 @@ export function drawBoxPage(
   place: Place = {},
   root: TreeNode = outline()
 ): BoxPage {
-  client.setQueryData(["asks", KEY], reads.asks);
+  client.setQueryData(["asks", KEY, "thread"], askThreadRows(reads.asks));
   client.setQueryData(["comments", KEY], reads.comments);
   client.setQueryData(["issue-messages", KEY], []);
   client.setQueryData(["agents"], [plannerAgent()]);
@@ -388,7 +406,7 @@ export function answerBoxReads(reads: BoxReads) {
   const commentsRead = spyOn(api, "listComments").mockImplementation(async () => reads.comments);
   const searchRead = spyOn(api, "search").mockResolvedValue(searchResponse([]));
   const others = [
-    spyOn(api, "listIssueAsks").mockImplementation(async () => reads.asks),
+    spyOn(api, "listIssueAskThreads").mockImplementation(async () => askThreadRows(reads.asks)),
     spyOn(api, "listIssueMessages").mockResolvedValue([]),
     spyOn(api, "listAgents").mockResolvedValue([plannerAgent()]),
     spyOn(api, "getIssueCollaborators").mockResolvedValue(issueCollaborators()),
