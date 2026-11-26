@@ -1,15 +1,12 @@
 // Command spec-check judges a directory of spec files, a checkout's .dispatch/spec, by the rules
 // of package specgraph, lists what changed between two such directories, compares one with an
 // approved spec and prints the approved text, checks that no CI file of a repository runs that
-// comparison, derives the states of a scenario, names each program check that CI refuses at a
-// commit, and lists the files that changed between two commits. It reads the directory as the
-// Dispatch server's importer reads .dispatch/architecture: notes.ReadSet takes each .md file
-// directly in it, within the size bound, and passes over every other entry. Every rule of the
-// spec files, of a scenario, of a citation and of the files that changed is specgraph's (Parse,
-// Validate, Compare, ReadScenario, Derive, WaitCycle, GoTies, Citations and GitHistory); the
+// comparison, and derives the states of a scenario. It reads the directory as the Dispatch
+// server's importer reads .dispatch/architecture: notes.ReadSet takes each .md file directly in it,
+// within the size bound, and passes over every other entry. Every rule of the spec files and of a
+// scenario is specgraph's (Parse, Validate, Compare, ReadScenario, Derive and WaitCycle); the
 // command states none of its own. The rule of guard is the command's (cifiles.go), since it reads
-// CI files and no spec file, and so is the form of the files that citations alone reads: --needs,
-// --changed and --ties (citations.go, basetie.go).
+// CI files and no spec file.
 //
 // Usage:
 //
@@ -22,12 +19,13 @@
 //	spec-check state --scenario <dir> [--json]
 //	  (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy;
 //	  a check of production or of the graph is judged only at a deploy, and one of the graph reads
-//	  unknown there when no result read the subject's graph_tx; <dir>/ties.json holds each check's tie
-//	  by commit, and a result at one commit counts at another only when the check's tie is known at
-//	  both and no path that changed between them reaches the tie at either)
-//	spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed)
-//	    --reports <dir> --needs <file> [--ties <file>...] [--json <file>] [--allow-empty]
-//	spec-check changed --repo <root> --base <commit> [--head <commit>]
+//	  unknown there when no result read the subject's graph_tx; a run of a check of the code counts
+//	  only at the commit that it read, and a failing example at the commit that it counts from, its
+//	  planted_on for a program check of the code; <dir>/ties.json holds each check's tie by commit,
+//	  and a failing example that the test caught, or a run of the test of a program check of
+//	  production or of the graph, counts at another commit only when the check's tie is known at both
+//	  and no path that changed between them is covered by the tie at either; one that the test missed
+//	  never counts at another commit)
 //
 // tree judges one directory. It exits 0 for a valid tree, with the count line "spec-check: <dir>:
 // 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is valid" on standard output.
@@ -52,7 +50,7 @@
 // statements as added, and a checkout with no spec file has no program check.
 //
 // compare compares the files of one directory with an approved spec in the form of approved.json
-// (specgraph.ApprovedFile). It exits 1 when the files hold a node in a text that the approved spec
+// (specgraph.ReadApproved). It exits 1 when the files hold a node in a text that the approved spec
 // never held, with one line for each such node on standard error, "spec-check:
 // <dir>/<file>:<line>: <node>: <detail>", and "spec-check: <dir>: the comparison fails on <n>
 // nodes" on standard output. It exits 0 otherwise, with "spec-check: <dir>: the approved spec held
@@ -135,16 +133,19 @@
 // no bound on its size.
 //
 // state reads a scenario of The Spec in the format of specgraph.ReadScenario (the directories of
-// internal/dispatch/specgraph/testdata/scenarios) and derives the state of each check and each
-// statement at each subject of it. For each subject it prints "spec-check: subject <commit>, the
+// internal/dispatch/specgraph/testdata/scenarios; packages/envoy/docs/spec-check-state.md is its
+// guide for a user) and derives the state of each check and each statement at each subject of it.
+// For each subject it prints "spec-check: subject <commit>, the
 // head of <branch>", "spec-check: subject <commit>, the commit that production runs at deploy
 // <deploy>", or with the graph_tx of the subject "…, the commit that production runs at deploy
 // <deploy>, and the graph at transaction <graph_tx>", then each current approved statement in
 // preorder, "statement <id>: met", "met, partly checked", "not built (…)", "not met (…)" or
 // "unknown (…)", each followed by its own checks that read the subject, "  check <id>: true
-// (passed, counted from <commit>)", "false (failed, counted from <commit>)" or "unknown
-// (<reason>)". With units.json, at the head of main, it prints "wait of <unit> on <statement>:
-// ends" or "holds (<own state>)" for each wait, and after the last subject
+// (passed, counted from <x>)", "false (failed, counted from <x>)" or "unknown (<reason>)", where
+// <x> is the commit, the deploy or the transaction of the graph that the counted result read; then
+// each check whose statement the approved spec removed, "check <id> (serves no current statement):
+// <state>", its state in the same words. With units.json, at the head of main, it prints "wait of
+// <unit> on <statement>: ends" or "holds (<own state>)" for each wait, and after the last subject
 // "spec-check: cycle of waits: <unit> -> <statement> -> … -> <unit>" or "spec-check: cycle of
 // waits: none". --json prints the states as one line of JSON instead, []State, or with units.json
 // {"states":[…],"cycle":[…]}. It exits 0 for a scenario it reads, and 2, with one line on standard
@@ -160,71 +161,14 @@
 // names graph_tx only with a deploy, each name of a subject has a letter or a digit, and a result
 // names one subject, so the reader refuses graph_tx on a branch, a commit, branch, deploy or
 // graph_tx of no letter and no digit, and a result that names two of commit, deploy and graph_tx.
-// ties.json holds the tie of each check at each commit, and a result at one commit counts at another
-// only when the check's tie is known at both commits and no path that changed between them reaches
-// the tie at either commit; the reader refuses a commit of ties.json of no letter and no
-// digit, as it refuses such a commit of a subject, and names the form that ties.json needs when a
-// value in it is of another type, such as ties by check alone.
-//
-// citations names each program check of a directory of spec files that CI refuses at the commit of
-// the repository at <root> (specgraph.Citations, R48): its test is not in the code (GoCode, go list
-// in <root>), the code cannot be searched for it, its selector picks two tests, its job is not in
-// the workflow or spec-citations does not wait for it, or code that its test reads changed and the
-// job did not run the test. A result that go test replayed from its cache, the package's line "ok
-// <package> (cached)", is no run at the commit, and neither is a run in a report that ends before
-// its package's own end event. --changed is the list that changed prints: its first line, "base
-// <commit>", names the commit where each result that the commit carries stands, which for a
-// change's branch is its merge base with the default branch and never the branch's push before,
-// since a list from that push holds no change of the pushes before it; the paths after it changed
-// since that commit. So after a rebase onto a default branch whose commits changed a test's code,
-// a push that changes only docs is cited with no run of that test: the result that counts is then
-// the one at that base commit, and the check's state reads unknown when no result stands there.
-// --all-changed says that there is no base commit. A result carries from the base only while the
-// check's tie is known at the commit and at the base and holds no path of the list and no path
-// under one, since git names a submodule that moved by its one path, the gitlink, so a file that
-// the change deleted, or moved out of the tie, counts, and a tie that is not known at either end
-// counts as a change also when no path changed. A report is the account of the process under test,
-// so a test that prints the testing package's marked run and pass lines of another test makes that
-// test read as run, and a report of go test -json -v, or of go test -json with -test.v=true after
-// -args, lets a test print those lines of any test of its package with no marker: a step that makes
-// a report for CI runs go test -json with no -v and no -test.v. --reports holds one directory per
-// report artifact of the run, spec-report--<job> or spec-report--<job>--<leg>, each with the go
-// test -json report.jsonl; --needs holds toJSON(needs) of the spec-citations job, the result of
-// each job it waits for. The tie of a check whose test did not run, the one check whose tie the
-// rules read, is
-// at the commit what <root>'s .github/scripts/go-test-reads.sh says its test reads (GoTies), and at
-// the base what the base's own script says, in a checkout of the base commit that the command makes
-// in a new temporary directory when a check needs it and removes when it ends, which holds the tree
-// as git stores it whatever the settings of git, of .gitattributes or of the process; a base that
-// is the commit itself has the tie at the commit. --ties, which may be given more than once, names
-// a file of ties by commit, {"<commit>":{"<check>":["<path or pattern>",...]}} (ReadCommitTies), each
-// commit by its full object name; with it, the ties at the commit are the files' ties of the
-// commit that HEAD of <root> names (exit 2 when git cannot read it) and those at the base the
-// files' ties of the base line's commit. A commit or a check that the files do not hold reads as a
-// tie that is not known, and a commit key that is no full object name, or that two of the files
-// hold, is exit 2. Each refused check is one line on standard error, "spec-check:
-// <dir>/<file>:<line>: <check>: <detail>", where the detail begins with the rule, with
-// "spec-check: <dir>: <n> program checks; <k> refused" on standard output, exit 1; none is
-// "spec-check: <dir>: <n> program checks; each is cited", exit 0. --json writes the faults to a
-// file as one line of JSON, as checks and state write theirs, [{"check","rule","detail"}], [] for
-// none, making its directory. With --allow-empty, a directory that does not exist or holds no spec
-// file is "spec-check: <dir>: holds no spec file; no check to cite", exit 0. A spec file that does
-// not parse is exit 2 with its problems. <root> is the top of its git clone, and citations refuses
-// one that is not as changed does, before it reads an input.
-//
-// changed prints the line "base <commit>", with the full object name of the base, then the paths
-// whose content differs between the trees of the two commits of the git clone at <root>, both
-// paths of a move (GitHistory), sorted, one a line on standard output, with "spec-check: <root>:
-// <n> paths changed from <base> to <head>" on standard error; --head is HEAD when not given. The
-// base is the commit where each result that the head carries stands, which for a change's branch
-// is its merge base with the default branch, and never the branch's push before. A commit that git
-// cannot read and a path that holds a line break are exit 2 with one line naming them. <root> is
-// the top of its git clone, from which git names each path whatever directory the command names: a
-// directory below the top is exit 2 before git reads a commit, with the one line "spec-check:
-// <root>: is not the top of its git clone; pass the top, --repo <top>", where <top> is what git
-// rev-parse --show-toplevel gives, and a directory where git finds no work tree, such as a clone's
-// .git, is exit 2 with "spec-check: <root>: git finds no work tree there: <git's words>". The top
-// named through a link is the top.
+// ties.json holds the tie of each check at each commit. A run of a check of the code counts only at
+// the commit that it read, and a failing example at the commit that it counts from, its planted_on
+// for a program check of the code; a failing example that its test caught, or a run of the test of
+// a program check of production or of the graph, counts at another commit only when the check's tie
+// is known at both commits and no path that changed between them is covered by the tie at either
+// commit, and one that its test missed never counts at another commit; the reader refuses a commit
+// of ties.json of no letter and no digit, as it refuses such a commit of a subject, and names the
+// form that ties.json needs when a value in it is of another type, such as ties by check alone.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage, and for a file or a device on
@@ -234,23 +178,16 @@
 // is closed at the start reads as /dev/null, since the Go runtime opens /dev/null on it before the
 // program starts, so the text is lost as with >/dev/null. Each entry of a directory that is
 // not a spec file is a warning on standard error, since the importer passes over it in silence.
-// Each path of a file or a directory the command reads is printed absolute. Every line but the
-// usage, the JSON of checks and of state, the blocks of print, the statement, check and wait lines
-// of state, and the list of changed is written by runnerlog.Say with the prefix "spec-check: ",
-// so no text a file name, a file or an argument holds starts a line of the runner's log or names a
-// workflow command. Each statement, check and wait line starts with its fixed word and passes
-// through runnerlog.Printable for the same reason. A JSON line holds no raw line break, as
-// encoding/json escapes each control character, and checks, state and the --json file of
-// citations write the "[" of each "##[" in it as \u005b, which a JSON reader reads back as "[".
-// print writes each block as the approved spec holds it, since a change copies it byte for byte,
-// so the output of print must not reach a CI log: a line of a block that starts with "::" would be
-// a workflow command there. changed writes its base line and each path as git gives it, the data
-// of a file, which the citations job writes its standard output to.
-//
-// The command opens no database. citations runs go list in <root>, which can download the
-// workspace's modules, git, and <root>'s .github/scripts/go-test-reads.sh, and for the tie at the
-// base the base's own go-test-reads.sh in a temporary directory; changed runs git; the other
-// subcommands start no process and reach no network.
+// Paths are printed absolute. Every line but the usage, the JSON of checks and of state, the
+// blocks of print, and the statement, check and wait lines of state is written by runnerlog.Say
+// with the prefix "spec-check: ", so no text a file name, a file or an argument holds starts a line
+// of the runner's log or names a workflow command. Each statement, check and wait line starts with
+// its fixed word and passes through runnerlog.Printable for the same reason. A JSON line holds no
+// raw line break, as encoding/json escapes each control character, and checks and state write the
+// "[" of each "##[" in it as \u005b, which a JSON reader reads back as "[". print writes each block
+// as the approved spec holds it, since a change copies it byte for byte, so the output of print
+// must not reach a CI log: a line of a block that starts with "::" would be a workflow command
+// there.
 package main
 
 import (
@@ -258,7 +195,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -277,30 +213,28 @@ const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <fi
        spec-check state --scenario <dir> [--json]
          (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy;
          a check of production or of the graph is judged only at a deploy, and one of the graph reads
-         unknown there when no result read the subject's graph_tx; <dir>/ties.json holds each check's tie
-         by commit, and a result at one commit counts at another only when the check's tie is known at
-         both and no path that changed between them reaches the tie at either)
-       spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed)
-           --reports <dir> --needs <file> [--ties <file>...] [--json <file>] [--allow-empty]
-       spec-check changed --repo <root> --base <commit> [--head <commit>]`
+         unknown there when no result read the subject's graph_tx; a run of a check of the code counts
+         only at the commit that it read, and a failing example at the commit that it counts from, its
+         planted_on for a program check of the code; <dir>/ties.json holds each check's tie by commit,
+         and a failing example that the test caught, or a run of the test of a program check of
+         production or of the graph, counts at another commit only when the check's tie is known at both
+         and no path that changed between them is covered by the tie at either; one that the test missed
+         never counts at another commit)`
 
 // prefix is the fixed text that starts every line the command prints but the usage, the JSON of
-// checks and of state, the blocks of print, the statement, check and wait lines of state, and the
-// list of changed.
+// checks and of state, the blocks of print, and the statement, check and wait lines of state.
 const prefix = "spec-check: "
 
 // subcommands is each subcommand by its name: it takes the arguments after the name and answers
 // the exit status.
 var subcommands = map[string]func(args []string, stdout, stderr io.Writer) int{
-	"tree":      runTree,
-	"changes":   runChanges,
-	"checks":    runChecks,
-	"compare":   runCompare,
-	"print":     runPrint,
-	"guard":     runGuard,
-	"state":     runState,
-	"citations": runCitations,
-	"changed":   runChanged,
+	"tree":    runTree,
+	"changes": runChanges,
+	"checks":  runChecks,
+	"compare": runCompare,
+	"print":   runPrint,
+	"guard":   runGuard,
+	"state":   runState,
 }
 
 func main() {
@@ -388,21 +322,6 @@ func absolute(stderr io.Writer, path string) (string, bool) {
 		return "", false
 	}
 	return abs, true
-}
-
-// isDirectory is whether path is a directory; when not, it has written the line that says why.
-func isDirectory(stderr io.Writer, path string) bool {
-	switch info, err := os.Stat(path); {
-	case errors.Is(err, fs.ErrNotExist):
-		say(stderr, "%s: does not exist", path)
-	case err != nil:
-		say(stderr, "%s: cannot be read: %s", path, err)
-	case !info.IsDir():
-		say(stderr, "%s: is not a directory", path)
-	default:
-		return true
-	}
-	return false
 }
 
 // judged is one directory of spec files, read and judged: its tree, every problem of Parse and,

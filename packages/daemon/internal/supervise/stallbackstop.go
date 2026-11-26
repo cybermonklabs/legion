@@ -25,19 +25,23 @@ func (s StepRecord) LastStep() time.Time {
 // once the machine has done it (Deps.StallBackstopped, the daemon's stallBackstopped): the
 // record the request carried, the moment the machine judged from, the bound it passed, the
 // end the machine reached — relaunched, the relaunch parked on the wake pacing, the relaunch
-// still to make, suspended, or the claim failed (ProcessEnd) — the moment a parked launch's
-// turn comes, whether the process that end let go was left possibly running, and what the
-// replacement charged the claim on its way to that end. The owner's notice is written from
-// this and not from what the sweep asked for, because the sweep asks over claims it read
-// before the decision and the machine can answer by leaving the turn exactly as it stands.
+// waiting at its issue pod's gate, the relaunch still to make, suspended, or the claim failed
+// (ProcessEnd) — the moment a parked launch's turn comes, whether the process that end let go was
+// left possibly running, and what the replacement charged the claim on its way to that end. The
+// owner's notice is written from this and not from what the sweep asked for, because the sweep
+// asks over claims it read before the decision and the machine can answer by leaving the turn
+// exactly as it stands.
 type StallBackstopStop struct {
 	Step     StepRecord
 	LastStep time.Time
 	Bound    time.Duration
 	End      ProcessEnd
-	// WakeDue is when the launch the pacing parked is due to run (wake.at, reserveWake), carried
-	// so the owner's notice names that moment rather than guessing at the wait (the daemon's
-	// stallBackstopEnds). It is the zero time for every other end, which queues no wake.
+	// WakeDue is the moment the pacer estimated, when the stop was built, that it lets out the
+	// place of the launch the pacing parked (wakepace.Place.Estimate, reserveWake), carried so the
+	// owner's notice names that estimate rather than guessing at the wait (the daemon's
+	// stallBackstopEnds). It is an estimate and no due moment: a change to the queues or to the
+	// pace can move the let-out earlier or later, so the notice says so. It is the zero time for
+	// every other end, which queues no wake.
 	WakeDue time.Time
 	// StopUnconfirmed is whether the runtime left the process this end let go possibly running:
 	// it refused the stop and the machine went on anyway, or the daemon's own stop cut the launch
@@ -47,7 +51,7 @@ type StallBackstopStop struct {
 	// owner acts on. It is false for an end that let no process go.
 	StopUnconfirmed bool
 	// LaunchFailures is how many launch failures the replacement this end came out of charged
-	// the claim: one for every start of it the runtime refused (launchNow). It is read as the
+	// the claim: one for every start of it the runtime refused (launchTries). It is read as the
 	// claim's launch budget after the replacement less that budget before it, which is exact
 	// because the only two things that reset the budget are event rows of the table — the
 	// agent's ready and a retry (the table's ready and retry) — and a row runs under the
@@ -74,9 +78,9 @@ type StallBackstopStop struct {
 //
 // A claim that already holds a wake is decided nothing at all, exactly as refreshPlugin decides
 // nothing over one: that wake is a launch of this same claim waiting its turn in the pacing,
-// and a replacement raised over it would take a second token and replace the wake with a
-// launch that does what the parked one was already going to do. A relaunch parked on the
-// pacing leaves the claim working, so without this guard every sweep of a wave would raise
+// and a replacement raised over it would take a place at the back of the queue and replace the
+// wake with a launch that does what the parked one was already going to do. A relaunch parked on
+// the pacing leaves the claim working, so without this guard every sweep of a wave would raise
 // another. Nothing is lost by returning, and nothing is owed to this request: the wake standing
 // over the claim is what decides the turn — its own turn replaces the stalled process, unless a
 // suspension already waiting or the tree's close ends the claim there instead (wakeNow, letGo) —
@@ -94,7 +98,7 @@ type StallBackstopStop struct {
 // that repeats would spend the claim's death budget and fail the claim at launch_failure_limit,
 // where the requirement is that the claim come back with its task still owed. What the
 // replacement itself charges is another thing: a start the runtime refuses inside it is a launch
-// failure like any other (launchNow), so the end can carry charges the stop did not make, and
+// failure like any other (launchTries), so the end can carry charges the stop did not make, and
 // the report carries how many of them this replacement charged for the owner's notice to say
 // (StallBackstopStop.LaunchFailures).
 //
@@ -146,7 +150,7 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 	}
 	if m.wake != nil {
 		m.log.Info("supervise: the stall backstop found this claim already queued for a wake; its turn is left to that wake",
-			"kind", m.wake.kind, "due", m.wake.at, "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last)
+			"kind", m.wake.kind, "due", m.wake.due(), "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last)
 		return nil
 	}
 	suspended := m.held != nil
@@ -186,7 +190,7 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 			// The wake the machine holds now is this replacement's own: the guard above returned
 			// over a claim that already held one, and the end itself is read from a wake that is
 			// not the one the replacement began with (endReached).
-			stop.WakeDue = m.wake.at
+			stop.WakeDue = m.wake.due()
 		}
 		m.deps.StallBackstopped(m.current(), stop)
 	}

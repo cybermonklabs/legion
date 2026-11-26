@@ -9,7 +9,7 @@ tags:
   - retro
   - pr-body
 date: 2026-10-09
-status: superseded in part by INFRA-714 — `READY_NOT_APPROVED` and the whole READY route are deleted, so a merger reaching a round with no recorded approval meets no refusal from the daemon; the architect decides whether the round runs again. A confirmation after a conflict-forced merge, as in the evidence below, still follows the fingerprint rule, and the round-counter labelling below still holds
+status: superseded in part by INFRA-714 — `READY_NOT_APPROVED` and the whole READY route are deleted, so a merger reaching a round with no recorded approval meets no refusal from the daemon; the architect decides whether the round runs again. A confirmation after a conflict-forced merge, as in the evidence below, still follows the fingerprint rule, and the round-counter labelling below still holds. Retro commits nothing and pushes nothing, and no role writes to docs/solutions/. An approval moves the issue to its task's next step (accepting in the default steps), and retro starts once the task's last step passes. An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: packages/daemon/internal/admit
 applies_when:
   - A child issue of a Legion tree sits in merging (or past review) when the tree's root is re-admitted at a new generation

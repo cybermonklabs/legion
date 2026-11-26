@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("(oe\x10=\xf0h7\xce")

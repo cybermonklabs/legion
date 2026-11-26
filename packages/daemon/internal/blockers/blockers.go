@@ -3,9 +3,11 @@
 //
 // Admission decides whether to admit a root, and the workflow whether to start a child's first
 // phase, inside a transaction that performs no I/O: neither can ask Dispatch what an issue is
-// blocked by at the moment it decides. So the daemon keeps its own table of Dispatch's answer
-// (record.DispatchIssueRow), written by Mirror as each issue event arrives and by Reconcile from
-// the boot listing, and read back for the issues a judgement names, with what they wait on.
+// blocked by at the moment it decides. So the daemon keeps its own copy of what Dispatch said
+// (record.DispatchIssueRow), which only a reading of Dispatch writes — Mirror, from each issue
+// event or view of one issue, the release's read of the children it adopts and the periodic
+// turn's re-read, and Reconcile, from a listing — each value at the sequence of the reading that
+// wrote it, and reads it back for the issues a judgement names, with what they wait on.
 package blockers
 
 import (
@@ -304,7 +306,7 @@ func startedIssues(issues []record.Issue, slots []record.Slot, facts record.Line
 // second is the same judgement the line holds an unstarted parent by: a started parent waits for
 // its children exactly as one that never started does, and only the slot it holds differs.
 //
-// An issue whose phase keeps no slot (record.KeepsSlot: past its review, done, or out of the
+// An issue whose phase keeps no slot (record.KeepsSlot: accepting, retro or merging, done, or out of the
 // workflow) waits on nothing here, whatever its links say. The wait this answers is the one a
 // started issue gives its row back for, and such an issue holds no row to give back, so the
 // rule that states the wait term states the phase term too: the release for a wait (admit's
@@ -336,7 +338,7 @@ func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts) []
 	if issue.Phase == phase.Admitted && record.AtWork(issue, facts.Gates[issue.Tree]) {
 		return nil
 	}
-	if record.QueuedRoot(issue, facts.Gates[issue.Tree]) {
+	if record.QueuedRoot(issue, facts.Lifecycles[issue.Tree], facts.Gates[issue.Tree]) {
 		return nil
 	}
 	waits := Unfinished(rows, issue.Key)

@@ -1,0 +1,10 @@
+jj --color=never log --no-graph -r 'root()' -T commit_id
+Warning: Refused to snapshot some files:
+  large.bin: 4.9KiB (5000 bytes); the maximum size allowed is 1.0KiB (1000 bytes)
+Hint: This is to prevent large files from being added by accident. To fix this:
+  * Add the file(s) to `.gitignore`
+  * Run `jj config set --repo snapshot.max-new-file-size 5000`
+    This will increase the maximum file size allowed for new files, in this repository only.
+  * Run `jj --config snapshot.max-new-file-size=5000 status`
+    This will increase the maximum file size allowed for new files, for this command only.
+--- exit 0

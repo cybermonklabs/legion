@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
@@ -85,23 +86,29 @@ func newPauseHarness(t *testing.T, cfg config.Config) *pauseHarness {
 // whose pause service is svc; nil is a daemon with no workflow, which has none.
 func (h *pauseHarness) serveWith(svc PauseService) {
 	h.t.Helper()
+	h.handler = NewServer("127.0.0.1", 8437, h.pauseOptions(svc)).Handler
+}
+
+// pauseOptions is the daemon serveWith serves: the harness's store, machines and boot tokens,
+// with svc as its pause service. placePodCallers starts from it too.
+func (h *pauseHarness) pauseOptions(svc PauseService) Options {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	options := Options{
+	return Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
 		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Log: quiet,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
 		Handlers: []intake.Handler{&factRecorder{}}, Dispatch: h.statuses, Pause: svc,
 	}
-	h.handler = NewServer("127.0.0.1", 8437, options).Handler
 }
 
-// controllerSession registers ses_controller as the project's controller, as `legion controller
-// start` and the session's registration do, and answers a grant that session minted.
-func (h *pauseHarness) controllerSession() string {
+// controllerSession registers the project's controller as the session the constant
+// controllerSession names, as `legion controller start` and the session's registration do, and
+// answers a grant that session minted.
+func (h *harness) controllerSession() string {
 	h.t.Helper()
-	registration := h.registeredController(h.mintedSecret(), "ses_controller")
-	recorder := h.controllerSessionGrant("ses_controller", registration.Secret)
+	registration := h.registeredController(h.mintedSecret(), controllerSession)
+	recorder := h.controllerSessionGrant(controllerSession, registration.Secret)
 	if recorder.Code != http.StatusOK {
 		h.t.Fatalf("the controller session's grant = %d; body %s", recorder.Code, recorder.Body)
 	}
@@ -139,14 +146,21 @@ func (h *pauseHarness) pauseOK(target string, body any, header http.Header) *htt
 // pauseRefused sends a request and requires the refusal status and code, answering its body.
 func (h *pauseHarness) pauseRefused(target string, body any, header http.Header, status int, code string) PauseFailure {
 	h.t.Helper()
-	recorder := h.request(http.MethodPost, target, body, header)
+	return refusalServed(h.t, h.request(http.MethodPost, target, body, header), target, status, code)
+}
+
+// refusalServed requires recorder to answer the POST of target with a refusal of status coded
+// code with its sentence, and answers the refusal, decoded out of the recorder. pauseRefused and
+// pauseRefusalServed both check a refusal through it.
+func refusalServed(t *testing.T, recorder *httptest.ResponseRecorder, target string, status int, code string) PauseFailure {
+	t.Helper()
 	if recorder.Code != status {
-		h.t.Fatalf("POST %s = %d, want %d; body %s", target, recorder.Code, status, recorder.Body)
+		t.Fatalf("POST %s = %d, want %d; body %s", target, recorder.Code, status, recorder.Body)
 	}
 	var refused PauseFailure
-	decodeInto(h.t, recorder, &refused)
+	decodeInto(t, recorder, &refused)
 	if refused.Code != code || refused.Error == "" {
-		h.t.Fatalf("POST %s refused %+v, want code %s and a sentence", target, refused, code)
+		t.Fatalf("POST %s refused %+v, want code %s and a sentence", target, refused, code)
 	}
 	return refused
 }
@@ -671,9 +685,9 @@ func TestThePauseContractIsTheContractThatAddedTheKeys(t *testing.T) {
 		t.Fatalf("pauseContract = %d, want %d, the contract whose entry in version.go added `paused` and `lastPause`",
 			pauseContract, addedPause)
 	}
-	if pauseContract > DaemonAPIVersion {
+	if pauseContract > DaemonAPIVersion() {
 		t.Fatalf("pauseContract = %d, above DaemonAPIVersion %d: no caller could be served the keys",
-			pauseContract, DaemonAPIVersion)
+			pauseContract, DaemonAPIVersion())
 	}
 }
 
@@ -691,7 +705,7 @@ func TestPauseStateTxReadsThePauseThroughTheStatesSnapshot(t *testing.T) {
 		t.Helper()
 		var paused *PausedView
 		var last *PauseView
-		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			paused, last, err = PauseStateTx(ctx, tx, testDispatchProject, h.clock.Now())
 			return err
@@ -710,7 +724,7 @@ func TestPauseStateTxReadsThePauseThroughTheStatesSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error { return record.NewStore().Enqueue(ctx, tx, start) }); err != nil {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error { return record.NewStore().Enqueue(ctx, tx, start) }); err != nil {
 		t.Fatalf("queue a start the pause holds: %v", err)
 	}
 	h.clock.advance(2 * time.Minute)

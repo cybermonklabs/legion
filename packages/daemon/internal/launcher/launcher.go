@@ -17,17 +17,17 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -40,14 +40,6 @@ import (
 // child. The Legion plugin tells the agent so in a message it saves to the session at its start,
 // ahead of the next turn (pi-legion, src/workspace-recreated.ts).
 const WorkspaceRecreatedVariable = "LEGION_WORKSPACE_RECREATED"
-
-// WorkspaceRestoredVariable is how the same launcher tells that generation whether the pod's one
-// workspace-bundle restore put the released workspace's unpushed work back: "true" or "false",
-// set on every generation beside WorkspaceRecreatedVariable, so no value from the container's
-// environment reaches the child. A workspace recreated by a release and restored holds the work
-// its session remembers, where one recreated by anything else holds only what was pushed, and
-// the two are different notices (pi-shared, src/workspace-recreated.ts).
-const WorkspaceRestoredVariable = "LEGION_WORKSPACE_RESTORED"
 
 // Config is the launcher's configuration. The controller's pod names one role: Token, read from
 // its role-private projected Secret before Run is called, Role, and PrivateDir, that container's
@@ -65,14 +57,17 @@ type Config struct {
 	// only an issue pod's container does (RolesDir set). The deployment asks for it with
 	// `runtime.kubernetes.test_postgres`.
 	TestPostgres bool
-	// MicroVM says the pod runs in a GKE Sandbox microVM rather than under gVisor (--microvm). It
-	// comes from the pod as built, never from the daemon's acknowledgement, whose settings are the
-	// configuration of the moment: a pod kept since its issue moved to the other sandbox still
-	// runs where it was built.
+	// MicroVM says the pod runs in a GKE Sandbox microVM rather than under gVisor (--microvm), in
+	// either form: the daemon renders it on a microVM issue pod's container and on the project
+	// controller's pod where the project's sandbox is a microVM. It decides the pod's memory watch
+	// (runsGuest). It comes from the pod as built, never from the daemon's acknowledgement, whose
+	// settings are the configuration of the moment: a pod kept since its issue, or its project,
+	// moved to the other sandbox still runs where it was built.
 	MicroVM bool
 	// Metadata has this launcher serve the pod-local metadata endpoint (metadata.go), which only a
-	// microVM issue pod's container does (MicroVM and RolesDir set): a microVM's pod does not reach
-	// the node's metadata server. The deployment asks for it with
+	// microVM pod's container does (MicroVM set), in either form: a microVM issue pod's roles
+	// container and a microVM controller pod's, since a microVM's pod does not reach the node's
+	// metadata server. The deployment asks for it with
 	// `runtime.kubernetes.sandbox.microvm.metadata`.
 	Metadata       *MetadataConfig
 	Stdout, Stderr io.Writer
@@ -82,13 +77,16 @@ type Config struct {
 	// SessionDatabase is the Cloud SQL database every generation keeps its Oh My Pi session in,
 	// which the launcher proxies to (internal/sessionproxy) as the pod itself, or as the service
 	// account the database names (ImpersonateServiceAccount), which the pod impersonates with its
-	// own credentials. The zero value is every other session store: no proxy, and the child's
-	// session storage is whatever its environment names.
+	// own credentials, or, with a writer audience (WriterAudience), with the writer token under
+	// the roles directory (SessionWriterDirName). With a writer audience the proxy also admits
+	// only the launcher and the generation's agent (sessionPeer). The zero value is every other
+	// session store: no proxy, and the child's session storage is whatever its environment names.
 	SessionDatabase ompsessions.Database
-	// SessionDialer builds that proxy's upstream dialer for account, the service account
-	// SessionDatabase names, or "" for the pod itself (sessionproxy.Config.NewDialer). Nil is the
-	// Cloud SQL connector's, which is the only one a pod uses; a test passes a fake.
-	SessionDialer func(ctx context.Context, account string) (sessionproxy.Dialer, error)
+	// SessionDialer builds that proxy's upstream dialer for signer, which names the service
+	// account that SessionDatabase names, or no account for the pod itself
+	// (sessionproxy.Config.NewDialer). Nil is the Cloud SQL connector's, which is the only one a
+	// pod uses; a test passes a fake.
+	SessionDialer func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error)
 	// LeakCheckDir is where the launcher installs the shared public leak check the daemon serves
 	// it; "" is leakguard.InstallDir, the one directory every role's shim reads it from. A test
 	// names a temporary one.
@@ -124,11 +122,12 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	// PID 1 adopts every orphan of its PID namespace and must reap it. The controller's pod runs
-	// one role, whose processes are this namespace's; an issue pod's roles each have a namespace
-	// of their own, whose init reaps theirs, but anything else started in the container (a
-	// `kubectl exec` and what it leaves behind) is this process's. The reaper never waits on a
-	// generation's own process, whose exit its manager reads.
+	// PID 1 adopts every orphan of its PID namespace and must reap it. The single-role form, the
+	// controller's pod without a writer audience, runs its one role's processes in this
+	// namespace. In the roles-dir form each role has a namespace of its own, whose init reaps its
+	// processes, but anything else started in the container (a `kubectl exec` and what it leaves
+	// behind) is this process's. The reaper never waits on a generation's own process, whose exit
+	// its manager reads.
 	if os.Getpid() == 1 {
 		exits := make(chan os.Signal, 1)
 		signal.Notify(exits, syscall.SIGCHLD)
@@ -136,34 +135,47 @@ func Run(ctx context.Context, cfg Config) error {
 		go reapOrphans(ctx, exits, managers, pids)
 	}
 	if cfg.RolesDir == "" {
-		return managers[0].serveUntil(ctx, address)
+		// The controller pod's memory watch, before the role's first connection, so the container
+		// is watched while the daemon is away: the guard under gVisor (INFRA-3531), the guest
+		// watch in a microVM (INFRA-4567). Only a launcher that is the container's first process
+		// runs one, as only that one runs the reaper above, and any other logs a line instead
+		// (serveMemoryGuard). Run returns once its loop has, as the roles form's below does.
+		memory := serveMemoryGuard(ctx, cfg, managers, pids)
+		// A microVM controller pod's metadata endpoint, before the role's first connection, so
+		// the role's first generation finds it listening and is told its address only once it
+		// listens (metadataEnv), as the roles form's below. Its lines are the role's own
+		// (manager.logf), since this form has no roles log, and its server is waited on before
+		// Run returns, as the memory watch is.
+		metadata := serveMetadataFor(ctx, cfg, managers, managers[0].logf)
+		err := managers[0].serveUntil(ctx, address)
+		if metadata != nil {
+			<-metadata
+		}
+		<-memory
+		return err
 	}
-	// The clone's stale git locks, swept for the life of the pod (gitLockSweep). This is an
-	// issue pod's roles container: the single-role form returned above is the project
-	// controller's pod, whose working directory is no jj workspace and whose generations carry
-	// no workspace at all. The first pass is this call's, before serveTestPG, which starts a
-	// PostgreSQL: the first pass's rule is that no process of the container holds a lock yet.
-	// Only a launcher that is the container's first process sweeps, as only that one runs the
-	// memory guard below, since only it sees every process that may hold a lock; any other logs
-	// a line instead (serveGitLockSweep).
+	// The clone's stale git locks, swept for the life of the pod (gitLockSweep). This is a
+	// roles-dir container: an issue pod's, or the project controller's where the session
+	// database names a writer audience. The controller's working directory is no jj workspace
+	// and its generations carry no workspace at all, so there the sweep finds no clone, writes
+	// one line and sweeps nothing (newGitLockSweep, learn). The first pass is this call's, before
+	// serveTestPG, which starts a PostgreSQL: the first pass's rule is that no process of the
+	// container holds a lock yet. Only a launcher that is the container's first process sweeps,
+	// as only that one runs the memory guard below, since only it sees every process that may
+	// hold a lock; any other logs a line instead (serveGitLockSweep).
 	locks := serveGitLockSweep(ctx, managers)
 	// The pod's one memory guard, before the test database and any role start, so it watches
 	// both from their first process; only a launcher that is the container's first process runs
 	// one, as only that one runs the reaper above, and any other logs a line instead
 	// (serveMemoryGuard). Its loop is waited on with the roles below, as the test database's
-	// ticker is.
+	// ticker is. In the controller's pod, under a writer audience, it watches the controller's
+	// role as it watches each role of an issue pod, and the controller's acknowledgement hands it
+	// the controller pod's settings (serve).
 	memory := serveMemoryGuard(ctx, cfg, managers, pids)
 	// The pod-local metadata endpoint, before any role starts: a role's first Google client finds
 	// it listening, and a role is told its address only once it listens (metadataEnv). Its server
 	// is waited on with the roles below, as the test database's ticker is.
-	var metadata <-chan struct{}
-	if cfg.Metadata != nil {
-		var served string
-		metadata, served = serveMetadata(ctx, cfg, managers[0].log.linef)
-		for _, m := range managers {
-			m.metadataAddress = served
-		}
-	}
+	metadata := serveMetadataFor(ctx, cfg, managers, managers[0].log.linef)
 	// The pod's own test database, before any role starts: a role that starts at once finds the
 	// server serving its DSN (serveTestPG). Its ticker is waited on with the roles below, so Run
 	// returns with nothing of the launcher's still running.
@@ -205,11 +217,30 @@ func Run(ctx context.Context, cfg Config) error {
 	return ctx.Err()
 }
 
+// serveMetadataFor starts the pod-local metadata endpoint where cfg asks for it (serveMetadata),
+// with its lines written through logf, and tells each of managers the address it serves at, which
+// every generation they start is told (metadataEnv). It answers the channel serveMetadata does, nil
+// where cfg asks for no endpoint.
+func serveMetadataFor(ctx context.Context, cfg Config, managers []*manager, logf func(string, ...any)) <-chan struct{} {
+	if cfg.Metadata == nil {
+		return nil
+	}
+	metadata, address := serveMetadata(ctx, cfg, logf)
+	for _, m := range managers {
+		m.metadataAddress = address
+	}
+	return metadata
+}
+
 // serveVolumeTrim runs the pod's cache trimmer until ctx ends or the trimmer switches itself off
 // (trimmer.run), and answers a channel closed once its loop has returned, so Run can wait for it
-// as it waits for the test database's ticker (serveTestPG). The controller's pod gets none:
-// Run's single-role branch returns before this is reached, since that launcher runs one role, its
-// volume belongs to its Sandbox rather than to an issue, and no architect would read its report.
+// as it waits for the test database's ticker (serveTestPG). The controller's pod trims nothing:
+// that launcher runs one role, its volume belongs to its Sandbox rather than to an issue, and no
+// architect would read its report. In its single-role form Run returns before this is reached.
+// Where the session database names a writer audience, its roles-dir form reaches here and builds
+// a trimmer, but the controller's acknowledgement carries no VolumeTrim (launcherHelloAck in
+// internal/runtime/sandbox), so that trimmer waits for settings that never come and reads,
+// deletes and reports nothing (trimmer.awaitSettings).
 //
 // The trimmer runs only where the launcher is PID 1 of its PID namespace (containerInit), which in
 // an issue pod is the container's first process, as the memory guard and the git lock sweep do
@@ -242,9 +273,10 @@ func Run(ctx context.Context, cfg Config) error {
 // starts from, the pod's shared config home and the mount points a role's own directories are
 // bound at. Every path a role's namespace replaces is an empty filesystem in that namespace, and
 // the deleter is the one thing that keeps a link a role left in a cache out of them (RoleCover,
-// volumedelete.go). Only an issue pod's container reaches here, and that is the launcher that
-// names a roles directory. guard is the launcher's pidGuard, which each sweep's deleter starts
-// through so PID 1's reaper leaves its exit to the deleter's own wait (startRemover).
+// volumedelete.go). Only a launcher that names a roles directory reaches here: an issue pod's
+// container, or the controller's where the session database names a writer audience. guard is
+// the launcher's pidGuard, which each sweep's deleter starts through so PID 1's reaper leaves its
+// exit to the deleter's own wait (startRemover).
 func serveVolumeTrim(ctx context.Context, m *manager, guard *pidGuard) <-chan struct{} {
 	done := make(chan struct{})
 	if !containerInit() {
@@ -266,37 +298,38 @@ func serveVolumeTrim(ctx context.Context, m *manager, guard *pidGuard) <-chan st
 	return done
 }
 
-// podTrimmer is the trimmer's own loop, a package variable for the reason readVolumeUsage is one
-// (volumeusage_linux.go): a test drives the trimmer the launcher built — its tree, its /proc,
-// its clock and its ticker — and watches the very loop Run waits on return.
+// podTrimmer is the trimmer's own loop, a package variable so a test can drive the trimmer the
+// launcher built — its tree, its volume reading, its /proc, its clock and its ticker — and watch
+// the very loop Run waits on return. Only a launcher taken for the container's first process
+// (containerInit) reads it, and only a test that runs alone makes a launcher one
+// (useContainerInit).
 var podTrimmer = func(ctx context.Context, trim *trimmer) { trim.run(ctx) }
 
 // newManagers is one manager per role the launcher serves, each with its own token, private
 // directory, launcher id and, in an issue pod's container, its own prefix in the container's log.
-// guard holds the launcher's own children out of PID 1's reaper (pidGuard).
+// guard holds the launcher's own children out of PID 1's reaper (pidGuard). Every line the
+// launcher writes passes the URL rule (redact.Writer): the controller pod's manager writes its own
+// lines through it, and an issue pod's role log writes every line through it, the launcher's and
+// each role child's alike, since the role log writes each line whole. The controller pod's shim
+// is handed cfg.Stdout and cfg.Stderr themselves (command), so its descriptors stay the
+// container's files rather than a pipe through the launcher.
 func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
-	// One restore per pod: the daemon sends the released workspace's bundle to whichever role's
-	// connection it reaches, and the first role to start applies it for the pod, with every other
-	// role's start waiting on that one restore. Its jj and git start through the guard: they are
-	// this process's children, and the reaper would otherwise take an exit before the restore's
-	// own wait read it, which then fails with `waitid: no child processes` (under gVisor at times
-	// `wait: no child processes` or `waitid: no such process`) and puts nothing back.
-	restore := newBundleRestore(guard.starter())
 	// One install of the shared public leak check per launcher process, for the pin of its own
 	// environment: the daemon pushes it to whichever role's connection it starts first, and
 	// every other role's connection finds it installed. Its one run of the check starts through
-	// the guard for the same reason as the restore's jj and git: a run the reaper took first fails
-	// the install with `the served check could not be run: waitid: no child processes` (or, under
-	// gVisor, `wait: no child processes` or `waitid: no such process`), and the role's launch with it.
+	// the guard: it is this process's child, and the reaper would otherwise take its exit before
+	// the install's own wait read it, which fails the install with `the served check could not be
+	// run: waitid: no child processes` (or, under gVisor, `wait: no child processes` or `waitid: no
+	// such process`), and the role's launch with it.
 	check := newCheckInstall(os.Getenv(leakguard.TagVariable), cfg.LeakCheckDir, guard.starter())
 	if cfg.RolesDir == "" {
 		return []*manager{{
 			cfg: cfg, role: cfg.Role, token: cfg.Token, private: cfg.PrivateDir, launcherID: randomID(),
-			stdout: cfg.Stdout, stderr: cfg.Stderr, requests: map[string]request{}, restore: restore, check: check, guard: guard,
+			stderr: redact.Writer(cfg.Stderr), requests: map[string]request{}, check: check, guard: guard,
 			acknowledged: make(chan struct{}),
 		}}, nil
 	}
-	log := &roleLog{stdout: cfg.Stdout, stderr: cfg.Stderr}
+	log := &roleLog{stdout: redact.Writer(cfg.Stdout), stderr: redact.Writer(cfg.Stderr)}
 	managers := make([]*manager, 0, len(cfg.Roles))
 	for _, role := range cfg.Roles {
 		file := filepath.Join(cfg.RolesDir, role, RoleLauncherDir, LauncherTokenFile)
@@ -314,7 +347,7 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 		managers = append(managers, &manager{
 			cfg: cfg, role: role, token: strings.TrimSpace(string(token)), namespaced: true,
 			private: filepath.Join(cfg.RolesDir, role, RolePrivateDir), launcherID: randomID(),
-			log: log, stderr: own, requests: map[string]request{}, restore: restore, check: check, guard: guard,
+			log: log, stderr: own, requests: map[string]request{}, check: check, guard: guard,
 			acknowledged: make(chan struct{}),
 		})
 	}
@@ -349,13 +382,16 @@ func (m *manager) logf(format string, args ...any) {
 }
 
 // serve is one authenticated daemon connection: hello, acknowledgement, the launcher's actual
-// state, then start, stop, bundle and leak-check commands until the connection ends. The hello
+// state, then start, stop and leak-check commands until the connection ends. The hello
 // names the launcher's leak-check pin and whether this process has installed it, so the daemon
-// pushes the check only to a launcher that still needs it. The acknowledgement is logged as one
-// line, so a launcher the daemon accepted reads apart from one still dialing. The memory guard
-// settings it carries, or their absence, go to the pod's guard, and what it carries decides
-// whether the kill reports of this role's processes go on this connection (openMemoryReports);
-// what it carries for the pod's cache trimmer is put in force with the writer (applyAck).
+// pushes the check only to a launcher that still needs it. It also says that this launcher looks a
+// session named by its id alone up in the session table (resumesBySession, which start's lookup
+// serves): the daemon names a session that way only to a launcher whose hello said so. The
+// acknowledgement is logged as one line, so a launcher the daemon accepted reads apart from one
+// still dialing. The memory guard settings it carries, or their absence, go to the pod's guard,
+// and what it carries decides whether the kill reports of this role's processes go on this
+// connection (openMemoryReports); what it carries for the pod's cache trimmer is put in force with
+// the writer (applyAck).
 func (m *manager) serve(ctx context.Context, address string) error {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	if err != nil {
@@ -367,6 +403,7 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	writer := shimwire.NewWriter(conn)
 	hello := shimwire.LauncherHello{
 		Token: m.token, Sandbox: m.cfg.Sandbox, Role: m.role, PodUID: m.cfg.PodUID, LauncherID: m.launcherID,
+		ResumesBySession: true,
 	}
 	hello.LeakCheckTag, hello.LeakCheckInstalled = m.check.hello()
 	if err := writer.WriteFrame(hello); err != nil {
@@ -386,8 +423,9 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	// The guard runs by the newest acknowledgement of any role, and an acknowledgement that
 	// carries no settings turns it off: that is how a daemon built before the guard answers, and
 	// how a deployment that turned the guard off does. A connection that merely drops keeps the
-	// settings in force. A microVM pod's launcher holds no guard (serveMemoryGuard), so no
-	// acknowledgement's settings reach anything there.
+	// settings in force. A microVM pod's launcher, the controller's as an issue pod's, holds no
+	// guard (serveMemoryGuard), so the settings the daemon still sends the controller's reach
+	// nothing there.
 	if m.memoryGuard != nil {
 		m.memoryGuard.Apply(ack.MemoryGuard)
 	}
@@ -409,16 +447,15 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	if err := m.state(); err != nil {
 		return err
 	}
-	// A restore whose outcome no connection has carried yet goes over this one: until the daemon
-	// has it, the saved work stays in its database (bundleRestore.owed).
-	m.reportRestore()
 	// The kill reports of this role's processes go on this connection from here, after its state,
 	// or are dropped where the daemon behind it may not know them: a gVisor pod's launcher sends
-	// them where the acknowledgement carried guard settings, and a microVM pod's where it carried
-	// KernelKills, whatever MemoryGuard says, since a daemon that sends guard settings and no
-	// KernelKills would tell a role of the kernel's kill in the guard's words.
+	// them where the acknowledgement carried guard settings, and a microVM pod's, the controller's
+	// as an issue pod's (runsGuest), where it carried KernelKills, whatever MemoryGuard says, since
+	// a daemon that sends guard settings and no KernelKills, as one from before the controller's
+	// pod ran in a microVM answers the controller, would tell a role of the kernel's kill in the
+	// guard's words.
 	carried := ack.MemoryGuard != nil
-	if m.cfg.MicroVM {
+	if m.cfg.runsGuest() {
 		carried = ack.KernelKills
 	}
 	m.openMemoryReports(writer, carried)
@@ -433,8 +470,6 @@ func (m *manager) serve(ctx context.Context, address string) error {
 			answer = m.start(ctx, command)
 		case shimwire.LauncherStop:
 			answer = m.stop(command)
-		case shimwire.LauncherBundle:
-			answer = m.restore.receive(command)
 		case shimwire.LauncherLeakCheck:
 			answer = m.check.receive(ctx, command, m.logf)
 		default:
@@ -499,22 +534,46 @@ func (c Config) validate() error {
 // in it and the login together are what opens it, so a generation started without one of them would
 // proxy to nothing. A service account to impersonate names a database too, so with it each of the
 // three is required: startSession, which skips only the zero value, would otherwise hand the proxy
-// an account and no instance, and every generation would fail. Naming none of the four is the
-// other stores, which need no proxy.
+// an account and no instance, and every generation would fail. A writer audience names a database
+// too, and needs the account as well, because the writer token signs in only by impersonating it.
+// Naming none of the five is the other stores, which need no proxy.
+//
+// A writer audience is refused, too, in a form other than ompsessions.ValidWriterAudience's, and in
+// the single-role form. That form runs its agent in the container's own namespaces, where the
+// writer token under the container's filesystem would be in the agent's view. Only the roles-dir
+// form hides it, behind the cover role-init puts over the roles directory (SessionWriterDirName).
 func (c Config) validateSessionDatabase() error {
 	if c.SessionDatabase == (ompsessions.Database{}) {
 		return nil
 	}
-	return namedInPart("the session database",
+	if err := namedInPart("the session database",
 		namedFlag{"--session-instance", c.SessionDatabase.Instance},
 		namedFlag{"--session-database", c.SessionDatabase.Name},
-		namedFlag{"--session-user", c.SessionDatabase.User})
+		namedFlag{"--session-user", c.SessionDatabase.User}); err != nil {
+		return err
+	}
+	audience := c.SessionDatabase.WriterAudience
+	switch {
+	case audience == "":
+		return nil
+	case c.SessionDatabase.ImpersonateServiceAccount == "":
+		return errors.New("launcher: --session-writer-audience needs --session-impersonate-service-account:" +
+			" the writer token signs in to Cloud SQL only by impersonating that service account")
+	case !ompsessions.ValidWriterAudience(audience):
+		return fmt.Errorf("launcher: --session-writer-audience %q is not a workload identity provider's full resource name, %s",
+			audience, ompsessions.WriterAudienceForm)
+	case c.RolesDir == "":
+		return errors.New("launcher: --session-writer-audience needs the roles-dir form (--roles-dir):" +
+			" the single-role form runs its agent in the container's own namespaces, where the writer token would be in the agent's view")
+	}
+	return nil
 }
 
-// validateMetadata refuses the metadata endpoint anywhere but in a microVM issue pod's container,
-// and named in part: the pool and the identity provider together make the token exchange's
-// audience. A gVisor pod reaches the node's metadata server, which the endpoint would shadow, and
-// the controller's pod is never a microVM's.
+// validateMetadata refuses the metadata endpoint anywhere but in a microVM pod's container, and
+// named in part: the pool and the identity provider together make the token exchange's audience.
+// A gVisor pod reaches the node's metadata server, which the endpoint would shadow. Either form
+// serves it with --microvm: a microVM issue pod's roles container, and the controller's pod, which
+// the daemon renders in a microVM where the project's sandbox is one.
 func (c Config) validateMetadata() error {
 	if c.Metadata == nil {
 		return nil
@@ -524,14 +583,20 @@ func (c Config) validateMetadata() error {
 		namedFlag{"--metadata-identity-provider", c.Metadata.IdentityProvider}); err != nil {
 		return err
 	}
-	switch {
-	case !c.MicroVM:
+	if !c.MicroVM {
 		return errors.New("launcher: the metadata endpoint serves a microVM's pod: it needs --microvm")
-	case c.RolesDir == "":
-		return errors.New("launcher: the metadata endpoint is an issue pod's container: it needs --roles-dir")
 	}
 	return nil
 }
+
+// runsGuest is whether this launcher's memory watch is the guest watch rather than the guard: the
+// launcher of a microVM's pod (MicroVM), in either form. The daemon renders --microvm on a microVM
+// issue pod's container and on the controller's pod where the project's sandbox is a microVM, so
+// a microVM controller pod's launcher runs the guest watch over controllerClassifier
+// (serveMemoryGuard) and sends its kill reports where the acknowledgement carried KernelKills
+// (serve), as a microVM issue pod's does: the daemon sets KernelKills on the controller's
+// acknowledgement too, beside its guard settings (runtime/sandbox's launcherHelloAck).
+func (c Config) runsGuest() bool { return c.MicroVM }
 
 // namedFlag is one flag of a setting that several flags name together, and its value.
 type namedFlag struct{ flag, value string }
@@ -611,9 +676,10 @@ type child struct {
 
 // manager serves one role: its own daemon connection, its own launcher id, its own token and
 // private directory, its own child, and, in an issue pod's container, its own prefix in the log
-// and a namespace of its own for every generation it starts. stdout and stderr are where the
-// controller's one role writes; in an issue pod's container stderr is the launcher's own lines
-// for the role, and log gives each generation writers of its own.
+// and a namespace of its own for every generation it starts. stderr is where the launcher's own
+// lines for the role go, through the URL rule (newManagers): in the controller's pod the
+// container's stderr, in an issue pod's container the role's own writer of log, which gives each
+// generation writers of its own too.
 type manager struct {
 	cfg        Config
 	role       string
@@ -621,7 +687,6 @@ type manager struct {
 	private    string
 	namespaced bool
 	launcherID string
-	stdout     io.Writer
 	stderr     io.Writer
 	log        *roleLog
 	writer     *shimwire.Writer
@@ -629,19 +694,16 @@ type manager struct {
 	child      *child
 	lastExit   *shimwire.LauncherExit
 	requests   map[string]request
-	// restore is the pod's one workspace-bundle restore, which every role manager of the
-	// container shares: the bundle a released pod's work was saved as arrives on one role's
-	// connection and is applied once, before the first role of the pod starts.
-	restore *bundleRestore
 	// gitLocks is the pod's one sweep of the clone's stale git locks, which every role manager
 	// of the container shares: the first role start that carries a workspace tells it which
 	// clone to sweep, when the container's working directory did not (gitLockSweep.learn). It is
-	// nil where the launcher runs no sweep: the controller's pod, and a roles launcher that is
+	// nil where the launcher runs no sweep: the single-role form, and a roles launcher that is
 	// not the container's first process (serveGitLockSweep); learn, its one use, takes a nil
-	// sweep for one with nothing to learn.
+	// sweep for one with nothing to learn. The controller's roles-dir form, under a writer
+	// audience, holds a sweep that never finds a clone (newGitLockSweep).
 	gitLocks *gitLockSweep
 	// check is the launcher process's one install of the shared public leak check, which every
-	// role manager of the container shares as it shares restore.
+	// role manager of the container shares as it shares gitLocks.
 	check *checkInstall
 	// guard holds the launcher's own children, which are no generation's, out of every reap of
 	// PID 1's (pidGuard): the orphan reaper's passes, and the controller pod's drain of an exited
@@ -650,11 +712,12 @@ type manager struct {
 	// metadataAddress is the address this launcher serves the pod-local metadata endpoint at, which
 	// every generation it starts is told (metadataEnv); "" when it serves none.
 	metadataAddress string
-	// memoryGuard is the pod's one memory guard, which every role manager of an issue pod's
-	// container shares: each connection's acknowledgement hands it the daemon's settings
-	// (serve). It is nil in the controller's pod, in a launcher that is not its container's
-	// first process, which run none, and in a microVM pod's launcher, which runs the guest watch
-	// instead (serveMemoryGuard).
+	// memoryGuard is the pod's one memory guard, which every role manager of a roles-dir
+	// container shares (an issue pod's, or the controller's under a writer audience) and the
+	// controller pod's one manager holds alone in the single-role form: each connection's
+	// acknowledgement hands it the daemon's settings (serve). It is nil in a launcher that is not
+	// its container's first process, which runs none, and in a microVM pod's launcher, an issue
+	// pod's or the controller's, which runs the guest watch instead (serveMemoryGuard).
 	memoryGuard *memoryguard.Guard
 	// memoryKills are the reports of this role's processes stopped for memory that no connection
 	// has carried yet, oldest first, at most maxWaitingMemoryKills (queueMemoryKill). reportWriter
@@ -750,13 +813,12 @@ func (m *manager) volumeTrimming() bool {
 //
 // A manager with no connection up, and one whose answer carries no settings, each answer an
 // error, which is what the trimmer reads as "not now": it holds the report until an
-// acknowledgement puts both back, as reportRestore holds its own confirmation, rather than
-// dropping a volume nobody was told about, and an answer with no settings has the held report
-// discarded the next time the trimmer waits for settings or tries its last report
-// (trimmer.settingsInForce). They are two errors rather than one so that the line the pod's log
-// carries says which of them it was. The writer is taken under the same mutex as state and
-// reportRestore take it, and shimwire.Writer has a mutex of its own, so writing here beside the
-// command loop is safe.
+// acknowledgement puts both back, rather than dropping a volume nobody was told about, and an
+// answer with no settings has the held report discarded the next time the trimmer waits for
+// settings or tries its last report (trimmer.settingsInForce). They are two errors rather than one
+// so that the line the pod's log carries says which of them it was. The writer is taken under the
+// same mutex as state takes it, and shimwire.Writer has a mutex of its own, so writing here beside
+// the command loop is safe.
 func (m *manager) sendVolumeReport(report shimwire.LauncherVolumeReport) error {
 	m.mu.Lock()
 	writer, settings := m.writer, m.volumeTrimSettings
@@ -790,28 +852,6 @@ func (m *manager) state() error {
 		return fmt.Errorf("launcher state: %w", err)
 	}
 	return nil
-}
-
-// reportRestore tells the daemon what became of the bundle it sent this pod, when a report is
-// owed and this role has a connection to carry it: the daemon keeps the saved work in its
-// database until one arrives, so a report that cannot be written now is left for the next
-// connection of any role of the pod (serve) rather than dropped.
-func (m *manager) reportRestore() {
-	report := m.restore.owed()
-	if report == nil {
-		return
-	}
-	m.mu.Lock()
-	writer := m.writer
-	m.mu.Unlock()
-	if writer == nil {
-		return
-	}
-	if err := writer.WriteFrame(*report); err != nil {
-		m.logf("launcher: the restore's outcome did not reach the daemon (%v); the next connection reports it again", err)
-		return
-	}
-	m.restore.sent(report)
 }
 
 // start runs command's generation. ctx is the container's: once it has ended (the container's
@@ -863,7 +903,7 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	if err != nil {
 		return refuse(err)
 	}
-	proxy, clientURL, err := m.startSession(ctx, command.Generation, dir)
+	proxy, clientURL, err := m.startSession(ctx, command, env, dir)
 	var keeper *claudeKeeper
 	// abandon refuses a start that made the generation's directory, undoing what it made first.
 	abandon := func(cause error) shimwire.LauncherStartResult {
@@ -874,6 +914,24 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	if err != nil {
 		return abandon(err)
 	}
+	// A start that names its session by its id alone (ResumeSession, which the daemon sends only to
+	// a launcher whose hello said resumesBySession, and which Validate refused beside a ResumeFile)
+	// resumes the newest session the table holds under that id (sessionByID). The found path
+	// becomes the start's ResumeFile and takes the place of the argv's one `--resume=<id>`, so the
+	// child resumes that exact file rather than leave Oh My Pi to resolve the id, and from here the
+	// start is a path resume: resumable, the recreated-workspace notice and the child. A table that
+	// holds no such session refuses the start before any child, as resumable refuses a file it
+	// does not hold. The record a retry of the same id is compared with keeps the frame as
+	// received: body was marshalled from it above, and the change is made to this call's copy of
+	// the frame with its argv copied (resumeArgv), so the caller's frame is not changed either.
+	if command.ResumeSession != "" {
+		file, err := sessionByID(ctx, env, command.ResumeSession, clientURL)
+		if err != nil {
+			return abandon(err)
+		}
+		command.Argv = resumeArgv(command.Argv, command.ResumeSession, file)
+		command.ResumeFile = file
+	}
 	// A Claude Code child's session is kept in the session table (claudeKeeper): the order is
 	// the resume's lookup, which decides the recreated-workspace notice from the row's last save,
 	// then the restore of the session's files from their rows, then the child, then the saves.
@@ -881,7 +939,7 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 		return abandon(err)
 	}
 	recreated := false
-	var sessions *pgx.Conn
+	var sessions *ompsessions.Conn
 	if command.ResumeFile != "" {
 		if recreated, sessions, err = resumable(ctx, env, command.ResumeFile, clientURL, m.stderr); err != nil {
 			return abandon(err)
@@ -891,23 +949,11 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 		return abandon(err)
 	}
 	// The clone's stale git locks: this start names the workspace the sweep works, and a sweep
-	// that had none sweeps it here, before the restore below runs real git and jj against that
-	// clone, where a stale lock would fail it (gitLockSweep.learn). A launcher that runs no sweep
-	// holds none here, and its restore runs over the clone as it stands.
+	// that had none sweeps it here, before the role's child runs git and jj against that clone,
+	// where a stale lock would fail them (gitLockSweep.learn). A launcher that runs no sweep holds
+	// none here, and the role starts on the clone as it stands.
 	m.gitLocks.learn(ctx, envValue(env, "LEGION_WORKSPACE"))
-	// The pod's one workspace-bundle restore, if a release saved one: after writeFiles, which
-	// clears the role's private directory, and before any role of the pod runs, so no role works
-	// a workspace that is half restored. Every other role's start waits here for this one. A
-	// restore that fails still starts the role, with a notice of what was lost in the log.
-	outcome := m.restore.apply(ctx, env)
-	if outcome.Notice != "" {
-		m.logf("launcher: %s", outcome.Notice)
-	}
-	m.reportRestore()
-	env = mergeEnv(env, []string{
-		WorkspaceRecreatedVariable + "=" + strconv.FormatBool(recreated),
-		WorkspaceRestoredVariable + "=" + strconv.FormatBool(outcome.Restored),
-	})
+	env = mergeEnv(env, []string{WorkspaceRecreatedVariable + "=" + strconv.FormatBool(recreated)})
 	// The pod's own test database: the DSN this launcher serves, over whatever the daemon's start
 	// command carried, and no such variable at all when this launcher serves none (testPGEnv).
 	env = testPGEnv(env, m.cfg.TestPostgres)
@@ -955,7 +1001,11 @@ func (m *manager) remember(id string, body []byte, result shimwire.Frame) {
 // command is one generation's process: in an issue pod's container, role-init as the init of
 // this role's new user, mount, PID and IPC namespaces, with the pipe it reports the shim's own
 // wait status on and prefixed writers of the generation's own; in the controller's pod, the shim
-// itself in the container's own namespaces.
+// itself in the container's own namespaces, writing to the container's stdout and stderr
+// themselves (cfg.Stdout and cfg.Stderr, never the launcher's own writer, which is no file), so
+// the shim's descriptors are the container's files and no pipe through the launcher. There the
+// shim is told to reap its own orphans (reapingShim); role-init's shim never is, since role-init
+// keeps that shim in role-init's own process group (runRoleShim).
 func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProcess, error) {
 	if m.namespaced {
 		stdout, stderr := m.log.writers(m.role)
@@ -968,11 +1018,30 @@ func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProc
 		process.output = []io.Writer{stdout, stderr}
 		return process, nil
 	}
-	cmd := exec.Command(start.Argv[0], start.Argv[1:]...)
+	argv := reapingShim(start.Argv)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = env
-	cmd.Stdout, cmd.Stderr = m.stdout, m.stderr
+	cmd.Stdout, cmd.Stderr = m.cfg.Stdout, m.cfg.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return &roleProcess{cmd: cmd}, nil
+}
+
+// reapOrphansFlag is the flag that makes `legion worker-shim` the child subreaper of everything it
+// starts, reaping their orphans itself (internal/shim's Config.ReapOrphans).
+const reapOrphansFlag = "--" + shimwire.ReapOrphansFlag
+
+// reapingShim is argv with reapOrphansFlag after `legion worker-shim`, where argv runs the shim,
+// and argv as it is otherwise. The controller pod's single-role form starts the shim as this
+// process's own child, in a process group of the shim's own, and this process, the container's
+// PID 1, is in another: an orphan of the shim's group that PID 1 reaped would be reaped by a
+// parent outside that group, which under the cluster's gVisor takes one from the count that keeps
+// the group from reading as orphaned (internal/shim's Config.ReapOrphans says the whole of it).
+// With the flag such orphans come to the shim, in their own group, and the shim reaps them.
+func reapingShim(argv []string) []string {
+	if len(argv) < 2 || argv[1] != shimArgument {
+		return argv
+	}
+	return slices.Concat(argv[:2], []string{reapOrphansFlag}, argv[2:])
 }
 
 // wait reports the generation's exit once its process is gone. A role's exit is the shim's own:
@@ -1146,7 +1215,10 @@ func (m *manager) writeFiles(command shimwire.LauncherStart) (string, error) {
 // roles where one container per role showed six. Whole lines are written under one lock, so two
 // roles never interleave inside a line. Each writer holds its own unfinished line, so the
 // launcher's lines for a role and each generation of its child are written through writers of
-// their own, and none is ever joined to another's unfinished line.
+// their own, and none is ever joined to another's unfinished line. stdout and stderr are the
+// container's behind the URL rule (newManagers): each line reaches them in one write, so the rule
+// reads it whole, a child's lines among them however its pipe was read, but for a line longer than
+// maxLogLine, which reaches them where logLineCut cuts it.
 type roleLog struct {
 	mu             sync.Mutex
 	stdout, stderr io.Writer
@@ -1176,7 +1248,8 @@ func (l *roleLog) linef(format string, args ...any) {
 }
 
 // maxLogLine bounds how much of one unfinished line a role can make PID 1 hold: a longer line is
-// written out as a line of its own at that length, and the rest follows behind the prefix again.
+// written out as lines of their own, each at most that length and cut where logLineCut says, and
+// the rest follows behind the prefix again.
 const maxLogLine = 64 * 1024
 
 // prefixWriter holds back a partial line until its newline arrives, so a prefix only ever
@@ -1195,18 +1268,22 @@ type prefixWriter struct {
 func (w *prefixWriter) Write(p []byte) (int, error) {
 	w.log.mu.Lock()
 	defer w.log.mu.Unlock()
+	// What partial holds from earlier writes holds no newline, so the search starts after it.
+	start, scanned := 0, len(w.partial)
 	w.partial = append(w.partial, p...)
-	start := 0
 	for {
 		rest := w.partial[start:]
-		end := bytes.IndexByte(rest, '\n')
+		end := bytes.IndexByte(rest[scanned:], '\n')
 		switch {
 		case end >= 0:
+			end += scanned
 			w.emit(rest[:end+1], false)
-			start += end + 1
+			start, scanned = start+end+1, 0
 		case len(rest) >= maxLogLine:
-			w.emit(rest[:maxLogLine], true)
-			start += maxLogLine
+			cut := logLineCut(rest[:maxLogLine])
+			w.emit(rest[:cut], true)
+			// rest holds no newline, so neither does what follows the cut.
+			start, scanned = start+cut, len(rest)-cut
 		default:
 			w.partial = w.partial[:copy(w.partial, rest)]
 			return len(p), nil
@@ -1214,13 +1291,33 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 	}
 }
 
-// emit writes one line behind the role's prefix, ending a line cut at maxLogLine itself.
+// emit writes one line behind the role's prefix. It ends itself a line that holds no newline of
+// its own: a run Write cut at logLineCut, or the unfinished line flush writes out.
 func (w *prefixWriter) emit(line []byte, cut bool) {
 	w.line = append(append(w.line[:0], w.prefix...), line...)
 	if cut {
 		w.line = append(w.line, '\n')
 	}
 	_, _ = w.out.Write(w.line)
+}
+
+// logLineCut is where prefixWriter cuts run, a line's first maxLogLine bytes with no newline in
+// them, so that a line longer than maxLogLine reaches the container's log in writes of its own:
+// just after run's last byte that ends a URL for the URL rule (redact.EndsURLByte). Each URL of
+// the part before the cut then ends inside it, and each of the rest starts after it, so the rule
+// of the container's log (redact.Writer) reads each whole, in one write, and removes from the two
+// writes what it would remove from the line whole. A run whose only such byte is its first, or
+// that holds none, is cut at its end: one URL can be such a run, and that cut is the one cut of
+// the role log that can fall inside a URL. The search reads back from the run's end to the cut,
+// and the bytes it read past hold no such byte, so a line's cuts read each of its bytes twice at
+// most.
+func logLineCut(run []byte) int {
+	for i := len(run) - 1; i > 0; i-- {
+		if redact.EndsURLByte(run[i]) {
+			return i + 1
+		}
+	}
+	return len(run)
 }
 
 // flush writes the unfinished line the writer holds, behind its prefix and ended as a line of its
@@ -1266,16 +1363,42 @@ func writeCredential(path, content string) error {
 // back there), so the URL the agent reads names the socket where the agent finds it. The role's
 // processes run as the launcher's own user, so the socket is theirs to connect to.
 //
+// With a writer audience, the proxy impersonates the database's service account with the writer
+// token at <roles-dir>/session-writer/token (SessionWriterDirName), and admits only the launcher and
+// the generation's agent (sessionPeer). The token's path goes to the proxy alone, never into the
+// generation's environment or a file. The generation is refused before anything is written where
+// Yama lets a role's process trace the agent (requireTraceScope), or where no process could be
+// known as the agent (newSessionPeer): command names the agent's executable, and env, the
+// generation's environment, says whether the start is a Claude Code one.
+//
 // ctx bounds the proxy's start, so a start still in progress when the container is told to stop is
 // abandoned, and its proof dial is bounded besides by proofTimeout, so an instance that never
 // answers is refused while the daemon still waits for the answer. A started proxy ignores ctx: it
 // serves until the generation's own end closes it (wait), which lets it serve the child through its
 // stop grace after ctx has ended.
-func (m *manager) startSession(ctx context.Context, generation uint64, dir string) (*sessionproxy.Proxy, string, error) {
-	if m.cfg.SessionDatabase == (ompsessions.Database{}) {
+func (m *manager) startSession(ctx context.Context, command shimwire.LauncherStart, env []string, dir string) (*sessionproxy.Proxy, string, error) {
+	database := m.cfg.SessionDatabase
+	if database == (ompsessions.Database{}) {
 		return nil, "", nil
 	}
-	local := ompsessions.Endpoint{SocketDir: dir, Database: m.cfg.SessionDatabase.Name, User: m.cfg.SessionDatabase.User}
+	generation := command.Generation
+	config := sessionproxy.Config{
+		Instance: database.Instance, ImpersonateServiceAccount: database.ImpersonateServiceAccount, NewDialer: m.cfg.SessionDialer,
+		ProofTimeout: m.proofTimeout(), Drain: sessionDrain, Log: m.stderr,
+	}
+	if database.WriterAudience != "" {
+		if err := requireTraceScope(); err != nil {
+			return nil, "", fmt.Errorf("generation %d: %v", generation, err)
+		}
+		peer, err := newSessionPeer(m, command, env)
+		if err != nil {
+			return nil, "", fmt.Errorf("generation %d: %v", generation, err)
+		}
+		config.WriterAudience = database.WriterAudience
+		config.WriterTokenFile = filepath.Join(m.cfg.RolesDir, SessionWriterDirName, SessionWriterTokenFile)
+		config.Admit = peer.admit
+	}
+	local := ompsessions.Endpoint{SocketDir: dir, Database: database.Name, User: database.User}
 	agent := local
 	if m.namespaced {
 		agent.SocketDir = generationDir(filepath.Join(roleFixedRoot, RolePrivateDir), generation)
@@ -1283,11 +1406,8 @@ func (m *manager) startSession(ctx context.Context, generation uint64, dir strin
 	if err := writeCredential(filepath.Join(dir, ompsessions.DSNFileName), agent.AgentURL()); err != nil {
 		return nil, "", fmt.Errorf("write the session database URL for generation %d: %v", generation, err)
 	}
-	proxy, err := sessionproxy.Start(ctx, sessionproxy.Config{
-		Socket: local.Socket(), Instance: m.cfg.SessionDatabase.Instance,
-		ImpersonateServiceAccount: m.cfg.SessionDatabase.ImpersonateServiceAccount, NewDialer: m.cfg.SessionDialer,
-		ProofTimeout: m.proofTimeout(), Drain: sessionDrain, Log: m.stderr,
-	})
+	config.Socket = local.Socket()
+	proxy, err := sessionproxy.Start(ctx, config)
 	if err != nil {
 		return nil, "", fmt.Errorf("the session database proxy for generation %d: %v", generation, err)
 	}
@@ -1337,7 +1457,7 @@ func endSession(proxy *sessionproxy.Proxy, dir string) {
 // only what was pushed. A workspace with no record, or a child with no workspace (the controller),
 // was not. A record that cannot be read, which an init container killed mid-write can leave, only
 // decides that notice: it is written to log and taken as no record, and the resume goes ahead.
-func resumable(ctx context.Context, env []string, file, clientURL string, log io.Writer) (recreated bool, conn *pgx.Conn, err error) {
+func resumable(ctx context.Context, env []string, file, clientURL string, log io.Writer) (recreated bool, conn *ompsessions.Conn, err error) {
 	sessions, err := newSessionDial(env, clientURL)
 	if err != nil {
 		return false, nil, fmt.Errorf("resume session %s: %w: %v", file, shimwire.SessionStoreUnreachable, err)
@@ -1364,10 +1484,10 @@ func resumable(ctx context.Context, env []string, file, clientURL string, log io
 // the child's Oh My Pi keeps it in (resumable) through a connection sessions dials, which it returns
 // open. A table that could not be asked at all is shimwire.SessionStoreUnreachable; a session the
 // table answers it does not hold is shimwire.SessionGone, refused at once.
-func sessionWritten(parent context.Context, sessions sessionDial, file string) (time.Time, *pgx.Conn, error) {
+func sessionWritten(parent context.Context, sessions sessionDial, file string) (time.Time, *ompsessions.Conn, error) {
 	var written time.Time
 	var found bool
-	conn, err := sessions.dial(parent, func(ctx context.Context, conn *pgx.Conn) (err error) {
+	conn, err := sessions.dial(parent, func(ctx context.Context, conn *ompsessions.Conn) (err error) {
 		written, found, err = ompsessions.Written(ctx, conn, file)
 		return err
 	})
@@ -1379,6 +1499,47 @@ func sessionWritten(parent context.Context, sessions sessionDial, file string) (
 		return time.Time{}, nil, fmt.Errorf("resume session %s: %w", file, shimwire.SessionGone)
 	}
 	return written, conn, nil
+}
+
+// sessionByID is the file of the newest session the session table holds under the session id id
+// (ompsessions.FindByID), for a start that names its session by its id alone, asked through the
+// same sessionDial resumable's lookup uses. The connection is closed once it answers, since the
+// path resume that follows (resumable) dials its own and hands it to the keeper. A table that could
+// not be asked at all is shimwire.SessionStoreUnreachable; a table that answers it holds no such
+// session is shimwire.SessionGone, refused at once, so no child starts.
+func sessionByID(ctx context.Context, env []string, id, clientURL string) (string, error) {
+	sessions, err := newSessionDial(env, clientURL)
+	if err != nil {
+		return "", fmt.Errorf("resume session %s: %w: %v", id, shimwire.SessionStoreUnreachable, err)
+	}
+	var file string
+	var found bool
+	conn, err := sessions.dial(ctx, func(ctx context.Context, conn *ompsessions.Conn) (err error) {
+		file, found, err = ompsessions.FindByID(ctx, conn, id)
+		return err
+	})
+	if err != nil {
+		return "", fmt.Errorf("resume session %s: %w: %v", id, shimwire.SessionStoreUnreachable, err)
+	}
+	closeSessions(conn)
+	if !found {
+		return "", fmt.Errorf("resume session %s: %w", id, shimwire.SessionGone)
+	}
+	return file, nil
+}
+
+// resumeArgv is a copy of argv whose element `--resume=<id>` reads `--resume=<file>`, so the
+// child resumes the exact file the table holds and the frame the argv came from is left as the
+// daemon sent it. LauncherStart.Validate holds a start naming its session by its id to exactly one
+// such element.
+func resumeArgv(argv []string, id, file string) []string {
+	resumed := slices.Clone(argv)
+	for i, arg := range resumed {
+		if arg == "--resume="+id {
+			resumed[i] = "--resume=" + file
+		}
+	}
+	return resumed
 }
 
 // envValue is name's value in env, the last entry naming it, "" when none does.

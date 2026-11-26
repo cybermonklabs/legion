@@ -10,7 +10,7 @@ In the text moved here, "this workflow" refers to `.github/workflows/release.yam
 
 ## Why the workflow level permissions block is empty, and the four stages a release waits for
 
-Every job declares its own permissions (legion_build, legion_names, pi_envoy_build,
+Every job declares its own permissions (ref, legion_build, legion_names, pi_envoy_build,
 pi_envoy_names, pi_legion_build, pi_legion_names, claude_envoy_build, claude_envoy_names,
 publish, worker_image, worker_image_attest, worker_image_release); nothing runs under this
 workflow-level default, so it stays empty rather than becoming an unreviewed grant to a job
@@ -31,7 +31,8 @@ pinned actions its steps use (actions/checkout, actions/setup-node, actions/down
 of the steps that push. release-push.sh handed checks what each build job handed over before
 anything acts on it.
 
-So a release waits for a runner four times: for the four build jobs together; for their names
+So a release waits for a runner five times: for the ref job, which decides whether the run is on
+main; for the four build jobs together; for their names
 jobs; for publish beside worker_image's build; and for worker_image_attest's attestation beside
 worker_image_release. Each stage holds what the one before it may not: publish cannot run in a
 job that built what it publishes, a names job holds the term list no build job may, the image
@@ -115,6 +116,38 @@ go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches t
 straight from the source and checks them against go.sum, so this is a second path, not a weaker
 check.
 
+## Why the ref job, and not github.ref, decides main
+
+The jobs that release, publish or deploy run only on main, and the `ref` job decides what main
+is: one bash test, `[ "$GITHUB_REF" = refs/heads/main ]`, whose verdict each such job reads as
+`needs.ref.outputs.main == 'true'`. An `if:` cannot make that test itself. GitHub compares
+strings in an expression ignoring case (docs.github.com, "Evaluate expressions in workflows and
+actions", Operators), and `startsWith`, `endsWith` and `contains` do too, so
+`github.ref == 'refs/heads/main'` is also true on a branch named `Main` or `MAIN`.
+
+GitHub keeps such a branch beside `main` as a branch of its own, no ruleset of this repository
+covers it, and a workflow_dispatch runs on it: measured on a scratch repository on 2026-11-21,
+where a job behind that `if:` ran in a push run and in a dispatched run on `Main` while `main`
+stood at another commit. GitHub itself compares the ref exactly elsewhere, measured the same day:
+`on.push.branches: [main]` starts no run on a push to `Main`, so only a dispatch reaches these
+jobs; two branches whose names differ only in case get two concurrency groups from a group keyed
+on `github.ref`, and two Actions cache scopes; and `gh attestation verify` refused an archive
+attested on main when asked for `refs/heads/Main`, so a deployment's check, which asks for
+`refs/heads/main`, refuses an attestation made on `Main`. The npm publishes and the GitHub
+releases and tags check nothing of the kind; the listener's `latest` step alone also checks that
+its commit is on main. The `github.ref` comparisons that stay, in cache conditions
+(setup-bun's `no-cache`, `.github/workflows/worker-image.yaml#cache-to`, the `restore-keys` lines) and in
+worker_image_attest's `skip_attest`, still take `Main` for main. On `Main`, `no-cache` and
+`cache-to` write only `Main`'s own cache scope, the `restore-keys` lines write nothing and only
+restore less, and `skip_attest` skips an attestation.
+
+`github.ref_protected` would answer only while the rulesets protect `main` and no branch named
+`Main`, which a settings change outside this tree can alter. The `ref` job holds no permission
+and checks nothing out, so it runs no code of this repository, and its `timeout-minutes` of 5
+bounds a lost runner only. It is a job of its own in each workflow, never a step of a job that
+runs code of the checkout: a job's outputs are read when the job ends, after every step of it.
+release-envoy-listener.yaml, release-envoy-infra.yaml and docs-pages.yaml carry copies of it.
+
 ## What legion_build releases and why it holds no credential
 
 The Go `legion`: linux and darwin archives of the binary, which embeds its role prompts, with
@@ -181,7 +214,7 @@ GitHub release. Nothing is committed: the tag records the version.
 ## Why only main publishes a plugin
 
 Only main publishes: a workflow_dispatch from another branch skips this job and publish, so
-no branch build ever reaches npm or moves `latest` (AGENTS.md, "Deploys come only from
+no branch build ever reaches npm or moves `latest` (CONTRIBUTING.md, "Deploys come only from
 main"). A workflow_dispatch on main runs it as a push does.
 
 ## Why pi_envoy_build reads the tags before setup-bun, and what a re-run releases
@@ -288,7 +321,7 @@ program, only release-push.sh, git, gh, jq, sha256sum, npm (view, and publish of
 tarball) and the pinned actions its steps use (actions/checkout, actions/setup-node, actions/download-artifact, actions/attest-build-provenance), so the scopes and the deploy key it holds never meet the
 code the build jobs ran. release-push.sh itself also runs curl, tar and one binary of its own:
 the gitleaks release it fetches and holds to a pinned sha256, which runs this repository's
-private-name rules (packages/daemon/internal/leakguard/private-names.toml, from this checkout)
+private-name rules (.github/private-names.toml, from this checkout)
 over every write this job's steps make to a public repository and refuses the write when they match. That
 binary reads what is about to be published and nothing else, and it is a pinned upstream
 release, not code from a build job.
@@ -415,9 +448,9 @@ another commit) leaves no attestation for archives no release carries.
 
 ## What legion's GitHub release step does on a re-run
 
-release-push.sh `release`: creates the release, reuses a published one, or publishes a draft
-an earlier attempt left, with the files the "legion: Check build's archives and write SHA256SUMS" step listed. Its version and tag are the
-job's outputs, which worker_image_release names the worker image on.
+`.github/scripts/release-push.sh#release)`: creates the release, reuses a published one, or publishes a draft an
+earlier attempt left, with the files the "legion: Check build's archives and write SHA256SUMS" step listed. Its
+version and tag are the job's outputs, which worker_image_release names the worker image on.
 
 ## What the worker image build is given and what it pushes
 
@@ -433,8 +466,7 @@ released it.
 
 No `secrets:`: the called workflow reads only GITHUB_TOKEN, which it receives automatically;
 `inherit` would hand DEPLOY_KEY and every other repository secret to a job that runs a
-PR-authored Dockerfile. This job's permissions must cover every scope worker-image.yaml's
-`permissions:` blocks declare, even for the `attest` job this call skips: its workflow-level
+PR-authored Dockerfile. This job's permissions must cover every scope `.github/workflows/worker-image.yaml#permissions:` blocks declare, even for the `attest` job this call skips: its workflow-level
 block (the build, with actions: read and checks: write for the ci-ok report its build runs
 only on ci.yaml's pull_request call) and its `attest` job's (id-token and attestations:
 write, for the image's GitHub attestation). The release note, which needs contents: write,
@@ -452,7 +484,8 @@ when publish's pair_ok says both plugins it links are on npm. That condition is 
 `skip_attest` input rather than this job's `if:`, because check-image-trigger-paths.sh reads
 the `if:` of a job calling worker-image.yaml as an image gate and refuses one that tests another
 job's outputs or the ref. Off main (a workflow_dispatch from a branch) publish skips and the
-image is attested, as a branch dispatch's image always was.
+image is attested, as a branch dispatch's image always was; on a branch named `Main` or `MAIN`,
+which that `github.ref` comparison takes for main, publish skips and the image is not attested.
 
 ## Why the attest call is handed the image repository
 

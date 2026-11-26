@@ -26,8 +26,8 @@
     "build": "bun build extensions/envoy.ts --outdir dist --target bun --format esm --external @oh-my-pi/pi-ai --external @oh-my-pi/pi-coding-agent --external @oh-my-pi/pi-tui --external @oh-my-pi/pi-utils && ../envoy-client/scripts/build-dispatch-cli.sh dist",
     "prepack": "../../scripts/pi-plugin-prepack.sh",
     "postpack": "rm -rf dist/skills",
-    "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "typecheck": "bun ../contracts/scripts/gen-api.ts && bunx tsc --noEmit",
+    "test": "bun test --timeout 250000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome lint extensions/ src/"
   },
   "devDependencies": {

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Run the cases against a Dispatch search route and record where the right answer landed.
 
-usage: DISPATCH_TOKEN_FILE=<file> run_search.py --cases cases.json --fixture-dsn <dsn> \\
+usage: DISPATCH_TOKEN_FILE=<file> FIXTURE_DATABASE_URL=<url> run_search.py --cases cases.json \\
          --url http://127.0.0.1:8799 --out $TMPDIR/out.jsonl [--only serial120.json] [--workers 1]
 
-The bearer is read from the file DISPATCH_TOKEN_FILE names, which keeps it out of the command
-line every process on the machine can read. --token gives one as an argument, for a fixture
-server's own fixed token alone.
+The fixture's database URL, the one the server is serving, is read from FIXTURE_DATABASE_URL, and
+the bearer from the file DISPATCH_TOKEN_FILE names: both stay out of the command line every
+process on the machine can read, and psql is given the URL without its password (pg.py).
+--token gives a bearer as an argument, for a fixture server's own fixed token alone.
 
 Each case's query is read back out of the fixture the server is serving (case_text.py) and
 checked against the descriptor's SHA-256: a case whose text has moved is refused, never guessed
@@ -19,6 +20,7 @@ alone. More workers measure recall faster and say nothing about latency.
 
 import argparse
 import json
+import os
 import sys
 import threading
 import time
@@ -32,7 +34,6 @@ from dispatch_read import ReadOnlyDispatch, pmap
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cases", required=True)
-    parser.add_argument("--fixture-dsn", required=True)
     parser.add_argument("--url", required=True, help="the search server, built from this tree")
     parser.add_argument("--token", default="",
                         help="a fixture server's fixed bearer; else DISPATCH_TOKEN_FILE's contents")
@@ -47,6 +48,9 @@ def main():
     parser.add_argument("--warmup", action="store_true",
                         help="run every case once, unrecorded, before the run that is recorded")
     arguments = parser.parse_args()
+    fixture_url = os.environ.get("FIXTURE_DATABASE_URL", "")
+    if not fixture_url:
+        parser.error("FIXTURE_DATABASE_URL must name the fixture's database, the one the server is serving")
 
     with open(arguments.cases) as handle:
         cases = json.load(handle)
@@ -55,7 +59,7 @@ def main():
             wanted = set(json.load(handle))
         cases = [case for case in cases if case["case_id"] in wanted]
 
-    queries, refused = resolve(cases, arguments.fixture_dsn)
+    queries, refused = resolve(cases, fixture_url)
     print(f"{len(queries)} cases resolved, {len(refused)} refused", file=sys.stderr)
     for case_id, why in refused[:10]:
         print(f"  refused {case_id}: {why}", file=sys.stderr)

@@ -50,16 +50,23 @@ func serveRecorded(t *testing.T, build func(*logging.Logger) http.HandlerFunc, r
 	logs := &cmdtest.LockedBuffer{}
 	recorder := httptest.NewRecorder()
 	build(logging.NewWithWriter("test", logs)).ServeHTTP(recorder, request)
-	written := strings.TrimSpace(logs.String())
+	return recorder, soleRecord(t, logs.String())
+}
+
+// soleRecord is the one log line a request wrote, parsed, failing t unless exactly one was
+// written: serveRecorded's reading, and that of a test that serves its request on a goroutine.
+func soleRecord(t *testing.T, logs string) map[string]any {
+	t.Helper()
+	written := strings.TrimSpace(logs)
 	lines := strings.Split(written, "\n")
 	if written == "" || len(lines) != 1 {
-		t.Fatalf("one request wrote %d record lines, want exactly one:\n%s", len(lines), logs.String())
+		t.Fatalf("one request wrote %d record lines, want exactly one:\n%s", len(lines), logs)
 	}
 	var record map[string]any
 	if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
 		t.Fatalf("the record line is not JSON: %v\n%s", err, lines[0])
 	}
-	return recorder, record
+	return record
 }
 
 // assertRecordFields compares the named fields of one record line, field by field, as the
@@ -87,6 +94,7 @@ func assertRecordFields(t *testing.T, record map[string]any, want map[string]any
 // delivery read back from notifications.agent.<id> is the second half: a 200 alone would pass
 // even if the envelope never left the listener.
 func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
+	t.Parallel()
 	const target = "ses_cold_cache_target"
 	registrar, cold := trailingListeners(t)
 	if err := registrar.sessions.Put(target, session.SessionEntry{
@@ -198,9 +206,9 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	// nats.go notices the closed link from its own read loop, so the send below is issued on a
 	// connection already known to be down rather than on one that is about to be: the measured
 	// time is the handler's, not the client's time to notice.
-	for deadline := time.Now().Add(5 * time.Second); client.Conn.IsConnected(); {
+	for deadline := time.Now().Add(listenerWaitBound(t)); client.Conn.IsConnected(); {
 		if time.Now().After(deadline) {
-			t.Fatal("the NATS client still reports itself connected 5s after the relay cut every link")
+			t.Fatal("the NATS client still reports itself connected the time this package gives a wait after the relay cut every link")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -429,6 +437,7 @@ func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
 // topic goes to the bus as written, so `notifications..x` clears the handler's prefix checks and
 // is refused by the bus's own subject check (bus.ErrInvalidSubject).
 func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) {
+	t.Parallel()
 	const target = "ses_refused_publish_target"
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{target})
@@ -527,6 +536,7 @@ func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) 
 // the line's own fields (the summary among them) are checked on a refusal that has an envelope
 // and on one refused before any envelope exists.
 func TestListenerRecordsEverySendAndPublishRequest(t *testing.T) {
+	t.Parallel()
 	const target = "ses_recorded_target"
 	const sender = "ses_recorded_sender"
 	client := setupPublishTestClient(t)

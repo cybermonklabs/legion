@@ -1,0 +1,5 @@
+kind: Added
+body: The fixture `fixtures/envelope-without-role.json` is an envelope with every field `EnvelopeSchema` names set except `role`, on the agent subject of `ses_role_field`. The readers' rows of envoy-client, claude-envoy and pi-envoy read it with and without `role`, each on its own session's subject.
+time: 2026-11-19T17:01:11Z
+custom:
+    Issue: pr4387

@@ -107,7 +107,7 @@ func (h *harness) unsentAsk(round string) Delivery {
 func (h *harness) olderDaemonsAsk(round string, sent bool, set ...func(*Delivery)) Delivery {
 	h.t.Helper()
 	h.markAsked(round)
-	ask := Delivery{ID: updateTaskID(round), Task: UpdateTask(round, testReasons, epoch.Add(time.Hour)),
+	ask := Delivery{ID: updateTaskID(round), Task: UpdateTask(claim.RoleImplementer, round, testReasons, epoch.Add(time.Hour)),
 		QueuedAt: h.clock.Now()}
 	if sent {
 		if err := h.conn.Prompt(h.ctx, ask.ID, ask.Task); err != nil {
@@ -393,6 +393,20 @@ func TestPodUpdatePublishUpdateAskMarksOnlyAnAskThatReachedASession(t *testing.T
 		}
 	})
 
+	t.Run("a claim that has answered its round is published nothing and marked nothing", func(t *testing.T) {
+		h := updateHarness(t, PodUpdateContract)
+		h.reach(StateReady)
+		h.openUpdate(testRound, testReasons)
+		h.signalUpdate("c0ffee")
+		reached := &askPublisher{delivered: true}
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskAnswered {
+			t.Fatalf("the ask to a claim that answered = %v, %v; want UpdateAskAnswered", outcome, err)
+		}
+		if c, stored := h.claim(), h.store.load(h.token); reached.calls != 0 || c.UpdateTaskedAt != nil || stored.UpdateTaskedAt != nil {
+			t.Fatalf("the ask to a claim that answered published %d times and marked %v, stored %v; want neither", reached.calls, c.UpdateTaskedAt, stored.UpdateTaskedAt)
+		}
+	})
+
 	t.Run("a publish that fails marks nothing and answers the publisher's error", func(t *testing.T) {
 		h := updateHarness(t, PodUpdateContract)
 		h.reach(StateReady)
@@ -475,6 +489,78 @@ func TestPodUpdatePublishUpdateAskWaitsForNoLock(t *testing.T) {
 	}
 
 	h.markAsked(testRound)
+}
+
+// An ask of the round to a claim the daemon suspended publishes nothing and marks nothing
+// (dispatch://INFRA-4109 R1): the outbox's row ends at UpdateAskSuspended before the publish.
+// Such a claim runs no process and no turn in the pod, so the ask would reach no session. A
+// publish to a role with no holder is not free either: the Envoy listener raises a role wake for
+// it, and that wake would bring back a pod the daemon released. Every source but the operator's
+// is such a suspension: the daemon's, a root's exit, an idle release, and one older than its
+// source. A root's exit and a source-less suspension reach no claim through RequestSuspend, so
+// the store holds them and a restart restores them, as a boot does.
+//
+// The control is the operator's suspension, which the round still asks (dispatch://INFRA-2981
+// R5): its ask is published as before, and the claim is marked asked.
+func TestPublishUpdateAskPublishesNothingToAClaimTheDaemonSuspended(t *testing.T) {
+	suspend := func(h *harness, by SuspendSource) {
+		h.t.Helper()
+		switch by {
+		case SuspendedByOperator, SuspendedByDaemon, SuspendedByReleased:
+			h.must(RequestSuspend{Claim: h.token, By: by})
+		default:
+			h.must(RequestSuspend{Claim: h.token, By: SuspendedByDaemon})
+			c := h.claim()
+			c.SuspendedBy = by
+			if err := h.store.PutClaim(h.ctx, c); err != nil {
+				h.t.Fatal(err)
+			}
+			h.restart()
+		}
+		if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != by {
+			h.t.Fatalf("the claim is %s, suspended by %q, want it suspended by %q", c.State, c.SuspendedBy, by)
+		}
+	}
+	for _, by := range []SuspendSource{SuspendedByDaemon, SuspendedByExit, SuspendedByReleased, SuspendedByUnknown} {
+		t.Run(string(by), func(t *testing.T) {
+			h := updateHarness(t, PodUpdateContract)
+			h.reach(StateIdle)
+			suspend(h, by)
+			h.openUpdate(testRound, testReasons)
+			h.wantRound(testRound)
+
+			reached := &askPublisher{delivered: true}
+			if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskSuspended {
+				t.Fatalf("the ask to a claim suspended by %s = %v, %v; want UpdateAskSuspended", by, outcome, err)
+			}
+			if reached.calls != 0 {
+				t.Fatalf("the ask to a claim suspended by %s was published %d times, want none", by, reached.calls)
+			}
+			if c, stored := h.claim(), h.store.load(h.token); c.UpdateTaskedAt != nil || stored.UpdateTaskedAt != nil {
+				t.Fatalf("UpdateTaskedAt = %v, stored %v; want no mark: no ask reached the claim", c.UpdateTaskedAt, stored.UpdateTaskedAt)
+			}
+			h.wantState(StateSuspended)
+		})
+	}
+
+	t.Run(string(SuspendedByOperator), func(t *testing.T) {
+		h := updateHarness(t, PodUpdateContract)
+		h.reach(StateIdle)
+		suspend(h, SuspendedByOperator)
+		h.openUpdate(testRound, testReasons)
+		h.wantRound(testRound)
+
+		reached := &askPublisher{delivered: true}
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskDelivered {
+			t.Fatalf("the ask to a claim the operator suspended = %v, %v; want it delivered", outcome, err)
+		}
+		if reached.calls != 1 {
+			t.Fatalf("the ask to a claim the operator suspended was published %d times, want once", reached.calls)
+		}
+		if stored := h.store.load(h.token); stored.UpdateTaskedAt == nil {
+			t.Fatal("stored UpdateTaskedAt = nil, want the ask marked")
+		}
+	})
 }
 
 // An ask an older daemon queued as a task for the round the claim is still in is dropped and
@@ -727,7 +813,7 @@ func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
 // turn, or that only the background jobs of the turn in progress go with the pod.
 func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 	endsAt := time.Date(2026, 11, 13, 14, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
-	text := UpdateTask(testRound, `image "sha256:1"`, endsAt)
+	text := UpdateTask(claim.RoleImplementer, testRound, `image "sha256:1"`, endsAt)
 	for _, want := range []string{
 		"The round is " + testRound + ".",
 		`The reasons are: image "sha256:1".`,

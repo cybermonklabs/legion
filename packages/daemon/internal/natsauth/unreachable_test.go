@@ -3,6 +3,7 @@ package natsauth_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
 // Unreachable's table: every shape the audit found, plus the boundary cases (an authorization or
@@ -44,6 +46,17 @@ func TestUnreachableClassifiesEachErrorShape(t *testing.T) {
 		{"no responders for a JetStream request: ambiguous (disabled vs. still starting), exits by default",
 			errors.New("nats: no responders available for request"), false},
 		{"a plain error with no recognized shape at all", errors.New("boom"), false},
+		// A TLS alert is an answer no wait fixes: the server demands a client certificate, say, or
+		// speaks no TLS version the client does. These rows' alerts end the handshake; an alert on a
+		// later record reads the same (tlsalert.In). Each is built as crypto/tls builds it over TCP
+		// (crypto/tls/conn.go), a *net.OpError naming no network.
+		{"a TLS alert the server sent", &net.OpError{Op: "remote error", Err: errors.New("tls: certificate required")}, false},
+		{"a TLS alert the client sent itself, on a handshake answer it could not take",
+			&net.OpError{Op: "local error", Err: errors.New("tls: unexpected message")}, false},
+		{"a TLS alert behind a refused dial, joined as WithLastError joins a closed connection's last error",
+			fmt.Errorf("%w (the NATS connection's last error: %w)",
+				&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")},
+				&net.OpError{Op: "remote error", Err: errors.New("tls: certificate required")}), false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			if got := natsauth.Unreachable(testCase.err); got != testCase.want {
@@ -96,14 +109,10 @@ func TestWithLastErrorNamesAPermissionViolationOnceTheConnectionIsClosed(t *test
 // package owes the boot gate; the retry loop that rides it out lives in bootprobe and is tested
 // there (bootprobe.TestRunWithoutABoundWaitsOutEveryTransientFailure).
 func TestConnectAgainstAClosedPortReturnsAnErrorUnreachableAccepts(t *testing.T) {
-	reserved, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve a port: %v", err)
-	}
-	addr := reserved.Addr().String()
-	reserved.Close() // nothing answers here.
+	// A port the test holds and nothing listens on: nothing answers here.
+	addr := testport.Refused(t)
 
-	_, err = natsauth.Connect([]string{"nats://" + addr}, "", t.Name(), nats.Timeout(500*time.Millisecond))
+	_, err := natsauth.Connect([]string{"nats://" + addr}, "", t.Name(), nats.Timeout(500*time.Millisecond))
 	if err == nil {
 		t.Fatal("Connect against a closed port must fail")
 	}

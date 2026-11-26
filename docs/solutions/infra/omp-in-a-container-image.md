@@ -17,6 +17,7 @@ symptoms:
   - "`omp plugin install <file>.tgz` fails with ENOTDIR … /package.json"
   - "an image-time `legion probe-image` fails with 'does not expose pi.agents' on a slow link"
   - "a pod starts but OMP cannot find the plugin or re-downloads native modules"
+  - "the image build fails with `mise ERROR \"omp\" couldn't exec process: No such file or directory` after `github rate limit: 0/15000 (core)`"
 ---
 
 # Baking OMP and a Plugin into a Container Image
@@ -91,12 +92,20 @@ disabled or unregistered plugin has a manifest and still fails the load probe.
 
 ## Other pins worth knowing
 
-- The OMP fork pin has one source, `packages/daemon/src/daemon/omp-pin.ts`; the Dockerfile prints
-  it in-build (`bun omp-pin.ts > /out/omp-pin`) and the `tools` stage reads it via `COPY --from`.
-  No `ARG`, nothing for a workflow to compute.
-- `mise x github:<owner>/<repo>@<version>` resolves the fork inside the build exactly as the daemon
-  does; mount `github_token` as a BuildKit secret (`MISE_GITHUB_TOKEN`) so a shared runner IP
-  does not hit the unauthenticated API limit.
+- The OMP fork pin has one source, the one line of `.omp-pin` (`github:<owner>/<repo>@<version>`);
+  the `tools` stage `COPY`s it. The version is no `ARG`; the sha256 of that release's linux-x64
+  archive is, `ARG OMP_SHA256`, and a bump of `.omp-pin` moves it in the same commit.
+- Do not resolve a pinned release through GitHub's REST API inside the build. Until 2026-11-21 the
+  `tools` stage ran `mise x <pin> -- omp --version` with the run's `GITHUB_TOKEN` as a BuildKit
+  secret, and mise's github backend reads the release, its asset list and its attestations
+  through the API. That token's budget, 15,000 calls an hour, is shared by every job of every
+  workflow run in the repository (about 350 runs an hour that day). When it ran out, mise logged
+  `github rate limit: 0/15000 (core)` as a warning, skipped the install it could not resolve,
+  and ran `omp` off `PATH`: every pull request's build failed with `"omp" couldn't exec process:
+  No such file or directory` until the hour reset. A release asset's download address,
+  `https://github.com/<owner>/<repo>/releases/download/<tag>/<name>`, is no API call, so the stage
+  fetches the archive there and checks it against the pinned sha256, as it fetches jj and gh, and
+  the build takes no token at all.
 - `oven/bun:<version>-slim` owns uid 1000, so the runtime stage is `debian:bookworm-slim` with Bun
   copied from the build stage; `USER 1000:1000` (numeric) lets Kubernetes `runAsNonRoot` verify
   from the image alone.

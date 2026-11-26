@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/envoy/.changes/unreleased/pr4183-Added-20261116-091606.yaml TestTheLimitsOfTheRuleAreOneTextInEachPlace reads that one fragment under ../..
+
 import (
 	"fmt"
 	"io/fs"

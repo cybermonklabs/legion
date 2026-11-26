@@ -1,0 +1,174 @@
+package record
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"time"
+)
+
+// ErrChainBroken is every reason ChainVerifier.Verify refuses: the record does not exist, its
+// stored body does not reproduce its own id, its embedded request object does not verify, or it
+// does not carry exactly one terminal decision that is an approval by its approver. A caller that
+// only cares "does this still authenticate" collapses every case with errors.Is(err,
+// ErrChainBroken); one that needs the reason keeps the wrapped detail.
+var ErrChainBroken = errors.New("credential request chain does not verify")
+
+// ErrNotApprover is a decision on a record by a login other than the approver the record names.
+var ErrNotApprover = errors.New("only the record's approver may decide it")
+
+// TerminalEvent is one terminal decision event a record carries — approved, denied, expired or
+// cancelled — the login that decided it, "" for an event no human decided, and the audit actor
+// the event was written under: HumanActor for a person's decision, JudgeActor for one the model
+// judge made, which carries no login at all, and the broker itself for an event it ended on its
+// own. Verify reads which arm admits an approval off Actor, so the two strings beside each other
+// must not be able to swap: store.Store.ChainVerifier fills these in by column name
+// (pgx.RowToStructByName), which makes each field's name the column's and no reordering of them
+// a change of meaning.
+type TerminalEvent struct {
+	Event string
+	Login string
+	Actor string
+}
+
+// terminalEventNames are the events that end a record's pending state, which a record carries at
+// most once: credential_request_decision's partial unique index, whose predicate spells the same
+// list, holds it to that.
+var terminalEventNames = []string{"approved", "denied", "expired", "cancelled"}
+
+// TerminalEventNames returns a copy of the terminal events, for a query to pass as
+// `event = any($n)`; a copy, so no caller can change the list another caller reads.
+func TerminalEventNames() []string {
+	return slices.Clone(terminalEventNames)
+}
+
+// ChainVerifier re-derives a credential-request record's full issuance chain rather than
+// trusting a downstream row (a launcher credential, a grant) that merely names the record's id:
+// the stored body must reproduce the record's own content-addressed id, the request object it
+// embeds must still be a well-formed, signed proof — checked as of the record's own creation
+// time, not now, since a request object's own ~10-minute exp is long past by the time anything
+// built from it is used again; re-verifying it proves provenance, not freshness — and the record
+// must carry exactly one terminal decision, an approval by a login the record's rule admits: its
+// approver, or, for a service's machine login, any login — or, for an approval the model judge
+// made, one the keys' judge tags let the judge make at all (MayJudge).
+//
+// store.Store.ChainVerifier builds the one enroll.AuthenticateLauncher and requests.Machine's own
+// chain check each use, by record kind, through these narrow func fields, so this package needs no
+// store access of its own.
+type ChainVerifier struct {
+	// Kind is the kind of record FetchRecord serves (KindAgentSecret or KindLauncherCredential),
+	// which, with the service its request object names, decides who may have approved it
+	// (MayDecide).
+	Kind string
+
+	// Audience and Skew re-verify the embedded request object as VerifyStoredRequestObject reads
+	// every stored record: its aud is Audience's origin, its times are checked as of the record's
+	// creation. EdgeAudience is BROKER_EDGE_URL on the launcher credentials' verifier of a broker
+	// with an edge, whose machine logins may be signed for it, and "" on every other.
+	Audience     string
+	EdgeAudience string
+	Skew         time.Duration
+
+	// FetchRecord resolves a record id to its stored canonical body and creation time. found is
+	// false when no such record exists — including, per the caller's own query, one that exists
+	// but is not of the kind the caller cares about.
+	FetchRecord func(ctx context.Context, recordID string) (body string, createdAt time.Time, found bool, err error)
+
+	// FetchDecisions resolves every terminal decision event the record carries, oldest first.
+	// The broker writes at most one (credential_request_decision's partial unique index holds it
+	// to that), so a second is a row something other than the broker wrote.
+	FetchDecisions func(ctx context.Context, recordID string) ([]TerminalEvent, error)
+
+	// JudgeSeconds is the bound a key's judge tag puts on the lifetime the model judge may decide
+	// for it (policy.Set.JudgeSeconds, read from the live policy at each call), which MayJudge
+	// holds a judge's approval to. It is a func field for the same reason MayJudge takes one:
+	// this package must not import policy. A verifier that leaves it nil never admits a judge's
+	// approval, since MayJudge refuses with no bound available — which is what
+	// enroll.NewChainVerifier does, a launcher credential being no record the judge ever decides.
+	JudgeSeconds func(secret string) (uint32, bool)
+
+	// Decided answers, for a record the judge approved, which of its request's keys needed a
+	// decision when the request was written — the keys the judge decided, which MayJudge holds
+	// to the rules' bound — where every other key is one the session got at once beside them.
+	// requests.NewChainVerifier reads it off the request's own rows; a nil Decided is every key
+	// decided, as for a verifier that holds no such rows. That a key was got at once is no
+	// licence of its own: every release asks the live policy again whether it still needs no
+	// decision (requests' stillAllowed), so a row that claims it of a key that needs one
+	// releases nothing.
+	Decided func(ctx context.Context, recordID string) (func(secret string) bool, error)
+
+	// Groups answers who is a member of a group approver now (the broker's group reader), which
+	// MayDecide reads for a group-approved agent_secret record. A verifier that leaves it nil
+	// admits no group's member, which is what enroll.NewChainVerifier does, a machine login's
+	// approver never being a group.
+	Groups Groups
+}
+
+// Verify re-derives recordID's full issuance chain and returns its parsed Body once every link
+// holds.
+//
+// Which arm admits the approval is read off the event's actor and never its login: the judge's
+// own approval is written under JudgeActor with a null login on purpose, so no owner tag or
+// login_hint can dress it up as a person's — MayDecide refuses a login shaped "judge:" for that
+// same reason — and an event with any other actor is a person's, held to MayDecide as before.
+//
+// A group-approved record whose decider the group does not admit now answers
+// ApproverNotAdmittedError: alone, a lapsed grant (ErrApproverNotAdmittedNow), when the group is
+// stale or was never read, since nobody can tell whether the decider is still a member; wrapped
+// in ErrChainBroken when the group is fresh and does not list the decider, since nobody in the
+// group decided it now — a member who left, or a decision row naming a login the group never
+// held. A decision row with no login is a broken chain whatever the group says.
+func (c *ChainVerifier) Verify(ctx context.Context, recordID string) (Body, error) {
+	canonical, createdAt, found, err := c.FetchRecord(ctx, recordID)
+	if err != nil {
+		return Body{}, err
+	}
+	if !found {
+		return Body{}, fmt.Errorf("%w: no such record", ErrChainBroken)
+	}
+	body, err := VerifyBodyReproducesID(canonical, recordID)
+	if err != nil {
+		if errors.Is(err, ErrBodyIDMismatch) {
+			return Body{}, fmt.Errorf("%w: stored body does not reproduce its own id", ErrChainBroken)
+		}
+		return Body{}, fmt.Errorf("%w: stored body does not parse: %s", ErrChainBroken, err)
+	}
+	obj, err := VerifyStoredRequestObject(body.Request, c.Audience, c.EdgeAudience, c.Skew, createdAt)
+	if err != nil {
+		return Body{}, fmt.Errorf("%w: request object: %s", ErrChainBroken, err)
+	}
+	decisions, err := c.FetchDecisions(ctx, recordID)
+	if err != nil {
+		return Body{}, err
+	}
+	switch {
+	case len(decisions) == 0:
+		return Body{}, fmt.Errorf("%w: no approved event", ErrChainBroken)
+	case len(decisions) > 1:
+		return Body{}, fmt.Errorf("%w: %d terminal decision events, want exactly one", ErrChainBroken, len(decisions))
+	case decisions[0].Event != "approved":
+		return Body{}, fmt.Errorf("%w: no approved event (decided %s)", ErrChainBroken, decisions[0].Event)
+	}
+	if modelID, judged := JudgeLogin(decisions[0].Actor); judged {
+		var decided func(string) bool
+		if c.Decided != nil {
+			if decided, err = c.Decided(ctx, recordID); err != nil {
+				return Body{}, err
+			}
+		}
+		if err := MayJudge(body, obj, c.JudgeSeconds, decided); err != nil {
+			return Body{}, fmt.Errorf("%w: approved by the model judge %q, which its keys' judge tags do not admit: %w", ErrChainBroken, modelID, err)
+		}
+	} else if err := CheckDecider(c.Kind, body.Approver, obj.Service(), decisions[0].Login, c.Groups); err != nil {
+		var lapsed ApproverNotAdmittedError
+		if errors.As(err, &lapsed) {
+			if !lapsed.Fresh {
+				return Body{}, lapsed
+			}
+			return Body{}, fmt.Errorf("%w: %w", ErrChainBroken, lapsed)
+		}
+		return Body{}, fmt.Errorf("%w: approved by %q, whom the record's rule does not admit (approver %q)", ErrChainBroken, decisions[0].Login, body.Approver)
+	}
+	return body, nil
+}

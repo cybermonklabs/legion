@@ -1,0 +1,185 @@
+[
+  {
+    "id": "state",
+    "routes": [
+      "GET /legion/v1/state"
+    ],
+    "since": 46,
+    "noBody": false,
+    "typedSettings": [
+      {
+        "key": "max_fix_attempts",
+        "since": 46,
+        "until": 58
+      },
+      {
+        "key": "worker_boot_timeout_seconds",
+        "since": 46
+      },
+      {
+        "key": "review_round_cap",
+        "since": 86
+      }
+    ]
+  },
+  {
+    "id": "issue-record",
+    "routes": [
+      "GET /legion/v1/issues/{key}/record"
+    ],
+    "since": 193,
+    "noBody": false
+  },
+  {
+    "id": "health",
+    "routes": [
+      "GET /healthz"
+    ],
+    "since": 193,
+    "noBody": false
+  },
+  {
+    "id": "register",
+    "routes": [
+      "POST /legion/v1/claims/register"
+    ],
+    "since": 46,
+    "noBody": false
+  },
+  {
+    "id": "register-controller",
+    "routes": [
+      "POST /legion/v1/claims/register"
+    ],
+    "since": 46,
+    "noBody": false
+  },
+  {
+    "id": "no-content",
+    "routes": [
+      "POST /legion/v1/claims/ready",
+      "POST /legion/v1/claims/ready-for-update",
+      "POST /legion/v1/claims/exit",
+      "POST /legion/v1/claims/activity"
+    ],
+    "since": 46,
+    "noBody": true
+  },
+  {
+    "id": "release-records",
+    "routes": [
+      "POST /legion/v1/claims/release-records"
+    ],
+    "since": 48,
+    "noBody": false
+  },
+  {
+    "id": "grant",
+    "routes": [
+      "POST /legion/v1/grants"
+    ],
+    "since": 46,
+    "noBody": false
+  },
+  {
+    "id": "handoff-complete",
+    "routes": [
+      "POST /legion/v1/handoff/complete"
+    ],
+    "since": 46,
+    "noBody": false
+  },
+  {
+    "id": "empty-object",
+    "routes": [
+      "POST /legion/v1/issues/status",
+      "POST /legion/v1/gates/register",
+      "POST /legion/v1/tasks/stop",
+      "POST /legion/v1/phase/backward",
+      "POST /legion/v1/phase/retry",
+      "POST /legion/v1/signoff",
+      "POST /legion/v1/roots/close",
+      "POST /legion/v1/children/rerun"
+    ],
+    "since": 46,
+    "noBody": false
+  },
+  {
+    "id": "fresh-session",
+    "routes": [
+      "POST /legion/v1/claims/fresh-session"
+    ],
+    "since": 59,
+    "noBody": false
+  },
+  {
+    "id": "compact",
+    "routes": [
+      "POST /legion/v1/claims/compact"
+    ],
+    "since": 59,
+    "noBody": false
+  },
+  {
+    "id": "turn-outcome",
+    "routes": [
+      "POST /legion/v1/claims/turn-outcome"
+    ],
+    "since": 86,
+    "noBody": false
+  },
+  {
+    "id": "wave-release",
+    "routes": [
+      "POST /legion/v1/waves/release"
+    ],
+    "since": 46,
+    "noBody": false
+  },
+  {
+    "id": "refusal",
+    "routes": [],
+    "since": 46,
+    "noBody": false
+  },
+  {
+    "id": "project-pause",
+    "routes": [
+      "POST /legion/v1/project/pause"
+    ],
+    "since": 178,
+    "noBody": false
+  },
+  {
+    "id": "project-resume",
+    "routes": [
+      "POST /legion/v1/project/resume"
+    ],
+    "since": 178,
+    "noBody": false
+  },
+  {
+    "id": "plan-register",
+    "routes": [
+      "POST /legion/v1/plans/register"
+    ],
+    "since": 219,
+    "noBody": false
+  },
+  {
+    "id": "intake-replay",
+    "routes": [
+      "POST /legion/v1/intake/replay"
+    ],
+    "since": 228,
+    "noBody": false
+  },
+  {
+    "id": "intake-discard",
+    "routes": [
+      "POST /legion/v1/intake/discard"
+    ],
+    "since": 228,
+    "noBody": false
+  }
+]

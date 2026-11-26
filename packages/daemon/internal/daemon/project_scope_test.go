@@ -35,6 +35,7 @@ import (
 // Dispatch, and none of them ever gets a branch created on GitHub (refs/heads/legion/<key>) by this
 // daemon.
 func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	cfg.AdmissionCap = 2
 	other := "OTHER" + randomSuffix(t)
@@ -58,7 +59,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 	root := func(key, status, rank string) record.Issue {
 		return record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: key, Project: other, Title: "Another project's root", Phase: phase.Admitted, Generation: 1, Status: status, Rank: rank}
 	}
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		taken, err := records.Slots(ctx, tx)
 		if err != nil {
 			return err
@@ -170,7 +171,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 	}
 
 	var slots []string
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		all, err := records.Slots(ctx, tx)
 		for _, slot := range all {
 			if strings.HasPrefix(slot.Issue, other+"-") {
@@ -203,6 +204,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 // as the store holds them. The raw store beside it reads every project's, so each case shows the
 // other project's record is there to be read.
 func TestTheProjectsRecordsReadNoRecordOfAnotherProjectsIssue(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	raw := record.NewStore()
@@ -224,7 +226,7 @@ func TestTheProjectsRecordsReadNoRecordOfAnotherProjectsIssue(t *testing.T) {
 		issue.Parent, issue.Ancestry = &parent, []string{parent}
 		return issue
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, issue := range []record.Issue{
 			of("LEGION", "LEGION-1", "LEGION-1", "in_progress", phase.Implementing),
 			of("LEGION", "LEGION-2", "LEGION-1", "in_progress", phase.Implementing),
@@ -243,7 +245,7 @@ func TestTheProjectsRecordsReadNoRecordOfAnotherProjectsIssue(t *testing.T) {
 	}
 	read := func(t *testing.T, through func(pgx.Tx) error) {
 		t.Helper()
-		if err := pgx.BeginFunc(ctx, pool, through); err != nil {
+		if err := store.Transact(ctx, pool, func(_ context.Context, tx pgx.Tx) error { return through(tx) }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -326,6 +328,7 @@ func TestTheProjectsRecordsReadNoRecordOfAnotherProjectsIssue(t *testing.T) {
 // rolls back. Each refusal is logged at Warn with the row's kind, its key and the project, so
 // nothing is dropped in silence. The same write of a row of this project's own key goes through.
 func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	raw := record.NewStore()
@@ -335,7 +338,7 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 	later := now.Add(time.Hour)
 	write := func(t *testing.T, through func(pgx.Tx) error) {
 		t.Helper()
-		if err := pgx.BeginFunc(ctx, pool, through); err != nil {
+		if err := store.Transact(ctx, pool, func(_ context.Context, tx pgx.Tx) error { return through(tx) }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -420,7 +423,7 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 	t.Run("EnqueueID", func(t *testing.T) {
 		enqueue := func(key string) (int64, error) {
 			var id int64
-			err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				var err error
 				id, err = records.EnqueueID(ctx, tx, status(t, key, now))
 				return err
@@ -439,10 +442,16 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 	t.Run("ExpediteOutbox", func(t *testing.T) {
 		row := seed(t, status(t, "OTHERPROJECT-4", later))
 		before := rowsOf(t, "OTHERPROJECT-4")
-		write(t, func(tx pgx.Tx) error { return records.ExpediteOutbox(ctx, tx, row, now) })
+		write(t, func(tx pgx.Tx) error {
+			_, err := records.ExpediteOutbox(ctx, tx, row, now)
+			return err
+		})
 		refused(t, record.OutboxKindDispatchStatus, "OTHERPROJECT-4", before)
 		own := seed(t, status(t, "LEGION-4", later))
-		write(t, func(tx pgx.Tx) error { return records.ExpediteOutbox(ctx, tx, own, now) })
+		write(t, func(tx pgx.Tx) error {
+			_, err := records.ExpediteOutbox(ctx, tx, own, now)
+			return err
+		})
 		var due time.Time
 		if err := pool.QueryRow(ctx, `select next_at from outbox where id = $1`, own.ID).Scan(&due); err != nil || !due.Equal(now) {
 			t.Errorf("the project's own row %d keyed LEGION-4 is due at %s (%v), want it expedited to %s", own.ID, due, err, now)
@@ -496,10 +505,16 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 		}
 		seed(t, catchUp("OTHERPROJECT-6"))
 		before := rowsOf(t, "OTHERPROJECT-6")
-		write(t, func(tx pgx.Tx) error { return records.DropCatchUps(ctx, tx, "OTHERPROJECT-6", now) })
+		write(t, func(tx pgx.Tx) error {
+			_, err := records.DropCatchUps(ctx, tx, "OTHERPROJECT-6", now)
+			return err
+		})
 		refused(t, record.OutboxKindNotice, "OTHERPROJECT-6", before)
 		seed(t, catchUp("LEGION-6"))
-		write(t, func(tx pgx.Tx) error { return records.DropCatchUps(ctx, tx, "LEGION-6", now) })
+		write(t, func(tx pgx.Tx) error {
+			_, err := records.DropCatchUps(ctx, tx, "LEGION-6", now)
+			return err
+		})
 		if got := rowsOf(t, "LEGION-6"); len(got) != 0 {
 			t.Errorf("the project's own rows keyed LEGION-6 after the drop = %q, want its catch-up dropped", got)
 		}
@@ -513,6 +528,21 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 		write(t, func(tx pgx.Tx) error { return records.DropStatusWrites(ctx, tx, "LEGION-7") })
 		if got := rowsOf(t, "LEGION-7"); len(got) != 0 {
 			t.Errorf("the project's own rows keyed LEGION-7 after the drop = %q, want its status write dropped", got)
+		}
+	})
+	t.Run("DropUnfencedCheckWakes", func(t *testing.T) {
+		unfenced := func(key string) record.OutboxRow {
+			return mustOutboxRow(t, key, record.CheckWakeDue{Look: 1, Reason: "an earlier release's wake"}, now)
+		}
+		seed(t, unfenced("OTHERPROJECT-10"))
+		before := rowsOf(t, "OTHERPROJECT-10")
+		write(t, func(tx pgx.Tx) error { return records.DropUnfencedCheckWakes(ctx, tx, "OTHERPROJECT-10") })
+		refused(t, record.OutboxKindCheckWake, "OTHERPROJECT-10", before)
+		seed(t, unfenced("LEGION-10"))
+		seed(t, mustOutboxRow(t, "LEGION-10", record.CheckWakeDue{Look: 1, WakeAt: now.Add(time.Hour), Reason: "this release's wake"}, now))
+		write(t, func(tx pgx.Tx) error { return records.DropUnfencedCheckWakes(ctx, tx, "LEGION-10") })
+		if got := rowsOf(t, "LEGION-10"); len(got) != 1 {
+			t.Errorf("the project's own rows keyed LEGION-10 after the drop = %q, want the wake that names its time alone", got)
 		}
 	})
 	// A clear of a generation deletes the design gates it covers and queues, keyed by each issue
@@ -562,6 +592,7 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 // where that daemon stands it — still merging, lingering nowhere, with no production check
 // opened and no row queued keyed by it — while it closes its own.
 func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	raw := record.NewStore()
@@ -576,7 +607,7 @@ func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.
 	}
 	ownIssue, ownPR := merging("LEGION", "LEGION-301", "sjawhar/legion", 1)
 	theirIssue, theirPR := merging("OTHER", "OTHER-1", "acme/other", 6)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, seed := range []struct {
 			issue record.Issue
 			pr    record.PullRequest
@@ -599,7 +630,7 @@ func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.
 	var own, theirs *record.Issue
 	var check *record.ProductionCheck
 	var rows int
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if own, err = raw.Issue(ctx, tx, ownIssue.Key); err != nil {
 			return err

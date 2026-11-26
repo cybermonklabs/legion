@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -382,6 +383,56 @@ func TestAReplayedRefusalWhileTheSendIsInFlightLeavesTheConfirmedTask(t *testing
 	}
 }
 
+// A replayed refusal is an earlier connection's, of a prompt sent before the send in flight under
+// the same id, so it answers nothing of that send (lateRefused): a restart re-sends the task under
+// the id the earlier daemon's prompt was acknowledged under, a turn starts while the re-send is in
+// flight, and the shim replays Oh My Pi's refusal of the earlier prompt. The re-send's own answer
+// is still to come, so the turn's end, read before the re-send's acknowledgement, retires nothing
+// (resultPending's send window), and that acknowledgement, read after it, is the re-send's: the
+// prompt waits on its result (Machine.outstanding), and the result that says its turn ran settles
+// the task. Taken for the re-send's answer, the refusal would have closed the send window, so the
+// turn's end retired the task, and the fence dropped the acknowledgement as moot (fenceOutcome).
+func TestAReplayedRefusalLeavesTheReSendUnderItsIdUnanswered(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+	first := h.wantPrompts(1)[0].DeliveryID
+	h.restart()
+	gated := newGatedConn()
+	h.conns.Register(testToken, gated)
+	// Handle, not must: must waits for the send, which the gate is holding.
+	handle := func(ev Event) {
+		t.Helper()
+		if err := h.m.Handle(h.ctx, ev); err != nil {
+			t.Fatalf("handle %T: %v", ev, err)
+		}
+	}
+	handle(StreamHello{Claim: testToken, Generation: h.generation()})
+	if resent := testwait.Receive(t, "the re-send", gated.entered); resent != first {
+		t.Fatalf("the restart re-sent %s, want %s, the id the earlier prompt was acknowledged under: this test proves nothing", resent, first)
+	}
+	handle(StreamTurnStart{Claim: testToken})
+	if p := h.pending(); p.ID != first || p.ConfirmedAt.IsZero() {
+		t.Fatalf("pending once the turn started = %+v, want %s confirmed by it: this test proves nothing", p, first)
+	}
+
+	handle(StreamLateRefusal{Claim: testToken, DeliveryID: first, Error: busyAnswer, Replayed: true, ConnSequence: gated.Sequence()})
+	handle(StreamTurnEnd{Claim: testToken})
+	if c := h.claim(); c.Pending == nil || c.Pending.ID != first || c.ServingGeneration == 7 {
+		t.Fatalf("after the turn's end, read before the re-send's acknowledgement: pending %+v serving %d, want %s kept for the re-send's answer: the replayed refusal answered the earlier connection's prompt", c.Pending, c.ServingGeneration, first)
+	}
+
+	gated.release <- struct{}{}
+	h.m.Wait()
+	if outstanding := h.outstanding(); !slices.Contains(outstanding, first) {
+		t.Fatalf("after the re-send's acknowledgement the prompts waiting on a result are %v, want %s: the acknowledgement is the re-send's", outstanding, first)
+	}
+	h.must(StreamPromptResult{Claim: testToken, DeliveryID: first, AgentInvoked: true})
+	if c := h.claim(); c.Pending != nil || c.ServingGeneration != 7 {
+		t.Fatalf("after the re-send's result: pending %+v serving %d, want the task settled, run 7 served", c.Pending, c.ServingGeneration)
+	}
+}
+
 // A send lost with its connection keeps its id, and the replacement connection's hello re-sends
 // it. The shim's backlog can then replay a turn of the agent's own that started while no daemon
 // was connected - which confirms the task, since the re-send is in flight - and Oh My Pi's busy
@@ -464,9 +515,10 @@ func TestAReplayedRefusalLeavesATaskThisConnectionReSent(t *testing.T) {
 	}
 }
 
-// A send's outcome can arrive after settle retired its task: the turn end's retire failed and
-// left the task held, and the next event's settle retires it. The acknowledgement then has no
-// task to mark, and it must record nothing rather than end the daemon.
+// A send's outcome can arrive after settle retired its task: the prompt's turn and its result were
+// decided before the send's acknowledgement (sending), the result's retire failed and left the task
+// held, and the next event's settle retires it. The acknowledgement then has no task to mark, and
+// it must record nothing rather than end the daemon.
 func TestALateAcknowledgementOfARetiredTaskRecordsNothing(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -476,12 +528,14 @@ func TestALateAcknowledgementOfARetiredTaskRecordsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := waitFor(t, "the send", gated.entered)
-	if err := h.m.Handle(h.ctx, StreamTurnStart{Claim: testToken}); err != nil {
-		t.Fatal(err)
+	for _, ev := range []Event{StreamTurnStart{Claim: testToken}, StreamTurnEnd{Claim: testToken}} {
+		if err := h.m.Handle(h.ctx, ev); err != nil {
+			t.Fatal(err)
+		}
 	}
 	h.store.fail("RetireDelivery", errBoom)
-	if err := h.m.Handle(h.ctx, StreamTurnEnd{Claim: testToken}); err == nil {
-		t.Fatal("the turn end's retire succeeded, want it to fail and leave the task held")
+	if err := h.m.Handle(h.ctx, StreamPromptResult{Claim: testToken, DeliveryID: id, AgentInvoked: true}); err == nil {
+		t.Fatal("the result's retire succeeded, want it to fail and leave the task held")
 	}
 	h.store.fail("RetireDelivery", nil)
 	if h.claim().Pending == nil {
@@ -755,9 +809,10 @@ func TestAReplayedRefusalLeavesATaskANewerConnectionReSent(t *testing.T) {
 	}
 }
 
-// confirm writes the claim and the delivery together, and its retry does too: a delivery written
-// confirmed beside a claim still ready is a turn a restart finds over, and it would retire the task
-// as served while the turn still runs - the task's own, or one whose refusal then finds no task.
+// confirmCarrying writes the claim and the delivery together, and its retry does too: a delivery
+// written confirmed beside a claim still ready is a turn a restart finds over, and it would retire
+// the task as served while the turn still runs - the task's own, or one whose refusal then finds
+// no task.
 func TestAFailedConfirmIsWrittenAgainWholeBeforeARestartReadsIt(t *testing.T) {
 	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	for _, foreign := range []bool{false, true} {

@@ -83,6 +83,7 @@ import {
   REFUSAL,
   REFUSED_NOTE,
 } from "../../__tests__/draft-matrix-fixture";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
@@ -91,6 +92,12 @@ import { AuthGate } from "../../app";
 import type { ReplyTarget } from "../conversation/composer-model";
 import type { SentRequest } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // The composer draws the quote of the message it answers through the Markdown engine, a module
 // loaded on first use (`markdown-engine.ts`). A cell reads what the composer quotes in the commit
@@ -157,6 +164,7 @@ function message(id: string, body: string, createdAt: string, author: string): M
     broadcast_id: null,
     created_at: createdAt,
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: null,
@@ -608,7 +616,10 @@ for (const held of HELD) {
         await within(row()).findByRole("combobox", { name: "Issue" }),
         coreIssue.key
       );
-      await waitFor(() => expect(field().value).toBe(`@Planner ${BODY}`));
+      // The issue's seed names Planner as the link a pick writes (`seededDraft`).
+      await waitFor(() =>
+        expect(field().value).toBe(`[@Planner](dispatch://agent/planner-session) ${BODY}`)
+      );
       expect({ note: note(), retry: retryOffered() }).toEqual(ownMoveToIssue[held]);
     } finally {
       page.restore();

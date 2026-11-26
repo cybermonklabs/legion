@@ -1,6 +1,7 @@
 package prompts
 
 import (
+	"embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,7 +31,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 	}
 	// Every operation the legion tool gives an architect besides register_gate
 	// (packages/pi-legion/src/tools.ts), which a prompt that never names it leaves unused.
-	architectOperations := []string{"`release_children`", "`park_child`", "`rerun_child`", "`request_backward_move`", "`retry_or_escalate`", "`sign_off`", "`read_record`"}
+	architectOperations := []string{"`release_children`", "`rerun_child`", "`request_backward_move`", "`retry_or_escalate`", "`sign_off`", "`read_record`"}
 
 	for _, tc := range []struct {
 		name     string
@@ -194,15 +195,7 @@ func composedText(t *testing.T, composer *Composer, role claim.Role, isRoot bool
 	if err != nil {
 		t.Fatalf("Compose %s (root %t): %v", role, isRoot, err)
 	}
-	var text strings.Builder
-	for _, path := range parts.RolePromptPaths {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		text.Write(body)
-	}
-	return text.String()
+	return readJoined(t, parts.RolePromptPaths...)
 }
 
 // No role's handoff is a commit: each is a record on the Dispatch issue, so no phase worker's
@@ -330,6 +323,21 @@ func TestTheComposedPromptsNameAnIssueWithNoBeforeMergeCheckAsAGap(t *testing.T)
 // still one phrase to match.
 func foldWhitespace(text string) string {
 	return strings.Join(strings.Fields(text), " ")
+}
+
+// readJoined is the bytes of each of paths, read in order and joined; a read that fails ends the
+// test (t.Fatalf), naming the path.
+func readJoined(t *testing.T, paths ...string) string {
+	t.Helper()
+	var text strings.Builder
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text.Write(body)
+	}
+	return text.String()
 }
 
 // ruleParagraphs are the blank-line-separated paragraphs of a composed prompt that hold marker,
@@ -565,9 +573,14 @@ func TestTheRootArchitectPartNamesTheGatedSteps(t *testing.T) {
 }
 
 // retiredGatePhrases are the words the step list replaced. A prompt that still carries one tells
-// its reader to look on the addressing line for a sentence the daemon no longer writes.
+// its reader to look on the addressing line for a sentence the daemon no longer writes. The last
+// three are the registration words option b' replaced (dispatch://INFRA-175, Design 7): a root
+// with a Verification document registers it as `criteria` under a line that names `spec` alone,
+// not only where the line names both, and each document is registered at the version the
+// approval question names for it, which a request for two documents prints once for each.
 var retiredGatePhrases = []string{"gates.design: root-issues", "gates.design: off", "Design gate policy",
-	"either design gate policy", "The gate records one document"}
+	"either design gate policy", "The gate records one document",
+	"Where the line names both `criteria` and `spec`", "at the version the request returned", "at the version it returned"}
 
 // The controller reads the same addressing line as a root architect, so its own prompt names the
 // steps sentence and carries none of the words that sentence replaced. Its text is read folded:
@@ -582,15 +595,7 @@ func TestTheControllerPartNamesTheGatedSteps(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ControllerPromptPaths(headless %t): %v", headless, err)
 		}
-		var text strings.Builder
-		for _, path := range paths {
-			body, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read %s: %v", path, err)
-			}
-			text.Write(body)
-		}
-		folded := foldWhitespace(text.String())
+		folded := foldWhitespace(readJoined(t, paths...))
 		if !strings.Contains(folded, "`Design gate steps:`") {
 			t.Errorf("the composed controller prompt (headless %t) never names the `Design gate steps:` line it reads its steps off", headless)
 		}
@@ -622,7 +627,7 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 		"once the branch has an open pull request",
 		"an empty one when your work is complete",
 		"tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
-		"The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
+		"The merger pushes only a merge of the base forward, and makes this read after that push as any role does",
 	}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 		claim.RoleReviewer, claim.RoleMerger} {
@@ -718,10 +723,12 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 // entry's task. The core part names the commit in the daemon part's words, the head the Legion
 // footer of the reviewer's own newest deciding review named, since a deciding review whose footer
 // names no entry or another one moves no commit. It says to read the difference from that commit
-// and each thread, gives the thermonuclear pair that same diff, keeps every defect seen outside it
-// a finding, and names the three cases that read the whole change again. The pair's old sentence,
-// which ran it over the whole change in every round, is gone. This shows the text is loaded, never
-// that a reviewer follows it.
+// and each thread, takes that commit as the earlier head the review sizes itself to, names in each
+// task of the thermonuclear pair the diff it reviews, keeps every defect seen outside it a
+// finding, and reads the whole change where the commit is no ancestor of the head. The pair's old
+// sentence, which ran it over the whole change in every round, is gone, and so is the
+// unchanged-diff fingerprint, which dispatch://INFRA-4406 R1 deleted from the role prompts. This
+// shows the text is loaded, never that a reviewer follows it.
 func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -741,19 +748,22 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 		"A `COMMENT`, a review the daemon set aside, a person's review and a review whose footer names no entry or another than your row's, such as one of a round before a new generation or a carried hand-over's promotion entered you again, leave it where it stands.",
 		"the head read by the newest of your own deciding reviews whose footer named the entry of its round; the daemon part below gives the whole rule and where the commit comes from.",
 		"read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
-		"over the diff that round reads, when that diff touches runtime code",
-		"The thermonuclear pair reads that same difference, and runs only when it touches runtime code.",
+		"over the diff that round reads, when that diff touches runtime code, and name that diff in each agent's task",
 		"The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other",
-		"Read the whole change again, and give the pair the whole change, in two cases: the task names no commit,",
-		"the commit is not an ancestor of the head (`git merge-base --is-ancestor <commit> <head>` does not exit 0)",
-		"After a forward merge of the base, read the merge as the next paragraph says",
+		"On a new head, that commit is your earlier head, unless it is not an ancestor of the head (`git merge-base --is-ancestor <commit> <head>` does not exit 0): then you read the whole change, as for `none`.",
+		"Size your review to the change you read: review again only what it can affect, and confirm the rest by naming the earlier head.",
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed reviewer prompt omits %q", phrase)
 		}
 	}
-	if retired := "Run the thermonuclear pair once at the head the round reviews when the diff touches runtime code"; strings.Contains(text, retired) {
-		t.Errorf("the composed reviewer prompt still says %q", retired)
+	for _, retired := range []string{
+		"Run the thermonuclear pair once at the head the round reviews when the diff touches runtime code",
+		"fingerprint",
+	} {
+		if strings.Contains(text, retired) {
+			t.Errorf("the composed reviewer prompt still says %q", retired)
+		}
 	}
 }
 
@@ -781,100 +791,78 @@ func TestTheComposedRetroNamesTheRatingsFieldsAndRefusals(t *testing.T) {
 	}
 }
 
-// A pod holds every role of one issue in a single container under one memory limit, and its
-// sandbox ends the container rather than the process that filled it, so a heavy run started by
-// any role ends every role's turn. The rule that says so has to reach each role through the
-// prompt Compose builds, not through the part that happens to hold it today: the phase workers
-// read it from the headless mechanics, which is the only part the merger shares with the four
-// roles that compose a core, and both architect shapes read it from the one common part they
-// share, so the root's wording and the sub-architect's cannot drift apart. Composing and reading
-// the parts back is what makes a part dropped from Compose fail here. This shows the text is
-// loaded, never that a role obeys it.
-func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
+// bannedCheckLimits are limits of the last look that the production check's rule no longer has:
+// each keeps the last look's pending, or its close as not run, for a merge that production does
+// not carry. Each is joined from halves, as retiredCheckSentences are, so a search of the
+// repository for one of them finds the texts that state it and never this test.
+// internal/workflow and internal/textcheck keep their own copies, since a test package cannot
+// import another package's test helpers.
+var bannedCheckLimits = []string{
+	"not carrying" + " the merge alone",
+	"did not carry the merge" + " within the bound",
+	"never carried" + " the merge",
+}
+
+// whetherOrNotCarried are the words that keep a fail clause's mention of production from limiting
+// the fail.
+const whetherOrNotCarried = "whether or not production carries the merge"
+
+// isCheckFailClause reports whether clause, one of clauses, makes a requirement still unobserved
+// at the last look a fail.
+func isCheckFailClause(clause string) bool {
+	return strings.Contains(clause, "unobserved") && strings.Contains(clause, "last") && strings.Contains(clause, "fail")
+}
+
+// checkRuleFaults are the ways clause breaks the production check's rule, one message each: it
+// states a limit the rule no longer has (bannedCheckLimits), or it is a fail clause
+// (isCheckFailClause) that still holds "production carries the merge" when every
+// whetherOrNotCarried is taken out of it.
+func checkRuleFaults(clause string) []string {
+	var faults []string
+	for _, phrase := range bannedCheckLimits {
+		if strings.Contains(clause, phrase) {
+			faults = append(faults, fmt.Sprintf("says %q, a limit the production check's rule no longer has: a requirement still unobserved at the last look is a fail %s, and that look's pending is only for an issue with no requirement that only the deploy can show: %q", phrase, whetherOrNotCarried, clause))
+		}
 	}
-	const (
-		sandboxEndsTheContainer = "where that pod's sandbox ends the whole container rather than the one process that filled it"
-		everyRolesTurn          = "a command that fills the limit ends every role's turn and not only yours"
-		ciWork                  = "A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` are CI's work on the pull request"
-	)
-	worker := []string{
-		"In an issue pod every role of this issue runs in one container and shares its memory limit",
-		sandboxEndsTheContainer,
-		everyRolesTurn,
-		ciWork,
-		"what a role runs in the pod is what `skill://legion-worker/references/tools.md` names",
-		"Every other heavy run goes where your deployment's instructions say",
-		"instructions that name no such route are a gap you report to the architect that owns your issue",
-		"Each subagent you start runs its commands in this pod, so put these facts in its context",
+	if isCheckFailClause(clause) && strings.Contains(strings.ReplaceAll(clause, whetherOrNotCarried, ""), "production carries the merge") {
+		faults = append(faults, fmt.Sprintf("limits the fail of a requirement still unobserved at the last look by whether production carries the merge, but that requirement is a fail %s: %q", whetherOrNotCarried, clause))
 	}
-	architect := []string{
-		"Your subagents run their commands in your own issue pod",
-		sandboxEndsTheContainer,
-		everyRolesTurn,
-		ciWork,
-		"what may run in the pod is what `skill://legion-worker/references/tools.md` names",
-		"every other heavy run goes where your deployment's instructions say and instructions that name no such route are a gap to report, and you put these facts in the context of each subagent you start",
-	}
-	for _, tc := range []struct {
-		name   string
-		role   claim.Role
-		isRoot bool
-		rule   []string
-	}{
-		{"root architect", claim.RoleArchitect, true, architect},
-		{"sub-architect", claim.RoleArchitect, false, architect},
-		{"planner", claim.RolePlanner, false, worker},
-		{"implementer", claim.RoleImplementer, false, worker},
-		{"tester", claim.RoleTester, false, worker},
-		{"reviewer", claim.RoleReviewer, false, worker},
-		{"merger", claim.RoleMerger, false, worker},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			text := foldWhitespace(composedText(t, composer, tc.role, tc.isRoot))
-			for _, phrase := range tc.rule {
-				if !strings.Contains(text, phrase) {
-					t.Errorf("the composed %s prompt omits %q", tc.name, phrase)
-				}
-			}
-		})
-	}
+	return faults
 }
 
 // A production check opens at the issue's close, which comes at the merge or, for a merge that
 // waits on the issues beneath it, later (workflow.closeMerged), and its bound is counted from that
-// close (workflow.checkBound). Its last look fails a requirement only the deploy can show and still
-// unobserved only where production carries the merge: a merge production never carried leaves
-// every such requirement unobserved, and that look's verdict is its `pending`, which closes the
-// check as not run (workflow.checkTask). So every clause that makes such a requirement a fail at
-// the last look says, in that clause, that production carries the merge. The unit is the clause,
-// split at `; ` as well as at full stops as workflow's check task test splits its task, never the
-// sentence: matched sentence by sentence, this test passed with the concepts page's limit taken
-// out, since that page's one sentence of the three verdicts reads whether production carries the
-// merge in its opening clause and limits nothing of its `fail` clause by it. A test that passes on
-// the revert it exists to catch measures the wrong unit, so a check widened from here keeps the
-// clause. That is read over the composed prompt of each role a look reaches, the tester's and the
-// implementer's. The two pages that state the rule outside a prompt - the e2e proof's account
-// of the bound's look and the concepts page - are read by
-// internal/textcheck's TestThePagesFailAnUnobservedRequirementOnlyWhereProductionCarriesTheMerge,
-// with the same clause rule, so an edit to one of them alone starts the text checks rather than
-// this package's whole lane. Each prompt must hold one such clause at least, so a matcher that
-// stopped finding the rule fails here rather than passing on nothing. Besides: a
-// clause naming `production_check_hours` counts it from the close, never from the merge; a clause
-// saying the session is handed the check task names the close before it; and no clause says the
-// merge closes the issue, since in these two prompts the close is the moment the check task is
-// handed and the role's work ends, and a merge that waits on the issues beneath it comes before
-// that moment. The architect's, the merger's and the reviewer's "the merge closes" name only what
-// causes the close, which is true, and no prompt this test reads holds them. This shows the text
-// is loaded, never that a role follows it.
-func TestTheProductionCheckFailsAnUnobservedRequirementOnlyWhereProductionCarriesTheMerge(t *testing.T) {
+// close (workflow.checkBound). A requirement that only the deploy can show is a fail when a look
+// observes it as not met. It is also a fail when it is still unobserved at the last look, whether
+// or not production carries the merge, and that look's pending is only for an issue with no such
+// requirement (workflow.checkTask). So the composed prompt of each role a look reaches, the
+// tester's and the implementer's, holds that rule clause by clause. No clause states a limit the
+// rule no longer has, and no fail clause, one that holds "unobserved", "last" and "fail", holds
+// "production carries the merge" outside the words "whether or not production carries the merge"
+// (checkRuleFaults). Each prompt holds one fail clause with those words at least, and one fail
+// clause for a requirement observed as not met, so a matcher that stopped finding the rule fails
+// here rather than passing on nothing. The unit is the clause, cut at `; ` as well as at full stops
+// as workflow's check task test cuts its task, never the sentence: matched sentence by sentence, a
+// test of this rule passed with the concepts page's limit taken out, since that page's one
+// sentence of the three verdicts reads whether production carries the merge in its opening
+// clause. A test that passes on the revert it exists to catch measures the wrong unit, so a check
+// widened from here keeps the clause. TestTheProductionCheckRuleHoldsInEveryPromptPart holds
+// every part of both trees to the same limits and names the part that breaks them. The pages and
+// the proof scripts that state the rule outside a prompt are read by internal/textcheck's
+// TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge, with the same
+// clause rule, so an edit to one of them alone starts the text checks rather than this package's
+// whole lane. Besides: a clause naming `production_check_hours` counts it from the close, never
+// from the merge; a clause saying the session is handed the check task names the close before it;
+// and no clause says the merge closes the issue, since in these two prompts the close is the
+// moment the check task is handed and the role's work ends, and a merge that waits on the issues
+// beneath it comes before that moment. The architect's, the merger's and the reviewer's "the merge
+// closes" name only what causes the close, which is true, and no prompt this test reads holds
+// them. This shows the text is loaded, never that a role follows it.
+func TestTheProductionCheckFailsAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	const limit = "production carries the merge"
 	theClose := regexp.MustCompile(`\bclose\b`)
 	boundFromTheMerge := regexp.MustCompile("production_check_hours`? (after|from|since) the merge")
 	type text struct{ name, body string }
@@ -884,13 +872,16 @@ func TestTheProductionCheckFailsAnUnobservedRequirementOnlyWhereProductionCarrie
 	}
 	for _, tc := range texts {
 		t.Run(tc.name, func(t *testing.T) {
-			fails := 0
+			statements, observedNotMet := 0, 0
 			for _, clause := range clauses(tc.body) {
-				if strings.Contains(clause, "unobserved") && strings.Contains(clause, "last") && strings.Contains(clause, "fail") {
-					fails++
-					if !strings.Contains(clause, limit) {
-						t.Errorf("%s makes a requirement still unobserved at the last look a fail without saying %q, so it fails a merge production never carried: %q", tc.name, limit, clause)
-					}
+				for _, fault := range checkRuleFaults(clause) {
+					t.Errorf("%s %s", tc.name, fault)
+				}
+				if isCheckFailClause(clause) && strings.Contains(clause, whetherOrNotCarried) {
+					statements++
+				}
+				if isCheckFailClause(clause) && strings.Contains(clause, "observed as not met") {
+					observedNotMet++
 				}
 				if strings.Contains(clause, "`production_check_hours`") && (!theClose.MatchString(clause) || boundFromTheMerge.MatchString(clause)) {
 					t.Errorf("%s counts the check's bound from something other than the issue's close: %q", tc.name, clause)
@@ -902,9 +893,37 @@ func TestTheProductionCheckFailsAnUnobservedRequirementOnlyWhereProductionCarrie
 					t.Errorf("%s says the merge closes the issue, which puts the check's hand-off and the end of this role's work at the merge, before the close for a merge that waits on the issues beneath it: %q", tc.name, clause)
 				}
 			}
-			if fails == 0 {
-				t.Errorf("%s holds no clause making a requirement still unobserved at the last look a fail", tc.name)
+			if statements == 0 {
+				t.Errorf("%s holds no clause that makes a requirement still unobserved at the last look a fail %s", tc.name, whetherOrNotCarried)
+			}
+			if observedNotMet == 0 {
+				t.Errorf("%s holds no fail clause for a requirement observed as not met", tc.name)
 			}
 		})
+	}
+}
+
+// Every part of both trees holds the production check's rule clause by clause, not only the parts
+// Compose joins for the tester and the implementer. A sentence left in a part that neither role
+// composes still reaches whichever role does compose it, and a part Compose joins for nobody today
+// is joined by the next role that needs it. So no clause of a part states a limit the rule no
+// longer has, and no fail clause of a part limits the fail by whether production carries the merge
+// (checkRuleFaults). Each failure names the part's file, so a revert of one sentence names the
+// file it is in. A part need not state the rule, since most parts are about other work: the
+// composed prompts hold the statement
+// (TestTheProductionCheckFailsAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge).
+func TestTheProductionCheckRuleHoldsInEveryPromptPart(t *testing.T) {
+	for dir, parts := range map[string]embed.FS{"roles": roleParts, "go": goParts} {
+		err := eachPart(parts, dir, func(name string, body []byte) error {
+			for _, clause := range clauses(string(body)) {
+				for _, fault := range checkRuleFaults(clause) {
+					t.Errorf("%s/%s %s", dir, name, fault)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("read the %s parts: %v", dir, err)
+		}
 	}
 }

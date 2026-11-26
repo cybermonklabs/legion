@@ -2,13 +2,25 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
-import { ISSUE_TITLE_MAX, MAX_ISSUE_ADVANCES, PROJECT_NAME_MAX } from "./dispatch-api";
+import {
+  ISSUE_LABEL_MAX,
+  ISSUE_TITLE_MAX,
+  MAX_ISSUE_ADVANCES,
+  MAX_ISSUE_BLOCKERS,
+  MAX_ISSUE_COMPONENTS,
+  MAX_ISSUE_LABELS,
+  MAX_ISSUE_PAGE_LIMIT,
+  PROJECT_NAME_MAX,
+} from "./dispatch-api";
 import {
   ARTIFACT_STORED_TEXT_RULE,
   DISPATCH_HANDOFF_BODY_MAX,
+  type DispatchToolSpec,
   dispatchToolSchema,
   dispatchToolSpecs,
+  ISSUE_STATUS_OPTIONS,
   ISSUE_STATUSES,
+  ISSUE_UPDATE_PATCH_FIELDS,
   PROJECT_KEY_RULE,
   pathKeepsBytesOf,
   SEARCH_QUERY_MAX,
@@ -163,7 +175,17 @@ const validCalls = {
     quote: "old wording",
     replace_with: "new wording",
   },
+  dispatch_edit_comment: {
+    comment: "dispatch://DSP-1/comment/comment-1",
+    body: "Corrected: the retry window is 72 hours.",
+  },
+  dispatch_delete_comment: { comment: "dispatch://DSP-1/comment/comment-1" },
   dispatch_message: { issue: "DSP-1", body: "Implementation started." },
+  dispatch_edit_message: {
+    message: "dispatch://DSP-1/message/message-1",
+    body: "Corrected: the export runs at 02:00 UTC.",
+  },
+  dispatch_delete_message: { message: "dispatch://DSP-1/message/message-1" },
   dispatch_send_to_agent: specFor("dispatch_send_to_agent").example,
   dispatch_doc_edit: {
     issue: "DSP-1",
@@ -192,12 +214,14 @@ const validCalls = {
   dispatch_issues: { project: "ACME" },
   dispatch_project: { key: "CORE", name: "Core" },
   dispatch_projects: {},
+  dispatch_project_update: { project: "CORE", proven_sessions: "off" },
   dispatch_priorities: { project: ["DSP"] },
   dispatch_architecture_sync: { project: "CORE" },
   dispatch_open_asks: {},
   dispatch_answers: {},
   dispatch_whoami: {},
   dispatch_limits: {},
+  dispatch_api: specFor("dispatch_api").example,
   dispatch_handoff_write: specFor("dispatch_handoff_write").example,
   dispatch_handoff_read: { issue: "DSP-1", phase: "implement", version: 2 },
   dispatch_steps: { issue: "DSP-1" },
@@ -222,7 +246,7 @@ function expectNotAProjectKey(schema: z.ZodType, inputs: readonly Record<string,
 }
 
 const ISSUE_UPDATE_FIELDS_RULE =
-  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
+  "Issue update requires at least one field besides issue: status, title, labels, labels_add, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note.";
 const reasonOnlyWithDone = (status: string): string =>
@@ -293,7 +317,11 @@ describe("dispatchToolSpecs", () => {
       "dispatch_follow",
       "dispatch_comment",
       "dispatch_suggest",
+      "dispatch_edit_comment",
+      "dispatch_delete_comment",
       "dispatch_message",
+      "dispatch_edit_message",
+      "dispatch_delete_message",
       "dispatch_send_to_agent",
       "dispatch_doc_edit",
       "dispatch_doc_read",
@@ -309,12 +337,14 @@ describe("dispatchToolSpecs", () => {
       "dispatch_issues",
       "dispatch_project",
       "dispatch_projects",
+      "dispatch_project_update",
       "dispatch_priorities",
       "dispatch_architecture_sync",
       "dispatch_open_asks",
       "dispatch_answers",
       "dispatch_whoami",
       "dispatch_limits",
+      "dispatch_api",
       "dispatch_handoff_write",
       "dispatch_handoff_read",
       "dispatch_steps",
@@ -394,6 +424,28 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ project: "INFRA", since: 1 }).success).toBe(false);
     // An empty key would send `GET /api/v1/projects//plans`, so it is refused like any other.
     expectNotAProjectKey(schema, [{ project: "infra" }, { project: "" }]);
+  });
+
+  test("dispatch_project_update takes a project key and on or off, and nothing else", () => {
+    const schema = schemaFor("dispatch_project_update");
+
+    for (const proven_sessions of ["on", "off"]) {
+      expect(schema.safeParse({ project: "CORE", proven_sessions }).success, proven_sessions).toBe(
+        true
+      );
+    }
+    expect(schema.safeParse({ project: "CORE" }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: true }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: "yes" }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: "on", name: "Core" }).success).toBe(
+      false
+    );
+    // An empty key would send `PUT /api/v1/projects//proven-sessions`, so it is refused like any
+    // other.
+    expectNotAProjectKey(schema, [
+      { project: "core", proven_sessions: "on" },
+      { project: "", proven_sessions: "off" },
+    ]);
   });
 
   test("dispatch_search rejects a one-character query and a limit above 50", () => {
@@ -692,6 +744,45 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({}).success).toBe(false);
   });
 
+  // The history of a post is the bodies its edits and its delete replaced, so the call names one
+  // post. A ref names one; an issue, a document and a whole conversation do not.
+  test("dispatch_read takes history with a ref alone", () => {
+    const schema = schemaFor("dispatch_read");
+    const message = "6f1d2c3b-4a5e-4f60-8b7c-9d0e1f2a3b4c";
+
+    expect(
+      schema.safeParse({ ref: "dispatch://DSP-1/comment/comment-1", history: true }).success
+    ).toBe(true);
+    expect(schema.safeParse({ ref: "dispatch://DSP-1/comment/comment-1" }).success).toBe(true);
+    expect(schema.safeParse({ issue: "DSP-1", history: true }).success).toBe(false);
+    expect(schema.safeParse({ message, history: true }).success).toBe(false);
+    // history false names no post, so it breaks nothing.
+    expect(schema.safeParse({ issue: "DSP-1", history: false }).success).toBe(true);
+  });
+
+  test("the four post corrections take the post and nothing else, and each edit takes a body", () => {
+    const id = "01234567-0000-4000-8000-000000000001";
+    for (const [name, post, edits] of [
+      ["dispatch_edit_comment", "comment", true],
+      ["dispatch_delete_comment", "comment", false],
+      ["dispatch_edit_message", "message", true],
+      ["dispatch_delete_message", "message", false],
+    ] as const) {
+      const schema = schemaFor(name);
+      const call = edits ? { [post]: id, body: "Corrected." } : { [post]: id };
+
+      expect(schema.safeParse(call).success, name).toBe(true);
+      // The post is required, and the call names no owner beside it.
+      expect(schema.safeParse(edits ? { body: "Corrected." } : {}).success, name).toBe(false);
+      expect(schema.safeParse({ ...call, issue: "DSP-1" }).success, name).toBe(false);
+      // An edit replaces the body, so it needs one; a delete clears the body and takes none.
+      expect(
+        schema.safeParse(edits ? { [post]: id } : { ...call, body: "Corrected." }).success,
+        name
+      ).toBe(false);
+    }
+  });
+
   test("dispatch_whoami accepts no arguments and rejects any key", () => {
     const schema = schemaFor("dispatch_whoami");
 
@@ -718,6 +809,53 @@ describe("dispatchToolSpecs", () => {
     expect(specFor("dispatch_inbox").description).toContain("envoy_inbox");
   });
 
+  test("dispatch_api takes a route under /api/v1, a write method with a body, and refuses the rest by name", () => {
+    const schema = schemaFor("dispatch_api");
+    const refusals = (args: Record<string, unknown>) =>
+      schema.safeParse(args).error?.issues.map((issue) => issue.message);
+
+    expect(schema.safeParse({ path: "/api/v1" }).success).toBe(true);
+    expect(schema.safeParse({ path: "/api/v1/issues?project=ACME" }).success).toBe(true);
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      const call = { path: "/api/v1/issues/ACME-1/comments", method };
+      expect(schema.safeParse(call).success, method).toBe(true);
+      expect(schema.safeParse({ ...call, body: '{"body":"Looks good."}' }).success, method).toBe(
+        true
+      );
+    }
+    // A call with no method is a GET, so GET is no value of method.
+    expect(schema.safeParse({ path: "/api/v1/whoami", method: "GET" }).success).toBe(false);
+    expect(refusals({ path: "/api/v1/whoami", body: "{}" })).toEqual([
+      "body goes only with method: a call that names no method is a GET, which sends no body.",
+    ]);
+    // Each character Bun's URL percent-encodes in a path is refused before the query, naming the
+    // path, and taken in the query, which the rule leaves alone and the URL parser writes
+    // (percent-encoding `"`, `'`, `<` and `>`).
+    for (const character of ['"', "<", ">", "^", "`", "{", "}"]) {
+      const path = `/api/v1/issues/a${character}b`;
+      expect(refusals({ path }), character).toEqual([
+        `path ${JSON.stringify(path)} holds before its query a character a URL parser rewrites in a path (", <, >, ^, \`, { or }): percent-encode it.`,
+      ]);
+      expect(schema.safeParse({ path: `/api/v1/issues?q=a${character}b` }).success, character).toBe(
+        true
+      );
+    }
+    for (const path of [
+      "https://dispatch.internal.example/api/v1/whoami",
+      "//dispatch.internal.example/api/v1/whoami",
+      "\\\\dispatch.internal.example/api/v1/whoami",
+      "/healthz",
+      "/api/v1x",
+      "/api/v2/whoami",
+      "/api/v1/../healthz",
+      "/api/v1/%2e%2e/healthz",
+    ]) {
+      const [refusal, ...more] = refusals({ path }) ?? [];
+      expect({ path, more }).toEqual({ path, more: [] });
+      expect(refusal, path).toStartWith(`path ${JSON.stringify(path)} `);
+    }
+  });
+
   test("dispatch_handoff_write takes one JSON object body of any length, and a phase slug", () => {
     const schema = schemaFor("dispatch_handoff_write");
     const refusals = (args: Record<string, unknown>) =>
@@ -731,7 +869,7 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ ...call, body: `{"a":"${filler}x"}` }).success).toBe(true);
     for (const body of ["[1]", '"text"', "null", "{not json", "{} {}"]) {
       expect(refusals({ ...call, body }), body).toEqual([
-        'body is not one JSON object: a handoff body is a JSON object such as {"schemaVersion":1}',
+        'body is not one JSON object: a handoff body is a JSON object such as {"head":"<the commit your phase ended at>","note":"<one paragraph for the next role>"}',
       ]);
     }
     for (const phase of ["Implement", "1plan", "", "a".repeat(33), "plan/x"]) {
@@ -858,6 +996,7 @@ describe("dispatchToolSpecs", () => {
     for (const args of [
       { issue: "DSP-1", title: "Renamed" },
       { issue: "DSP-1", labels: [] },
+      { issue: "DSP-1", labels_add: ["accessibility"] },
       { issue: "DSP-1", priority: 0 },
       { issue: "DSP-1", priority: null },
       { issue: "DSP-1", assignee: "alice@example.com" },
@@ -920,6 +1059,7 @@ describe("dispatchToolSpecs", () => {
       "Give at most one of path and content. A call with neither makes an empty document under the name, which a person or an agent writes in afterwards with dispatch doc-edit.";
     const artifactOwner =
       "Exactly one of issue and project is required; with project, artifact names the document.";
+    const notMarkdownName = `a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and "rows.jsonl" is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged; a document takes a name ending in .md or .markdown or with no extension.`;
     const edit = { artifact: "spec.md", ops: [{ op: "delete", find: "x" }] };
     const readOwner =
       "Exactly one of issue and project is required; project alone lists its documents, and with artifact names one.";
@@ -934,6 +1074,12 @@ describe("dispatchToolSpecs", () => {
       ["dispatch_artifact", { issue: "DSP-1", name: "n", path: "p", content: "c" }, source],
       ["dispatch_artifact", { name: "n", content: "c" }, artifactOwner],
       ["dispatch_artifact", { name: "n", path: "p", content: "c" }, `${artifactOwner} ${source}`],
+      // A call that breaks the owner rule and the Markdown-name rule is told of both at once.
+      [
+        "dispatch_artifact",
+        { name: "rows.jsonl", content: "c" },
+        `${artifactOwner} ${notMarkdownName}`,
+      ],
       ["dispatch_read", { issue: "DSP-1", message: "m" }, readMessage],
       ["dispatch_read", {}, readOwner],
     ] as const) {
@@ -944,6 +1090,40 @@ describe("dispatchToolSpecs", () => {
         `${tool} ${JSON.stringify(args)}`
       ).toEqual([refusal]);
     }
+  });
+
+  // Dispatch refuses a comment whose mentions name one target twice ("mentions must not repeat a
+  // target", validateCommentMentions in comment_create.go), and the field promises "none named
+  // twice", so the tool refuses such a call in those words before anything is sent. The server
+  // judges each target in turn, its form before whether an earlier target named it, and the tool
+  // names the rule the same call breaks first there. The rule the tool states names the repeat
+  // beside the count and the form.
+  test("dispatch_comment refuses a repeated mention target in Dispatch's words", () => {
+    const repeat = "mentions must not repeat a target";
+    const form = "mention target must be role:<name> or session:<id>";
+    const schema = schemaFor("dispatch_comment");
+    for (const [mentions, refusal] of [
+      [["role:architect", "role:architect"], repeat],
+      [["session:s1", "role:architect", "session:s1"], repeat],
+      [["role:architect", "role:architect", "user:alice"], repeat],
+      [["role:architect", "user:alice", "role:architect"], form],
+    ] as const) {
+      const result = schema.safeParse({ issue: "DSP-1", body: "Over to you.", mentions });
+      expect(result.success, JSON.stringify(mentions)).toBe(false);
+      expect(
+        result.error?.issues.map((issue) => issue.message),
+        JSON.stringify(mentions)
+      ).toEqual([refusal]);
+    }
+    expect(
+      schema.safeParse({
+        issue: "DSP-1",
+        body: "Over to you.",
+        mentions: ["role:architect", "session:architect"],
+      }).success
+    ).toBe(true);
+    const comment: DispatchToolSpec = specFor("dispatch_comment");
+    expect(comment.validation?.message).toContain(`and ${repeat}.`);
   });
 
   // The reason is the close's note, so the tool takes it in the same call, posts it before the
@@ -980,6 +1160,47 @@ describe("dispatchToolSpecs", () => {
     expect(
       schema.safeParse({ issue: "DSP-1", status: "done", reason: "x".repeat(32001) }).success
     ).toBe(true);
+  });
+
+  // The route refuses a write naming both labels and labels_add (400 LABELS_INPUT): labels
+  // replaces every label, and labels_add adds to the labels the issue holds. The tool refuses such
+  // a call before anything is sent, in words that say which to name; each alone is a field.
+  test("dispatch_issue_update takes labels_add, which adds labels, and never with labels", () => {
+    const schema = schemaFor("dispatch_issue_update");
+    const both = schema.safeParse({ issue: "DSP-1", labels: ["board"], labels_add: ["api"] });
+    expect(both.success).toBe(false);
+    expect(both.error?.issues.map((issue) => issue.message)).toEqual([
+      "labels_add goes without labels: labels replaces every label the issue holds and labels_add adds to them, so name the labels to add in labels_add alone, or the whole set in labels alone.",
+    ]);
+    expect(schema.safeParse({ issue: "DSP-1", labels_add: ["api"], priority: 2 }).success).toBe(
+      true
+    );
+    expect(schema.safeParse({ issue: "DSP-1", labels_add: ["x".repeat(41)] }).success).toBe(false);
+    const update: DispatchToolSpec = specFor("dispatch_issue_update");
+    expect(update.validation?.message).toContain("; labels_add goes without labels.");
+    expect(update.description).toContain("labels_add adds labels and keeps every label");
+  });
+
+  // The status change route takes the status, the options and the actor, and drops each other
+  // member of its body with no error. So every argument of the tool but issue, status, reason and
+  // the three options is a field of the PATCH that no option goes with, and an option beside
+  // labels_add is refused as an option beside any other such field is.
+  test("dispatch_issue_update refuses an option beside each field the status change does not take", () => {
+    const update = specFor("dispatch_issue_update").arguments(schemaApi) as Record<string, unknown>;
+    const taken: readonly string[] = ["issue", "status", "reason", ...ISSUE_STATUS_OPTIONS];
+    expect(new Set<string>(ISSUE_UPDATE_PATCH_FIELDS)).toEqual(
+      new Set(Object.keys(update).filter((field) => !taken.includes(field)))
+    );
+    const beside = schemaFor("dispatch_issue_update").safeParse({
+      issue: "DSP-1",
+      status: "in_progress",
+      include_parent: true,
+      labels_add: ["api"],
+    });
+    expect(beside.success).toBe(false);
+    expect(beside.error?.issues.map((issue) => issue.message)).toEqual([
+      "With include_parent, give status alone, and reason when the status is done. This call also names labels_add. Send those fields in a call of their own.",
+    ]);
   });
 
   // The server owns the bound on an ask's question too, and names it in its refusal.
@@ -1518,12 +1739,21 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
+  // reviews.go trims the reason with Go's strings.TrimSpace, which reads U+0085 as space and
+  // U+FEFF as content, where JavaScript's trim reads each the other way (go-blank.ts).
   test("dispatch_review requests changes only with a reason, and names the rule without one", () => {
     const schema = schemaFor("dispatch_review");
     const changes = { issue: "DSP-1", version: 2, verdict: "changes_requested" };
 
-    expect(schema.safeParse({ ...changes, reason: "Name the rollback path." }).success).toBe(true);
-    for (const args of [changes, { ...changes, reason: "" }, { ...changes, reason: "   " }]) {
+    for (const reason of ["Name the rollback path.", "\uFEFF"]) {
+      expect(schema.safeParse({ ...changes, reason }).success, JSON.stringify(reason)).toBe(true);
+    }
+    for (const args of [
+      changes,
+      { ...changes, reason: "" },
+      { ...changes, reason: "   " },
+      { ...changes, reason: "\u0085" },
+    ]) {
       const result = schema.safeParse(args);
       expect(result.success, JSON.stringify(args)).toBe(false);
       expect(result.error?.issues.map((issue) => issue.message)).toEqual([
@@ -1667,7 +1897,7 @@ describe("dispatchToolSpecs", () => {
     ],
     [
       "dispatch_doc_edit",
-      "The spec holds requirements, design, and decisions - never progress, status, or timestamps; a record of open items or progress is a document of its own.",
+      "The spec holds requirements, design, and decisions - never progress, status, or timestamps. Work still to do is a task in the issue's plan, an issue, or an ask, never a separate document that lists it.",
     ],
     [
       "dispatch_issue",
@@ -1724,5 +1954,202 @@ describe("dispatchToolSpecs", () => {
 
   test("no tool result subscribes the session to an issue; following an ask is the write's side effect", () => {
     expect(dispatchToolSpecs.every((spec) => !("subscribes" in spec))).toBe(true);
+  });
+});
+
+/** The Go the server's catalogue (GET /api/v1/going/catalogue) and every Go host read the tools
+ *  from, as `bun run gen:go` writes it. */
+const generatedTools = readFileSync(
+  resolve(import.meta.dir, "../../envoy/internal/contracts/dispatch_tools_generated.go"),
+  "utf8"
+);
+
+/** One tool's entry of the generated Go, from its name to the next tool's. */
+function generatedTool(name: string): string {
+  const start = generatedTools.search(new RegExp(`^\\t\\tName: +${JSON.stringify(name)},$`, "m"));
+  if (start < 0) throw new Error(`the generated Go holds no ${name}`);
+  const rest = generatedTools.slice(start + 1);
+  const next = rest.search(/^\t\tName: +"/m);
+  return next < 0 ? rest : rest.slice(0, next);
+}
+
+/** Each bound a stretch of the generated Go writes, in its order, as `Min:N` or `Max:N`. */
+function goBounds(text: string): string[] {
+  return [...text.matchAll(/\b(Min|Max): new\(float64\(([^()]+)\)\)/g)].map(
+    ([, side, value]) => `${side}:${value}`
+  );
+}
+
+/** The bounds one field's line of the generated Go writes: its own, and its list item's. */
+function goFieldBounds(tool: string, field: string): { own: string[]; item: string[] } {
+  const line = generatedTool(tool)
+    .split("\n")
+    .find((text) => text.trimStart().startsWith(`{Name: ${JSON.stringify(field)},`));
+  if (line === undefined) throw new Error(`${tool} has no field ${field} in the generated Go`);
+  const [own = "", item = ""] = line.split(" Item: &ToolField");
+  return { own: goBounds(own), item: goBounds(item) };
+}
+
+/** A schema node that keeps the bounds its builder states and those of the nodes it holds. */
+interface Bounded extends SchemaNode<Bounded> {
+  readonly bounds: readonly string[];
+}
+
+/**
+ * Every bound one spec's arguments state, as `Min:N` or `Max:N`, in the order gen-go writes a
+ * field's: its own, then its list item's, then those of its own fields. A text's length, a list's
+ * count of items and a number's value each count.
+ */
+function statedBounds(name: string): string[] {
+  const node = (bounds: readonly string[]): Bounded => ({
+    bounds,
+    optional: () => node(bounds),
+    nullable: () => node(bounds),
+    describe: () => node(bounds),
+  });
+  const own = (opts: { min?: number; max?: number } = {}) => [
+    ...(opts.min === undefined ? [] : [`Min:${opts.min}`]),
+    ...(opts.max === undefined ? [] : [`Max:${opts.max}`]),
+  ];
+  const held = (shape: Record<string, Bounded>) =>
+    Object.values(shape).flatMap((field) => field.bounds);
+  const api: SchemaApi<Bounded> = {
+    string: (opts) => node(own(opts)),
+    number: (opts) => node(own(opts)),
+    boolean: () => node([]),
+    enum: () => node([]),
+    literal: () => node([]),
+    array: (item, opts) => node([...own(opts), ...item.bounds]),
+    unknown: () => node([]),
+    object: (shape) => node(held(shape)),
+    refineObject: (shape) => node(held(shape)),
+  };
+  return held(specFor(name).arguments(api) as Record<string, Bounded>);
+}
+
+/** The rule of a `components` argument's parts, as dispatch_issue and dispatch_issue_update
+ *  state it. */
+const COMPONENTS_RULE = "components mode explicit names ids, and mode none names a reason.";
+
+// The catalogue serves each tool's arguments with the bounds its spec states (ToolField's Min and
+// Max), and a client holds a call to them before it is sent, so a bound the Go loses or moves, or
+// one looser than the route's, promises an argument the route refuses.
+describe("the bounds and words each tool states beside its arguments", () => {
+  test("the generated Go carries every bound each tool's arguments state, on the field that states it", () => {
+    expect(dispatchToolSpecs.flatMap((spec) => statedBounds(spec.name)).length).toBeGreaterThan(0);
+    for (const spec of dispatchToolSpecs) {
+      expect(goBounds(generatedTool(spec.name)), spec.name).toEqual(statedBounds(spec.name));
+    }
+  });
+
+  // Each row is the bounds a route holds a field to, one of each kind among them: a text's length,
+  // a list's count of items and a number's value. An upper bound is a constant gen-go writes into
+  // Go for the handler that enforces it: one of dispatch-api-limits.ts, or SEARCH_QUERY_MAX of
+  // dispatch-tools.ts. A lower bound is the route's refusal of an empty value (1) or of a
+  // one-character search (2). The field's generated Go states the same bounds, no looser and no
+  // tighter.
+  test.each([
+    ["dispatch_issue", "title", [`Max:${ISSUE_TITLE_MAX}`], []],
+    ["dispatch_issue_update", "title", ["Min:1", `Max:${ISSUE_TITLE_MAX}`], []],
+    ["dispatch_issue", "advances", [`Max:${MAX_ISSUE_ADVANCES}`], ["Min:1"]],
+    ["dispatch_issue_update", "advances", [`Max:${MAX_ISSUE_ADVANCES}`], ["Min:1"]],
+    ["dispatch_issue", "blocked_by", [`Max:${MAX_ISSUE_BLOCKERS}`], ["Min:1"]],
+    ["dispatch_issue_update", "blocked_by", [`Max:${MAX_ISSUE_BLOCKERS}`], ["Min:1"]],
+    ["dispatch_issue", "labels", [`Max:${MAX_ISSUE_LABELS}`], ["Min:1", `Max:${ISSUE_LABEL_MAX}`]],
+    [
+      "dispatch_issue_update",
+      "labels",
+      [`Max:${MAX_ISSUE_LABELS}`],
+      ["Min:1", `Max:${ISSUE_LABEL_MAX}`],
+    ],
+    [
+      "dispatch_issue_update",
+      "labels_add",
+      [`Max:${MAX_ISSUE_LABELS}`],
+      ["Min:1", `Max:${ISSUE_LABEL_MAX}`],
+    ],
+    ["dispatch_issue", "ids", ["Min:1", `Max:${MAX_ISSUE_COMPONENTS}`], ["Min:1"]],
+    ["dispatch_issue_update", "ids", ["Min:1", `Max:${MAX_ISSUE_COMPONENTS}`], ["Min:1"]],
+    ["dispatch_issues", "limit", ["Min:1", `Max:${MAX_ISSUE_PAGE_LIMIT}`], []],
+    ["dispatch_project", "name", [`Max:${PROJECT_NAME_MAX}`], []],
+    ["dispatch_search", "query", ["Min:2", `Max:${SEARCH_QUERY_MAX}`], []],
+  ] as const)("%s's %s states the bounds its route holds it to", (tool, field, own, item) => {
+    expect(goFieldBounds(tool, field)).toEqual({ own: [...own], item: [...item] });
+  });
+
+  // parseIssueComponents (issue_components.go) refuses, 400 COMPONENTS_INPUT, mode explicit with
+  // no ids or an empty list, and mode none with no reason or one Go's strings.TrimSpace empties:
+  // TestIssueComponentsInputValidation holds the route to each, U+0085 among them, and takes a
+  // reason of U+FEFF. The tool refuses the same calls before anything is sent, in the rule its
+  // field states, and takes what the route takes; JavaScript's trim would read U+0085 and U+FEFF
+  // the other way.
+  test.each([
+    "dispatch_issue",
+    "dispatch_issue_update",
+  ] as const)("%s refuses the components parseIssueComponents refuses, in the rule its field states", (name) => {
+    const schema = schemaFor(name);
+    for (const components of [
+      { mode: "explicit" },
+      { mode: "none" },
+      { mode: "none", reason: " \n" },
+      { mode: "none", reason: "\u0085" },
+    ]) {
+      const result = schema.safeParse({ ...validCalls[name], components });
+      expect(result.success, JSON.stringify(components)).toBe(false);
+      expect(
+        result.error?.issues.map((issue) => issue.message),
+        JSON.stringify(components)
+      ).toEqual([COMPONENTS_RULE]);
+    }
+    const empty = { mode: "explicit", ids: [] };
+    expect(schema.safeParse({ ...validCalls[name], components: empty }).success).toBe(false);
+    for (const components of [
+      { mode: "inherit" },
+      { mode: "explicit", ids: ["web"] },
+      { mode: "none", reason: "hiring" },
+      { mode: "none", reason: "\uFEFF" },
+    ]) {
+      const result = schema.safeParse({ ...validCalls[name], components });
+      expect(result.success, JSON.stringify(components)).toBe(true);
+    }
+    const words = argumentDescriptions(name).join(" ");
+    expect(words).toContain(COMPONENTS_RULE);
+    expect(words).toContain("Required for mode explicit");
+    expect(words).toContain("Required for mode none");
+  });
+
+  // POST /api/v1/issues imports the GitHub issue an external reference names into the project the
+  // create names: one already imported into that project answers its issue and creates nothing,
+  // and one imported into another project is refused 400 EXTERNAL_PROJECT_MISMATCH (createIssue).
+  // TestDispatchIssuesExternalWordsAreWhatItsRouteAnswers in server_test.go holds the tool's
+  // generated words to each of those answers of the route.
+  test("dispatch_issue's external says the form its route reads and the refusal it answers", () => {
+    const external = argumentDescriptions("dispatch_issue").find((text) =>
+      text.startsWith("Optional external issue reference")
+    );
+    expect(external).toContain("owner/repo#n");
+    expect(external).toContain("answers its issue and creates nothing");
+    expect(external).toContain("400 EXTERNAL_PROJECT_MISMATCH");
+  });
+
+  // A suggestion's replacement is markdown: text alone stays in the quoted text's block, and whole
+  // blocks stand where the quoted text stood, over a heading's whole text in the heading's place.
+  // A section moves by its blocks written beside the whole text of the block where it goes, then
+  // each emptied where it stood, a heading staying as its #s alone. block_edits_test.go's
+  // TestASuggestionsBlocksOverAHeadingsTextStandInItsPlace holds the route to each step; the
+  // words promise no more than that, and no block in a table cell.
+  test("dispatch_suggest's replace_with says which blocks its route takes, where, and how a section moves", () => {
+    const replaceWith = argumentDescriptions("dispatch_suggest").find((text) =>
+      text.startsWith("Replacement markdown for the quoted text.")
+    );
+    for (const promise of [
+      "Text alone stays in the quoted text's block",
+      "whole blocks (paragraphs, lists, headings written with their #s) stand where the quoted text stood",
+      "over a heading's whole text they take the heading's place, so a heading that stays is written with its #s",
+      "A table cell takes text alone.",
+      "To move a section, write its blocks beside the whole text of the block where it goes, and suggest each moved block's text replaced with nothing where it stood (an emptied heading stays as its #s alone).",
+    ]) {
+      expect(replaceWith, promise).toContain(promise);
+    }
   });
 });

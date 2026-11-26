@@ -5,6 +5,7 @@ import {
   zodSchemaApi,
 } from "@legion/contracts";
 import { z } from "zod";
+import { NotUtf8Error } from "./dispatch-file-text";
 import { messageFor } from "./errors";
 
 /**
@@ -24,8 +25,13 @@ import { messageFor } from "./errors";
  *   `--options-json <json>` for a list whose labels hold ": " themselves, which `commandLine`
  *   writes for such a list so every list round-trips;
  * - any other object or array: `--<field>-json <json>` and `--<field>-json-file <path>`.
+ * A file's or stdin's text is `io.readText`'s, which the `dispatch` entry reads as bytes that must
+ * be UTF-8 (`readFileText`): bytes that are not refuse the command in Dispatch's own words (an
+ * `unstorable` parse, which `runDispatchCli` refuses).
  * A JSON flag's help lists the keys of its object, or of each item of its list, from the same
  * schema, with each key's type, whether it is required, and its description (`shapeLines`).
+ * A flag of `PREFIXED_FLAGS` adds an item to an array of text behind a prefix, in argv order with
+ * the field's own flag (`--mention-role <name>` is `--mention role:<name>`).
  * Every command also takes `--help` and `--dry-run`.
  */
 
@@ -59,7 +65,30 @@ interface FlagEntry {
   readonly action: FlagAction;
   readonly value?: string;
   readonly text: string;
+  /** A `PREFIXED_FLAGS` flag's prefix, and what an empty value fails to name. */
+  readonly prefix?: { readonly text: string; readonly names: string };
 }
+
+/**
+ * Flags no spec field is named for: each adds its value, behind `prefix`, to the array of text
+ * `field` is, in argv order with the field's own flag, so the two can be given together. A role
+ * is the mention an agent writes most, and its name is what the agent knows.
+ */
+const PREFIXED_FLAGS = [
+  {
+    tool: "dispatch_comment",
+    field: "mentions",
+    flag: "--mention-role",
+    prefix: "role:",
+    names: "a role's name",
+    text:
+      "A role the comment mentions, by its name alone, with no role: before it: sends " +
+      "role:<name> in mentions, in the order given among the --mention values. Dispatch " +
+      "delivers the comment to the session that holds the role, whichever session that is, " +
+      "retries a send that does not go through, and records every attempt on the comment. One " +
+      "role per flag, repeated; an empty name is refused before anything is sent.",
+  },
+] as const;
 
 interface CommandSurface {
   readonly spec: DispatchToolSpec;
@@ -93,6 +122,17 @@ export type ParsedCommand =
       /** False when every problem is a bare `-` given to a text flag, so the refusal lists no
        *  flags. */
       readonly aboutAFlag?: false;
+    }
+  | {
+      /** A file or stdin a flag read holds bytes that are not UTF-8, which Dispatch cannot store:
+       *  `field` is the field the flag sets and `bytes` every byte it read, of the first such
+       *  flag. `runDispatchCli` refuses them in Dispatch's own words, which name the field, as a
+       *  Markdown document's bytes where it checks the field as one. Any other problem of the argv
+       *  is a `refused` instead. */
+      readonly kind: "unstorable";
+      readonly tool: string;
+      readonly field: string;
+      readonly bytes: Uint8Array;
     };
 
 export interface CommandFlagRow {
@@ -102,6 +142,10 @@ export interface CommandFlagRow {
 }
 
 const STDIN = "-";
+/** What every `--<field>-file` and `--<field>-json-file` flag's help says of its bytes
+ *  (`readFileText`, `parseCommand`'s `unstorable` parse). */
+const FILE_BYTES_RULE =
+  "Bytes that are not UTF-8 are refused in Dispatch's own words, and nothing is sent.";
 const BARE_WORD = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const OPTION_SEPARATOR = ": ";
 
@@ -157,14 +201,16 @@ const surfaces = new Map<string, CommandSurface>();
 function surfaceFor(tool: string): CommandSurface {
   const cached = surfaces.get(tool);
   if (cached !== undefined) return cached;
-  const spec = dispatchToolSpecs.find((candidate) => candidate.name === tool);
+  const spec: DispatchToolSpec | undefined = dispatchToolSpecs.find(
+    (candidate) => candidate.name === tool
+  );
   if (spec === undefined) throw new Error(`Unknown Dispatch tool: ${tool}`);
   const fields = fieldKinds(spec);
   const surface: CommandSurface = {
     spec,
     command: commandName(spec.name),
     fields,
-    flags: flagTable(spec.name, fields),
+    flags: flagTable(spec, fields),
   };
   surfaces.set(tool, surface);
   return surface;
@@ -295,10 +341,15 @@ function placeholder(info: FieldInfo): string {
   return "<text>";
 }
 
-function flagTable(tool: string, fields: ReadonlyMap<string, FieldInfo>): Map<string, FlagEntry> {
+/** The command's flags, each with its help text. `spec.dryRunHelp` is the spec's own sentence for
+ *  `--dry-run`, for a command whose dry run asks Dispatch something past the argument check. */
+function flagTable(
+  spec: DispatchToolSpec,
+  fields: ReadonlyMap<string, FieldInfo>
+): Map<string, FlagEntry> {
   const flags = new Map<string, FlagEntry>();
   const add = (flag: string, entry: FlagEntry): void => {
-    if (flags.has(flag)) throw new Error(`${tool}: two fields claim the flag ${flag}`);
+    if (flags.has(flag)) throw new Error(`${spec.name}: two fields claim the flag ${flag}`);
     flags.set(flag, entry);
   };
   for (const [field, info] of fields) {
@@ -313,7 +364,7 @@ function flagTable(tool: string, fields: ReadonlyMap<string, FieldInfo>): Map<st
         field,
         action: "file",
         value: "<path>",
-        text: `--${name} read from a file; - reads stdin.`,
+        text: `--${name} read from a file; - reads stdin. ${FILE_BYTES_RULE}`,
       });
     } else if (kind === "number") {
       add(`--${name}`, { field, action: "set", value: "<n>", text: about });
@@ -346,7 +397,7 @@ function flagTable(tool: string, fields: ReadonlyMap<string, FieldInfo>): Map<st
         field,
         action: "json-file",
         value: "<path>",
-        text: `--${name}-json read from a file; - reads stdin.`,
+        text: `--${name}-json read from a file; - reads stdin. ${FILE_BYTES_RULE}`,
       });
     } else {
       const none = kind.array === "number-or-null" ? " none is null." : "";
@@ -356,6 +407,19 @@ function flagTable(tool: string, fields: ReadonlyMap<string, FieldInfo>): Map<st
         value: placeholder(info),
         text: `${about} One item per flag, repeated.${none}`.trim(),
       });
+      for (const prefixed of PREFIXED_FLAGS) {
+        if (prefixed.tool !== spec.name || prefixed.field !== field) continue;
+        if (kind.array !== "string") {
+          throw new Error(`${spec.name}: ${prefixed.flag} needs ${field} to be a list of text`);
+        }
+        add(prefixed.flag, {
+          field,
+          action: "append",
+          value: "<name>",
+          text: prefixed.text,
+          prefix: { text: prefixed.prefix, names: prefixed.names },
+        });
+      }
     }
     if (info.nullable || typeof kind === "object" || kind === "options") {
       add(`--clear-${name}`, {
@@ -369,9 +433,8 @@ function flagTable(tool: string, fields: ReadonlyMap<string, FieldInfo>): Map<st
   add("--dry-run", {
     action: "dry-run",
     text:
-      tool === "dispatch_result"
-        ? "Checks the arguments as the call would and prints them as JSON. A record's dry run then asks Dispatch for the pull-request body line the record would print, and prints it; Dispatch records nothing. A retraction's dry run sends nothing."
-        : "Checks the arguments as the call would, then prints them as JSON and sends nothing.",
+      spec.dryRunHelp ??
+      "Checks the arguments as the call would, then prints them as JSON and sends nothing.",
   });
   return flags;
 }
@@ -401,8 +464,10 @@ export function parseCommand(
   let help = false;
   let dryRun = false;
   let stdinFlag: string | undefined;
+  // The field and the bytes of the first file or stdin a flag read whose bytes are not UTF-8.
+  let unstorable: { readonly field: string; readonly bytes: Uint8Array } | undefined;
 
-  const read = (flag: string, path: string): string | undefined => {
+  const read = (flag: string, field: string, path: string): string | undefined => {
     if (path === STDIN) {
       if (stdinFlag !== undefined) {
         problems.push(`${stdinFlag} and ${flag} both read stdin (-); only one flag can`);
@@ -413,15 +478,25 @@ export function parseCommand(
     try {
       return io.readText(path);
     } catch (error) {
+      if (error instanceof NotUtf8Error) {
+        // The field is claimed, as a field read whole is, so a field given twice is still refused
+        // for that, with exit 2, before this refusal.
+        claim(field, flag, false);
+        unstorable ??= { field, bytes: error.bytes };
+        return undefined;
+      }
       problems.push(
         `${flag} could not read ${path === STDIN ? "stdin" : path}: ${messageFor(error)}`
       );
       return undefined;
     }
   };
+  // An append flag adds to whatever list another append flag of its field began, so `--mention`
+  // and `--mention-role` build one list in argv order; every other second setter is refused.
   const claim = (field: string, flag: string, repeatable: boolean): boolean => {
     const earlier = setBy.get(field);
-    if (earlier === undefined || (repeatable && earlier === flag)) {
+    const earlierAppends = earlier !== undefined && surface.flags.get(earlier)?.action === "append";
+    if (earlier === undefined || (repeatable && earlierAppends)) {
       setBy.set(field, flag);
       return true;
     }
@@ -536,20 +611,37 @@ export function parseCommand(
         break;
       }
       case "file": {
-        const text = read(flag, value);
+        const text = read(flag, field, value);
         if (text !== undefined && claim(field, flag, false)) args[field] = text;
         break;
       }
       case "json":
       case "json-file": {
-        const text = action === "json" ? value : read(flag, value);
+        const text = action === "json" ? value : read(flag, field, value);
         const parsed = text === undefined ? undefined : json(flag, text);
         if (parsed !== undefined && claim(field, flag, false)) args[field] = parsed.value;
         break;
       }
       case "append": {
         if (!claim(field, flag, true)) break;
-        const item = appendedItem(info.kind, flag, value, number);
+        const { prefix } = entry;
+        // The prefix alone names nobody: `--mention-role ''` would send `role:`. A value that
+        // carries the prefix itself would send it twice (`role:role:x`), which the schema refuses
+        // without naming this flag, so it is refused here, naming both spellings that work.
+        if (prefix !== undefined && value.trim() === "") {
+          problems.push(`${flag} needs ${prefix.names}, not an empty value`);
+          break;
+        }
+        if (prefix !== undefined && value.startsWith(prefix.text)) {
+          const name = value.slice(prefix.text.length);
+          const own = `--${singular(flagName(field))}`;
+          problems.push(
+            `${flag} takes ${prefix.names} alone, so ${flag} ${quoteWord(value)} would send ${prefix.text}${value}: write ${flag} ${quoteWord(name)}, or ${own} ${quoteWord(value)}`
+          );
+          break;
+        }
+        const text = prefix === undefined ? value : `${prefix.text}${value}`;
+        const item = appendedItem(info.kind, flag, text, number);
         if (item === undefined) break;
         const list = (args[field] as unknown[] | undefined) ?? [];
         list.push(item.value);
@@ -566,6 +658,7 @@ export function parseCommand(
       ? { kind: "refused", tool, problems, aboutAFlag: false }
       : { kind: "refused", tool, problems };
   }
+  if (unstorable !== undefined) return { kind: "unstorable", tool, ...unstorable };
   return { kind: "call", tool, args, dryRun };
 }
 
@@ -687,7 +780,9 @@ export function commandsHelp(): string {
       return `  ${commandName(spec.name).padEnd(width)}  ${sentence}`;
     }),
     "",
-    "Run dispatch <command> --help for its flags and an example; --dry-run checks a command's arguments as the call would and prints them as given, sending nothing, except that dispatch result's dry run of a record also prints the pull-request body line Dispatch would write for it, recording nothing.",
+    "Run dispatch <command> --help for its flags and an example. --dry-run checks a command's arguments as the call would and prints them as given. It stores nothing. A command whose dry run asks Dispatch something past that check (dispatch artifact: how Dispatch would store its text; dispatch result: the pull-request body line the record would print) says so in its --help.",
+    "",
+    "dispatch login --device logs a machine with no identity of its own, such as a laptop, in at the secrets broker, once per machine; it is no Dispatch call, and needs no host or session (dispatch login --help).",
     "",
   ].join("\n");
 }

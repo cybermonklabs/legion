@@ -81,8 +81,11 @@ dispatch_events() {
   jq -s -c 'add' <<<"$pages"
 }
 dispatch_status_is() { dispatch_get "issues/$1" | jq -e --arg status "$2" '.status == $status'; }
+# review_cap_posted ISSUE: whether a standing message of ISSUE names review_round_cap=3
+# (lib/review-cap-posted.jq, which passes over a message its author deleted). workflow_lib, this
+# file's own directory, is set below, before any caller runs it.
 review_cap_posted() {
-  dispatch_events "$1" | jq -e 'any(.[]; .type == "message.created" and (.payload.body | contains("review_round_cap=3")))'
+  dispatch_events "$1" | jq -e -f "$workflow_lib/review-cap-posted.jq"
 }
 # session_actor_body SESSION BODY prints the JSON object BODY with SESSION as its actor: the shape a
 # bearer caller must name, or Dispatch refuses the write (ACTOR_KIND).
@@ -326,8 +329,8 @@ architect_registers_gate() {
 # enters awaiting_person: legion state shows waitingOn {kind: "gate", gateVersion} with no
 # answeredAt, and the root keeps the admission slot it took when the daemon started it (.slot is
 # there and admission.active names it), while its architect stays live. The person's review
-# answers the wait (waitingOn.answeredAt), and the answered root
-# waits in the line among the issues whose work came back, oldest first: at planning when an
+# answers the wait (waitingOn.answeredAt), and the answered root waits in the line
+# within its priority, among the issues whose work came back, oldest first: at planning when an
 # approval opened the gate, at admitted with the same architect session given its task when
 # changes were requested. The resume takes no slot, since the root holds one throughout, so it
 # comes on the pass that reads the answer however full the cap is, and the answer reads either as
@@ -503,9 +506,10 @@ pull_request_legion_only_commits() {
   done
 }
 # request_changes_as_reviewer ISSUE ROUND BODY [NOTE] has the reviewer pane post a round's
-# changes-requested review and complete its phase. A review ends when its reviewer completes it —
-# the reviewer's handoff is part of the phase — so the round is driven through the reviewer worker,
-# as the final approval is, rather than posted from the proof's own gh. BODY is the review's text;
+# changes-requested review and complete its phase. The review ends the round whether or not the
+# reviewer has completed, and its completion names the round's handoff record, so the round is
+# driven through the reviewer worker, as the final approval is, rather than posted from the
+# proof's own gh. BODY is the review's text;
 # the reviewer ends it with the Legion footer naming its own session, as its role ends every review,
 # since the daemon sets aside a review-App review whose footer does not name the session recorded on
 # the reviewer's claim (workflow.Engine.DecidesRound). NOTE, when given, is a further step for the
@@ -584,10 +588,20 @@ reviewer_commented() {
 # reviewer_completed ISSUE: the daemon recorded the reviewer's completion of the issue's open round,
 # which names the reviewer's Dispatch handoff record (the reviewer pushes nothing).
 reviewer_completed() { daemon_state | jq -e --arg issue "$1" '(.issues[$issue].workers.reviewer.handoffRecord.id // "") != ""' >/dev/null; }
+# assert_review_round_handoff ISSUE ROUND checks the reviewer's handoff record of a changes-requested
+# round. The review ends the round whether or not the reviewer has completed
+# (workflow.Engine.reviewRound), so the issue can stand in implementing before the daemon records
+# the completion that names the record. The move into reviewing clears the reviewer's record of the
+# round before, so a record in the state is this round's. It waits for that completion
+# (reviewer_completed), then checks the record (assert_handoff_record).
+assert_review_round_handoff() {
+  until_true 600 "the daemon to record the reviewer's completion of $1's round $2, naming its handoff record" reviewer_completed "$1"
+  assert_handoff_record "$1" reviewer reviewing "$2"
+}
 # approve_as_reviewer asks the reviewer for the round's last review and waits for it to approve the
 # head on its own: the reviewer approves the code head and pushes nothing above it, its handoff
-# being a record on the Dispatch issue. The merge carries the run's retro learnings onto the smoke
-# main, and clean_smoke_main removes them.
+# being a record on the Dispatch issue. Retro commits nothing, so the merge carries no retro
+# learning onto the smoke main, and clean_smoke_main removes any an earlier merge left there.
 approve_as_reviewer() {
   local issue=$1 app
   app=$(role_app reviewer) || return 1
@@ -640,8 +654,8 @@ release_smoke_main() {
   note "released $repo main ($smoke_main_lock)"
 }
 # smoke_main_leftovers prints each path on the smoke repository's main under docs/solutions/, the
-# retro learnings a merged proof pull request carries there, or under .legion/, which only a merge
-# from before handoffs moved to Dispatch can have left.
+# retro learnings a proof pull request merged before retro stopped committing left there, or under
+# .legion/, which only a merge from before handoffs moved to Dispatch can have left.
 smoke_main_leftovers() {
   gh api "repos/$repo/git/trees/main?recursive=1" \
     --jq '.tree[] | select(.type == "blob") | .path | select(startswith(".legion/") or startswith("docs/solutions/"))'
@@ -907,7 +921,7 @@ clean_smoke_main() {
     gh api -X DELETE "repos/$repo/contents/$path" -f message="proof fixture: remove $path" -f sha="$sha" -f branch="$branch" >/dev/null
   done <<<"$paths"
   url=$(gh -R "$repo" pr create --base main --head "$branch" --title "proof fixture: remove the handoffs and learnings Stage 3 runs merged ($project)" \
-    --body "The Stage 3 proof run $project removes what merged proof pull requests left on main: docs/solutions/ retro learnings, which each proof merge carries, and any .legion/ handoffs a merge from before retro removed them left. This is a proof fixture change by the proof's human-merge identity; it changes no product.")
+    --body "The Stage 3 proof run $project removes what merged proof pull requests left on main: docs/solutions/ retro learnings, which proof merges from before retro stopped committing left, and any .legion/ handoffs a merge from before retro removed them left. This is a proof fixture change by the proof's human-merge identity; it changes no product.")
   smoke_cleanup_url=$url
   pr=${url##*/}
   timeout_hook=report_smoke_pr_merge_state
@@ -1238,14 +1252,14 @@ assert_round_handoff() {
 # default): the daemon opens the check on the merge commit, hands that role its first look, and
 # `legion state --json` shows it as `.issues[KEY].check` (repo, pullRequest, mergeCommit, openedAt,
 # role, looks, lookOpen, lastWake{kind, detail, at}, nextWakeAt, last) while it is open, and omits
-# it once it has closed. A look's report is that role's `handoff_complete` with a verdict and no
-# commit: `pending` before the last look ends the look and suspends the role's claim with the
-# issue's Sandbox, so the check stays open with `lookOpen` false. That report carries `wake_at`,
-# when the agent wants its next look, and the daemon starts the next look then (`nextWakeAt`): it
-# is the only thing that starts a look before the bound, since no deploy, no Dispatch notice and
-# no boot of the daemon's own wakes a check any more. A wake at or past the check's bound starts
-# no look of its own, and the bound (`production_check_hours`) starts the last look, whose
-# `pending` closes the check as not_run and retires that role's claim (`issue_close`). Every
+# it once it has closed. A look's report is that role's `handoff_complete` with `check_opened_at`
+# from its look task, a verdict and no commit. A `pending` before the last look ends the look and
+# suspends the role's claim with the issue's Sandbox, so the check stays open with `lookOpen`
+# false. That report carries `wake_at`, when the agent wants its next look, and the daemon starts
+# the next look then (`nextWakeAt`). Only that report starts a look before the bound: no deploy,
+# Dispatch notice or boot of the daemon's own wakes a check any more. A wake at or past the
+# check's bound starts no look of its own. The bound (`production_check_hours`) starts the last
+# look. Its `pending` closes the check as not_run and retires that role's claim (`issue_close`). Every
 # reader over daemon_state is a jq predicate, so a wait polls it as it polls issue_phase; the
 # readers over daemon.log parse each line on its own, since the log carries the daemon's stderr too.
 # check_open ISSUE: the issue's production check is open.
@@ -1360,13 +1374,16 @@ worker_sessions() {
 # worker_notices SESSIONS prints one line for each workflow notice delivered into a phase-worker
 # session under SESSIONS: the session file, the role it claims, and the delivery's summary. Every
 # notice kind is for an architect, the issue's own or the one above it that the daemon routes it
-# to, published on that architect's role topic, so a phase worker's session holds none.
+# to, published on that architect's role topic, whatever role it names: a review-stuck notice can
+# name the reviewer's topic for the architect to ask, and a task-stopped notice names the role of
+# the phase the task stopped in. So a phase worker's session holds none, and a line here is a
+# notice routed to the wrong session.
 worker_notices() {
   local f role
   while IFS=$'\t' read -r f role; do
     jq -R -r --arg file "${f##*/}" --arg role "$role" '
       fromjson? | select(.customType == "envoy-message") | (.content | tostring)
-      | capture("summary: (?<summary>(phase-finished|worker-died|held|pr-blocked|pr-merged|pr-closed-unmerged|pull-request-missing|design-approved|design-changes-requested|carried-gate-opened|child-closed|child-status|child-release-stalled|child-not-recorded|catch-up|checks-red|review-stuck|status-reasserted|session-lost|session-store-fault) on [^\\n]*)")
+      | capture("summary: (?<summary>(phase-finished|worker-died|worker-stalled|worker-silent|worker-background-stalled|held|pr-blocked|pr-merged|pr-closed-unmerged|pull-request-missing|message-refused|design-approved|design-changes-requested|carried-gate-opened|child-closed|child-status|children-first|child-release-stalled|child-not-recorded|catch-up|checks-red|review-stuck|status-reasserted|session-lost|session-forgotten|session-store-fault|task-stopped|plan-not-taken|retro-held) on [^\\n]*)")
       | "\($file) \($role) \(.summary)"' "$f"
   done < <(worker_sessions "$1")
 }

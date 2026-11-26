@@ -1,6 +1,7 @@
 package specgraph
 
 import (
+	"cmp"
 	"encoding/json/jsontext"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 )
 
 // Scenario is a scenario of The Spec, in the format of testdata/scenarios that `spec-check state`
@@ -68,10 +71,12 @@ var (
 
 // scenarioResult is one result of results.json: a Result, whose members its own JSON names give,
 // with check_version in the place of its CheckDigest, which names the approved version of the check
-// that ran.
+// that ran, and Leg nil where the file leaves it out, which readResults refuses, since "" is the
+// leg of no matrix.
 type scenarioResult struct {
 	Result
-	CheckVersion int `json:"check_version" input:"nonzero"`
+	Leg          *string `json:"leg" input:"present: \"\" is the leg of no matrix, which the results of a job from before its matrix give"`
+	CheckVersion int     `json:"check_version" input:"nonzero"`
 }
 
 // The forms of the JSON files of a scenario that ReadScenario reads itself, with the type of each
@@ -80,7 +85,7 @@ type scenarioResult struct {
 // the one text of a time of the package's forms, as approvedForm writes it.
 const (
 	subjectForm = `{"commit":"<commit>","branch":"<branch>","deploy":"<deploy>","graph_tx":"<transaction>","now":"` + timeForm + `"}`
-	resultForm  = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"` + timeForm + `","seq":<whole number from 1>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>"}`
+	resultForm  = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"` + timeForm + `","seq":<whole number from 1>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>","planted_on":"<commit>","fault_paths":["<repository path>", …]}`
 	jobRunForm  = `{"job":"<job>","leg":"<leg>","commit":"<commit>","ended":<true or false>}`
 	unitForm    = `{"id":"<unit>","serves":["<statement id>", …],"needs":["<unit>", …],"waits_on":["<statement id>", …]}`
 	uncitedForm = `{"<commit>":{"<check id>":"<R48 rule>"}}`
@@ -92,7 +97,7 @@ const (
 // its own letters, a member that one object gives two times, text after the value, and a value of
 // another type than the file's form needs, which it names with the form and the place of the value.
 // It refuses each member that the derivation reads and that a file does not set, by the type that it
-// reads the file into (memberMark), with the functions that the entry of the derivation refuses the
+// reads the file into (members.go), with the functions that the entry of the derivation refuses the
 // same member with (Input.check): one marked nonzero at its zero value, and one marked present that
 // the file leaves out, since the zero value of such a member would read as a real one and turn a
 // state toward true or hide a failure; a member marked zero that a file leaves out reads as its
@@ -100,10 +105,11 @@ const (
 // as a value or as a key, has a letter or a digit (nameFault), and each path of the repository is a
 // repository path (isRepoPath):
 //
-//   - approved.json, as ReadApproved reads it, and with no cycle of parent and support relations
-//     among the current statements (R5: "Dispatch refuses a change that makes one"). The rules of
-//     the files are not run on it: the person approves a level before the checks of its
-//     statements exist, so an approved leaf can have no check, and the files then do not hold it;
+//   - approved.json, as ReadApproved reads it, a cycle of parent and support relations among the
+//     current statements among what it refuses (R5: "Dispatch refuses a change that makes one").
+//     The rules of the files are not run on it: the person approves a level before the checks of
+//     its statements exist, so an approved leaf can have no check, and the files then do not hold
+//     it;
 //   - subjects.json, [{"commit","branch","deploy","graph_tx","now"}]: at least one subject, each
 //     with a commit, a now, and exactly one of branch and deploy; graph_tx, the transaction of the
 //     graph that the subject reads, only with a deploy; and each of commit, branch, deploy and
@@ -111,26 +117,32 @@ const (
 //     the graph is judged only at a deploy, and a check of the graph reads unknown there when
 //     graph_tx is absent or names a transaction that no result read;
 //   - files/<commit>/: the spec files at the commit of each subject, each a *.md file directly in
-//     it, which Parse reads and Validate judges with no problem, as `spec-check tree` does, and no
-//     directory that no subject reads;
+//     it of at most notes.MaxFileSize bytes, which Parse reads and Validate judges with no problem,
+//     as `spec-check tree` does, and no directory that no subject reads;
 //   - history.json, as ReadFixtureHistory reads it: it sets commits, [] for none, and each commit
-//     sets its files, a tree of one path or more, each a repository path with a content label of
-//     one character or more;
+//     sets its files, a tree of one path or more, each a repository path with a content label that
+//     has a letter or a digit;
 //   - ties.json, {"<commit>":{"<check id>":["<path or pattern>", …]}}, as ReadCommitTies reads it:
 //     a check that the object of a commit does not name has a tie that is not known at that commit,
-//     and so has each check at a commit that the file does not name. A result at one commit counts
-//     at another only when the check's tie is known at both commits and no path that changed
-//     between them reaches the tie at either commit (changeBetween);
+//     and so has each check at a commit that the file does not name. A run of a check of the code
+//     counts only at the commit that it read, and a failing example at the commit that it counts
+//     from, its planted_on for a program check of the code; a failing example that its test caught,
+//     or a run of the test of a program check of production or of the graph, counts at another
+//     commit only when the check's tie is known at both commits and no path that changed between
+//     them is covered by the tie at either commit, and one that its test missed never does;
 //   - results.json, [{"check","check_version","kind","outcome","commit","deploy","graph_tx","job",
-//     "leg","attempt","at","seq","fault_author","test_authors","test_commit"}]: check_version
-//     names an approved version of the check, whose Digest the result carries, and the result is
-//     whole by that version's text (Result.fault): kind is run or failing_example, outcome pass,
-//     fail or could_not_run, it names at most one of the subjects commit, deploy and graph_tx, the
-//     one that it read, and it sets leg ("" for no matrix), at and seq, from 1; a run, and a
-//     failing example of a check of the code, names the subject of its check's kind, a run of a
-//     check of the graph that could not run too, which names the transaction that it tried to read;
-//     a run of a program check that names a job names the job, and a result of a program check of
-//     production or of the graph names test_commit. No two results of one check have one at and one
+//     "leg","attempt","at","seq","fault_author","test_authors","test_commit","planted_on",
+//     "fault_paths"}]: check_version names an approved version of the check, whose Digest the
+//     result carries, and the result is whole by that version's text (Result.fault): kind is run or
+//     failing_example, outcome pass, fail or could_not_run, it names at most one of the subjects
+//     commit, deploy and graph_tx, the one that it read, and it sets leg ("" for no matrix), at and
+//     seq, from 1; a run, and a failing example of a check of the code, names the subject of its
+//     check's kind, a run of a check of the graph that could not run too, which names the
+//     transaction that it tried to read; a run of a program check that names a job names the job,
+//     and a result of a program check of production or of the graph names test_commit; each of
+//     fault_paths is a repository path. A failing example of a program check of the code counts
+//     from planted_on, the commit that its fault was planted on, and never at its commit, the
+//     fault's own commit (deriveChecks, step 7). No two results of one check have one at and one
 //     seq;
 //   - jobs.json, [{"job","leg","commit","ended"}]: each run sets job and commit, leg ("" for no
 //     matrix), and ended, false for a run that has not ended;
@@ -142,7 +154,10 @@ const (
 //     approved spec, needs naming units of the file; with none, no wait is read;
 //   - want.txt (optional), which ReadScenario does not read.
 //
-// A JSON null is refused at each place of each file (decodeJSON).
+// A JSON null is refused at each place of each file (decodeJSON), and so is each JSON file that
+// holds more than fileBound bytes, 16 MiB, and each spec file that holds more than
+// notes.MaxFileSize, 1 MiB, the bound past which `spec-check tree` and Dispatch's importer refuse a
+// spec file; such a file is read no further.
 func ReadScenario(fsys fs.FS) (Scenario, error) {
 	var s Scenario
 	entries, err := fs.ReadDir(fsys, ".")
@@ -165,9 +180,6 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 	if s.Approved, err = readWith(fsys, "approved.json", ReadApproved); err != nil {
 		return s, err
 	}
-	if cycle := approvedLoop(s.Approved); cycle != nil {
-		return s, scenarioFault("approved.json", "loop: %s", loopDetail(cycle))
-	}
 	if s.Subjects, err = readSubjects(fsys); err != nil {
 		return s, err
 	}
@@ -180,13 +192,14 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 	if s.Ties, err = readWith(fsys, "ties.json", ReadCommitTies); err != nil {
 		return s, err
 	}
-	if s.Results, err = readResults(fsys, s.Approved); err != nil {
+	var procedures []*Check
+	if s.Results, procedures, err = readResults(fsys, s.Approved); err != nil {
 		return s, err
 	}
 	if s.JobRuns, err = readJobRuns(fsys); err != nil {
 		return s, err
 	}
-	if fault, ofRun := legFault(s.JobRuns, s.Results); fault != "" {
+	if fault, ofRun := legFault(s.JobRuns, s.Results, procedures); fault != "" {
 		file := "results.json"
 		if ofRun {
 			file = "jobs.json"
@@ -231,8 +244,9 @@ func readSubjects(fsys fs.FS) ([]ScenarioSubject, error) {
 	return subjects, nil
 }
 
-// readScenarioFiles reads the spec files at the commit of each subject, files/<commit>/*.md,
-// parses them and judges the tree by Validate, and refuses the first problem of Parse, or else of
+// readScenarioFiles reads the spec files at the commit of each subject, files/<commit>/*.md, each
+// at most notes.MaxFileSize bytes, the bound of `spec-check tree` and of Dispatch's importer, parses
+// them and judges the tree by Validate, and refuses the first problem of Parse, or else of
 // Validate, with its file and line.
 func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree, error) {
 	trees := map[string]Tree{}
@@ -264,7 +278,7 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 			if !entry.Type().IsRegular() || path.Ext(entry.Name()) != ".md" {
 				return nil, scenarioFault(name, "the spec files of a commit are *.md files directly in its directory")
 			}
-			if files[entry.Name()], err = fs.ReadFile(fsys, name); err != nil {
+			if files[entry.Name()], err = readFile(fsys, name, notes.MaxFileSize); err != nil {
 				return nil, &ScenarioError{File: name, Err: err}
 			}
 		}
@@ -294,16 +308,6 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 	return trees, nil
 }
 
-// approvedLoop is a cycle of parent and serves relations among the current statements of a, as
-// Validate's loop rule writes it, or nil when there is none.
-func approvedLoop(a Approved) []string {
-	current, _ := a.Current() // ReadApproved refused every block that would be a problem here
-	if loops := findLoops(statementEdges(current.Statements)); len(loops) > 0 {
-		return loops[0]
-	}
-	return nil
-}
-
 // readWith reads the file name with read, and names the file in its fault.
 func readWith[T any](fsys fs.FS, name string, read func(io.Reader) (T, error)) (T, error) {
 	f, err := fsys.Open(name)
@@ -320,29 +324,37 @@ func readWith[T any](fsys fs.FS, name string, read func(io.Reader) (T, error)) (
 }
 
 // readResults reads results.json, each result carrying the Digest of the approved version of its
-// check that check_version names, and refuses a result that Result.fault refuses by that version's
-// text, and two results that sameRecordFault names.
-func readResults(fsys fs.FS, approved Approved) ([]Result, error) {
+// check that check_version names, and the text of that version of each, and refuses a result that
+// leaves out its leg, one that Result.fault refuses by that text, and two results that
+// sameRecordFault names.
+func readResults(fsys fs.FS, approved Approved) ([]Result, []*Check, error) {
 	read, err := readEach[scenarioResult](fsys, "results.json", "result", resultForm)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	results := make([]Result, len(read))
+	texts := make([]Check, len(read))
+	procedures := make([]*Check, len(read))
 	for i, r := range read {
 		check, held := checkVersion(approved, r.Check, r.CheckVersion)
 		if !held {
-			return nil, scenarioFault("results.json", "result %d: the approved spec holds no version %d of check %s", i+1, r.CheckVersion, quoted(r.Check))
+			return nil, nil, scenarioFault("results.json", "result %d: the approved spec holds no version %d of check %s", i+1, r.CheckVersion, quoted(r.Check))
+		}
+		if r.Leg == nil {
+			return nil, nil, scenarioFault("results.json", `result %d: it sets no leg; a result of no matrix sets ""`, i+1)
 		}
 		results[i] = r.Result
+		results[i].Leg = *r.Leg
 		results[i].CheckDigest = check.Digest()
-		if fault := results[i].fault(&check); fault != "" {
-			return nil, scenarioFault("results.json", "result %d: %s", i+1, fault)
+		texts[i], procedures[i] = check, &texts[i]
+		if fault := results[i].fault(procedures[i]); fault != "" {
+			return nil, nil, scenarioFault("results.json", "result %d: %s", i+1, fault)
 		}
 	}
 	if fault := sameRecordFault(results); fault != "" {
-		return nil, scenarioFault("results.json", "%s", fault)
+		return nil, nil, scenarioFault("results.json", "%s", fault)
 	}
-	return results, nil
+	return results, procedures, nil
 }
 
 // checkVersion is the text of version v of the check id in the approved spec, and whether the
@@ -359,14 +371,17 @@ func checkVersion(approved Approved, id string, v int) (Check, bool) {
 	return text.Checks[0], true
 }
 
-// readJobRuns reads jobs.json, and refuses a run that JobRun.fault refuses.
+// readJobRuns reads jobs.json, and refuses a run that leaves out its leg or ended
+// (jobRunFile.unsetFault), and one that JobRun.fault refuses.
 func readJobRuns(fsys fs.FS) ([]JobRun, error) {
-	runs, err := readEach[JobRun](fsys, "jobs.json", "job run", jobRunForm)
+	read, err := readEach[jobRunFile](fsys, "jobs.json", "job run", jobRunForm)
 	if err != nil {
 		return nil, err
 	}
-	for i, r := range runs {
-		if fault := r.fault(); fault != "" {
+	runs := make([]JobRun, len(read))
+	for i, r := range read {
+		runs[i] = r.run()
+		if fault := cmp.Or(r.unsetFault(), runs[i].fault()); fault != "" {
 			return nil, scenarioFault("jobs.json", "job run %d: %s", i+1, fault)
 		}
 	}
@@ -389,11 +404,8 @@ func readUnits(fsys fs.FS, approved Approved) ([]Unit, error) {
 	for _, st := range current.Statements {
 		statements[st.ID] = true
 	}
-	ids := map[string]bool{}
+	ids := make(map[string]bool, len(units))
 	for _, u := range units {
-		if ids[u.ID] {
-			return nil, scenarioFault("units.json", "unit %s is in the file two times", quoted(u.ID))
-		}
 		ids[u.ID] = true
 	}
 	for _, u := range units {
@@ -435,7 +447,7 @@ func readEach[T any](fsys fs.FS, name, noun, form string) ([]T, error) {
 
 // readJSON decodes the file name into v with decodeJSON, in the form form.
 func readJSON(fsys fs.FS, name string, v any, form string) error {
-	content, err := fs.ReadFile(fsys, name)
+	content, err := readFile(fsys, name, fileBound)
 	if err != nil {
 		return &ScenarioError{File: name, Err: err}
 	}
@@ -443,6 +455,16 @@ func readJSON(fsys fs.FS, name string, v any, form string) error {
 		return &ScenarioError{File: name, Err: err}
 	}
 	return nil
+}
+
+// readFile is the file name of fsys, at most bound bytes of it (readBounded).
+func readFile(fsys fs.FS, name string, bound int) ([]byte, error) {
+	f, err := fsys.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return readBounded(f, bound)
 }
 
 // scenarioFault is the fault of the file name, the format filled with args.

@@ -8,6 +8,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -30,16 +31,17 @@ func onAccount(account string) func(*corev1.Pod) {
 // round, which first has every worker in the pod do the steps of its update message
 // (supervise.UpdateTask). A launch into a pod no round covers — the daemon-launched controller's
 // — replaces it for the account whatever it is installing, since no round will ever come for such
-// a pod: that is the one place the account still beats the stale-plugin exemption, which
-// otherwise keeps a drifted pod and installs into it. A replaced Sandbox is kept under its new
-// pod (an issue pod's disk is the pod's own ephemeral volume and goes with it, as for image
-// drift). An issue pod is kept here whatever account it runs as, so the rows that hold the
-// launch's own reading of the account are the controller's: its pod is kept where it already
-// runs as the configured account — including a pod on `default` under a configuration naming no
-// account, which is that same account spelled the other way — and replaced where it does not.
-// What an issue pod's account reaches instead is its round's reasons
+// a pod: the account is one of the two drifts, beside the image (podImageDrift), that still beat
+// the stale-plugin exemption, which otherwise keeps a drifted controller pod and installs into it.
+// A replaced Sandbox is kept under its new pod (an issue pod's disk is the pod's own ephemeral
+// volume and goes with it, as for image drift). An issue pod is kept here whatever account it runs
+// as, so the rows that hold the launch's own reading of the account are the controller's: its pod
+// is kept where it already runs as the configured account — including a pod on `default` under a
+// configuration naming no account, which is that same account spelled the other way — and
+// replaced where it does not. What an issue pod's account reaches instead is its round's reasons
 // (TestPodDriftNamesTheServiceAccountThePodRunsAs).
 func TestALaunchKeepsAnAccountDriftedPodARoundCoversAndReplacesOneNoRoundCovers(t *testing.T) {
+	t.Parallel()
 	plugins := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: 24}
 	for name, tc := range map[string]struct {
 		spec     func(*testing.T) runtime.SpawnSpec
@@ -123,6 +125,7 @@ func TestALaunchKeepsAnAccountDriftedPodARoundCoversAndReplacesOneNoRoundCovers(
 // is passed over before the warning, as it is for the image: its own sweep makes its pod again
 // under the new account, with no round and no launch to wait for.
 func TestTheBootReconciliationWarnsOfEachPodRunningAnotherServiceAccount(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	issue, controller := g.spawn(spec), g.spawn(controllerSpec(t))
@@ -155,5 +158,30 @@ func TestTheBootReconciliationWarnsOfEachPodRunningAnotherServiceAccount(t *test
 	}
 	if cache := CacheSandboxName(testProject, spec.Repository); warnings(cache) != 0 {
 		t.Errorf("the boot reconciliation warned of the cache %s, which its own sweep makes again: %q", cache, logs.String())
+	}
+}
+
+// The boot reconciliation logs the held and configured leak-check manifests of a pod that was
+// built under another setting. Without this warning an operator sees the round's drift reason
+// only after the round has chosen the pod, rather than in the boot sweep that names every pod
+// still running the old check.
+func TestTheBootReconciliationWarnsOfEachPodRunningAnotherLeakCheckManifest(t *testing.T) {
+	t.Parallel()
+	g := newRig(t, nil)
+	loc := g.spawn(workerSpec(t))
+	moved := leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
+	logs := &lockedLog{}
+	r2 := secondRuntime(t, g, func(o *Options) {
+		o.LeakCheckSetting = moved
+		o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	})()
+
+	if err := r2.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: workerToken, Locator: &loc}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	want := "sandbox runtime: " + loc.Sandbox.Name + " runs leak check manifest " + testLeakCheck.ManifestSHA256 +
+		", the configured manifest is " + moved.ManifestSHA256 + "; its agents keep the held check until its update round replaces the pod"
+	if got := strings.Count(logs.String(), want); got != 1 {
+		t.Fatalf("the boot reconciliation logged %q matching leak-check warning(s), want one in %q", want, logs.String())
 	}
 }

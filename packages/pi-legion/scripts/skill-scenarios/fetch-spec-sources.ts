@@ -13,8 +13,11 @@
  *   messages.md  each message and comment by a person, oldest first. Each entry starts with the
  *                line `<!-- message <created_at> -->` or `<!-- comment <created_at> -->`, or, for a
  *                comment anchored to the spec, `<!-- comment <created_at> anchored -->`, whose text
- *                starts with its quote, each line after `> `, then a blank line. A project
- *                document is one message: its text, at the time of its latest version.
+ *                starts with its quote, each line after `> `, then a blank line. A post its author
+ *                deleted is left out, as label-comments.ts leaves a deleted comment out: Dispatch
+ *                serves it with no body, so there is nothing of it to write. An edited post's body
+ *                is followed by ` · edited <time>`, as every read of the dispatch command prints it.
+ *                A project document is one message: its text, at the time of its latest version.
  *   asks.json    each ask on the issue, every state, oldest first: id, kind, question, options,
  *                multiple, state, created_at, and answer (selected, text, user, at) or null. A
  *                project document gets [].
@@ -25,15 +28,19 @@
  * writes <dir>/agent-texts.json: every message, comment and ask by a session (author kind
  * `session`) whose created_at is in the window (--since inclusive, --until exclusive), over the
  * issues that label-comments.ts reads (one unpaged `GET /api/v1/issues`). Each row is
- * {issue, id, kind, body, origin_session_title, created_at}. An ask's body is its question, then
- * for each option its label on one line and its description on the next line when it has one.
+ * {issue, id, kind, body, origin_session_title, created_at}. A deleted message or comment is left
+ * out, and an edited one's body is followed by ` · edited <time>`, as in messages.md. An ask's
+ * body is its question, then for each option its label on one line and its description on the
+ * next line when it has one.
  *
- * Stdout gives file names and counts only. Exit 1 is a failed read. Exit 2 is a refusal before any
- * read: a bad argument, an --out inside a git or jj checkout, or no Dispatch.
+ * Stdout gives file names and counts only, with how many deleted posts each run left out. Exit 1
+ * is a failed read. Exit 2 is a refusal before any read: a bad argument, an --out inside a git or
+ * jj checkout, or no Dispatch.
  */
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Actor, Ask, Comment, Message } from "@legion/contracts";
+import { editedMark, withEditedMark } from "@legion/envoy-client/actor-text";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   byCreatedAt,
@@ -111,8 +118,25 @@ function parseReference(text: string): Reference | undefined {
   return undefined;
 }
 
+/** A standing message's or comment's words as every file of this script holds them: for an
+ * edited post, its body followed by the mark every read of the dispatch command prints after an
+ * edited post's words (`withEditedMark`), or that mark alone where the body is empty; else the
+ * body as it is. A deleted post is in no file (`standing`). */
+function postWords(post: Pick<Comment | Message, "body" | "edited_at">): string {
+  if (post.edited_at == null) return post.body;
+  const body = post.body.trimEnd();
+  return body === "" ? editedMark(post.edited_at) : withEditedMark(body, post.edited_at);
+}
+
+/** Whether a post stands: one its author deleted is left out of every file, as label-comments.ts
+ * leaves a deleted comment out, since Dispatch serves it with no body. */
+function standing(post: Pick<Comment | Message, "deleted_at">): boolean {
+  return post.deleted_at == null;
+}
+
 /** A comment's text as messages.md holds it: its quote as `>` lines when it is anchored (see
- * `anchored`), then its body, then the replacement text when the comment is a suggestion. */
+ * `anchored`), then its words (`postWords`), then the replacement text when the comment is a
+ * suggestion. */
 function commentText(comment: Comment): string {
   const parts: string[] = [];
   if (anchored(comment)) {
@@ -124,8 +148,8 @@ function commentText(comment: Comment): string {
         .join("\n")
     );
   }
-  const body = comment.body.trimEnd();
-  if (body !== "") parts.push(body);
+  const words = postWords(comment).trimEnd();
+  if (words !== "") parts.push(words);
   if (comment.suggestion != null) {
     parts.push(`Suggested replacement:\n${comment.suggestion.replace_with.trimEnd()}`);
   }
@@ -203,23 +227,24 @@ async function fetchIssue(dispatch: ProductionDispatch, out: string, key: string
     dispatch.asks(key),
   ]);
   const spec = await dispatch.artifactText(issue.primary_artifact_id);
+  const byPeople = {
+    messages: messages.filter(({ author }) => author.kind === "user"),
+    comments: comments.filter(({ author }) => author.kind === "user"),
+  };
   const entries: Entry[] = [
-    ...messages
-      .filter(({ author }) => author.kind === "user")
-      .map((message) => ({
-        kind: "message" as const,
-        created_at: message.created_at,
-        text: message.body.trimEnd(),
-      })),
-    ...comments
-      .filter(({ author }) => author.kind === "user")
-      .map((comment) => ({
-        kind: "comment" as const,
-        created_at: comment.created_at,
-        text: commentText(comment),
-        anchored: anchored(comment),
-      })),
+    ...byPeople.messages.filter(standing).map((message) => ({
+      kind: "message" as const,
+      created_at: message.created_at,
+      text: postWords(message).trimEnd(),
+    })),
+    ...byPeople.comments.filter(standing).map((comment) => ({
+      kind: "comment" as const,
+      created_at: comment.created_at,
+      text: commentText(comment),
+      anchored: anchored(comment),
+    })),
   ];
+  const deleted = byPeople.messages.length + byPeople.comments.length - entries.length;
   const sourceAsks = asks.toSorted(byCreatedAt).map(sourceAsk);
   const target = writeSource(out, key.toLowerCase(), {
     "title.txt": `${issue.title}\n`,
@@ -227,7 +252,7 @@ async function fetchIssue(dispatch: ProductionDispatch, out: string, key: string
     "asks.json": `${JSON.stringify(sourceAsks, null, 2)}\n`,
     "old-spec.md": spec.markdown,
   });
-  return `${target}: title.txt, messages.md (${entries.length} entries), asks.json (${sourceAsks.length} asks), old-spec.md`;
+  return `${target}: title.txt, messages.md (${entries.length} entries, ${deleted} deleted posts left out), asks.json (${sourceAsks.length} asks), old-spec.md`;
 }
 
 async function fetchDocument(
@@ -272,7 +297,7 @@ function sessionTitle(author: Actor): string | null {
 async function agentTexts(
   dispatch: ProductionDispatch,
   window: Window
-): Promise<{ texts: AgentText[]; issues: number }> {
+): Promise<{ texts: AgentText[]; deleted: number; issues: number }> {
   const issues = await dispatch.issues();
   const perIssue = await mapLimit(issues, CONCURRENCY, async ({ key }) => {
     const [messages, comments, asks] = await Promise.all([
@@ -280,27 +305,31 @@ async function agentTexts(
       dispatch.comments(key),
       dispatch.asks(key),
     ]);
-    const texts: AgentText[] = [
+    const bySessions = [
       ...messages.map((message) => ({
         kind: "message" as const,
         author: message.author,
         row: message,
-        body: message.body,
+        stands: standing(message),
+        body: postWords(message),
       })),
       ...comments.map((comment) => ({
         kind: "comment" as const,
         author: comment.author,
         row: comment,
-        body: comment.body,
+        stands: standing(comment),
+        body: postWords(comment),
       })),
       ...asks.map((ask) => ({
         kind: "ask" as const,
         author: ask.author,
         row: ask,
+        stands: true,
         body: askBody(ask),
       })),
-    ]
-      .filter(({ author, row }) => author.kind === "session" && inWindow(window, row.created_at))
+    ].filter(({ author, row }) => author.kind === "session" && inWindow(window, row.created_at));
+    const texts: AgentText[] = bySessions
+      .filter(({ stands }) => stands)
       .map(({ kind, author, row, body }) => ({
         issue: key,
         id: row.id,
@@ -309,9 +338,13 @@ async function agentTexts(
         origin_session_title: sessionTitle(author),
         created_at: row.created_at,
       }));
-    return texts;
+    return { texts, deleted: bySessions.length - texts.length };
   });
-  return { texts: perIssue.flat().toSorted(byCreatedAt), issues: issues.length };
+  return {
+    texts: perIssue.flatMap(({ texts }) => texts).toSorted(byCreatedAt),
+    deleted: perIssue.reduce((sum, { deleted }) => sum + deleted, 0),
+    issues: issues.length,
+  };
 }
 
 interface SourcesArguments {
@@ -383,20 +416,20 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
   if (outside !== undefined) return refuse(outside);
   let dispatch: ProductionDispatch;
   try {
-    dispatch = new ProductionDispatch(resolveDispatch(io.env, io.cwd), io.fetch, io.sleep);
+    dispatch = new ProductionDispatch(await resolveDispatch(io.env, io.cwd), io.fetch, io.sleep);
   } catch (error) {
     return refuse(messageFor(error));
   }
   const out = path.resolve(args.out);
   try {
     if (args.mode === "agent-texts") {
-      const { texts, issues } = await agentTexts(dispatch, args.window);
+      const { texts, deleted, issues } = await agentTexts(dispatch, args.window);
       mkdirSync(out, { recursive: true });
       const file = path.join(out, "agent-texts.json");
       writeFileSync(file, `${JSON.stringify(texts, null, 2)}\n`);
       const count = (kind: AgentText["kind"]) => texts.filter((text) => text.kind === kind).length;
       io.out(
-        `${file}: ${texts.length} texts by sessions (${count("message")} messages, ${count("comment")} comments, ${count("ask")} asks) read from ${issues} issues`
+        `${file}: ${texts.length} texts by sessions (${count("message")} messages, ${count("comment")} comments, ${count("ask")} asks) read from ${issues} issues, ${deleted} deleted posts left out`
       );
       return 0;
     }

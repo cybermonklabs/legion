@@ -53,6 +53,7 @@ func linesHolding(logged, text string) []string {
 // binding wrote stay — and is logged naming the sandbox, the role, its App, the lease's expiry and
 // the owner it rewrote.
 func TestTheRefresherRewritesOnlyTheOwnersWhoseGhFilesAreStale(t *testing.T) {
+	t.Parallel()
 	logs := &lockedLog{}
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -143,6 +144,7 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseGhFilesAreStale(t *testing.T) {
 // and a render of it that holds no directory for the owner its Secret records is refused on its
 // own.
 func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
+	t.Parallel()
 	var lease atomic.Pointer[string]
 	first, second := "first", "second"
 	lease.Store(&first)
@@ -236,6 +238,7 @@ func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
 // bundle's directories must rest on (INFRA-2543 R2). A build that fails is kept by nothing, so
 // the tick's next role of that App asks again and fails naming itself.
 func TestATickBuildsOneBundlePerAppRoleAndRepository(t *testing.T) {
+	t.Parallel()
 	var built sync.Map
 	var fail atomic.Bool
 	logs := &lockedLog{}
@@ -293,6 +296,7 @@ func TestATickBuildsOneBundlePerAppRoleAndRepository(t *testing.T) {
 // may not leave out (appauth's mintBundle), and the recorded default stays as the launch wrote
 // it.
 func TestAControllerIsRefreshedForTheOwnerItsSecretRecords(t *testing.T) {
+	t.Parallel()
 	var gained atomic.Bool
 	// asked is the owner the controller's bundle was last asked for: none by its launch, and
 	// the recorded one by its refresh, which is what this test holds the tick to.
@@ -369,6 +373,7 @@ func TestAControllerIsRefreshedForTheOwnerItsSecretRecords(t *testing.T) {
 // the refresher's read and its write — is retried once on a fresh read, so the binding's annotation
 // and the new gh files both land.
 func TestTheRefresherRetriesAConflictedWriteOnce(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.spawn(rootSpec(t))
 	issue := SandboxName(rootToken)
@@ -404,6 +409,7 @@ func TestTheRefresherRetriesAConflictedWriteOnce(t *testing.T) {
 // A pod that is not live is not refreshed: one whose phase is past Running, or one being deleted,
 // runs its launchers no more, so its Secrets are left as they are.
 func TestTheRefresherLeavesAPodThatIsNotLiveAlone(t *testing.T) {
+	t.Parallel()
 	for name, edit := range map[string]func(*corev1.Pod){
 		"a succeeded pod":   func(p *corev1.Pod) { p.Status.Phase = corev1.PodSucceeded },
 		"a failed pod":      func(p *corev1.Pod) { p.Status.Phase = corev1.PodFailed },
@@ -509,6 +515,7 @@ func refreshTick(g *rig) {
 // once for a repository however many of its pods the walk holds, and a repository whose mint
 // fails is logged once and left to the next tick.
 func TestTheRefresherKeepsEveryLivePodsProvisioningTokenFresh(t *testing.T) {
+	t.Parallel()
 	t.Run("every live pod and the repository cache follow the lease", func(t *testing.T) {
 		tokens := &leaseTokens{}
 		first, second := "first", "second"
@@ -836,11 +843,13 @@ func leaseNamed(role appauth.AppRole, owner, kind string) string {
 // its Secret records instead would mint sjawhar's own token and leave it there, which is every
 // push of the issue's trees refused.
 func TestTheRefresherKeepsARenamedIssuesWriteLeaseInItsOwnDirectory(t *testing.T) {
+	t.Parallel()
 	leases := &namedLeases{}
-	served := func() []ghrepo.Repository { return []ghrepo.Repository{servingSmoke} }
+	listed := func() []ghrepo.Repository { return []ghrepo.Repository{servingSmoke} }
+	served := servesOneOf(listed)
 	renames := ghrepo.MustRenames(smokeRename)
 	installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
-	installs := installedOnMapped{served: served}
+	installs := installedOnServed{repos: listed}
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.GitHubCredential = appauth.GitHubCredential(sourceOf(leases, installs), served, renames, installed, left, nil)
 		o.ControllerCredential = appauth.ControllerCredential(sourceOf(leases, installs), served, renames, installed, left, nil)
@@ -971,6 +980,7 @@ func hostsTokens(t *testing.T, secret *corev1.Secret, dirs ...string) map[string
 // recorded stays: cybermonklabs, the directory the issue's repository routes to
 // (ghconfig.RouteDir), the owner holding the repository the pair moved.
 func TestTheRefresherServesAPodProjectingThePairsTheLayoutBuiltNow(t *testing.T) {
+	t.Parallel()
 	g, pod, name, app, logs := renamedIssueOnBothOwners(t)
 	if got := string(g.secret(name).Data[GitHubDefaultKey]); got != "cybermonklabs" {
 		t.Fatalf("the launch recorded the default %q, want cybermonklabs, the directory sjawhar/legion-smoke routes to", got)
@@ -999,6 +1009,7 @@ func TestTheRefresherServesAPodProjectingThePairsTheLayoutBuiltNow(t *testing.T)
 // and the default stays the sjawhar its Secret records. Served the layout built now, its refresh
 // would put sjawhar's own lease where that pod's push of the moved repository reads it.
 func TestTheRefresherServesAPodProjectingNoPairsTheLayoutItWasLaunchedWith(t *testing.T) {
+	t.Parallel()
 	g, pod, name, app, logs := renamedIssueOnBothOwners(t)
 	projectGhItems(t, g, g.r, pod, ownerRoutedItems("cybermonklabs", "sjawhar"))
 	staleGhKeys(g, pod, "sjawhar", "cybermonklabs", "sjawhar")
@@ -1026,6 +1037,7 @@ func TestTheRefresherServesAPodProjectingNoPairsTheLayoutItWasLaunchedWith(t *te
 // sjawhar/legion-smoke, the pair's `from`, takes cybermonklabs' — the installation holding the
 // repository GitHub serves for that name — and never sjawhar's, which cannot write it.
 func TestTheRefresherFillsTheRepositoryDirectoriesAnOlderPodProjects(t *testing.T) {
+	t.Parallel()
 	g, pod, name, app, logs := renamedIssueOnBothOwners(t)
 	dirs := []string{"cybermonklabs", "sjawhar", "sjawhar/legion-smoke", "sjawhar/other"}
 	projectGhItems(t, g, g.r, pod, ownerRoutedItems(dirs...))
@@ -1049,6 +1061,7 @@ func TestTheRefresherFillsTheRepositoryDirectoriesAnOlderPodProjects(t *testing.
 // issue's role: the refresh is refused and writes nothing, whichever layout the pod's projection
 // names.
 func TestTheRefresherRefusesASecretRecordingAnotherIssuesDefault(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		items []corev1.KeyToPath
@@ -1076,38 +1089,39 @@ func TestTheRefresherRefusesASecretRecordingAnotherIssuesDefault(t *testing.T) {
 	}
 }
 
-// installedOnOwners is a role's App installed on a fixed set of owner accounts, whatever the
-// project's mapping names (appauth.OwnerInstallations): the account that installs an App
-// decides where it is installed, and no mapping edit moves that (INFRA-2543), which is what a
-// test that moves the mapping alone wants.
+// installedOnOwners is a role's App installed on a fixed set of owner accounts, whatever
+// repositories the daemon serves (appauth.OwnerInstallations): the account that installs an App
+// decides where it is installed, and no change of the served names moves that (INFRA-2543), which
+// is what a test that moves the served names alone wants.
 type installedOnOwners []string
 
 func (i installedOnOwners) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
 	return slices.Clone(i), nil
 }
 
-// A mapping edit that starts or stops a configured pair resolving moves the default of every
-// bundle built after it, and a live pod's refresh goes on all the same. A pair resolves only
-// while the project serves its `to` and not its `from` (ghrepo.Renames.Moving), and a bundle's
+// A change of the served names that starts or stops a configured pair resolving moves the default
+// of every bundle built after it, and a live pod's refresh goes on all the same. A pair resolves
+// only while the daemon serves its `to` and not its `from` (ghrepo.Renames.Moving), and a bundle's
 // default is the directory the issue's repository routes to by the pairs that resolve
 // (appauth's bundleDirs). So with the App installed on both owners, the issue recorded on
-// sjawhar/legion-smoke defaults to sjawhar while the mapping serves both names, and to
-// cybermonklabs once the operator removes the old name, the usual step after a transfer.
+// sjawhar/legion-smoke defaults to sjawhar while the daemon serves both names, and to
+// cybermonklabs once it no longer serves the old name.
 //
 // The pod's GH_CONFIG_DIR stays at the directory its launch recorded. The directory set is the
 // same two owners in both states and the pod projects the pairs file, so nothing opens an
 // update round over it (movedGhDirs): a refresh that refused the moved default would stop for
 // the rest of the pod's life, and every token in the pod would expire within the hour. Each
-// tick after an edit, in either direction, therefore writes every role's two directories their
+// tick after a change, in either direction, therefore writes every role's two directories their
 // owners' current leases, rewrites the pairs key (GitHubPairsKey) from the pairs the Secret
 // held to the ones that resolve now, which is what the pod's wrappers route the moved
 // repository by, and leaves the recorded default where the launch fixed it.
-func TestACredentialRefreshGoesOnAfterAMappingEditMovedTheRoutedDefault(t *testing.T) {
-	// state is one state of the mapping the pair turns on: the repositories it serves, the
+func TestACredentialRefreshGoesOnAfterTheServedNamesMovedTheRoutedDefault(t *testing.T) {
+	t.Parallel()
+	// state is one state of the served names the pair turns on: the repositories served, the
 	// directory a bundle built under it routes sjawhar/legion-smoke to, and the pairs file
 	// such a bundle carries.
 	type state struct {
-		mapped        []ghrepo.Repository
+		repos         []ghrepo.Repository
 		routed, pairs string
 	}
 	// With both names served each is a repository of its own and the pair moves nothing; with
@@ -1116,22 +1130,23 @@ func TestACredentialRefreshGoesOnAfterAMappingEditMovedTheRoutedDefault(t *testi
 	oldNameGone := state{[]ghrepo.Repository{servingSmoke}, "cybermonklabs", ghconfig.RenderPairs([]ghrepo.Rename{smokeRename})}
 	dirs := []string{"cybermonklabs", "sjawhar"}
 	for _, tc := range []struct {
-		name             string
-		launched, edited state
+		name              string
+		launched, changed state
 	}{
-		{"the old name leaves the mapping", bothNames, oldNameGone},
-		{"the old name comes back into the mapping", oldNameGone, bothNames},
+		{"the old name stops being served", bothNames, oldNameGone},
+		{"the old name is served again", oldNameGone, bothNames},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var mapping atomic.Pointer[[]ghrepo.Repository]
-			mapping.Store(&tc.launched.mapped)
-			served := func() []ghrepo.Repository { return *mapping.Load() }
+			var held atomic.Pointer[[]ghrepo.Repository]
+			held.Store(&tc.launched.repos)
+			listed := func() []ghrepo.Repository { return *held.Load() }
+			served := servesOneOf(listed)
 			renames := ghrepo.MustRenames(smokeRename)
 			installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
 			leases, installs, logs := &namedLeases{}, installedOnOwners(dirs), &lockedLog{}
 			g := newRig(t, nil, withOptions(func(o *Options) {
 				o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-				o.Mapped = served
+				o.CacheRepositories = listed
 				o.Tokens = servingTokens{served: served, renames: renames}
 				o.GitHubCredential = appauth.GitHubCredential(sourceOf(leases, installs), served, renames, installed, left, nil)
 				o.ControllerCredential = appauth.ControllerCredential(sourceOf(leases, installs), served, renames, installed, left, nil)
@@ -1149,25 +1164,25 @@ func TestACredentialRefreshGoesOnAfterAMappingEditMovedTheRoutedDefault(t *testi
 			for _, role := range roles {
 				secret := g.secret(roleSecretName(pod, role))
 				if got := string(secret.Data[GitHubDefaultKey]); got != recorded {
-					t.Fatalf("the launch recorded the default %q for %s, want %s, the directory %s routes to under the mapping the pod was launched with",
+					t.Fatalf("the launch recorded the default %q for %s, want %s, the directory %s routes to under the served names the pod was launched with",
 						got, role, recorded, recordedSmoke)
 				}
 				if got := string(secret.Data[GitHubPairsKey]); got != pairs {
-					t.Fatalf("the launch wrote the pairs %q for %s, want %q, the ones that resolve under the mapping the pod was launched with", got, role, pairs)
+					t.Fatalf("the launch wrote the pairs %q for %s, want %q, the ones that resolve under the served names the pod was launched with", got, role, pairs)
 				}
 			}
 
-			// refreshed moves the mapping to next, ages every role's tokens past their hour,
-			// runs one tick, and holds every role's Secret to what a daemon serving next
+			// refreshed moves the served names to next, ages every role's tokens past their
+			// hour, runs one tick, and holds every role's Secret to what a daemon serving next
 			// renders for a pod fixed at the recorded default.
 			refreshed := func(when string, next state) {
 				t.Helper()
-				mapping.Store(&next.mapped)
+				held.Store(&next.repos)
 				if bundle, err := g.r.gitHubCredential(g.ctx, claim.RoleArchitect, recordedSmoke); err != nil || bundle.Default != next.routed {
 					t.Fatalf("%s: a bundle built for %s defaults to %q (%v), want %s", when, recordedSmoke, bundle.Default, err, next.routed)
 				}
 				if next.pairs == pairs {
-					t.Fatalf("%s: the mapping moves between two states that carry the same pairs %q, so no tick can show the key rewritten", when, pairs)
+					t.Fatalf("%s: the served names move between two states that carry the same pairs %q, so no tick can show the key rewritten", when, pairs)
 				}
 				staleGhKeys(g, pod, recorded, dirs...)
 
@@ -1197,8 +1212,8 @@ func TestACredentialRefreshGoesOnAfterAMappingEditMovedTheRoutedDefault(t *testi
 				}
 				pairs = next.pairs
 			}
-			refreshed("after the edit", tc.edited)
-			refreshed("after the edit is undone", tc.launched)
+			refreshed("after the change", tc.changed)
+			refreshed("after the change is undone", tc.launched)
 		})
 	}
 }

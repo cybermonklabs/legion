@@ -182,16 +182,22 @@ note "listener port $envoy_port"
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
 envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy")
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion")
-want_contract=$(jq -r .legion.daemonApiVersion "$root/packages/pi-legion/package.json")
-note "plugins $(jq -r '.name + "@" + .version' "$envoy_manifest") and $(jq -r '.name + "@" + .version' "$manifest") in OMP profile $profile, daemonApiVersion $want_contract"
-# The boot gate resolves the model of every task agent the prompts dispatch, so the profile names
-# their roles and the default one model, served by a static-key provider that listens nowhere: the
-# controller's one model turn, the start message (LEGION_CONTROLLER_START_MESSAGE) that pi-legion's
-# `/legion-controller-start`, the word `legion controller start` puts on Oh My Pi's command line,
-# sends once Oh My Pi's startup is over, fails against it, no check reads its answer, and no
-# credential the machine carries decides the gate.
-mkdir -p "$profile_agent"
-cat >"$profile_agent/models.yml" <<'EOF'
+# The contract this checkout's daemon speaks, which the pack above wrote into the installed
+# manifest: the checkout's own manifest declares none (scripts/daemon-contract.sh, of the working
+# tree, so a `git archive` tree with no .git reads it too).
+want_contract=$(bash "$root/scripts/daemon-contract.sh")
+note "plugins $(jq -r '.name + "@" + .version' "$envoy_manifest") and $(jq -r '.name + "@" + .version' "$manifest") in OMP profile $profile, daemon API contract $want_contract"
+# write_controller_profile AGENT writes the controller's profile settings into AGENT, the profile's
+# agent directory (lib/omp-home.test.ts reads what it writes). The boot gate resolves the model of
+# every task agent the prompts dispatch, so the profile names their roles and the default one model,
+# served by a static-key provider that listens nowhere: the controller's one model turn, the start
+# message (LEGION_CONTROLLER_START_MESSAGE) that pi-legion's `/legion-controller-start`, the word
+# `legion controller start` puts on Oh My Pi's command line, sends once Oh My Pi's startup is over,
+# fails against it, no check reads its answer, and no credential the machine carries decides the
+# gate.
+write_controller_profile() {
+  mkdir -p "$1"
+  cat >"$1/models.yml" <<'EOF'
 providers:
   offline:
     baseUrl: http://127.0.0.1:9
@@ -202,9 +208,11 @@ providers:
       - id: m1
         name: M1
 EOF
-printf 'modelRoles:\n  default: offline/m1\n  review: offline/m1\n  oracle: offline/m1\n  deep: offline/m1\n' >"$profile_agent/config.yml"
-# The controller is an interactive Oh My Pi in a pane, which a fresh profile's setup wizard would hold.
-omp_setup_wizard_off "$profile_agent/config.yml"
+  printf 'modelRoles:\n  default: offline/m1\n  review: offline/m1\n  oracle: offline/m1\n  deep: offline/m1\n' >"$1/config.yml"
+  # The controller is an interactive Oh My Pi in a pane, which a fresh profile's setup wizard would hold.
+  omp_setup_wizard_off "$1/config.yml"
+}
+write_controller_profile "$profile_agent"
 
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/operator-token")
 cat >"$work/legion.yaml" <<EOF

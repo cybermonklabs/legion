@@ -13,13 +13,14 @@ import {
   type SubscribeResult,
   type UnsubscribeInput,
 } from "@legion/envoy-client/transport";
-import type { NatsConnection } from "nats";
 import {
   createRegistrationState,
+  type DialLimit,
   type RegistrationInput,
   type RegistrationState,
   taskWasAbandoned,
 } from "./registration-state";
+import type { SessionInbound } from "./session-inbound";
 
 /** The deadline rejection the queue answers with, which the module names through its predicate:
  *  the error class itself is private to it. */
@@ -93,11 +94,11 @@ interface HarnessControl {
   getRole: (role: string) => Promise<RoleInfo>;
   getInterest: (sessionID: string) => Promise<Interest>;
   unsubscribe: (input: UnsubscribeInput) => Promise<void>;
-  dial: () => Promise<NatsConnection>;
+  dial: (limit?: DialLimit) => Promise<SessionInbound>;
   /** The session's connection, as the extension's `ensureConnection` answers it: it dials when
    *  the session has none, and can wait again after the dial. */
-  connect: (dial: () => Promise<NatsConnection>) => Promise<NatsConnection>;
-  subscribeTopic: (topic: string, connect: () => Promise<NatsConnection>) => Promise<boolean>;
+  connect: (dial: () => Promise<SessionInbound>) => Promise<SessionInbound>;
+  subscribeTopic: (topic: string, connect: () => Promise<SessionInbound>) => Promise<boolean>;
 }
 
 interface Harness {
@@ -121,7 +122,7 @@ interface Harness {
     readonly timeoutMs?: number;
   }[];
   readonly claims: SetRoleInput[];
-  readonly fakeConnection: (name: string) => NatsConnection;
+  readonly fakeConnection: (name: string) => SessionInbound;
   /** Claims `role` for `id` through a settled role move, as a healthy pass does. */
   readonly hold: (role: string, id: string) => Promise<boolean | undefined>;
 }
@@ -143,12 +144,12 @@ function createHarness(): Harness {
   }[] = [];
   const claims: SetRoleInput[] = [];
 
-  const fakeConnection = (name: string): NatsConnection =>
+  const fakeConnection = (name: string): SessionInbound =>
     ({
       close: async (): Promise<void> => {
         closedConnections.push(name);
       },
-    }) as unknown as NatsConnection;
+    }) as unknown as SessionInbound;
 
   const control: HarnessControl = {
     open: "",
@@ -200,7 +201,7 @@ function createHarness(): Harness {
     notify: (message, level) => notices.push({ message, level }),
     log: { warn: (message, context) => warnings.push({ message, context }) },
     appendRoleClaimEntry: (claim) => roleEntries.push(claim),
-    dial: () => control.dial(),
+    dial: (limit) => control.dial(limit),
     connect: (dial) => control.connect(dial),
     subscribeTopic: (topic, connect) => {
       subscribedTopics.push(topic);
@@ -434,6 +435,32 @@ describe("the serial queues", () => {
     release.resolve();
     await finished.promise;
     expect(closedConnections).toEqual(["abandoned"]);
+  });
+
+  test("a queued task's dial is given the task's deadline, and is told it stopped once the task was abandoned", async () => {
+    const { state, control, fakeConnection } = createHarness();
+    control.open = "ses_a";
+    control.deadlineMs = 200;
+    const given = Promise.withResolvers<DialLimit | undefined>();
+    const release = Promise.withResolvers<void>();
+    control.dial = async (limit) => {
+      given.resolve(limit);
+      await release.promise;
+      return fakeConnection("limited");
+    };
+    const started = performance.now();
+    const running = state.passes.run(async (handle) => {
+      handle.actFor("ses_a");
+      await handle.connect().catch(() => undefined);
+      return true;
+    });
+    const limit = await given.promise;
+    if (limit === undefined) throw new Error("the task's dial was given no limit");
+    expect(Math.abs(limit.deadlineAt - (started + 200))).toBeLessThan(100);
+    expect(limit.stopped()).toBe(false);
+    await expectAbandoned(running);
+    expect(limit.stopped()).toBe(true);
+    release.resolve();
   });
 
   test("a subscribe whose dial its task's session outran closes that dial and opens nothing", async () => {

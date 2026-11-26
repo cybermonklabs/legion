@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // On a three-copy stream with a byte limit (in-process three-server cluster), a GitHub delivery,
@@ -21,6 +22,7 @@ import (
 // exactly once: sent again under that id, each is answered from the copy the stream holds and no
 // second copy is stored.
 func TestARetryOfAGitHubDeliveryTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(t *testing.T) {
+	t.Parallel()
 	const limit = 16 << 10
 	cluster := testnats.StartCluster(t, 3)
 	client := startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(limit))
@@ -163,6 +165,7 @@ func TestARetryOfAGitHubDeliveryTheFullClusterStreamRefusedIsStoredOnceTheStream
 // whose deadline has passed writes nothing at all - the send is answered ErrWindowDeadline before
 // anything is sent, and the stream holds nothing of it.
 func TestAWindowSendTheFullStreamRefusedIsStoredOnceAndAPassedDeadlineSendsNothing(t *testing.T) {
+	t.Parallel()
 	const limit = 16 << 10
 	cluster := testnats.StartCluster(t, 3)
 	client := startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(limit))
@@ -209,12 +212,7 @@ func TestAWindowSendTheFullStreamRefusedIsStoredOnceAndAPassedDeadlineSendsNothi
 	}
 
 	passed := client.WindowUntil(func() time.Time { return time.Now().Add(-time.Second) })
-	var err error
-	select {
-	case err = <-passed.PublishAsync(item):
-	case <-time.After(time.Minute):
-		t.Fatal("the send was not answered within a minute")
-	}
+	err := testwait.Receive(t, "the send through a window whose deadline has passed to be answered", passed.PublishAsync(item))
 	if !errors.Is(err, ErrWindowDeadline) {
 		t.Fatalf("a send through a window whose deadline has passed = %v, want ErrWindowDeadline", err)
 	}

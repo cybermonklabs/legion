@@ -2,10 +2,18 @@ package store
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"math/big"
+	"net"
 	"net/url"
 	"os"
 	"slices"
@@ -14,6 +22,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -23,21 +33,30 @@ import (
 )
 
 // testDSN is the devbox and CI Postgres the store tests run against. Without it
-// there is nothing to test: the store has no in-memory mode by design.
+// there is nothing to test: the store has no in-memory mode by design. A pool a test opens on it
+// holds testdb.PoolConns connections unless LEGION_TEST_PG_DSN sets a size of its own, which it
+// keeps (testdb.PoolBounded): each URL this package's tests build from it goes only to a pool,
+// Open's or pgxpool's, and a pool sized by the CPU count would ask a large machine's Postgres for
+// more connections than it allows.
 //
 // These tests name no internal/testpg helper, and the file imports that package nowhere: testpg
 // imports this one, to migrate the template its Clone copies, so an import of it here would be a
 // cycle in this package's test binary. internal/testpg's own skip message holds the pinned
-// Postgres image to start, and testdb.Drop, which waits an autovacuum worker out, is the one
-// copy of that wait: internal/testpg/testdb imports nothing of this module, so this package's own
-// tests can take it where they cannot take internal/testpg.
+// Postgres image to start, and testdb.Drop, which waits out an autovacuum worker and a backend
+// that has not exited yet, is the one copy of that wait: internal/testpg/testdb imports no package
+// of this module except internal/testwait, which imports none, so this package's own tests can
+// take it where they cannot take internal/testpg.
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
 	if dsn == "" {
 		t.Skip("LEGION_TEST_PG_DSN is unset, so there is no Postgres to test against: start one and set it as internal/testpg's own skip message says, which holds the whole recipe and the image to run.")
 	}
-	return dsn
+	bounded, err := testdb.PoolBounded(dsn, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bounded
 }
 
 // emptyStore opens a store on a database of its own, so "an empty database" in a
@@ -99,6 +118,7 @@ func randomSuffix(t *testing.T) string {
 }
 
 func TestOpenNamesTheUnreachableAddressAndNotThePassword(t *testing.T) {
+	t.Parallel()
 	_, err := Open(context.Background(), "postgres://legion:hunter2@127.0.0.1:1/legion")
 	if err == nil {
 		t.Fatal("expected an error connecting to 127.0.0.1:1, got none")
@@ -114,6 +134,7 @@ func TestOpenNamesTheUnreachableAddressAndNotThePassword(t *testing.T) {
 // The driver's own text is not ours to trust: whatever it says on a future
 // version, the password the daemon was configured with does not reach a log.
 func TestConnectErrorRedactsThePasswordOutOfWhatItWraps(t *testing.T) {
+	t.Parallel()
 	for _, detail := range []string{
 		"failed to connect to `host=db.internal password=hunter2`",
 		"cannot parse postgres://legion:hunter2@db.internal:5432/legion",
@@ -132,6 +153,7 @@ func TestConnectErrorRedactsThePasswordOutOfWhatItWraps(t *testing.T) {
 // the user and the database name. Redaction that blanked every occurrence
 // would hide the two fields an operator reads to diagnose the refusal.
 func TestConnectErrorKeepsTheFieldsThatMerelyMatchThePassword(t *testing.T) {
+	t.Parallel()
 	err := &connectError{
 		address:  "127.0.0.1:5432",
 		password: "legion",
@@ -142,7 +164,286 @@ func TestConnectErrorKeepsTheFieldsThatMerelyMatchThePassword(t *testing.T) {
 	}
 }
 
+// Each connection error of dispatch://INFRA-2597/spec R3, as Open itself returns it, is read as R3
+// reads it (c-boot-db-retry case 4): no answer — a refused connection, a reset, a connection
+// closed before an answer, an attempt's own deadline, a host name that does not resolve — and the
+// codes that tell a client to try again later can clear at the next attempt; every other answer,
+// a DSN pgx cannot parse, a TLS failure (a certificate the client cannot verify, an alert of the
+// handshake, the server's or the client's own) and a stop of the caller cannot.
+//
+// It needs no database: each row is a listener of its own, or an address nothing listens on. Each
+// row also holds the type its error carries, measured against PostgreSQL 18.6 through pgx on
+// Open's own path, so a row that passes passes on the error pgx really builds, not on whatever
+// its listener happened to make it return. The server's codes come from a listener that answers
+// the startup message with one ErrorResponse (refusingBackend): 57P01, 57P02 and class 08 cannot
+// be made on a scratch server in a test, and the rest answer the same way from a real one.
+func TestOpenRetryableReadsEachConnectionErrorOfR3(t *testing.T) {
+	t.Parallel()
+	refused := "postgres://legion@127.0.0.1:1/legion?sslmode=disable"
+	at := func(listen func(*testing.T) string) func(*testing.T) string {
+		return func(t *testing.T) string {
+			return "postgres://legion@" + listen(t) + "/legion?sslmode=disable"
+		}
+	}
+	answering := func(code, message string) func(*testing.T) string {
+		return at(func(t *testing.T) string { return refusingBackend(t, code, message) })
+	}
+	// clientCertificateDemanded is a server that demands a certificate of the client, which pgx has
+	// none of: under TLS 1.3 the server sends its alert once it reads the client's answer.
+	clientCertificateDemanded := func(t *testing.T) string {
+		return tlsBackend(t, func(config *tls.Config) { config.ClientAuth = tls.RequireAnyClientCert })
+	}
+	for _, row := range []struct {
+		name string
+		dsn  func(*testing.T) string
+		// attempt is Open's deadline; zero is ten seconds, an attempt's limit at the daemon's start.
+		attempt time.Duration
+		// cancelled hands Open a context its caller has already cancelled.
+		cancelled bool
+		// carries is the identity the row's error must carry, for the row to be the row it names.
+		carries func(error) bool
+		want    bool
+	}{
+		{name: "a refused connection", dsn: func(*testing.T) string { return refused }, carries: carriesType[*net.OpError], want: true},
+		{name: "a connection reset as it is accepted", dsn: at(resettingListener), carries: carriesType[*net.OpError], want: true},
+		{name: "a connection closed after its startup message", dsn: at(closingListener), carries: carriesError(io.ErrUnexpectedEOF), want: true},
+		{name: "a listener that never answers, past the attempt's deadline", dsn: at(silentListener), attempt: 200 * time.Millisecond,
+			carries: carriesError(context.DeadlineExceeded), want: true},
+		{name: "a host name that does not resolve", dsn: func(*testing.T) string {
+			return "postgres://legion@no-such-host.invalid:5432/legion?sslmode=disable"
+		}, carries: carriesType[*net.DNSError], want: true},
+		{name: "08006 connection failure", dsn: answering("08006", "could not receive data from client: Connection reset by peer"), carries: carriesCode("08006"), want: true},
+		{name: "53300 slots full", dsn: answering("53300", "remaining connection slots are reserved for roles with the SUPERUSER attribute"), carries: carriesCode("53300"), want: true},
+		{name: "57P01 admin shutdown", dsn: answering("57P01", "terminating connection due to administrator command"), carries: carriesCode("57P01"), want: true},
+		{name: "57P02 crash shutdown", dsn: answering("57P02", "terminating connection because of crash of another server process"), carries: carriesCode("57P02"), want: true},
+		{name: "57P03 shutting down", dsn: answering("57P03", "the database system is shutting down"), carries: carriesCode("57P03"), want: true},
+		{name: "28P01 a refused password", dsn: answering("28P01", `password authentication failed for user "legion"`), carries: carriesCode("28P01"), want: false},
+		{name: "28000 no pg_hba entry", dsn: answering("28000", `no pg_hba.conf entry for host "127.0.0.1", user "legion", database "legion", no encryption`), carries: carriesCode("28000"), want: false},
+		{name: "3D000 a database that does not exist", dsn: answering("3D000", `database "legion" does not exist`), carries: carriesCode("3D000"), want: false},
+		{name: "a DSN pgx cannot parse", dsn: func(*testing.T) string { return "postgres://x@127.0.0.1/x?sslmode=bogus" },
+			carries: carriesType[*pgconn.ParseConfigError], want: false},
+		{name: "a certificate verify-full cannot verify, beside a refused dial", dsn: func(t *testing.T) string {
+			// Two hosts, as localhost is two addresses, 127.0.0.1 and ::1: pgx tries each, and its
+			// error carries the refused certificate at the first beside the refused dial at the
+			// second, so the row holds that a TLS failure is read before the network's.
+			return "postgres://legion@" + tlsBackend(t, nil) + ",127.0.0.1:1/legion?sslmode=verify-full"
+		}, carries: func(err error) bool {
+			return carriesType[*tls.CertificateVerificationError](err) && carriesType[*net.OpError](err)
+		}, want: false},
+		// Over TCP, Go's TLS client returns an alert the server sent as a *net.OpError whose Op is
+		// "remote error", and one it sent itself as a *net.OpError whose Op is "local error"
+		// (crypto/tls/conn.go): each row holds the Op pgx v5.13.0 returned on Open's path.
+		{name: "a server that demands a client certificate, which alerts the client", dsn: func(t *testing.T) string {
+			return "postgres://legion@" + clientCertificateDemanded(t) + "/legion?sslmode=require"
+		}, carries: carriesOp("remote error"), want: false},
+		{name: "a server that speaks only TLS 1.1, which alerts the client", dsn: func(t *testing.T) string {
+			return "postgres://legion@" + tlsBackend(t, func(config *tls.Config) {
+				config.MinVersion, config.MaxVersion = tls.VersionTLS10, tls.VersionTLS11
+			}) + "/legion?sslmode=require"
+		}, carries: carriesOp("remote error"), want: false},
+		{name: "a handshake message of a type TLS does not define, which the client alerts", dsn: func(t *testing.T) string {
+			return "postgres://legion@" + sslBackend(t, func(conn net.Conn) {
+				// One handshake record (22, TLS 1.2, 4 bytes) holding a handshake message of type
+				// 255, which no version of TLS defines, and of length 0.
+				if _, err := conn.Write([]byte{22, 3, 3, 0, 4, 255, 0, 0, 0}); err == nil {
+					_, _ = io.Copy(io.Discard, conn)
+				}
+			}) + "/legion?sslmode=require"
+		}, carries: carriesOp("local error"), want: false},
+		{name: "a server that demands a client certificate, after a refused dial", dsn: func(t *testing.T) string {
+			// The refused dial comes first in the error, so the row holds that the alert is read
+			// wherever it stands, and not only at the chain's first *net.OpError.
+			return "postgres://legion@127.0.0.1:1," + clientCertificateDemanded(t) + "/legion?sslmode=require"
+		}, carries: func(err error) bool {
+			return carriesOp("dial")(err) && carriesOp("remote error")(err)
+		}, want: false},
+		{name: "a caller that stopped", dsn: func(*testing.T) string { return refused }, cancelled: true,
+			carries: carriesError(context.Canceled), want: false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			attempt := row.attempt
+			if attempt == 0 {
+				attempt = 10 * time.Second
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), attempt)
+			defer cancel()
+			if row.cancelled {
+				cancel()
+			}
+			st, err := Open(ctx, row.dsn(t))
+			if err == nil {
+				st.Close()
+				t.Fatal("Open succeeded; the row needs the error it names")
+			}
+			if !row.carries(err) {
+				t.Fatalf("Open failed with %q, which does not carry the error this row names", err)
+			}
+			if got := OpenRetryable(err); got != row.want {
+				t.Errorf("OpenRetryable(%q) = %t, want %t", err, got, row.want)
+			}
+		})
+	}
+}
+
+// carriesType is whether err carries an error of type T anywhere in its chain.
+func carriesType[T error](err error) bool {
+	var target T
+	return errors.As(err, &target)
+}
+
+// carriesError is whether an error carries target anywhere in its chain.
+func carriesError(target error) func(error) bool {
+	return func(err error) bool { return errors.Is(err, target) }
+}
+
+// carriesCode is whether an error carries a server's answer of code.
+func carriesCode(code string) func(error) bool {
+	return func(err error) bool {
+		var pgErr *pgconn.PgError
+		return errors.As(err, &pgErr) && pgErr.Code == code
+	}
+}
+
+// carriesOp is whether an error carries, anywhere in its chain, a *net.OpError whose Op is op.
+func carriesOp(op string) func(error) bool {
+	var carries func(error) bool
+	carries = func(err error) bool {
+		if opErr, ok := err.(*net.OpError); ok && opErr.Op == op {
+			return true
+		}
+		switch err := err.(type) {
+		case interface{ Unwrap() error }:
+			return carries(err.Unwrap())
+		case interface{ Unwrap() []error }:
+			return slices.ContainsFunc(err.Unwrap(), carries)
+		}
+		return false
+	}
+	return carries
+}
+
+// fakePostgres listens on 127.0.0.1 for the test, hands each connection it accepts to serve, and
+// returns its address. The listener closes when the test ends.
+func fakePostgres(t *testing.T, serve func(net.Conn)) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go serve(conn)
+		}
+	}()
+	return listener.Addr().String()
+}
+
+// resettingListener ends each connection with a TCP reset (SO_LINGER 0) as soon as it is accepted.
+func resettingListener(t *testing.T) string {
+	return fakePostgres(t, func(conn net.Conn) {
+		_ = conn.(*net.TCPConn).SetLinger(0)
+		_ = conn.Close()
+	})
+}
+
+// closingListener reads each connection's startup message and closes the connection before it
+// answers.
+func closingListener(t *testing.T) string {
+	return fakePostgres(t, func(conn net.Conn) {
+		defer conn.Close()
+		_, _ = pgproto3.NewBackend(conn, conn).ReceiveStartupMessage()
+	})
+}
+
+// silentListener accepts each connection and never answers it; the connection ends when its
+// client closes it.
+func silentListener(t *testing.T) string {
+	return fakePostgres(t, func(conn net.Conn) {
+		defer conn.Close()
+		_, _ = io.Copy(io.Discard, conn)
+	})
+}
+
+// refusingBackend answers each connection's startup message with one FATAL ErrorResponse of code
+// and message, as a server that refuses the connection answers it.
+func refusingBackend(t *testing.T, code, message string) string {
+	return fakePostgres(t, func(conn net.Conn) {
+		defer conn.Close()
+		backend := pgproto3.NewBackend(conn, conn)
+		if _, err := backend.ReceiveStartupMessage(); err != nil {
+			return
+		}
+		backend.Send(&pgproto3.ErrorResponse{Severity: "FATAL", Code: code, Message: message})
+		_ = backend.Flush()
+	})
+}
+
+// sslBackend answers each connection's SSLRequest with S, as a server that speaks TLS does, and
+// then hands the connection to serve.
+func sslBackend(t *testing.T, serve func(net.Conn)) string {
+	t.Helper()
+	return fakePostgres(t, func(conn net.Conn) {
+		defer conn.Close()
+		startup, err := pgproto3.NewBackend(conn, conn).ReceiveStartupMessage()
+		if err != nil {
+			return
+		}
+		if _, ok := startup.(*pgproto3.SSLRequest); !ok {
+			return
+		}
+		if _, err := conn.Write([]byte("S")); err != nil {
+			return
+		}
+		serve(conn)
+	})
+}
+
+// tlsBackend answers each connection's SSLRequest with S and then serves a TLS handshake with a
+// self-signed certificate no client can verify, under the settings tune makes (nil makes none).
+// Whatever the handshake ends in, the server reads the connection to its end, so its close sends
+// no reset that could overtake the alert it sent.
+func tlsBackend(t *testing.T, tune func(*tls.Config)) string {
+	t.Helper()
+	config := &tls.Config{Certificates: []tls.Certificate{selfSignedCertificate(t)}}
+	if tune != nil {
+		tune(config)
+	}
+	return sslBackend(t, func(conn net.Conn) {
+		_ = tls.Server(conn, config).Handshake()
+		_, _ = io.Copy(io.Discard, conn)
+	})
+}
+
+// selfSignedCertificate is a certificate for localhost that signs itself, which no root a client
+// trusts has signed.
+func selfSignedCertificate(t *testing.T) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate the certificate's key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("sign the certificate: %v", err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
 func TestSchemaVersionIsZeroBeforeAnyMigration(t *testing.T) {
+	t.Parallel()
 	version, err := emptyStore(t).SchemaVersion(context.Background())
 	if err != nil {
 		t.Fatalf("schema version on an empty database: %v", err)
@@ -164,6 +465,7 @@ func latestMigration(t *testing.T) (count, version int) {
 }
 
 func TestMigrateAppliesEveryEmbeddedMigration(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	count, latest := latestMigration(t)
@@ -185,6 +487,7 @@ func TestMigrateAppliesEveryEmbeddedMigration(t *testing.T) {
 }
 
 func TestMigrateAppliesNothingASecondTime(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	_, latest := latestMigration(t)
@@ -211,6 +514,7 @@ func TestMigrateAppliesNothingASecondTime(t *testing.T) {
 // so a database at 0001-0040 and 0042 and later takes 0041 — here child_release_retries, a table no
 // later migration alters — and ends with every version recorded.
 func TestMigrateAppliesALowerMigrationADatabaseAlreadyPastItLacks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	all, err := migrations.All()
@@ -284,6 +588,7 @@ func TestMigrateAppliesALowerMigrationADatabaseAlreadyPastItLacks(t *testing.T) 
 // connection returns to the pool as the migration left it, and this fails: a pooled connection
 // reads 77s and the row's schema.
 func TestMigrateResetsTheSessionAMigrationLeftOnItsConnection(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	all, err := migrations.All()
@@ -376,6 +681,7 @@ func TestMigrateResetsTheSessionAMigrationLeftOnItsConnection(t *testing.T) {
 }
 
 func TestBootsCountsTheProjectsBootsFromItsFirst(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	first := time.Now().UTC().Truncate(time.Microsecond)
@@ -408,6 +714,7 @@ func TestBootsCountsTheProjectsBootsFromItsFirst(t *testing.T) {
 }
 
 func TestBootsIsZeroForAProjectThatNeverBooted(t *testing.T) {
+	t.Parallel()
 	count, firstBootAt, err := migratedStore(t).Boots(context.Background(), "LEGION")
 	if err != nil {
 		t.Fatalf("boots: %v", err)
@@ -421,6 +728,7 @@ func TestBootsIsZeroForAProjectThatNeverBooted(t *testing.T) {
 }
 
 func TestStopBootStampsTheBootItNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	started := time.Now().UTC().Truncate(time.Microsecond)
@@ -456,6 +764,7 @@ func TestStopBootStampsTheBootItNames(t *testing.T) {
 }
 
 func TestStopBootRefusesAnUnknownBoot(t *testing.T) {
+	t.Parallel()
 	err := migratedStore(t).StopBoot(context.Background(), 4242, time.Now().UTC())
 	if err == nil {
 		t.Fatal("expected an error stopping boot 4242, got none")
@@ -466,10 +775,11 @@ func TestStopBootRefusesAnUnknownBoot(t *testing.T) {
 }
 
 func TestTxCommitsWhatTheFunctionWrote(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, "insert into daemon_boot (project, started_at) values ($1, now())", "LEGION")
 		return err
 	}); err != nil {
@@ -486,11 +796,12 @@ func TestTxCommitsWhatTheFunctionWrote(t *testing.T) {
 }
 
 func TestTxRollsBackWhatTheFunctionWroteBeforeFailing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	failure := errors.New("the phase gave up")
 
-	err := store.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, store.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "insert into daemon_boot (project, started_at) values ($1, now())", "LEGION"); err != nil {
 			return err
 		}
@@ -535,7 +846,7 @@ func phaseRowOf(t *testing.T, st *Store, issue string, role claim.Role) record.P
 	t.Helper()
 	ctx := context.Background()
 	var rows []record.PhaseRow
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		rows, err = record.NewStore().Phases(ctx, tx, issue)
 		return err
@@ -550,6 +861,7 @@ func phaseRowOf(t *testing.T, st *Store, issue string, role claim.Role) record.P
 // worker happened to be handed a new task: 0011 gives each such delivery the run its issue is on,
 // and leaves a claim on an issue no workflow records — an operator's own (LEGION-272) — at zero.
 func TestTheDeliveryGenerationBackfillsFromTheIssuesRun(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, 10)
@@ -602,6 +914,7 @@ func TestTheDeliveryGenerationBackfillsFromTheIssuesRun(t *testing.T) {
 // the task its new process is given carries its own run — as is one on an issue no workflow
 // records.
 func TestTheServingRunBackfillsForClaimsBetweenTurns(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, 10)
@@ -652,6 +965,7 @@ func TestTheServingRunBackfillsForClaimsBetweenTurns(t *testing.T) {
 // root still lingers, so the row goes on to expire that linger, and deletes the rest: their linger
 // has ended, and a row that never decodes would fail every tick and every promotion of its tree.
 func TestQueuedLingerRowsOfTheOlderShapeNameTheirLingerOrGo(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, 13)
@@ -734,6 +1048,7 @@ func TestQueuedLingerRowsOfTheOlderShapeNameTheirLingerOrGo(t *testing.T) {
 // boot and together cover every live claim; started from 0013, a claim already past relaunching
 // with a zero run is out of 0014's reach, which is the limit its header states.
 func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		from      int
 		wantReady int64
@@ -800,14 +1115,22 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // `jj diff --from main@origin --to @ --name-only packages/daemon/internal/store/migrations`
 // named on dispatch://INFRA-714's branch. A migration a later branch adds that rewrites
 // outbox_kind_check with a kind of its own belongs in it too, as dispatch://INFRA-3274's
-// 20261114031356, the role-holders publication's 20261116165926 and dispatch://INFRA-4374's
-// 20261119003157 (conflict_confirm and merge_forward) do: the case of a database main
-// migrated applies a version left out of the list before the list's own rewrites of that check,
-// which do not name the later kind, so the row seeded of that kind fails the upgrade. So does one
-// that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
-// claims.abandoned_session (20261029121200): applied before that version, it fails on the missing
-// column. Any other version left out makes the cases below weaker, never red, which is why the
-// comment says where the list comes from.
+// 20261114031356, the role-holders publication's 20261116165926, the step record's
+// 20261117000528, the plan record's 20261117023932, dispatch://INFRA-4374's 20261119003157
+// (conflict_confirm and merge_forward) and dispatch://INFRA-175's 20261119203047 do: the case of a
+// database main migrated applies a version left out of the list before the list's own rewrites of
+// that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
+// So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
+// claims.abandoned_session (20261029121200) and dispatch://INFRA-5463's 20261123212127 reads
+// claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
+// column. So does one that changes a table a version of the list creates, as the givers of a plan
+// version (20261124033010) add a column to 20261117034837's issue_plans: applied as main's, before
+// that table exists, it fails on the missing table. 20261119203047 is the last migration that
+// writes outbox_kind_check: it stands above main's 20261119003157, which writes it too, and main's
+// 20261111090000, 20261111091500 and 20261116144907 write none. The cache trimmer's two,
+// 20261111090000 and 20261111091500, read no column a version of the list adds either, so neither
+// is in the list. Any other version left out makes the cases below weaker, never red, which is why
+// the comment says where the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
@@ -816,7 +1139,8 @@ var thisRelease = map[int]bool{
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
-	20261117064152: true, 20261119003157: true,
+	20261117034837: true, 20261117064152: true, 20261119003157: true, 20261119203047: true,
+	20261123212127: true, 20261124033010: true,
 }
 
 const idleRelease = 20261101222956
@@ -836,8 +1160,15 @@ var retiredOutboxKinds = []record.OutboxKind{"ready_merge", "auto_merge_disable"
 // check, and a database that ran 0031 through 0038 before 0029 and 0030 applies those two last, so
 // a queued close suspension must survive them and both kinds must stand at the end in either
 // order. Migrations from 0039 on ship only in binaries that carry 0030, and Migrate applies in
-// ascending order, so none can run before it: 0043 sets the list after every kind it names.
+// ascending order, so none can run before it: 0043 sets the list after every kind it names. On a
+// fresh database the rewrite with the highest version is the last word, so a kind that only a
+// lower one names is refused there: design_changes would be, had its 20261119203047 stood below
+// the role-holders kind's 20261116165926 or the merge forward's 20261119003157, whose lists leave
+// it out, and step_record, plan_record, conflict_confirm and merge_forward are, unless the design
+// news's list, which runs after the step record's 20261117000528, the plan record's 20261117023932
+// and the merge forward's 20261119003157, names them too.
 func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.T) {
+	t.Parallel()
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
@@ -845,7 +1176,8 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 	// Every kind the daemon runs, read from the lanes rather than listed here: a kind added to a
 	// lane and forgotten in a hand-kept list is exactly the omission this case exists to catch,
 	// and it is how a kind of the role-message lane came to be missing from two rewrites of an
-	// earlier release.
+	// earlier release. Every lane is read, the claim lane's claim_release, the documents lane's
+	// design_changes and the record lane's step_record and plan_record among them.
 	var kinds []record.OutboxKind
 	for _, lane := range record.OutboxLanes() {
 		kinds = append(kinds, record.LaneKinds(lane)...)
@@ -935,6 +1267,7 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 // fail to decode and stall its issue's lifecycle lane. The migration strips the key and leaves
 // everything else of the row as it is; a row that never had it is untouched.
 func TestTheIssueSuspendMigrationStripsTheReleaseKeyFromQueuedRows(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, 50)

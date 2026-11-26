@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -77,12 +76,9 @@ type Delivery struct {
 	// was upgraded to number them. The promotion's resume of a mid-phase worker is no such task:
 	// it carries the entry it raised (workflow.Engine.StartPromotedWorker).
 	Entry int64
-	// CheckLook is the look of a closed issue's production check this task is of, from the start
-	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). It is what says a
-	// turn's completion is a check report rather than a phase completion: the API routes on the
-	// look the claim's worker took (Claim.ServingCheck), and the report is of that look rather
-	// than of whichever look the check has reached (api/handoff.go, checkReport). The zero value
-	// is a task of no look: every phase task, an operator's own, a resume.
+	// CheckLook is the look and check instance this task gives the worker. ServingCheck uses it
+	// to attribute an explicitly named check report to the look the worker took, not to choose
+	// between a report and a phase completion. Phase tasks, operator tasks and resumes carry zero.
 	CheckLook   CheckLook
 	Phase       phase.Phase
 	QueuedAt    time.Time
@@ -108,7 +104,11 @@ type Delivery struct {
 	// (startSend) and by any outcome of such a send (markRead, clearReadMark), never cleared while
 	// the task lives, and persisted, because it is what tells a task nobody has read from one the
 	// daemon has not sent at all: a claim that has served no run is working the task it holds
-	// unless a prompt of that task has already come to nothing (Claim.ServingRun).
+	// unless a prompt of that task has already come to nothing (Claim.ServingRun). Since it is set
+	// before the send adopts the working copy and mints the role's identity, a send that failed at
+	// either sets it with no prompt sent, so it is not what says a prompt reached the agent: for
+	// news of the approved design, the copy an acknowledged prompt carried says that
+	// (Delivery.Carried, unsentNews).
 	Prompted bool
 	// OutOfMemory says the end that cut a turn of this task off was its pod running out of memory
 	// (runtime.Observation.OutOfMemory), so the task is sent behind outOfMemoryTask as well as
@@ -131,10 +131,9 @@ type Delivery struct {
 	// late refusal of its own (lateRefused), which charges the budget, so it bounds itself and
 	// is read there rather than in this record of the silent ones. All three are written
 	// together on every send that fails in refused, and cleared together where the budgets are
-	// cleared (confirm), so a task that got through carries zeroes. LastSendError is never the
-	// far side's text as it arrived: the write that records it scrubs and bounds it first
-	// (scrubSendError), because the text is the far side's own and the store takes only some of
-	// what the far side can say.
+	// cleared (confirmCarrying), so a task that got through carries zeroes. LastSendError is the
+	// far side's text as the daemon keeps any far side's error text (storetext.FarSideError), set
+	// so in memory as well as in the store, and the whole text is in the log (table.go's refused).
 	SendFailures      int
 	LastSendFailureAt time.Time
 	LastSendError     string
@@ -147,6 +146,48 @@ type Delivery struct {
 	// owes them. It is rewritten, with the task text, by the send-time narrowing of what the task
 	// still names of this claim's tree (Deps.RootTask). Empty for a task that names none.
 	Kept []byte
+	// News is what the task carries of news of the approved design (record.DeliveryNews, encoded
+	// JSON): the start's own text, each item it tells and each opening it carries. It is opaque here
+	// as Kept is, and carried and persisted with the delivery. It is rewritten, with the task text,
+	// at every send, by the one render that writes both (Deps.DesignNews, and Deps.RootTask where a
+	// root architect's task is narrowed), so the news a delivery holds is exactly what its text
+	// names: no writer keeps one beside a text it did not render with it. Empty for a task that
+	// carries none, which no send asks about.
+	News []byte
+	// Carried is the copy of News that the prompt whose turn this delivery's confirmation takes
+	// carried, and, while the delivery is confirmed, its credit: what its audiences are read as
+	// having taken from it (the claim store's design_news_told_in), held by this delivery's row and
+	// by nothing else, so the write that takes the confirmation back, or the retirement, ends exactly
+	// that credit, whatever has been credited since. News is rendered again at each send, so a later
+	// prompt can carry more than the earlier one whose turn starts — the late turn of a prompt whose
+	// wait ran out while a resend was answered busy, or, after a restart, the turn of a prompt an
+	// earlier daemon sent — and that turn's confirmation must credit only what its own prompt said
+	// (turnAnswers).
+	//
+	// It is written where Oh My Pi acknowledges a prompt of the task (acked): the send's adoption of
+	// the working copy and its identity mint went through, and the prompt reached the agent. A
+	// send whose adoption or mint failed, or that Oh My Pi refused, writes nothing, so a task no
+	// acknowledged prompt carried holds none, and the question a restart left never takes a turn of
+	// the agent's own for it (unsentNews). The confirmation fixes it to the prompt its turn answers.
+	// It goes where the confirmation is taken back, or the task is taken back with no prompt of it
+	// left outstanding, since no turn of a prompt that carried it can start any more. It stays once
+	// the turn's result says the turn ran, which makes the credit final (Ran).
+	Carried []byte
+	// Ran says the result of the prompt whose turn this delivery's confirmation took said that turn
+	// ran with no provider error (promptResulted): the agent read what Carried credits, so the
+	// credit is final, and the write that records Ran folds it into the told rows (the claim store's
+	// settleDesignNews), where it outlives the delivery. It is set only on a confirmed delivery with
+	// a copy, and it goes with the copy: every write of Carried writes it false (credit).
+	Ran bool
+	// NewsOnly says the task was queued for news of the approved design alone
+	// (RequestDeliver.NewsOnly, the daemon's news-only start). It names its member's phase and run,
+	// so that it is dropped once the issue has left that phase (phaseHolds), but it is no task of
+	// that phase: it hands the worker no work of the phase, only the news. So no reader of a
+	// claim's pending delivery takes it for the phase's task (StillWorked, HoldsWork), and the start
+	// or repair that sends the phase's task still sends it to a claim that holds one. The mark is
+	// the delivery's own column (pending_task_deliveries.news_only), written and read beside News,
+	// so no writer of the news can drop it.
+	NewsOnly bool
 	// ProviderErrorRetries is how many times this task has been sent again after a turn of it
 	// ended in a provider error, from 0 (promptResulted's providerErrored). It is what the wait
 	// before the next send is a function of (promptRetryDelay), so a daemon restarted in the
@@ -162,77 +203,52 @@ type Delivery struct {
 	// Empty for a task no provider error has taken back.
 	ProviderErrorNote string
 	// RoundNamed is the typed fact that Task ends with the daemon's two sentences of a reviewer's
-	// review round (reviewround.Sentences), from the start row that queued it
-	// (record.SuperviseRequest.RoundNamed, RequestDeliver.RoundNamed). message reads it: a task of
-	// the reviewer without it, which a start row of the release before this one, an operator or a
-	// delivery the release before stored can be, is sent with the daemon's sentences naming no
-	// commit and no entry at its end.
+	// review round (reviewround.Sentences), from the start that queued it (RequestDeliver.RoundNamed):
+	// the start row's own mark (record.SuperviseRequest.RoundNamed), or the round the start
+	// executor names on a reviewer's start queued for news alone (the daemon's newsForStart). The
+	// send of a task that carries news keeps the two last, after the news (the daemon's
+	// renderNews). message reads it: a task of the reviewer without it, which a start row of the
+	// release before this one, an operator or a delivery the release before stored can be, is sent
+	// with the daemon's sentences naming no commit and no entry at its end.
 	RoundNamed bool
-}
-
-// maxSendErrorRunes bounds the text of a failed send kept on a delivery (scrubSendError). What a
-// reader of that record needs is why the send failed: the first line of the far side's answer and
-// enough of what follows to name the failure — the shim's words name the stale lock's path and
-// its age within the first two hundred characters — so this is more room than the diagnosis asks
-// for and far less than the text can be. What it cuts is the rest of a relayed command's output:
-// a refused adoption carries the wedged command's whole stderr, measured at about a megabyte
-// (INFRA-1480), which would otherwise be stored on every failed send of the task and served
-// again in every operator listing of the claim.
-const maxSendErrorRunes = 2048
-
-// scrubSendError is the text of a failed send as a delivery may hold it. The text is the far
-// side's own and is not this daemon's to trust: a refused adoption carries the wedged command's
-// whole stderr, relayed by the shim, and a refused prompt carries the `error` Oh My Pi decoded
-// from JSON, where a `\u0000` in it becomes a NUL byte.
-//
-// The rule the store holds is that the text is valid UTF-8. Postgres refuses any byte its server
-// encoding cannot read — on the UTF8 encoding production runs, `select E'wedged\000lock'` is
-// "invalid byte sequence for encoding \"UTF8\": 0x00" and a lone 0xff is the same refusal — so
-// the NUL is one instance of that rule rather than the rule itself, and an SQL_ASCII server,
-// which takes the 0xff and refuses the NUL, draws the line in another place. So the text is made
-// valid UTF-8, with each run of bytes that reads as no character replaced by the replacement
-// character rather than dropped, so the record still shows where the far side's words were
-// unreadable; the NUL — valid UTF-8 and still refused by every encoding — goes; and what is left
-// is cut to maxSendErrorRunes. The start is what is kept, because that is where the far side
-// names the failure: the shim's own words give the stale lock's path and its age there. The cut
-// counts runes rather than bytes, so it can never make the text invalid again by ending inside a
-// character.
-//
-// Nothing of the far side's answer is lost this way, only moved: the whole unscrubbed text goes
-// to the log line this record stands beside (table.go's refused), which has no store to refuse
-// it, so the operator who needs the megabyte still reads it in the pod's log.
-func scrubSendError(text string) string {
-	text = strings.ReplaceAll(strings.ToValidUTF8(text, "\uFFFD"), "\x00", "")
-	if runes := []rune(text); len(runes) > maxSendErrorRunes {
-		return string(runes[:maxSendErrorRunes]) + "…"
-	}
-	return text
 }
 
 // StillWorked says whether a claim in state will still work this task as the task of generation's
 // run in phase p: it is that run's task for that phase, and either not yet confirmed (sent once the
 // claim is ready, a task a death took back included) or confirmed in the turn the claim is working.
-// A confirmed task on a claim not working is over: the claim's next decision retires it.
+// A confirmed task on a claim not working is over: the claim's next decision retires it. A task of
+// news alone (NewsOnly) names the phase and the run but is no task of the phase, so it is never
+// the phase's task a claim still works: a start that retries a failed claim still sends the
+// phase's task (the daemon's keepsStartTask), the silence repair still sees a worker that holds
+// no phase task (workflow's unpromptedPhaseWorker), and the rest of the readers of this rule read
+// it the same way.
 func (d Delivery) StillWorked(generation uint64, p phase.Phase, state ClaimState) bool {
-	return d.Generation == generation && d.Phase == p && (d.ConfirmedAt.IsZero() || state == StateWorking)
+	return !d.NewsOnly && d.Generation == generation && d.Phase == p && (d.ConfirmedAt.IsZero() || state == StateWorking)
 }
 
 // SupersededBy is whether a task of the run generation at entry takes d's place in a tree root
-// architect's hands: d is a task of an earlier run, or of the same run at a lower entry, and d
-// carries a run and an entry of its own. A task of no run (generation 0), an operator's own and
-// the daemon's delivery of a relaunch's record among them, is superseded by nothing, and so is a
-// task of no entry: a wake's task (workflow's wakeRow), which is the sentence that says why the
-// pod came back and is no entry's work, and every task a daemon delivered before it numbered
-// entries. A newer task is refused behind such a task while it is untaken, as behind any untaken
-// task, and it is sent first (queue). The exception is the two tasks a newer task replaces
-// whatever they carry (replaceable): the task a provider error took back while the ladder's wait
-// stands for it, and the daemon's own delivery of a relaunch's record while no prompt of it waits
-// on a result. It is the one statement of that comparison, and two readers make it: the claim's
-// machine, before it puts a newer task in the place of the one the claim holds unconfirmed
+// architect's hands by the root architect's rule: d is a task of an earlier run, or of the same run
+// at a lower entry, and d carries a run and an entry of its own. A task of no run (generation 0),
+// an operator's own and the daemon's delivery of a relaunch's record among them, is superseded by
+// nothing here, and so is a task of no entry: a wake's task (workflow's wakeRow), which is the
+// sentence that says why the pod came back and is no entry's work, and every task a daemon
+// delivered before it numbered entries. A newer task is refused behind such a task while it is
+// untaken, as behind any untaken task, and it is sent first (queue). Three tasks are the
+// exceptions, each replaced by another rule than this one. The two a newer task replaces whatever
+// they carry (replaceable): the task a provider error took back while the ladder's wait stands for
+// it, and the daemon's own delivery of a relaunch's record while no prompt of it waits on a result.
+// And a task of news of the approved design alone (NewsOnly), which carries no entry: the task of
+// any entry takes its place, for every role (Machine.supersedes, whose first rule that is), since
+// the start of an entry carries that same news itself.
+//
+// It is the one statement of this comparison, and two readers make it: the claim's machine,
+// before it puts a newer task in the place of the one the claim holds unconfirmed
 // (Machine.supersedes), and the admission sweep, which writes the start of the entry a root
 // architect's phases row names unless the claim holds a task that start would not replace
-// (workflow.ArchitectStartPending). So the sweep and the machine agree on which held task a start
-// of the root's run at that entry replaces.
+// (workflow.ArchitectStartPending). The sweep never reads a task of news alone as one that holds
+// its start back (supervise.HoldsWork, which its reading of a start on its way goes through), so
+// the sweep and the machine agree on which held task a start of the root's run at that entry
+// replaces, a task of news alone among them.
 func (d Delivery) SupersededBy(generation uint64, entry int64) bool {
 	if d.Generation == 0 || d.Entry <= 0 {
 		return false
@@ -244,7 +260,7 @@ func (d Delivery) SupersededBy(generation uint64, entry int64) bool {
 // session the claim abandoned (AbandonedSession, abandonedTask), and what the last let-go of its
 // process ended (EndedWork, relaunchSentence). Delivery.message answers it beside the prompt it
 // composes, so what a prompt is marked as telling is what its text holds (Machine.carried, which
-// confirm reads).
+// confirmCarrying reads).
 type sentences struct{ abandoned, ended bool }
 
 // message is the prompt a delivery is sent as, and which of the claim's two untold records it
@@ -279,7 +295,7 @@ type sentences struct{ abandoned, ended bool }
 //     last death's words. With an abandoned session still to tell, that turn was the old
 //     session's, and the abandoned session's sentence stands in its place (the first item).
 //
-// Composing a prompt tells nothing (confirm).
+// Composing a prompt tells nothing (confirmCarrying).
 //
 // Behind the interruption, when its end was the pod running out of memory, comes outOfMemoryTask
 // — the agent reads that its turn was interrupted, then why, then the task. A task a provider
@@ -299,13 +315,14 @@ type sentences struct{ abandoned, ended bool }
 // of each task the reviewer is sent (reviewround.Sentences), and this is the one place each
 // prompt of a delivery is composed, so it is where the rule holds for every task, whatever queued
 // it. A task that says it ends with them (RoundNamed), as each task the workflow queues for the
-// reviewer does (workflow's queuedRow), is sent as it stands. A task of the reviewer that does
-// not say so is given them at its end, naming no commit and no entry: a start row or a delivery
-// the release before this one stored, whose text can end with words of the same shape that no
-// review recorded, or a task an operator wrote. Its reviewer reads the whole change and keeps the
-// entry of its round. It is the fact and never the task's text that tells the two apart, since
-// two such texts can be the same word for word. The relaunch's record is no task, and is sent as
-// it is.
+// reviewer does (workflow's queuedRow) and each the start executor names on a reviewer's start
+// queued for news alone (the daemon's newsForStart), is sent as it stands. A task of the reviewer
+// that does not say so is given them at its end, naming no commit and no entry: a start row or a
+// delivery the release before this one stored, whose text can end with words of the same shape
+// that no review recorded, or a task an operator wrote. Its reviewer reads the whole change and
+// keeps the entry of its round. It is the fact and never the task's text that tells the two
+// apart, since two such texts can be the same word for word. The relaunch's record is no task, and
+// is sent as it is.
 //
 // One case still sends a stale note: the previous release's upsert carries no out_of_memory
 // column, so if an image rollback takes a marked task back again for another end, the row keeps
@@ -410,17 +427,24 @@ func pendingID(p *Delivery) string {
 // turn on the held task has ended and the delivery retired.
 //
 // A pending delivery whose task the worker has already taken refuses nothing: the turn took it
-// (confirm writes ConfirmedAt), so there is no task left to give and the delivery is only the
-// record of the turn in flight. Such a delivery is retired here and the newer task queued in its
-// place. Refusing it instead is what left three supervise rows of the live daemon answered "a
-// delivery is already pending" with nothing ever sent (dispatch://INFRA-1352, INFRA-1443,
+// (confirmCarrying writes ConfirmedAt), so there is no task left to give and the delivery is only
+// the record of the turn in flight. Such a delivery is retired here and the newer task queued in
+// its place. Refusing it instead is what left three supervise rows of the live daemon answered
+// "a delivery is already pending" with nothing ever sent (dispatch://INFRA-1352, INFRA-1443,
 // INFRA-1519): the phase's own start was the newer task, and the worker that would have taken it
 // was holding a delivery it had finished with. The newer task is not sent into the running turn —
 // queue sends nothing, and sendPending hands a working claim nothing — so it goes at the next
 // point a turn may take it, once, and no turn is interrupted or started twice.
 //
+// A taken task retired so before its turn's result has come ends the credit its confirmation made
+// of the news of the approved design (Delivery.Carried, which goes with the row the claim store's
+// RetireDelivery deletes): the result of that turn now answers a task the claim no longer holds,
+// and the fence drops it, so a provider error that ends the turn could take nothing back. The news
+// is owed again, and the next start of the phase, or the reconcile once the claim holds no untaken
+// task, tells it: told twice, never not at all.
+//
 // An untaken pending delivery still refuses a second one, as it always has: that task has reached
-// nobody, so accepting over it would lose a task rather than save one. Three untaken deliveries are
+// nobody, so accepting over it would lose a task rather than save one. Four untaken deliveries are
 // not refused. Two of them are replaceable. One is the task a provider error took back, while the
 // ladder's wait stands for it and nothing works it. The next step of the ladder can be ten minutes
 // away and a run of errors has no end of its own, so a refusal would keep every newer task of the
@@ -465,6 +489,16 @@ func pendingID(p *Delivery) string {
 // entry's task is sent once the wake's turn has ended
 // (TestAnEntrysTaskRefusedBehindAWakesTaskIsSentOnceTheWakesTurnEnds).
 //
+// The fourth, for every role, is a task of news of the approved design alone (Delivery.NewsOnly)
+// that a task of an entry supersedes (supersedes). It is a task of no entry, but not of the kind
+// the architect's rule leaves in place: a wake's task says something no entry's task says, and
+// everything a task of news alone says, the start of an entry carries too (the daemon's
+// newsForStart reads the news the record owes the claim when the start runs, and a task no turn
+// confirmed raised none of it). So the entry's task takes its place while nothing of it is in the
+// agent's hands, and the worker is sent its entry's work, with the news, first and in one turn,
+// rather than a turn of news and then, after the start's backoff, the work it is owed. A start of
+// no entry carries no news, so it is refused behind such a task as behind any untaken task.
+//
 // What the older task named of a person's decisions is not lost with it: its retirement releases
 // them (the claim store's releaseKeptDecisions), so they are the tree's again, and the catch-up of
 // the architect's next ready names them, as does the one the root's start writes for an architect
@@ -487,22 +521,45 @@ func pendingID(p *Delivery) string {
 // (Claim.ProviderErrorRun): the provider failed this claim's turns whichever task they worked,
 // and only a turn that ends with no error puts that run back to zero.
 //
+// A task queued for news of the approved design alone (RequestDeliver.NewsOnly) takes neither
+// place: it holds no work of the claim's, so it replaces no task that does (HoldsTask), confirmed
+// or not. A confirmed task is the work of the turn that is running. If that turn ends in a
+// provider error, the machine takes the task back and sends it again (providerErrored), and it can
+// do so only while the task is still pending. A retired task's prompt result is fenced as stale,
+// and the phase's task is lost until a repair finds the silent worker. A task a provider error took
+// back is owed work, and the ladder sends it again. So such a request is refused, as one behind an
+// untaken task is, and its start waits on its row's backoff until the claim holds no task: the
+// turn ended and its task was retired. The daemon's own delivery of a relaunch's record holds no
+// work, and a task of news alone takes its place as any newer task does.
+//
 // Of a task an operator gave the claim, which carries no id of its own and no outbox row
-// (operatorDelivery), neither thing accepted above can be true, so the refusal below is exactly
-// a claim that holds a pending delivery its worker has not finished with and that no newer task
-// replaces. runParkedLaunchNow reads the same pending delivery before it runs a parked launch
-// for such a task, so nothing runs for one this refuses; a task that replaces one runs that
+// (operatorDelivery), neither thing accepted above can be true, so the second refusal below is
+// exactly a claim that holds a pending delivery its worker has not finished with and that no
+// newer task replaces. runParkedLaunchNow reads the same pending delivery before it runs a parked
+// launch for such a task, so nothing runs for one this refuses; a task that replaces one runs that
 // launch where it arrives, and retires the replaced delivery itself before it does — the launch
 // takes the ladder's wait with the claim's timers and every prompt's wait for a result with the
 // process (letGo), so the claim reaching here then holds no delivery at all.
+//
+// The task is as the store keeps it: a deliver's request comes through Handle, which gives every
+// event's text through the store's rule, and the daemon's own delivery of a relaunch's record
+// (queueRelaunch) is written from the claim's record, which holds only text the store keeps. An
+// operator's task can hold a NUL, which the request holds as the stored delivery does and a
+// restart reads back. So the comparison with the pending task, the delivery written and the
+// prompt the agent is sent all read the stored text, before a restart as after one.
 func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
-	id, task := request.ID, request.Task
+	id := request.ID
 	queued := m.given(request)
 	if pending := m.claim.Pending; pending != nil {
-		if (id != "" && pending.ID == id && pending.Task == task) || queued {
+		if (id != "" && pending.ID == id && pending.Task == request.Task) || queued {
 			return nil
 		}
 		switch {
+		case request.NewsOnly && HoldsTask(pending):
+			// A task of news alone waits behind every task that holds work, confirmed or owed
+			// again after a provider error (RequestDeliver.NewsOnly). An untaken task is sent first,
+			// as below; a confirmed one is not sent, since its turn is running.
+			return m.refuseBehindPending(ctx)
 		case pending.ConfirmedAt.IsZero():
 			owed, attempt := pending.ID, pending.ProviderErrorRetries
 			replaced, err := m.replaceOwedTask(ctx)
@@ -517,17 +574,19 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 				m.log.Info("supervise: a newer task replaces the one a provider error took back",
 					"owed", owed, "attempt", attempt, "delivery", id)
 			case m.supersedes(*pending, request):
-				m.log.Info("supervise: the root architect's unconfirmed task of an earlier run or entry is superseded by the newer entry's task, which takes its place",
+				// supersedes decided which of its two rules holds; the line names that one.
+				why := "supervise: the root architect's unconfirmed task of an earlier run or entry is superseded by the newer entry's task, which takes its place"
+				if pending.NewsOnly {
+					why = "supervise: the untaken task of news alone gives way to the newer entry's task, which carries that news itself"
+				}
+				m.log.Info(why,
 					"superseded", pending.ID, "supersededGeneration", pending.Generation, "supersededEntry", pending.Entry,
 					"delivery", id, "generation", request.Generation, "entry", request.Entry)
 				if err := m.dropPending(ctx); err != nil {
 					return err
 				}
 			default:
-				if err := m.sendPending(ctx); err != nil {
-					return err
-				}
-				return &RefusedError{State: m.claim.State, Request: "deliver", Err: ErrDeliveryPending}
+				return m.refuseBehindPending(ctx)
 			}
 		default:
 			m.log.Info("supervise: the pending task was taken by a turn, so the newer task takes its place",
@@ -545,8 +604,9 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	if id == "" {
 		id = rand.Text()
 	}
-	d := Delivery{ID: id, Task: task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
-		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed}
+	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
+		News: request.News, NewsOnly: request.NewsOnly, Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(),
+		RoundNamed: request.RoundNamed}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them
 		// with the delivery: a write that failed leaves the row undelivered and the entry ungiven,
@@ -570,6 +630,16 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	return nil
 }
 
+// refuseBehindPending is queue's refusal of a task that waits behind the claim's pending one: the
+// pending task is sent where a send can go now (sendPending), and the request is refused
+// ErrDeliveryPending, which keeps a start's row on its backoff until the claim can take its task.
+func (m *Machine) refuseBehindPending(ctx context.Context) error {
+	if err := m.sendPending(ctx); err != nil {
+		return err
+	}
+	return &RefusedError{State: m.claim.State, Request: "deliver", Err: ErrDeliveryPending}
+}
+
 // given is whether the claim has already been given the work request carries, so queue queues
 // nothing for it. A request that carries an entry of its own is decided by that entry, and one
 // that carries none — or that resends the entry its role's row already names — by the outbox row
@@ -582,28 +652,57 @@ func (m *Machine) given(request RequestDeliver) bool {
 }
 
 // supersedes is whether request's task takes the place of p, the task the claim holds pending and
-// has not confirmed, by the rule only a tree's root architect is held to (queue): request carries
-// a run and an entry, is no resend of an entry (RequestDeliver.ResendEntry) and is no work the
-// claim was given already (given, which queues nothing and so takes nobody's place), and p is a
-// task of a run that is either earlier than request's or the same run at a lower entry
-// (Delivery.SupersededBy). A task of no run, an operator's own and the daemon's delivery of a
-// relaunch's record among them, is never superseded, and neither is a task of no entry, a wake's
-// task (workflow's wakeRow) among them: queue refuses request behind it, unless it is one a newer
-// task replaces whatever it carries (replaceable, asked before this), and StartedBy sends it. A
-// request of no entry supersedes nothing. Two places read it, so the rule is decided once: queue,
-// which retires p and queues request in its place, and StartedBy, which does not send p first
-// when the start's own task is such a request.
+// has not confirmed, by one of two rules. Each asks first that request carries an entry
+// (RequestDeliver.Entry) and is no work the claim was given already (given, which queues nothing
+// and so takes nobody's place).
+//
+// The first holds for every role: p is a task of news of the approved design alone
+// (Delivery.NewsOnly). It holds no work, only the news, and the start of an entry carries that
+// same news itself: the start executor reads what the record owes the claim when the start runs
+// (the daemon's newsForStart), and p's news is still owed then, since a task no turn confirmed
+// holds no credit (the claim store counts only a confirmed row's copy, design_news_told_in), and
+// the send renders it again from the record (currentNews). So the entry's task goes first and
+// alone, and the work the role is owed never waits a turn and a backoff behind news. Kept in front
+// of it, p would also hold a root architect's entry out of the first stall arm, which reads only a
+// task of the row's entry (admit's architectStalls). A start of no entry carries no news (the
+// daemon's startNewsOf), so p is not superseded by it: queue refuses it behind p and sends p
+// first, as behind any untaken task, and the reconcile tells p's news where no later start of an
+// entry does.
+//
+// The second is the rule only a tree's root architect is held to (queue): request carries a run,
+// is no resend of an entry (RequestDeliver.ResendEntry), and p is a task of a run that is either
+// earlier than request's or the same run at a lower entry (Delivery.SupersededBy). A task of no
+// run, an operator's own and the daemon's delivery of a relaunch's record among them, is never
+// superseded by it, and neither is a task of no entry, a wake's task (workflow's wakeRow) among
+// them: queue refuses request behind it, unless it is one a newer task replaces whatever it
+// carries (replaceable, asked before this), and StartedBy sends it. A request of no entry
+// supersedes nothing. Two places read it, so each rule is decided once: queue, which retires p and
+// queues request in its place, and StartedBy, which does not send p first when the start's own
+// task is such a request.
 //
 // It answers false while anything of p is in the agent's hands: a send of it in flight
 // (Machine.send), or a prompt of it Oh My Pi acknowledged that still waits on its result
 // (awaitsResult). That prompt's turn is the session's next, and a newer task put in p's place
 // would be confirmed by p's turn and retired by its end, unsent (replaceable says the same of the
 // relaunch's record).
+//
+// A superseded p ends no credit, since it holds none: its retirement removes a row no turn
+// confirmed, and the claim store counts only a confirmed row's copy as a credit
+// (design_news_told_in). So what p carried of the approved design stays owed on the told rows,
+// whatever became of p before — never sent, sent and acknowledged by a daemon before a restart, or
+// confirmed by a turn whose confirmation was then taken back — and the task that takes its place,
+// or the reconcile, tells it.
 func (m *Machine) supersedes(p Delivery, request RequestDeliver) bool {
-	if !m.claim.treeRoot() || !p.ConfirmedAt.IsZero() || m.send != nil || m.awaitsResult() {
+	if !p.ConfirmedAt.IsZero() || m.send != nil || m.awaitsResult() {
 		return false
 	}
-	if request.Entry <= 0 || request.ResendEntry || request.Generation == 0 || m.given(request) {
+	if request.Entry <= 0 || m.given(request) {
+		return false
+	}
+	if p.NewsOnly {
+		return true
+	}
+	if !m.claim.treeRoot() || request.ResendEntry || request.Generation == 0 {
 		return false
 	}
 	return p.SupersededBy(request.Generation, request.Entry)
@@ -636,14 +735,16 @@ func (c Claim) openRoundHoldsTask() bool {
 
 // sendPending sends the pending delivery if everything a send needs is true now: the claim is
 // ready or idle, the delivery is neither confirmed nor already on its way, the issue is still in
-// the phase the task was queued for, the root of a root architect's task of a run has an architect
-// to hear it, the claim's connection is registered, and — for a task that adopts the working
-// copy the issue's roles share (adopts) — no other claim of the issue is in a turn or has a
-// prompt on its way to one. A missing connection is not a failure — the shim's next hello sends
-// it. A delivery an earlier daemon may have sent is sent again only after the agent says it is
-// not already in a turn; if it is, that turn is taken as the delivery's — except for a root
-// architect's task of a run, which no turn of the agent's own is ever taken for, since it may be
-// a task nobody has sent at all (asksRoot).
+// the phase the task was queued for, a task carrying news of the approved design still has some
+// to say (currentNews, which renders it again from the record), the root of a root architect's
+// task of a run has an architect to hear it, the claim's connection is registered, and — for a
+// task that adopts the working copy the issue's roles share (adopts) — no other claim of the
+// issue is in a turn or has a prompt on its way to one. A missing connection is not a failure —
+// the shim's next hello sends it. A delivery an earlier daemon may have sent is sent again only
+// after the agent says it is not already in a turn; if it is, that turn is taken as the
+// delivery's — except for a root architect's task of a run, which may be a task nobody has sent at
+// all (asksRoot), and a task carrying news of the approved design that no acknowledged prompt
+// carried (unsentNews): no turn of the agent's own is ever taken for either (askFirstNeverTakes).
 //
 // Four states hand the claim nothing and hold the task instead of dropping it: a claim holding a
 // suspension (holdSuspension), a claim that has answered its open update round
@@ -709,6 +810,8 @@ func (c Claim) openRoundHoldsTask() bool {
 // sentence and nothing else, so once the record is told it has nothing to say. The claim holds
 // one in that state when its session is abandoned before the delivery's turn (forgetSession), and
 // sending it would tell the fresh agent the old session's record in the text it was queued with.
+// So does a fourth: a task queued for news of the approved design alone that has nothing left to
+// say once its news is read again from the record (currentNews).
 //
 // A drop that leaves the claim holding nothing while its record of the last let-go still tells
 // gives it the daemon's own delivery of that record and sends it (relaunchAfterDrop): the ready
@@ -775,17 +878,26 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// holds is whether the delivery is still the claim's to send. An older daemon's ask of an
 	// update round never is, whichever round it names, and its issue's phase is not asked about.
 	// Nor is the daemon's own delivery of a relaunch's record whose record no longer tells
-	// (spent), whose sentence is all it carries; it names no phase either.
+	// (spent), whose sentence is all it carries; it names no phase either. says is whether a task
+	// that still holds has anything to say: a task queued for news of the approved design alone
+	// can have nothing left once the record is read again (currentNews), which is asked only of a
+	// task that holds, so a task its phase has left is dropped without a read of its news.
 	round, asks := updateRoundOf(p.ID)
 	spent := p.Relaunch() && !m.claim.EndedWork.Tells()
-	holds := !asks && !spent
+	holds, says := !asks && !spent, true
 	if holds {
 		var err error
 		if holds, err = m.phaseHolds(ctx, *p); err != nil {
 			return err
 		}
 	}
-	if !holds {
+	if holds {
+		var err error
+		if says, err = m.currentNews(ctx); err != nil {
+			return err
+		}
+	}
+	if !holds || !says {
 		switch {
 		case asks:
 			m.log.Info("supervise: this task is an ask an older daemon queued for an update round; it is dropped and never sent",
@@ -793,9 +905,12 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		case spent:
 			m.log.Info("supervise: the daemon's own delivery of a relaunch's record has nothing to say, since that record no longer tells; it is dropped rather than sent",
 				"delivery", p.ID, "cause", m.claim.EndedWork.Cause, "ended", m.claim.EndedWork.Generation, "toldBy", m.claim.EndedWork.ToldBy)
-		default:
+		case !holds:
 			m.log.Info("supervise: the issue has left the phase this task was queued for; it is dropped rather than sent",
 				"delivery", p.ID, "issue", m.claim.Issue, "queuedFor", p.Phase)
+		default:
+			m.log.Info("supervise: this task was queued for news of the approved design and none of it stands now; it is retired rather than sent",
+				"delivery", p.ID, "issue", m.claim.Issue)
 		}
 		if err := m.retirePending(ctx); err != nil {
 			return err
@@ -811,7 +926,10 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// holds (review round 12 of #4220). The task waits, unsent and charged nothing, and the next
 	// decision asks again, so an operator's settle of the name sends it. A store that does not
 	// answer sends nothing either. For a claim holding its session this asks the store once per
-	// session (Machine.heldNames).
+	// session (Machine.heldNames). The check comes before both sends below: a root architect's task
+	// of a run (asksRoot), whose narrowing (currentRootTask) waits on it too, and every other task, a
+	// task that carries news and a task of news alone among them. The news render above
+	// (currentNews) rewrites the delivery and sends nothing.
 	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
 		var refusal claim.Refusal
 		switch {
@@ -824,17 +942,18 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		}
 		return nil
 	}
-	// A root architect's task of a run (asksRoot) is the one delivery the question a restart left
-	// never answers: such a task may be one nobody has ever sent — it is held on the claim while
-	// its root has no architect to hear it, across restarts — and the decisions it names are held
-	// by this delivery and told at its confirmation, so a turn of the agent's own taken for this
-	// task's would confirm it unsent and tell a person's decision to nobody. The question is
-	// resolved here rather than asked: while the root does not hear, the task stays pending and
-	// unconfirmed and nothing is sent; once the root hears, it is sent. A send can meet an agent
-	// still in a turn of its own, which answers it busy and leaves the task waiting, charged
-	// nothing, with the claim recorded working for that turn (refused, recordBusyTurn), and the
-	// turn's end sends it again: sending again is the lesser fault of the two. Its phase check
-	// always holds — such a task names no phase — so a dropped task is never this one.
+	// A root architect's task of a run (asksRoot) is one of the two deliveries the question a
+	// restart left never answers (the other is below): such a task may be one nobody has ever
+	// sent — it is held on the claim while its root has no architect to hear it, across restarts —
+	// and the decisions it names are held by this delivery and told at its confirmation, so a turn
+	// of the agent's own taken for this task's would confirm it unsent and tell a person's decision
+	// to nobody. The question is resolved here rather than asked: while the root does not hear,
+	// the task stays pending and unconfirmed and nothing is sent; once the root hears, it is sent.
+	// A send can meet an agent still in a turn of its own, which answers it busy and leaves the
+	// task waiting, charged nothing, with the claim recorded working for that turn (refused,
+	// recordBusyTurn), and the turn's end sends it again: sending again is the lesser fault of the
+	// two. Its phase check always holds — such a task names no phase — so a dropped task is never
+	// this one.
 	if m.asksRoot(*p) {
 		m.askFirst = false
 		hears, err := m.rootHears(ctx, *p)
@@ -862,8 +981,19 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// confirms the delivery the earlier daemon sent, which is the turn's own task.
 	// An agent that cannot say is taken as not streaming here: sending under the same id is what
 	// the shim's dedupe and the next agent_start make safe.
-	if m.askFirst {
-		m.askFirst = false
+	//
+	// A task carrying news of the approved design that no acknowledged prompt carried (unsentNews)
+	// is resolved here rather than asked, as a root architect's task of a run is above: no earlier
+	// daemon's prompt of it reached the agent, so the turn the agent is in is not its turn, and its
+	// confirmation would record news no prompt carried as taken. It is sent. An agent in a turn of
+	// its own answers busy, which leaves it waiting, charged nothing, with the claim recorded
+	// working for that turn (refused, recordBusyTurn), and the turn's end sends it again. A task an
+	// earlier daemon's prompt did carry is asked about, and the agent's turn confirms it with what
+	// that prompt carried (turnAnswers: the delivery's copy, Delivery.Carried), never with the news
+	// the send above rendered again.
+	askAgent := m.askFirst && !unsentNews(*p)
+	m.askFirst = false
+	if askAgent {
 		if streaming, _ := m.streaming(ctx, conn); streaming {
 			// The agent's answer is the daemon's first word of the turn, so the turn is dated
 			// from it (Claim.LastTurnStart), as recordBusyTurn dates a turn from a busy answer,
@@ -876,7 +1006,8 @@ func (m *Machine) sendPending(ctx context.Context) error {
 			// turn whose write failed.
 			m.startTurn(p.ID)
 			m.log.Info("supervise: the agent is in a turn; confirming the delivery an earlier daemon sent", "delivery", p.ID)
-			return m.confirm(ctx)
+			news, _ := m.turnAnswers()
+			return m.confirmCarrying(ctx, news)
 		}
 	}
 	// Every role of an issue works one jj workspace, so a task that adopts its working copy adopts
@@ -917,11 +1048,35 @@ func (m *Machine) sendPending(ctx context.Context) error {
 // asksRoot says whether a delivery's send waits on whether the root of this claim's tree has an
 // architect to hear it (rootHears): a root architect's task of a run — it names no phase and a
 // run, and the claim is its tree's root — on a daemon with a workflow to answer for it. It is also
-// what says the question a restart left cannot confirm that task by itself (table.go's
-// turnStarted): a task nobody has sent is no task in flight.
+// one of the two deliveries the question a restart left cannot confirm by itself
+// (askFirstNeverTakes, table.go's turnStarted): a task nobody has sent is no task in flight.
 func (m *Machine) asksRoot(d Delivery) bool {
 	return m.deps.RootHears != nil && d.Phase == "" && d.Generation != 0 && m.claim.treeRoot()
 }
+
+// unsentNews says whether d carries news of the approved design (Delivery.News) that no
+// acknowledged prompt carried (Delivery.Carried). The write that records its confirmation makes
+// what the prompt its turn answers carried the delivery's credit, its items and the opening it
+// carried (the claim store reads the copy a confirmed row holds, design_news_told_in, and folds it
+// once the turn's result says it ran, settleDesignNews), so its confirmation must come from a turn
+// that such a prompt started. The mark is the copy, not Delivery.Prompted: Prompted is set as the
+// send goes out, before the send adopts the working copy and mints its identity, so a send whose
+// adoption was refused (runtime.ErrAdoptRefused) or whose mint failed
+// (runtime.ErrIdentityUnavailable) is Prompted with no prompt ever sent, where the copy is written
+// only at Oh My Pi's acknowledgement (acked). A restart that left such a task pending knows that no
+// earlier daemon's prompt of it reached the agent, so the question that restart left (askFirst)
+// never takes a turn of the agent's own for it, at the send (sendPending) or at a turn's start
+// (beginTurn). The copy is persisted at that acknowledgement, so a prompt acknowledged just before
+// a crash reads as never sent and the news is sent a second time: of the two faults, that is the
+// one that loses nothing.
+func unsentNews(d Delivery) bool { return len(d.News) > 0 && len(d.Carried) == 0 }
+
+// askFirstNeverTakes says whether a turn the agent started by itself is never taken for d's turn
+// by the question a restart left (askFirst): a root architect's task of a run (asksRoot), which
+// may be a task nobody has sent, and a task carrying news no acknowledged prompt carried
+// (unsentNews). The confirmation of either tells something — a person's decisions, or the news —
+// so only a turn a send of this machine's own started may confirm it.
+func (m *Machine) askFirstNeverTakes(d Delivery) bool { return m.asksRoot(d) || unsentNews(d) }
 
 // rootHears asks whether the root of this claim's tree has an architect to hear the task now
 // (Deps.RootHears). Only a root architect's task of a run is put to the answer (asksRoot): it names
@@ -952,20 +1107,24 @@ func (m *Machine) rootHears(ctx context.Context, d Delivery) (bool, error) {
 //
 // A task left naming nothing is retired rather than sent: there is nothing to tell this architect,
 // and the start row that queued it is recorded on the claim (Claim.DeliveredRows), so no retry
-// gives it again. The id is kept across the rewrite: it is this delivery, under the row that
-// queued it, with less in it than when it was queued, and the prompt that would be deduped against
-// it carried more rather than less. The narrowed task is persisted before it is sent, so a restart
-// reads the same task this send carried.
+// gives it again. A task that carries news of the approved design is narrowed in the start's own
+// text, which its news follows, and the answer renders both again through the one render a send of
+// news goes through, so the news it carries is exactly what its text names and no later send
+// renders a released decision from the text the start wrote. The id is kept across a rewrite of
+// the text and the decisions alone: it is this delivery, under the row that queued it, with less in
+// it than when it was queued, and the prompt that would be deduped against it carried more rather
+// than less. A rewrite that changes the news takes a new id, as currentNews's does (renderedID). The
+// narrowed task is persisted before it is sent, so a restart reads the same task this send carried.
 func (m *Machine) currentRootTask(ctx context.Context) (bool, error) {
 	p := m.claim.Pending
 	if m.deps.RootTask == nil {
 		return true, nil
 	}
-	task, kept, err := m.deps.RootTask(ctx, m.claim, *p)
+	task, kept, news, err := m.deps.RootTask(ctx, m.claim, *p)
 	if err != nil {
 		return false, fmt.Errorf("read what the task held for %s says now: %w", m.claim.Token, err)
 	}
-	if task == p.Task && bytes.Equal(kept, p.Kept) {
+	if task == p.Task && bytes.Equal(kept, p.Kept) && bytes.Equal(news, p.News) {
 		return true, nil
 	}
 	if task == "" {
@@ -973,29 +1132,120 @@ func (m *Machine) currentRootTask(ctx context.Context) (bool, error) {
 			"delivery", p.ID, "issue", m.claim.Issue, "run", p.Generation)
 		return false, m.retirePending(ctx)
 	}
-	next := *p
-	next.Task, next.Kept = task, kept
-	if err := m.saved(m.putDelivery(ctx, next)); err != nil {
+	was := p.ID
+	id := renderedID(was, news, p.News)
+	if err := m.rewritePending(ctx, id, task, kept, news); err != nil {
 		return false, err
 	}
-	*p = next
 	m.log.Info("supervise: a decision this held task named is owed to another tree now; the task is sent without it",
-		"delivery", p.ID, "issue", m.claim.Issue, "run", p.Generation)
+		"delivery", id, "was", was, "issue", m.claim.Issue, "run", p.Generation)
+	return true, nil
+}
+
+// renderedID is the id a held task takes when a send rewrites it with news, held being the news
+// it carried under was: the same id where the news is the same, and a new one (rotateTaskID) where
+// it is not. A delivery id names one rendering of the news, and never two (currentNews says why).
+func renderedID(was string, news, held []byte) string {
+	if bytes.Equal(news, held) {
+		return was
+	}
+	return rotateTaskID(was)
+}
+
+// rewritePending writes the pending delivery back under id with task as its text, and kept and
+// news as the decisions and the news it carries, then holds that delivery in memory: the one
+// persist-and-swap of a held task read again at its send (currentRootTask, currentNews), each of
+// which keeps its own rule for when to rewrite and when to retire. Its callers render the task's
+// text and its news together, so news is always what task names. The write comes first, so a
+// restart reads the task the send that follows carries, and a failed write leaves memory as the
+// record holds it.
+func (m *Machine) rewritePending(ctx context.Context, id, task string, kept, news []byte) error {
+	next := *m.claim.Pending
+	next.ID, next.Task, next.Kept, next.News = id, task, kept, news
+	if err := m.saved(m.putDelivery(ctx, next)); err != nil {
+		return err
+	}
+	*m.claim.Pending = next
+	return nil
+}
+
+// currentNews writes a task that carries news of the approved design back to what it says now
+// (Deps.DesignNews) and answers whether it still has anything to say. Such a task was composed
+// from the record when the start that queued it ran, and the record can move while it waits: the
+// gate it names can close again, a later approval can replace an item it tells, and another
+// delivery's confirmation can tell it first. So the text is rendered again here, where the machine
+// owns the pending delivery, at every send — a send refused busy is rendered again when it is sent
+// again — and what the answer no longer carries goes from the delivery as well as from the text,
+// so the next prompt carries what the record owes now.
+//
+// What this renders is not what a confirmation credits. The confirmation credits what the prompt
+// its turn answers carried (Delivery.Carried, turnAnswers), written as that prompt is
+// acknowledged: a render here that adds an opening, before the restart's question is asked or for
+// a resend Oh My Pi answers busy, adds nothing to the copy of a prompt that went out before it.
+//
+// A rewrite that changes the news takes a new id (renderedID), so a delivery id names one
+// rendering of the news and never two. The acknowledgement of a prompt is what records the news it
+// carried (acked), and the shim answers a send under a delivery id it already holds from its own
+// record, without forwarding it to Oh My Pi (shimwire's Dedupe): the acknowledgement of such a
+// resend is the first send's, and the agent read the first send's text. A resend under the same id
+// carrying a new rendering would record news the agent never read — after a restart whose question
+// finds the agent out of the turn, or after the answer to the first send was lost on the way back
+// and the reconnect's hello sends the task again (refused keeps the id for that dedupe). Under a new
+// id the shim forwards the new rendering, so Oh My Pi either takes it or answers it busy, and what
+// is recorded is what it took. Keeping the first send's news for the id instead is not enough: the
+// daemon learns what a send carried only from its acknowledgement, and a lost acknowledgement leaves
+// it nothing to keep. The cost of the new id is a prompt sent twice where the earlier one's turn
+// still runs or already ran: told twice, never not at all. A restart's question that finds the
+// agent in the earlier prompt's turn confirms the task under the new id with the copy that prompt
+// carried, and that prompt's result is then fenced as another id's, so its turn's end ends that
+// credit with the delivery (the claim store's RetireDelivery) and a later task tells it again. A
+// rewrite of the text alone keeps the id, as currentRootTask's does: what a confirmation credits is
+// the news.
+//
+// A task queued for its news alone that is left with nothing to say is not sent, and the answer
+// is false: sendPending retires it through the one exit every drop leaves by, which answers the
+// question a restart left for it (answerAskFirstAfterDrop) and gives a claim that drop leaves
+// holding nothing the delivery of its untold record of the last let-go (relaunchAfterDrop). The
+// rewritten task is persisted before it is sent, so a restart reads the task this send carried. A
+// task that carries no news is never asked about, and every task holds where nothing answers
+// (Deps.DesignNews nil).
+func (m *Machine) currentNews(ctx context.Context) (bool, error) {
+	p := m.claim.Pending
+	if m.deps.DesignNews == nil || len(p.News) == 0 {
+		return true, nil
+	}
+	task, news, err := m.deps.DesignNews(ctx, m.claim, *p)
+	if err != nil {
+		return false, fmt.Errorf("read what the news task held for %s says now: %w", m.claim.Token, err)
+	}
+	if task == "" {
+		return false, nil
+	}
+	if task == p.Task && bytes.Equal(news, p.News) {
+		return true, nil
+	}
+	was := p.ID
+	id := renderedID(was, news, p.News)
+	if err := m.rewritePending(ctx, id, task, p.Kept, news); err != nil {
+		return false, err
+	}
+	m.log.Info("supervise: the news this task carries was read again from the record; the task is sent as it reads now",
+		"delivery", id, "was", was, "issue", m.claim.Issue)
 	return true, nil
 }
 
 // answerAskFirstAfterDrop answers the question a restart armed for a delivery that is now gone
 // (askFirst), and every drop of a delivery runs it in the same step as the drop: sendPending's
-// three — the task its issue's phase has left behind, an older daemon's ask of an update round,
-// and the daemon's own delivery of a relaunch's record that no longer tells — the retirement's
-// (machine.go's retire), and dropUpdateTask, which makes it of its own for the three drops a
-// round that is over makes through it (leaveRound, endPodUpdate, openPodUpdate's round switch).
-// The one drop that does not run it is currentRootTask's retirement of a root architect's held
-// task that names nothing any more:
-// sendPending's asksRoot branch clears askFirst before it, without asking, so no question is left
-// to answer. Left armed over nothing pending, the question would make the claim's next task the
-// running turn's — confirmed by a turn of another cause, never prompted, and retired unsent by
-// that turn's end — and the worker would never receive that task at all.
+// four — the task its issue's phase has left behind, an older daemon's ask of an update round,
+// the daemon's own delivery of a relaunch's record that no longer tells, and the task queued for
+// news of which nothing stands now (currentNews) — the retirement's (machine.go's retire), and
+// dropUpdateTask, which makes it of its own for the three drops a round that is over makes
+// through it (leaveRound, endPodUpdate, openPodUpdate's round switch). The one drop that does not
+// run it is currentRootTask's retirement of a root architect's held task that names nothing any
+// more: sendPending's asksRoot branch clears askFirst before it, without asking, so no question
+// is left to answer. Left armed over nothing pending, the question would make the claim's next
+// task the running turn's — confirmed by a turn of another cause, never prompted, and retired
+// unsent by that turn's end — and the worker would never receive that task at all.
 //
 // It asks what a send would have asked, and confirms nothing: no delivery is left to confirm, so
 // an agent the ask finds in a turn only moves the claim to working, dated from the answer
@@ -1057,18 +1307,19 @@ func (m *Machine) dropPending(ctx context.Context) error {
 // daemon's own delivery of its record of the last let-go (queueRelaunch), when that record still
 // tells, and sends it. The ready queues that delivery only for a claim that holds nothing when it
 // is ready (finishReady), before the send that ready makes; a held task that send then drops —
-// its phase gone, an older daemon's ask of an update round, or a root architect's held task left
-// naming nothing (currentRootTask) — leaves the claim holding nothing, and the sentence would
-// wait for whatever task came next.
+// its phase gone, an older daemon's ask of an update round, a task queued for news of the
+// approved design alone with nothing left to say (currentNews), or a root architect's held task
+// left naming nothing (currentRootTask) — leaves the claim holding nothing, and the sentence
+// would wait for whatever task came next.
 //
 // It runs after the drop's retirement and after the answer to the question a restart armed for
 // the dropped delivery (answerAskFirstAfterDrop), which asks only of a claim holding nothing, so
 // that question is answered for the dropped delivery and never taken for the new one's. Nothing
 // here recurses without end. queue sends nothing for a claim that holds no delivery, and the send
-// below drops nothing it queues: the delivery has no phase, no round and no run, so neither the
-// phase check nor the round's drops it, it asks no root (asksRoot), and it is queued only while
-// its record tells, so it is not spent either. A record that does not tell queues nothing, and
-// the send then finds nothing to send.
+// below drops nothing it queues: the delivery has no phase, no round, no run and no news, so
+// neither the phase check, the round's drops nor the read of its news drops it, it asks no root
+// (asksRoot), and it is queued only while its record tells, so it is not spent either. A record
+// that does not tell queues nothing, and the send then finds nothing to send.
 //
 // One order costs a turn and loses nothing. A newer task that queue refuses because the claim
 // holds an untaken task runs sendPending first (queue), and when that send drops the held task
@@ -1101,9 +1352,11 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 
 // retirePending drops the pending delivery, and is the one place a delivery ends: settle calls
 // it for a delivery whose life is over, sendPending for a task the issue's phase has left
-// behind and for an older daemon's ask of an update round, dropUpdateTask for the ask of a
-// round that is over, retire for the ask the claim ends with, and queue for the task a newer one
-// replaces. The claim keeps its state — the task is stale, not the agent.
+// behind, for an older daemon's ask of an update round, for the daemon's own delivery of a
+// relaunch's record that no longer tells and for a task queued for news of which nothing stands
+// now, dropUpdateTask for the ask of a round that is over, retire for the ask the claim ends
+// with, and queue for the task a newer one replaces. The claim keeps its state — the task is
+// stale, not the agent.
 //
 // A confirmed task of a run leaves the run behind it, and its phase entry and its check look
 // with it: the worker goes on working it in whatever turn comes next — one an Envoy notice
@@ -1210,7 +1463,8 @@ func (m *Machine) retirePending(ctx context.Context) error {
 	// The prompts the retired task waited on a result for go with it (Machine.outstanding): their
 	// results answer a task the claim no longer holds, and the fence drops them, so a newer task
 	// queue puts in its place is never taken for the turn one of them runs.
-	m.claim, m.unsaved, m.outstanding = retired, false, nil
+	m.claim, m.unsaved = retired, false
+	m.forgetOutstanding()
 	if err != nil {
 		m.log.Warn("supervise: the store holds no such delivery; the refusal is of a retirement it has already made",
 			"delivery", p.ID, "error", err)
@@ -1224,10 +1478,10 @@ func (m *Machine) retirePending(ctx context.Context) error {
 // saved records the outcome of a write of the pending delivery that memory changed first, since
 // the decision it records has been made whether or not the store takes it. A write that failed
 // leaves the delivery unsaved, and settle writes it again, with the claim, before the next decision
-// - confirm's write covers both, and a delivery written confirmed beside a claim still ready is a
-// turn a restart would find over. So once the store takes writes again, a restart reads what the
-// machine decided rather than what it replaced; one before that reads the older rows, as a restart
-// after a crash between a decision and its write does.
+// - confirmCarrying's write covers both, and a delivery written confirmed beside a claim still
+// ready is a turn a restart would find over. So once the store takes writes again, a restart reads
+// what the machine decided rather than what it replaced; one before that reads the older rows, as
+// a restart after a crash between a decision and its write does.
 func (m *Machine) saved(err error) error {
 	m.unsaved = err != nil
 	return err
@@ -1255,9 +1509,16 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, 
 // task is marked as put to the agent before the goroutine starts (Delivery.Prompted), whatever
 // the agent then answers: from here on, a prompt of it has gone out. Of the claim's two untold
 // records, this marks which the prompt carries the sentence of, as message composed it
-// (Machine.carried), and tells neither, as confirm states. Whether the send adopts the working
-// copy first is decided here, under the machine's lock, so the goroutine acts on the claim the
-// hold in sendPending was decided against.
+// (Machine.carried), and tells neither, as confirmCarrying states. Whether the send adopts the
+// working copy first is decided here, under the machine's lock, so the goroutine acts on the claim
+// the hold in sendPending was decided against.
+//
+// The news of the approved design this prompt carries is the pending delivery's own (d.News, as
+// sendPending's render left it), and nothing keeps a second copy of it: every rendering takes a new
+// id (currentNews, currentRootTask) and the fence passes only an outcome of the pending id
+// (fenceOutcome), so while this send is the pending delivery's, the pending delivery's News is what
+// it carries. Its acknowledgement records that news with the prompt (acked), and a turn taken for
+// the task's while the send is in flight credits the same (turnAnswers).
 func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 	token, generation, role, loc := m.claim.Token, m.claim.Generation, m.claim.Role, m.claim.Locator
 	adopting := m.adopts(d)
@@ -1267,7 +1528,8 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 	if p := m.claim.Pending; p != nil && p.ID == d.ID {
 		p.Prompted = true
 	}
-	m.send, m.helloDuringSend = &sending{id: d.ID, generation: generation}, false
+	send := &sending{id: d.ID, generation: generation}
+	m.send, m.helloDuringSend = send, false
 	if seq := conn.Sequence(); seq > m.sentThrough {
 		m.sentThrough = seq
 	}
@@ -1356,11 +1618,11 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 	return nil
 }
 
-// confirm records that the pending delivery's turn started: the claim and the delivery together,
-// because either half alone is a claim a restart reads wrongly — a working claim whose delivery
-// is unconfirmed is re-sent under the same id and answered by the shim without a second turn, so
-// its worker is never prompted again, and an idle claim holding a confirmed delivery holds one
-// nothing retires. Once the write holds, the workflow is told the agent took its work
+// confirmCarrying records that the pending delivery's turn started: the claim and the delivery
+// together, because either half alone is a claim a restart reads wrongly — a working claim whose
+// delivery is unconfirmed is re-sent under the same id and answered by the shim without a second
+// turn, so its worker is never prompted again, and an idle claim holding a confirmed delivery holds
+// one nothing retires. Once the write holds, the workflow is told the agent took its work
 // (Deps.TaskConfirmed): a root whose wait that untaken task held is decided on this fact rather
 // than at the next tick. A write that failed tells no one, and is owed: the claim it carries is
 // the claim memory holds from here on — the turn started whether or not the row says so — so the
@@ -1401,9 +1663,18 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 // write as the confirmation, and a restart reads both or neither. The one record told anywhere
 // else is the old session's record of a let-go, which the abandonment of that session ends by no
 // delivery (forgetSession, where that rule is written).
-func (m *Machine) confirm(ctx context.Context) error {
+//
+// News of the approved design is told the same way, by the copy this write makes the delivery's
+// credit (Delivery.Carried): news, what the prompt this turn answers carried, never the news the
+// delivery holds now, which a send since that prompt may have rendered again with more in it. A
+// turn's start and a restart's question read it off the prompts this machine sent (turnAnswers),
+// and a prompt's own result that confirms a task no turn was matched to names its prompt itself
+// (promptResulted). A second confirmation of the same delivery writes its own copy over the first,
+// so the delivery holds one credit, the last one written.
+func (m *Machine) confirmCarrying(ctx context.Context, news []byte) error {
 	p := m.claim.Pending
 	p.ConfirmedAt = m.deps.Clock.Now()
+	p.credit(news)
 	m.claim.Handshake = m.claim.Handshake.confirmed(*p)
 	m.disarm(TimerTurn)
 	m.askFirst = false
@@ -1428,6 +1699,67 @@ func (m *Machine) confirm(ctx context.Context) error {
 	return nil
 }
 
+// turnAnswers is the one answer to which prompt of the pending task a turn that starts now
+// answers: the news of the approved design that prompt carried, which the turn's confirmation
+// credits (confirmCarrying), and whether a turn that names no prompt is taken for the task's at all
+// (inFlight). beginTurn confirms the task by it, and so does sendPending where a restart's question
+// finds the agent in a turn, so a new reason a turn is the task's is written here once. In order:
+//
+//   - While a prompt of the task Oh My Pi acknowledged waits on its result (Machine.outstanding),
+//     the turn is the first of them's: the pinned Oh My Pi runs one admitted prompt at a time, and
+//     a later send it answered busy carried nothing that turn reads. So a resend that rendered an
+//     opening the first prompt did not carry adds none to what the turn's confirmation credits.
+//   - Otherwise, while a send of the pending task is in flight and no answer has made it moot
+//     (sendUnanswered), the turn is that send's (the INFRA-264 race, where the prompt's own turn
+//     starts before its acknowledgement), and its confirmation credits what that send carries,
+//     the pending delivery's own news (startSend says why that is the send's). A turn of another
+//     input's that starts while the send is still adopting the working copy or minting its
+//     identity is taken the same way, and the send's own outcome takes it back with its credit
+//     wherever the prompt does not then run: a refused or lost send, a busy answer or a result
+//     that ran no turn, a let-go while the send or its prompt is outstanding (untellInFlight),
+//     and a turn's end after a restart that no result answered (RetireDelivery). Where the prompt
+//     does run, its news was read, so the credit stands.
+//   - A send in flight under another id, its answer still to come, carried another delivery's
+//     news, or this task's under an id it has left — a retired task that a newer one replaced
+//     while its send was out, or one taken back under a new id since — so the turn is taken for
+//     the task's, and credits nothing of it: told twice, never credited for a prompt that was not
+//     this delivery's.
+//   - A send whose answer has come (sending.resulted) is read as no send at all, under any id, so
+//     a turn that starts after that answer is the task's only by the bullet below. The answer has
+//     said what became of the prompt: a result that ran a turn says which turn that was
+//     (promptResulted), and a no-turn answer takes the task back under a new id (promptFailed,
+//     takeBackPending) or, where that write fails, leaves it under the send's own id with its
+//     confirmation cleared, so the pending task's own send is read by its answer too, not by its
+//     id alone. Taken for the task's, such a turn would confirm a task with nothing left to come
+//     that could take the confirmation back: a let-go in that turn would vouch for it
+//     (confirmationInDoubt), and the end of the turn a busy answer named would retire the task as
+//     served (settle). A resend that an earlier prompt's result marked answered, that result's
+//     turn having ended in a provider error, is read the same way, though the resend's own turn
+//     can still run after that one: nothing confirms the task, the retry sends it again, and the
+//     resend's result is fenced, as when the resend's acknowledgement is read before that result.
+//   - Otherwise the turn is taken for the task's while the wait for an acknowledged prompt's turn
+//     is armed, or while a restart's question stands for a task it may take (askFirst,
+//     askFirstNeverTakes), and it credits the copy the delivery holds: the copy the earlier
+//     daemon's acknowledged prompt wrote, none where no prompt was acknowledged. A turn a replay
+//     names by the pending id credits the same.
+func (m *Machine) turnAnswers() (news []byte, inFlight bool) {
+	p := m.claim.Pending
+	switch {
+	case m.awaitsResult():
+		return m.turnNews(), true
+	case m.sendUnanswered() && p != nil && m.send.id == p.ID:
+		return p.News, true
+	case m.sendUnanswered():
+		return nil, true
+	}
+	_, awaiting := m.timers[TimerTurn]
+	inFlight = awaiting || (m.askFirst && (p == nil || !m.askFirstNeverTakes(*p)))
+	if p != nil {
+		news = p.Carried
+	}
+	return news, inFlight
+}
+
 // settle retires a delivery whose life is over, and runs around every decision, so that two things
 // hold however the claim got where it is — the turn ending, a suspension — and hold again at once
 // for a claim restored from a store a crash left in between: a confirmed delivery lives exactly as
@@ -1443,6 +1775,16 @@ func (m *Machine) confirm(ctx context.Context) error {
 // really is its own would serve no run. The result lands on the heels of the agent_end of the
 // turn the prompt ran, so the wait is milliseconds; a prompt the agent refused or a daemon
 // restart leaves none outstanding, and the turn's end decides as it always did.
+//
+// The same holds while the send of the task's prompt is in flight and no answer has made it moot
+// (sending.resulted): its own result or its refusal after the acknowledgement, or a
+// turn-reporting result of any prompt of the task (resultPending's send window). A turn that
+// starts then is taken for the task's (turnAnswers), and its end can be decided before the send's
+// acknowledgement, which reaches the machine on the send's own goroutine (sending). A task
+// retired at that end would have its prompt's result dropped as stale (fence), and with it the
+// final credit of the news the prompt carried, which would then be owed and sent again, or the
+// provider error that leaves the work owed (providerErrored). The send's outcome and the prompt's
+// result say which turn it was, as they do for a prompt acknowledged first.
 //
 // A daemon suspension ends the claim's phase, so a task queued for a phase is the finished phase's
 // and goes with it; the next resume is handed its new phase's task, never that one. An operator
@@ -1506,25 +1848,25 @@ func interruptedTask(cause string) string {
 }
 
 // abandonedTask begins the first prompt given to the agent that replaced a session the claim
-// abandoned (forgetSession): one the provider refused out of its budget, one an operator retried
+// abandoned (forgetSession): one whose last turns the provider refused, one an operator retried
 // with --fresh-session, or one no session store holds any more. Nothing in a new session says
 // that an older one existed, so a worker reading an empty transcript takes its task for a fresh
 // start and does again what is already pushed (dispatch://INFRA-714, item 4 of the refusal
-// section). It names the session that was left behind and why in the words the claim recorded —
-// for a refused session the provider's own, the size it refused at among them — and then the two
-// things that outlive a session: the issue's branch, and the handoff records its phases wrote on
-// the Dispatch issue. The controller is told neither, since it works no checkout. last is whether
-// this sentence is the last one before the task, and so ends in the task's own instruction: in
-// front of a task with no record's sentence after it. Where the record's sentence follows it
-// (EndedWork.Tells), that sentence is the last and carries the instruction instead
+// section). It names the session that was left behind and why in the words the claim recorded,
+// and then the two things that outlive a session: the issue's branch, and the handoff records its
+// phases wrote on the Dispatch issue. The controller is told neither, since it works no checkout.
+// last is whether this sentence is the last one before the task, and so ends in the task's own
+// instruction: in front of a task with no record's sentence after it. Where the record's sentence
+// follows it (EndedWork.Tells), that sentence is the last and carries the instruction instead
 // (relaunchSentence); in front of the daemon's own delivery of a relaunch's record, which has no
 // task (Delivery.Relaunch), neither carries one (Delivery.message).
 //
-// The reason is the provider's own text read into an agent's prompt, so it is quoted as a Go
-// string (strconv.Quote), the way a check run's name is where the daemon reads one into a prompt
+// The reason can be far-side text read into an agent's prompt — a runtime's account of a death,
+// or the provider's own words in a failure an earlier daemon wrote — so it is quoted as a Go
+// string with %q, the way a check run's name is where the daemon reads one into a prompt
 // (workflow's namedConclusions): the quotes bound it, and a newline or a quote inside it is
 // escaped rather than ending the sentence that carries it, so no refusal text can read as an
-// instruction of the daemon's own.
+// instruction of the daemon's own. The abandoned session's id is quoted the same way, with %q.
 func abandonedTask(c Claim, last bool) string {
 	read := "read the issue"
 	if c.Role != claim.RoleController {
@@ -1532,11 +1874,11 @@ func abandonedTask(c Claim, last bool) string {
 			"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
 			claim.IssueBranch(c.Issue), c.Issue, handoffWords())
 	}
-	sentence := fmt.Sprintf("The session this claim ran before this one, %s, was abandoned where it stood: %s. "+
+	sentence := fmt.Sprintf("The session this claim ran before this one, %q, was abandoned where it stood: %q. "+
 		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+
 		"gone, and only what it pushed and committed survives. Before you repeat any of that work, %s, and "+
 		"tell the architect your Legion addressing line names what you found, unless that is you or it names none.",
-		c.Abandoned.Session, strconv.Quote(c.Abandoned.Why), read)
+		c.Abandoned.Session, c.Abandoned.Why, read)
 	if last {
 		sentence += " Then continue the task."
 	}
@@ -1609,8 +1951,8 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // runs. A decision that records its let-go before this take-back marks the task first, under the
 // id it holds (recordGoneEnd), and this moves the mark to the new id.
 //
-// What the confirmation it clears told stays told (confirm) where the result of the prompt it
-// confirmed has come: that result says a turn ran the prompt, so the agent read the sentence the
+// What the confirmation it clears told stays told (confirmCarrying) where the result of the prompt
+// it confirmed has come: that result says a turn ran the prompt, so the agent read the sentence the
 // prompt carried, and the let-go that cuts that turn off takes no telling back (moveTelling). A
 // confirmation a turn took while the send of its prompt was still in flight, or while a prompt of
 // the task still waited on its result, may be another input's, and goes back to untold before the
@@ -1637,6 +1979,10 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	m.log.Warn("supervise: "+why+"; the task waits for the relaunch", "delivery", p.ID)
 	next := *p
 	next.ID, next.ConfirmedAt, next.Interrupted, next.OutOfMemory = rotateTaskID(p.ID), time.Time{}, true, outOfMemory
+	// The confirmation goes, and with it the credit its copy held: the write ends it with the
+	// copy, where the turn's result had not yet made it final, and the relaunch's prompt carries
+	// the news again.
+	next.credit(nil)
 	doubt := m.confirmationInDoubt()
 	untold := m.untellInFlight()
 	stored := m.stored()
@@ -1655,7 +2001,7 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	}
 	*p = next
 	m.claim.Handshake = stored.Handshake
-	m.outstanding = nil
+	m.forgetOutstanding()
 	m.cutTurnOf = next.ID
 	return nil
 }
@@ -1682,12 +2028,18 @@ const ordinaryEnd = false
 // is always the one whose acknowledgement set the mark standing now. Each also records that a
 // prompt of this task went out (Delivery.Prompted), as the send itself does: an outcome of either
 // kind is proof that the agent was put to it.
+//
+// clearReadMark is a prompt that came to nothing unread, so the copy of the news an unconfirmed
+// task holds (Delivery.Carried) goes back to that of the first prompt still outstanding, or to none
+// (copyTurnNews): the prompt that set it starts no turn. A confirmed task keeps the copy its
+// confirmation credited, which only that confirmation's own take-back moves.
 func (m *Machine) markRead(p *Delivery) {
 	p.DeliveredAt, p.MarkedBy, p.Prompted = m.deps.Clock.Now(), p.ID, true
 }
 
 func (m *Machine) clearReadMark(p *Delivery) {
 	p.DeliveredAt, p.MarkedBy, p.Prompted = time.Time{}, "", true
+	m.copyTurnNews(p)
 }
 
 // markUnread drops the pending task's read mark without touching its id or its budget: an
@@ -1703,27 +2055,91 @@ func (m *Machine) markUnread(ctx context.Context) error {
 	return m.putPending(ctx)
 }
 
-// awaitResult records id as a prompt of the pending task Oh My Pi acknowledged, whose result is
-// still to come (Machine.outstanding). An id already held is held once: the shim answers a prompt
-// it has a record of without a second turn (shimwire's dedupe), so its acknowledgement can come
-// twice for one prompt.
-func (m *Machine) awaitResult(id string) {
-	if !slices.Contains(m.outstanding, id) {
-		m.outstanding = append(m.outstanding, id)
+// copyTurnNews writes, on a task no turn has confirmed, the copy of the news its next turn would
+// credit: the news of the first prompt of it still outstanding, whose turn is the session's next,
+// none where no prompt is (turnNews). A confirmed task keeps the copy its confirmation fixed. It is
+// the one writer of the pending task's unconfirmed copy: for an acknowledgement (acked), a prompt
+// that came to nothing (clearReadMark), a confirmation taken back (takeBackConfirmation) and a
+// let-go (letGo). It answers whether the copy changed, so a caller that leaves the write of the
+// delivery to settle marks it unsaved (letGo). A let-go's take-back of a confirmation (interrupted)
+// writes no copy of the pending task: it drops the copy of the task that takes that task's place
+// once its write lands (credit, with no news).
+func (m *Machine) copyTurnNews(p *Delivery) bool {
+	if !p.ConfirmedAt.IsZero() {
+		return false
 	}
+	news := m.turnNews()
+	changed := !bytes.Equal(p.Carried, news)
+	p.credit(news)
+	return changed
+}
+
+// credit writes news as the delivery's copy (Carried), not yet final (Ran). It is how every writer
+// of the copy writes it — a confirmation (confirmCarrying), the writer of an unconfirmed copy
+// (copyTurnNews) and a let-go's take-back of a confirmation (interrupted), which drops the copy
+// and with it the credit the confirmation held — so no copy is ever written beside a stale mark
+// that it is final.
+func (d *Delivery) credit(news []byte) {
+	d.Carried, d.Ran = news, false
+}
+
+// awaitResult records id as a prompt of the pending task Oh My Pi acknowledged, whose result is
+// still to come (Machine.outstanding), with news, the news of the approved design that prompt
+// carried. An id already held is held once, with the news its first acknowledgement reported: the
+// shim answers a prompt it has a record of without a second turn (shimwire's dedupe), so its
+// acknowledgement can come twice for one prompt, and the agent read what the send the shim
+// forwarded carried. Every send under one id carries the same news (currentNews takes a new id for
+// a new rendering), so keeping the first is that rule's backstop.
+func (m *Machine) awaitResult(id string, news []byte) {
+	if m.outstandingPrompt(id) {
+		return
+	}
+	m.outstanding = append(m.outstanding, awaitedPrompt{id: id, news: news})
+}
+
+// forgetOutstanding ends the wait for every prompt of the pending task at once
+// (Machine.outstanding): a turn's result, the sweep's answer that the agent is in no prompt, a
+// compaction, a let-go, a take-back of a task whose turn its process can no longer finish, and a
+// retirement each end the wait for all of them.
+func (m *Machine) forgetOutstanding() {
+	m.outstanding = nil
 }
 
 // answered drops id from the prompts the pending task waits on a result for: Oh My Pi answered
 // it, a result or a refusal, and answers no prompt twice.
 func (m *Machine) answered(id string) {
-	m.outstanding = slices.DeleteFunc(m.outstanding, func(o string) bool { return o == id })
+	m.outstanding = slices.DeleteFunc(m.outstanding, func(o awaitedPrompt) bool { return o.id == id })
+}
+
+// promptNews is the news of the approved design the outstanding prompt id carried, and whether id
+// is outstanding at all.
+func (m *Machine) promptNews(id string) ([]byte, bool) {
+	at := slices.IndexFunc(m.outstanding, func(o awaitedPrompt) bool { return o.id == id })
+	if at < 0 {
+		return nil, false
+	}
+	return m.outstanding[at].news, true
 }
 
 // outstandingPrompt is whether id is a prompt of the pending task still waiting on its result.
-func (m *Machine) outstandingPrompt(id string) bool { return slices.Contains(m.outstanding, id) }
+func (m *Machine) outstandingPrompt(id string) bool {
+	_, outstanding := m.promptNews(id)
+	return outstanding
+}
 
 // awaitsResult is whether any prompt of the pending task is still waiting on its result.
 func (m *Machine) awaitsResult() bool { return len(m.outstanding) > 0 }
+
+// turnNews is the news of the approved design the first prompt of the pending task still
+// outstanding carried, nil where none is outstanding: the pinned Oh My Pi runs one admitted prompt
+// at a time, so the session's next turn is that prompt's (Machine.outstanding), and that is what
+// a confirmation of it credits (turnAnswers).
+func (m *Machine) turnNews() []byte {
+	if !m.awaitsResult() {
+		return nil
+	}
+	return m.outstanding[0].news
+}
 
 // takeBackPending returns the pending delivery to waiting after a prompt came to nothing, under a
 // new id so the retry is a new prompt rather than an echo the shim answers from its record, and
@@ -1773,9 +2189,9 @@ func (m *Machine) awaitsResult() bool { return len(m.outstanding) > 0 }
 // A confirmation taken back was never the worker's, so the claim's handshake gives back its own
 // too (takeBackConfirmation); a confirmation kept for an outstanding prompt keeps the handshake's
 // with it, since that prompt's turn is the task's. Where the handshake gives its own back, the
-// claim goes with the delivery in one write, as confirm wrote the two and as a telling that moved
-// goes: a write that fails leaves the delivery unsaved as before, and settle's write of it
-// (putClaimAndPending) carries the claim, so the cleared handshake reaches the store with the
+// claim goes with the delivery in one write, as confirmCarrying wrote the two and as a telling
+// that moved goes: a write that fails leaves the delivery unsaved as before, and settle's write of
+// it (putClaimAndPending) carries the claim, so the cleared handshake reaches the store with the
 // first write the store takes and no failure is handled any other way.
 func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 	m.disarm(TimerTurn)
@@ -1785,6 +2201,9 @@ func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 	if kept {
 		moved = m.moveTelling(p.ID, id)
 	} else {
+		// No prompt of the task is left whose turn can start, so no copy of the news a prompt
+		// carried stands either (Delivery.Carried); a confirmation it clears ends its credit with
+		// the write.
 		handshakeMoved = m.takeBackConfirmation(p)
 		if !read {
 			m.clearReadMark(p)
@@ -1817,9 +2236,16 @@ func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 // once its write lands: it gives the handshake's confirmation back by the same reading where the
 // confirmation is in doubt (confirmationInDoubt), and keeps it where a turn of the task did take
 // it.
+//
+// Both callers take a confirmation back with no prompt of the task outstanding (takeBackPending,
+// refused), so no turn of a prompt that carried news of the approved design can start any more,
+// and the copy of that news goes with the confirmation (Delivery.Carried, copyTurnNews, which
+// writes none with no prompt outstanding): the write that records the take-back ends the credit
+// the copy held, and no other (the claim store's design_news_told_in).
 func (m *Machine) takeBackConfirmation(p *Delivery) bool {
 	handshake, moved := m.claim.Handshake.unconfirmed(*p)
 	p.ConfirmedAt = time.Time{}
+	m.copyTurnNews(p)
 	if !moved {
 		return false
 	}
@@ -1827,9 +2253,9 @@ func (m *Machine) takeBackConfirmation(p *Delivery) bool {
 	return true
 }
 
-// moveTelling hands what the confirmation of delivery from told (confirm) to to, the id that
-// confirmation stands under from here on, and reports whether any record had a telling to hand:
-// each of the claim's two records whose ToldBy is from names to instead. to "" is the
+// moveTelling hands what the confirmation of delivery from told (confirmCarrying) to to, the id
+// that confirmation stands under from here on, and reports whether any record had a telling to
+// hand: each of the claim's two records whose ToldBy is from names to instead. to "" is the
 // confirmation taken back, which tells nothing any more, so such a record goes back to untold and
 // the next prompt carries its sentence again. Its callers:
 //
@@ -1866,34 +2292,35 @@ func (m *Machine) moveTelling(from, to string) bool {
 }
 
 // confirmationInDoubt is whether the pending task's confirmation is one a let-go cannot vouch for:
-// it stands while the send of the task's prompt is in flight (Machine.send) or a prompt of the
-// task still waits on its result (awaitsResult). untellInFlight states the rule and why; this is
-// its one reading, which interrupted makes for the claim's handshake too. It reads the send and
-// the prompts outstanding, so it is read before the let-go forgets them (letGo, forgetSend;
-// interrupted).
+// it stands while a send is in flight whose answer is still to come (sendUnanswered) or a prompt
+// of the task still waits on its result (awaitsResult). untellInFlight states the rule and why;
+// this is its one reading, which interrupted makes for the claim's handshake too. It reads the
+// send and the prompts outstanding, so it is read before the let-go forgets them (letGo,
+// forgetSend; interrupted).
 func (m *Machine) confirmationInDoubt() bool {
 	p := m.claim.Pending
-	return (m.send != nil || m.awaitsResult()) && p != nil && !p.ConfirmedAt.IsZero()
+	return (m.sendUnanswered() || m.awaitsResult()) && p != nil && !p.ConfirmedAt.IsZero()
 }
 
 // untellInFlight is the rule for a confirmation a let-go cannot vouch for (confirmationInDoubt).
-// The pending task's confirmation is uncertain at a let-go while the send of its prompt is in
-// flight (Machine.send) or any prompt of the task still waits on its result (awaitsResult). A turn
-// that starts then is taken for the task's (beginTurn): with the send in flight, the INFRA-264
-// race, and with an acknowledged prompt outstanding, however late the turn starts. Either way the
-// turn may be another input's, an Envoy notice's, and what would say so is still to come: the
-// send's busy answer (refused), or the prompt's own answer, a busy answer or a late refusal that
-// ran no turn (promptResulted, lateRefused, takeBackPending), each of which takes the confirmation
-// back. The let-go forgets the send and the prompts outstanding (letGo, forgetSend; interrupted),
-// so that answer is fenced out (fenceOutcome, fence) and never takes anything back. So the let-go
-// takes back what the confirmation told (moveTelling): the record goes back to untold, the record
-// of this let-go joins it rather than replacing it (recordEnd, joined), and the next prompt
-// carries its sentence again. Where the turn was the task's own, the agent is told twice, which
-// is the accepted cost: told twice, never not at all. A confirmation whose prompt's result has
-// come stands: that result says a turn ran the prompt (promptResulted), so the agent read the
-// sentence the prompt carried, and a let-go after it, in that turn or later, keeps the record
-// told. The take-back of the task gives the claim's handshake's confirmation back by the same
-// reading (interrupted).
+// The pending task's confirmation is uncertain at a let-go while a send is in flight whose answer
+// is still to come (sendUnanswered) or any prompt of the task still waits on its result
+// (awaitsResult). A turn that starts then is taken for the task's (beginTurn): with a send in
+// flight, the INFRA-264 race, and with an acknowledged prompt outstanding, however late the turn
+// starts. Either way the turn may be another input's, an Envoy notice's, and what would say so is
+// still to come: the send's busy answer (refused), or the prompt's own answer, a busy answer or a
+// late refusal that ran no turn (promptResulted, lateRefused, takeBackPending), each of which
+// takes the confirmation back. The let-go forgets the send and the prompts outstanding (letGo,
+// forgetSend; interrupted), so that answer is fenced out (fenceOutcome, fence) and never takes
+// anything back. So the let-go takes back what the confirmation told (moveTelling): the record
+// goes back to untold, the record of this let-go joins it rather than replacing it (recordEnd,
+// joined), and the next prompt carries its sentence again. Where the turn was the task's own, the
+// agent is told twice, which is the accepted cost: told twice, never not at all. A confirmation
+// whose prompt's result has come stands, whether or not the outcome of that prompt's send has
+// been read yet (sending.resulted): that result says a turn ran the prompt (promptResulted), so
+// the agent read the sentence the prompt carried, and a let-go after it, in that turn or later,
+// keeps the record told. The take-back of the task gives the claim's handshake's confirmation
+// back by the same reading (interrupted).
 //
 // It reports whether a telling moved, and it is idempotent: once it has run, no record is told by
 // the pending id. recordEnd and interrupted both call it, and whichever of them a let-go runs first

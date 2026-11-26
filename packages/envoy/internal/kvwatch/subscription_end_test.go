@@ -11,11 +11,12 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A kvwatch subscription can end in ways kvwatch does not choose: the connection closes or drains
 // under it, or the listener shuts down mid-scan. None of them may panic the process. nats.go's
-// legacy KV watcher (v1.50.0 kv.go) arms an init timer while a scan is pending, and its callback
+// legacy KV watcher (v1.55.0 kv.go) arms an init timer while a scan is pending, and its callback
 // sends on the watcher's errCh under the watcher's mutex; the subscription's end (pDone) closes that
 // channel under the same mutex and only Stops the timer, which does not wait for a callback already
 // running. A callback that fires while the message handler holds the mutex - the handler blocks
@@ -69,12 +70,7 @@ func TestASubscriptionEndingMidScanNeverPanics(t *testing.T) {
 		}}
 		w := kvwatch.New("test cache", handle, into, kvwatch.WithStreamProbeInterval(0))
 		w.Start()
-		var started time.Time
-		select {
-		case started = <-first:
-		case <-time.After(10 * time.Second):
-			t.Fatalf("round %d: the first record never reached the cache", round)
-		}
+		started := testwait.Receive(t, fmt.Sprintf("round %d: the first record to reach the cache", round), first)
 		time.Sleep(time.Until(started.Add(hold)))
 		conn.Close()
 		close(release)

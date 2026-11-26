@@ -12,6 +12,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/sjawhar/envoy/infra/gcp"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // listenerLoopback is the address the session listener's probes ask, on the pod's own loopback.
@@ -19,7 +22,7 @@ const listenerLoopback = "http://127.0.0.1:9020"
 
 // The session listener's startup probe passes only on a scrape that holds envoy_active_interests'
 // sample line, which the listener writes only once its /v1 gate is open and its interest list can
-// be served. The rendered script runs under the shell shellCommand names, with an httptest
+// be served. The rendered script runs under the shell gcp.ShellCommand names, with an httptest
 // server's URL in place of the pod's loopback. It exits 0 for a /metrics body holding the sample
 // line, and 1, grep's status when it selects no line, for a body holding only the gauge's "# HELP"
 // and "# TYPE" lines, which every scrape carries, for a 503 whose body holds the sample line, so
@@ -71,20 +74,20 @@ func TestClusteredNatsHubListenerStartupProbePassesOnlyOnTheSample(t *testing.T)
 		})
 	}
 	t.Run("no server", func(t *testing.T) {
-		server := httptest.NewServer(http.NotFoundHandler())
-		closed := server.URL
-		server.Close()
+		// A port the test holds and nothing listens on, so curl's dial is refused and no other
+		// process can take the port and answer the scrape (testport.Refused).
+		closed := "http://" + testport.Refused(t)
 		exit, stderr := runStartupScript(t, strings.ReplaceAll(script, listenerLoopback, closed))
 		require.Equal(t, 1, exit, "the script's exit with nothing listening at %s (stderr %q)", closed, stderr)
 	})
 }
 
-// runStartupScript runs script under the shell shellCommand names, with this machine's PATH alone
-// in its environment, so no proxy setting reaches curl, and returns its exit status and what it
-// wrote to stderr. A shell that does not start fails the test.
+// runStartupScript runs script under the shell gcp.ShellCommand names, with this machine's PATH
+// alone in its environment, so no proxy setting reaches curl, and returns its exit status and what
+// it wrote to stderr. A shell that does not start fails the test.
 func runStartupScript(t *testing.T, script string) (int, string) {
 	t.Helper()
-	cmd := shellCommand(t, "-c", script)
+	cmd := gcp.ShellCommand(t, "-c", script)
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 	var stderr strings.Builder
 	cmd.Stderr = &stderr

@@ -17,6 +17,12 @@ type Holding struct {
 	Current bool
 }
 
+// holdsCurrent is whether the files hold the node's current approved text: the one reading of it
+// that the check judge (not_built) and the statement judge (notBuilt) share.
+func (h Holding) holdsCurrent() bool {
+	return h.Present && h.Current
+}
+
 // Comparison is what Compare finds: Problems, each node of the files in a text that the approved
 // spec does not let them hold; Holds, for each node of the approved spec that it did not remove,
 // the approved text that the files hold; and Removed, the id of each node that the files hold in

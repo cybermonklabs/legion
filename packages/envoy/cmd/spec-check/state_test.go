@@ -16,12 +16,10 @@ import (
 // Each scenario of specgraph's testdata/scenarios, each with the answers that the spec gives it in
 // want.txt: state prints want.txt byte for byte, exit 0 and nothing on stderr. The four of The Spec
 // (carry, one-commit-two-answers, earlier-text, wait-cycle) are among them, and the test fails when
-// one is missing; the others hold shapes that the sweep of specgraph reads. No flag of the test writes
-// want.txt, so a difference is a fault of the code or a question about the spec, and a scenario with
-// no want.txt fails the test, which would read nothing. The control runs carry with no tie, so that
-// no result carries: the comparison can fail. The refusal scenario is built so on purpose: a pass at
-// c1, and test-not-in-code at c2, which holds no result of the check and has the same tied files, so
-// c2 reads unknown (uncited) and m2, whose tree is c2's, reads true from c1.
+// one is missing; the others hold more shapes of the rules. No flag of the test writes want.txt, and
+// a scenario with no want.txt fails the test, which would read nothing. The control runs carry with
+// no tie, so that c1's caught failing example counts only at c1, where its fault was planted: the
+// comparison can fail.
 func TestScenarios(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -45,7 +43,7 @@ func TestScenarios(t *testing.T) {
 			expect(t, runBinary(t, binary, "", "state", "--scenario", dir), result{stdout: wantOf(t, dir)})
 		})
 	}
-	t.Run("control: carry with no tie carries no result to c2 and m2", func(t *testing.T) {
+	t.Run("control: carry with no tie counts c1's failing example at neither c2 nor m2", func(t *testing.T) {
 		t.Parallel()
 		dir := copyScenario(t, "carry")
 		writeFile(t, filepath.Join(dir, "ties.json"), []byte("{}\n"))
@@ -56,10 +54,10 @@ func TestScenarios(t *testing.T) {
 		if got.stdout == wantOf(t, fixture(t, "scenarios", "carry")) {
 			t.Errorf("with no tie, the state is carry's want.txt")
 		}
-		moved := "  check a-restart-loses-no-message: unknown (subject_moved)"
+		unplaced := "  check a-restart-loses-no-message: unknown (no_failing_example)"
 		for _, subject := range []string{"c2, the head of listener-restart", "m2, the head of main"} {
-			if lines := subjectLines(got.stdout, subject); !slices.Contains(lines, moved) {
-				t.Errorf("at subject %s: %q, want the line %q", subject, lines, moved)
+			if lines := subjectLines(got.stdout, subject); !slices.Contains(lines, unplaced) {
+				t.Errorf("at subject %s: %q, want the line %q", subject, lines, unplaced)
 			}
 		}
 	})
@@ -75,7 +73,7 @@ func TestScenarios(t *testing.T) {
 		if !slices.Equal(subjects, want) {
 			t.Fatalf("the subjects of the states: %+v, want %+v", subjects, want)
 		}
-		if want := []specgraph.CheckState{{ID: "a-restart-loses-no-message", State: "true", Reason: "passed", From: "c1"}}; !slices.Equal(states[1].Checks, want) {
+		if want := []specgraph.CheckState{{ID: "a-restart-loses-no-message", State: "true", Reason: "passed", From: "m2"}}; !slices.Equal(states[1].Checks, want) {
 			t.Errorf("the checks at m2: %+v, want %+v", states[1].Checks, want)
 		}
 		want3 := []specgraph.StatementState{
@@ -85,6 +83,17 @@ func TestScenarios(t *testing.T) {
 		}
 		if !slices.Equal(states[2].Statements, want3) {
 			t.Errorf("the statements at c3:\n got %+v\nwant %+v", states[2].Statements, want3)
+		}
+	})
+	// R48: a refusal of CI names the rule that refused the check. The text of the scenario refusal
+	// prints its check at c2 as unknown (uncited), and --json prints the rule as the check's detail.
+	t.Run("--json prints the rule of a refusal of CI as the detail of the check", func(t *testing.T) {
+		t.Parallel()
+		var states []specgraph.State
+		decodeStrict(t, runBinary(t, binary, "", "state", "--scenario", fixture(t, "scenarios", "refusal"), "--json"), &states)
+		want := []specgraph.CheckState{{ID: "a-restart-loses-no-message", State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}}
+		if len(states) == 0 || states[0].Subject != (specgraph.Point{Commit: "c2", Branch: "listener-restart"}) || !slices.Equal(states[0].Checks, want) {
+			t.Errorf("the states: %+v\nwant first the state at c2, with the checks %+v", states, want)
 		}
 	})
 	t.Run("--json with units.json prints the states and the cycle", func(t *testing.T) {
@@ -132,52 +141,87 @@ func TestAnApprovedLeafWithNoCheckReadsNotBuilt(t *testing.T) {
 	}
 }
 
-// R9: "An agent that did not write the test writes the fault." Through the command, carry's failing
-// example counts at c2 and m2 only while its record names an author of the test and the fault is by
-// another agent: with no test_authors, or an empty list, the check reads unknown, as it does when
-// the author of the test wrote the fault (the control). carry itself, a complete record of another
-// agent, reads true (TestScenarios).
-func TestAFailingExampleThatNamesNoTestAuthorDoesNotCount(t *testing.T) {
+// A relation names a node of the approved spec of its kind, kept or removed (R22: "Dispatch refuses
+// the approval of a change request that puts a statement under a parent that the approved spec does
+// not hold"). A node that the approved spec removed is one that it holds, so a relation to it is
+// taken, and the derivation reads the current tree, which leaves the removed node out: in
+// wait-cycle with envoy-delivers-messages removed, the two statements under it read at the top of
+// the tree, and the check that serves it is taken and judged. --json reports it among the checks,
+// and the text prints it after the statements, as a check that serves no current statement, so the
+// text names each check that --json reports. The wait of u-c on it is dropped, since a unit waits
+// on a current statement.
+// The relations that name no node, or a node of another kind, are rows of TestScenarioRefusals.
+func TestARelationToANodeThatTheApprovedSpecRemovedIsTaken(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
-	for _, row := range []struct {
-		name   string
-		change func(fault map[string]any)
-	}{
-		{"control: the author of the test wrote the fault", func(fault map[string]any) { fault["fault_author"] = "agent-a" }},
-		{"the author of the test wrote the fault, and the record names no test_authors", func(fault map[string]any) {
-			fault["fault_author"] = "agent-a"
-			delete(fault, "test_authors")
-		}},
-		{"another agent wrote the fault, and the record names no test_authors", func(fault map[string]any) { delete(fault, "test_authors") }},
-		{"another agent wrote the fault, and test_authors is empty", func(fault map[string]any) { fault["test_authors"] = []any{} }},
-		{"the one test author is only white space", func(fault map[string]any) { fault["test_authors"] = []any{" "} }},
-		{"the author of the fault is only white space", func(fault map[string]any) { fault["fault_author"] = " " }},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
-			dir := copyScenario(t, "carry")
-			path := filepath.Join(dir, "results.json")
-			var results []map[string]any
-			readJSONFile(t, path, &results)
-			i := slices.IndexFunc(results, func(r map[string]any) bool { return r["kind"] == "failing_example" })
-			if i < 0 {
-				t.Fatalf("%s holds no failing example", path)
-			}
-			row.change(results[i])
-			writeJSONFile(t, path, results)
-			got := runBinary(t, binary, "", "state", "--scenario", dir)
-			if got.code != 0 || got.stderr != "" {
-				t.Fatalf("exit %d, stderr %q: want exit 0 and nothing on stderr", got.code, got.stderr)
-			}
-			line := "  check a-restart-loses-no-message: unknown (fault_by_test_author)"
-			for _, subject := range []string{"c2, the head of listener-restart", "m2, the head of main"} {
-				if lines := subjectLines(got.stdout, subject); !slices.Contains(lines, line) {
-					t.Errorf("at subject %s: %q, want the line %q", subject, lines, line)
-				}
-			}
-		})
+	dir := copyScenario(t, "wait-cycle")
+	editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
+		approvedNode(t, nodes, "envoy-delivers-messages").Removed = true
+		return nodes
+	})
+	replaceIn(t, filepath.Join(dir, "units.json"), `"waits_on": ["envoy-delivers-messages"]`, `"waits_on": []`)
+	text := runBinary(t, binary, "", "state", "--scenario", dir)
+	expect(t, text, result{stdout: `spec-check: subject m1, the head of main
+statement a-message-reaches-a-late-session: met
+  check a-late-session-gets-the-message: true (passed, counted from m1)
+statement a-message-survives-a-restart: not met (check a-restart-keeps-the-message is false)
+  check a-restart-keeps-the-message: false (failed, counted from m1)
+check a-sent-message-reaches-a-listener (serves no current statement): true (passed, counted from m1)
+wait of u-a on a-message-reaches-a-late-session: ends
+wait of u-b on a-message-survives-a-restart: holds (not met)
+spec-check: cycle of waits: u-a -> a-message-reaches-a-late-session -> u-b -> a-message-survives-a-restart -> u-a
+`})
+	var out struct {
+		States []specgraph.State `json:"states"`
+		Cycle  []string          `json:"cycle"`
 	}
+	decodeStrict(t, runBinary(t, binary, "", "state", "--scenario", dir, "--json"), &out)
+	served := specgraph.CheckState{ID: "a-sent-message-reaches-a-listener", State: "true", Reason: "passed", From: "m1"}
+	if len(out.States) != 1 || !slices.Contains(out.States[0].Checks, served) {
+		t.Fatalf("--json: states %+v; want one state, whose checks hold %+v", out.States, served)
+	}
+	for _, c := range out.States[0].Checks {
+		if !strings.Contains(text.stdout, "check "+c.ID+":") && !strings.Contains(text.stdout, "check "+c.ID+" (serves no current statement):") {
+			t.Errorf("--json reports the check %s, and the text names it on no line", c.ID)
+		}
+	}
+}
+
+// R5: "The parent and support relations taken together form no cycle, and Dispatch refuses a change
+// that makes one." A change of the approved spec is a new version of a node, and a loop that only
+// an older version made is no loop of the approved spec now: wait-cycle, where version 1 of
+// a-message-survives-a-restart made it its own parent and version 2, its text as written, is the one
+// that the files hold, reads as wait-cycle (want.txt). The loop in version 2 is a row of
+// TestScenarioRefusals.
+func TestALoopThatOnlyAnOlderVersionOfTheApprovedSpecMadeIsTaken(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	dir := copyScenario(t, "wait-cycle")
+	withSecondVersion(t, dir, "a-message-survives-a-restart", `parent="envoy-delivers-messages"`, `parent="a-message-survives-a-restart"`, 1)
+	want, err := os.ReadFile(filepath.Join(dir, "want.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(t, runBinary(t, binary, "", "state", "--scenario", dir), result{stdout: string(want)})
+}
+
+// withSecondVersion gives the node id of approved.json of dir a version 2 at the time of its
+// version 1, with the block of version 1, and replaces old with new in the block of version
+// changed. The test fails when that block does not hold old.
+func withSecondVersion(t *testing.T, dir, id, old, new string, changed int) {
+	t.Helper()
+	editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
+		n := approvedNode(t, nodes, id)
+		second := n.Versions[0]
+		second.Version = 2
+		n.Versions = append(n.Versions, second)
+		v := &n.Versions[changed-1]
+		if !strings.Contains(v.Block, old) {
+			t.Fatalf("version %d of %s does not hold %q", changed, id, old)
+		}
+		v.Block = strings.Replace(v.Block, old, new, 1)
+		return nodes
+	})
 }
 
 // R29: "That wait ends when main holds the statement's approved text and its own checks read true
@@ -343,113 +387,6 @@ func TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject(t *testing.T) {
 	}
 }
 
-// R8: "A result at one commit also counts at another commit when no code that the check runs
-// changed between the two (R18)", "A check whose tie to its code is unknown runs on each push to the
-// branch", and "A failing example that the check's test caught counts at another commit only while
-// no file that the test reads changed". R18: "At each commit, Dispatch derives four ties". Through
-// the command, a result at c1 counts at c2 only when the check's tie is known at both commits and no
-// path that changed between them is covered by the tie at either commit. Each row: carry at c2
-// alone, whose tree differs from c1's in docs/x.md and in the row's files under testdata, with the
-// row's tie of the check at c1 and at c2 (tie: carry's tie; narrow: that tie with no entry of
-// testdata). A program row takes carry's code check out for a program check of production, at
-// deploy d1, with a pass of its test at c2 and a failing example that its test caught at c1.
-func TestAResultCarriesByTheTiesOfBothCommits(t *testing.T) {
-	t.Parallel()
-	binary := cmdtest.Build(t, "spec-check")
-	program := specgraph.Check{ID: "a-production-restart-loses-no-message", Serves: "a-stored-message-survives-a-restart",
-		Subject: specgraph.SubjectProduction, Procedure: specgraph.ProcedureProgram,
-		Test:           &specgraph.Test{Runner: "go", Selector: "github.com/sjawhar/envoy/cmd/listener TestAProductionRestartLosesNoMessage", Job: "production-checks"},
-		Claim:          "A message that production stores before a restart reaches its session after the restart.",
-		ProcedureText:  "The program stores one message in production, starts the listener again and reads the messages of the session.\nIt must find the message one time.",
-		FailingExample: "A listener that deletes its stored messages when it starts."}
-	const testdata = "packages/envoy/cmd/listener/testdata/a.json"
-	tie := []string{"go.work", "packages/contracts/fixtures/dispatch-targeted-delivery.json", "packages/envoy/cmd/listener/*",
-		"packages/envoy/cmd/listener/testdata/**", "packages/envoy/go.mod", "packages/envoy/go.sum"}
-	narrow := slices.DeleteFunc(slices.Clone(tie), func(p string) bool { return p == "packages/envoy/cmd/listener/testdata/**" })
-	carried, moved := "true (passed, counted from c1)", "unknown (subject_moved)"
-	for _, row := range []struct {
-		name         string
-		program      bool
-		atC1, atC2   []string // the files under testdata that only c1, only c2 holds
-		tieC1, tieC2 []string // nil: the object of the commit holds no tie of the check
-		noC1         bool     // ties.json holds no object of c1
-		want         string   // the state of the row's check at c2
-	}{
-		{name: "control: c2 changes docs/x.md, which neither tie covers", tieC1: tie, tieC2: tie, want: carried},
-		{name: "control: the ties differ, and no path that changed is in either", tieC1: tie, tieC2: narrow, want: carried},
-		{name: "(a) c2 deletes a file under testdata that only the tie at c1 covers", atC1: []string{testdata}, tieC1: tie, tieC2: narrow, want: moved},
-		{name: "control: c2 deletes a file that both ties cover", atC1: []string{testdata}, tieC1: tie, tieC2: tie, want: moved},
-		{name: "c2 adds a file under testdata that only the tie at c2 covers", atC2: []string{testdata}, tieC1: narrow, tieC2: tie, want: moved},
-		{name: "(c) ties.json holds no object of c1", noC1: true, tieC2: tie, want: moved},
-		{name: "(d) the check has a tie at c2 only", tieC2: tie, want: moved},
-		{name: "the check has a tie at c1 only", tieC1: tie, want: moved},
-		{name: "(b) a program check: c2 deletes a file under testdata that only the tie at c1, where its test caught the fault, covers",
-			program: true, atC1: []string{testdata}, tieC1: tie, tieC2: narrow, want: "unknown (no_failing_example)"},
-		{name: "control (b): a program check whose ties differ, and no path that changed is in either",
-			program: true, tieC1: tie, tieC2: narrow, want: "true (passed, counted from d1)"},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
-			dir := copyScenario(t, "carry")
-			for _, commit := range []string{"m2", "c3", "c4"} {
-				removeAll(t, filepath.Join(dir, "files", commit))
-			}
-			check, subject := "a-restart-loses-no-message", map[string]any{"commit": "c2", "branch": "listener-restart", "now": "2026-11-14T00:00:00Z"}
-			subjectLine := "c2, the head of listener-restart"
-			if row.program {
-				check, subject = program.ID, map[string]any{"commit": "c2", "deploy": "d1", "now": "2026-11-14T00:00:00Z"}
-				subjectLine = "c2, the commit that production runs at deploy d1"
-				removeCheck(t, dir, "a-restart-loses-no-message")
-				addApproved(t, dir, program.ID, program)
-				block, err := program.Print()
-				if err != nil {
-					t.Fatal(err)
-				}
-				spec := filepath.Join(dir, "files", "c2", "spec.md")
-				content, err := os.ReadFile(spec)
-				if err != nil {
-					t.Fatal(err)
-				}
-				writeFile(t, spec, append(append(content, '\n'), block...))
-				var results []any
-				readJSONFile(t, filepath.Join(dir, "results.json"), &results)
-				results = append(results,
-					map[string]any{"check": program.ID, "check_version": 1, "kind": "failing_example", "outcome": "fail", "test_commit": "c1", "leg": "",
-						"at": "2026-11-13T11:00:00Z", "seq": 20, "fault_author": "agent-b", "test_authors": []string{"agent-a"}},
-					map[string]any{"check": program.ID, "check_version": 1, "kind": "run", "outcome": "pass", "deploy": "d1", "job": "production-checks", "leg": "",
-						"test_commit": "c2", "at": "2026-11-13T12:00:00Z", "seq": 21})
-				writeJSONFile(t, filepath.Join(dir, "results.json"), results)
-			}
-			writeJSONFile(t, filepath.Join(dir, "subjects.json"), []any{subject})
-			var history specgraph.FixtureHistory
-			readJSONFile(t, filepath.Join(dir, "history.json"), &history)
-			for _, c := range history.Commits {
-				for _, file := range map[string][]string{"c1": row.atC1, "c2": row.atC2}[c.ID] {
-					c.Files[file] = "1"
-				}
-			}
-			writeJSONFile(t, filepath.Join(dir, "history.json"), history)
-			ties := map[string]map[string][]string{"c1": {}, "c2": {}}
-			for commit, paths := range map[string][]string{"c1": row.tieC1, "c2": row.tieC2} {
-				if paths != nil {
-					ties[commit][check] = paths
-				}
-			}
-			if row.noC1 {
-				delete(ties, "c1")
-			}
-			writeJSONFile(t, filepath.Join(dir, "ties.json"), ties)
-			got := runBinary(t, binary, "", "state", "--scenario", dir)
-			if got.code != 0 || got.stderr != "" {
-				t.Fatalf("exit %d, stderr %q: want exit 0 and nothing on stderr", got.code, got.stderr)
-			}
-			if want := "  check " + check + ": " + row.want; !slices.Contains(subjectLines(got.stdout, subjectLine), want) {
-				t.Errorf("no line %q at subject %s in:\n%s", want, subjectLine, got.stdout)
-			}
-		})
-	}
-}
-
 // scenarioApproval is when the approved nodes of the scenarios were approved.
 var scenarioApproval = time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
 
@@ -462,8 +399,7 @@ func addApproved(t *testing.T, dir, id string, node interface{ Print() (string, 
 		t.Fatal(err)
 	}
 	editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
-		return append(nodes, specgraph.ApprovedNode{ID: id, Removed: new(false), PartlyChecked: new(false),
-			Versions: []specgraph.ApprovedVersion{{Version: 1, At: scenarioApproval, Block: block}}})
+		return append(nodes, specgraph.ApprovedNode{ID: id, Versions: []specgraph.ApprovedVersion{{Version: 1, At: scenarioApproval, Block: block}}})
 	})
 }
 

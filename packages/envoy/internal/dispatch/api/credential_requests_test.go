@@ -30,7 +30,7 @@ const credentialTestAccountToken = "dispatch-account-token"
 
 // accountTokenFile writes token to a file of the test's own directory, as a pod's projected
 // token volume holds it, and answers the path the client reads its bearer from.
-func accountTokenFile(t *testing.T, token string) string {
+func accountTokenFile(t testing.TB, token string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(path, []byte(token), 0o600); err != nil {
@@ -40,8 +40,9 @@ func accountTokenFile(t *testing.T, token string) string {
 }
 
 // newCredentialTestHandler mounts the real routes with AgentSecrets pointed at brokerURL ("" to
-// leave the feature off). It never shares newTestServer's testServerOptions on purpose: every
-// other API test leaves the feature off, and this file's tests are the only ones that need it on.
+// leave the feature off), on a server that configures nothing else. A test that needs the relay
+// beside another of newTestServer's options, the broker token verifier among them, sets
+// testServerOptions.agentSecretsURL instead (broker_token_approve_test.go).
 func newCredentialTestHandler(t *testing.T, brokerURL string) http.Handler {
 	t.Helper()
 	tokenFile := ""
@@ -100,6 +101,7 @@ var featureOffRoutes = []struct {
 }
 
 func TestCredentialRoutesAnswerFeatureOffWithNilClient(t *testing.T) {
+	t.Parallel()
 	handler := newCredentialTestHandler(t, "")
 	for _, route := range featureOffRoutes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
@@ -122,6 +124,7 @@ func TestCredentialRoutesAnswerFeatureOffWithNilClient(t *testing.T) {
 // failed request, while the request is held to the same human caller and `approver=me` as one a
 // broker would answer.
 func TestListCredentialPendingWithAndWithoutABroker(t *testing.T) {
+	t.Parallel()
 	t.Run("without a broker", func(t *testing.T) {
 		handler := newCredentialTestHandler(t, "")
 		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/credential-requests?approver=me", nil, "alice")
@@ -194,6 +197,7 @@ func newFakeBrokerRig(t *testing.T) *fakeBrokerRig {
 // The pending list relays the broker's answer untouched, a secret request's approve_url among its
 // rows. That link is the broker's, and Dispatch adds nothing to it.
 func TestCredentialRouteForwardsBrokerSuccessBodyAndAuth(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, brokerRoute, dispatchPath, body string
 	}{
@@ -224,6 +228,7 @@ func TestCredentialRouteForwardsBrokerSuccessBodyAndAuth(t *testing.T) {
 // A secret request is decided on the broker's page alone, so the broker refuses Dispatch's approve
 // or deny of one; the browser gets that refusal, and the page it names, exactly as the broker sent it.
 func TestCredentialRouteForwardsBrokerErrorStatusAndBodyVerbatim(t *testing.T) {
+	t.Parallel()
 	refusal := `{"code":"DECIDE_ON_BROKER_PAGE","error":"decide it at https://secrets.example.com/approve/rec1","approve_url":"https://secrets.example.com/approve/rec1"}`
 	for _, action := range []string{"approve", "deny"} {
 		t.Run(action, func(t *testing.T) {
@@ -245,6 +250,7 @@ func TestCredentialRouteForwardsBrokerErrorStatusAndBodyVerbatim(t *testing.T) {
 }
 
 func TestCredentialRouteRelaysRequestBodyVerbatim(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	handler := newCredentialTestHandler(t, rig.server.URL)
 
@@ -265,6 +271,7 @@ func TestCredentialRouteRelaysRequestBodyVerbatim(t *testing.T) {
 // its body. A dismissal reads no body at all, so it sends the approver alone whatever the browser
 // sent.
 func TestDecisionsNameTheCallerNeverTheBrowsersApprover(t *testing.T) {
+	t.Parallel()
 	browserBody := map[string]any{"approver": "bob", "code": "ABCD-1234", "assertion": map[string]string{"id": "x"}}
 	for _, tc := range []struct {
 		path     string
@@ -294,6 +301,7 @@ func TestDecisionsNameTheCallerNeverTheBrowsersApprover(t *testing.T) {
 }
 
 func TestCredentialRouteTransportFailureIsAgentSecretsUnavailable(t *testing.T) {
+	t.Parallel()
 	// Nothing listens at the broker's port, and the test holds it, so every call is a transport
 	// failure (testport.Refused).
 	handler := newCredentialTestHandler(t, "http://"+testport.Refused(t))
@@ -349,6 +357,7 @@ func TestCredentialRouteWithAnUnreadableAccountTokenNamesDispatchsOwnCredential(
 // expired ones nobody has dismissed, on every call: the browser's URL names neither, and a state
 // the browser does add narrows nothing.
 func TestListCredentialPendingResolvesApproverMeToCallerCanonicalLogin(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	handler := newCredentialTestHandler(t, rig.server.URL)
 
@@ -364,6 +373,7 @@ func TestListCredentialPendingResolvesApproverMeToCallerCanonicalLogin(t *testin
 }
 
 func TestListCredentialGrantsResolvesApproverMeToCallerCanonicalLogin(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	handler := newCredentialTestHandler(t, rig.server.URL)
 
@@ -377,6 +387,7 @@ func TestListCredentialGrantsResolvesApproverMeToCallerCanonicalLogin(t *testing
 }
 
 func TestApproverLiteralOtherValueIsRejectedBeforeReachingTheBroker(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	handler := newCredentialTestHandler(t, rig.server.URL)
 
@@ -398,6 +409,7 @@ func TestApproverLiteralOtherValueIsRejectedBeforeReachingTheBroker(t *testing.T
 // A sign-in belongs to one person, so the two routes that read and end one must name that person
 // from Dispatch's own session and never from the browser, exactly as every decision does.
 func TestSignInRoutesNameTheCallerNeverTheBrowser(t *testing.T) {
+	t.Parallel()
 	t.Run("the list asks for the caller's own sign-ins", func(t *testing.T) {
 		rig := newFakeBrokerRig(t)
 		handler := newCredentialTestHandler(t, rig.server.URL)
@@ -428,6 +440,7 @@ func TestSignInRoutesNameTheCallerNeverTheBrowser(t *testing.T) {
 // broker, which answers a sign-in of anybody else as an unknown id. This drives both against a
 // broker that behaves as the real one does.
 func TestOnePersonReachesNoneOfAnothersSignIns(t *testing.T) {
+	t.Parallel()
 	signIns := map[string]string{"signin-alice": "alice", "signin-bob": "bob"}
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -493,8 +506,9 @@ func TestOnePersonReachesNoneOfAnothersSignIns(t *testing.T) {
 // it has to follow that document, cost the broker one read however many pages ask, answer for a
 // Dispatch with no broker at all, and keep the page rather than lose it when the broker cannot
 // be read. What a lapsed window does with a broker that has stopped answering is the client's
-// own test (internal/dispatch/agentsecrets).
+// own test (internal/dispatch/cipher).
 func TestCredentialCapabilitiesFollowTheBrokersMetadata(t *testing.T) {
+	t.Parallel()
 	const metadata = "GET /.well-known/oauth-authorization-server"
 	ask := func(t *testing.T, handler http.Handler) bool {
 		t.Helper()

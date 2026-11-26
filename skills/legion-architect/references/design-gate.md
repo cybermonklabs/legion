@@ -11,6 +11,10 @@ Read this before you write a root spec, before any edit to an approved one, and 
 - Upload `verification.md` beside it (`--force` from its second version). Each clause of a check's
   `negative_control` names the test row or run that drives it. A requirement over every member of
   a class iterates the class's list, never a sample.
+- Your `Production check` line says whether this project checks production after a merge. When it
+  names a role, write one `after_merge` check for the production check in the Verification
+  document, with the spec and while the issue is open, because a closed issue refuses every new
+  document. Under `Production check: off`, write none.
 - Where a real recorded input exists (a stored record, a captured log, a real service's answer),
   hold at least one read-only check against it, or say in a decision block why none can be
   written. A requirement of the form "try X and see" is accepted by an observed real run.
@@ -19,49 +23,20 @@ Read this before you write a root spec, before any edit to an approved one, and 
 
 ## A check CI proves
 
-A check carrying `ci_check` is CI's: `ci_check` names the GitHub check run that proves it at the
-head; it takes no `run`, its `when` is `before_merge`, and no role runs it or records its result
-(`skill://legion-worker/references/ci-checks.md`). Where a CI job that runs on an ordinary pull
-request already makes a check's proof, write that check as `ci_check` rather than as a command. A
-`run` that names tests names specific tests or files; a whole suite is the CI job that runs it.
+A check carrying `ci_check` is CI's (`skill://legion-worker/references/ci-checks.md`): it names
+the check run that proves it at the head, takes no `run`, its `when` is `before_merge`, and no
+role runs or records it. Where a CI job already makes a check's proof, write that check as
+`ci_check` rather than as a command. A `run` that names tests names specific tests or files; a
+whole suite is the CI job that runs it.
 
 1. Name the check run of the job that runs the proof, never a roll-up. On cybermonklabs/legion
-   never `ci-ok`, which passes when the jobs it did not select were skipped
+   never `ci-ok`, which passes when jobs it did not select were skipped
    (`.github/scripts/ci-ok.sh`).
-2. A job held back from ordinary pull requests needs its label on the pull request for as long as
-   a check names it (`full-ci` on cybermonklabs/legion); without it the job reads `skipped`.
-3. Write in `negative_control` the case inside that job that fails when the property breaks: a
+2. Name it as GitHub writes it: `<caller> / <job>` for a job of a called workflow (`test / test`).
+3. A held-back job needs its label (`full-ci` or `lane:<output>`) on the pull request while a
+   check names it; without it the check reads `absent` or `skipped`.
+4. Write in `negative_control` the case inside that job that fails when the property breaks: a
    step with `continue-on-error` keeps its job green.
-
-## Show the surface before you ask
-
-Where this tree builds or changes a surface a person opens (a page, a screen, a dashboard), that
-person sees it and answers before you request approval: a spec for a surface they have not seen is
-refused. A new surface or a large visual change needs this round, and a flow needs a page they can
-click; a small change inside a standing shape does not, unless you are unsure what they want. A
-surface that is only text (an alert, a report, printed output) carries that literal text in the
-spec instead.
-
-1. Build the surface as a page from real readings of the real system. Draw the empty state and the
-   worst realistic data, or say which states you left out. Mark every invented figure in the
-   picture, and draw an existing surface as it is now beside the new one.
-2. Take the picture with the pod's Chromium and put it on the issue, with a clickable page as a
-   `file` artifact for a flow:
-
-   ```bash
-   chromium --headless --disable-gpu --no-sandbox --window-size=1440,900 \
-     --screenshot=<file.png> file://<page.html>
-   dispatch artifact --issue <KEY> --name <name>.png --path <file.png>
-   ```
-
-3. Ask one question with two to four answers, one of them that this is the wrong surface. Write no
-   code for the round, and end your turn.
-4. Put the agreed pictures in the spec, each with a line on what it shows and which readings are
-   real, and one line on the states they do not show. The spec's words still govern the build.
-
-You end the round, not the person. The round writes no spec version of its own, and a tree whose
-gate is open starts none. Under `Design gate steps: none`, put the picture in the spec and ask
-nobody. The surfaces children build are the root architect's.
 
 ## Which steps are gated
 
@@ -81,16 +56,19 @@ For each gated step, once every child is filed:
 
 1. Edit the document in place: `dispatch doc-edit --issue <root> --ops-json-file -`.
 2. Settle every decision block (`skill://dispatch-writing-specs`, "Approval").
-3. Give the current spec, the code and output it relies on, and the person's words to two fresh
-   reviewers: `task(agent="plan-gap-analyst")` for its gaps, and `task(agent="plan-reviewer")`,
-   told it is a spec, for each factual claim. `wait` for each, resolve every finding, and check
-   each unverified claim with a command or take it out.
+3. Where the spec is large, or changed in a way you cannot check alone,
+   `task(agent="plan-gap-analyst")` can find its gaps and `task(agent="plan-reviewer")`, told the
+   document is a spec, can check its factual claims; each runs as a job of its own, so `wait` for
+   its result.
 4. Request approval only once the person has agreed to every point; a new point gets its own
    decision block first. `--include-verification` covers `spec` and `criteria` in one request:
 
    ```bash
-   dispatch request-approval --issue <root> --include-verification --summary '<what they approve> Reviews: <gap result>, <claim result>; <what they do not show>.'
+   dispatch request-approval --issue <root> --include-verification --summary '<what they approve>'
    ```
+
+   `--summary` says in one to three sentences what the person approves, and nothing else. A
+   measurement or test result the design rests on goes in the document the request names.
 
 5. Register each step on its own document, with the id and version the request printed, never a
    slug. Leave `step` out only where your line names one step:
@@ -106,19 +84,23 @@ For each gated step, once every child is filed:
   once they have agreed to that version, run `dispatch request-approval` again to give it back.
 - `already approved at version <N>`: still `register_gate` that id and version.
 - Refusals record nothing: `VERSION_NOT_IN_DISPATCH` (register the latest version),
-  `GATE_STEP_REQUIRED` (name the step), `GATE_STEP_NOT_CONFIGURED` (register only gated steps),
+  `GATE_STEP_REQUIRED` (name the step),
+  `GATE_STEP_NOT_CONFIGURED` (register only gated steps, and `criteria` where the line names `spec` and not `criteria`),
   `GATE_STEP_DOCUMENT_MISMATCH` (register that step's own document).
 - Never open a `dispatch ask` with an `Approve` option: the daemon ignores its answer.
 
 ## After approval
 
-An approval is pinned to its version: any new version closes that step, with no wake. Two keep it:
-a version whose only change is a person's answer to a decision block, and one equal to the approved
-text (an accidental edit undone exactly).
+An approval is pinned to its version: any new version closes that step. The daemon tells the
+architect and every phase holder when the gate closes. Three keep it: a version whose only change
+is the approver's answer to a decision block, given after the approval at a browser or under a
+credential with the approve scope; one equal to the approved text (an accidental edit undone
+exactly) with no decision block in it decided since; and, after a close and a reopen, the approved
+text with only the questions the close withdrew open again.
 
 Edit an approved spec only where its Summary, a requirement, a check, the scope or a settled
 decision changes: put the problem to the person as a decision block at the end of the section it
-changes. When their answer changes text outside the block, rewrite it and repeat steps 3 to 5,
+changes. When their answer changes text outside the block, rewrite it and repeat steps 4 and 5,
 with a `--summary` sentence naming what changed. Work in flight goes on; release no further child
 until the next `design-approved`.
 

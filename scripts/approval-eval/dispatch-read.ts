@@ -16,8 +16,28 @@ import { CannotRunError, pool } from "./corpus-io";
  * another try would not help.
  */
 
-/** The growing waits between the tries of one read: four retries after the first try. */
-const RETRY_WAITS_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000];
+/** The growing waits between the tries of one read, in units of `retryWaitUnitMs`: four retries
+ * after the first try. */
+const RETRY_WAITS: readonly number[] = [1, 2, 4, 8];
+/** The production length of one unit of those waits: a second. */
+const RETRY_WAIT_UNIT_MS = 1_000;
+/** The length of one unit now: a second, unless a test has shortened it. */
+let retryWaitUnitMs = RETRY_WAIT_UNIT_MS;
+
+/**
+ * Runs the retry ladder with `unitMs` milliseconds in place of each second of its waits, so a test
+ * reads the same tries, the same growth and the same refusal without waiting 15 seconds for them.
+ * `resetRetryWaitUnitForTests` puts the second back.
+ */
+export function setRetryWaitUnitForTests(unitMs: number): void {
+  retryWaitUnitMs = unitMs;
+}
+
+/** Puts back the second `setRetryWaitUnitForTests` replaced. */
+export function resetRetryWaitUnitForTests(): void {
+  retryWaitUnitMs = RETRY_WAIT_UNIT_MS;
+}
+
 /** How many reads `readMany` runs at once when its caller names no other bound. */
 const DEFAULT_CONCURRENCY = 8;
 /** The page the event log is asked for, which is that route's own maximum. */
@@ -77,12 +97,15 @@ export interface DispatchEvent {
   payload: Record<string, unknown>;
 }
 
-/** One reply to a Dispatch comment, with the fields `claimRunOf` (`reserve.ts`) reads. */
+/** One reply to a Dispatch comment, with the fields `claimRunOf` (`reserve.ts`) reads. A reply its
+ *  author deleted keeps its place and its `created_at`, carries `deleted_at`, and has an empty
+ *  body; a Dispatch older than the delete serves no `deleted_at` at all. */
 export interface CommentReply {
   id: string;
   body: string;
   created_at: string;
   edited_at: string | null;
+  deleted_at?: string | null;
 }
 
 /** The replies to one comment, as `GET /api/v1/comments/<id>` serves its thread. */
@@ -95,6 +118,11 @@ export async function dispatchRepliesOf(commentId: string): Promise<readonly Com
 
 /** What `pageEventLog` is asked to walk, and what it hands each page to. */
 export interface PageEventLogOptions {
+  /**
+   * The event id the walk starts after: its first event is the first above it. With none, the
+   * walk starts at the start of the log.
+   */
+  after?: number;
   /**
    * The last event id of the walk. The walk ends with it, and an event above it, with everything
    * after it, is dropped. With none, the walk runs to the end of the log.
@@ -154,6 +182,14 @@ export async function readText(path: string, config?: DispatchConfig): Promise<s
   return read(path, config, (answer) => answer.text());
 }
 
+/**
+ * GET one path of the Dispatch API and take its body as the bytes the server sent, for a reader
+ * that names an answer by the sha256 of those bytes (`s10-inputs.ts`, each search page).
+ */
+export async function readBytes(path: string, config?: DispatchConfig): Promise<Uint8Array> {
+  return read(path, config, async (answer) => new Uint8Array(await answer.arrayBuffer()));
+}
+
 /** One GET under the retry policy, its successful answer's body taken by `body`. */
 async function read<T>(
   path: string,
@@ -179,11 +215,11 @@ async function read<T>(
       if (error instanceof DispatchRefusedError) throw error;
       lastFailure = error instanceof Error ? error.message : String(error);
     }
-    const wait = RETRY_WAITS_MS[attempt];
+    const wait = RETRY_WAITS[attempt];
     if (wait === undefined) {
-      throw new DispatchUnreachableError(path, RETRY_WAITS_MS.length + 1, lastFailure);
+      throw new DispatchUnreachableError(path, RETRY_WAITS.length + 1, lastFailure);
     }
-    await sleep(wait);
+    await sleep(wait * retryWaitUnitMs);
   }
 }
 
@@ -206,15 +242,16 @@ export async function readMany<T>(
 }
 
 /**
- * Walk `/api/v1/events/log` from the start, a page of `EVENT_PAGE_SIZE` at a time, handing each
- * page to `onPage` oldest event first. The walk ends at the first empty page, or at the first
- * event whose id is above `through`: that event, and everything after it, is dropped, so two
- * walks pinned to the same id read the same events however much the log grew between them.
+ * Walk `/api/v1/events/log` from the start, or from just after `after`, a page of
+ * `EVENT_PAGE_SIZE` at a time, handing each page to `onPage` oldest event first. The walk ends at
+ * the first empty page, or at the first event whose id is above `through`: that event, and
+ * everything after it, is dropped, so two walks pinned to the same id read the same events
+ * however much the log grew between them.
  */
 export async function pageEventLog(options: PageEventLogOptions): Promise<EventLogWalk> {
   const { through, onPage } = options;
   const config = await dispatchConfig();
-  let after = 0;
+  let after = options.after ?? 0;
   let eventsRead = 0;
   let pages = 0;
   let lastEventId = 0;

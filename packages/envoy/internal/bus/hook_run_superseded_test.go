@@ -14,30 +14,43 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // supersede is what a reconnect hook does to lose the connection its run is on: it stops srv, and
 // returns once conn, the run's connection, has left CONNECTED and ctx, the run's context, has ended
-// with it, with the context's error. Either that is not done within 10 s returns an error of its
-// own, which no run reads as superseded.
+// with it, with the context's error. Either that is not done by the test binary's deadline less
+// runLostSpare returns an error of its own, which no run reads as superseded.
 func supersede(ctx context.Context, t *testing.T, srv *testnats.Server, conn *nats.Conn) error {
 	srv.Stop(t)
-	return awaitRunLost(ctx, conn)
+	return awaitRunLost(ctx, t, conn)
 }
 
-// awaitRunLost waits, within 10 s each, for conn to leave CONNECTED and then for ctx, the context
-// of a run on conn, to end, and returns ctx's error; a wait that runs out returns an error of its
-// own.
-func awaitRunLost(ctx context.Context, conn *nats.Conn) error {
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool { return !conn.IsConnected() }) {
-		return errors.New("the run's connection still read CONNECTED 10s after it was cut")
+// runLostSpare is what awaitRunLost leaves of the test binary's deadline: more than the margin
+// testwait's own waits leave, so a hook's wait gives up, and hands its error to the test, before
+// the test's wait for that error does.
+const runLostSpare = 45 * time.Second
+
+// awaitRunLost waits for conn to leave CONNECTED and then for ctx, the context of a run on conn,
+// to end, and returns ctx's error. It runs on a hook's goroutine, so it fails nothing itself: its
+// one bound is the test binary's deadline less runLostSpare (testwait.Left), and a wait that
+// reaches it returns an error of its own.
+func awaitRunLost(ctx context.Context, t *testing.T, conn *nats.Conn) error {
+	bound, err := testwait.Left(t, runLostSpare)
+	if err != nil {
+		return err
+	}
+	expired := time.NewTimer(bound)
+	defer expired.Stop()
+	if !testwait.Holds(bound, 10*time.Millisecond, func() bool { return !conn.IsConnected() }) {
+		return errors.New("the run's connection still read CONNECTED " + runLostSpare.String() + " before the test binary's deadline")
 	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-time.After(10 * time.Second):
-		return errors.New("the run's context had not ended 10s after its connection left CONNECTED")
+	case <-expired.C:
+		return errors.New("the run's context had not ended " + runLostSpare.String() + " before the test binary's deadline, though its connection had left CONNECTED")
 	}
 }
 
@@ -55,13 +68,14 @@ func markHooksDue(c *Client) {
 // (afterReconnect), and both lose their connection to a stopped server; the third covers the
 // reconnect that follows.
 func TestASupersededRunKeepsNoErrorAndLogsNoWarning(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
-	client, err := Connect([]string{uri}, WithName(t.Name()))
+	logs := captureLogs()
+	client, err := Connect([]string{uri}, WithName(t.Name()), WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	logs := captureLogs(t)
 	var calls atomic.Int32
 	client.AddReconnectHook(func(ctx context.Context, conn *nats.Conn) error {
 		if calls.Add(1) <= 2 {
@@ -123,6 +137,7 @@ type hookCall struct {
 // hook that returns the cancel, which ends the run there, and for one that swallows it and returns
 // nil, after which the hooks behind it run on the ended context; the run is superseded either way.
 func TestASupersededRunLeavesEveryHookDue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		swallow bool
@@ -204,7 +219,7 @@ type proxiedConn struct {
 
 func newHalfOpenProxy(t *testing.T, upstream string) *halfOpenProxy {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("proxy listen: %v", err)
 	}
@@ -306,8 +321,10 @@ func (p *halfOpenProxy) forward(conn *proxiedConn) {
 // durable's push binding, for minutes. nats.go reconnects in place, and the durable ends bound and
 // handed what the stream takes.
 func TestTheRestoresBindOutlivesTheRunItsConnectionLossSuperseded(t *testing.T) {
+	t.Parallel()
 	_, uri := testnats.Start(t)
-	owner, err := ConnectOwningStream([]string{uri}, WithName(t.Name()+"-owner"))
+	logs := captureLogs()
+	owner, err := ConnectOwningStream([]string{uri}, WithName(t.Name()+"-owner"), WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("create the stream: %v", err)
 	}
@@ -327,7 +344,7 @@ func TestTheRestoresBindOutlivesTheRunItsConnectionLossSuperseded(t *testing.T) 
 	}
 
 	proxy := newHalfOpenProxy(t, strings.TrimPrefix(uri, "nats://"))
-	client, err := Connect([]string{"nats://" + proxy.addr()}, WithConnectInBackground(), WithName(t.Name()))
+	client, err := Connect([]string{"nats://" + proxy.addr()}, WithConnectInBackground(), WithName(t.Name()), WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("connect in the background: %v", err)
 	}
@@ -339,7 +356,6 @@ func TestTheRestoresBindOutlivesTheRunItsConnectionLossSuperseded(t *testing.T) 
 	}, nats.Bind(Stream, consumer), nats.ManualAck()); err == nil {
 		t.Fatal("the durable was bound before the client's first connection; the test needs that connection's restore to bind it")
 	}
-	logs := captureLogs(t)
 	var calls atomic.Int32
 	cut := make(chan error, 1)
 	client.AddReconnectHook(func(ctx context.Context, conn *nats.Conn) error {
@@ -354,19 +370,14 @@ func TestTheRestoresBindOutlivesTheRunItsConnectionLossSuperseded(t *testing.T) 
 			return err
 		}
 		proxy.cutClients()
-		err := awaitRunLost(ctx, conn)
+		err := awaitRunLost(ctx, t, conn)
 		cut <- err
 		return err
 	})
 
 	proxy.admit()
-	select {
-	case err := <-cut:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("the first connection's run was not superseded by the cut: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the first connection's run of the hooks did not reach the cut within 30s")
+	if err := testwait.Receive(t, "the first connection's run of the hooks to reach the cut", cut); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the first connection's run was not superseded by the cut: %v", err)
 	}
 	if !testwait.Holds(30*time.Second, 20*time.Millisecond, func() bool {
 		return calls.Load() >= 2 && !client.hooksDue() && client.SubOK()

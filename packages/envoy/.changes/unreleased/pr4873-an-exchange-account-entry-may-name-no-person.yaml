@@ -1,0 +1,29 @@
+kind: Added
+body: |-
+  A `BROKER_EXCHANGE_ACCOUNTS` entry may name neither a person nor a project: `<service account>==`,
+  or `<service account>===<session>` to fix its session. Its pods' tokens act as the account itself:
+  the project scope `named`, no person and no project, and the account
+  (`system:serviceaccount:<namespace>:<name>`) as the token's `service`. Dispatch, the Envoy listener
+  and the NATS auth service take such a token as a session's credential, and only when its service
+  is a whole Kubernetes account subject. Dispatch lets it write wherever a credential that names no
+  project may write, the writes that belong to the deployment and need no OAuth scope included:
+  priorities, a new project with its default assignee, the delivery settings, a project's Legion
+  daemon URL and default repository, and the delivery session groups. Dispatch records each write as
+  the token's session acting for that account and for no person, and refuses it a route that needs
+  `person` or `approve` (`403 OAUTH_SCOPE_REQUIRED`). A token that names a service and no person
+  under the project scope `person`, a machine nobody has signed in on, is still refused every write
+  `403 SIGN_IN_REQUIRED`. `GET /api/v1/whoami` answers `sign_in_required`, true only for that
+  machine's token, from the same decision Dispatch refuses its writes on. An entry that names a
+  project and no person refuses the broker's start, naming that rule: an entry that names a project
+  names its person, so no account entry's token held to a project is personless. A broker of an
+  older build refuses to start on an entry naming no person, and an Envoy listener or a Dispatch of
+  an older build answers its token `401`, so deploy the broker, Dispatch and every Envoy listener
+  before you write one, and remove every entry that names no person before you roll any of the
+  three back below this release. Bring the pi-envoy release and the claude-envoy rebuild that carry
+  this release's `dispatch` command to the session images first too: an older `dispatch whoami` ignores
+  `sign_in_required` and tells such a session that its writes are refused, though they succeed. A
+  `BROKER_POD_OPERATORS` mapping of an account that the exchange lists with no person refuses the
+  start too.
+time: 2026-11-21T17:54:41.000000000Z
+custom:
+  Issue: pr4873

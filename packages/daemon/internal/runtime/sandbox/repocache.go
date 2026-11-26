@@ -28,19 +28,21 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // A repository cache is the third kind of Sandbox the runtime makes, beside the issue pods and the
-// controller's (podKind) and the image probe: one per mapped repository, holding a bare clone on a
-// volume of its own and serving it to the issue pods' fetch containers (internal/repocache). It is
-// no claim: nothing registers on the worker stream for it, no claim.Token names it, and `legion
-// state` lists it under the repositories. Every place that lists the project's Sandboxes tells a
-// cache apart by its marker label (labelCache) before anything else, as each does the probe.
+// controller's (podKind) and the image probe: one per repository of the cache set
+// (Options.CacheRepositories), holding a bare clone on a volume of its own and serving it to the
+// issue pods' fetch containers (internal/repocache). It is no claim: nothing registers on the
+// worker stream for it, no claim.Token names it, and `legion state` lists it under the
+// repositories. Every place that lists the project's Sandboxes tells a cache apart by its marker
+// label (labelCache) before anything else, as each does the probe.
 
 // RepositoryCache is runtime.kubernetes.repository_cache: the volume each cache Sandbox owns, how
-// often its process fetches GitHub, how long the cache of a repository the mapping no longer names
-// is kept before the sweep deletes it, and the one container's reservation.
+// often its process fetches GitHub, how long the cache of a repository the cache set no longer
+// holds is kept before the sweep deletes it, and the one container's reservation.
 type RepositoryCache struct {
 	Volume    resource.Quantity
 	Refresh   time.Duration
@@ -65,9 +67,12 @@ func (c RepositoryCache) check() error {
 // the cache's annotation names it; its Sandbox; its State (starting, cloning, ready, failing or
 // refused), with the kubelet's Reason while it is failing and its Service's while it is refused;
 // whether its pod has passed its readiness probe behind its own Service, and its address then,
-// that Service's (cacheURL); once the repository has left the mapping, until when the sweep keeps
-// it; and, from RepositoryCaches alone, the pod's last health read: what its /healthz answered
-// (Health), or why it could not be read (HealthError), both empty when it was not Ready to be read.
+// that Service's (cacheURL); once the repository has left the cache set, until when the sweep
+// keeps it; and, from RepositoryCaches alone, its volume claim's name (Claim, cacheClaimName) and
+// the pod's last health read: what its /healthz answered (Health), or why it could not be read
+// (HealthError), both empty when it was not Ready to be read. The daemon's capability report reads
+// Repo, Claim, Health's room on the volume (VolumeBytes, AvailableBytes, VolumeError, the two
+// failure times) and Bytes, a nil Health counting the cache unread (daemon's supervision.caches).
 type CacheStatus struct {
 	Repo          ghrepo.Repository
 	Sandbox       string
@@ -76,6 +81,7 @@ type CacheStatus struct {
 	Ready         bool
 	Address       string
 	RetainedUntil time.Time
+	Claim         string
 	Health        *repocache.Health
 	HealthError   string
 }
@@ -253,10 +259,10 @@ func nestedNames(object unstructured.Unstructured, path ...string) []string {
 }
 
 // EnsureRepositoryCache makes repo's cache exist and run, under the pod's launch turn (lockPod on
-// CacheSandboxName) so two mapping changes never race on one cache: the Sandbox is read and, absent,
-// created Suspended (ensureCacheSandbox); its Secret brought to the current token
+// CacheSandboxName) so a launch and the sweep never race on one cache: the Sandbox is read and,
+// absent, created Suspended (ensureCacheSandbox); its Secret brought to the current token
 // (writeCacheSecret); and its pod made or replaced when it must be (reconcileCachePod). Readiness
-// is not awaited: RepositoryCache reads it from the pod store, so a mapping change never blocks on
+// is not awaited: RepositoryCache reads it from the pod store, so the sweep never blocks on
 // a volume being bound or an image being pulled. A cache already as it should be costs one Sandbox
 // read and one Secret read.
 func (r *Runtime) EnsureRepositoryCache(ctx context.Context, repo ghrepo.Repository) error {
@@ -294,7 +300,7 @@ func (r *Runtime) ensureRepositoryCache(ctx context.Context, repo ghrepo.Reposit
 // (cacheSandboxShape), or is another project's; waited out, within the boot timeout, while it is
 // being deleted (the sweep retiring it), and then created afresh.
 func (r *Runtime) ensureCacheSandbox(ctx context.Context, name string, repo ghrepo.Repository) (*sandbox, error) {
-	deadline := time.Now().Add(r.bootTimeout)
+	deadline := r.clock.Now().Add(r.bootTimeout)
 	for {
 		u, err := r.sandboxClient().Get(ctx, name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
@@ -303,7 +309,7 @@ func (r *Runtime) ensureCacheSandbox(ctx context.Context, name string, repo ghre
 				return nil, err
 			}
 			created, err := r.sandboxClient().Create(ctx, manifest, metav1.CreateOptions{})
-			if apierrors.IsAlreadyExists(err) && time.Now().Before(deadline) {
+			if apierrors.IsAlreadyExists(err) && r.clock.Now().Before(deadline) {
 				continue
 			}
 			if err != nil {
@@ -338,7 +344,7 @@ func (r *Runtime) ensureCacheSandbox(ctx context.Context, name string, repo ghre
 			}
 			return err == nil && current.GetUID() != uid, err
 		}
-		if err := r.await(ctx, time.Until(deadline), fmt.Sprintf("sandbox %s (uid %s) to be deleted", name, uid), gone); err != nil {
+		if err := r.await(ctx, deadline.Sub(r.clock.Now()), fmt.Sprintf("sandbox %s (uid %s) to be deleted", name, uid), gone); err != nil {
 			return nil, err
 		}
 	}
@@ -580,7 +586,7 @@ var cacheFailures = []string{"CrashLoopBackOff", "ImagePullBackOff", "ErrImagePu
 // controller has made no Service for it yet, failing with the kubelet's reason while its container
 // waits on one of cacheFailures or the pod has failed, ready once the pod's Ready condition is True
 // (the readiness probe passed) and its Service is made, with its address, that Service's
-// (cacheURL), and cloning otherwise — and RetainedUntil from annotationCacheUnmappedAt plus the
+// (cacheURL), and cloning otherwise — and RetainedUntil from annotationCacheUnusedAt plus the
 // retention when the annotation is set. Not found when no Sandbox of the name is stored.
 func (r *Runtime) RepositoryCache(repo ghrepo.Repository) (CacheStatus, bool) {
 	name := CacheSandboxName(r.project, repo)
@@ -624,15 +630,17 @@ func (r *Runtime) RepositoryCache(repo ghrepo.Repository) (CacheStatus, bool) {
 	case !made && status.State == cacheReady:
 		status.State, status.Ready, status.Address = cacheStarting, false, ""
 	}
-	if at, err := time.Parse(time.RFC3339, s.Annotations[annotationCacheUnmappedAt]); err == nil {
+	if at, err := time.Parse(time.RFC3339, s.Annotations[annotationCacheUnusedAt]); err == nil {
 		status.RetainedUntil = at.Add(r.cacheConfig.Retain)
 	}
 	return status, true
 }
 
 // RepositoryCaches is every cache the stores hold whose repository parses, sorted by repository,
-// each as RepositoryCache answers it with the last health read (readCacheHealth) of the pod it
-// owns now, none when that read was of another: what `legion state` shows of the caches.
+// each as RepositoryCache answers it with its volume claim's name, as the controller names the
+// claim it makes from the Sandbox's template (cacheClaimName), and the last health read
+// (readCacheHealth) of the pod it owns now, none when that read was of another: what `legion
+// state` shows of the caches, and what the daemon's capability report reads of their room.
 func (r *Runtime) RepositoryCaches() []CacheStatus {
 	var caches []CacheStatus
 	for _, u := range r.storedCaches() {
@@ -644,6 +652,7 @@ func (r *Runtime) RepositoryCaches() []CacheStatus {
 		if !found {
 			continue
 		}
+		status.Claim = cacheClaimName(status.Sandbox)
 		r.mu.Lock()
 		read, held := r.cacheHealth[status.Sandbox]
 		r.mu.Unlock()
@@ -694,7 +703,9 @@ func (r *Runtime) readCacheHealth(ctx context.Context) {
 		address := "http://" + net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(repocache.Port))
 		health, err := cacheHealthOf(ctx, client, address, repo)
 		if err != nil {
-			read.err = err.Error()
+			// The error is the HTTP client's or the cache's own answer, which legion state
+			// serves, so it is kept as any far side's error text is.
+			read.err = storetext.FarSideError(err.Error())
 		} else {
 			read.health = &health
 		}
@@ -795,38 +806,50 @@ func (r *Runtime) refreshCacheTokens(ctx context.Context) {
 }
 
 // sweepCaches is ReconcileOrphans' pass over the repository caches (the claim path, sweep, never
-// sees one), against the repositories the project works now (Options.Mapped: the repositories
-// Dispatch's mapping names and the repositories of the project's live issue records). For each
-// stored cache Sandbox: a repository that does not parse, or a shape this runtime does not build,
-// is logged and kept, as sweep keeps a Sandbox it cannot judge (the next boot's census refuses it
-// by name); a repository the set holds has its cache's annotationCacheUnmappedAt removed; one the
-// set does not — no live record and no mapping names it — is marked
-// with now once, kept while now minus the mark is under the retention, and deleted after it
-// (deleteFenced, in the foreground, so its volume and Secret go with it), logged with the repository
-// and how long it was kept. Then every member's cache is ensured (EnsureRepositoryCache):
-// one missing is made — at boot, whose reconciliation runs this, and after an ensure a mapping
-// change asked for failed — and a drifted or dead cache pod is replaced, all on the sweep's
-// schedule. Each runs under the cache's launch turn, fenced to the Sandbox as the store held it.
-// Every failure is logged, as a warning naming the cache, and tried at the next sweep; none is
-// ReconcileOrphans' error, which holds the claims' launches back at boot (reconcileBootOrphans):
-// each launch ensures its own repository's cache and fails, naming why, when it cannot be made, so
-// one repository's cache never stops another's launches.
+// sees one), against the cache set (Options.CacheRepositories: the repositories of the project's
+// live issue records and of the launches since the daemon last read them). For each stored cache
+// Sandbox: a repository that does not parse, or a shape this runtime does not build, is logged
+// and kept, as sweep keeps a Sandbox it cannot judge (the next boot's census refuses it by name);
+// a repository the set holds has its cache's annotationCacheUnusedAt and
+// annotationCacheOldUnusedAt removed; one the set does not — no live record and no launch since
+// the last read names it — is marked with now once, kept while now minus the mark is under the
+// retention, and deleted after it (deleteFenced, in the foreground, so its volume and Secret go
+// with it), logged with the repository and how long it was kept. A cache an earlier release
+// marked under annotationCacheOldUnusedAt loses that annotation at the first pass that judges it
+// (sweepOldMarkedCache), in the set or not. Outside the set it keeps the time of its first mark,
+// the earlier of its marks that parse as a time: it is retired at that pass when that mark is one
+// retention old or more, and otherwise has that time written under annotationCacheUnusedAt in the
+// patch that removes the old annotation, so it retires one retention after its first mark; one
+// none of whose marks parses is marked with now in that patch, with a warning naming each value,
+// and kept one retention. Then every member's cache is ensured (EnsureRepositoryCache): one
+// missing is made — at boot, whose reconciliation runs this, and after a launch's own ensure
+// failed — and a drifted or dead cache pod is replaced, all on the sweep's schedule. Each runs
+// under the cache's launch turn, fenced to the Sandbox as the store held it. Every failure is
+// logged, as a warning naming the cache, and tried at the next sweep; none is ReconcileOrphans'
+// error, which holds the claims' launches back at boot (reconcileBootOrphans): each launch
+// ensures its own repository's cache and fails, naming why, when it cannot be made, so one
+// repository's cache never stops another's launches.
 func (r *Runtime) sweepCaches(ctx context.Context) {
-	mapped := r.mapped()
+	cached := r.cacheRepositories()
 	for _, u := range r.storedCaches() {
-		if err := r.sweepCache(ctx, u, mapped); err != nil && ctx.Err() == nil {
+		if err := r.sweepCache(ctx, u, cached); err != nil && ctx.Err() == nil {
 			r.log.Warn("sandbox runtime: repository cache sweep failed; tried at the next sweep", "sandbox", u.GetName(), "err", err)
 		}
 	}
-	for _, repo := range mapped {
+	for _, repo := range cached {
 		if err := r.EnsureRepositoryCache(ctx, repo); err != nil && ctx.Err() == nil {
 			r.log.Warn("sandbox runtime: repository cache sweep failed; tried at the next sweep", "sandbox", CacheSandboxName(r.project, repo), "repo", repo.String(), "err", err)
 		}
 	}
 }
 
-// sweepCache is sweepCaches' judgement of one stored cache Sandbox, u, against mapped.
-func (r *Runtime) sweepCache(ctx context.Context, u *unstructured.Unstructured, mapped []ghrepo.Repository) error {
+// sweepCache is sweepCaches' judgement of one stored cache Sandbox, u, against cached, the cache
+// set, with one of four outcomes. In the set, a cache that carries annotationCacheUnusedAt loses
+// it. Outside the set, a cache with no mark is marked with now; one whose mark is not a time is
+// logged and kept; and one whose mark is a time is retired once now minus that mark reaches the
+// retention, and kept until then. A cache an earlier release marked under
+// annotationCacheOldUnusedAt is judged by sweepOldMarkedCache instead, under the same lock.
+func (r *Runtime) sweepCache(ctx context.Context, u *unstructured.Unstructured, cached []ghrepo.Repository) error {
 	repo, err := cacheRepository(u.GetAnnotations())
 	if err != nil {
 		return fmt.Errorf("%w; kept", err)
@@ -843,41 +866,106 @@ func (r *Runtime) sweepCache(ctx context.Context, u *unstructured.Unstructured, 
 	if err != nil {
 		return err
 	}
-	marked := s.Annotations[annotationCacheUnmappedAt]
-	if slices.ContainsFunc(mapped, func(m ghrepo.Repository) bool { return sameRepository(m, repo) }) {
+	held := slices.ContainsFunc(cached, func(m ghrepo.Repository) bool { return sameRepository(m, repo) })
+	if old, markedBefore := s.Annotations[annotationCacheOldUnusedAt]; markedBefore {
+		return r.sweepOldMarkedCache(ctx, s, repo, held, old)
+	}
+	marked := s.Annotations[annotationCacheUnusedAt]
+	if held {
 		if marked != "" {
-			if _, err := r.markUnmapped(ctx, s, nil); err != nil {
+			if _, err := r.markUnused(ctx, s, nil); err != nil {
 				return err
 			}
-			r.log.Info("sandbox runtime: repository cache mapped again; kept", "sandbox", s.Name, "repo", repo.String())
+			r.log.Info("sandbox runtime: repository cache back in the cache set; its marks cleared, kept", "sandbox", s.Name, "repo", repo.String())
 		}
 		return nil
 	}
 	now := r.now()
 	if marked == "" {
 		stamp := now.UTC().Format(time.RFC3339)
-		if _, err := r.markUnmapped(ctx, s, &stamp); err != nil {
+		if _, err := r.markUnused(ctx, s, &stamp); err != nil {
 			return err
 		}
-		r.log.Info("sandbox runtime: repository cache no longer mapped; kept for its retention", "sandbox", s.Name, "repo", repo.String(), "retain", r.cacheConfig.Retain.String())
+		r.log.Info("sandbox runtime: repository cache no longer in the cache set; kept for its retention",
+			"sandbox", s.Name, "repo", repo.String(), "retain", r.cacheConfig.Retain.String())
 		return nil
 	}
 	at, err := time.Parse(time.RFC3339, marked)
 	if err != nil {
-		return fmt.Errorf("%s is %q, not a time: %w; kept", annotationCacheUnmappedAt, marked, err)
+		return fmt.Errorf("%s is %q, not a time: %w; kept", annotationCacheUnusedAt, marked, err)
 	}
-	if kept := now.Sub(at); kept < r.cacheConfig.Retain {
+	kept := now.Sub(at)
+	if kept < r.cacheConfig.Retain {
 		return nil
 	}
-	return r.deleteFenced(ctx, s,
-		"sandbox runtime: retired a repository cache no longer mapped", "repo", repo.String(), "kept", now.Sub(at).Truncate(time.Second).String())
+	return r.deleteFenced(ctx, s, "sandbox runtime: retired a repository cache no longer in the cache set",
+		"repo", repo.String(), "kept", kept.Truncate(time.Second).String())
 }
 
-// markUnmapped sets s's annotationCacheUnmappedAt to stamp, or removes it when stamp is nil, in one
-// JSON merge patch carrying s's uid, so a Sandbox replaced in between is never written.
-func (r *Runtime) markUnmapped(ctx context.Context, s *sandbox, stamp *string) (*sandbox, error) {
+// sweepOldMarkedCache is sweepCache's judgement of s, a cache an earlier release marked under
+// annotationCacheOldUnusedAt with the value old, held telling whether the cache set holds its
+// repository, repo. It is the pass that takes that annotation off, which INFRA-4401's A4 requires
+// of the first sweep that judges the cache: each of its writes is markUnused's patch, which
+// removes the annotation, or the cache's deletion. In the set, the cache loses both marks. Outside
+// it, the cache's first mark is the earlier of its marks that parse as a time, old and its
+// annotationCacheUnusedAt, and the cache is retired once now minus that mark reaches the
+// retention; a cache kept has that mark written under annotationCacheUnusedAt (markUnused with that
+// mark's time, never now), so it retires one retention after its first mark, and one none of whose
+// marks parses is marked with now and logged as a warning naming each value, so it is kept one
+// retention and not retired at once. Each outcome has one INFO line naming the cache, its
+// repository, the old annotation's value and what the pass did: cleared it in the set, marked the
+// cache at its first mark, retired it, or marked it with now. dispatch://INFRA-3532's pull request
+// deletes it, with the one `if` of sweepCache that calls it.
+func (r *Runtime) sweepOldMarkedCache(ctx context.Context, s *sandbox, repo ghrepo.Repository, held bool, old string) error {
+	if held {
+		if _, err := r.markUnused(ctx, s, nil); err != nil {
+			return err
+		}
+		r.log.Info("sandbox runtime: repository cache back in the cache set; its marks cleared, kept",
+			"sandbox", s.Name, "repo", repo.String(), annotationCacheOldUnusedAt, old)
+		return nil
+	}
+	marked := s.Annotations[annotationCacheUnusedAt]
+	now := r.now()
+	// first is the cache's first mark, the earlier of its marks that parse as a time; err is nil
+	// once one does.
+	first := marked
+	at, err := time.Parse(time.RFC3339, first)
+	if oldAt, oldErr := time.Parse(time.RFC3339, old); oldErr == nil && (err != nil || oldAt.Before(at)) {
+		first, at, err = old, oldAt, nil
+	}
+	if err == nil {
+		if kept := now.Sub(at); kept >= r.cacheConfig.Retain {
+			return r.deleteFenced(ctx, s, "sandbox runtime: retired a repository cache no longer in the cache set",
+				"repo", repo.String(), "kept", kept.Truncate(time.Second).String(), annotationCacheOldUnusedAt, old)
+		}
+		if _, err := r.markUnused(ctx, s, &first); err != nil {
+			return err
+		}
+		r.log.Info("sandbox runtime: repository cache marked at its first mark, its old annotation removed; kept for the rest of its retention",
+			"sandbox", s.Name, "repo", repo.String(), annotationCacheOldUnusedAt, old, annotationCacheUnusedAt, first, "retain", r.cacheConfig.Retain.String())
+		return nil
+	}
+	stamp := now.UTC().Format(time.RFC3339)
+	if _, err := r.markUnused(ctx, s, &stamp); err != nil {
+		return err
+	}
+	values := []any{"sandbox", s.Name, "repo", repo.String(), annotationCacheOldUnusedAt, old}
+	if marked != "" {
+		values = append(values, annotationCacheUnusedAt, marked)
+	}
+	r.log.Warn("sandbox runtime: repository cache carries no mark that is a time; marked with this sweep's time, its old annotation removed", values...)
+	r.log.Info("sandbox runtime: repository cache no longer in the cache set; kept for its retention",
+		"sandbox", s.Name, "repo", repo.String(), "retain", r.cacheConfig.Retain.String(), annotationCacheOldUnusedAt, old)
+	return nil
+}
+
+// markUnused sets s's annotationCacheUnusedAt to stamp, or removes it when stamp is nil, and
+// removes annotationCacheOldUnusedAt either way, in one JSON merge patch carrying s's uid, so a
+// Sandbox replaced in between is never written.
+func (r *Runtime) markUnused(ctx context.Context, s *sandbox, stamp *string) (*sandbox, error) {
 	body, err := json.Marshal(map[string]any{
-		"metadata": map[string]any{"uid": string(s.UID), "annotations": map[string]*string{annotationCacheUnmappedAt: stamp}},
+		"metadata": map[string]any{"uid": string(s.UID), "annotations": map[string]*string{annotationCacheUnusedAt: stamp, annotationCacheOldUnusedAt: nil}},
 	})
 	if err != nil {
 		return nil, err

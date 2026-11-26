@@ -91,12 +91,17 @@ holder_pid=
 # database_created, which the `create database` sets, and never names a database that is not there.
 database=
 database_created=
-ok=
 
 note() { echo "   $*"; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
+. "$root/scripts/e2e/lib/run-verdict.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
+. "$root/scripts/e2e/lib/dispatch-identity.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
+. "$root/scripts/e2e/lib/omp-home.sh"
 
 # stop_omp PID ends one Oh My Pi the driver started, and only while it still carries the run's mark
 # (names_dir and run_marks, lib/process-tree.sh), so a pid the kernel gave to another process since
@@ -110,6 +115,8 @@ stop_omp() {
   stop_pid "$1"
 }
 
+# cleanup stops what the run started, drops its database, and prints its last line through
+# lib/run-verdict.sh: PASS only for a run that reached run_end, the script's last statement.
 cleanup() {
   local status=$? pid start
   set +e
@@ -122,6 +129,7 @@ cleanup() {
   fi
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
+  stop_pid "$dispatch_identity_issuer_pid"
   stop_pid "$holder_pid"
   stop_pid "$nats_pid"
   if [ -n "$database_created" ]; then
@@ -129,11 +137,9 @@ cleanup() {
       echo "could not drop database $database; drop it by hand" >&2
   fi
   rm -rf "$work"
-  if [ "$status" -eq 0 ] && [ -n "$ok" ]; then
-    echo "dispatch session settings e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"
-  else
-    echo "dispatch session settings e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)" >&2
-  fi
+  run_verdict "$status" \
+    "dispatch session settings e2e: PASS in $((SECONDS - started))s (evidence: $evidence)" \
+    "dispatch session settings e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -229,10 +235,12 @@ listener() { curl -fsS -H "@$work/envoy-auth-header" "$@"; }
 envoy_port=$(bun "$driver" free-port)
 dispatch_port=$(bun "$driver" free-port)
 # Neither service inherits this shell (dispatch-user-turns.sh's reasoning): a HOME or XDG directory
-# holding legion/envoy.json would hand Dispatch a production configuration.
+# holding legion/envoy.json would hand Dispatch a production configuration. Dispatch has an identity
+# of its own at the listener (lib/dispatch-identity.sh), as a deployment gives it.
+dispatch_identity_start
 env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$envoy_port" \
   ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-session-settings-$$" NATS_URLS="$nats_url" \
-  "$work/envoy-listener" >"$evidence/logs/listener.log" 2>&1 &
+  "${dispatch_identity_listener_env[@]}" "$work/envoy-listener" >"$evidence/logs/listener.log" 2>&1 &
 listener_pid=$!
 record_start "$listener_pid" || true
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
@@ -241,7 +249,7 @@ env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/no
   DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$dispatch_port" \
   DISPATCH_SERVER_URL="http://127.0.0.1:$dispatch_port" DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
   DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" ENVOY_URL="http://127.0.0.1:$envoy_port" \
-  ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url" \
+  ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url" "${dispatch_identity_dispatch_env[@]}" \
   "$work/dispatch" >"$evidence/logs/dispatch.log" 2>&1 &
 dispatch_pid=$!
 record_start "$dispatch_pid" || true
@@ -261,11 +269,10 @@ until_true 30 "the broken provider's port to be held" test -s "$work/broken-port
 broken_port=$(cat "$work/broken-port")
 
 # ---- the Oh My Pi profile ----------------------------------------------------------------------------
-# HOME is the run's own, with .omp/natives linked to the caller's native-module cache as
-# lib/omp-home.sh's make_omp_home links it, so nothing is downloaded and nothing of the caller's
-# ~/.omp is written. The agent directory holds the profile every session of the run shares.
-natives=$HOME/.omp/natives
-if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
+# HOME is the run's own, with .omp/natives linked to the caller's native-module cache
+# (omp_natives_dir, lib/omp-home.sh), so nothing is downloaded and nothing of the caller's ~/.omp is
+# written. The agent directory holds the profile every session of the run shares.
+natives=$(omp_natives_dir)
 mkdir -p "$natives" "$work/home/.omp" "$work/agent" "$work/session" "$work/tmp"
 ln -sfT "$natives" "$work/home/.omp/natives"
 # rig-broken answers nothing: its one model is the fallback check's, and retry.fallbackChains (the
@@ -312,4 +319,4 @@ note "setup took $((SECONDS - started))s"
 check=checks
 ANTHROPIC_API_KEY=$anthropic_key OPENAI_API_KEY=$openai_key bun "$driver" run "$work/rig.json" ||
   fail "the driver failed (the failing check is named above)"
-ok=1
+run_end

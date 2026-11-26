@@ -134,7 +134,7 @@ func TestGhostWisprHandler(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			pub := &mockPublisher{err: tc.publishErr}
-			handler := GhostWisprHandler(tc.secret, pub)
+			handler := GhostWisprHandler(tc.secret, pub, NewBodyBudget(DefaultBodyBudget, nil))
 
 			body := []byte(tc.body)
 			req := httptest.NewRequest(tc.method, "/webhook/ghostwispr", strings.NewReader(tc.body))
@@ -191,7 +191,7 @@ func TestGhostWisprHandlerRefusesAnEventItCannotCheck(t *testing.T) {
 				req.Header.Set("X-GhostWispr-Signature", tc.signature)
 			}
 			rec := httptest.NewRecorder()
-			GhostWisprHandler(tc.secret, pub).ServeHTTP(rec, req)
+			GhostWisprHandler(tc.secret, pub, NewBodyBudget(DefaultBodyBudget, nil)).ServeHTTP(rec, req)
 			t.Logf("secret set %v, signature %q: status %d, body %q, published %d", tc.secret != "", tc.signature, rec.Code, strings.TrimSpace(rec.Body.String()), len(pub.published))
 			if rec.Code != tc.wantStatus || len(pub.published) != tc.wantPublished {
 				t.Errorf("status %d, published %d; want status %d, published %d", rec.Code, len(pub.published), tc.wantStatus, tc.wantPublished)
@@ -262,7 +262,7 @@ func TestGhostWisprHandlerPassesSessionFields(t *testing.T) {
 			req.Header.Set("X-GhostWispr-Signature", ghostWisprSign(secret, []byte(body)))
 			pub := &mockPublisher{}
 			rec := httptest.NewRecorder()
-			GhostWisprHandler(secret, pub).ServeHTTP(rec, req)
+			GhostWisprHandler(secret, pub, NewBodyBudget(DefaultBodyBudget, nil)).ServeHTTP(rec, req)
 			if rec.Code != 200 || len(pub.published) != 1 {
 				t.Fatalf("status = %d, published = %d; want 200 and 1; body = %s", rec.Code, len(pub.published), rec.Body.String())
 			}

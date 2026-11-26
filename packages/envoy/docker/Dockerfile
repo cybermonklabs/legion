@@ -29,7 +29,7 @@ RUN set -eu; \
 COPY package.json bun.lock ./
 COPY patches patches
 COPY packages/contracts/package.json packages/contracts/package.json
-COPY packages/broker-client/package.json packages/broker-client/package.json
+COPY packages/cipher-client/package.json packages/cipher-client/package.json
 COPY packages/envoy-client/package.json packages/envoy-client/package.json
 COPY packages/pi-envoy/package.json packages/pi-envoy/package.json
 COPY packages/pi-legion/package.json packages/pi-legion/package.json
@@ -116,29 +116,33 @@ COPY --from=web /repo/packages/envoy/listenerwire/envelope_generated.go ./listen
 COPY --from=web /repo/packages/dispatch/web/dist/THIRD_PARTY_NOTICES.txt /tmp/dispatch-web-notices
 RUN mkdir -p /out \
     && CGO_ENABLED=0 go-third-party-notices.sh /tmp/go-notices \
-      ./cmd/listener ./cmd/dispatch ./cmd/broker ./cmd/agent-secrets \
+      ./cmd/listener ./cmd/dispatch ./cmd/cipherd ./cmd/cipher \
     && assemble-third-party-notices.sh /out/THIRD_PARTY_NOTICES \
       "Third-party software in the Legion Envoy image, with the license of each piece. Legion's own code is under the Apache License 2.0. The Debian packages the image installs carry their terms in /usr/share/doc/<package>/copyright." \
       "Go modules compiled into /usr/local/bin/envoy-listener, envoy-dispatch, envoy-broker and agent-secrets" /tmp/go-notices \
       "npm packages inlined into, and the typeface shipped with, the Dispatch web app, /srv/dispatch-web (served as /THIRD_PARTY_NOTICES.txt)" /tmp/dispatch-web-notices
 
 # The legion commit this image is built from, which envoy-dispatch's /healthz reports as
-# `commit`. The release workflow passes its own github.sha, for the image it publishes and for
+# `commit`, and which every binary below that connects to NATS names after its connection's name
+# (internal/buildversion's commit; legacy-subjects-gate.sh reads it from the hub's census of
+# connections). The release workflow passes its own github.sha, for the image it publishes and for
 # the smoke image it tests first. Left empty — a local compose or hand build, and the
-# pull-request lane's smoke image, which publishes nothing to match — the binary reports null;
-# anything else must be a full commit sha, so no placeholder is ever reported as a commit.
+# pull-request lane's smoke image, which publishes nothing to match — the binary reports null and
+# names no build; anything else must be a full commit sha, so no placeholder is ever reported as a
+# commit.
 ARG LEGION_COMMIT=
 RUN if [ -n "$LEGION_COMMIT" ] && ! printf '%s' "$LEGION_COMMIT" | grep -Eqx '[0-9a-f]{40}'; then \
       echo "LEGION_COMMIT must be a full 40-character commit sha or empty, got '$LEGION_COMMIT'" >&2; exit 1; \
     fi \
+    && build="-X github.com/sjawhar/envoy/internal/buildversion.commit=${LEGION_COMMIT}" \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
-    go build -o /out/envoy-listener ./cmd/listener \
+    go build -ldflags "$build" -o /out/envoy-listener ./cmd/listener \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
-    go build -ldflags "-X main.buildCommit=${LEGION_COMMIT}" -o /out/envoy-dispatch ./cmd/dispatch \
+    go build -ldflags "-X main.buildCommit=${LEGION_COMMIT} $build" -o /out/envoy-dispatch ./cmd/dispatch \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
-    go build -o /out/envoy-broker ./cmd/broker \
+    go build -ldflags "$build" -o /out/envoy-broker ./cmd/cipherd \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
-    go build -o /out/agent-secrets ./cmd/agent-secrets
+    go build -ldflags "$build" -o /out/agent-secrets ./cmd/cipher
 
 # Minimal runtime — static binary, no shell needed.
 # curl is included for HEALTHCHECK and operational debugging.

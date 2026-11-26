@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A deregistration while the role claim copy cannot be served no longer deletes a claim granted after the deregistration read it. Such a deregistration releases the roles of the session''s stored row and then scans the role bucket. The scan read again a role the row''s release had already read, so a new grant of that role to the same process, landing between that read and the release''s delete, was read by the scan as its own and deleted, under the holder''s own release and under the administrator''s force through `DELETE /v1/interests/<session_id>`. The scan now leaves alone every role the row''s release read, so the new grant stands.'
+time: 2026-11-22T09:37:22.000000000Z
+custom:
+    Issue: pr4992

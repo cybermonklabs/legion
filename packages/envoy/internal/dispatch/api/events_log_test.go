@@ -36,8 +36,8 @@ func readEventLogPage(t *testing.T, handler http.Handler, query string) ([]event
 }
 
 // readEventLogBehindHorizon reads the event log's first page until holds accepts it: the log
-// answers only the events at or below the server's safe horizon (sinceHorizon), which a
-// transaction held anywhere on the Postgres instance keeps back (awaitHorizonRead).
+// answers only the events at or below the server's safe horizon (sinceHorizon), which an event
+// write of the server's database keeps back for as long as it stays open (awaitHorizonRead).
 func readEventLogBehindHorizon(t *testing.T, handler http.Handler, database *store.Store, what string, holds func([]eventLogRow) bool) ([]eventLogRow, map[int64]json.RawMessage) {
 	t.Helper()
 	type page struct {
@@ -54,6 +54,7 @@ func readEventLogBehindHorizon(t *testing.T, handler http.Handler, database *sto
 // The event log is every event whatever owns it: a project's own event, an issue's and a project
 // document's all appear, in id order, each exactly as its owner's event list serves it.
 func TestEventLogPagesEveryEventAcrossOwnersInIDOrder(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "CORE", "Logged issue", "A spec")
 	if response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
@@ -111,6 +112,7 @@ func TestEventLogPagesEveryEventAcrossOwnersInIDOrder(t *testing.T) {
 // Paging by the last id read with a small limit yields the same events as one page: no gap and
 // no repeat, ending on a short page.
 func TestEventLogPagesByAfterWithoutGapOrRepeat(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "CORE", "Paged issue", "A spec")
 	for index := range 3 {
@@ -154,6 +156,7 @@ func TestEventLogPagesByAfterWithoutGapOrRepeat(t *testing.T) {
 }
 
 func TestEventLogRefusesAnInvalidQuery(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	for _, query := range []string{"?after=-1", "?after=x", "?limit=0", "?limit=1001", "?limit=x"} {
 		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/events/log"+query, nil, "alice")
@@ -169,6 +172,7 @@ func TestEventLogRefusesAnInvalidQuery(t *testing.T) {
 // The log admits exactly whom the live socket admits: any signed-in human or agent, and no
 // anonymous caller.
 func TestEventLogRefusesAnUnauthenticatedCallerAsTheLiveSocketDoes(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	socket := dispatchRequest(t, handler, http.MethodGet, "/ws/live", nil, "")
 	log := dispatchRequest(t, handler, http.MethodGet, "/api/v1/events/log", nil, "")

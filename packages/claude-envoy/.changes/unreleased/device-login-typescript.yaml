@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  A session on a machine with no identity of its own, such as a laptop, can trade a broker
+  credential with no Go binary. Log the machine in once with `dispatch login --device --person
+  <address>`, have that person approve the printed code in Dispatch, and set
+  `AGENT_SECRETS_MACHINE_IDENTITY=device-login` beside `AGENT_SECRETS_URL`. The login is kept in
+  the file `AGENT_SECRETS_DEVICE_LOGIN_FILE` names (default `~/.config/legion/device-login.json`),
+  and the Codex plugin passes that variable to its server. Run the command in a terminal of your
+  own, as the plugin's `bin/dispatch`: it waits until the code is approved. The broker must be
+  https, or http on this machine's loopback.

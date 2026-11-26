@@ -28,6 +28,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
 
@@ -311,6 +313,62 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 	defer mu.Unlock()
 	if exchanges != 2 || discoveries != 1 || identities != 1 {
 		t.Fatalf("exchanges=%d discoveries=%d identities=%d, want 2, 1, 1", exchanges, discoveries, identities)
+	}
+}
+
+// KnownIdentity is the bot identity a lease of the App already fetched, read from the Manager's
+// cache alone: none is known for either App before a mint, the identity once a lease of that App
+// fetched it, still none for the other App, and no read of it, before or after, reaches GitHub.
+func TestKnownIdentityIsWhatALeaseFetchedAndAsksGitHubNothing(t *testing.T) {
+	_, privatePEM := testAppKey(t)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	var requests atomic.Int64
+	server := githubtest.Serve(t, githubtest.Spec{Record: func(*http.Request) { requests.Add(1) }, Handle: func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/app/installations":
+			fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}}]`)
+		case "/app/installations/77":
+			fmt.Fprint(w, installationGranting("77", grantedEverythingAsked))
+		case "/app/installations/77/access_tokens":
+			_, asked := askedInExchange(t, r)
+			fmt.Fprint(w, mintedFor("installation-1", now.Add(time.Hour), asked.Permissions, "legion"))
+		case "/app":
+			fmt.Fprint(w, `{"slug":"legion-implementer"}`)
+		case "/users/legion-implementer[bot]":
+			fmt.Fprint(w, `{"id":271566630}`)
+		default:
+			githubtest.Unexpected(t, w, r)
+		}
+	}})
+	tokens := New(config.GitHubApps{
+		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
+		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
+	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
+	t.Cleanup(tokens.Close)
+
+	for _, role := range append(slices.Clone(Roles), "unconfigured") {
+		if identity, known := tokens.KnownIdentity(role); known {
+			t.Errorf("KnownIdentity(%s) before any mint = %+v, want none known", role, identity)
+		}
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("%d requests reached GitHub before any mint, want none: KnownIdentity asks GitHub nothing", got)
+	}
+
+	lease, err := tokens.Token(context.Background(), Implement, "acme")
+	if err != nil {
+		t.Fatalf("the implement App's lease on acme: %v", err)
+	}
+	minted := requests.Load()
+	want := GitIdentity{Name: "legion-implementer[bot]", Email: "271566630+legion-implementer[bot]@users.noreply.github.com"}
+	if identity, known := tokens.KnownIdentity(Implement); !known || identity != want || identity != lease.Identity {
+		t.Errorf("KnownIdentity(implement) after its lease = %+v, %t; want %+v, the identity the lease fetched", identity, known, want)
+	}
+	if identity, known := tokens.KnownIdentity(Review); known {
+		t.Errorf("KnownIdentity(review) after the implement App's lease alone = %+v, want none known: no lease of the review App fetched one", identity)
+	}
+	if got := requests.Load(); got != minted {
+		t.Errorf("%d requests reached GitHub after the mint's %d, want none: KnownIdentity reads the cache alone", got-minted, minted)
 	}
 }
 
@@ -1078,6 +1136,170 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 			var transient *TransientError
 			if got := errors.As(err, &transient); got != tc.transient {
 				t.Fatalf("Token = %v, transient %v, want transient %v", err, got, tc.transient)
+			}
+		})
+	}
+}
+
+// Every GitHub call appauth makes keeps GitHub's answer where only the daemon's start reads it
+// (dispatch://INFRA-2597/spec R4): each answer other than 2xx carries an *AnswerError holding the
+// request's method and path, GitHub's status, body and rate-limit headers, inside the
+// TransientError where one is made, and the error's message is the one it was before. The start
+// reads it on its own calls, the App logins read and the key proof (internal/daemon's bootLimit);
+// a mint's calls carry it too, though the start mints no token. The answer is a field and no link
+// of the chain, so errors.As finds no *githubrest.Answer in any of these errors: every other
+// reader of one (internal/daemon's defaultBranchLimit and the outbox's githubrest.RetryAfter among
+// them) reads a mint's error as it did before.
+//
+// One row per call: the installation discovery, the permissions read and the exchange, each
+// refused for a spent rate limit; the exchange's 422 that carries the limit's headers, which is
+// GitHub's trouble and no rate limit githubrest names (RateLimited false); the logins' GET /app;
+// the bot user; token mode's viewer, App and repository reads; key mode's installation read of a
+// repository (InstalledOn); and the answers that are no rate limit, the 404s of the exchange and of
+// the permissions read, and token mode's 401 of the repository list.
+func TestEveryGitHubCallOfTheStartsMintKeepsGitHubsAnswer(t *testing.T) {
+	_, privatePEM := testAppKey(t)
+	reset := strconv.FormatInt(time.Now().Add(30*time.Minute).Unix(), 10)
+	spent := githubrest.LimitHeaders{Limit: "15000", Remaining: "0", Reset: reset, Resource: "core"}
+	const limitBody = `{"message":"API rate limit exceeded for installation ID 77."}`
+	widgets := ghrepo.MustParse("acme/widgets")
+	keyMode := func(server *httptest.Server) *Manager {
+		return New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM}},
+			Options{BaseURL: server.URL, HTTPClient: server.Client(), Stderr: io.Discard})
+	}
+	broker := newFakeBroker(t, []string{"acme"}, time.Now().Add(time.Hour))
+	tokenMode := func(server *httptest.Server) *Manager {
+		return New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", TokenCommand: broker.command}},
+			Options{BaseURL: server.URL, HTTPClient: server.Client(), Stderr: io.Discard})
+	}
+	mint := func(tokens *Manager) error {
+		_, err := tokens.Token(context.Background(), Implement, "acme")
+		return err
+	}
+	login := func(tokens *Manager) error {
+		_, err := tokens.AppLogin(context.Background(), Implement)
+		return err
+	}
+	installedOn := func(tokens *Manager) error {
+		_, err := tokens.InstalledOn(context.Background(), Implement, widgets)
+		return err
+	}
+	for _, tc := range []struct {
+		name      string
+		manager   func(*httptest.Server) *Manager
+		call      func(*Manager) error
+		method    string
+		path      string
+		status    int
+		limit     githubrest.LimitHeaders
+		body      string
+		message   string
+		transient bool
+	}{
+		{name: "the installation discovery", manager: keyMode, call: mint, method: http.MethodGet, path: "/app/installations",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "GitHub App installation discovery failed (403)"},
+		{name: "the permissions read", manager: keyMode, call: mint, method: http.MethodGet, path: "/app/installations/77",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "GitHub App installation permissions read failed (403): " + limitBody},
+		{name: "the exchange", manager: keyMode, call: mint, method: http.MethodPost, path: "/app/installations/77/access_tokens",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "GitHub App token exchange failed (403): " + limitBody},
+		{name: "the exchange's 422 with the limit's headers", manager: keyMode, call: mint, method: http.MethodPost, path: "/app/installations/77/access_tokens",
+			status: http.StatusUnprocessableEntity, limit: spent, body: limitBody, transient: true,
+			message: "GitHub App token exchange failed (422): " + limitBody},
+		{name: "the logins read", manager: keyMode, call: login, method: http.MethodGet, path: "/app",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "read the implement App's login: GitHub App identity lookup failed (403)"},
+		{name: "the bot user", manager: keyMode, call: mint, method: http.MethodGet, path: "/users/legion-implementer[bot]",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "GitHub App bot identity lookup failed (403)"},
+		{name: "token mode's viewer", manager: tokenMode, call: login, method: http.MethodPost, path: "/graphql",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "read the implement App's login: read the implement App's bot login (GraphQL viewer) failed (403)"},
+		{name: "token mode's App", manager: tokenMode, call: login, method: http.MethodGet, path: "/apps/legion-implementer",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "read the implement App's login: read the implement App legion-implementer (GET /apps/legion-implementer) failed (403)"},
+		{name: "token mode's repository list", manager: tokenMode, call: installedOn, method: http.MethodGet, path: "/installation/repositories",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "read whether the implement App is installed on acme/widgets failed (403)"},
+		{name: "key mode's installation read of a repository", manager: keyMode, call: installedOn, method: http.MethodGet, path: "/repos/acme/widgets/installation",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "read whether the implement App is installed on acme/widgets failed (403)"},
+		{name: "the exchange's 404", manager: keyMode, call: mint, method: http.MethodPost, path: "/app/installations/77/access_tokens",
+			status: http.StatusNotFound, body: `{"message":"Not Found"}`,
+			message: `github_app_not_installed: implement's installation 77 on acme answers the installation is gone: GitHub App token exchange failed (404): {"message":"Not Found"}`},
+		{name: "the permissions read's 404", manager: keyMode, call: mint, method: http.MethodGet, path: "/app/installations/77",
+			status: http.StatusNotFound, body: `{"message":"Not Found"}`,
+			message: `github_app_not_installed: implement's installation 77 on acme answers the installation is gone: GitHub App installation permissions read failed (404): {"message":"Not Found"}`},
+		{name: "token mode's 401 of the repository list", manager: tokenMode, call: installedOn, method: http.MethodGet, path: "/installation/repositories",
+			status: http.StatusUnauthorized, body: `{"message":"Bad credentials"}`,
+			message: "read whether the implement App is installed on acme/widgets failed (401)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == tc.method && r.URL.Path == tc.path {
+					for header, value := range map[string]string{"X-RateLimit-Limit": tc.limit.Limit, "X-RateLimit-Remaining": tc.limit.Remaining,
+						"X-RateLimit-Reset": tc.limit.Reset, "X-RateLimit-Resource": tc.limit.Resource} {
+						if value != "" {
+							w.Header().Set(header, value)
+						}
+					}
+					w.WriteHeader(tc.status)
+					_, _ = io.WriteString(w, tc.body)
+					return
+				}
+				switch {
+				case r.URL.Path == "/app/installations":
+					fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}}]`)
+				case r.URL.Path == "/app/installations/77":
+					fmt.Fprint(w, installationGranting("77", grantedEverythingAsked))
+				case r.URL.Path == "/app/installations/77/access_tokens":
+					_, asked := askedInExchange(t, r)
+					fmt.Fprint(w, mintedFor("ghs_installation", time.Now().Add(time.Hour), asked.Permissions, "legion"))
+				case r.URL.Path == "/app":
+					fmt.Fprint(w, `{"slug":"legion-implementer"}`)
+				case r.URL.Path == "/users/legion-implementer[bot]":
+					fmt.Fprint(w, `{"id":271566630}`)
+				case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+					fmt.Fprint(w, `{"data":{"viewer":{"login":"legion-implementer[bot]"}}}`)
+				case r.URL.Path == "/apps/legion-implementer":
+					fmt.Fprint(w, `{"id":12345,"slug":"legion-implementer"}`)
+				case r.URL.Path == "/installation/repositories":
+					fmt.Fprint(w, `{"total_count":1,"repositories":[{"full_name":"acme/widgets"}]}`)
+				case r.URL.Path == "/repos/acme/widgets/installation":
+					fmt.Fprint(w, `{"id":77}`)
+				default:
+					githubtest.Unexpected(t, w, r)
+				}
+			}})
+
+			err := tc.call(tc.manager(server))
+
+			if err == nil || err.Error() != tc.message {
+				t.Fatalf("the call = %v, want today's message %q", err, tc.message)
+			}
+			var trouble *TransientError
+			if got := errors.As(err, &trouble); got != tc.transient {
+				t.Fatalf("the call = %v, transient %v, want transient %v as before", err, got, tc.transient)
+			}
+			var hidden *githubrest.Answer
+			if errors.As(err, &hidden) {
+				t.Fatalf("errors.As found GitHub's answer %+v in %v, want it out of the chain, so no reader after the start reads it", hidden, err)
+			}
+			var kept *AnswerError
+			if !errors.As(err, &kept) {
+				t.Fatalf("the call = %v, want an *AnswerError holding GitHub's answer", err)
+			}
+			if tc.transient && !errors.As(trouble.Err, &kept) {
+				t.Fatalf("the TransientError = %v, want the *AnswerError inside it", trouble)
+			}
+			answer := kept.Answer
+			if answer == nil || answer.Method != tc.method || answer.Path != tc.path || answer.Status != tc.status || answer.Body != tc.body || answer.Limit != tc.limit {
+				t.Fatalf("the answer kept = %+v, want %s %s answered %d with %s and headers %+v", answer, tc.method, tc.path, tc.status, tc.body, tc.limit)
+			}
+			if wantLimited := tc.status == http.StatusForbidden; answer.RateLimited != wantLimited {
+				t.Errorf("the answer kept reads as a rate limit: %v, want %v, as githubrest reads it", answer.RateLimited, wantLimited)
 			}
 		})
 	}

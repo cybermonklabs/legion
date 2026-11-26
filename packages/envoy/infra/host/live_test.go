@@ -2,6 +2,8 @@
 
 package host_test
 
+//ci:builds packages/envoy/infra ./cmd/pulumi-resource-envoy-infra its pulumitest.Plugin call builds the provider with go build (`packages/envoy/infra/internal/pulumitest/pulumitest.go#buildPlugin`)
+
 import (
 	"crypto/rand"
 	"encoding/hex"

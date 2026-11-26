@@ -11,13 +11,15 @@
   "description": "Autonomous development swarm using Oh My Pi agents",
   "private": true,
   "scripts": {
+    "postinstall": "bun packages/contracts/scripts/gen-api.ts || { rm -f packages/contracts/src/dispatch-api.generated.ts || exit 1; echo 'postinstall: packages/contracts/scripts/gen-api.ts failed (above), so packages/contracts/src/dispatch-api.generated.ts is removed: every type check that reads the Dispatch API types fails naming it until `bun run gen:api` in packages/contracts succeeds' >&2; }",
     "dispatch:local": "cd packages/dispatch && bun run dispatch:local",
     "docs:dev": "cd docs/site && bun run dev",
     "docs:build": "cd docs/site && bun run build",
-    "docs:media": "bun docs/site/media/shots.ts"
+    "docs:media": "bun docs/site/media/shots.ts",
+    "test:e2e-lib": "bun test --timeout 200000 scripts/e2e/lib"
   },
   "workspaces": [
-    "packages/broker-client",
+    "packages/cipher-client",
     "packages/contracts",
     "packages/envoy-client",
     "packages/pi-envoy",
@@ -57,6 +59,7 @@
     "micromark@4.0.2": "patches/micromark@4.0.2.patch",
     "micromark-core-commonmark@2.0.3": "patches/micromark-core-commonmark@2.0.3.patch",
     "micromark-extension-gfm-footnote@2.1.0": "patches/micromark-extension-gfm-footnote@2.1.0.patch",
-    "mdast-util-from-markdown@2.0.3": "patches/mdast-util-from-markdown@2.0.3.patch"
+    "mdast-util-from-markdown@2.0.3": "patches/mdast-util-from-markdown@2.0.3.patch",
+    "playwright@1.64.1": "patches/playwright@1.64.1.patch"
   }
 }

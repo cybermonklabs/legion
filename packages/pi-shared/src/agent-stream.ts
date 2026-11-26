@@ -13,6 +13,7 @@ import {
   capAgentStreamText,
   isTypableCommandName,
 } from "@legion/contracts";
+import { readInboundCard } from "@legion/envoy-client/inbound-card";
 import type { ContextUsage } from "@legion/pi-shared/pi-types";
 
 /**
@@ -38,6 +39,13 @@ import type { ContextUsage } from "@legion/pi-shared/pi-types";
  * *after* it has already settled. A settled message is therefore final here: once a key holds
  * one, a later streaming record for it is dropped outright — no ring write, no sequence number —
  * so a finished turn can never be left looking like a running one.
+ *
+ * Beside the session's own turns it carries each Envoy card the session displays (an
+ * `envoy-message` custom message: the brief a session launcher sends, another agent's
+ * message, a Dispatch notification), as a user message saying who sent it and what they wrote, so
+ * the live view shows the conversation the terminal shows (dispatch://INFRA-5271). A card that
+ * delivers a Dispatch message to the session is the one left out: Dispatch stores that message
+ * for the session, and the live view draws it from there (`DispatchMessageCardDetails`).
  */
 
 /**
@@ -55,6 +63,9 @@ interface HostMessage {
   readonly model?: unknown;
   readonly provider?: unknown;
   readonly tag?: unknown;
+  readonly customType?: unknown;
+  readonly display?: unknown;
+  readonly details?: unknown;
 }
 
 interface HostPart {
@@ -104,6 +115,21 @@ export interface AgentStreamPublisherDeps {
   /** A core NATS publish. Never JetStream: see the subject note in `@legion/contracts`. */
   readonly publish: (subject: string, payload: string) => void;
   readonly now: () => number;
+}
+
+/** The custom type of the card the Envoy plugin shows the session each Envoy message in. */
+const ENVOY_CARD = "envoy-message";
+
+/**
+ * What an `envoy-message` card's `details` carry when the card delivers a Dispatch message to the
+ * session (pi-envoy's `handCard` writes it), or answers one (the agent's copy of a person's
+ * `!command` report, whose frame the stream already carries tagged with that message): that
+ * message's id. Dispatch stores every message it delivers to a session for that session, and the
+ * live view draws it from that store (`GET /api/v1/agents/{session_id}/messages`), or from the
+ * report's own frame, so such a card is not streamed: the page would show the message twice.
+ */
+export interface DispatchMessageCardDetails {
+  readonly dispatchMessageId: string;
 }
 
 /** What a `settings` frame says without its envelope: what the session's host reports of its
@@ -176,13 +202,40 @@ function readMessage(raw: unknown): ReadableMessage | null {
   };
 }
 
+/** A string field of an object the host handed over, if it is one. */
+function stringField(value: unknown, field: string): string | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const found: unknown = Reflect.get(value, field);
+  return typeof found === "string" && found !== "" ? found : undefined;
+}
+
+/** Whether `host` is an Envoy card this stream carries: every `envoy-message` the session
+ *  displays but one that delivers a Dispatch message, which the live view draws from Dispatch's
+ *  store (`DispatchMessageCardDetails`). */
+function streamedCard(host: HostMessage): boolean {
+  if (host.customType !== ENVOY_CARD || host.display !== true) return false;
+  const delivered: keyof DispatchMessageCardDetails = "dispatchMessageId";
+  return stringField(host.details, delivered) === undefined;
+}
+
 /** The ring slot a message occupies, or null for a message this build does not carry. A tagged
- *  user message's slot names its tag too: two Sends can be stamped in the same millisecond. */
-function keyFor(message: ReadableMessage): string | null {
+ *  user message's slot names its tag too: two Sends can be stamped in the same millisecond. So
+ *  does a card's: the wake's id for it, else the event it shows, else `untagged`'s number for the
+ *  host's message object, which the host hands each record of one message as. */
+function keyFor(message: ReadableMessage, untagged: (host: HostMessage) => number): string | null {
   if (message.role === "toolResult") {
     return message.toolCallId === undefined ? null : `t:${message.toolCallId}`;
   }
   if (message.role === "assistant") return `m:a${message.timestamp}`;
+  if (message.role === "custom") {
+    if (!streamedCard(message.host)) return null;
+    const { details } = message.host;
+    const card =
+      stringField(details, "envoyCard") ??
+      stringField(details, "event_id") ??
+      untagged(message.host);
+    return `m:c${message.timestamp}:${card}`;
+  }
   if (message.role !== "user") return null;
   return message.tag === undefined
     ? `m:u${message.timestamp}`
@@ -253,6 +306,61 @@ function conversationParts(content: unknown): AgentStreamPart[] {
   return parts;
 }
 
+/** `text` as a fenced block, its fence longer than any run of backticks inside it, so the viewer
+ *  shows it verbatim, as the terminal's card does, and no fence inside it ends the block. */
+function fenced(text: string): string {
+  let longest = 2;
+  for (const run of text.matchAll(/`+/g)) longest = Math.max(longest, run[0].length);
+  const fence = "`".repeat(longest + 1);
+  return `${fence}\n${text}\n${fence}`;
+}
+
+/**
+ * What the live view shows of a card's text (`readInboundCard`): who sent it, then the words they
+ * wrote, which the view renders as it renders any message a person or an agent wrote, then each
+ * note the card adds about them (`note`, `body_note`), as the terminal's card shows them. A card
+ * with no such words - a Dispatch event, a structured message, an empty one, one of the plugin's
+ * own notices - is shown whole and verbatim instead, as the terminal shows it: the view renders
+ * Markdown, which reads the card's indented TOON as code blocks and joins its lines.
+ */
+function cardText(text: string): string {
+  const card = readInboundCard(text);
+  const head = card?.from === undefined ? "Envoy message:" : `Envoy message from ${card.from}:`;
+  const words = card === undefined || card.dispatch ? undefined : card.words?.text;
+  if (words === undefined) return `${head}\n\n${fenced(text)}`;
+  const notes = [
+    ...(card?.note === undefined ? [] : [`note: ${card.note}`]),
+    ...(card?.bodyNote === undefined ? [] : [`body_note: ${card.bodyNote}`]),
+  ];
+  return [head, words, ...notes].join("\n\n");
+}
+
+/** A card's parts: its text (`cardText`), then a placeholder for each picture it carries. */
+function cardParts(content: unknown): AgentStreamPart[] {
+  const { partChars } = AGENT_STREAM_LIMITS;
+  const blocks: unknown[] =
+    typeof content === "string"
+      ? [{ text: content, type: "text" }]
+      : Array.isArray(content)
+        ? content
+        : [];
+  const parts: AgentStreamPart[] = [];
+  let read = false;
+  for (const raw of blocks) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const part = raw as HostPart;
+    if (part.type === "text" && typeof part.text === "string") {
+      // The card is its first text block: the extension sends a card's text, then its pictures.
+      const text = read ? part.text : cardText(part.text);
+      read = true;
+      parts.push({ text: capAgentStreamText(text, partChars), type: "text" });
+    } else if (typeof part.type === "string") {
+      parts.push({ text: blockPlaceholder(part.type), type: "text" });
+    }
+  }
+  return parts;
+}
+
 /** The frame a ring entry becomes. This is the only place a message's content is read. */
 function frameFor(entry: RingEntry): AgentStreamFrame {
   const { dispatchMessageId, message } = entry;
@@ -268,6 +376,22 @@ function frameFor(entry: RingEntry): AgentStreamFrame {
         ),
         toolCallId: message.toolCallId,
         toolName: message.toolName ?? "tool",
+      },
+      seq: entry.seq,
+      v: AGENT_STREAM_PROTOCOL,
+    };
+  }
+  if (message.role === "custom") {
+    // A card is no person's turn, so it names no Dispatch message, which the live view would
+    // read as one (`dispatchTurns`).
+    return {
+      kind: "message",
+      message: {
+        at: message.timestamp,
+        id: entry.key.slice(2),
+        parts: cardParts(message.host.content),
+        role: "user",
+        streaming: false,
       },
       seq: entry.seq,
       v: AGENT_STREAM_PROTOCOL,
@@ -303,6 +427,10 @@ export class AgentStreamPublisher {
   /** When each message was last put on the wire, so a token storm costs one frame per
    *  `snapshotIntervalMs` rather than one per delta. */
   readonly #publishedAt = new Map<string, number>();
+  /** The number each card that names no id of its own keys under (`keyFor`), by the host's
+   *  message object; held weakly, so a card the ring dropped is not kept alive by its number. */
+  readonly #untaggedCards = new WeakMap<HostMessage, number>();
+  #untaggedCount = 0;
   /** The last sequence number handed out. Seeded from the clock, so it is monotonic across the
    *  session's processes as well as within one: see `SEQ_PER_MS`. `reset` never touches it. */
   #seq: number;
@@ -465,7 +593,7 @@ export class AgentStreamPublisher {
    * away. The `{tokens: 0, contextWindow, percent: null}` answer reports a window and no figure,
    * so it leaves the slot as it is, neither replacing nor clearing it.
    *
-   * The pinned host (Oh My Pi 18.18.6-sami.20261119-162325, `.omp-pin`) answers undefined only
+   * The pinned host (Oh My Pi 18.18.6-sami.20261125-164517, `.omp-pin`) answers undefined only
    * from a runner not yet initialised, never after a good reading, so clearing on it cannot make
    * the ring flicker. A window of zero comes from a model with no window, or from no model, and
    * lasts until the model changes. The `percent: null` guard stays for an older pinned build,
@@ -557,7 +685,7 @@ export class AgentStreamPublisher {
 
   /**
    * Records one of the session's messages and, while a viewer is attached, publishes it.
-   * `streaming` is false for a settled message (`message_end`, and every user or tool-result
+   * `streaming` is false for a settled message (`message_end`, and every user, tool-result or card
    * message) and true for an assistant message still being produced. `dispatchMessageId` is the
    * Dispatch message a user message delivered, which the caller alone can know; a later record of
    * the same message keeps it. Returns whether the message was recorded: false for one this build
@@ -566,7 +694,15 @@ export class AgentStreamPublisher {
   record(subject: string, raw: unknown, streaming: boolean, dispatchMessageId?: string): boolean {
     const message = readMessage(raw);
     if (message === null) return false;
-    const key = keyFor(message);
+    const key = keyFor(message, (host) => {
+      let number = this.#untaggedCards.get(host);
+      if (number === undefined) {
+        this.#untaggedCount += 1;
+        number = this.#untaggedCount;
+        this.#untaggedCards.set(host, number);
+      }
+      return number;
+    });
     if (key === null) return false;
     const stillStreaming = message.role === "assistant" && streaming;
     // The host's updates outlive its own `message_end`, so a settled message is final.

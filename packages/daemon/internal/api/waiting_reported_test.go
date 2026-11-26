@@ -44,7 +44,7 @@ var waitNow = time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 
 // waitRepositories resolves the one repository these records name. A repository it does not hold
 // answers as the daemon's own does since INFRA-2543: GitHub has not been read for it yet, which
-// records no refusal note, rather than the mapping refusal the daemon no longer makes.
+// records no refusal note.
 type waitRepositories struct{}
 
 func (waitRepositories) ResolveRepository(resolved string) (workflow.Resolution, error) {
@@ -79,7 +79,7 @@ func waitingStore(t *testing.T) (*store.Store, record.Store, []record.DesignStep
 func seedWaitIssue(t *testing.T, st *store.Store, records record.Store, issue record.Issue, lifecycle bool) {
 	t.Helper()
 	ctx := context.Background()
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -101,7 +101,7 @@ func seedWaitIssue(t *testing.T, st *store.Store, records record.Store, issue re
 func seedWaitSlot(t *testing.T, st *store.Store, records record.Store, key string, index int) {
 	t.Helper()
 	ctx := context.Background()
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: index, AdmittedAt: waitNow})
 	}); err != nil {
 		t.Fatalf("seed the slot of %s: %v", key, err)
@@ -113,9 +113,9 @@ func seedWaitSlot(t *testing.T, st *store.Store, records record.Store, key strin
 func seedWaitMirror(t *testing.T, st *store.Store, records record.Store, key, status, parent string, waits ...string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
-		return records.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: key, Project: waitProject,
-			Status: status, Parent: parent, Blockers: waits, Seq: 1})
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: key, Project: waitProject, Seq: 1,
+			Status: record.Carry(status), Parent: record.Carry(parent), Blockers: record.Carry(waits)})
 	}); err != nil {
 		t.Fatalf("seed the mirror of %s: %v", key, err)
 	}
@@ -125,7 +125,7 @@ func seedWaitMirror(t *testing.T, st *store.Store, records record.Store, key, st
 // builds it (internal/projection), with no claims and no capability reports: this reading is the
 // admission object alone.
 func projectWaitingState(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep) (api.State, error) {
-	return projection.Project(ctx, tx, records, waitProject, steps, nil, nil, nil, nil, waitNow)
+	return projection.Project(ctx, projection.Inputs{Tx: tx, Store: records, Project: waitProject, Steps: steps, Now: waitNow})
 }
 
 // waitingIssue is one issue of the fixture, written out so each case names the record it reads.
@@ -184,9 +184,9 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		// promotion passes over it.
 		{key: queuedRoot, stands: phase.Admitted, status: "todo", tree: queuedRoot},
 		// The live tree the held child belongs to, and the child itself, held at admitted by a
-		// link: a child the workflow holds is out of the line altogether. The root is at work on
-		// a phase short of its review, so it holds the row it was started with
-		// (record.KeepsSlot): a root past its review would hold none.
+		// link: a child the workflow holds is out of the line altogether. The root is at work in
+		// implementing, a phase that keeps a slot, so it holds the row it was started with
+		// (record.KeepsSlot): a root in accepting, retro or merging would hold none.
 		{key: treeRoot, stands: phase.Implementing, status: "in_progress", tree: treeRoot, slotted: true},
 		{key: heldChild, stands: phase.Admitted, status: "in_progress", tree: treeRoot, parent: treeRoot},
 		// An issue a person moved out of the workflow, and one at work waiting on nothing.
@@ -207,7 +207,7 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	}
 	// The design gate of the started root, opened: its architect has handed the work on, so its
 	// own first phase is what the open child holds.
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		approved := 1
 		return records.PutGate(ctx, tx, record.DesignGate{Issue: startedChild, ArtifactID: "artifact-211",
 			LatestVersion: 1, ApprovedVersion: &approved, EverOpened: true})
@@ -234,8 +234,9 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		t.Fatalf("run an admission pass: %v", err)
 	}
 
+	// The state route answers from the store's pool, as the daemon's server does.
 	server := api.NewServer("127.0.0.1", 8437, api.Options{
-		Steps: steps, State: projectedSource{records: records, steps: steps}, StateTransactions: st,
+		Steps: steps, State: projectedSource{records: records, steps: steps}, Pool: st.Pool(), StateTransactions: st.Pool(),
 	})
 	request := httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil)
 	recorder := httptest.NewRecorder()

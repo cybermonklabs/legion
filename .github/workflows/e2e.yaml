@@ -22,6 +22,12 @@ name: E2E proofs
 #     default branch alone, so the nightly is main's copy of this file, of the list beside it and
 #     of the scripts, never a pull request's.
 #
+# A hosted row marked `dispatch_only` runs on the first start alone, `gh workflow run e2e.yaml
+# --ref <branch> -f script=<name>`, whose checkout is that branch's head: the label checks out a
+# pull request's merge commit, for which no image is built, and the nightly main's head, whose
+# image release.yaml builds only for a push whose paths call it, and maybe not yet when the nightly
+# starts; such a proof runs the image of its checkout's own commit (shared-clone-kind.sh).
+#
 # No hosted proof here needs a secret, and none may: Sami answered that no API key goes into
 # cybermonklabs/legion, and that a smoke test which calls a model runs in the deployment repository on
 # workload identity federation (sjawhar/legion#2512).
@@ -107,8 +113,13 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
+          --shm-size=1g
           --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -162,9 +173,17 @@ jobs:
           # The module the proof builds: packages/daemon's driver, or packages/envoy's dispatch
           # and natsd.
           go-version-file: ${{ matrix.go_version_file }}
+          go-download-base-url: https://go.dev/dl
+          token: ''
           # Only a workflow that runs on a push to main writes an Actions cache entry here, and
           # this workflow saves none (.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs, "Caches").
           cache: false
+
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
+        timeout-minutes: 2
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
 
       - name: Run the proof
         env:

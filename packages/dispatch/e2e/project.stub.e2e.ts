@@ -161,15 +161,19 @@ referencesTest(
   "an issue's Artifacts tab lists its reference closure and a document page lists its referrers @pr",
   async ({ page, scene }, testInfo) => {
     await page.goto(`/issues/${scene.issue}/artifacts`);
-    await page.getByText(/References \(\d+\)/).click();
+    // One hop out: the issue's own document and its comment both link to Design notes, which is
+    // one row, via the document, the lowest of its two vias. Design notes' own link to the other
+    // issue's diagram is a second hop, which the read does not take, and no row has a depth.
+    await page.getByText("References (1)", { exact: true }).click();
     const references = page.getByRole("region", { name: "References" });
+    await expect(references.getByRole("listitem")).toHaveCount(1);
     await expect(references.getByRole("link", { name: "Design notes" })).toHaveAttribute(
       "href",
       "/projects/CORE/documents/design-notes"
     );
-    await expect(references).toContainText("via artifact");
-    await expect(references).toContainText("depth 1");
-    await expect(references).toContainText("depth 2");
+    await expect(references).toContainText("CORE · artifact · via artifact");
+    await expect(references).not.toContainText("depth");
+    await expect(page.getByText("more references beyond 8 hops")).toHaveCount(0);
     const tabs = page.getByRole("main").getByRole("tab");
     await expect(tabs).toHaveCount(10);
     for (const [index, name] of [

@@ -8,11 +8,14 @@
 // d-listener-url-userinfo, d-listener-env-userinfo, i-basic-listener-echo and
 // d-listener-url-at-in-password. Put it in packages/claude-envoy/tests/ and run
 // `bun test tests/envoy-send-url.test.ts` in packages/claude-envoy.
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { randomBytes } from "node:crypto"
 import { writeFileSync } from "node:fs"
 import * as path from "node:path"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
+import { collected, exitBeforeTheGuard, ROW_GUARD_MS, rowStarted } from "./row-deadline"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
+import { unresolvedNames } from "./unresolved-names"
 
 const servers: { stop: (closeActive?: boolean) => void }[] = []
 afterEach(() => {
@@ -21,25 +24,48 @@ afterEach(() => {
 const tempDir = temporaryDirectories("envoy-send-url")
 const command = path.join(import.meta.dir, "..", "bin", "envoy-send.ts")
 
-/** Runs envoy-send against `url` as the listener the session's envoy.json names. */
-async function send(url: string): Promise<{ exitCode: number; stderr: string; stdout: string }> {
+// Each row waits for the send to end, and for nothing else; a send that never ends fails the row
+// by name before the hang guard this file sets as its rows' default (`ROW_GUARD_MS`, 120 s, `./row-deadline.ts`). A fixed 20 s
+// decided the 401 row before: its child wrote Bun's transpiler cache into its empty HOME first
+// (`./transpiler-cache.ts`), and at a load of about 900 it had not reached the listener in 20 s.
+beforeEach(rowStarted)
+setDefaultTimeout(ROW_GUARD_MS)
+
+/** Runs envoy-send against `url` as the listener the session's envoy.json names, with `preload`
+ *  given to Bun first where set. `ended` is how it ended: its exit code, or the signal that ended
+ *  it. */
+async function send(
+  url: string,
+  preload?: string,
+): Promise<{ ended: string; exitCode: number; stderr: string; stdout: string }> {
   const home = tempDir()
   const config = path.join(home, "envoy.json")
   writeFileSync(
     config,
     JSON.stringify({ envoy: { enabled: true, url }, dispatch: { enabled: false } }),
   )
-  const child = Bun.spawn(["bun", command, "ses_target", "hello"], {
-    env: { PATH: process.env["PATH"] ?? "", HOME: home, TMPDIR: home, ENVOY_CONFIG_FILE: config },
+  const preloading = preload === undefined ? [] : ["--preload", preload]
+  const child = Bun.spawn(["bun", ...preloading, command, "ses_target", "hello"], {
+    env: {
+      PATH: process.env["PATH"] ?? "",
+      HOME: home,
+      TMPDIR: home,
+      ENVOY_CONFIG_FILE: config,
+      ...NO_TRANSPILER_CACHE,
+    },
     stdout: "pipe",
     stderr: "pipe",
   })
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ])
-  return { exitCode, stderr, stdout }
+  const stdout = collected(child.stdout)
+  const stderr = collected(child.stderr)
+  const exitCode = await exitBeforeTheGuard(
+    child,
+    "envoy-send",
+    () =>
+      `it wrote ${JSON.stringify(stdout.text())} to stdout, ${JSON.stringify(stderr.text())} to stderr`,
+  )
+  const ended = child.signalCode === null ? `exit ${exitCode}` : `signal ${child.signalCode}`
+  return { ended, exitCode, stderr: await stderr.ended, stdout: await stdout.ended }
 }
 
 describe("envoy-send's failure line names no part of the listener URL's user info", () => {
@@ -56,20 +82,34 @@ describe("envoy-send's failure line names no part of the listener URL's user inf
       },
     })
     servers.push(server)
-    const { exitCode, stderr } = await send(`http://${user}:${password}@127.0.0.1:${server.port}`)
+    const { ended, exitCode, stderr } = await send(
+      `http://${user}:${password}@127.0.0.1:${server.port}`,
+    )
     // The row can fail for the leak: the send reached the listener and failed.
-    expect(seen.length).toBeGreaterThan(0)
+    expect(
+      seen.length,
+      `the send ended (${ended}) without reaching the listener: ${stderr}`,
+    ).toBeGreaterThan(0)
     expect(exitCode).toBe(1)
     expect(stderr).toContain("Claude Envoy send failed")
     expect(stderr).not.toContain(user)
     expect(stderr).not.toContain(password)
-  }, 20_000)
+  })
 
+  // The host the URL parser reads is the password's tail, under `.invalid`; the send's fetch of it
+  // is answered by a stand-in that fails as Bun's resolver does (`unresolved-names.ts`), so the row
+  // asks no DNS server and does not wait on its answer.
   test("a password with an `@` in it", async () => {
     const secret = `s${randomBytes(8).toString("hex")}`
-    const { exitCode, stderr } = await send(`http://user:p@ss${secret}`)
+    const names = await unresolvedNames(tempDir())
+    const { exitCode, stderr } = await send(`http://user:p@ss${secret}.invalid`, names.preload)
+    // The send's error named the secret, so the checks below can fail. The send tries a request
+    // that reached nothing again, so the stand-in may be asked more than once, and only this host.
+    const asked = await names.asked()
+    expect(asked.length).toBeGreaterThan(0)
+    expect(asked.filter((name) => name !== `ss${secret}.invalid`)).toEqual([])
     expect(exitCode).toBe(1)
     expect(stderr).toContain("Claude Envoy send failed")
     expect(stderr).not.toContain(secret)
-  }, 20_000)
+  })
 })

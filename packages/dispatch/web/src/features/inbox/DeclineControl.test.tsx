@@ -1,20 +1,31 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: one row needs a write that passes maxLength.
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, settle } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, type DeclineAskInput, NetworkError } from "../../api/client";
-import type { Ask, AskRead } from "../../api/types";
+import { inboxQuery } from "../../api/queries";
+import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
+import type { Ask, AskRead, DispatchEvent, InboxRow } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
+import { issueAsk } from "./inbox-fixture";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 let whoAmI: Mock<typeof api.whoAmI>;
 let getReferences: Mock<typeof api.getReferences>;
@@ -138,10 +149,12 @@ function thread(ask: Ask): AskRead {
 
 /** The card under the application's key registry, since Escape reaches an open dialog through
  *  it (`KeymapProvider`, `useDialog`) and nothing else. */
-function renderCard(node: ReactNode) {
-  const queryClient = new QueryClient({
+function renderCard(
+  node: ReactNode,
+  queryClient: QueryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
+  })
+) {
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
@@ -293,6 +306,57 @@ test("the decline dialog counts what is left to write, and sends no note when em
   }
 });
 
+// A pick writes into the box without typing, so a note can pass the bound the field's own
+// `maxLength` holds typing to. Both ways out of the box answer to one test of that: the button
+// and Ctrl+Enter, which has no form to submit and so reaches `onFormlessSubmit`.
+test("a note past the bound sends by neither the button nor Ctrl+Enter", async () => {
+  const user = userEvent.setup();
+  const open = openAsk();
+  const sent: DeclineAskInput[] = [];
+  const { view } = renderCard(
+    <AskCard
+      ask={open}
+      declineAsk={async (_id, input) => {
+        sent.push(input);
+        return declinedAsk("");
+      }}
+      getAskThread={async () => thread(declinedAsk(""))}
+      initialThread={thread(open)}
+    />
+  );
+  const card = within(view.container);
+  try {
+    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    const dialog = card.getByRole("dialog", { name: "Decline to answer" });
+    const field = within(dialog).getByLabelText("Note (optional)") as HTMLTextAreaElement;
+    // What a pick does and typing cannot: a write that passes the box's own `maxLength`, which
+    // user-event honours as a browser does, so there is no user-event form for this one.
+    fireEvent.change(field, { target: { value: "x".repeat(DISPATCH_EVENT_BODY_MAX + 5) } });
+    expect(within(dialog).getByText("-5 characters left")).toBeTruthy();
+
+    const decline = within(dialog).getByRole("button", { name: "Decline to answer" });
+    expect(decline).toBeDisabled();
+    await user.click(decline);
+    await user.click(field);
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+    // The refused presses are not waited on: a send the box let through would reach
+    // `declineAsk` through the write's own queue, and the in-bound send below goes through that
+    // same queue. So the row brings the note back inside the bound, presses the keys again, and
+    // waits on that one send to land: anything the refused presses let through would stand in
+    // `sent` before it.
+    fireEvent.change(field, { target: { value: "short" } });
+    expect(within(dialog).getByText(`${DISPATCH_EVENT_BODY_MAX - 5} characters left`)).toBeTruthy();
+    await user.click(field);
+    await user.keyboard("{Control>}{Enter}{/Control}");
+
+    await waitFor(() => expect(sent).toEqual([{ note: "short" }]));
+  } finally {
+    view.unmount();
+  }
+});
+
 // Escape and the backdrop close the dialog as Cancel does, and Cancel is disabled while the
 // decline is out. The two must refuse with it: a close lets the write's hold go, and the dialog
 // is the one surface the refusal is shown on, so a decline the server refuses after a press on
@@ -333,6 +397,239 @@ test("a decline out keeps its dialog through Escape and the backdrop, and shows 
     expect(card.getByRole("dialog", { name: "Decline to answer" })).toBeTruthy();
   } finally {
     view.unmount();
+  }
+});
+
+// A read of the thread asked before the decline was answered - an event's refresh of the ask,
+// say - answers the question as it stood, open. Landing after the decline, it would draw the open
+// question and its Decline to answer again over the record of the decline, until a read asked
+// after the decline came back. On Dispatch's client a refresh waits for the running read rather
+// than cancelling it, so the row reads on that client.
+test("a read of the thread asked before a decline answered does not put back the open question", async () => {
+  const user = userEvent.setup();
+  const open = openAsk();
+  const declined = declinedAsk("");
+  const reads: ReturnType<typeof Promise.withResolvers<AskRead>>[] = [];
+  const getAskThread = () => {
+    const read = Promise.withResolvers<AskRead>();
+    reads.push(read);
+    return read.promise;
+  };
+  const { queryClient, view } = renderCard(
+    <AskCard
+      ask={open}
+      declineAsk={async () => declined}
+      getAskThread={getAskThread}
+      initialThread={thread(open)}
+    />,
+    new DispatchQueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    })
+  );
+  const card = within(view.container);
+  const badge = () => card.queryByTestId("ask-resolution-badge")?.textContent;
+  try {
+    const decline = await card.findByRole("button", { name: "Decline to answer" });
+    let asked = Promise.resolve();
+    await act(async () => {
+      asked = queryClient.refetchQueries({ queryKey: ["ask-thread", open.id] });
+    });
+    expect(reads).toHaveLength(1);
+
+    await user.click(decline);
+    const dialog = card.getByRole("dialog", { name: "Decline to answer" });
+    await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));
+    await waitFor(() => expect(badge()).toBe("Declined"));
+
+    // The read answers as Dispatch held the ask when it was asked: open.
+    await act(async () => {
+      reads[0]?.resolve(thread(open));
+      await asked;
+    });
+    // The decline's answer gave that read up and asked for the thread again, after the decline.
+    await waitFor(() => expect(reads).toHaveLength(2));
+    expect(badge()).toBe("Declined");
+    expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
+
+    // It answers the ask declined. The decline's own refresh of the thread waited behind it, and
+    // asks once it is in: Dispatch still holds the decline then.
+    await act(async () => {
+      reads[1]?.resolve(thread(declined));
+    });
+    await waitFor(() => expect(reads).toHaveLength(3));
+    await act(async () => {
+      reads[2]?.resolve(thread(declined));
+    });
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(badge()).toBe("Declined");
+    expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The Inbox's own rows, by id, as its list draws them from its one read (`inboxQuery`). */
+function InboxRows(): ReactNode {
+  const rows = useQuery(inboxQuery()).data;
+  return <output data-testid="inbox-rows">{rows?.map((row) => row.id).join(" ")}</output>;
+}
+
+// A decline takes its row out of the Inbox at once. An Inbox read asked while the decline is out -
+// an event's refresh, another surface's read - would reach Dispatch before the decline did, and
+// bring the declined question back into the list while the decline is still going through. It
+// waits for the decline's answer, and then reads what Dispatch holds after it.
+test("an Inbox read asked while a decline is out waits for its answer, and brings no row back", async () => {
+  const user = userEvent.setup();
+  const open = openAsk();
+  const declined = declinedAsk("");
+  const out = Promise.withResolvers<Ask>();
+  const other = issueAsk({ id: "ask-2" });
+  // What Dispatch lists before the decline is in, and after it: the declined question gone, and
+  // a question asked since.
+  let served: InboxRow[] = [issueAsk({ id: open.id }), other];
+  const after = [other, issueAsk({ id: "ask-3" })];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  // Dispatch's own client (`main.tsx`), whose reads a write's holds keep back.
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const { view } = renderCard(
+    <>
+      <InboxRows />
+      <AskCard
+        ask={open}
+        declineAsk={() => out.promise}
+        getAskThread={async () => thread(declined)}
+        initialThread={thread(open)}
+      />
+    </>,
+    queryClient
+  );
+  const card = within(view.container);
+  const listed = () => card.getByTestId("inbox-rows").textContent;
+  try {
+    await waitFor(() => expect(listed()).toBe("ask-1 ask-2"));
+    expect(getInbox).toHaveBeenCalledTimes(1);
+    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    const dialog = card.getByRole("dialog", { name: "Decline to answer" });
+    await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));
+    await waitFor(() => expect(listed()).toBe("ask-2"));
+
+    await act(async () => {
+      void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
+    });
+    // The read has started, and has asked Dispatch nothing.
+    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryState(inboxQuery().queryKey)?.fetchStatus).toBe("fetching");
+    expect(listed()).toBe("ask-2");
+
+    served = after;
+    await act(async () => {
+      out.resolve(declined);
+    });
+    await waitFor(() => expect(listed()).toBe("ask-2 ask-3"));
+    expect(getInbox.mock.calls.length).toBeGreaterThan(1);
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(listed()).toBe("ask-2 ask-3");
+  } finally {
+    view.unmount();
+    getInbox.mockRestore();
+  }
+});
+
+/** The event alice's feed carries once Dispatch has written ask `id`: `type`, by her. */
+function askEvent(type: "ask.asked_of" | "ask.resolved", id: string): DispatchEvent {
+  return {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-10-08T03:00:00Z",
+    id: 1,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: { id },
+    seq: 1,
+    type,
+  } as DispatchEvent;
+}
+
+// The Inbox lists the questions other people ask, so an Inbox read held until a decline's answer,
+// however late, would keep back a question asked meanwhile that long. The decline's own event -
+// `ask.resolved` for its ask - says Dispatch has taken it: the held read goes then, and lists the
+// new question without the declined one while the decline's answer is still out. Another ask's
+// decline, or a hand-on of this ask, leaves the read held.
+test("an Inbox read held behind a decline goes on the decline's own event, and shows a question asked meanwhile before its answer", async () => {
+  const user = userEvent.setup();
+  const open = openAsk();
+  const declined = declinedAsk("");
+  const out = Promise.withResolvers<Ask>();
+  const other = issueAsk({ id: "ask-2" });
+  let served: InboxRow[] = [issueAsk({ id: open.id }), other];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const { view } = renderCard(
+    <>
+      <InboxRows />
+      <AskCard
+        ask={open}
+        declineAsk={() => out.promise}
+        getAskThread={async () => thread(declined)}
+        initialThread={thread(open)}
+      />
+    </>,
+    queryClient
+  );
+  const card = within(view.container);
+  const listed = () => card.getByTestId("inbox-rows").textContent;
+  const readInboxAgain = () => {
+    void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
+  };
+  try {
+    await waitFor(() => expect(listed()).toBe("ask-1 ask-2"));
+    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    const dialog = card.getByRole("dialog", { name: "Decline to answer" });
+    await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));
+    await waitFor(() => expect(listed()).toBe("ask-2"));
+
+    // Dispatch has not taken the decline, so a read that reached it now would list the question.
+    await act(async () => {
+      readInboxAgain();
+      await settle();
+    });
+    expect(getInbox).toHaveBeenCalledTimes(1);
+
+    // Neither another ask's decline nor a hand-on of this one is this decline.
+    await act(async () => {
+      hearLiveEvent(queryClient, askEvent("ask.resolved", "ask-4"), "alice");
+      hearLiveEvent(queryClient, askEvent("ask.asked_of", open.id), "alice");
+      readInboxAgain();
+      await settle();
+    });
+    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listed()).toBe("ask-2");
+
+    // Dispatch takes the decline, and somebody asks a new question meanwhile: the decline's event
+    // comes, and the read it held goes, with the refresh the event asks for behind it.
+    served = [other, issueAsk({ id: "ask-3" })];
+    await act(async () => {
+      hearLiveEvent(queryClient, askEvent("ask.resolved", open.id), "alice");
+      readInboxAgain();
+      await settle();
+    });
+    expect(getInbox.mock.calls.length).toBeGreaterThan(1);
+    await waitFor(() => expect(listed()).toBe("ask-2 ask-3"));
+    // The decline is still out: its dialog stands until Dispatch answers it.
+    expect(card.getByRole("dialog", { name: "Decline to answer" })).toBeInTheDocument();
+
+    await act(async () => {
+      out.resolve(declined);
+    });
+    await waitFor(() => expect(card.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(listed()).toBe("ask-2 ask-3");
+  } finally {
+    view.unmount();
+    getInbox.mockRestore();
   }
 });
 

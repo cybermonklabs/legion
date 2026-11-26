@@ -1,0 +1,12 @@
+{
+  "kinds": {
+    "daemon": false,
+    "dispatch": true,
+    "edge-listener": true,
+    "listener": true,
+    "measure": false,
+    "operator": false,
+    "probe": false
+  },
+  "session": false
+}

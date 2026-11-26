@@ -1,20 +1,31 @@
 /** Why each spec file's remaining rows stay on the real stack, read by `e2e/tools/row-map.ts`.
  *
  *  dispatch://INFRA-1407's k2 asks, for every row the change did not move, the server behaviour
- *  its assertion depends on. The reasons are here rather than as a comment in each of the
- *  hundred and forty spec files that keep rows, because a comment in each would touch every
- *  file of a suite several trees edit at once and conflict with all of them; gathering them
- *  makes the list readable in one pass as well. The generation refuses a file the listing names
- *  that is absent here, so the map stays complete and machine-checked either way.
+ *  its assertion depends on. A file's reason is in one of two places:
+ *
+ *  - **The list below** holds the reasons of the files that were there when the list closed. A
+ *    change to one of those reasons is made in the list.
+ *  - **The file's own header** holds the reason of a file added after the list closed. The
+ *    reason is a `/**` comment at the very start of the file, and `headerReasons` reads it as
+ *    the generation reads a stub file's header. So two changes that each add a file with its
+ *    reason change no common line.
+ *
+ *  `realStackReasons` holds the list's entries first, then the headers' reasons. Where the list
+ *  names a file, the list gives its reason, and its header is not read.
  *
  *  A reason names what the server decides for that file's rows: the four shapes
  *  `packages/dispatch/README.md`, "The stubbed layer", sets out. Where a file's rows stay for
  *  more than one, the reasons are joined with a semicolon.
  *
- *  A file whose every row moved is absent from this list, and so is a file no project of this
- *  listing runs - the multiprocess specs among them, which the generation never names. It
- *  refuses a file it lists that has no reason here, and a reason here for a file it does not
- *  list, so this list is exactly the suite's real-stack files and nothing else. */
+ *  A file whose every row moved has no reason, and neither has a file no project of this
+ *  listing runs - the multiprocess specs among them, which the generation never names. The
+ *  generation refuses a file it lists that has no reason, and a reason for a file it does not
+ *  list. So the reasons are exactly the suite's real-stack files and nothing else. */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { sourceFiles } from "../source-files";
+
 export const realStackReasons: Record<string, string> = {
   "accessibility.e2e.ts":
     "three of its scanned routes wait on the live document's connected status, which the Yjs socket alone gives",
@@ -62,6 +73,8 @@ export const realStackReasons: Record<string, string> = {
   "architecture-sources.e2e.ts": "fake GitHub import, saves and a reload",
   "architecture.e2e.ts":
     "a status write must move the server-computed bar; the server's import refusal is the assertion",
+  "artifact-dry-run.e2e.ts":
+    "runs the real `dispatch artifact` with `--dry-run` and without against the server over every text an upload refuses for the text alone, and compares the two answers with what the server stored",
   "artifacts.e2e.ts": "uploads, version compare, document sockets and a 503 refetch",
   "ask-blocks.e2e.ts":
     "decision answers the server records, and pastes in the live document editor",
@@ -129,6 +142,8 @@ export const realStackReasons: Record<string, string> = {
   "email-links.e2e.ts": "asserts in the live editor before the past version",
   "failed-room.e2e.ts": "a document room that fails and recovers",
   "followers.e2e.ts": "follower and subscriber writes change what the server delivers",
+  "foot-sweep.e2e.ts":
+    "the floats are a write Dispatch refuses and the builds every live process serves, and each page's scrollers reach the foot only with what the server holds: the review corpus, a margin of asks, a transcript the relay replays and a long Inbox document",
   "gated-step-approvals.e2e.ts":
     "gate state is the server's computation over versions; server-computed gate state; the write answers both steps server-side",
   "github-checks.e2e.ts": "the checks pill is the server's evaluation of fake GitHub runs",
@@ -141,6 +156,8 @@ export const realStackReasons: Record<string, string> = {
   "going-new-issue.e2e.ts":
     "the bar creates an issue and the row re-reads what the server stored, its messages and its results",
   "going-operators.e2e.ts": "each operator form and each chip narrows a list the server answers",
+  "graph-store.e2e.ts":
+    "both rows read the node and tuple store back through the server's own reads over a real database: one applies a supertag migration under an open editor and reads the version the live document room admits after it, and the other reads one person's page, whose rows are the authored_by and delivered_to tuples the server wrote as those comments were posted and delivered",
   "handoffs.e2e.ts": "needs the live frame",
   "heavy-bodies.e2e.ts":
     "its claim is a wall-clock time, so it runs one row at a time in the -alone projects and in no other",
@@ -178,10 +195,19 @@ export const realStackReasons: Record<string, string> = {
     "its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in",
   "issue-page-switch.e2e.ts":
     "the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold",
+  "issue-page-i.e2e.ts": "the server's reads fold the outline; read marks and typed words persist",
+  "issue-page-q.e2e.ts": "the server's decisions read sorts the view; a sent Change is re-read",
+  "issue-page-k.e2e.ts": "the view orders the plan's blocks and needs the server stored",
+  "issue-page-v.e2e.ts":
+    "the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads",
   "issues-table.e2e.ts":
     "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
   "issue-page-d.e2e.ts":
     "each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue",
+  "issue-page-h.e2e.ts":
+    "the seed's approvals, claim, blockers and pins are the server's own, and one row writes each control's value through Dispatch and reads it back after a reload",
+  "issue-page-p.e2e.ts":
+    "each row writes the header's issue, its questions and its approval requests through the server and reads back what the header's controls write: the title, the status, the priority, the pin and an approval",
   "issue.e2e.ts":
     "asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read",
   "judged-grant.e2e.ts":
@@ -220,6 +246,8 @@ export const realStackReasons: Record<string, string> = {
   "margin-thread-reply.e2e.ts": "margin replies in flight with server refusals",
   "margin.e2e.ts": "two contexts, live document marks, suggestion accepts",
   "mention-composer.e2e.ts": "delivery through the fake Envoy and the listener's own refusals",
+  "mention-reference.e2e.ts":
+    "each row sends a comment and reads the stored record back - the party set the server reads out of the body, its delivery rows and the frames the fake Envoy listener took - and the refusals are the server's own",
   "mermaid.e2e.ts":
     "the edit lands and is re-read; each draws the diagram inside the live document editor",
   "message-agent.e2e.ts": "mention targets posted and their delivery failures",
@@ -229,6 +257,8 @@ export const realStackReasons: Record<string, string> = {
     "its claim is a wall-clock time, so it runs one row at a time in chromium-alone and in no other",
   "offline-edits.e2e.ts": "document transport, IndexedDB recovery and read-only admissions",
   "overlapping-marks.e2e.ts": "two readers' marks and the server's anchor refresh",
+  "parent-status-choice.e2e.ts":
+    "each question is the server's dry run of a status change, which the row holds against its own call of that dry run, and each choice is read back from the issues the server wrote",
   "parse-count.e2e.ts":
     "every row counts what the browser parsed while the page drew a text the live server stored, which is the whole claim: a recording would answer the trees a recording holds rather than the trees this server sends, and its first row seeds the texts the rest of the file counts over, which only a live server does",
   "paste-recovery.e2e.ts": "pastes into the live document",
@@ -247,6 +277,8 @@ export const realStackReasons: Record<string, string> = {
   "popover-escape.e2e.ts":
     "the command bar's own search reads `/api/v1/search`, and the inbox peek lists the asks the server holds for the reader",
   "polish.e2e.ts": "opens the margin ask composer on the live document",
+  "post-corrections.e2e.ts":
+    "each mark is the server's record of an edit or a delete, written through the API and then read back on four pages",
   "prefix-links.e2e.ts": "`sql`-forged id twins and the server's short-id resolution",
   "priorities.e2e.ts":
     "every row reads what the server decides about a priority: the two faults are its own queries over statuses and the `advances` tuples, a priority a child inherits is its walk down the parent chain, each write is read back out of the store after a reload, the margin is the history the server answers, the rail's count falls under an open page with no reload, and another person's write of a priority reaches that open page as the server's event",
@@ -255,8 +287,32 @@ export const realStackReasons: Record<string, string> = {
   "project-default-assignee.e2e.ts":
     "which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach the open Inboxes, issue page and document page over the live socket with no reload",
   "project.e2e.ts": "the reference closure is the server's graph walk",
+  "reading-agents.e2e.ts":
+    "the Agents rows write a message and a session's reply and read back what the server stored and threaded, for a session the fake registry lists, and the live rows open on a view the relay builds from the session's replay; every key and address reads the title the server holds for its issue",
+  "reading-answers.e2e.ts":
+    "every row writes a record through the API and reads it back on a page the server builds from that write - the Answers rows are its `/me/answers` over the asks alice answered and replied on, the Reply thread is its `/me/replies` - and each key, address and party draws with the title and name the server's issue summaries and agent registry answer",
+  "reading-broadcasts.e2e.ts":
+    "each row writes a broadcast or a recipient's reply through the API and reads it back on the broadcast's page, the Broadcasts list or the Agents page; the issue titles and the session name those texts draw come from the server's summaries and the fake listener's registry, and the send row reads the strip the page keeps after Dispatch refuses the send",
+  "reading-conversation.e2e.ts":
+    "each row writes a record and then reads its own write, as the server resolves it: the bare key and the address read as the titles of issues the server holds, the party as the name of a session in the fake registry, and the decision is the server's reading of decisions.md; the Activity row pins an event and reads it back in the margin",
+  "reading-documents.e2e.ts":
+    "each row writes a record through the API and reads it back in the page, where a key and an address read as the titles the server answers for them, a decision card shows where the server's reading of decisions.md links a spec block, and a pinned card is the reader's pin written to the server and read back from its stored state",
+  "reading-inbox-asks.e2e.ts":
+    "the server reads each stored question, option, answer, earlier wording and resolution reason into the tree the card draws, resolves each reference's title and the live session's name, and decides which closed asks the Inbox lists as Reply rows",
+  "reading-inbox-threads.e2e.ts":
+    "each row writes a record through the API and reads it back in the Inbox: the server lists the Reply rows, builds the approval's question around the summary, and answers each reference's title and the session's name as they are now",
+  "reading-pages.e2e.ts":
+    "each row reads a text the server stored and resolves - a component's prose that the source sync read from the fake GitHub, a priority's description and an issue's reason for touching no component written through the API, and the comments a person wrote, which their page lists from the authored_by tuples the server wrote - and the server decides what each bare key, address, `#id` and party in it reads as, which a recording would freeze at the state it was recorded in",
+  "reading-references.e2e.ts":
+    "each row writes a record through the API and reads it on another record's surface: a card and the hover card read their target as the server stores it, and the palette's hits are the server's ranking and its ts_headline snippet",
   "recipients-claim.e2e.ts": "claims and routes the server computes, with live card updates",
   "reference-cards.e2e.ts": "opens the spec's live editor and its margin thread",
+  "reference-kinds.e2e.ts":
+    "each pick is read back from the stored record, whose text and resolved name the server writes, and the party rows drive the fake registry and the fake Envoy listener",
+  "reference-naming.e2e.ts":
+    "a bare address reads as its target's current name, which is the server's own resolution of the reference, re-read after the write that names it",
+  "reference-picker.e2e.ts":
+    "the picker's rows come from the server's search and its registry read, and the row that reaches another project's node is that search answering across projects",
   "reference-titles.e2e.ts": "asserts drawn titles inside the live editor",
   "references.e2e.ts": "the backlink index the server rebuilds after each write",
   "refetch-budget.e2e.ts": "writes after load, counted reads and the server's event feed",
@@ -265,7 +321,7 @@ export const realStackReasons: Record<string, string> = {
   "search-tiers.e2e.ts":
     "its claim is the number of embeddings the server asks the fake embedder for, counted on the server's own calls",
   "search.e2e.ts": "the server's search hits; the server's answer for the query",
-  "settings.e2e.ts": "mappings, defaults and architecture sources saved, refused and re-read",
+  "settings.e2e.ts": "project defaults and architecture sources saved, refused and re-read",
   "shell.e2e.ts": "the server must revoke the session",
   "signins.e2e.ts": "the broker's machine list and a Revoke decided there",
   "smoke.e2e.ts":
@@ -287,8 +343,64 @@ export const realStackReasons: Record<string, string> = {
     "opens the document's live room; where a result's commit stands is the server's comparison with the PR head",
   "visual.e2e.ts":
     "it compares a page against a committed baseline inside the pinned Playwright image, which is its own pair of projects",
+  "visual-guard.e2e.ts":
+    "the writes the guard must stop go to the real API and the live document room, and a second page reads the server back",
   "workspace.e2e.ts": "it asserts the counts and the titles the server groups a workspace into",
   "writer-spelling.e2e.ts": "asserts the readings inside the live document editor",
   "writes.e2e.ts":
     "a failed pin's retry, one comment from a double Submit, and a pin removed from Pinned",
+  "writing-surfaces.e2e.ts":
+    "it walks every covered writing box, the document's live editor and the agent live conversation among them, and each delivering box's row is read back from the write the server stored and the frame the fake Envoy listener took",
 };
+
+/** The directories under `e2e/` that hold no spec file: `node_modules`, as Playwright's own
+ *  default ignores it, and the outputs of a browser run (`outputDir: "test-results"` in
+ *  e2e/playwright.config.ts, and the HTML report), which hold traces, videos and screenshots.
+ *  `specFiles` of e2e/no-browser-rows.ts skips `node_modules` and `test-results` for the same
+ *  reason. The walk below runs as this module loads, so this set stands above it. */
+const skippedDirectories = new Set(["node_modules", "playwright-report", "test-results"]);
+
+// A listing names a file relative to `e2e/`, so the walk starts there. The headers' reasons
+// come after the list's entries.
+Object.assign(
+  realStackReasons,
+  headerReasons(fileURLToPath(new URL("..", import.meta.url)), realStackReasons)
+);
+
+/** The reasons that the real-stack spec files under `directory` give in their own headers. Each
+ *  key is a file's path relative to `directory`, with `/` separators. A file gives a reason when
+ *  all of these are true:
+ *
+ *  - Its name ends in `.e2e.ts`, but not in `.stub.e2e.ts` or `.multiprocess.e2e.ts`.
+ *  - `listed` does not name it.
+ *  - A `/**` comment starts at its first byte.
+ *
+ *  The walk goes down every directory but `skippedDirectories`. */
+export function headerReasons(
+  directory: string,
+  listed: Readonly<Record<string, string>>
+): Record<string, string> {
+  const files = sourceFiles(directory, {
+    directory: (name) => !skippedDirectories.has(name),
+    file: (name) =>
+      name.endsWith(".e2e.ts") &&
+      !name.endsWith(".stub.e2e.ts") &&
+      !name.endsWith(".multiprocess.e2e.ts"),
+  });
+  const reasons: Record<string, string> = {};
+  for (const file of files) {
+    if (listed[file] !== undefined) continue;
+    // This is the rule of `stubReason` in e2e/tools/row-map.ts, which reads a stub file's header.
+    // It is a second copy, and not an import, because row-map.ts keeps its import line of this
+    // module unchanged. A change to the rule is made in both copies.
+    const header = /^\/\*\*([\s\S]*?)\*\//.exec(readFileSync(join(directory, file), "utf8"));
+    if (header === null) continue;
+    reasons[file] = header[1]
+      .split("\n")
+      .map((line) => line.replace(/^\s*\*? ?/, "").trimEnd())
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  return reasons;
+}

@@ -14,50 +14,60 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// idleRigSaveWatch is the release's runtime with one thing added: it reads the state of the claim
-// whose shim is being asked, at the moment it is asked. Only a shim can build the bundle — it
+// idleRigCheckWatch is the release's runtime with one thing added: it reads the state of the claim
+// whose shim is being asked, at the moment it is asked. Only a shim can read the workspace — it
 // runs the `jj` of the workspace it already works in — and a shim dies with its role's process,
-// so the one thing the save's place in the release has to hold is that the process is still
-// there when the save runs.
-type idleRigSaveWatch struct {
+// so the one thing the check's place in the release has to hold is that the process is still
+// there when the check runs.
+type idleRigCheckWatch struct {
 	runtime.Runtime
-	bundler  runtime.WorkspaceBundler
+	reader   runtime.WorkspaceWorkReader
 	releaser runtime.IssueReleaser
 	pods     issuePods
 	observe  func()
 }
 
-func (w *idleRigSaveWatch) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
+func (w *idleRigCheckWatch) WorkspaceWork(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceWork, error) {
 	w.observe()
-	return w.bundler.BundleWorkspace(ctx, issue, role)
+	return w.reader.WorkspaceWork(ctx, issue, role)
 }
 
-func (w *idleRigSaveWatch) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
-	return w.releaser.ReleaseIssue(ctx, issue, tree, authorize)
+func (w *idleRigCheckWatch) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
+	return w.releaser.ReleaseIssue(ctx, issue, tree, authorize, writing)
 }
 
-func (w *idleRigSaveWatch) IssuePodRunsConfiguredImage(issue string) bool {
+func (w *idleRigCheckWatch) IssuePodRunsConfiguredImage(issue string) bool {
 	return w.pods.IssuePodRunsConfiguredImage(issue)
 }
 
-func (w *idleRigSaveWatch) IssueSandbox(issue string) (string, bool) {
+func (w *idleRigCheckWatch) IssueSandbox(issue string) (string, bool) {
 	return w.pods.IssueSandbox(issue)
 }
 
-// A release saves the workspace's unpushed work while the role whose shim builds it is still
-// running, and only then stops it. The save is a row of its own (record.IssueBundle) ahead of the
-// release's `release` rows, because the runtime asks the role's shim and refuses a claim with no
-// process — "holds no role process to bundle it" (sandbox.Runtime.BundleWorkspace). With the save
-// in the teardown behind those stops, as it was, every release of every pod was cancelled
-// bundle_save_failed and no pod was ever released.
-func TestTheReleaseSavesTheWorkspaceWhileTheRolesProcessIsStillRunning(t *testing.T) {
+func (w *idleRigCheckWatch) IssuePod(issue string) (string, bool) {
+	return w.pods.IssuePod(issue)
+}
+
+func (w *idleRigCheckWatch) IssueKeepsVolume(issue string, since time.Time) bool {
+	return w.pods.IssueKeepsVolume(issue, since)
+}
+
+// A release reads the workspace for work origin does not hold while the role whose shim reads it
+// is still running, and only then stops it. The check is a row of its own
+// (record.IssueWorkspaceCheck) ahead of the release's `release` rows, because the runtime asks the
+// role's shim and refuses a claim with no process — "holds no role process to read it"
+// (sandbox.Runtime.WorkspaceWork). With the check behind those stops, every check would fail, every
+// release would be declined workspace_unread, and no pod would ever be released.
+func TestTheReleaseChecksTheWorkspaceWhileTheRolesProcessIsStillRunning(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 
 	inner := rig.sup.deps.Runtime
-	bundler, ok := inner.(runtime.WorkspaceBundler)
+	reader, ok := inner.(runtime.WorkspaceWorkReader)
 	if !ok {
-		t.Fatal("the rig's runtime bundles no workspace")
+		t.Fatal("the rig's runtime reads no workspace")
 	}
 	releaser, ok := inner.(runtime.IssueReleaser)
 	if !ok {
@@ -67,31 +77,31 @@ func TestTheReleaseSavesTheWorkspaceWhileTheRolesProcessIsStillRunning(t *testin
 	if !ok {
 		t.Fatal("the rig's runtime reads no issue pod")
 	}
-	var saves int
-	var atSave supervise.Claim
-	rig.sup.deps.Runtime = &idleRigSaveWatch{Runtime: inner, bundler: bundler, releaser: releaser, pods: podRuntime,
+	var checks int
+	var atCheck supervise.Claim
+	rig.sup.deps.Runtime = &idleRigCheckWatch{Runtime: inner, reader: reader, releaser: releaser, pods: podRuntime,
 		observe: func() {
-			saves++
-			atSave = rig.machine.Claim()
+			checks++
+			atCheck = rig.machine.Claim()
 		}}
 
 	if got := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) }); len(got) != 3 || got[0] != "issue_bundle" {
-		t.Fatalf("queued rows = %v, want the save first", got)
+		t.Fatalf("queued rows = %v, want the workspace check first", got)
 	}
 	rig.drain(t)
 
-	if saves != 1 {
-		t.Fatalf("the release asked for the bundle %d times, want exactly once", saves)
+	if checks != 1 {
+		t.Fatalf("the release read the workspace %d times, want exactly once", checks)
 	}
-	if atSave.State == supervise.StateSuspended || atSave.Locator == nil {
-		t.Fatalf("at the save the claim was %s by %q with locator %v; want its role process still running",
-			atSave.State, atSave.SuspendedBy, atSave.Locator)
+	if atCheck.State == supervise.StateSuspended || atCheck.Locator == nil {
+		t.Fatalf("at the check the claim was %s by %q with locator %v; want its role process still running",
+			atCheck.State, atCheck.SuspendedBy, atCheck.Locator)
 	}
 	if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByReleased {
 		t.Fatalf("after the release the claim = %s by %s, want suspended by released", got.State, got.SuspendedBy)
 	}
-	if !rig.bundled(t) {
-		t.Fatal("the release stored no bundle")
+	if rig.declined(t) {
+		t.Fatal("the release of a clean workspace recorded a decline")
 	}
 }
 
@@ -106,6 +116,7 @@ func TestTheReleaseSavesTheWorkspaceWhileTheRolesProcessIsStillRunning(t *testin
 // shape that catches a divergence: every test that picks one spelling and uses it on both sides
 // passes either way, which is how it was missed.
 func TestTheEngineAndTheDaemonReadThePodTablesUnderOneProject(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	st := outboxTreeStore(t, pool, "LEGION-208")

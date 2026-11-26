@@ -20,20 +20,85 @@ import (
 	"time"
 )
 
-// scenarioFileTypes is each JSON file of a scenario with the type that ReadScenario reads it into.
-var scenarioFileTypes = map[string]reflect.Type{
-	"approved.json": reflect.TypeFor[ApprovedFile](),
-	"subjects.json": reflect.TypeFor[[]ScenarioSubject](),
-	"history.json":  reflect.TypeFor[FixtureHistory](),
-	"ties.json":     reflect.TypeFor[map[string]map[string][]string](),
-	"results.json":  reflect.TypeFor[[]scenarioResult](),
-	"jobs.json":     reflect.TypeFor[[]JobRun](),
-	"uncited.json":  reflect.TypeFor[map[string]map[string]string](),
-	"units.json":    reflect.TypeFor[[]Unit](),
+// memberMark is the mark of one member of an input type, as its tag input writes it: the marks and
+// what each means are in members.go's comment on the tag.
+type memberMark struct {
+	kind  string // "nonzero", "present", "zero" or "one of"
+	other string // the other member of a "one of" mark, by its JSON name
+}
+
+// markOf is the mark of the member f, or an error that names what the tag lacks: a kind, or a
+// reason after a mark that needs one.
+func markOf(f reflect.StructField) (memberMark, error) {
+	tag := f.Tag.Get("input")
+	if tag == "nonzero" {
+		return memberMark{kind: tag}, nil
+	}
+	head, reason, _ := strings.Cut(tag, ": ")
+	if !hasWord(reason) {
+		return memberMark{}, fmt.Errorf("member %s has the mark %q, not nonzero or a mark with its reason", f.Name, tag)
+	}
+	switch {
+	case head == "present" || head == "zero":
+		return memberMark{kind: head}, nil
+	case strings.HasPrefix(head, "one of ") && hasWord(strings.TrimPrefix(head, "one of ")):
+		return memberMark{kind: "one of", other: strings.TrimPrefix(head, "one of ")}, nil
+	}
+	return memberMark{}, fmt.Errorf("member %s has the mark %q, not nonzero, present, zero or one of", f.Name, tag)
+}
+
+// inputMember is one member of an input type, as its JSON text names it: its name, its field and
+// the path of the field's index from the type.
+type inputMember struct {
+	name  string
+	field reflect.StructField
+	index []int
+}
+
+// inputMembers is each member of the struct type t, in the order of its fields, a member of an
+// embedded struct with no JSON name of its own in its place, as encoding/json/v2 reads it inline.
+// A member that JSON does not hold (json:"-") is a member too, with no name.
+func inputMembers(t reflect.Type) []inputMember {
+	var members []inputMember
+	for _, f := range reflect.VisibleFields(t) {
+		if !f.IsExported() {
+			continue
+		}
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if f.Anonymous && name == "" && f.Type.Kind() == reflect.Struct {
+			continue // its own members follow it in VisibleFields
+		}
+		if name == "" {
+			name = f.Name
+		}
+		if name == "-" {
+			name = ""
+		}
+		members = append(members, inputMember{name: name, field: f, index: f.Index})
+	}
+	return members
+}
+
+// pointerToken writes a name as a token of a JSON pointer (RFC 6901 §3).
+var pointerToken = strings.NewReplacer("~", "~0", "/", "~1")
+
+// scenarioFileTypes is each JSON file of a scenario with the type that ReadScenario reads it into,
+// a new map at each call, as each table that a sweep reads is a function (sweepMaps).
+func scenarioFileTypes() map[string]reflect.Type {
+	return map[string]reflect.Type{
+		"approved.json": reflect.TypeFor[approvedFile](),
+		"subjects.json": reflect.TypeFor[[]ScenarioSubject](),
+		"history.json":  reflect.TypeFor[FixtureHistory](),
+		"ties.json":     reflect.TypeFor[map[string]map[string][]string](),
+		"results.json":  reflect.TypeFor[[]scenarioResult](),
+		"jobs.json":     reflect.TypeFor[[]jobRunFile](),
+		"uncited.json":  reflect.TypeFor[map[string]map[string]string](),
+		"units.json":    reflect.TypeFor[[]Unit](),
+	}
 }
 
 // libraryInputTypes is the type of each input that a caller of the library gives: an Input of
-// Derive and CheckStates, the FixtureHistory that a scenario gives as its History, the GitHistory
+// Derive and deriveChecks, the FixtureHistory that a scenario gives as its History, the GitHistory
 // of a clone, and the units of WaitCycle. A type of the package that implements History is reached
 // through an interface, which no walk of the types enters, so the list names each one, and
 // TestEachHistoryOfThePackageIsAnInputType fails for one that it does not name; a type of a caller
@@ -41,8 +106,10 @@ var scenarioFileTypes = map[string]reflect.Type{
 var libraryInputTypes = []reflect.Type{reflect.TypeFor[Input](), reflect.TypeFor[FixtureHistory](), reflect.TypeFor[GitHistory](), reflect.TypeFor[[]Unit]()}
 
 // TestEachHistoryOfThePackageIsAnInputType reads the non-test source of the package with go/types,
-// and fails for each type of it that implements History, by value or by pointer, that
+// and fails for each exported type of it that implements History, by value or by pointer, that
 // libraryInputTypes does not name, and when it finds no such type at all, since it then read none.
+// A caller gives only an exported type; an unexported one, such as fixtureTrees, the judge's view of
+// a FixtureHistory, is built by the package from an input whose members the marks already read.
 func TestEachHistoryOfThePackageIsAnInputType(t *testing.T) {
 	t.Parallel()
 	dir, err := filepath.Abs(".")
@@ -73,7 +140,7 @@ func TestEachHistoryOfThePackageIsAnInputType(t *testing.T) {
 	found := 0
 	for _, name := range pkg.Scope().Names() {
 		typ, ok := pkg.Scope().Lookup(name).(*types.TypeName)
-		if !ok || types.IsInterface(typ.Type()) || !types.Implements(typ.Type(), history) && !types.Implements(types.NewPointer(typ.Type()), history) {
+		if !ok || !typ.Exported() || types.IsInterface(typ.Type()) || !types.Implements(typ.Type(), history) && !types.Implements(types.NewPointer(typ.Type()), history) {
 			continue
 		}
 		found++
@@ -110,8 +177,9 @@ func structTypes(t reflect.Type, types []reflect.Type) []reflect.Type {
 // inputTypes is each struct type that a file of a scenario or an input of the library holds.
 func inputTypes() []reflect.Type {
 	var types []reflect.Type
-	for _, name := range slices.Sorted(maps.Keys(scenarioFileTypes)) {
-		types = structTypes(scenarioFileTypes[name], types)
+	fileTypes := scenarioFileTypes()
+	for _, name := range slices.Sorted(maps.Keys(fileTypes)) {
+		types = structTypes(fileTypes[name], types)
 	}
 	for _, t := range libraryInputTypes {
 		types = structTypes(t, types)
@@ -132,7 +200,7 @@ func TestEachMemberOfAnInputHasAMark(t *testing.T) {
 			files = append(files, name)
 		}
 	}
-	if got := slices.Sorted(maps.Keys(scenarioFileTypes)); !slices.Equal(got, slices.Sorted(slices.Values(files))) {
+	if got := slices.Sorted(maps.Keys(scenarioFileTypes())); !slices.Equal(got, slices.Sorted(slices.Values(files))) {
 		t.Errorf("the test reads the types of %q, and a scenario holds the JSON files %q", got, files)
 	}
 	types, marked := inputTypes(), 0
@@ -168,10 +236,13 @@ func TestEachMemberOfAnInputHasAMark(t *testing.T) {
 // two times; Q, a program check of production, and G, a query of the graph; at c1, whose history
 // holds c2 and c3 after it, a failing run of each check before its pass, a caught failing example of
 // each, and a failing example of C that missed its fault; the runs of C's job in two legs and of
-// Q's in one; the tie of G at c1 not known (Tie{}), which no rule of a query reads; CI's refusal of Q
-// at c9, a commit that the history does not hold, so that it counts nowhere; at the commit that
-// production runs at deploy d1 and transaction tx1. subjects are the subjects of its scenario, two
-// at the head of a branch and two at a deploy, and units two units.
+// Q's in one, and a run in one leg of docs-checks, a job that no check names, the one run whose leg
+// the entry takes at "" (zeroTaken), since of one job at one commit a run of the leg "" beside a
+// record in a named leg is refused (legFault); the tie of G at c1 not known (Tie{}), which no rule
+// of a query reads; CI's refusal of Q at c9, a commit that the history does not hold, so that it
+// counts nowhere; at the commit that production runs at deploy d1 and transaction tx1. subjects are
+// the subjects of its scenario, two at the head of a branch and two at a deploy, and units two
+// units.
 func memberBase(t *testing.T) (s *checkCase, in Input, subjects []ScenarioSubject, units []Unit) {
 	t.Helper()
 	s = newCheckCase(t)
@@ -185,27 +256,28 @@ func memberBase(t *testing.T) (s *checkCase, in Input, subjects []ScenarioSubjec
 	s.commit("c3", "c2", "docs/x.md")
 	run := checkStateRun
 	fault := func(c Check, outcome Outcome, author string, after time.Duration) Result {
-		return Result{Check: c.ID, Kind: ResultFailingExample, Outcome: outcome, Leg: new(""), At: run.Add(after), FaultAuthor: author, TestAuthors: []string{"author-a"}}
+		return Result{Check: c.ID, Kind: ResultFailingExample, Outcome: outcome, Leg: "", At: run.Add(after), FaultAuthor: author, TestAuthors: []string{"author-a"}}
 	}
 	missed, caught := fault(checkStateCheck, OutcomePass, "author-c", 6*time.Minute), fault(checkStateCheck, OutcomeFail, "author-b", 5*time.Minute)
 	for _, r := range []*Result{&missed, &caught} {
-		r.Commit, r.Job, r.Leg, r.Attempt = "c1", "go-checks", new("linux"), 1
+		*r = plantedOn(*r, "c1")
+		r.Job, r.Leg, r.Attempt = "go-checks", "linux", 1
 	}
 	qFault := fault(q, OutcomeFail, "author-b", 5*time.Minute)
 	qFault.TestCommit = "c1"
 	qRun := func(outcome Outcome, attempt int, after time.Duration) Result {
-		return Result{Check: q.ID, Kind: ResultRun, Outcome: outcome, Deploy: "d1", Job: q.Test.Job, Leg: new("linux"), Attempt: attempt, TestCommit: "c1", At: run.Add(after)}
+		return Result{Check: q.ID, Kind: ResultRun, Outcome: outcome, Deploy: "d1", Job: q.Test.Job, Leg: "linux", Attempt: attempt, TestCommit: "c1", At: run.Add(after)}
 	}
 	gRun := func(outcome Outcome, after time.Duration) Result {
-		return Result{Check: g.ID, Kind: ResultRun, Outcome: outcome, GraphTx: "tx1", Leg: new(""), At: run.Add(after)}
+		return Result{Check: g.ID, Kind: ResultRun, Outcome: outcome, GraphTx: "tx1", Leg: "", At: run.Add(after)}
 	}
 	s.Results = []Result{
 		legRun("c1", "linux", 2, OutcomeFail, run.Add(time.Minute)), legRun("c1", "linux", 1, OutcomePass, run), caught, missed,
 		qRun(OutcomeFail, 2, time.Minute), qRun(OutcomePass, 1, 0), qFault,
-		gRun(OutcomeFail, time.Minute), gRun(OutcomePass, 0), {Check: g.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, Leg: new(""), At: run.Add(5 * time.Minute)},
+		gRun(OutcomeFail, time.Minute), gRun(OutcomePass, 0), {Check: g.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, Leg: "", At: run.Add(5 * time.Minute)},
 	}
-	s.JobRuns = []JobRun{{Job: "go-checks", Leg: new("linux"), Commit: "c1", Ended: new(true)}, {Job: "go-checks", Leg: new("arm"), Commit: "c1", Ended: new(true)},
-		{Job: q.Test.Job, Leg: new("linux"), Commit: "c1", Ended: new(true)}}
+	s.JobRuns = []JobRun{{Job: "go-checks", Leg: "linux", Commit: "c1", Ended: true}, {Job: "go-checks", Leg: "arm", Commit: "c1", Ended: true},
+		{Job: q.Test.Job, Leg: "linux", Commit: "c1", Ended: true}, {Job: "docs-checks", Leg: "linux", Commit: "c1", Ended: true}}
 	s.Subject = Point{Commit: "c1", Deploy: "d1", GraphTx: "tx1"}
 	s.Uncited = map[string]map[string]string{"c9": {q.ID: "test-not-in-code"}}
 	s.Ties["c1"][g.ID] = Tie{}
@@ -256,7 +328,7 @@ func memberScenario(t *testing.T) fstest.MapFS {
 	put("ties.json", ties)
 	results := make([]scenarioResult, len(in.Results))
 	for i, r := range in.Results {
-		results[i] = scenarioResult{Result: r, CheckVersion: len(in.Approved.Nodes[r.Check].Versions)}
+		results[i] = scenarioResult{Result: r, Leg: &r.Leg, CheckVersion: len(in.Approved.Nodes[r.Check].Versions)}
 	}
 	put("results.json", results)
 	put("jobs.json", in.JobRuns)
@@ -358,6 +430,10 @@ func withJSONAt(v any, pointer string, x any) any {
 	return v
 }
 
+// elementAt is the writer of TestAMemberLeftOutOfAFileIsReadByItsMark (treeWriter): the tree that
+// it is handed, its own, with c's value at c's place, whose names hold no ~ or / (withJSONAt).
+func elementAt(tree any, c treeChange) any { return withJSONAt(tree, treePointer(c.place), c.value) }
+
 // parentOf is the pointer of the value that holds the value at the pointer.
 func parentOf(pointer string) string { return pointer[:max(strings.LastIndexByte(pointer, '/'), 0)] }
 
@@ -372,6 +448,14 @@ func parentOf(pointer string) string { return pointer[:max(strings.LastIndexByte
 // A member marked nonzero, present or one of is refused, where the same element with the member
 // reads otherwise; one marked zero reads as the same element with the member at its zero value, the
 // reading that its reason states. A member of a one of mark is refused too beside the other member.
+// Each file that the test writes is read back whole, as the base's tree with the element that the
+// test's edit makes at its pointer, which the read back takes as JSON before the writer runs, while
+// the writer (elementAt) gets a tree and a copy of the element of its own (changedFile), with each
+// other file unchanged, so that a writer that writes another element, at another place or in
+// another file, changes another place of the file too, or changes the element that it is handed,
+// fails by name. The element is the edit's own, so a fault of the edit is in what the read back
+// takes too; the readings that each mark states catch it. The test reads at least the floor of
+// readings of a member left out that it read when the floor was written (markReadingsFloor).
 func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 	t.Parallel()
 	base := memberScenario(t)
@@ -385,18 +469,10 @@ func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 		}
 		return v
 	}
-	with := func(t *testing.T, name string, v any) fstest.MapFS {
-		data, err := json.Marshal(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fsys := maps.Clone(base)
-		fsys[name] = &fstest.MapFile{Data: data}
-		return fsys
-	}
 	checked := 0
-	for _, name := range slices.Sorted(maps.Keys(scenarioFileTypes)) {
-		for _, typ := range structTypes(scenarioFileTypes[name], nil) {
+	fileTypes := scenarioFileTypes()
+	for _, name := range slices.Sorted(maps.Keys(fileTypes)) {
+		for _, typ := range structTypes(fileTypes[name], nil) {
 			for _, m := range inputMembers(typ) {
 				if m.name == "" {
 					continue
@@ -409,7 +485,7 @@ func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 				zero := zeroJSON(t, m.field.Type)
 				// The element that leaves the member out: one that sets it, a non-zero value first, and for
 				// a result one of outcome fail; and an element beside it that sets it too.
-				objects := slices.DeleteFunc(objectsOf(read(t, name), scenarioFileTypes[name], "", typ), func(o object) bool { return o.members[m.name] == nil })
+				objects := slices.DeleteFunc(objectsOf(read(t, name), fileTypes[name], "", typ), func(o object) bool { return o.members[m.name] == nil })
 				slices.SortStableFunc(objects, func(a, b object) int {
 					return boolOrder(reflect.DeepEqual(a.members[m.name], zero), reflect.DeepEqual(b.members[m.name], zero))
 				})
@@ -438,15 +514,20 @@ func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 					continue
 				}
 				e := objects[element]
-				// placement is the file with e in its place, as edit leaves it: beside, or alone in its list.
+				// placement is the file with e in its place, as edit leaves it: beside, or alone in its list,
+				// read back at its pointer, whose tokens hold no ~ or / (jsonAt).
 				placement := func(t *testing.T, alone bool, edit func(members map[string]any)) fstest.MapFS {
-					v := read(t, name)
-					members := maps.Clone(jsonAt(v, e.pointer).(map[string]any))
+					members := maps.Clone(jsonAt(read(t, name), e.pointer).(map[string]any))
 					edit(members)
+					at, x := e.pointer, any(members)
 					if alone && e.pointer != "" {
-						return with(t, name, withJSONAt(v, parentOf(e.pointer), []any{members}))
+						at, x = parentOf(e.pointer), []any{members}
 					}
-					return with(t, name, withJSONAt(v, e.pointer, members))
+					var place []string
+					if at != "" {
+						place = strings.Split(at[1:], "/")
+					}
+					return changedFile(t, base, name, treeChange{place: place, value: x}, elementAt)
 				}
 				for _, alone := range []bool{false, true} {
 					where := fmt.Sprintf("%s %s of %s %s, %s", name, m.name, typ.Name(), e.pointer, map[bool]string{false: "beside " + objectsPointer(objects, beside), true: "alone"}[alone])
@@ -477,6 +558,9 @@ func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 		}
 	}
 	t.Logf("%d readings of a member left out", checked)
+	if checked < markReadingsFloor {
+		t.Errorf("the test read %d readings of a member left out, fewer than its floor of %d (markReadingsFloor)", checked, markReadingsFloor)
+	}
 }
 
 // objectsPointer is the pointer of objects[i], and "none" for no i.
@@ -593,14 +677,14 @@ func edit(v reflect.Value, path []step, change func(reflect.Value)) {
 // mark in both directions:
 //
 //   - for each member marked nonzero or present, beside a value that sets it (for a result, the
-//     failing run of C beside its pass) and alone in its list or map, Derive and CheckStates
+//     failing run of C beside its pass) and alone in its list or map, Derive and deriveChecks
 //     (WaitCycle for a unit) give an error, where the same input with the member set gives none or
 //     another one: the zero value of a member marked present is "not set" (memberMark); for a map
 //     marked nonzero, also with one value of it at its zero value, at each depth of a map of maps,
 //     down to a value of a struct type, which the marks of its own members read;
 //   - for each member marked zero, its zero value is taken: at one value of its type in memberBase
 //     at least, the input with the member at its zero value gives a state and no error, and Derive
-//     and CheckStates agree, so a mark zero of a member that the entry refuses at its zero value
+//     and deriveChecks agree, so a mark zero of a member that the entry refuses at its zero value
 //     fails the test; a rule of the type can refuse the zero at another value, as Result.fault
 //     refuses a run of a check of the code with no commit;
 //   - for a member of a one of mark, also with both members set.
@@ -614,9 +698,9 @@ func TestAMemberLeftZeroAtTheEntryIsReadByItsMark(t *testing.T) {
 			return fmt.Sprint(err)
 		}
 		_, err := Derive(in)
-		_, checksErr := CheckStates(in)
+		_, _, checksErr := deriveChecks(in)
 		if fmt.Sprint(err) != fmt.Sprint(checksErr) {
-			t.Errorf("Derive: %v; CheckStates: %v", err, checksErr)
+			t.Errorf("Derive: %v; deriveChecks: %v", err, checksErr)
 		}
 		return fmt.Sprint(err)
 	}

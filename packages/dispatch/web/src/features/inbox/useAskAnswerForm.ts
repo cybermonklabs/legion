@@ -1,5 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type SetStateAction, useEffect, useId, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type SetStateAction,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import {
   ApiError,
@@ -9,6 +17,7 @@ import {
   type WriteMethod,
 } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type {
   AnswerAskInput,
   Ask,
@@ -29,6 +38,7 @@ import {
 } from "./ask-thread-freshness";
 import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers";
 import { askArtifactId, invalidateOwnerReads } from "./owner-reads";
+import { useQuestionLabel } from "./question-label";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
 interface UseAskAnswerFormOptions {
@@ -57,9 +67,11 @@ interface AskAnswerFailure {
   retryable: boolean;
 }
 
-/** One press of the answer: the ask it is of (`AskPress`) and what it sends. */
+/** One press of the answer: the ask it is of (`AskPress`), what it sends, and its question as the
+ *  label names it (`questionWords`). */
 interface AnswerPress extends AskPress {
   readonly input: AnswerAskInput;
+  readonly questionWords: string;
 }
 
 /** Whether a press changes an answer the server has already recorded, which its input names by
@@ -68,8 +80,10 @@ function changesAnswer({ input }: AnswerPress): boolean {
   return input.expected_answer_at !== undefined;
 }
 
-/** One press of a question back: the ask it is of (`AskPress`) and the text it posts. */
+/** One press of a question back: the ask it is of (`AskPress`), the text it posts, and its
+ *  question as the label names it (`questionWords`). */
 interface ClarificationPress extends AskPress {
+  readonly questionWords: string;
   readonly text: string;
 }
 
@@ -174,6 +188,22 @@ export function useAskAnswerForm({
   // and so does every thread on an issue whose claim or route moved while it was in flight.
   const refreshInitialThread =
     initialThread !== undefined && hasPendingAskThreadInvalidation(queryClient, ask);
+  // A view that reads this thread with no seed (the reading column's thread, `ThreadPane`) may
+  // already have a read of it out, asked at a time this card cannot know: perhaps before the Inbox
+  // read the seed comes from, so that it answers an older thread - the ask still open, say, after
+  // the seed showed it answered. TanStack puts the seed into that read's query, which holds no
+  // data yet, and leaves the read running, and its answer then replaces the seed with no compare
+  // of their ages. So the card notes on its first render, before `useQuery` puts the seed in,
+  // whether it seeds over such a read, and if it does, puts the seed over that read as every write
+  // goes over the reads still out (`replaceQueryData`).
+  const threadBeforeSeed = queryClient.getQueryState(["ask-thread", ask.id]);
+  const seedsOverRead = useRef(
+    initialThread !== undefined &&
+      !refreshInitialThread &&
+      threadBeforeSeed !== undefined &&
+      threadBeforeSeed.data === undefined &&
+      threadBeforeSeed.fetchStatus !== "idle"
+  );
   const threadQuery = useQuery<AskRead, Error>({
     initialData: refreshInitialThread ? undefined : initialThread,
     initialDataUpdatedAt: refreshInitialThread ? undefined : initialThreadUpdatedAt,
@@ -181,6 +211,19 @@ export function useAskAnswerForm({
     queryFn: () => getAskThread(ask.id),
     staleTime: Number.POSITIVE_INFINITY,
   });
+  // In a layout effect, so that no answer from the network lands between the commit that drew the
+  // seed and this write. Cancelling the read puts its query back as it stood before that read,
+  // with no data, so the seed is written after the cancel; and with a read cancelled,
+  // `replaceQueryData` asks the thread again, so the next answer is of a read asked after the seed.
+  useLayoutEffect(() => {
+    if (!seedsOverRead.current) return;
+    seedsOverRead.current = false;
+    replaceQueryData<AskRead>(
+      queryClient,
+      ["ask-thread", ask.id],
+      (current) => current ?? initialThread
+    );
+  }, [ask.id, initialThread, queryClient]);
   useEffect(() => {
     if (refreshInitialThread && threadQuery.data !== undefined) {
       clearPendingAskThreadInvalidation(queryClient, ask.id);
@@ -201,6 +244,11 @@ export function useAskAnswerForm({
     if (askId === ask.id) setAnswerText(next);
     else setAnswerDraft(askId, next);
   };
+  // The question as the labels of this form's two writes read it: its plain-text projection,
+  // the words the card draws (`useQuestionLabel`). A label is its press's ask's, so each press
+  // carries the line as it reads at the press, while the form is drawn for that ask: a Retry
+  // made once a host has drawn the form for the next one names the question it answers.
+  const question = useQuestionLabel(ask);
   // The card says why an answer was refused, in the ask's own words, beside the draft it holds;
   // the shell's indicator shows the answer only while it is out. The row's removal from the
   // Inbox, its restore on a refusal and the hold that keeps the question where the reader
@@ -210,7 +258,9 @@ export function useAskAnswerForm({
   // another, so a Retry sends the stopped answer to its own ask under its key, and its landing
   // reads that ask again.
   const mutation = useOutstandingAnswerWrite({
-    label: (press: AnswerPress) => `Answer to “${press.ask.question}”`,
+    // A write's label is one line the Writes indicator reads as text, so it holds the question's
+    // plain-text projection: the reading list's `write-label` (`DISPATCH_READING_SURFACES`).
+    label: (press: AnswerPress) => `Answer to “${press.questionWords}”`,
     method: "POST",
     write: (press: AnswerPress, bounds) => answer(press.ask.id, press.input, bounds),
     // A change to an answer the server has already recorded leaves the Inbox alone: the ask has
@@ -259,7 +309,9 @@ export function useAskAnswerForm({
       if (changed || updatedAsk === null) {
         if (updatedAsk?.answer != null) {
           const changedAnswer = updatedAsk.answer;
-          queryClient.setQueryData<AskRead>(["ask-thread", press.ask.id], (current) =>
+          // Over any read of the thread still out, which was asked before the change and would
+          // put back the answer it replaced (`replaceQueryData`).
+          replaceQueryData<AskRead>(queryClient, ["ask-thread", press.ask.id], (current) =>
             current === undefined
               ? undefined
               : {
@@ -279,7 +331,8 @@ export function useAskAnswerForm({
   // A question back carries its ask as an answer does, for the same reason.
   const clarification = useKeyedWrite({
     inline: true,
-    label: (press: ClarificationPress) => `Question back on “${press.ask.question}”`,
+    // The same line of the Writes indicator: `write-label` again (see above).
+    label: (press: ClarificationPress) => `Question back on “${press.questionWords}”`,
     method: "POST",
     write: (press: ClarificationPress, bounds) => {
       if (press.ask.issue_key === null) {
@@ -391,6 +444,7 @@ export function useAskAnswerForm({
       mutation.mutate({
         ask,
         input: answerAskInput(displayedAsk, answerSelection, text, replacing.current),
+        questionWords: question.line(),
       });
     });
   };
@@ -442,7 +496,7 @@ export function useAskAnswerForm({
   const sendClarification = () => {
     const text = answerText.trim();
     if (text === "") return;
-    submitGuard.guard(() => clarification.mutate({ ask, text }));
+    submitGuard.guard(() => clarification.mutate({ ask, questionWords: question.line(), text }));
   };
   const completed = changing ? null : recordedAsk;
   // What the reader typed and no form will ever send: the question closed under them - withdrawn,
@@ -471,6 +525,9 @@ export function useAskAnswerForm({
     mutation,
     otherSelected,
     questionChoice,
+    /** Reads the names of the references the question's projection holds, for the labels of
+     *  this form's writes; the card mounts it wherever it draws. */
+    questionReads: question.reads,
     reasonRequired,
     requiresReason,
     selectRealOption,

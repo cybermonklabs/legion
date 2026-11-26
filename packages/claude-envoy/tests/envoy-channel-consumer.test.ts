@@ -264,6 +264,9 @@ test("a frame written before a restart is answered done unshown after it, and th
 for (const refusal of [
   { status: 503, reason: "no_grant" },
   { status: 409, reason: "not_requested" },
+  // A consumer filter past the server's max payload, which the listener used to answer 503
+  // consumer_error and now answers 413: the session is told the same way.
+  { status: 413, reason: "too_large" },
 ] as const) {
   test(`a registration refused ${refusal.status} ${refusal.reason} leaves the session running with one notice naming it, and the next heartbeat asks again`, async () => {
     const directory = scratchState()
@@ -321,6 +324,29 @@ for (const refusal of [
         for (const write of notifier.pending) write.resolve()
         return notifier.written.some((written) => written.eventId === message.id)
       }, "the frame after the refusal")
+
+      // The accepted registration ends the outage, and the session is told so once.
+      const restored = () =>
+        notices().filter((written) => written.content.includes("Envoy inbound restored"))
+      await waitFor(async () => {
+        for (const write of notifier.pending) write.resolve()
+        return restored().length === 1
+      }, "the restored notice")
+      const told = () =>
+        notices().filter((written) => written.content.includes("Envoy inbound unavailable"))
+      expect(told()).toHaveLength(1)
+
+      // A second outage is told again, and its end too.
+      refusing = true
+      await waitFor(async () => {
+        for (const write of notifier.pending) write.resolve()
+        return told().length === 2
+      }, "the second outage's notice")
+      refusing = false
+      await waitFor(async () => {
+        for (const write of notifier.pending) write.resolve()
+        return restored().length === 2
+      }, "the second restored notice")
     } finally {
       for (const write of notifier.pending) write.resolve()
       await session.shutdown()

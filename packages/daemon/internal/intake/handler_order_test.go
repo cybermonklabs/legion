@@ -36,6 +36,7 @@ const orderProject = "LEGION"
 // is the whole reason the order is what it is. And the engine alone, over the same event, writes
 // no row at all.
 func TestABlockedByOnlyEditIsMirroredAheadOfTheEngineThatSkipsIt(t *testing.T) {
+	t.Parallel()
 	const issue, blocker = "LEGION-208", "LEGION-300"
 	pool := orderedPool(t)
 	records := record.NewStore()
@@ -93,6 +94,7 @@ func TestABlockedByOnlyEditIsMirroredAheadOfTheEngineThatSkipsIt(t *testing.T) {
 // the event's own transaction. The same event through the engine alone leaves the row's claim
 // unseen.
 func TestAClaimEventIsMirroredAheadOfTheEngine(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-208"
 	claimEvent := intake.DispatchClaim{Key: issue, Seq: 6, ClaimedBy: "user:alice"}
 	seed := func(pool *pgxpool.Pool, records record.Store) {
@@ -103,7 +105,8 @@ func TestAClaimEventIsMirroredAheadOfTheEngine(t *testing.T) {
 			HandedOver: true, LastDispatchSeq: 5,
 		})
 		if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-			return records.PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{Key: issue, Project: orderProject, Status: "todo", Seq: 5})
+			return records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: issue, Project: orderProject, Seq: 5,
+				Status: record.Carry("todo"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
 		}); err != nil {
 			t.Fatalf("seed the mirror row: %v", err)
 		}
@@ -154,9 +157,13 @@ func (c *claimReader) Apply(ctx context.Context, tx pgx.Tx, _ intake.Fact) (inta
 }
 
 // mirrorReader is a handler standing where admission stands, last in the daemon's chain: it reads
-// the project's whole mirror exactly as admission and the engine's own held-child pass do
-// (record.Store.DispatchIssues), inside the transaction the fact is applied in, and keeps what it
-// saw for the test.
+// the project's whole copy (record.Store.DispatchIssues) inside the transaction the fact is
+// applied in, and keeps what it saw for the test. Admission reads less of it, through the one
+// judgement of its line (blockers.JudgeLine): the rows of the keys a judgement names and of what
+// they wait on (blockers.Load, record.Store.DispatchIssuesOf), and the children under each parent
+// the children-first rule asks about (record.ChildWaitsOf, record.Store.DispatchChildren). Every
+// row either reads is a row of the whole copy, so a row this sees is one admission would. The
+// engine reads no row of the copy, only the claim kept beside one (record.Store.DispatchClaim).
 type mirrorReader struct {
 	records record.Store
 	rows    map[string]blockers.Row

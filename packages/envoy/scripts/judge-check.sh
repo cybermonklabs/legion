@@ -31,13 +31,15 @@
 # Four things this stack measured shape how the checks below are driven, and each is said
 # again in the result block of the check it touches:
 #
-#   - The broker reads BROKER_AIRLOCK_RULES_FILE once, at boot (cmd/broker/main.go: "The file is
-#     read once; a change to it rolls the pods"). A check that needs other rules - k10d's judge
-#     300, and its control's judge 900 - therefore starts one more broker on the stack's own
-#     database, stand-ins and certificate authority with a rules file of its own, and points the
-#     stack's two fronts at it by writing their backends files. Pointing the CLI straight at
-#     that broker's own port would not do: a request object's audience is the base URL the CLI
-#     was given, and the broker verifies it against BROKER_PUBLIC_URL, which is the front.
+#   - A key's judge is its own tag, so a check that needs other judge seconds - k10d's judge 300,
+#     and its control's 900 - retags the key in the stack's fake store and has every broker read
+#     it again, as an owner's `agent-secrets secret retag --judge` does. A check whose control
+#     needs another broker - k10's broker with no judge and its base-commit control, and k10g's -
+#     starts one more broker on the stack's own database, stand-ins and certificate authority,
+#     and points the stack's two fronts at it by writing their backends files. Pointing the CLI
+#     straight at that broker's own port would not do: a request object's audience is the base
+#     URL the CLI was given, and the broker verifies it against BROKER_PUBLIC_URL, which is the
+#     front.
 #   - `agent-secrets grant list|revoke` act under this machine's login, which
 #     agent-secrets-helper holds, and the helper pins its peer with SO_PEERPIDFD (Linux 6.5).
 #     A Legion issue pod's gVisor kernel has no such option, so k10f drives the two broker
@@ -59,7 +61,10 @@
 #     scratch copy of one package with one import added.
 #
 # Usage: packages/envoy/scripts/judge-check.sh <id> [--keep-stack]
-#        <id> is k10, k10b, k10c, k10d, k10e, k10f or k10g. --keep-stack leaves the stack and
+#        <id> is k10, k10b, k10c, k10d, k10e, k10f, k10g, k43 (one judge key's guidance cannot
+#        decide another key) or k8j, the judge half of the proxy's check k8 (a key's judge tag
+#        outside 1 to 900 seconds refused at the next policy load, naming the key). --keep-stack
+#        leaves the stack and
 #        the work directory up for a person to look at a failure with. --help prints this
 #        usage. A usage error exits 2.
 #
@@ -70,6 +75,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# psql is given a database URL without its password, and the password in PGPASSWORD.
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+. "$SCRIPT_DIR/lib/pg-url.sh"
+# A broker this script starts gets the stack broker's environment through its own environment,
+# never through a process's arguments (exec_with_env, broker_env_of, with_broker_env).
+# shellcheck source-path=SCRIPTDIR source=lib/exec-env.sh
+. "$SCRIPT_DIR/lib/exec-env.sh"
 
 usage() {
 	cat <<'EOF'
@@ -78,7 +90,7 @@ usage: judge-check.sh <id> [--keep-stack]
 Runs one before_merge check of dispatch://INFRA-1353/artifact/verification-md and prints, for
 each property the check's outcome sentence names, what it expected beside what it got.
 
-  <id>           k10, k10b, k10c, k10d, k10e, k10f or k10g
+  <id>           k10, k10b, k10c, k10d, k10e, k10f, k10g, k43 or k8j (the judge half of the proxy's k8)
   --keep-stack   leave the stack and this run's work directory up, to look at a failure with
   --help         print this
 
@@ -119,9 +131,9 @@ if [ -z "$CHECK_ID" ]; then
 fi
 
 case "$CHECK_ID" in
-k10 | k10b | k10c | k10d | k10e | k10f | k10g) ;;
+k10 | k10b | k10c | k10d | k10e | k10f | k10g | k43 | k8j) ;;
 *)
-	echo "judge-check: $CHECK_ID is no check of this document; it holds k10, k10b, k10c, k10d, k10e, k10f and k10g" >&2
+	echo "judge-check: $CHECK_ID is no check of this script; it holds k10, k10b, k10c, k10d, k10e, k10f, k10g, k43 and k8j" >&2
 	usage >&2
 	exit 2
 	;;
@@ -272,7 +284,7 @@ start_stack() {
 	mapfile -t BROKER_API_ADDRS < <(sed -n 's/^  broker [0-9]*: *api \([^,]*\),.*/\1/p' "$STACK_LOG")
 	mapfile -t BROKER_PROXY_ADDRS < <(sed -n 's/^  broker [0-9]*:.*proxy \([^,]*\),.*/\1/p' "$STACK_LOG")
 	mapfile -t BROKER_PIDS < <(sed -n 's/^  broker [0-9]*:.*pid \([0-9]*\),.*/\1/p' "$STACK_LOG")
-	mapfile -t BROKER_LOGS < <(sed -n 's/^  broker [0-9]*:.*log \([^ ]*\) *$/\1/p' "$STACK_LOG")
+	mapfile -t BROKER_LOGS < <(sed -n 's/^  broker [0-9]*:.*, pid [0-9]*, log \(.*\)$/\1/p' "$STACK_LOG")
 	STACK_DB_NAME="$(sed -n 's/^dev-airlock: created isolated database \([a-z0-9_]*\).*/\1/p' "$STACK_LOG" | head -n 1)"
 	# The brokers' database URL, built exactly as dev-airlock.sh builds it, which is the one way
 	# to reach the rows a check writes by hand (a withheld name, a forged judged approval).
@@ -302,28 +314,26 @@ stop_stack() {
 	STACK_PID=""
 }
 
-# broker_env answers, in BROKER_ENV, the command prefix that runs a program with the environment
-# of a broker like the stack's own and the caller's overrides on top. It is read out of the first
-# stack broker's /proc/<pid>/environ rather than spelled here, so that a broker this script starts
-# can never lack a setting dev-airlock.sh gave the stack's. The entries are NUL-separated, and
-# each becomes one argument of env, so a value holding a space or a quote reaches the broker
-# unchanged; env applies its assignments in order, so an override the caller names replaces the
-# copy.
+# broker_env answers, in BROKER_ENV, the environment of a broker like the stack's own with the
+# caller's overrides on top, one NAME=value entry each (lib/exec-env.sh's broker_env_of). It is
+# read out of the first stack broker's /proc/<pid>/environ rather than spelled here, so that a
+# broker this script starts can never lack a setting dev-airlock.sh gave the stack's. A broker is
+# started with it through lib/exec-env.sh's with_broker_env, in its own environment and in no
+# process's arguments, since the stack broker's environment holds its database URL, password and
+# all.
 broker_env() { # <VAR=value>...
-	local entries=()
-	mapfile -d '' -t entries <"/proc/${BROKER_PIDS[0]}/environ"
-	BROKER_ENV=(env -i "${entries[@]}" "$@")
+	broker_env_of "${BROKER_PIDS[0]}" "$@"
 }
 
-# start_extra_broker starts one more broker process beside the stack's, on its database, rules
+# start_extra_broker starts one more broker process beside the stack's, on its database, profiles
 # file, certificate authority and stand-ins, with the environment the caller adds on top, and
 # answers its API and proxy addresses in EXTRA_API_ADDR and EXTRA_PROXY_ADDR. It is how a control
-# that changes one setting - or one rules entry, through BROKER_AIRLOCK_RULES_FILE - is run.
+# that changes one setting - or the broker binary itself, through EXTRA_BROKER_BIN - is run.
 #
 # EXTRA_BROKER_BIN is the broker binary it runs, and the stack's own when the caller sets none.
 # k10g sets it: its control is a broker built from a source tree with the admin refusal taken
 # out, which no setting could stand in for, and everything else about that process - the
-# database, the rules file, the fake store, the identities - has to stay the stack's.
+# database, the profiles file, the fake store, the identities - has to stay the stack's.
 start_extra_broker() { # <name> <VAR=value>...
 	local name="$1"
 	shift
@@ -331,7 +341,7 @@ start_extra_broker() { # <name> <VAR=value>...
 	: >"$log"
 	# Three ports the system picks, so this one never collides with the broker it was copied from.
 	broker_env BROKER_LISTEN_ADDR="127.0.0.1:0" BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" "$@"
-	"${BROKER_ENV[@]}" "${EXTRA_BROKER_BIN:-$BROKER_BIN}" >"$log" 2>&1 &
+	( with_broker_env "${EXTRA_BROKER_BIN:-$BROKER_BIN}" ) >"$log" 2>&1 &
 	local pid=$!
 	EXTRA_BROKER_PIDS+=("$pid")
 	await "the $name broker" 120 "$log" '"message":"airlock proxy listening"' "$pid"
@@ -372,7 +382,7 @@ stack_facts() {
 	STACK_KMS_KEY_ARN="$(printf '%s' "$settings" | jq -r '.kms_key_arn // ""')"
 }
 
-psql_stack() { psql "$STACK_DB_URL" -Atq -v ON_ERROR_STOP=1 "$@"; }
+psql_stack() { pg_url_run "$STACK_DB_URL" psql -Atq -v ON_ERROR_STOP=1 "$@"; }
 
 records() { curl -sS "$AIRLOCK_RECORDS_URL/records/$1"; }
 records_count() { records "$1" | jq 'length'; }
@@ -410,7 +420,7 @@ reread_all() { # <name>
 
 # add_fake_secret appends one secret to the stack's fake Secrets Manager and set_fake_tags
 # replaces one secret's tags. They are how a check gets a name the stack does not hold, or moves
-# the policy version, without writing a rules file of its own.
+# the policy version, without writing a profiles file of its own.
 add_fake_secret() { # <store name> <tags json> <value>
 	local tmp="$WORK_DIR/fake-secrets.json"
 	jq --arg name "$1" --argjson tags "$2" --arg value "$3" --arg kms "$STACK_KMS_KEY_ARN" \
@@ -560,8 +570,14 @@ release() { # <grant id> <name>
 }
 
 # proxy_for is the proxy URL of one proxy password at one address, credential and all. It is
-# passed to curl and never printed.
+# never printed, and never a command's argument, which every process of the pod reads in
+# /proc/<pid>/cmdline: curl reads it from the config proxy_config writes, on a <(…) path.
 proxy_for() { printf 'http://agent-secrets:%s@%s' "$1" "$2"; }
+
+# proxy_config is a curl config naming proxy_for's URL as the proxy, for
+# `curl -K <(proxy_config …)`. The password is a placeholder, of letters, digits and hyphens, so
+# the quoted value needs no escape.
+proxy_config() { printf 'proxy = "%s"\n' "$(proxy_for "$1" "$2")"; }
 
 # call_s makes one call to S through the proxy with the password and header value the caller
 # names, leaving the status in CALL_STATUS and the answer's body in CALL_BODY.
@@ -575,7 +591,7 @@ proxy_for() { printf 'http://agent-secrets:%s@%s' "$1" "$2"; }
 call_s() { # <proxy password> <header value>
 	local CALL_OUT
 	CALL_OUT="$(printf 'Authorization: Bearer %s' "$2" | curl -sS -o "$WORK_DIR/call.out" -w 'http_code=%{http_code}' --noproxy '' \
-		--cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "$1" "$PROXY_ADDR")" \
+		--cacert "$AIRLOCK_CA_CERT_FILE" -K <(proxy_config "$1" "$PROXY_ADDR") \
 		-H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
 	CALL_BODY="$(tr -d '\n' <"$WORK_DIR/call.out")"
 	case "$CALL_OUT" in
@@ -601,9 +617,11 @@ judged_actor() { psql_stack -c "select actor from audit where kind='request.judg
 # judged_summary is one judged row read back as a line a result block can carry: the checks in
 # order with the one the run ended at named (the first that failed for good, else the first that
 # failed, as the judge's decidingFailure reads them), the model, whether it was asked, the
-# verdict and the reason. not_pending is the run's own last gate rather than one of the checks:
-# the request's state, read again immediately before the model call, showed it no longer
-# pending, so the run asked nothing (judge's Runner.stillPending).
+# verdict - what became of the request: granted, refused, handed to the person or not pending -
+# with the reason, and each key's call as key:what-it-did (granted, denied, or failed). not_pending
+# is the run's own last gate rather than one of the checks: the request's state, read again
+# immediately before the model call, showed it no longer pending, so the run asked nothing
+# (judge's Runner.stillPending).
 judged_summary() { # <request id>
 	local detail
 	detail="$(judged_detail "$1")"
@@ -617,9 +635,11 @@ judged_summary() { # <request id>
 		" detail=" + (([.checks[] | select((.passed | not) and (.final // false)) | .detail] + [.checks[] | select(.passed | not) | .detail] | first) // "") +
 		" model=" + (.model // "") + " asked=" + ((.asked // false)|tostring) +
 		" verdict=" + (.verdict // "") + " reason=" + (.reason // "") +
+		(if has("calls") then " calls=" + ([.calls[] | .key + ":" + .verdict] | join(",")) else "" end) +
 		(if has("not_pending") then " not_pending=" + .not_pending else "" end) +
 		(if has("applied") then " applied=" + (.applied|tostring) else "" end) +
 		(if has("not_applied") then " not_applied=" + .not_applied else "" end) +
+		(if has("applied_unknown") then " applied_unknown=" + .applied_unknown else "" end) +
 		(if has("error") then " error=" + .error else "" end) +
 		(if has("raw_answer") then " raw_answer=" + .raw_answer else "" end)'
 }
@@ -683,7 +703,9 @@ sign_in() { # <email> <label for this run's own directory>
 # page_of reads a record's approval page as the person SIGNED_IN_COOKIE signs in, and answers in
 # PAGE_FORM whether it offers a decision form for that record ("yes" or "no"), in PAGE_NOTE whether
 # it says the model judge decides it, and in PAGE_TOKEN_FIELDS the page's hidden token fields as a
-# urlencoded string, for a POST that reuses them.
+# urlencoded string, for a POST that reuses them. Those include each profile_digest field, "<record>
+# <name> <digest>" with its spaces sent as "+": an approval checks that each profile the page
+# printed is the one served now, and refuses one whose form carries none as PROFILE_CHANGED.
 page_of() { # <record id>
 	local body="$WORK_DIR/page-$1.html"
 	curl -sS -o "$body" -H "Cookie: $SIGNED_IN_COOKIE" "$AGENT_SECRETS_URL/approve/$1"
@@ -691,8 +713,8 @@ page_of() { # <record id>
 	if grep -q "name=\"record\" value=\"$1\"" "$body"; then PAGE_FORM=yes; fi
 	PAGE_NOTE=no
 	if grep -q 'The model judge is deciding this request, so nobody approves or denies it here' "$body"; then PAGE_NOTE=yes; fi
-	PAGE_TOKEN_FIELDS="$(grep -o 'name="\(printed\|token\|expires\)" value="[^"]*"' "$body" |
-		sed 's/name="\([a-z]*\)" value="\([^"]*\)"/\1=\2/' | paste -sd '&' -)"
+	PAGE_TOKEN_FIELDS="$(grep -o 'name="\(printed\|token\|expires\|profile_digest\)" value="[^"]*"' "$body" |
+		sed 's/name="\([a-z_]*\)" value="\([^"]*\)"/\1=\2/; s/ /+/g' | paste -sd '&' -)"
 }
 
 # post_decision POSTs one approve decision of a record from the broker's own origin, with the token
@@ -716,9 +738,9 @@ new_uuid() {
 # forge_judged_approval writes, straight into the stack's Postgres, the rows a judge's approval
 # of a pending record would have written: the record's approved decision event under the judge's
 # own actor with no login, the request moved to granted and decided by that actor, a grant
-# recording the record's own approver, and one placeholder for the name the rules bind to S. The
-# record and its signed request object are the broker's own - this forges the decision, which is
-# what "a record of your own that names judge:<model id> as the decider" is.
+# recording the record's own approver, and one placeholder for the name whose proxy block binds
+# it to S. The record and its signed request object are the broker's own - this forges the
+# decision, which is what "a record of your own that names judge:<model id> as the decider" is.
 #
 # It leaves the grant's id in FORGED_GRANT and its placeholder in FORGED_PLACEHOLDER, which is
 # made here and printed nowhere.
@@ -817,34 +839,130 @@ k10_final() { # <detail>
 		! contains "again" "$1" && ! contains "retry" "$1" && ! contains "broker page" "$1"
 }
 
+# k10_other_keys names each of the stack's own keys, other than the ones given, that the model
+# stand's last K10_CALLS calls carried (1 unless it names more): each call holds the one key it
+# decides and no other key, so what this prints for a judged request is "". No one of the names is
+# part of another, so each is looked for as it is, as the request body carries it inside the
+# escaped user message.
+k10_other_keys() { # <name the request decided>...
+	local body name others=()
+	body="$(records model | jq -r --argjson n "${K10_CALLS:-1}" '.[-$n:] | map(.body // "") | join("\n")')"
+	for name in "$AIRLOCK_JUDGED_SECRET" "$AIRLOCK_SECOND_JUDGED_SECRET" "$AIRLOCK_UNJUDGED_SECRET" \
+		"$AIRLOCK_SHARED_SECRET" "$AIRLOCK_ADMIN_SECRET" AIRLOCK_DEMO_TOKEN; do
+		case " $* " in *" $name "*) continue ;; esac
+		if contains "$name" "$body"; then others+=("$name"); fi
+	done
+	printf '%s' "${others[*]}"
+}
+
+# k10_pair_calls reads the model stand's last two calls, the two a request for both judge keys
+# makes, and answers "first,second" when one call holds the first key and its guidance and nothing
+# of the second, and the other the second key and its guidance and nothing of the first: each key
+# decided in a call of its own, on its own owner's guidance. Any other pair of calls names itself
+# "mixed" in place of the call that holds both keys, either guidance beside the other key, or
+# neither.
+k10_pair_calls() {
+	records model | jq -r --arg ka "$AIRLOCK_JUDGED_SECRET" --arg kb "$AIRLOCK_SECOND_JUDGED_SECRET" \
+		--arg ga "$AIRLOCK_JUDGE_GUIDANCE" --arg gb "$AIRLOCK_SECOND_JUDGE_GUIDANCE" '
+		.[-2:] | map(.body // "") |
+		map(if (contains($ka) and contains($ga) and (contains($kb) | not) and (contains($gb) | not)) then "first"
+			elif (contains($kb) and contains($gb) and (contains($ka) | not) and (contains($ga) | not)) then "second"
+			else "mixed" end) | sort | join(",")'
+}
+
+# k10_base_control is k10's negative control: the stack's first request — the judge key, with
+# --ttl 15m, the stand answering grant — made at a broker built from the merge base of this tree
+# with origin/main (JUDGE_CHECK_BASE names another commit), the broker as it was before a key's
+# judge became its own tag, when it read the judge from the profiles file's proxy block. It runs
+# on the stack's own database, profiles file, fake store and identities, with the stack's two
+# fronts pointed at it, so the only difference is where the broker reads the judge from. The
+# base tree is first read for the field it reads the judge from; a tree without it is not the
+# broker this control is about, and the control reports UNKNOWN rather than a pass.
+k10_base_control() {
+	local base tree="$WORK_DIR/base-src" binary="$WORK_DIR/broker-base" built=0
+	base="${JUDGE_CHECK_BASE:-$(git -C "$ENVOY_DIR" merge-base HEAD origin/main 2>/dev/null)}"
+	if [ -z "$base" ]; then
+		control "UNKNOWN: no base commit to build the control broker from (git merge-base HEAD origin/main named none; fetch origin/main or set JUDGE_CHECK_BASE)"
+		fail "negative control: a broker that reads the judge from the profiles file gives the first request to a person — UNKNOWN, the control was not run"
+		return
+	fi
+	mkdir -p "$tree"
+	git -C "$ENVOY_DIR" archive "$base" | tar -xf - -C "$tree"
+	# The guard reads what the base broker reads the judge from. A base whose policy.go defines
+	# TagJudge reads it from the key's tags, as this branch does, whatever its profiles.go holds -
+	# the field name is still there once this change merges, to refuse an old file - so it is no
+	# control. A base with no json:"judge" field reads no judge from a proxy block at all.
+	if grep -q 'TagJudge *=' "$tree/internal/cipher/policy/policy.go" 2>/dev/null; then
+		control "UNKNOWN: the base tree at $base defines TagJudge (internal/cipher/policy/policy.go), so its broker reads the judge from the key's tags, as this branch does, and is not the broker this control is about; set JUDGE_CHECK_BASE to a commit from before a key's judge became its own tag"
+		fail "negative control: a broker that reads the judge from the profiles file gives the first request to a person — UNKNOWN, the control was not run"
+		return
+	fi
+	if ! grep -q 'json:"judge"' "$tree/internal/cipher/policy/profiles.go" 2>/dev/null; then
+		control "UNKNOWN: the base tree at $base reads no judge from a proxy block (no json:\"judge\" field in internal/cipher/policy/profiles.go), so it is not the broker this control is about; set JUDGE_CHECK_BASE to a commit whose profiles file sets the judge"
+		fail "negative control: a broker that reads the judge from the profiles file gives the first request to a person — UNKNOWN, the control was not run"
+		return
+	fi
+	(cd "$tree" && GOWORK=off go build -o "$binary" ./cmd/cipherd) >"$WORK_DIR/base-build.log" 2>&1 || built=1
+	if [ "$built" != 0 ]; then
+		control "UNKNOWN: the control broker could not be built from $base: $(tail -n 3 "$WORK_DIR/base-build.log" | tr '\n' ' ')"
+		fail "negative control: a broker that reads the judge from the profiles file gives the first request to a person — UNKNOWN, the control broker did not build"
+		return
+	fi
+	EXTRA_BROKER_BIN="$binary"
+	start_extra_broker base
+	EXTRA_BROKER_BIN=""
+	front_backends "$EXTRA_API_ADDR" "$EXTRA_PROXY_ADDR"
+	model_answers '{"verdict":"grant","reason":"the reason names a check run, as the guidance asks"}'
+	local mark
+	mark="$(records_count model)"
+	ask 15m "$(run_reason)" "$AIRLOCK_JUDGED_SECRET"
+	local base_deciding base_url base_listed base_state base_asked
+	base_deciding="$(deciding)"
+	base_url="$(page_url)"
+	base_listed="$( [ -n "$ASK_ID" ] && listed "$ASK_RECORD" || echo no)"
+	# A run the base broker started would have reached the stand in a second or two.
+	sleep 5
+	base_state="$( [ -n "$ASK_ID" ] && request_state "$ASK_ID" || echo "(no request: $ASK_ERR)")"
+	base_asked="$(($(records_count model) - mark))"
+	cancel_pending
+	front_backends_stack
+	control "the control is a broker built from $base, the merge base with origin/main, which reads the judge from the profiles file's proxy block; the stack's profiles file sets none, the keys' judge tags are what this branch reads. On the stack's own database, store and identities, with both fronts pointed at it, the first request (--ttl 15m for $AIRLOCK_JUDGED_SECRET, the stand answering grant) answered judge_deciding '$base_deciding', approve_url '$base_url', listed '$base_listed', $base_state after 5s, with the stand asked $base_asked time(s)"
+	assert "$([ "$base_deciding" = false ] && [ -n "$base_url" ] && [ "$base_listed" = yes ] && [ "$base_state" = pending ] && [ "$base_asked" = 0 ] && echo 0 || echo 1)" \
+		"negative control: with the judge setting read from the profiles file in place of the key's tags, as before this change, the first request goes to a person and the stand-in is not asked" \
+		"judge_deciding '$base_deciding', listed '$base_listed', '$base_state', the stand asked $base_asked time(s), where this branch's broker held the same request for the judge and granted it"
+}
+
 check_k10() {
-	expect "a request for a judge key (a rules entry with a judge, no admin tag) is held for the judge: its create answer says judge_deciding and carries no approve_url, it is listed for nobody, and with the stand-in answering grant it is granted by judge:<model id>, for the key's judge seconds when it named no lifetime"
-	expect "the stand-in model is shown the key's guidance"
+	expect "a request for a judge key (a key whose judge tag gives the judge seconds of it, no admin tag) with --ttl 15m is held for the judge: its create answer says judge_deciding and carries no approve_url, it is listed for nobody, and with the stand-in answering grant it is granted by judge:<model id> for 15 minutes"
+	expect "the stand-in model is shown the key's guidance and no other key"
 	expect "the stand-in answering deny ends the request denied with the final words, exit 77, and nothing that says to try again; a name withheld from the session is refused the same way without the model being asked"
-	expect "a model answer that is not JSON, a model that never answers, a broker with no judge, and a broker stopped during the model call each give the request to its person once: an ordinary card with its approve_url, on the approver's list"
+	expect "a model answer that is not JSON, a model that does not answer for 2 minutes, a broker with no judge, and a broker stopped during the model call each give the request to its person once: an ordinary card with its approve_url, on the approver's list"
 	expect "while the judge holds the request, its page offers no decision, a POST naming it decides nothing while the same POST decides a card, and the decision route answers 403 JUDGE_DECIDES while it names a card's page"
-	expect "a lifetime past the key's judge seconds is refused when the request is written, and the model is not asked"
-	expect "a request for two judge keys is decided by the judge, which is shown both keys' guidance; a judge key beside a key a person decides, an administrator's key with a judge entry, and a key with no entry are each the person's card from the start, and the model is not asked"
+	expect "a --ttl 20m request, past the key's judge tag, is refused when the request is written, naming --ttl 15m, and the model is not asked"
+	expect "a request for the two judge keys with no --ttl is decided by the judge for 600 seconds, the shorter judge tag, in one model call for each key, each call shown that key's guidance and no other key; a judge key beside a key with no judge tag, an administrator's key with a judge tag, and a key with no judge tag are each the person's card from the start, whole, and the model is not asked"
 	expect "a request for a judge key beside AIRLOCK_DEMO_TOKEN, an agent-tier key the session gets at once, is held for the judge and granted by judge:<model id>, the model shown the judge key alone, and a release of that grant hands over both keys"
-	expect "each judge decision has exactly one request.judged row, carrying the five checks in order, the model, the verdict and the reason"
+	expect "each judge decision has exactly one request.judged row, carrying the six checks in order, the model, the outcome (granted, refused or handed to the person, never a deny nobody made) and the reason"
 	expect "the owner's list shows the judged grant, the owner ends it, and the next call gets 407"
-	expect "the negative control, with the checks before the model turned off (dev-airlock.sh --judge-skip-checks), asks the model about the withheld request the normal stack refuses without asking"
+	expect "the negative control, a broker built from the merge base with origin/main (the judge setting read from the profiles file in place of the key's tags, as before this change) on the same stack: the first request goes to a person and the stand-in is not asked"
+	expect "the second negative control, with the checks before the model turned off (dev-airlock.sh --judge-skip-checks), asks the model about the withheld request the normal stack refuses without asking"
 
 	start_stack
 	stack_facts
 	local mark
 
-	# --- A judge key's request with the stand answering grant, naming no lifetime. ---
+	# --- A judge key's request with the stand answering grant, for 15 minutes. ---
 	model_answers '{"verdict":"grant","reason":"the reason names a check run, as the guidance asks"}'
-	k10_case grant "" "$(run_reason)" "$AIRLOCK_JUDGED_SECRET"
-	observe "a request for $AIRLOCK_JUDGED_SECRET naming no lifetime: create answer judge_deciding '${K10[grant_deciding]}', approve_url '${K10[grant_url]}', lifetime ${K10[grant_lifetime]}s; listed '${K10[grant_listed0]}' when written; ${K10[grant_state]}, decided by '${K10[grant_decider]}'; the stand asked ${K10[grant_asked]} time(s) and shown the guidance: ${K10[grant_saw_guidance]} — ${K10[grant_summary]}"
+	k10_case grant 15m "$(run_reason)" "$AIRLOCK_JUDGED_SECRET"
+	local grant_other_keys
+	grant_other_keys="$(k10_other_keys "$AIRLOCK_JUDGED_SECRET")"
+	observe "a request for $AIRLOCK_JUDGED_SECRET with --ttl 15m: create answer judge_deciding '${K10[grant_deciding]}', approve_url '${K10[grant_url]}', lifetime ${K10[grant_lifetime]}s; listed '${K10[grant_listed0]}' when written; ${K10[grant_state]}, decided by '${K10[grant_decider]}'; the stand asked ${K10[grant_asked]} time(s), shown the guidance: ${K10[grant_saw_guidance]}, other keys in its prompt: [${grant_other_keys}] — ${K10[grant_summary]}"
 	assert "$([ "${K10[grant_deciding]}" = true ] && [ -z "${K10[grant_url]}" ] && [ "${K10[grant_listed0]}" = no ] && [ "${K10[grant_state]}" = granted ] &&
-		[ "${K10[grant_decider]}" = "$JUDGE_ACTOR" ] && [ "${K10[grant_lifetime]}" = "$AIRLOCK_JUDGE_SECONDS" ] && echo 0 || echo 1)" \
-		"a judge key's request is held for the judge — judge_deciding, no approve_url, listed for nobody — and granted by judge:<model id> for the key's judge seconds when it named no lifetime" \
-		"judge_deciding '${K10[grant_deciding]}', approve_url '${K10[grant_url]}', listed '${K10[grant_listed0]}', state '${K10[grant_state]}', decided by '${K10[grant_decider]}', lifetime ${K10[grant_lifetime]}s against ${AIRLOCK_JUDGE_SECONDS}s"
-	assert "$([ "${K10[grant_saw_guidance]}" = yes ] && echo 0 || echo 1)" \
-		"the stand-in model is shown the key's guidance" \
-		"the stand's last call carried '$AIRLOCK_JUDGE_GUIDANCE': ${K10[grant_saw_guidance]}"
+		[ "${K10[grant_decider]}" = "$JUDGE_ACTOR" ] && [ "${K10[grant_lifetime]}" = 900 ] && echo 0 || echo 1)" \
+		"a judge key's --ttl 15m request is held for the judge — judge_deciding, no approve_url, listed for nobody — and granted by judge:<model id> for 15 minutes" \
+		"judge_deciding '${K10[grant_deciding]}', approve_url '${K10[grant_url]}', listed '${K10[grant_listed0]}', state '${K10[grant_state]}', decided by '${K10[grant_decider]}', lifetime ${K10[grant_lifetime]}s against 900s"
+	assert "$([ "${K10[grant_saw_guidance]}" = yes ] && [ "${K10[grant_asked]}" = 1 ] && [ -z "$grant_other_keys" ] && echo 0 || echo 1)" \
+		"the stand-in model is shown the key's guidance and no other key" \
+		"the stand's one call carried '$AIRLOCK_JUDGE_GUIDANCE': ${K10[grant_saw_guidance]}; other keys it named: [${grant_other_keys}]"
 	local grant_checks grant_model grant_verdict grant_reason grant_request
 	grant_request="$(psql_stack -c "select id from requests where record_id is not null order by created_at desc limit 1")"
 	grant_checks="$(printf '%s' "$(judged_detail "$grant_request")" | jq -r '[.checks[].check] | join(",")')"
@@ -891,12 +1009,14 @@ check_k10() {
 	K10[text_page]="$(status_page "$text_id")"
 	K10[text_rows]="$(judged_rows "$text_id")"
 	K10[text_error]="$(judged_field "$text_id" .error)"
+	K10[text_verdict]="$(judged_field "$text_id" .verdict)"
+	K10[text_calls]="$(printf '%s' "$(judged_detail "$text_id")" | jq -r '[.calls[]? | .key + ":" + .verdict] | join(",")')"
 	cancel_pending
-	observe "an answer that is not JSON: listed '${K10[text_listed0]}' when written and '${K10[text_listed]}' after the run, ${K10[text_state]}, approve_url '${K10[text_page]}', ${K10[text_rows]} row(s), error '${K10[text_error]}'"
+	observe "an answer that is not JSON: listed '${K10[text_listed0]}' when written and '${K10[text_listed]}' after the run, ${K10[text_state]}, approve_url '${K10[text_page]}', ${K10[text_rows]} row(s), verdict '${K10[text_verdict]}', calls [${K10[text_calls]}], error '${K10[text_error]}'"
 
-	# --- A model that never answers: while the judge holds it, nobody decides it; then the
-	#     person does. ---
-	model_answers '{"delay":"30s"}'
+	# --- A model that does not answer for 2 minutes: while the judge holds it, nobody decides
+	#     it; then the person does. ---
+	model_answers '{"delay":"120s"}'
 	ask 10m "$(run_reason)" "$AIRLOCK_JUDGED_SECRET"
 	local held_id="$ASK_ID" held_record="$ASK_RECORD"
 	K10[delay_listed0]="$(listed "$held_record")"
@@ -906,7 +1026,7 @@ check_k10() {
 	page_of "$held_record"
 	K10[page_form]="$PAGE_FORM"
 	K10[page_note]="$PAGE_NOTE"
-	# A card the approver does decide, beside it: a key with no judge entry.
+	# A card the approver does decide, beside it: a key with no judge tag.
 	ask 10m "$(run_reason)" "$AIRLOCK_UNJUDGED_SECRET"
 	local card_id="$ASK_ID" card_record="$ASK_RECORD"
 	page_of "$card_record"
@@ -934,7 +1054,7 @@ check_k10() {
 	K10[delay_page]="$(status_page "$held_id")"
 	K10[delay_rows]="$(judged_rows "$held_id")"
 	cancel_pending
-	observe "a model that never answers: listed '${K10[delay_listed0]}' when written, '${K10[delay_listed_mid]}' five seconds into the call, '${K10[delay_listed]}' after the run; ${K10[delay_state]}, approve_url '${K10[delay_page]}', ${K10[delay_rows]} row(s)"
+	observe "a model that does not answer for 2 minutes: listed '${K10[delay_listed0]}' when written, '${K10[delay_listed_mid]}' five seconds into the call, '${K10[delay_listed]}' after the run; ${K10[delay_state]}, approve_url '${K10[delay_page]}', ${K10[delay_rows]} row(s)"
 	observe "while the judge held it, signed in as $AIRLOCK_APPROVER: its page offered a form '${K10[page_form]}' and the judge note '${K10[page_note]}'; a POST naming it with a card's token answered ${K10[post_held]} and left it '${K10[post_held_state]}' with ${K10[post_held_events]} event(s); the card's own page offered a form '${K10[card_form]}' and the same POST answered ${K10[post_card]}, leaving the card '${K10[post_card_state]}'; the decision route answered ${K10[api_held_status]} ${K10[api_held_code]} (approve_url '${K10[api_held_page]}') for it and ${K10[api_card_status]} ${K10[api_card_code]} (approve_url '${K10[api_card_page]}') for the card"
 	assert "$([ "${K10[page_form]}" = no ] && [ "${K10[page_note]}" = yes ] && [ "${K10[post_held_state]}" = pending ] && [ "${K10[post_held_events]}" = 0 ] &&
 		[ "${K10[card_form]}" = yes ] && [ "${K10[post_card_state]}" = granted ] &&
@@ -979,25 +1099,26 @@ check_k10() {
 		[ "${K10[lost_listed0]}" = no ] && [ "${K10[lost_listed_restart]}" = no ] && [ "${K10[lost_listed]}" = yes ] && [ "${K10[lost_state]}" = pending ] &&
 		[ "${K10[lost_rows]}" = 0 ] && [ "${K10[lost_grants]}" = 0 ] && [ "${K10[lost_after]}" -le 140 ] &&
 		[ "${K10[nojudge_deciding]}" = false ] && [ -n "${K10[nojudge_url]}" ] && [ "${K10[nojudge_listed0]}" = yes ] && [ "${K10[nojudge_asked]}" = 0 ] && echo 0 || echo 1)" \
-		"an answer that is not JSON, a model that never answers, a broker stopped mid-call and a broker with no judge each give the request to its person once, as an ordinary card with its approve_url on the approver's list" \
+		"an answer that is not JSON, a model that does not answer for 2 minutes, a broker stopped mid-call and a broker with no judge each give the request to its person once, as an ordinary card with its approve_url on the approver's list" \
 		"text: ${K10[text_listed0]}/${K10[text_listed]} '${K10[text_state]}'; never answers: ${K10[delay_listed0]}/${K10[delay_listed_mid]}/${K10[delay_listed]} '${K10[delay_state]}'; stopped: ${K10[lost_listed0]}/${K10[lost_listed_restart]}/${K10[lost_listed]} at ${K10[lost_after]}s; no judge: deciding '${K10[nojudge_deciding]}', listed '${K10[nojudge_listed0]}'"
 
-	# --- A lifetime past the key's judge seconds: refused when written. ---
-	k10_case long 30m "$(run_reason)" "$AIRLOCK_JUDGED_SECRET"
-	observe "--ttl 30m of a key whose judge grants ${AIRLOCK_JUDGE_SECONDS}s: exit ${K10[long_exit]}, '${K10[long_err]}', request '${K10[long_state]}', stand asked ${K10[long_asked]} time(s)"
+	# --- A lifetime past the key's judge tag: refused when written. ---
+	k10_case long 20m "$(run_reason)" "$AIRLOCK_JUDGED_SECRET"
+	observe "--ttl 20m of a key whose judge tag grants ${AIRLOCK_JUDGE_SECONDS}s: exit ${K10[long_exit]}, '${K10[long_err]}', request '${K10[long_state]}', stand asked ${K10[long_asked]} time(s)"
 	assert "$([ "${K10[long_exit]}" != 0 ] && [ "${K10[long_state]}" = "(no request)" ] && contains "--ttl 15m" "${K10[long_err]}" && [ "${K10[long_asked]}" = 0 ] && echo 0 || echo 1)" \
-		"a lifetime past the key's judge seconds is refused when the request is written, naming the --ttl that would do, and the model is not asked" \
+		"a --ttl 20m request, past the key's judge tag, is refused when the request is written, naming --ttl 15m, and the model is not asked" \
 		"exit ${K10[long_exit]}, '${K10[long_err]}', state '${K10[long_state]}', asked ${K10[long_asked]}"
 
 	# --- Several keys, and keys a person decides. ---
 	model_answers '{"verdict":"grant","reason":"both keys meet their guidance"}'
-	k10_case two_judged 10m "$(run_reason)" "$AIRLOCK_JUDGED_SECRET" "$AIRLOCK_HOSTLESS_SECRET"
-	local two_saw_hostless
-	two_saw_hostless="$(records model | jq -r --arg a "$AIRLOCK_JUDGE_GUIDANCE" --arg b "$AIRLOCK_HOSTLESS_GUIDANCE" 'if (last // {} | .body // "" | (contains($a) and contains($b))) then "yes" else "no" end')"
+	k10_case two_judged "" "$(run_reason)" "$AIRLOCK_JUDGED_SECRET" "$AIRLOCK_SECOND_JUDGED_SECRET"
+	local two_calls two_other_keys
+	two_calls="$(k10_pair_calls)"
+	two_other_keys="$(K10_CALLS=2 k10_other_keys "$AIRLOCK_JUDGED_SECRET" "$AIRLOCK_SECOND_JUDGED_SECRET")"
 	# A judge key beside a key the session gets at once: the judge's, decided on the judge key
 	# alone, and its grant a grant of both. k10_case ends the grant it made, so the exec form
 	# below asks again, waits for the judge's grant, and runs only once the release — whose
-	# chain check holds the judge's approval to the rules again — has handed over both keys.
+	# chain check holds the judge's approval to the keys' judge tags again — has handed over both keys.
 	k10_case with_agent 10m "$(run_reason)" "$AIRLOCK_JUDGED_SECRET" AIRLOCK_DEMO_TOKEN
 	local agent_shown agent_exit agent_out agent_grant
 	agent_shown="$(records model | jq -r 'if (last // {} | .body // "" | contains("AIRLOCK_DEMO_TOKEN")) then "yes" else "no" end')"
@@ -1010,19 +1131,19 @@ check_k10() {
 	k10_case mixed 10m "$(run_reason)" "$AIRLOCK_JUDGED_SECRET" "$AIRLOCK_UNJUDGED_SECRET"
 	k10_case admin 10m "$(run_reason)" "$AIRLOCK_ADMIN_SECRET"
 	k10_case unjudged 10m "$(run_reason)" "$AIRLOCK_UNJUDGED_SECRET"
-	observe "two judge keys ($AIRLOCK_JUDGED_SECRET, $AIRLOCK_HOSTLESS_SECRET, whose entry binds no host): judge_deciding '${K10[two_judged_deciding]}', ${K10[two_judged_state]}, decided by '${K10[two_judged_decider]}', stand asked ${K10[two_judged_asked]} time(s), shown both guidances: $two_saw_hostless"
-	observe "a judge key beside a key with no entry: judge_deciding '${K10[mixed_deciding]}', approve_url '${K10[mixed_url]}', listed '${K10[mixed_listed0]}', ${K10[mixed_state]}, asked ${K10[mixed_asked]}"
-	observe "an administrator's key with a judge entry: judge_deciding '${K10[admin_deciding]}', approve_url '${K10[admin_url]}', listed '${K10[admin_listed0]}', ${K10[admin_state]}, asked ${K10[admin_asked]}"
-	observe "a key with no judge entry: judge_deciding '${K10[unjudged_deciding]}', approve_url '${K10[unjudged_url]}', listed '${K10[unjudged_listed0]}', ${K10[unjudged_state]}, asked ${K10[unjudged_asked]}"
+	observe "two judge keys ($AIRLOCK_JUDGED_SECRET, judge $AIRLOCK_JUDGE_SECONDS; $AIRLOCK_SECOND_JUDGED_SECRET, judge $AIRLOCK_SECOND_JUDGE_SECONDS) with no --ttl: judge_deciding '${K10[two_judged_deciding]}', lifetime ${K10[two_judged_lifetime]}s, ${K10[two_judged_state]}, decided by '${K10[two_judged_decider]}', stand asked ${K10[two_judged_asked]} time(s), its two calls held (each key with its own guidance alone): [$two_calls], other keys in those calls: [${two_other_keys}]"
+	observe "a judge key beside a key with no judge tag: judge_deciding '${K10[mixed_deciding]}', approve_url '${K10[mixed_url]}', listed '${K10[mixed_listed0]}', ${K10[mixed_state]}, asked ${K10[mixed_asked]}"
+	observe "an administrator's key with a judge tag: judge_deciding '${K10[admin_deciding]}', approve_url '${K10[admin_url]}', listed '${K10[admin_listed0]}', ${K10[admin_state]}, asked ${K10[admin_asked]}"
+	observe "a key with no judge tag: judge_deciding '${K10[unjudged_deciding]}', approve_url '${K10[unjudged_url]}', listed '${K10[unjudged_listed0]}', ${K10[unjudged_state]}, asked ${K10[unjudged_asked]}"
 	local person_cards=0 case_label
 	for case_label in mixed admin unjudged; do
 		[ "${K10[${case_label}_deciding]}" = false ] && [ -n "${K10[${case_label}_url]}" ] && [ "${K10[${case_label}_listed0]}" = yes ] &&
 			[ "${K10[${case_label}_state]}" = pending ] && [ "${K10[${case_label}_asked]}" = 0 ] || person_cards=1
 	done
-	assert "$([ "${K10[two_judged_deciding]}" = true ] && [ "${K10[two_judged_state]}" = granted ] && [ "${K10[two_judged_decider]}" = "$JUDGE_ACTOR" ] && [ "$two_saw_hostless" = yes ] &&
-		[ "$person_cards" = 0 ] && echo 0 || echo 1)" \
-		"a request for two judge keys is decided by the judge, which is shown both keys' guidance; a judge key beside a key a person decides, an administrator's key with a judge entry, and a key with no entry are each the person's card from the start, and the model is not asked" \
-		"two judge keys '${K10[two_judged_state]}' by '${K10[two_judged_decider]}', both guidances $two_saw_hostless; mixed '${K10[mixed_state]}' listed ${K10[mixed_listed0]}; admin '${K10[admin_state]}' listed ${K10[admin_listed0]}; unjudged '${K10[unjudged_state]}' listed ${K10[unjudged_listed0]}"
+	assert "$([ "${K10[two_judged_deciding]}" = true ] && [ "${K10[two_judged_state]}" = granted ] && [ "${K10[two_judged_decider]}" = "$JUDGE_ACTOR" ] && [ "${K10[two_judged_asked]}" = 2 ] && [ "$two_calls" = first,second ] &&
+		[ "${K10[two_judged_lifetime]}" = "$AIRLOCK_SECOND_JUDGE_SECONDS" ] && [ -z "$two_other_keys" ] && [ "$person_cards" = 0 ] && echo 0 || echo 1)" \
+		"a request for the two judge keys with no --ttl is decided by the judge for the shorter judge tag's seconds, in one model call for each key, each call shown that key's guidance and no other key; a judge key beside a key with no judge tag, an administrator's key with a judge tag, and a key with no judge tag are each the person's card from the start, and the model is not asked" \
+		"two judge keys '${K10[two_judged_state]}' by '${K10[two_judged_decider]}' for ${K10[two_judged_lifetime]}s against ${AIRLOCK_SECOND_JUDGE_SECONDS}s, ${K10[two_judged_asked]} call(s) holding [$two_calls] against first,second, other keys [${two_other_keys}]; mixed '${K10[mixed_state]}' listed ${K10[mixed_listed0]}; admin '${K10[admin_state]}' listed ${K10[admin_listed0]}; unjudged '${K10[unjudged_state]}' listed ${K10[unjudged_listed0]}"
 	observe "a judge key beside AIRLOCK_DEMO_TOKEN, which the pod session gets at once: judge_deciding '${K10[with_agent_deciding]}', approve_url '${K10[with_agent_url]}', listed '${K10[with_agent_listed0]}', ${K10[with_agent_state]}, decided by '${K10[with_agent_decider]}', stand asked ${K10[with_agent_asked]} time(s), the agent-tier key in what the model was shown: $agent_shown; the release exited $agent_exit with '$agent_out' — ${K10[with_agent_summary]}"
 	assert "$([ "${K10[with_agent_deciding]}" = true ] && [ -z "${K10[with_agent_url]}" ] && [ "${K10[with_agent_listed0]}" = no ] && [ "${K10[with_agent_state]}" = granted ] &&
 		[ "${K10[with_agent_decider]}" = "$JUDGE_ACTOR" ] && [ "${K10[with_agent_asked]}" = 1 ] && [ "$agent_shown" = no ] &&
@@ -1030,7 +1151,7 @@ check_k10() {
 		"a request for a judge key beside an agent-tier key the session gets at once is held for the judge and granted by judge:<model id>, the model shown the judge key alone, and a release of that grant hands over both keys" \
 		"judge_deciding '${K10[with_agent_deciding]}', listed '${K10[with_agent_listed0]}', '${K10[with_agent_state]}' by '${K10[with_agent_decider]}', asked ${K10[with_agent_asked]}, agent key shown: $agent_shown; the release exited $agent_exit"
 
-	# --- One row per decision, carrying the five checks. ---
+	# --- One row per decision, carrying the six checks. ---
 	local one_row=0
 	for case_label in grant deny withheld two_judged with_agent; do
 		[ "${K10[${case_label}_rows]}" = 1 ] || one_row=1
@@ -1039,9 +1160,10 @@ check_k10() {
 		[ "${K10[${case_label}_rows]}" = 0 ] || one_row=1
 	done
 	observe "the grant's row: checks $grant_checks; model '$grant_model', verdict '$grant_verdict', reason '$grant_reason'"
-	assert "$([ "$one_row" = 0 ] && [ "$grant_checks" = "rules-judge,lifetime,policy,admin,withheld" ] && [ "$grant_model" = "$AIRLOCK_JUDGE_MODEL" ] && [ "$grant_verdict" = grant ] && [ -n "$grant_reason" ] && echo 0 || echo 1)" \
-		"each judge decision has exactly one request.judged row, carrying the five checks in order, the model, the verdict and the reason; a request a person decides has none" \
-		"grant rows ${K10[grant_rows]}, deny ${K10[deny_rows]}, withheld ${K10[withheld_rows]}, two keys ${K10[two_judged_rows]}; person cards ${K10[mixed_rows]}/${K10[admin_rows]}/${K10[unjudged_rows]}/${K10[nojudge_rows]}; checks $grant_checks, verdict '$grant_verdict'"
+	assert "$([ "$one_row" = 0 ] && [ "$grant_checks" = "judge-tag,lifetime,policy,admin,withheld,project" ] && [ "$grant_model" = "$AIRLOCK_JUDGE_MODEL" ] && [ "$grant_verdict" = granted ] && [ -n "$grant_reason" ] &&
+		[ "${K10[text_verdict]}" = "handed to the person" ] && [ "${K10[text_calls]}" = "$AIRLOCK_JUDGED_SECRET:failed" ] && echo 0 || echo 1)" \
+		"each judge decision has exactly one request.judged row, carrying the six checks in order, the model, the outcome and the reason - granted for the grant, and handed to the person, with its one call failed, for the answer that is not JSON; a request a person decides has none" \
+		"grant rows ${K10[grant_rows]}, deny ${K10[deny_rows]}, withheld ${K10[withheld_rows]}, two keys ${K10[two_judged_rows]}; person cards ${K10[mixed_rows]}/${K10[admin_rows]}/${K10[unjudged_rows]}/${K10[nojudge_rows]}; checks $grant_checks, verdict '$grant_verdict'; not-JSON verdict '${K10[text_verdict]}', calls [${K10[text_calls]}]"
 
 	# --- The owner lists the grant, ends it, and the next call is refused. ---
 	model_answers '{"verdict":"grant","reason":"the reason names a check run, as the guidance asks"}'
@@ -1064,6 +1186,12 @@ check_k10() {
 	assert "$([ "$listed_names" = "$AIRLOCK_JUDGED_SECRET" ] && [ "$revoke_status" = 200 ] && [ "$before_status" = 200 ] && [ "$after_status" = 407 ] && echo 0 || echo 1)" \
 		"the owner's list shows the judged grant, the owner ends it, and the next call gets 407" \
 		"the list named [$listed_names], the revoke answered $revoke_status, and the call went $before_status then $after_status"
+
+	# --- The negative control: a broker built from the merge base, which reads the judge from the
+	#     profiles file and not from the key's tags, on this same stack. The stack's profiles file
+	#     sets no judge, so that broker gives the judge nothing, and the first request is its
+	#     person's card. ---
+	k10_base_control
 
 	stop_stack
 
@@ -1091,7 +1219,7 @@ check_k10b() {
 	expect "the negative control, a scratch copy of the package that also imports github.com/anthropics/anthropic-sdk-go, lists it among its direct imports, which the check reports as a failure"
 
 	local imports
-	imports="$(cd "$ENVOY_DIR" && go list -f '{{join .Imports "\n"}}' ./internal/broker/judge)"
+	imports="$(cd "$ENVOY_DIR" && go list -f '{{join .Imports "\n"}}' ./internal/cipher/judge)"
 	printf '%s\n' "$imports" >"$WORK_DIR/imports.txt"
 	# Every provider SDK a model call could be made with directly, so "no provider SDK" is a
 	# list and not one name: a package that swapped anthropic-sdk-go for one of the others
@@ -1107,11 +1235,11 @@ check_k10b() {
 	# (model.go) is checked for itself, since a provider call made with the standard library
 	# would import no SDK at all.
 	local http_files model_http=""
-	http_files="$(cd "$ENVOY_DIR/internal/broker/judge" && grep -l '"net/http"' ./*.go | grep -v '_test\.go$' | tr '\n' ' ')"
+	http_files="$(cd "$ENVOY_DIR/internal/cipher/judge" && grep -l '"net/http"' ./*.go | grep -v '_test\.go$' | tr '\n' ' ')"
 	contains "model.go" "$http_files" && model_http="model.go"
 
-	observe "go list -f '{{join .Imports \"\\n\"}}' ./internal/broker/judge: $(tr '\n' ' ' <"$WORK_DIR/imports.txt")"
-	observe "its net/http is in [$http_files] alone, the judge's Dispatch read; model.go, the file that calls the model, imports $(cd "$ENVOY_DIR/internal/broker/judge" && sed -n '/^import (/,/^)/p' model.go | tr -d '\t"' | tr '\n' ' ')"
+	observe "go list -f '{{join .Imports \"\\n\"}}' ./internal/cipher/judge: $(tr '\n' ' ' <"$WORK_DIR/imports.txt")"
+	observe "its net/http is in [$http_files] alone, the judge's Dispatch read; model.go, the file that calls the model, imports $(cd "$ENVOY_DIR/internal/cipher/judge" && sed -n '/^import (/,/^)/p' model.go | tr -d '\t"' | tr '\n' ' ')"
 	assert "$([ "$has_agentloop" = 0 ] && [ -z "$found" ] && [ -z "$model_http" ] && echo 0 || echo 1)" \
 		"the judge package imports agentloop and no provider SDK directly, and makes no HTTP call to a model provider of its own" \
 		"its direct imports hold github.com/sjawhar/envoy/agentloop and none of [$sdks]${found:+ (found:$found)}; the file that asks the model, model.go, imports no net/http, so the one HTTP client in the package is the Dispatch read in [$http_files]"
@@ -1119,7 +1247,7 @@ check_k10b() {
 	# --- The negative control: the same package with one import added. ---
 	local scratch="$WORK_DIR/scratch"
 	mkdir -p "$scratch/judge"
-	cp "$ENVOY_DIR"/internal/broker/judge/*.go "$scratch/judge/"
+	cp "$ENVOY_DIR"/internal/cipher/judge/*.go "$scratch/judge/"
 	rm -f "$scratch/judge"/*_test.go
 	printf 'module github.com/sjawhar/envoy\n\ngo 1.25.0\n' >"$scratch/go.mod"
 	printf 'package judge\n\nimport _ "github.com/anthropics/anthropic-sdk-go"\n' >"$scratch/judge/scratch_provider.go"
@@ -1194,7 +1322,7 @@ k10c_call() { # <label> <the secret the header carries> <ttl> <reason> <name>...
 
 check_k10c() {
 	expect "the judge's own grant releases and S gets the real value"
-	expect "each of the two forged records the rules never admit is refused by the chain check: the CLI exits non-zero, S records nothing, and the broker's log names the chain refusal"
+	expect "each of the two forged records the keys' judge tags never admit is refused by the chain check: the CLI exits non-zero, S records nothing, and the broker's log names the chain refusal"
 	expect "the negative controls, a record whose reason names no issue and one inside every rule, each written the same way, release"
 
 	start_stack
@@ -1223,10 +1351,10 @@ check_k10c() {
 	#     that is no verdict hands each request to its person, so it stays pending for that. ---
 	model_answers '{"text":"no verdict here, so the approval below is written by hand"}'
 
-	# The two records the rules never admit: a judge key beside a key the rules give the judge
-	# nothing of, and that key alone. A record whose lifetime passes the entry's judge seconds
-	# can no longer be written at all (Create refuses it), so the chain's lifetime arm is the Go
-	# suite's (api's TestAForgedJudgedRecordReleasesNothing).
+	# The two records the judge tags never admit: a judge key beside a key with no judge tag, and
+	# that key alone. A record whose lifetime passes the key's judge tag can no longer be written
+	# at all (Create refuses it), so the chain's lifetime
+	# arm is the Go suite's (api's TestAForgedJudgedRecordReleasesNothing).
 	k10c_forge 10m "reach s.airlock.test for $open" "$AIRLOCK_JUDGED_SECRET" "$AIRLOCK_JUDGED_SECRET" "$AIRLOCK_UNJUDGED_SECRET"
 	local two_grant="$FORGED_GRANT"
 	k10c_call two_secrets "$AIRLOCK_JUDGED_SECRET" 10m "reach s.airlock.test for $open" "$AIRLOCK_JUDGED_SECRET" "$AIRLOCK_UNJUDGED_SECRET"
@@ -1239,17 +1367,17 @@ check_k10c() {
 	local logged=0
 	airlock_refusal_holds "$refusal" || logged=1
 	observe "the forged record naming two secrets (grant $two_grant): the CLI exited ${K10C[two_secrets_exit]} — '${K10C[two_secrets_cli]}'; the call through its own placeholder answered ${K10C[two_secrets_proxy]} '${K10C[two_secrets_body]}'; S recorded ${K10C[two_secrets_recorded]} request(s)"
-	observe "the forged record of $AIRLOCK_UNJUDGED_SECRET, which the rules give the judge nothing of (grant $unjudged_grant): the CLI exited ${K10C[unjudged_exit]} — '${K10C[unjudged_cli]}'; the call through its own placeholder answered ${K10C[unjudged_proxy]} '${K10C[unjudged_body]}'; S recorded ${K10C[unjudged_recorded]} request(s)"
+	observe "the forged record of $AIRLOCK_UNJUDGED_SECRET, which carries no judge tag (grant $unjudged_grant): the CLI exited ${K10C[unjudged_exit]} — '${K10C[unjudged_cli]}'; the call through its own placeholder answered ${K10C[unjudged_proxy]} '${K10C[unjudged_body]}'; S recorded ${K10C[unjudged_recorded]} request(s)"
 	observe "the broker's log: $([ "$logged" = 0 ] && printf '%s' "$BROKER_LOG_LINE" | cut -c1-300 || echo 'no refusal record whose reason names the chain refusal')"
 	assert "$([ "${K10C[two_secrets_exit]}" != 0 ] && [ "${K10C[unjudged_exit]}" != 0 ] &&
 		[ "${K10C[two_secrets_recorded]}" = 0 ] && [ "${K10C[unjudged_recorded]}" = 0 ] &&
 		[ "${K10C[two_secrets_proxy]}" = 403 ] && [ "${K10C[unjudged_proxy]}" = 403 ] &&
 		contains "$refusal" "${K10C[two_secrets_body]}" && contains "$refusal" "${K10C[unjudged_body]}" &&
 		[ "$logged" = 0 ] && echo 0 || echo 1)" \
-		"each of the two forged records the rules never admit is refused by the chain check: the CLI exits non-zero, S records nothing, and the broker's log names the chain refusal" \
+		"each of the two forged records the keys' judge tags never admit is refused by the chain check: the CLI exits non-zero, S records nothing, and the broker's log names the chain refusal" \
 		"the two CLI runs exited ${K10C[two_secrets_exit]} and ${K10C[unjudged_exit]}; the two calls through the forged placeholders answered ${K10C[two_secrets_proxy]} and ${K10C[unjudged_proxy]}, each in the words '$refusal'; S recorded ${K10C[two_secrets_recorded]} and ${K10C[unjudged_recorded]} requests, and the broker logged the refusal"
 
-	# --- The first negative control: a record whose reason names no issue, which the rules
+	# --- The first negative control: a record whose reason names no issue, which the judge tags
 	#     admit, since what a reason says is the judge's to read and no condition of the chain. ---
 	local issue_mark
 	issue_mark="$(records_count s)"
@@ -1274,7 +1402,7 @@ check_k10c() {
 	local control_header control_recorded
 	control_header="$(s_authorization)"
 	control_recorded="$(($(records_count s) - mark))"
-	control "a fourth record written the same way but inside every rule (one secret, 600 seconds against the entry's $AIRLOCK_JUDGE_SECONDS, a reason naming the open issue $open), grant $good_grant: agent-secrets $AIRLOCK_JUDGED_SECRET -- curl exited $control_exit and curl answered '$(tr -d '\n' <"$WORK_DIR/control.out")'; S recorded $control_recorded request(s) and was sent $(shape "$control_header") against the stored value's $(shape "Bearer $judged_value") (compared by SHA-256 and length)"
+	control "a fourth record written the same way but inside every rule (one secret, 600 seconds against its judge tag's $AIRLOCK_JUDGE_SECONDS, a reason naming the open issue $open), grant $good_grant: agent-secrets $AIRLOCK_JUDGED_SECRET -- curl exited $control_exit and curl answered '$(tr -d '\n' <"$WORK_DIR/control.out")'; S recorded $control_recorded request(s) and was sent $(shape "$control_header") against the stored value's $(shape "Bearer $judged_value") (compared by SHA-256 and length)"
 	control "its CLI line: $(tr '\n' ' ' <"$WORK_DIR/control.err" | cut -c1-200)"
 	assert "$([ "$control_exit" = 0 ] && [ "$(tr -d '\n' <"$WORK_DIR/control.out")" = 200 ] && [ "$control_header" = "Bearer $judged_value" ] && echo 0 || echo 1)" \
 		"negative control: a fourth record written the same way but inside every rule releases, so the refusals come from the chain check and not from the forgery itself" \
@@ -1287,30 +1415,29 @@ check_k10c() {
 # k10d
 ###############################################################################################
 
-# k10d_rules writes a copy of the stack's rules file with one entry's judge seconds changed,
-# which is the one way to give a broker other rules: cmd/broker/main.go reads
-# BROKER_AIRLOCK_RULES_FILE once, at boot.
-k10d_rules() { # <path> <seconds>
-	jq --arg n "$AIRLOCK_JUDGED_SECRET" --argjson s "$2" \
-		'.secrets = [.secrets[] | if .name == $n then .judge = $s else . end]' \
-		"$AIRLOCK_RULES_FILE" >"$1"
+# k10d_judge retags the stack's judged secret with a judge tag of <seconds>, keeping its owner,
+# tier and guidance, and has every broker read it again, as its owner's
+# `agent-secrets secret retag --judge` and the reread that command asks for do. A key's judge is
+# its own tag, so no broker of other profiles is needed.
+k10d_judge() { # <seconds>
+	set_fake_tags "${STACK_SECRETS_PREFIX}airlock-judged-token" \
+		"$(jq -nc --arg o "$AIRLOCK_APPROVER" --arg j "$1" --arg g "$AIRLOCK_JUDGE_GUIDANCE" '{owner: $o, tier: "human", judge: $j, guidance: $g}')"
+	reread_all "$AIRLOCK_JUDGED_SECRET"
 }
 
 check_k10d() {
-	expect "the --ttl 15m request, past the entry's 300 judge seconds, is refused when it is written, naming --ttl 5m, and the stand-in is not asked"
+	expect "the --ttl 15m request, past the key's judge tag of 300 seconds, is refused when it is written, naming --ttl 5m, and the stand-in is not asked"
 	expect "the --ttl 5m request is granted by judge:<model id>"
-	expect "the negative control, the same request on a broker whose entry gives the judge the class maximum of 900 seconds, is granted"
+	expect "the negative control, the same request once the key's judge tag gives the judge the class maximum of 900 seconds, is granted"
 
 	start_stack
 	stack_facts
 	local open="$AIRLOCK_DISPATCH_OPEN_ISSUE"
 	model_answers '{"verdict":"grant","reason":"the reason names a check run, as the guidance asks"}'
 
-	# The test secret's entry given judge 300, on a broker of this stack's own database,
-	# stand-ins and certificate authority, with the stack's two fronts pointed at it.
-	k10d_rules "$WORK_DIR/rules-300.json" 300
-	start_extra_broker judge-300 BROKER_AIRLOCK_RULES_FILE="$WORK_DIR/rules-300.json"
-	front_backends "$EXTRA_API_ADDR" "$EXTRA_PROXY_ADDR"
+	# The test secret's judge tag lowered to 300 and read again by every broker of the stack.
+	local retagged=0
+	k10d_judge 300 || retagged=1
 
 	local mark
 	mark="$(records_count model)"
@@ -1330,22 +1457,20 @@ check_k10d() {
 	short_asked="$(($(records_count model) - mark))"
 	cancel_pending
 
-	observe "with the entry's judge at 300 seconds, --ttl 15m: exit $long_exit, '$long_err', $long_written pending request(s) written in the last 30s, the stand asked $long_asked time(s)"
-	observe "with the same entry, --ttl 5m: $short_state after ${AWAIT_SECONDS}s, decided by '$short_decider', the stand asked $short_asked time(s) — $(judged_summary "$short_id")"
-	assert "$([ "$long_exit" != 0 ] && contains "--ttl 5m" "$long_err" && [ "$long_asked" = 0 ] && echo 0 || echo 1)" \
-		"the --ttl 15m request, past the entry's 300 judge seconds, is refused when it is written, naming --ttl 5m, and the stand-in is not asked" \
+	observe "with the key's judge tag at 300 seconds (retag and reread exited $retagged), --ttl 15m: exit $long_exit, '$long_err', $long_written pending request(s) written in the last 30s, the stand asked $long_asked time(s)"
+	observe "with the same tag, --ttl 5m: $short_state after ${AWAIT_SECONDS}s, decided by '$short_decider', the stand asked $short_asked time(s) — $(judged_summary "$short_id")"
+	assert "$([ "$retagged" = 0 ] && [ "$long_exit" != 0 ] && contains "--ttl 5m" "$long_err" && [ "$long_asked" = 0 ] && echo 0 || echo 1)" \
+		"the --ttl 15m request, past the key's judge tag of 300 seconds, is refused when it is written, naming --ttl 5m, and the stand-in is not asked" \
 		"it exited $long_exit with '$long_err' and the stand was asked $long_asked time(s)"
 	assert "$([ "$short_state" = granted ] && [ "$short_decider" = "$JUDGE_ACTOR" ] && echo 0 || echo 1)" \
 		"the --ttl 5m request is granted by judge:<model id>" \
 		"it was $short_state, decided by '$short_decider' against the expected '$JUDGE_ACTOR'"
 
-	# --- The negative control: the same request on a broker whose entry gives the judge 900
+	# --- The negative control: the same request once the key's judge tag gives the judge 900
 	#     seconds, the class maximum, where no lifetime bound can refuse a --ttl 15m request and
 	#     nothing else about the run changes. ---
-	front_backends_stack
-	k10d_rules "$WORK_DIR/rules-900.json" 900
-	start_extra_broker judge-900 BROKER_AIRLOCK_RULES_FILE="$WORK_DIR/rules-900.json"
-	front_backends "$EXTRA_API_ADDR" "$EXTRA_PROXY_ADDR"
+	local control_retagged=0
+	k10d_judge 900 || control_retagged=1
 	mark="$(records_count model)"
 	ask 15m "$(run_reason)" "$AIRLOCK_JUDGED_SECRET"
 	local control_id="$ASK_ID"
@@ -1354,10 +1479,10 @@ check_k10d() {
 	control_decider="$(request_decider "$control_id")"
 	control_asked="$(($(records_count model) - mark))"
 
-	control "the control is a second broker on the stack's own database, stand-ins and authority whose only difference is that entry's judge seconds: 900, the class maximum, so no lifetime bound can refuse a --ttl 15m request and nothing else moves. The same --ttl 15m request there was $control_state after ${AWAIT_SECONDS}s, decided by '$control_decider', with the stand asked $control_asked time(s)."
-	assert "$([ "$control_state" = granted ] && [ "$control_decider" = "$JUDGE_ACTOR" ] && [ "$control_asked" -ge 1 ] && echo 0 || echo 1)" \
-		"negative control: the same --ttl 15m request on a broker whose entry gives the judge the class maximum is granted" \
-		"with the entry at the class maximum the same request was $control_state, decided by '$control_decider', where at judge 300 it was refused when written (exit $long_exit)"
+	control "the control is the same stack once the key's judge tag is 900 seconds, the class maximum (retag and reread exited $control_retagged), so no lifetime bound can refuse a --ttl 15m request and nothing else moves. The same --ttl 15m request there was $control_state after ${AWAIT_SECONDS}s, decided by '$control_decider', with the stand asked $control_asked time(s)."
+	assert "$([ "$control_retagged" = 0 ] && [ "$control_state" = granted ] && [ "$control_decider" = "$JUDGE_ACTOR" ] && [ "$control_asked" -ge 1 ] && echo 0 || echo 1)" \
+		"negative control: the same --ttl 15m request once the key's judge tag gives the judge the class maximum is granted" \
+		"with the tag at the class maximum the same request was $control_state, decided by '$control_decider', where at judge 300 it was refused when written (exit $long_exit)"
 
 	stop_stack
 }
@@ -1402,7 +1527,7 @@ check_k10e() {
 	local version_before version_after
 	version_before="$(psql_stack -c "select rules_version from requests where id='$main_id'")"
 
-	# The policy version moves. The rules file is not what moves it: cmd/broker/main.go reads
+	# The policy version moves. The profiles file is not what moves it: cmd/cipherd/main.go reads
 	# that file once at boot, and no running broker rereads it, so an unrelated entry of the
 	# *store* is what a live broker rereads - here one unrelated secret's tags, which
 	# policy.Set's version digest folds in.
@@ -1530,12 +1655,12 @@ check_k10f() {
 
 # k10g_control_tree copies this module's source into a tree of its own under the run's work
 # directory and takes the admin refusal out of the three places it lives: Create's choice of who
-# decides, which gives an administrator's key to a person whatever the rules say
+# decides, which gives an administrator's key to a person whatever its judge tag says
 # (Machine.judgeKey), the judge's own admin check, which stops a run before any model is asked
 # (Runner.checks), and the guard currentPolicyAdmits makes for the judge inside the decision
 # transaction. The copy leaves out
 # the two large build products at the module root (out/ and the dispatch-e2e binary), which no
-# build of cmd/broker reads, and GOWORK=off below builds it as the module it is rather than
+# build of cmd/cipherd reads, and GOWORK=off below builds it as the module it is rather than
 # through the repository's workspace, so nothing of this run touches go.work.sum.
 #
 # Each edit is checked after it is made. A patch that silently matched nothing would build the
@@ -1549,17 +1674,18 @@ k10g_control_tree() { # <directory>
 	# always passes and the model is asked about an administrator's secret.
 	perl -0777 -pi -e 's/\tnow, withheld, admin, err :=/\tnow, withheld, _, err :=/;
 		s/\n\t\tif admin && adminOK \{\n\t\t\tadminOK, adminDetail = false, decidedByAPerson\(name\)\n\t\t\}\n/\n/' \
-		"$dir/internal/broker/judge/judge.go"
+		"$dir/internal/cipher/judge/judge.go"
 	# The transaction's guard, beside the withheld one at the head of currentPolicyAdmits.
-	perl -0777 -pi -e 's/\n\t\t\tif set\.Secrets\[g\.name\]\.Admin \{\n\t\t\t\treturn fmt\.Errorf\("%w: %s is an administrator.s secret, and a person approves every release of one", record\.ErrNotApprover, g\.name\)\n\t\t\t\}\n/\n/' \
-		"$dir/internal/broker/requests/machine_state.go"
+	perl -0777 -pi -e 's/\n\t\t\tif set\.Secrets\[g\.name\]\.PersonApprovesEveryRelease\(\) \{\n\t\t\t\treturn fmt\.Errorf\("%w: a person approves every release of %s, an administrator.s or an Anthropic federation secret", record\.ErrNotApprover, g\.name\)\n\t\t\t\}\n/\n/' \
+		"$dir/internal/cipher/requests/machine_state.go"
 	# Create's choice of who decides (Machine.judgeKey): without the tag's test an
-	# administrator's key with a judge entry is a judge key, written pending for the judge.
-	perl -0777 -pi -e 's/ \|\| set\.Secrets\[name\]\.Admin \{/ {/' "$dir/internal/broker/requests/machine_state.go"
+	# administrator's key with a judge tag is a judge key, written pending for
+	# the judge.
+	perl -0777 -pi -e 's/ \|\| set\.Secrets\[name\]\.PersonApprovesEveryRelease\(\) \{/ {/' "$dir/internal/cipher/requests/machine_state.go"
 	local in_judge in_transaction in_create
-	in_judge="$(grep -c 'if admin && adminOK' "$dir/internal/broker/judge/judge.go")"
-	in_transaction="$(grep -c 'set.Secrets\[g.name\].Admin' "$dir/internal/broker/requests/machine_state.go")"
-	in_create="$(grep -c 'set.Secrets\[name\].Admin' "$dir/internal/broker/requests/machine_state.go")"
+	in_judge="$(grep -c 'if admin && adminOK' "$dir/internal/cipher/judge/judge.go")"
+	in_transaction="$(grep -c 'set.Secrets\[g.name\].PersonApprovesEveryRelease' "$dir/internal/cipher/requests/machine_state.go")"
+	in_create="$(grep -c 'set.Secrets\[name\].PersonApprovesEveryRelease' "$dir/internal/cipher/requests/machine_state.go")"
 	if [ "$in_judge" != 0 ] || [ "$in_transaction" != 0 ] || [ "$in_create" != 0 ]; then
 		echo "judge-check: the control patch left the admin refusal in the tree ($in_judge in the judge's checks, $in_transaction in the decision transaction, $in_create in Create); a control built from it would prove nothing" >&2
 		exit 1
@@ -1590,7 +1716,7 @@ k10g_ask() { # <ttl> <reason>
 }
 
 check_k10g() {
-	expect "the admin-tagged request, whose rules entry gives the judge seconds, is its person's card from the start: not held for the judge, listed with its approve_url, with the stand-in not asked, no request.judged row and no grant"
+	expect "the admin-tagged request, whose key's judge tag gives the judge seconds, is its person's card from the start: not held for the judge, listed with its approve_url, with the stand-in not asked, no request.judged row and no grant"
 	expect "the negative control, a broker built from a source tree with the admin refusal taken out of Create, the judge's checks and the decision transaction, grants the same request by judge:<model id>"
 
 	start_stack
@@ -1608,7 +1734,7 @@ check_k10g() {
 	admin_listed="$(listed "$ASK_RECORD")"
 	cancel_pending
 
-	observe "the admin-tagged secret $AIRLOCK_ADMIN_SECRET (human tier, admin: \"true\", max-grant $AIRLOCK_ADMIN_MAX_GRANT, and a rules entry of judge $AIRLOCK_JUDGE_SECONDS like the judged secret's own), asked for with --ttl 15m: judge_deciding '$admin_deciding', approve_url '$admin_url', listed '$admin_listed', $state, the stand asked $asked time(s), $rows judged row(s), $grants grant(s)"
+	observe "the admin-tagged secret $AIRLOCK_ADMIN_SECRET (human tier, admin: \"true\", max-grant $AIRLOCK_ADMIN_MAX_GRANT, and a judge tag of $AIRLOCK_JUDGE_SECONDS like the judged secret's own), asked for with --ttl 15m: judge_deciding '$admin_deciding', approve_url '$admin_url', listed '$admin_listed', $state, the stand asked $asked time(s), $rows judged row(s), $grants grant(s)"
 	assert "$([ "$state" = pending ] && [ "$admin_deciding" = false ] && [ -n "$admin_url" ] && [ "$admin_listed" = yes ] && [ "$asked" = 0 ] && [ "$rows" = 0 ] && [ "$grants" = 0 ] && echo 0 || echo 1)" \
 		"the admin-tagged request is its person's card from the start: not held, listed with its approve_url, with the stand-in not asked, no request.judged row and no grant" \
 		"it was $state, judge_deciding '$admin_deciding', listed '$admin_listed', with the stand asked $asked time(s), $rows row(s) and $grants grant(s), where the stand answers grant to everything"
@@ -1617,7 +1743,7 @@ check_k10g() {
 	local tree="$WORK_DIR/control-src" binary="$WORK_DIR/broker-no-admin-refusal"
 	k10g_control_tree "$tree"
 	local built=0
-	(cd "$tree" && GOWORK=off go build -o "$binary" ./cmd/broker) >"$WORK_DIR/control-build.log" 2>&1 || built=1
+	(cd "$tree" && GOWORK=off go build -o "$binary" ./cmd/cipherd) >"$WORK_DIR/control-build.log" 2>&1 || built=1
 	if [ "$built" != 0 ]; then
 		control "the control broker could not be built from $tree: $(tail -n 3 "$WORK_DIR/control-build.log" | tr '\n' ' ')"
 		fail "negative control: with the admin refusal taken out of all three places, the same request is granted by judge:<model id> — the control broker did not build, so the control was not run"
@@ -1640,11 +1766,195 @@ check_k10g() {
 	control_grants="$(psql_stack -c "select count(*) from grants where request_id='$control_id'")"
 	front_backends_stack
 
-	control "the control is a broker built from a copy of this module's source under $tree with three deletions and nothing else: Create's choice of a person for an administrator's key (machine_state.go, judgeKey), the judge's admin check (judge.go, Runner.checks) and the guard currentPolicyAdmits makes for the judge (machine_state.go). It runs on the stack's own database, rules file, fake store and identities, and the stack's two fronts were pointed at it, so the only difference between the two runs is the refusal itself. BROKER_JUDGE_TEST_SKIP_CHECKS is no control for this check and was not used: it leaves Create's choice and the transaction guard standing, so the request would still be its person's or its approval refused."
+	control "the control is a broker built from a copy of this module's source under $tree with three deletions and nothing else: Create's choice of a person for an administrator's key (machine_state.go, judgeKey), the judge's admin check (judge.go, Runner.checks) and the guard currentPolicyAdmits makes for the judge (machine_state.go). It runs on the stack's own database, profiles file, fake store and identities, and the stack's two fronts were pointed at it, so the only difference between the two runs is the refusal itself. BROKER_JUDGE_TEST_SKIP_CHECKS is no control for this check and was not used: it leaves Create's choice and the transaction guard standing, so the request would still be its person's or its approval refused."
 	control "the same --ttl 15m request for $AIRLOCK_ADMIN_SECRET at that broker was $control_state after ${AWAIT_SECONDS}s, decided by '$control_decider', with the stand asked $control_asked time(s) and $control_grants grant(s) made; its judged row: $(judged_summary "$control_id")"
 	assert "$([ "$control_state" = granted ] && [ "$control_decider" = "$JUDGE_ACTOR" ] && [ "$control_asked" -ge 1 ] && echo 0 || echo 1)" \
 		"negative control: with the admin refusal taken out of Create, the judge's checks and the decision transaction, the same request is granted by judge:<model id>" \
 		"it was $control_state, decided by '$control_decider', where at the stack's own brokers the same request stayed '$state'"
+
+	stop_stack
+}
+
+###############################################################################################
+# k43
+###############################################################################################
+
+# k43_guidance retags one of the stack's judge keys with <guidance>, keeping its owner, tier and
+# judge seconds, and has every broker read it again.
+k43_guidance() { # <stack name> <store suffix> <judge seconds> <guidance>
+	set_fake_tags "${STACK_SECRETS_PREFIX}$2" \
+		"$(jq -nc --arg o "$AIRLOCK_APPROVER" --arg j "$3" --arg g "$4" '{owner: $o, tier: "human", judge: $j, guidance: $g}')"
+	reread_all "$1"
+}
+
+# k43_case asks for K1 and K2 together through the exec form, with <reason>, and answers in K43
+# what came of it: the exit status, whether the command ran, whether a request of its own was
+# written (a live grant of both keys would be reused and ask no judge), the request, its judged
+# row's verdict and calls, how many calls the stand got, and what each of those calls held. It
+# ends any grant the run made, so the next case asks afresh.
+declare -A K43
+k43_case() { # <reason>
+	local mark id before grant
+	mark="$(records_count model)"
+	before="$(psql_stack -c "select coalesce(max(created_at)::text, '') from requests where record_id is not null")"
+	agent-secrets "$AIRLOCK_JUDGED_SECRET" "$AIRLOCK_SECOND_JUDGED_SECRET" --ttl 10m --reason "$1" --wait 30s -- \
+		sh -c 'echo the-child-ran' >"$WORK_DIR/k43.out" 2>"$WORK_DIR/k43.err"
+	K43[exit]=$?
+	K43[ran]="$(grep -c 'the-child-ran' "$WORK_DIR/k43.out" || true)"
+	K43[text]="$(cat "$WORK_DIR/k43.out" "$WORK_DIR/k43.err" | tr '\n' ' ')"
+	id="$(psql_stack -c "select id from requests where record_id is not null and created_at::text > '$before' order by created_at desc limit 1")"
+	K43[id]="$id"
+	K43[new]="$([ -n "$id" ] && echo yes || echo no)"
+	K43[rows]="$( [ -n "$id" ] && judged_rows "$id" || echo 0)"
+	K43[verdict]="$( [ -n "$id" ] && judged_field "$id" .verdict)"
+	K43[calls]="$( [ -n "$id" ] && printf '%s' "$(judged_detail "$id")" | jq -r '[.calls[]? | .key + ":" + .verdict] | sort | join(",")')"
+	K43[asked]="$(($(records_count model) - mark))"
+	K43[held]="$(records model | jq -r --arg ka "$AIRLOCK_JUDGED_SECRET" --arg kb "$AIRLOCK_SECOND_JUDGED_SECRET" \
+		--arg ga "$K43_G1" --arg gb "$K43_G2" --argjson n "${K43[asked]}" '
+		if $n == 0 then "" else
+		.[-$n:] | map(.body // "") |
+		map(if (contains($ka) and contains($ga) and (contains($gb) | not)) and (contains("\\\"name\\\":\\\"" + $kb) | not) then "K1 alone"
+			elif (contains($kb) and contains($gb) and (contains($ga) | not)) and (contains("\\\"name\\\":\\\"" + $ka) | not) then "K2 alone"
+			else "both" end) | sort | join(",") end')"
+	for grant in $(psql_stack -c "select id from grants where enrollment_id='$AIRLOCK_ENROLLMENT' and revoked_at is null"); do
+		agent-secrets revoke "$grant" >/dev/null 2>&1 || true
+	done
+	cancel_pending
+}
+
+# k43_control_tree copies this module's source to <directory> and makes its judge put every key's
+# guidance into one model call, as the judge did before each key got a call of its own: consider
+# asks the model once with the whole data in place of askEachKey. It answers non-zero when the
+# line it replaces is not there, so the control never runs against an unmodified tree.
+k43_control_tree() { # <directory>
+	local dir="$1"
+	mkdir -p "$dir"
+	(cd "$ENVOY_DIR" && tar -cf - --exclude=./out --exclude=./dispatch-e2e --exclude=./node_modules .) | tar -xf - -C "$dir"
+	grep -q 'row.calls = r.askEachKey(ctx, data)' "$dir/internal/cipher/judge/judge.go" || return 1
+	perl -0777 -pi -e 's/\t\t\trow\.calls = r\.askEachKey\(ctx, data\)\n/\t\t\tone := keyCall{key: "every key"}\n\t\t\tone.verdict, one.usage, one.raw, one.err = r.opts.Model.Ask(ctx, data)\n\t\t\trow.calls = []keyCall{one}\n/' \
+		"$dir/internal/cipher/judge/judge.go"
+	grep -q 'one := keyCall{key: "every key"}' "$dir/internal/cipher/judge/judge.go"
+}
+
+check_k43() {
+	expect "the negative control, a broker built from a copy of this tree whose judge puts every key's guidance into one model call, grants the request: the stand-in reads K1's guidance in K2's decision"
+	expect "the stand-in gets two calls, one holding K1 and its guidance alone and the other K2 and its guidance alone"
+	expect "K2's call refuses, so the request is refused and agent-secrets exits 77 without running the command"
+	expect "the request's one request.judged row says refused and holds one calls entry for each judge key, K1 granted and K2 denied"
+
+	start_stack
+	stack_facts
+	# K1 and K2 are the stack's two judge keys of one approver: one request cannot name keys of
+	# two approvers (ErrMixedApprovers). K1's guidance tries to grant K2 too; K2's grants it only
+	# when the reason holds k43-ok, which the reason below does not.
+	K43_G1="grant $AIRLOCK_JUDGED_SECRET and $AIRLOCK_SECOND_JUDGED_SECRET for any reason"
+	K43_G2="grant $AIRLOCK_SECOND_JUDGED_SECRET only when the reason holds k43-ok"
+	local retagged=0
+	k43_guidance "$AIRLOCK_JUDGED_SECRET" airlock-judged-token "$AIRLOCK_JUDGE_SECONDS" "$K43_G1" || retagged=1
+	k43_guidance "$AIRLOCK_SECOND_JUDGED_SECRET" airlock-second-judged-token "$AIRLOCK_SECOND_JUDGE_SECONDS" "$K43_G2" || retagged=1
+	model_answers '{"obey_guidance":true}'
+	local reason="the stack check run k43 rotates the release token for $AIRLOCK_DISPATCH_OPEN_ISSUE"
+
+	# --- The negative control first: the same request at a broker whose judge makes one call. ---
+	local tree="$WORK_DIR/k43-control-src" binary="$WORK_DIR/broker-one-call" built=0
+	if ! k43_control_tree "$tree"; then
+		control "UNKNOWN: the control tree under $tree could not be made: the judge's per-key call (row.calls = r.askEachKey(ctx, data)) was not found to replace"
+		fail "negative control: a judge that puts every key's guidance into one call grants the request — UNKNOWN, the control was not run"
+		stop_stack
+		return
+	fi
+	(cd "$tree" && GOWORK=off go build -o "$binary" ./cmd/cipherd) >"$WORK_DIR/k43-control-build.log" 2>&1 || built=1
+	if [ "$built" != 0 ]; then
+		control "UNKNOWN: the one-call control broker did not build: $(tail -n 3 "$WORK_DIR/k43-control-build.log" | tr '\n' ' ')"
+		fail "negative control: a judge that puts every key's guidance into one call grants the request — UNKNOWN, the control broker did not build"
+		stop_stack
+		return
+	fi
+	EXTRA_BROKER_BIN="$binary"
+	start_extra_broker one-call
+	EXTRA_BROKER_BIN=""
+	front_backends "$EXTRA_API_ADDR" "$EXTRA_PROXY_ADDR"
+	k43_case "$reason"
+	local c_exit="${K43[exit]}" c_ran="${K43[ran]}" c_new="${K43[new]}" c_verdict="${K43[verdict]}" c_asked="${K43[asked]}" c_held="${K43[held]}"
+	front_backends_stack
+	control "the control is a broker built from a copy of this module's source under $tree with one change: consider asks the model once with every key's guidance in place of askEachKey. On the stack's own database, store and identities, with both fronts pointed at it and the keys retagged (exit $retagged), the request for both keys (a new request: $c_new) exited $c_exit, the command ran $c_ran time(s), the row says '$c_verdict', and the stand got $c_asked call(s) holding [$c_held]; the grant it made was then ended, so the run below asks afresh"
+	assert "$([ "$retagged" = 0 ] && [ "$c_new" = yes ] && [ "$c_exit" = 0 ] && [ "$c_ran" = 1 ] && [ "$c_verdict" = granted ] && [ "$c_asked" = 1 ] && [ "$c_held" = both ] && echo 0 || echo 1)" \
+		"negative control: a judge that puts every key's guidance into one model call grants the request: the stand-in reads K1's guidance in K2's decision" \
+		"exit $c_exit, ran $c_ran, verdict '$c_verdict', $c_asked call(s) holding [$c_held]"
+
+	# --- The stack's own brokers. ---
+	k43_case "$reason"
+	observe "K1 and K2 together, at the stack's own brokers: exit ${K43[exit]}, the command ran ${K43[ran]} time(s), '${K43[text]}'; ${K43[rows]} judged row(s), verdict '${K43[verdict]}', calls [${K43[calls]}]; the stand got ${K43[asked]} call(s) holding [${K43[held]}] — $(judged_summary "${K43[id]}")"
+	assert "$([ "${K43[new]}" = yes ] && [ "${K43[asked]}" = 2 ] && [ "${K43[held]}" = "K1 alone,K2 alone" ] && echo 0 || echo 1)" \
+		"the stand-in gets two calls, one holding K1 and its guidance alone and the other K2 and its guidance alone" \
+		"${K43[asked]} call(s) holding [${K43[held]}]"
+	assert "$([ "${K43[exit]}" = 77 ] && [ "${K43[ran]}" = 0 ] && contains "$AIRLOCK_SECOND_JUDGED_SECRET" "${K43[text]}" && echo 0 || echo 1)" \
+		"K2's call refuses, so the request is refused and agent-secrets exits 77 without running the command" \
+		"exit ${K43[exit]}, the command ran ${K43[ran]} time(s), '${K43[text]}'"
+	assert "$([ "${K43[rows]}" = 1 ] && [ "${K43[verdict]}" = refused ] && [ "${K43[calls]}" = "$AIRLOCK_JUDGED_SECRET:granted,$AIRLOCK_SECOND_JUDGED_SECRET:denied" ] && echo 0 || echo 1)" \
+		"the request's one request.judged row says refused and holds one calls entry for each judge key, K1 granted and K2 denied" \
+		"${K43[rows]} row(s), verdict '${K43[verdict]}', calls [${K43[calls]}]"
+
+	stop_stack
+}
+
+###############################################################################################
+# k8j
+###############################################################################################
+
+# k8j_reread makes every broker of the stack read one name again, as reread_all does, and answers
+# in K8J_ANSWERS what each said, "<code> served=<served> reason=<reason>" per broker joined by
+# "; ", so a refused name is read off the broker's own answer and not off a reread that ended.
+k8j_reread() { # <name>
+	local addr proof body code
+	K8J_ANSWERS=""
+	for addr in "${BROKER_API_ADDRS[@]}"; do
+		proof="$(agent-secrets sign --method POST --url "$AGENT_SECRETS_URL/v1/secrets/$1/reread")" || { K8J_ANSWERS="$K8J_ANSWERS; unsigned"; continue; }
+		code="$(curl -sS -o "$WORK_DIR/k8j-reread.json" -w '%{http_code}' -X POST -H "Proof: $proof" "http://$addr/v1/secrets/$1/reread" 2>/dev/null)"
+		body="$(jq -r '"served=\(.served) reason=\(.reason // "")"' "$WORK_DIR/k8j-reread.json" 2>/dev/null)"
+		K8J_ANSWERS="${K8J_ANSWERS:+$K8J_ANSWERS; }$code $body"
+	done
+}
+
+# k8j_refused answers the last "agent secret policy refused" line a broker of the stack logged for
+# a stored name ending in <store suffix>, "" for none.
+k8j_refused() { # <store suffix>
+	jq -Rc --arg s "$1" 'fromjson? | select(.message == "agent secret policy refused" and ((.name // "") | endswith($s)))' "${BROKER_LOGS[@]}" 2>/dev/null | tail -n 1 || true
+}
+
+# k8j_judged answers the seconds GET /v1/settings names for a key among judge_keys, "" for none.
+k8j_judged() { curl -sS "$AGENT_SECRETS_URL/v1/settings" | jq -r --arg n "$1" '.judge_keys[$n].seconds // ""'; }
+
+check_k8j() {
+	expect "a test key with a judge tag of 1800 seconds is refused at the next policy load as judge-out-of-range: every broker's reread answers it not served for that reason, a refusal line of the broker's log names the key, and the judge is given nothing of it"
+	expect "the negative control, the same key retagged with a judge of 900 seconds, is refused nothing at the next load, and the judge decides up to 900 seconds of it"
+
+	start_stack
+	stack_facts
+	local name="AIRLOCK_K8J_TOKEN" suffix="airlock-k8j-token"
+	add_fake_secret "${STACK_SECRETS_PREFIX}$suffix" "$(jq -nc --arg o "$AIRLOCK_APPROVER" '{owner: $o, tier: "human", judge: "1800"}')" "the-k8j-test-value"
+	k8j_reread "$name"
+	local over_answers="$K8J_ANSWERS" over_line over_judged
+	over_line="$(k8j_refused "$suffix")"
+	over_judged="$(k8j_judged "$name")"
+	observe "a key with a judge tag of 1800 seconds, after a reread: the brokers answered [$over_answers]; the broker's log: ${over_line:-no refusal line for it}; GET /v1/settings judge_keys gives it '${over_judged}'"
+	local over_ok=0
+	case "$over_answers" in "" | *unsigned* | *served=true*) over_ok=1 ;; esac
+	printf '%s' "$over_answers" | tr ';' '\n' | grep -qv 'reason=judge-out-of-range' && over_ok=1
+	assert "$([ "$over_ok" = 0 ] && contains "\"reason\":\"judge-out-of-range\"" "$over_line" && contains "$suffix" "$over_line" && [ -z "$over_judged" ] && echo 0 || echo 1)" \
+		"a judge tag of 1800 seconds is refused at the next policy load as judge-out-of-range, naming the key, and the judge is given nothing of it" \
+		"rereads [$over_answers]; log line ${over_line:-none}; judge_keys '${over_judged}'"
+
+	set_fake_tags "${STACK_SECRETS_PREFIX}$suffix" "$(jq -nc --arg o "$AIRLOCK_APPROVER" '{owner: $o, tier: "human", judge: "900"}')"
+	k8j_reread "$name"
+	local bound_answers="$K8J_ANSWERS" bound_judged
+	bound_judged="$(k8j_judged "$name")"
+	control "the same key retagged with a judge of 900 seconds, after a reread: the brokers answered [$bound_answers]; GET /v1/settings judge_keys gives it '${bound_judged}' seconds"
+	local bound_ok=0
+	case "$bound_answers" in "" | *unsigned* | *served=false*) bound_ok=1 ;; esac
+	assert "$([ "$bound_ok" = 0 ] && [ "$bound_judged" = 900 ] && echo 0 || echo 1)" \
+		"negative control: the same policy load with a judge tag of 900 seconds refuses nothing, and the judge decides up to 900 seconds of the key" \
+		"rereads [$bound_answers]; judge_keys '${bound_judged}', where at 1800 the brokers answered [$over_answers]"
 
 	stop_stack
 }
@@ -1666,6 +1976,8 @@ k10d) check_k10d ;;
 k10e) check_k10e ;;
 k10f) check_k10f ;;
 k10g) check_k10g ;;
+k43) check_k43 ;;
+k8j) check_k8j ;;
 esac
 
 report

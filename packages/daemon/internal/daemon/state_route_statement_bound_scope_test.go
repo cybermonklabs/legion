@@ -37,6 +37,7 @@ func (s *settingState) State(ctx context.Context, tx pgx.Tx) (api.State, []super
 // on it next, a migration's long DDL among them (internal/store's apply), which is why the route
 // sets it for its transaction and the pool carries the idle bound instead.
 func TestTheStateRoutesStatementBoundEndsWithItsTransaction(t *testing.T) {
+	t.Parallel()
 	const bound = 2 * time.Second
 	watcher := isolatedOutboxPool(t)
 	application := "legion-daemon-" + strings.ToLower(randomSuffix(t))
@@ -48,7 +49,7 @@ func TestTheStateRoutesStatementBoundEndsWithItsTransaction(t *testing.T) {
 
 	state := &settingState{}
 	server := httptest.NewServer(api.NewServer("127.0.0.1", 0, api.Options{
-		State: state, StateTransactions: st, StateReadBound: bound, Log: quietLogger(),
+		State: state, StateTransactions: st.Pool(), StateReadBound: bound, Log: quietLogger(),
 	}).Handler)
 	t.Cleanup(server.Close)
 	response, err := (&http.Client{Timeout: 20 * time.Second}).Get(server.URL + "/legion/v1/state")

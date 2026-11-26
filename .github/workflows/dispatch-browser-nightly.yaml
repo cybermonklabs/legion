@@ -1,13 +1,14 @@
 name: Dispatch browser nightly
 
 # Two jobs on a schedule: the full browser lane, and the re-record of the stubbed layer's
-# recordings. ci.yaml's dispatch-browser job runs the pull-request lane on a pull request that
-# carries no `full-ci` label, the rows a pull request is held to, and the full lane - all eight
-# parallel projects, the three `-alone` ones, the two stub ones and the two-process job - on
-# every other run, so the merge group runs it on the tree a change lands as. This run covers a
-# day with no such event, and is what runs the full lane on main's tip
-# (.github/workflows/dispatch-browser.yaml, which holds every step). The re-record job's own
-# head, below, says what it guards and why it is here rather than in a file of its own.
+# recordings. ci.yaml calls the same workflow twice: its dispatch-browser-pr job runs the
+# pull-request lane on a pull request, the rows a pull request is held to, and its
+# dispatch-browser job runs the full lane - all eight parallel projects, the three `-alone` ones,
+# the two stub ones and the two-process job - in the merge queue, so the merge group runs it on
+# the tree a change lands as. This run covers a day with no such event, and is what runs the full
+# lane on main's tip (.github/workflows/dispatch-browser.yaml, which holds every step). The
+# re-record job's own head, below, says what it guards and why it is here rather than in a file
+# of its own.
 #
 # What a red run does, and what it does not. The run fails, and its merged report, every leg's
 # blob and the failed legs' traces are artifacts of that run; GitHub's "Events that trigger
@@ -20,9 +21,9 @@ name: Dispatch browser nightly
 #
 # GitHub starts a scheduled run from the default branch alone, so the nightly is main's copy of
 # this file and of the workflow it calls, never a pull request's (e2e.yaml's head comment states
-# the same of its own nightly). A change to either is proven before main by ci.yaml's
-# dispatch-browser job: the pull-request lane on the pull request that makes it, and the full
-# lane in the merge group that lands it. It runs here only once it is on main.
+# the same of its own nightly). A change to either is proven before main by ci.yaml's two
+# callers of it: the pull-request lane on the pull request that makes it, and the full lane in the
+# merge group that lands it. It runs here only once it is on main.
 
 on:
   schedule:
@@ -62,13 +63,19 @@ jobs:
   # `.github/scripts/dispatch-browser-run-reads.sh jobs` (and its "Reading three" step reads that
   # same file). No `checks: write`, which the ci-ok report would need: this call passes no
   # `ci-ok-changes`, so that step does not run and this workflow posts no check.
-  full:
+  #
+  # The job carries the id of ci.yaml's full-lane caller and passes it as `job`, so its jobs are
+  # named `dispatch-browser / <job>` and its artifacts carry the names that caller's do:
+  # packages/dispatch/e2e/tools/shard-weights.ts reads the merged report of both, by the artifact
+  # name `dispatch-browser-report-1`.
+  dispatch-browser:
     permissions:
       contents: read
       actions: read
     uses: ./.github/workflows/dispatch-browser.yaml
     with:
       lane: full
+      job: dispatch-browser
   # The guard on the stubbed layer's recordings (dispatch://INFRA-1407's R3). A recording is a
   # snapshot of a server that keeps moving: this re-records every stubbed row against the real
   # harness and fails when a route no longer answers as its recording holds.
@@ -79,7 +86,7 @@ jobs:
   # (dispatch://INFRA-1406), the contract test holds every committed recording's body to that
   # shape on every pull request (packages/dispatch/e2e/__tests__/stub-recordings.test.ts), this
   # watches the status of each route, and the rows that stayed on the real stack hold the
-  # server's behaviour. `statusDrift` in packages/dispatch/e2e/stub/recording.ts is the whole of
+  # server's behaviour. `packages/dispatch/e2e/stub/recording.ts#statusDrift` is the whole of
   # the judgement and says why a comparison of values would be red every night on nothing.
   #
   # It is a job of this file rather than a workflow of its own because GitHub starts a schedule
@@ -101,9 +108,15 @@ jobs:
   # and a job's is the sum of its steps' budgets plus the measured maximum of every step with
   # none. The recording step runs every stubbed row once against one harness stack, measured at
   # 7 m 18 s for 132 rows in this issue's pod, so 438 x 1.15 = 504 s -> 9 min, doubled to 18
-  # for a runner slower than that pod and for the rows this layer will hold. The Chromium
-  # install keeps the 4 minutes the multiprocess job's own gives it. 18 + 4 = 22, and 200 s of
-  # unbudgeted steps round it to 26.
+  # for a runner slower than that pod and for the rows this layer will hold. The layout layer's
+  # 42 rows (e2e/layout-*.stub.e2e.ts) fit in it: in dispatch://INFRA-5200's pod the step took
+  # 3.3 min without them and 7.3 min with them (43 rows then; one control row of under a second
+  # was folded into another since), 240 s, and a layout reading costs 1.8 times on a shard what
+  # it costs in that pod (2.9 s, run 45301444362, against 1.6 s), so 432 s on the runner. With the
+  # other rows' 251 s there (nightly runs 45303170467 and 45159394267), the step's maximum is
+  # 683 s, and 683 x 1.15 = 785 s -> 14 min, under the 18. The Chromium install keeps the 4
+  # minutes the multiprocess job's own gives it. 18 + 4 = 22, and 200 s of unbudgeted steps
+  # round it to 26.
   re-record:
     runs-on: ubuntu-24.04
     timeout-minutes: 26
@@ -120,9 +133,12 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # Restored only: the harness builds the Dispatch server, which this job needs and no job
       # of this family saves a cache for.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

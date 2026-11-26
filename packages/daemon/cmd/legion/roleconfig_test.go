@@ -18,6 +18,7 @@ import (
 // role_config_files names that a pane of the role could not read, naming the role and the file, as
 // boot does before any pane starts; a file that is there passes.
 func TestConfigCheckRefusesARoleOverlayThePaneCannotRead(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	dir := t.TempDir()
 	present, missing := filepath.Join(dir, "fallback.yml"), filepath.Join(dir, "missing.yml")
@@ -46,6 +47,7 @@ func TestConfigCheckRefusesARoleOverlayThePaneCannotRead(t *testing.T) {
 // operator's pod block holds, since no pod could read it, and passes one a mount holds; whether the
 // ConfigMap holds the key is the image probe's to read.
 func TestConfigCheckRefusesARoleOverlayNoPodMountHolds(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	const pod = "    pod:\n" +
 		"      volumes:\n" +
@@ -76,6 +78,7 @@ func TestConfigCheckRefusesARoleOverlayNoPodMountHolds(t *testing.T) {
 // printed, then the refusal line the daemon reads, and the exit is 1; a role that only timed out
 // passes with the timeout printed.
 func TestProbeImageRefusesARoleOverlayAfterATimeout(t *testing.T) {
+	t.Parallel()
 	timedOut := errors.New("omp config get retry.modelFallback --json under PI_CONFIG_FILES /a.yml: timed out after 1m0s")
 	for _, tc := range []struct {
 		name, why string
@@ -85,9 +88,12 @@ func TestProbeImageRefusesARoleOverlayAfterATimeout(t *testing.T) {
 		{"the timeout alone", "", 0},
 	} {
 		var stderr bytes.Buffer
-		code := checkRoleOverlays([]roleOverlays{{role: "merger", files: []string{"/a.yml", "/b.yml"}}}, func([]string, []string) (string, error) { return tc.why, timedOut }, &stderr)
+		code, noVerdict := checkRoleOverlays(context.Background(), []roleOverlays{{role: "merger", files: []string{"/a.yml", "/b.yml"}}}, func([]string, []string) (string, error) { return tc.why, timedOut }, &stderr)
 		if code != tc.code || !strings.Contains(stderr.String(), "timed out after 1m0s") {
 			t.Errorf("%s: exit %d, stderr %q; want %d and the timeout", tc.name, code, stderr.String(), tc.code)
+		}
+		if len(noVerdict) != 0 {
+			t.Errorf("%s: steps with no verdict %q under a live context, want none", tc.name, noVerdict)
 		}
 		if refused := strings.Contains(stderr.String(), bootprobe.RoleOverlaysRefusedLine("merger", tc.why)); refused != (tc.why != "") {
 			t.Errorf("%s: stderr %q, refusal line printed %t", tc.name, stderr.String(), refused)
@@ -103,6 +109,7 @@ func TestProbeImageRefusesARoleOverlayAfterATimeout(t *testing.T) {
 // read on its own: the role's own file stands in both arms' values and Oh My Pi answers for it
 // once.
 func TestTheRoleConfigFilesFlagTakesARoleOncePerArmAndReadsEach(t *testing.T) {
+	t.Parallel()
 	own := []string{"/etc/legion-operator/tester.yml"}
 	alpha, beta := append(slices.Clone(own), "/etc/legion-alpha/alpha.yml"), append(slices.Clone(own), "/etc/legion-beta/beta.yml")
 	var flag roleConfigFilesFlag
@@ -121,13 +128,16 @@ func TestTheRoleConfigFilesFlagTakesARoleOncePerArmAndReadsEach(t *testing.T) {
 
 	var read, alone [][]string
 	var stderr bytes.Buffer
-	code := checkRoleOverlays(flag, func(value, own []string) (string, error) {
+	code, noVerdict := checkRoleOverlays(context.Background(), flag, func(value, own []string) (string, error) {
 		read = append(read, value)
 		alone = append(alone, own)
 		return "", nil
 	}, &stderr)
 	if code != 0 || stderr.Len() != 0 {
 		t.Fatalf("checkRoleOverlays = %d, stderr %q; want 0 and nothing", code, stderr.String())
+	}
+	if len(noVerdict) != 0 {
+		t.Errorf("checkRoleOverlays steps with no verdict = %q under a live context, want none", noVerdict)
 	}
 	if want := [][]string{alpha, beta}; !reflect.DeepEqual(read, want) {
 		t.Errorf("the probe read %q, want each arm on its own and the merger's repeat of the first read once: %q", read, want)

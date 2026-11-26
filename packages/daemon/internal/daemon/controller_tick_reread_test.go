@@ -35,6 +35,7 @@ import (
 // This fake serves none of them, so every one of those reads answers not-found — an issue
 // Dispatch no longer serves is no error, and the tick is applied all the same.
 func TestThePeriodicTurnReReadsOnlyWhatSomethingWaitsOn(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	client := &tickDispatch{}
 	w := tickRuntime(t, pool, client)
@@ -63,6 +64,7 @@ func TestThePeriodicTurnReReadsOnlyWhatSomethingWaitsOn(t *testing.T) {
 // Nothing waiting is almost every turn, and it reads nothing from Dispatch at all: the mirror
 // alone answers, and the tick applied is the tick as it always was.
 func TestThePeriodicTurnWithNothingWaitingReadsNothingFromDispatch(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	client := &tickDispatch{}
 	w := tickRuntime(t, pool, client)
@@ -85,6 +87,7 @@ func TestThePeriodicTurnWithNothingWaitingReadsNothingFromDispatch(t *testing.T)
 // blocker, the mirror handler writes what Dispatch answered ahead of the handlers that judge in
 // the same transaction, and the root is admitted on this very tick.
 func TestThePeriodicTurnAdmitsARootWhoseBlockerClosedWithNoEvent(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	client := &tickDispatch{issues: map[string]dispatch.Issue{
 		"CAPTURE-B1": {Key: "CAPTURE-B1", Project: "CAPTURE", Status: "done", LastSeq: 7},
@@ -112,6 +115,7 @@ func TestThePeriodicTurnAdmitsARootWhoseBlockerClosedWithNoEvent(t *testing.T) {
 // only wake a tree waiting on a refused root claim gets, so the turn logs the failure and applies
 // the tick with what it has — here nothing, which leaves the blocked root exactly where it was.
 func TestThePeriodicTurnWakesTheControllerWhenTheDispatchReadFails(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	registerProjectController(t, pool, "CAPTURE")
 	client := &tickDispatch{err: errors.New("dispatch is unreachable")}
@@ -134,6 +138,7 @@ func TestThePeriodicTurnWakesTheControllerWhenTheDispatchReadFails(t *testing.T)
 // one at a time, and above it the project is listed once instead — one request rather than the
 // twenty-six single reads the waiting set would otherwise ask for.
 func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T) {
+	t.Parallel()
 	t.Run("at the bound, one read per key", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{}
@@ -173,6 +178,7 @@ func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T)
 // The turn's re-read carries the claim Dispatch shows on each issue it reads, by a single read
 // and by the listing alike, and the mirror writes it.
 func TestThePeriodicTurnsReReadMirrorsTheClaim(t *testing.T) {
+	t.Parallel()
 	t.Run("a single read", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{issues: map[string]dispatch.Issue{
@@ -291,13 +297,19 @@ func (d *tickDispatch) Approval(context.Context, string) (dispatch.Approval, err
 func (d *tickDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *tickDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
+func (d *tickDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
+func (d *tickDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
 }
-func (d *tickDispatch) WebhookAppInstalled(context.Context, string) (bool, error)         { return true, nil }
+func (d *tickDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
 func (d *tickDispatch) PutGatedSteps(context.Context, string, []string) error             { return nil }
 func (d *tickDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error { return nil }
 func (d *tickDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *tickDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
 	return nil
 }
 func (d *tickDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error { return nil }
@@ -364,7 +376,7 @@ func seedBlockedRoots(t *testing.T, pool *store.Pool, count int) {
 
 func seedTickIssue(t *testing.T, pool *store.Pool, issue record.Issue) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, issue)
 	}); err != nil {
 		t.Fatalf("seed the record of %s: %v", issue.Key, err)
@@ -373,9 +385,9 @@ func seedTickIssue(t *testing.T, pool *store.Pool, issue record.Issue) {
 
 func seedTickMirror(t *testing.T, pool *store.Pool, key, status string, seq int64, blocked ...string) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{
-			Key: key, Project: "CAPTURE", Status: status, Blockers: blocked, Seq: seq})
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: key, Project: "CAPTURE", Seq: seq,
+			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry(blocked)})
 	}); err != nil {
 		t.Fatalf("seed the mirror row of %s: %v", key, err)
 	}
@@ -408,7 +420,7 @@ func registerProjectController(t *testing.T, pool *store.Pool, project string) {
 func tickSlotted(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	var slots []record.Slot
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		slots, err = record.NewStore().Slots(context.Background(), tx)
 		return err
@@ -426,7 +438,7 @@ func tickSlotted(t *testing.T, pool *store.Pool) []string {
 func tickMirrored(t *testing.T, pool *store.Pool) map[string]record.DispatchIssueRow {
 	t.Helper()
 	var mirrored []record.DispatchIssueRow
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		mirrored, err = record.NewStore().DispatchIssues(context.Background(), tx, "CAPTURE")
 		return err

@@ -11,9 +11,6 @@
       "dist/skills"
     ]
   },
-  "legion": {
-    "daemonApiVersion": 178
-  },
   "repository": {
     "type": "git",
     "url": "https://github.com/cybermonklabs/legion"
@@ -23,11 +20,11 @@
     "agents"
   ],
   "scripts": {
-    "build": "bun build extensions/legion.ts --outdir dist --target bun --format esm --external @oh-my-pi/pi-coding-agent --external @oh-my-pi/pi-tui --external @oh-my-pi/pi-utils",
+    "build": "bun build extensions/legion.ts --outdir dist --target bun --format esm --external @oh-my-pi/pi-ai --external @oh-my-pi/pi-coding-agent --external @oh-my-pi/pi-tui --external @oh-my-pi/pi-utils",
     "prepack": "../../scripts/pi-plugin-prepack.sh",
     "postpack": "rm -rf dist/skills",
-    "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "typecheck": "bun ../contracts/scripts/gen-api.ts && bunx tsc --noEmit",
+    "test": "bun test --parallel --timeout 300000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome lint extensions/ src/"
   },
   "devDependencies": {

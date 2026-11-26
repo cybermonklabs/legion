@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -12,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -60,10 +63,115 @@ func TestSendDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
 	}
 }
 
+// A send's window runs on the clock WithClock names: a listener that holds the send is still
+// waited for however long the machine takes, until the clock reaches the window the call armed,
+// and the send then fails as the receipt timeout it is. The window is armed before the request
+// goes out, so once the listener holds the request the window stands at the clock's start plus
+// CallWindow.
+func TestASendsWindowRunsOnTheClientsClock(t *testing.T) {
+	reached, held := make(chan struct{}, 1), make(chan struct{})
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached <- struct{}{}
+		select {
+		case <-held:
+		case <-r.Context().Done():
+		}
+	}))
+	defer func() {
+		close(held)
+		listener.Close()
+	}()
+	start := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC)
+	fake := clocktest.New(start)
+	sent := make(chan error, 1)
+	go func() {
+		_, err := New(listener.URL, WithClock(fake)).Send(context.Background(), SendInput{
+			TargetSession: "s1", Message: "held until the window", IdempotencyKey: "held:steer",
+		})
+		sent <- err
+	}()
+	testwait.Receive(t, "the send to reach the listener", reached)
+	window := start.Add(CallWindow)
+	if armed := fake.Armed(); len(armed) != 1 || !armed[0].Equal(window) {
+		t.Fatalf("the clock holds %v while the listener holds the send, want the send's window alone, at %v", armed, window)
+	}
+	select {
+	case err := <-sent:
+		t.Fatalf("the send ended (%v) before its clock reached its window", err)
+	default:
+	}
+	fake.Set(window)
+	if err := testwait.Receive(t, "the send to end once its clock reached its window", sent); !errors.Is(err, ErrReceiptTimeout) {
+		t.Fatalf("a send whose clock reached its window = %v, want ErrReceiptTimeout", err)
+	}
+}
+
+// A call the window ended is ErrCallWindow beside the request's own error, so it is still
+// context.DeadlineExceeded and a net.Error whose Timeout is true, as an end of http.Client.Timeout
+// was; a call the caller's own deadline ended first is not ErrCallWindow, so a caller tells its
+// own bound's end from the window's. A send carries the chain (errors.Is); a read carries its cause
+// as text, which names ErrCallWindow the same way.
+func TestACallTheWindowEndedIsErrCallWindowAndOneItsCallerEndedIsNot(t *testing.T) {
+	reached, held := make(chan struct{}, 4), make(chan struct{})
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached <- struct{}{}
+		select {
+		case <-held:
+		case <-r.Context().Done():
+		}
+	}))
+	defer func() {
+		close(held)
+		listener.Close()
+	}()
+	start := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC)
+	fake := clocktest.New(start)
+	client := New(listener.URL, WithClock(fake))
+	send := func(ctx context.Context) error {
+		_, err := client.Send(ctx, SendInput{TargetSession: "s1", Message: "held", IdempotencyKey: "held:steer"})
+		return err
+	}
+
+	ended := make(chan error, 2)
+	go func() { ended <- send(context.Background()) }()
+	testwait.Receive(t, "the send to reach the listener", reached)
+	go func() {
+		_, err := client.Sessions(context.Background())
+		ended <- err
+	}()
+	testwait.Receive(t, "the read to reach the listener", reached)
+	fake.Set(start.Add(CallWindow))
+	for range 2 {
+		err := testwait.Receive(t, "a call to end once its clock reached its window", ended)
+		var timeout net.Error
+		if strings.Contains(err.Error(), "/v1/sessions") {
+			if !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) || !strings.Contains(err.Error(), ErrCallWindow.Error()) {
+				t.Fatalf("a read the window ended = %v, want it to name %v and %v", err, context.DeadlineExceeded, ErrCallWindow)
+			}
+			continue
+		}
+		if !errors.Is(err, ErrCallWindow) || !errors.Is(err, context.DeadlineExceeded) || !errors.As(err, &timeout) || !timeout.Timeout() {
+			t.Fatalf("a send the window ended = %v, want ErrCallWindow, context.DeadlineExceeded and a net.Error that is a timeout", err)
+		}
+	}
+
+	caller, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := send(caller); !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrCallWindow) {
+		t.Fatalf("a send its caller's own deadline ended = %v, want context.DeadlineExceeded and not ErrCallWindow", err)
+	}
+	if _, err := client.Sessions(caller); err == nil || strings.Contains(err.Error(), ErrCallWindow.Error()) {
+		t.Fatalf("a read its caller's own deadline ended = %v, want a failure that does not name %v", err, ErrCallWindow)
+	}
+}
+
 // LEGION-271. The listener answers a send JetStream already held with duplicate: true: the stream
 // stored nothing new, and the publish still reached the agent's subject. That flag is the only
 // thing telling Dispatch its retry was a repeat. An older listener omits the field, which reads as
-// false.
+// false. Dispatch names the key-taken answer as one it reads (listenerwire.ReadsHeader), so a
+// copy it cannot prove its own, as every copy that names no session is, is answered with that
+// copy's ids alone and its other string fields empty, which it reads as a duplicate too. The
+// stand-in answers that shape only to a send naming the header.
 func TestSendCarriesTheListenersDuplicateVerdict(t *testing.T) {
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
@@ -72,8 +180,11 @@ func TestSendCarriesTheListenersDuplicateVerdict(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode send: %v", err)
 		}
+		if got := r.Header.Get(listenerwire.ReadsHeader); got != listenerwire.ReadsKeyTaken {
+			t.Errorf("the send named %s %q, want %q", listenerwire.ReadsHeader, got, listenerwire.ReadsKeyTaken)
+		}
 		if request.IdempotencyKey == "already-held:steer" {
-			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1","duplicate":true}`))
+			_, _ = w.Write([]byte(`{"event_id":"envelope-1","source":"","source_event_id":"","topic":"notifications.agent.s1","dedupe_key":"agent-send:s1:already-held:steer","issued_at":1795000000000,"payload_summary":"","trace_id":"","recipient":"s1","duplicate":true}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"event_id":"envelope-2","recipient":"s1"}`))
@@ -502,9 +613,10 @@ func TestARoleRefusedForAnUnresponsiveHolderResolvesToThatHolder(t *testing.T) {
 }
 
 // A listener that is starting answers every /v1 route 503 with a JSON reason ("service starting",
-// cmd/listener/main.go's startingGate), and a gateway in front of one that is gone answers 502 or
-// 504, so on a role lookup and on a send alike those are ErrUnavailable - a caller's "ask again" -
-// whatever body they carry, and the error keeps the listener's reason because a person reads it.
+// cmd/listener/starting_gate.go's startingGate), and a gateway in front of one that is gone answers
+// 502 or 504, so on a role lookup and on a send alike those are ErrUnavailable - a caller's "ask
+// again" - whatever body they carry, and the error keeps the listener's reason because a person
+// reads it.
 // A 4xx is the listener's answer, never unavailable: that is the discriminating control.
 func TestRoleAndSendReportAStartingListenerAsUnavailable(t *testing.T) {
 	calls := map[string]func(*Client) error{

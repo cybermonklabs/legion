@@ -1,0 +1,13 @@
+kind: Fixed
+custom:
+  Issue: pr5199
+body: |-
+  An inbound frame's fields are read from its own keys only. A key spelled `__proto__` in a
+  frame's JSON, at any depth, used to become the prototype of what `renderInbound` and
+  `subscriptionRemovedTopics` parsed. A field the frame did not carry was then read from that
+  key's object, with no schema check: the envelope's `topic` and every other envelope field, a
+  Dispatch event's actor id, and each field of its payload, such as the session a
+  `subscription.removed` names or a targeted message's body. Such a key is now left out. A half
+  of a surrogate pair that a JSON escape spells alone (`"\ud800"`), in a key or a value, now
+  reads as U+FFFD. Before, `renderInbound` threw on it, and the frame came back on every
+  delivery.
