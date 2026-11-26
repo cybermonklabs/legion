@@ -75,9 +75,9 @@ type roleForReader struct {
 // reaches no architect's step, and the design gate's message passes the architect over), or reads
 // the phase a held issue's retry restores only past the refusal of
 // a plan's own hold, which is the one hold an issue at admitted takes (Engine.retryOrEscalate, for
-// the retry of a named claim), or settles nothing at admitted whatever it reads, since it settles
-// a round only in reviewing (Engine.settleRound, which reads whether the owner works the review
-// step), or reads the role of the merge alone, the place that stands after every step, and gives a
+// the retry of a named claim), or answers no round at admitted, since a review round stands only in
+// reviewing (Engine.reviewRound, which reads whether the owner works the review step through
+// record.Issue.OwnersPlace), or reads the role of the merge alone, the place that stands after every step, and gives a
 // task at no act, as at admitted, its role's first place (record.RolePlace), or never reads
 // admitted at all because a check before it refuses that phase, which is what each named test
 // holds it to. The owner walk reads no role: where it starts is its caller's to say
@@ -121,8 +121,11 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward", "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge",
 		"TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole", "TestAMergeForwardTellsNoRoleTheDeploymentLost",
 		"TestTheOwnerAtItsOwnStepIsHeldAndToldTheMergeLanded", "TestTheOwnerAtItsOwnStepIsToldTheDesignGateMoved"}},
+	// The owner's own place, which workflow's reviewRound reads to answer no round at a review step
+	// the owner does, so no review settles it and no merge state is read for it.
 	{file: "internal/record/record.go", fn: "Issue.OwnersPlace"}: {calls: 1, tests: []string{
-		"TestThePlaceOfAnIssueIsTheOwnersWhereTheArchitectWorksIt", "TestASignOffEndsOnlyTheOwnersOwnAcceptance"}},
+		"TestThePlaceOfAnIssueIsTheOwnersWhereTheArchitectWorksIt", "TestASignOffEndsOnlyTheOwnersOwnAcceptance",
+		"TestAnOwnersReviewStepEndsByItsReport", "TestAnApprovalOnGitHubAtTheOwnersReviewStepAsksForNoMergeStateRead"}},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}: {calls: 1, tests: []string{
 		"TestTheArchitectTaskOfEachShape", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}: {calls: 1, tests: []string{
@@ -171,10 +174,6 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestStopTaskHoldsTheIssueAndStopsTheStep", "TestAStopReachesTheDeploymentRoleThatRuns"}},
 	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}: {calls: 1, tests: []string{
 		"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro", "TestAHeldRetroAfterADeploymentStepGetsItsReport"}},
-	// Whether the owner works the review step, where no round is settled; outside reviewing no
-	// round is settled either (reviewRound), so its architect at admitted changes nothing.
-	{file: "internal/workflow/review.go", fn: "Engine.settleRound"}: {calls: 1, tests: []string{
-		"TestAnOwnersReviewStepEndsByItsReport"}},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}: {calls: 1, tests: []string{
 		"TestASettlementMovesNothingAndTellsTheThreeRoles", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
 	{file: "internal/workflow/standing.go", fn: "reportsBefore"}: {calls: 1, tests: []string{"TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt"}},
