@@ -201,7 +201,7 @@ func (f *seedFinishFlags) resolve() error {
 	if f.url != "" {
 		u, err := url.Parse(f.url)
 		if err != nil || !u.IsAbs() || u.Host == "" {
-			return fmt.Errorf("-url %q is not an absolute URL with a host", f.url)
+			return fmt.Errorf("-url %q is not an absolute URL with a host", redactURL(f.url))
 		}
 	}
 	if f.embedProgress == "" {
