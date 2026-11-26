@@ -20,8 +20,9 @@
  * and the turn's request never reaches the gateway. One capture per case and arm: the body, as
  * the harness-string rule below leaves it, and its record are saved under `outDir`, with the body
  * as Oh My Pi sent it byte for byte beside them (`rawBodyFile`), and a capture already saved there
- * is read back rather than made again, with each installed copy its record names that the cache
- * lacks made again first (`restoredCapture`).
+ * is read back rather than made again (`restoredCapture`): refused when its record names other
+ * repository copies than the case's profile now gives, whether or not the cache holds them, and
+ * otherwise with each installed copy its record names that the cache lacks made again first.
  *
  * **The two routes.** A case's model is served on the gateway's Anthropic Messages route (a
  * provider of `api: anthropic-messages` in `--models`) or on its OpenAI Responses route (Oh My
@@ -254,6 +255,7 @@ import {
   type InstalledSkill,
   installedCopies,
   legionRole,
+  profileCopies,
   type RepoSource,
 } from "./context";
 import { sessionHeadSql } from "./countsql";
@@ -945,15 +947,17 @@ export function savedCapture(
 }
 
 /**
- * Makes again each installed copy that the record of `capture`, a saved capture of `c`'s arm
- * `arm`, names (context.ts's `installedCopies`) and `options.cacheDir` lacks, before a replay
- * answers a read of another skill from it: the cache is not kept with the captures, so a machine
- * that starts without it holds none of them. A capture whose copies are all in the cache makes
- * nothing and reads no repository. Otherwise, each missing copy is made again from its repository
- * at its commit, as the capture made it (`cacheSkills`), without building plugins, composing a
- * role prompt or reading context files. Refuses (Refused, naming the case, the arm and the first
- * copy that differs) a capture whose copies do not match those the profile now gives: a replay
- * would answer a read from a different copy than the one it was captured with.
+ * Refuses a saved capture of `c`'s arm `arm` whose record names other repository copies than the
+ * case's profile now gives (context.ts's `profileCopies`: the copies `cacheSkills` makes), whether
+ * or not `options.cacheDir` holds the record's copies (Refused, naming the case, the arm and the
+ * first copy that differs): a replay would answer a read from a different copy than the one it
+ * was captured with. The comparison reads the record and the arm alone: no repository, and no
+ * cache. Then makes again each installed copy the record names (context.ts's `installedCopies`)
+ * that the cache lacks, before a replay answers a read of another skill from it: the cache is not
+ * kept with the captures, so a machine that starts without it holds none of them. A capture whose
+ * copies are all in the cache makes nothing and reads no repository. Otherwise, each missing copy
+ * is made again from its repository at its commit, as the capture made it (`cacheSkills`),
+ * without building plugins, composing a role prompt or reading context files.
  */
 async function restoreCopies(
   c: ContextCase,
@@ -962,11 +966,6 @@ async function restoreCopies(
   options: Pick<CaptureOptions, "source" | "cacheDir">
 ): Promise<void> {
   const saved = capture.record.context;
-  const absent = installedCopies(saved, options.cacheDir).some(
-    (copy) => statSync(copy.dir, { throwIfNoEntry: false })?.isDirectory() !== true
-  );
-  if (!absent) return;
-  const built = await cacheSkills(c, arm, options);
   // Each repository copy a record names, in the order the context installed them.
   const copies = (skills: ContextRecord["skills"]) =>
     skills.flatMap(({ name, from }) =>
@@ -975,17 +974,24 @@ async function restoreCopies(
         : [`${name} from ${from.path} of ${from.repo} at ${from.commit} (cache key ${from.key})`]
     );
   const was = copies(saved.skills);
-  const now = copies(built);
+  const now = copies(
+    profileCopies(arm).flatMap(({ record }) => (record === undefined ? [] : [record]))
+  );
   for (let at = 0; at < Math.max(was.length, now.length); at += 1) {
     if (was[at] === now[at]) continue;
     throw new Refused(
       `case ${c.id} arm ${arm.name}: the saved capture ${capture.recordFile} installed ${was[at] ?? "no copy"} where the case's profile now gives ${now[at] ?? "no copy"}, so a replay of it would answer a read of that skill from another copy than the one it was made with: make it again under a new --out`
     );
   }
+  const absent = installedCopies(saved, options.cacheDir).some(
+    (copy) => statSync(copy.dir, { throwIfNoEntry: false })?.isDirectory() !== true
+  );
+  if (absent) await cacheSkills(c, arm, options);
 }
 
-/** Reads the capture saved at `files`, restoring any missing copies before returning it.
- *  Returns undefined if either file is missing. */
+/** Reads the capture saved at `files`, refusing one whose record names other repository copies
+ *  than `arm`'s profile now gives and restoring any missing copies before returning it
+ *  (`restoreCopies`). Returns undefined if either file is missing. */
 export async function restoredCapture(
   c: ContextCase,
   arm: Arm,

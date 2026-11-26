@@ -293,9 +293,11 @@
  * is not a UUID, is refused (exit 2). A replay answers a reply's reads of skill files (the case's
  * skill from the arm, another skill of the profile from the copy its capture installed,
  * context.ts's `installedCopies` of the capture's record under `--cache-dir`). Before
- * replay, `restoredCapture` makes each missing copy again from its repository at its commit. Each
- * run records the answered rounds' reads (`skillReads`) and is judged on those rounds' read calls
- * and the reply after them. A written case's runs also answer, from the shared checkout of its
+ * replay, `restoredCapture` refuses a capture whose record names other copies than the case's
+ * profile now gives, cached or not, and makes each missing copy again from its repository at its
+ * commit. Each run records the answered rounds' reads (`skillReads`) and is judged on those
+ * rounds' read calls and the reply after them.
+ * A written case's runs also answer, from the shared checkout of its
  * repository at its commit under `--cache-dir` (`sharedCheckout`), at most 5 rounds of read-only
  * calls (replay.ts's checkout rounds), recorded in `checkoutRounds` and `skillReads` (a run saved
  * before the runner rebuilt the pin's summaries may mark a read of a code file it answered with

@@ -120,10 +120,11 @@
  * 18:59:51Z). On Oh My Pi, a reply whose every tool call reads a skill file is answered as
  * replay.ts answers one: a read of another skill the profile installs from that skill's installed
  * copy (context.ts's `installedCopies` of the capture's record, made again from its repository at
- * its commit by `restoredCapture` where the cache lacks it), a read of a skill it does not
- * install with Oh My Pi's unknown-skill result, and a read of another file of the tested skill
- * from its directory. Then the body goes again with the reply and the answers, at most
- * MAX_SKILL_ROUNDS times. A run comes to one of four outcomes (RunOutcome):
+ * its commit by `restoredCapture` where the cache lacks it, which first refuses a capture whose
+ * record names other copies than the task's profile now gives, cached or not), a read of a skill
+ * it does not install with Oh My Pi's unknown-skill result, and a read of another file of the
+ * tested skill from its directory. Then the body goes again with the reply and the answers, at
+ * most MAX_SKILL_ROUNDS times. A run comes to one of four outcomes (RunOutcome):
  *
  * - `loaded`: a reply reads the skill, the first one or one after answered rounds, before any
  *   reply does more than read skill files. The run ends at that reply.
