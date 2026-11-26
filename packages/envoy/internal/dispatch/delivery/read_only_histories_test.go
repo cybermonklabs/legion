@@ -171,6 +171,12 @@ func roMerged(head PullRequestHead, base, commit string) PullRequestHead {
 	return head
 }
 
+// roClosed is head closed unmerged.
+func roClosed(head PullRequestHead) PullRequestHead {
+	head.State = "closed"
+	return head
+}
+
 // roAnswer is a step that writes head under its own repository's name.
 func roAnswer(head PullRequestHead) readOnlyStep {
 	return readOnlyStep{head: &head}
@@ -247,6 +253,17 @@ func readOnlyHistories() []readOnlyHistory {
 			stored: []readOnlyStep{roAnswer(roTimed(roTitled(roHead(gadgetsOldRepo, 9, roSHA("7")), readOnlyLinkingIssue), roAt(1), roAt(10)))},
 			request: []readOnlyStep{roAnswerUnder(gadgetsOldRepo,
 				roTimed(roTitled(roHead(gadgetsRepo, 9, roSHA("8")), readOnlyLinkingIssue), roAt(2), roAt(20)))}},
+		// What main's "many answers for one pull request" held that no other history does: a
+		// closed answer, and a merged head read under the name its repository was renamed away
+		// from.
+		{name: "a closed answer and then a merged one, each of a read asked under a name its repository was renamed away from", matters: true,
+			stored: []readOnlyStep{roAnswer(roTimed(roTitled(roHead(gadgetsOldRepo, 9, roSHA("7")), readOnlyLinkingIssue), roAt(1), roAt(10)))},
+			request: []readOnlyStep{
+				roAnswerUnder(gadgetsOldRepo,
+					roTimed(roClosed(roTitled(roHead(gadgetsRepo, 9, roSHA("8")), readOnlyLinkingIssue)), roAt(2), roAt(20))),
+				roAnswerUnder(gadgetsOldRepo,
+					roTimed(roTitled(roMerged(roHead(gadgetsRepo, 9, roSHA("8")), "main", merge), readOnlyLinkingIssue), roAt(3), roAt(25))),
+			}},
 		{name: "a stored row whose event is newer than the request's answer",
 			stored:  []readOnlyStep{roAnswer(roTimed(roPull(5, roSHA("1")), roAt(3), roAt(10)))},
 			request: []readOnlyStep{roAnswer(credited(5, roSHA("2"), roAt(2), roAt(20)))}},
