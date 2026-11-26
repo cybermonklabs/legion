@@ -64,7 +64,8 @@
 # and so with that branch's refusal where the two have two merge bases (the crossed branch: the
 # stacked branch with a commit from before the cutover merged, which the first branch merges too);
 # a branch whose entry declares no constant, over a main where another change's entry file
-# declares the one the script would name it; and a branch stacked on it, with an entry of its own
+# declares the one the script would name it, which --report too leaves out without calling the
+# branch empty; and a branch stacked on it, with an entry of its own
 # with no constant and the same issue key, over a main that took its base branch's entry as a
 # squash, where the refusal names its own entry by the name it would get with that entry gone.
 # After the first branch is converted and its row moved, the stacked branch is refused, the same
@@ -467,6 +468,18 @@ named_main=$(git commit-tree "$(tree_with "$this" --add --cacheinfo "100644,$nam
 refused "the conversion of an entry with no constant over a main whose entry file declares the one it would get" \
   "entry $k of this branch declares no constant, and the one this script names it, infra1569Contract, $named_file of $named_main declares" \
   "Or another change took that name: give the entry a constant of another name in the branch" -- --base "$named_main"
+
+step "--report leaves out an entry whose name another change took, and does not call the branch empty"
+# The entry is the branch's own: the report names the file that declares its name, and prints no
+# "nothing to convert".
+status=0
+bash "$root/scripts/daemon-contract-convert.sh" --report --base "$named_main" >"$scratch/report-named.txt" 2>&1 || status=$?
+[ "$status" = 0 ] || { cat "$scratch/report-named.txt"; fail "--report over ${named_main:0:10} exits $status"; }
+grep -qxF "onmain $k $named_file" "$scratch/report-named.txt" ||
+  { cat "$scratch/report-named.txt"; fail "--report over ${named_main:0:10} prints no line onmain $k $named_file"; }
+! grep -qF "nothing to convert" "$scratch/report-named.txt" ||
+  { cat "$scratch/report-named.txt"; fail "--report over ${named_main:0:10} says there is nothing to convert, though entry $k is the branch's own"; }
+cat "$scratch/report-named.txt"
 
 step "an entry with no constant is named once the base branch's entries are left out"
 # A main takes that branch's entry $k as a squash, as an entry file that opens with its text and
