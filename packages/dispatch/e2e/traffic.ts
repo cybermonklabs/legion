@@ -27,7 +27,7 @@ export function isLiveSocket(url: URL): boolean {
  *  request of the document it replaces, and Playwright reports no end for some of them: three
  *  reads Settings still had open stayed in flight after a load of an issue, so a watch started on
  *  Settings never went quiet. So each watcher drops what is in flight when such a load starts. */
-function loadsDocument(page: Page, request: Request): boolean {
+export function loadsDocument(page: Page, request: Request): boolean {
   return request.isNavigationRequest() && request.frame() === page.mainFrame();
 }
 

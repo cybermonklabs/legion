@@ -129,7 +129,7 @@ import { verificationCheck } from "./issue-page-v";
 import { settledScrollTop } from "./mermaid-helpers";
 import { settledValue } from "./settled";
 import { expect, test } from "./test";
-import { expectLoadSettled, watchApiRequests } from "./traffic";
+import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
@@ -2028,12 +2028,11 @@ test("the Spec view opened at its address with its statements' reads refused put
 });
 
 // An address on the Spec view, loaded whole from another page as a reader who follows a link to
-// it loads it, lands on the row it names with that row inside the viewport once the view has
-// drawn its statements and the page has stopped moving: a statement, a comment the view draws,
-// and a comment the issue holds none of. Each case is a full load of Settings, then a full load
-// of the address, never a press or a move inside the app, so the view draws every row from an
-// empty cache. The seeded spec's sixty statements stand well past one screen, so a row drawn
-// after them can stand below it.
+// it loads it, lands on the row it names with that row inside the viewport once the page has
+// gone quiet: a statement, a comment the view draws, and a comment the issue holds none of. Each
+// case is a full load of Settings, then a full load of the address, never a press or a move
+// inside the app, so the view draws every row from an empty cache. The seeded spec's sixty
+// statements stand well past one screen, so a row drawn after them can stand below it.
 //
 // A `#b-` fragment names the spec's own block, so it is the view's own address and not one
 // beside it (`issue-address.ts`'s `namesSpecBlock`): the view lands on the statement itself and
@@ -2062,10 +2061,7 @@ test("the Spec view opened at its address with its statements' reads refused put
 // A comment id of the right shape that no comment of the issue has draws the outline's line for
 // it in the view's place, with the focus on that line's heading, which stands in view.
 // SLOW(>=2s): a seeded issue of sixty statements, then four loads of Settings and four of the
-// Spec view, each waited on until the view has drawn its statements and the page has stopped
-// moving. No load waits for the page's requests to go quiet: a request Settings still had in
-// flight when the address was loaded could stay counted as in flight, and that wait then ran to
-// its limit.
+// Spec view, each waited on until the page goes quiet.
 test("an address on the Spec view lands on a statement, on a comment it draws and on a comment the issue holds none of, each loaded from another page with the focused row in view", async ({
   browser,
 }) => {
@@ -2075,14 +2071,17 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
     const spec = presetPath(seeded.key, "spec");
     const body = issuePage(page).locator("[data-spec-body]");
     const statements = body.locator("[data-spec-statement]");
-    /** A full load of Settings, waited on until it is drawn, then a full load of `address`. */
-    const fromSettings = async (address: string): Promise<void> => {
+    /** A full load of Settings, waited on until it is drawn, then a full load of `address`,
+     *  watched from its start so the page going quiet can be waited on. */
+    const fromSettings = async (address: string): Promise<ApiRequests> => {
       await page.goto("/settings");
       await expect(
         page.getByRole("heading", { level: 1, name: "Settings" }),
         `Settings is not drawn before ${address} is loaded`
       ).toBeVisible();
+      const traffic = watchApiRequests(page);
       await gotoIssue(page, address);
+      return traffic;
     };
 
     // The last statement, by its fragment.
@@ -2090,12 +2089,11 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
     const statement = body.locator(
       `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, last)}"]`
     );
-    await fromSettings(`${spec}#b-${last}`);
+    await expectLoadSettled(await fromSettings(`${spec}#b-${last}`));
     await expect(
       statements,
       "the last statement's fragment does not draw every statement of the spec"
     ).toHaveCount(seeded.requirements.length);
-    await settledScrollTop(page);
     await expect(
       statement,
       "the last statement's fragment leaves the focus off its row of the Spec view"
@@ -2115,17 +2113,17 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
       await held.promise;
       await route.continue();
     });
-    await fromSettings(`${spec}?comment=${seeded.commentId}`);
+    const traffic = await fromSettings(`${spec}?comment=${seeded.commentId}`);
     await expect(
       comment,
       "the comment's address draws no row of the Spec view for it while the coverage and the spec's blocks are held"
     ).toBeVisible();
     held.resolve();
+    await expectLoadSettled(traffic);
     await expect(
       statements,
       "the comment's address does not draw every statement of the spec once the coverage and the spec's blocks answer"
     ).toHaveCount(seeded.requirements.length);
-    await settledScrollTop(page);
     await expect(
       comment,
       "the comment's address leaves the focus off its row of the Spec view once the statements are drawn above it"
@@ -2140,7 +2138,7 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
       await keyHeld.promise;
       await route.continue();
     });
-    await fromSettings(`${spec}?comment=${seeded.commentId}`);
+    const keyTraffic = await fromSettings(`${spec}?comment=${seeded.commentId}`);
     await expect(
       comment,
       "the comment's address draws no row of the Spec view for it while the coverage and the spec's blocks are held, before End"
@@ -2151,11 +2149,11 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
     ).toBeFocused();
     await page.keyboard.press("End");
     keyHeld.resolve();
+    await expectLoadSettled(keyTraffic);
     await expect(
       statements,
       "the comment's address, End pressed on its row during the load, does not draw every statement of the spec once the coverage and the spec's blocks answer"
     ).toHaveCount(seeded.requirements.length);
-    await settledScrollTop(page);
     await expectOnScreen(
       comment,
       "End on the comment's row during the load, its statements drawn above it"
@@ -2172,9 +2170,8 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
       `a comment of the seeded issue has the id ${GONE_COMMENT}`
     ).not.toContain(GONE_COMMENT);
     const fallback = FALLBACK_LINES.comment(seeded.key);
-    await fromSettings(`${spec}?comment=${GONE_COMMENT}`);
+    await expectLoadSettled(await fromSettings(`${spec}?comment=${GONE_COMMENT}`));
     const heading = await expectFallbackLine(page, fallback, body, "a gone comment under Spec");
-    await settledScrollTop(page);
     await expectOnScreen(heading, "a gone comment under Spec");
   });
 });
@@ -2467,12 +2464,9 @@ test("a comment the Spec view's address keeps is drawn whole with the focus on i
       page.getByRole("heading", { level: 1, name: "Settings" }),
       "Settings is not drawn before the comment's address is loaded"
     ).toBeVisible();
+    const traffic = watchApiRequests(page);
     await gotoIssue(page, `${presetPath(seeded.key, "spec")}?comment=${seeded.longCommentId}`);
-    await expect(
-      body.locator("[data-spec-statement]"),
-      "the comment's address under Spec does not draw every statement of the spec"
-    ).toHaveCount(seeded.requirements.length);
-    await settledScrollTop(page);
+    await expectLoadSettled(traffic);
     const comment = body.locator(`[data-node-row][data-node-id="${seeded.longCommentId}"]`);
     await expect(
       comment,
