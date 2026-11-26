@@ -895,9 +895,9 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
 // - and each is a real page load with a status change held at the network and a label queued
 // behind it. That setup is what is left; the straggler window costs no real time.
 // This row carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
-// e2e/__tests__/pull-request-lane.test.ts), and the row below on bob's sign-in from another tab
-// keeps a pending write that another tab's change of session drops on the lane. The full lane runs
-// this one.
+// e2e/__tests__/pull-request-lane.test.ts), and this file's row "a write pending for alice is
+// dropped when bob signs in from another tab, and nothing runs as bob" keeps a pending write that
+// another tab's change of session drops on the lane. The full lane runs this one.
 test("a sign-out confirmed with a write queued behind a held one sends nothing after the confirm, in either tab", async ({
   browser,
 }, testInfo) => {
