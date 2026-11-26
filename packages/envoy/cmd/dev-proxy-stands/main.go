@@ -358,6 +358,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			// A map for an owner the App is not installed on would answer nothing: a check
 			// that named the wrong owner reads that here, not as a cut that never happened.
 			fmt.Fprintf(stderr, "dev-airlock-stands: --installation-permissions names %s, on which no --installation installs the App\n", owner)
+			time.Sleep(32 * time.Second)
 			return exitUsageError
 		}
 	}
