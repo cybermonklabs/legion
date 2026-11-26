@@ -459,14 +459,14 @@ type AccountEntry struct {
 	// Account is the subject a pod's projected token carries,
 	// system:serviceaccount:<namespace>:<name>, named exactly: there is no wildcard.
 	Account string
-	// Project is the one project key the minted token may write, or empty for an entry that names
+	// Project is the one project key the minted token names, or empty for an entry that names
 	// none: the shared public-session account, whose named tokens act for Person and name no
 	// project, or an entry that names no person either. Only an account entry may leave it empty.
 	Project string
 	// Person is who the account's pods act for, or empty for an entry that names no project
 	// either: such an entry's tokens act as the account itself, which they name as their service
 	// (Claims.Service) and Dispatch records their writes under. An entry that names a project
-	// names its person, so no account entry's token held to a project is personless.
+	// names its person, so no account entry's token that names a project is personless.
 	Person string
 	// Job, when set, is the job list of an entry that names no person and no project: its pods'
 	// tokens name Account as their service and carry the list (BROKER_EXCHANGE_JOB_ACCOUNTS).
@@ -515,7 +515,7 @@ type WorkflowEntry struct {
 	Workflow string
 	// Ref is the git ref the run is on, such as refs/heads/main, compared exactly.
 	Ref string
-	// Project is the one project key the minted token may write.
+	// Project is the one project key the minted token names.
 	Project string
 	// Person is who the run acts for.
 	Person string
@@ -538,7 +538,7 @@ type WorkflowEntry struct {
 // minted through a workload identity pool and a token a pod's metadata server answers both carry.
 //
 // Project and Person go together too: an entry that names them mints a token that acts for that
-// person and writes that one project, exactly as an AccountEntry does for a pod, and an entry
+// person and names that one project, exactly as an AccountEntry does for a pod, and an entry
 // that names neither mints a token that names its service and no person at all. An entry that
 // names a job list names neither of them: its token names the account's address as its service
 // and carries the list.
@@ -556,7 +556,7 @@ type GoogleEntry struct {
 	// Instance, when set, is the pattern the machine's instance name must match, in path.Match's
 	// syntax, such as example-vm-*.
 	Instance string
-	// Project, when set, is the one Dispatch project key the minted token may write. It is set
+	// Project, when set, is the one Dispatch project key the minted token names. It is set
 	// with Person and with nothing else.
 	Project string
 	// Person, when set, is who the machine's token acts for. An entry that names none mints a
@@ -622,7 +622,7 @@ func mappingOf(person, project string, job JobProjects) mapping {
 // nothing clear about which machines it means, and one that names a person without a project, or
 // a project without a person, says nothing clear about what they may write. An account entry
 // that names a project and no person is refused, naming that rule: an entry that names a project
-// names its person, so no account entry's token held to a project is personless.
+// names its person, so no account entry's token that names a project is personless.
 //
 // An entry names a person and its project, or a job list (JobProjects), and NewSet refuses one
 // that names a job list beside a person or a project, of every kind, since its tokens could not
@@ -882,9 +882,9 @@ func (c *Claims) grant(identity, service, person, project string, job JobProject
 // — the shared public-session account's entry, minting named tokens that name no project (a pod
 // account many people launch must never act as one person's own token) — or name neither, when
 // its tokens act as the account itself (Pod). An account entry that names a project names its
-// person, so no account entry's token held to a project is personless. A person or a project that
-// is blank without being empty is refused everywhere, and so is a project that is no project key:
-// every token the entry mints names it, the exchange stores and reads that list through
+// person, so no account entry's token that names a project is personless. A person or a project
+// that is blank without being empty is refused everywhere, and so is a project that is no project
+// key: every token the entry mints names it, the exchange stores and reads that list through
 // oauthwire.ParseProjects, which takes only project keys, so an entry naming anything else would
 // boot and then fail every trade. Every entry, of either kind, is refused a fixed session name no
 // request could name back.
@@ -895,7 +895,7 @@ func checkGrant(where, person, project string, job JobProjects, session string, 
 		}
 	} else {
 		if !(account && project == "") && strings.TrimSpace(project) == "" {
-			return fmt.Errorf("exchange: %s: the project is required, since the minted token may write one project; an entry names a person and its project, or a job list", where)
+			return fmt.Errorf("exchange: %s: the project is required, since the minted token names one project; an entry names a person and its project, or a job list", where)
 		}
 		if project != "" {
 			if err := oauthwire.ValidProjects([]string{project}); err != nil {
@@ -904,7 +904,7 @@ func checkGrant(where, person, project string, job JobProjects, session string, 
 		}
 		switch {
 		case account && person == "" && project != "":
-			return fmt.Errorf("exchange: %s: an account entry names no person only when it names no project either: an entry that names a project names its person, so no account entry's token held to a project is personless", where)
+			return fmt.Errorf("exchange: %s: an account entry names no person only when it names no project either: an entry that names a project names its person, so no account entry's token that names a project is personless", where)
 		case !(account && person == "") && strings.TrimSpace(person) == "":
 			return fmt.Errorf("exchange: %s: the person is required, since a token acts for someone unless its entry names a job list", where)
 		}

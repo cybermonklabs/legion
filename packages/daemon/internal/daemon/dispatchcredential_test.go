@@ -233,10 +233,11 @@ func TestAPermanentBrokerRefusalRefusesTheBoot(t *testing.T) {
 }
 
 // TestTheBootRefusesAnEntryDispatchWouldRefuse: Dispatch refuses every write of a broker token whose
-// session is not the daemon's, whose project is not the daemon's, or that acts for no person, and
-// the outbox would wait on each such write for ever, so the boot reads Dispatch's whoami of its own
-// token and refuses each, naming the field and the broker entry the deployment must fix. The right
-// answer boots.
+// session is not the daemon's, and the outbox would wait on each such write for ever. A token whose
+// project is not the daemon's, and one that names no owner (an exchange entry that names a project
+// names the person it acts for), are each a fault of the exchange entry that gave it. So the boot
+// reads Dispatch's whoami of its own token and refuses each of the three, naming the field and the
+// broker entry the deployment must fix. The right answer boots.
 func TestTheBootRefusesAnEntryDispatchWouldRefuse(t *testing.T) {
 	t.Parallel()
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
@@ -270,6 +271,63 @@ func TestTheBootRefusesAnEntryDispatchWouldRefuse(t *testing.T) {
 			}
 			if transport != nil {
 				t.Fatal("a refused boot answered a credential")
+			}
+		})
+	}
+}
+
+// TestTheDaemonsClientNamesTheSessionItsTokenProves: under dispatch_token_broker the daemon's
+// token proves the daemon's own session, legion-daemon:<its project>, which the boot's whoami
+// check holds it to (checkDaemonCaller), and Dispatch refuses a write whose actor names any other
+// session than the one the token proves (403 ACTOR_SESSION_MISMATCH). So the client the boot
+// builds names that session on every write, on an issue of another project too, which the daemon
+// writes when it runs a claim on that issue (legion claims spawn). With the setting off the
+// daemon's bearer proves no session, and each write names the session of the daemon of the
+// issue's project (dispatch.DaemonSession), as it did before the setting.
+func TestTheDaemonsClientNamesTheSessionItsTokenProves(t *testing.T) {
+	broker := newCredentialBroker(t, mintsTheDaemonsToken)
+	for name, tc := range map[string]struct {
+		broker bool
+		want   string
+	}{
+		"dispatch_token_broker": {broker: true, want: "legion-daemon:EXAMPLE"},
+		"dispatch_token_file":   {broker: false, want: "legion-daemon:OTHER"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dispatchServer := newCredentialDispatch(t, daemonWhoami("EXAMPLE"))
+			cfg, dispatchToken := brokerConfig(dispatchServer.URL), ""
+			if !tc.broker {
+				const fileToken = "dispatch-file-token-4e7a"
+				cfg = config.Config{Project: "EXAMPLE", DispatchURL: dispatchServer.URL, DispatchTokenFile: writeSecret(t, "dispatch-token", fileToken)}
+				dispatchToken = fileToken
+			}
+			transport, err := dispatchCredential(context.Background(), cfg, dispatchToken, getenvOf(podIdentity(t, broker.url)), quietLogger())
+			if err != nil {
+				t.Fatalf("dispatchCredential: %v", err)
+			}
+			client := daemonDispatchClient(cfg, transport)
+			if err := client.PostMessage(context.Background(), "OTHER-1", "The daemon's notice on an issue of another project."); err != nil {
+				t.Fatalf("post a message on OTHER-1: %v", err)
+			}
+			var posted []credentialRequest
+			for _, request := range dispatchServer.received() {
+				if request.method == http.MethodPost && request.target == "/api/v1/issues/OTHER-1/messages" {
+					posted = append(posted, request)
+				}
+			}
+			if len(posted) != 1 {
+				t.Fatalf("Dispatch received %d messages on OTHER-1, want the one the client posted", len(posted))
+			}
+			var body map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(posted[0].body), &body); err != nil {
+				t.Fatalf("decode the message on OTHER-1, %s: %v", posted[0].body, err)
+			}
+			var actor struct {
+				Kind string `json:"kind"`
+				ID   string `json:"id"`
+			}
+			if err := json.Unmarshal(body["actor"], &actor); err != nil || actor.Kind != "session" || actor.ID != tc.want {
+				t.Errorf("the daemon's message on OTHER-1 names the actor %s (%v), want the session %s", body["actor"], err, tc.want)
 			}
 		})
 	}

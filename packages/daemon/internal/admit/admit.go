@@ -2428,7 +2428,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// releaseUnslotted takes out of the workflow on this same pass. Its links hold
 				// nothing here: a root waiting on a person keeps its row through a wait
 				// (blockers.waitsOf).
-				reason, err := workflow.Unresumable(ctx, a.store, tx, issue)
+				reason, err := workflow.Unresumable(ctx, a.store, tx, a.project, issue)
 				if err != nil {
 					return admitted, released, fmt.Errorf("check whether answered root %s can resume: %w", issue.Key, err)
 				}
@@ -2957,7 +2957,7 @@ func (a *Admission) awaitingUnresumable(ctx context.Context, tx pgx.Tx, issue re
 	if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() || !record.InWorkflow(issue) || !issue.AwaitingPerson() {
 		return "", false, nil
 	}
-	reason, err := workflow.Unresumable(ctx, a.store, tx, issue)
+	reason, err := workflow.Unresumable(ctx, a.store, tx, a.project, issue)
 	return reason, reason != "", err
 }
 

@@ -88,11 +88,12 @@ export const ActorSchema = z.union([
       /** The subject of the verified service token that authenticated the write
        *  (`system:serviceaccount:<namespace>:<name>`); absent under any other bearer. */
       service: z.string().optional(),
-      /** The one project key the write's credential may write. The server reads it from an
+      /** The project key the write's credential's token names. The server reads it from an
        *  access token the secrets broker issued for that project and never from a body, as it
        *  reads `service` from a service token; it is absent under every credential that names
        *  none, a browser cookie, a personal token and a broker token scoped to its person
-       *  included. */
+       *  included. A token that names a project also writes other projects' objects, as a
+       *  credential that names none does, except in a private project it does not name. */
       project: z.string().optional(),
       proven: z.literal(true).optional(),
     })
