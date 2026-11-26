@@ -212,6 +212,8 @@ func treeEffects(t *testing.T, project, w string, architect claim.Token, artifac
 		// The reconcile of w's news of its approved design, whose row names the tree's root and carries
 		// nothing (record.DesignNewsReconcile).
 		string(record.OutboxKindDesignChanges): {w, record.DesignNewsReconcile{}},
+		// The project's merge-holds change notice to w's merger (record.MergeHoldsChanged, #4065).
+		string(record.OutboxKindMergeHoldsChanged): {w, record.MergeHoldsChanged{Project: project}},
 		// What the release before cannot run, which the step deletes or strips.
 		"dispatch_status with an option": {w, option},
 	}
