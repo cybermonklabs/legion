@@ -11,6 +11,7 @@ import type {
   HeadNotRead,
   IssueCheckResults,
 } from "@legion/contracts";
+import { newestResultsText } from "@legion/contracts";
 import { actorText } from "../actor-text";
 
 /** How many characters of a reading `--brief` keeps. R2 of the spec sets the number: a reader
@@ -130,16 +131,6 @@ function basisPlace(basis: CheckBasis): string {
   return "the commit you named";
 }
 
-/** Where the results a head line lists stand, as the bases the line has just named: `at that
- *  commit` or `at those commits` for heads and named commits, `on that branch` or `on those
- *  branches` for branches, and `at what the check compared with` for a mix of the two. */
-function comparedPlace(bases: readonly CheckBasis[]): string {
-  const branches = bases.filter((basis) => basis.kind === "branch").length;
-  if (branches === 0) return bases.length > 1 ? "at those commits" : "at that commit";
-  if (branches === bases.length) return bases.length > 1 ? "on those branches" : "on that branch";
-  return "at what the check compared with";
-}
-
 /** The first of R4's two facts: where one result's commit stands against what its check compared
  *  with. A Dispatch server that does not answer it says so rather than reading as another
  *  commit. An answer a linked repository decided names it (`repo`). */
@@ -196,32 +187,16 @@ function passStandsText(pass: CheckPassStands | undefined): string {
 }
 
 /** A recorded check's answer for the gate: Dispatch's answer, whether a pass stands, then the
- *  newest result of each role at what the check compared with (comparedPlace), pass and fail
- *  alike, oldest first: `A pass stands: yes. Newest at that commit: implementer: pass (2120a467);
- *  tester: fail (9f5fd8c4, newer)`. The roles of the passes that stand, alone, read as a verdict
- *  and hid a newer fail beside a pass; the list names both. Each result is named by the first eight
- *  characters of its id, which its own line below names whole. The API serves results newest
- *  first, so the first result of each role is its newest. A retracted result proves nothing and is
- *  left out. A result recorded later than the one before it in the list says `newer`, and one the
- *  check's words moved after says so. With no result there, the answer stands alone. What counts
- *  as a pass that stands is Dispatch's answer, which this does not judge. */
+ *  newest result of each role at what the check compared with, pass and fail alike, in the words
+ *  the dashboard's Verification tab shows too (newestResultsText): `A pass stands: yes. Newest at
+ *  that commit: implementer: pass (2120a467); tester: fail (9f5fd8c4, newer)`. With no result
+ *  there, the answer stands alone. What counts as a pass that stands is Dispatch's answer, which
+ *  this does not judge. */
 function recordedPassText(check: CheckBlock): string {
   const pass = check.pass_stands;
   const answer = passStandsText(pass === undefined ? undefined : { ...pass, roles: [] });
-  const newest = new Map<string, CheckResult>();
-  for (const result of check.results ?? []) {
-    if (result.commit_stands?.answer !== "at_basis" || result.retracted !== undefined) continue;
-    if (!newest.has(result.role)) newest.set(result.role, result);
-  }
-  if (newest.size === 0) return answer;
-  const ordered = [...newest.values()].reverse();
-  const named = ordered.map((result, at) => {
-    const notes = [result.id.slice(0, 8)];
-    if (at > 0 && result.created_at !== ordered[at - 1]?.created_at) notes.push("newer");
-    if (result.check_words_moved === true) notes.push("the check's words moved after it");
-    return `${result.role}: ${result.verdict} (${notes.join(", ")})`;
-  });
-  return `${answer}. Newest ${comparedPlace(check.compared_with ?? [])}: ${named.join("; ")}`;
+  const newest = newestResultsText(check);
+  return newest === undefined ? answer : `${answer}. ${newest}`;
 }
 
 /** Text a role or a person wrote (a reading, a retraction's reason, a check's words) on a line that

@@ -173,10 +173,13 @@ test("each check reads the server's answer over every result of it", async () =>
     "Dispatch cannot say whether a pass stands",
     "No pass stands",
   ]);
-  // Only a check whose pass stands names the roles it stands from.
-  expect(screen.getAllByTestId("verification-check-roles").map((row) => row.textContent)).toEqual([
-    "from tester",
+  // Each check that compared with a commit names the newest result of each role there; the
+  // roles a pass stands from are no longer drawn beside a recorded check's answer.
+  expect(screen.getAllByTestId("verification-check-newest").map((row) => row.textContent)).toEqual([
+    "Newest at that commit: tester: pass (result-1)",
+    "Newest at that commit: tester: fail (result-2)",
   ]);
+  expect(screen.queryByTestId("verification-check-roles")).toBeNull();
   // The check with no result says so where its results would be.
   expect(screen.getByTestId("verification-check-no-results").textContent).toBe(
     "No result recorded against this check."
@@ -185,7 +188,7 @@ test("each check reads the server's answer over every result of it", async () =>
 
 // R9: no state of a check is read from its newest result alone. The newest result of this
 // check is a fail, and the pass recorded before it still stands at the head, so the check
-// reads that a pass stands and names the role whose pass it is.
+// reads that a pass stands, and names the newest result of each role beside it.
 test("a check whose newest result failed still reads the pass that stands", async () => {
   const { getIssueResults, view } = renderTab(verification, [
     check("c1", [
@@ -200,7 +203,9 @@ test("a check whose newest result failed still reads the pass that stands", asyn
 
   await screen.findByTestId("verification-checks");
   expect(screen.getByTestId("verification-check-pass-stands").textContent).toBe("A pass stands");
-  expect(screen.getByTestId("verification-check-roles").textContent).toBe("from tester");
+  expect(screen.getByTestId("verification-check-newest").textContent).toBe(
+    "Newest at that commit: tester: pass (result-o); reviewer: fail (result-n)"
+  );
   // Both results are drawn, in the order the server served them, each with its own role.
   const rows = screen.getAllByTestId("verification-result");
   expect(
@@ -209,6 +214,43 @@ test("a check whose newest result failed still reads the pass that stands", asyn
   expect(
     rows.map((row) => within(row).getByTestId("verification-result-verdict").textContent)
   ).toEqual(["Fail", "Pass"]);
+});
+
+// Beside the server's answer, a recorded check names the newest result of each role at the commit
+// it compared with, pass and fail alike, oldest first, in the words `dispatch results` prints
+// (newestResultsText), so a newer fail beside a pass is never hidden behind that answer. The pair
+// is INFRA-5924's check c-wayback-runs: an implementer's pass, then a tester's newer fail.
+test("a check names each role's newest result at the compared commit, a newer fail beside a pass", async () => {
+  const { getIssueResults, view } = renderTab(verification, [
+    check(
+      "c-wayback-runs",
+      [
+        result({
+          created_at: "2026-11-26T11:00:00Z",
+          failed: 1,
+          id: "9f5fd8c4-0000-4000-8000-000000000002",
+          verdict: "fail",
+        }),
+        result({
+          created_at: "2026-11-26T10:00:00Z",
+          id: "2120a467-0000-4000-8000-000000000001",
+          role: "implementer",
+        }),
+      ],
+      { pass_stands: { answer: "yes", roles: ["implementer"] } }
+    ),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  await screen.findByTestId("verification-checks");
+  expect(screen.getByTestId("verification-check-pass-stands").textContent).toBe("A pass stands");
+  expect(screen.getByTestId("verification-check-newest").textContent).toBe(
+    "Newest at that commit: implementer: pass (2120a467); tester: fail (9f5fd8c4, newer)"
+  );
+  expect(screen.queryByTestId("verification-check-roles")).toBeNull();
 });
 
 // The two facts of R4, kept apart: where the result's commit stands, and whether the check's

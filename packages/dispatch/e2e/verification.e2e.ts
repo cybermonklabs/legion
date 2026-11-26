@@ -120,10 +120,12 @@ A check nobody has run yet reads no result.
     ]);
 
     // The result recorded through the API sits under its own check, and a pass of that check
-    // stands, from the role that recorded it.
+    // stands, with the newest result of the role that recorded it named beside the answer.
     const passed = checks.filter({ hasText: "The tab lists every check of the document." });
     await expect(passed).toHaveAttribute("data-pass-stands", "yes");
-    await expect(passed.getByTestId("verification-check-roles")).toHaveText("from tester");
+    await expect(passed.getByTestId("verification-check-newest")).toHaveText(
+      /^Newest at that commit: tester: pass \([0-9a-f]{8}\)$/
+    );
     await expect(passed.getByTestId("verification-check-when")).toHaveText("before_merge");
     await expect(passed.getByTestId("verification-check-surface")).toHaveText("browser");
     const result = passed.getByTestId("verification-result");
@@ -407,7 +409,8 @@ A retracted pass stands for nothing.
 
     // Both results are drawn, newest first, each with the reading its role recorded. The
     // check's own answer is read over both of them: the tester's pass stands at the head, and
-    // the reviewer's later fail takes nothing away from it.
+    // the reviewer's later fail takes nothing away from it. Beside that answer the check names
+    // the newest result of each role at the head, so the later fail is not hidden behind it.
     const both = checks.filter({ hasText: "A pass at the head stands under a later fail" });
     await expect(both.getByTestId("verification-result")).toHaveCount(2);
     await expect(both.getByTestId("verification-result-verdict")).toHaveText(["Fail", "Pass"]);
@@ -418,7 +421,9 @@ A retracted pass stands for nothing.
     ]);
     await expect(both).toHaveAttribute("data-pass-stands", "yes");
     await expect(both.getByTestId("verification-check-pass-stands")).toHaveText("A pass stands");
-    await expect(both.getByTestId("verification-check-roles")).toHaveText("from tester");
+    await expect(both.getByTestId("verification-check-newest")).toHaveText(
+      /^Newest at that commit: tester: pass \([0-9a-f]{8}\); reviewer: fail \([0-9a-f]{8}, newer\)$/
+    );
 
     // The one pass of the other check is retracted, so no pass of it stands. The result is
     // neither changed nor hidden: it shows as retracted, with the reason it is wrong.

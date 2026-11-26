@@ -1,3 +1,4 @@
+import { newestResultsText } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
@@ -303,6 +304,11 @@ function ComparedWith({ check }: { check: CheckBlock }): ReactNode {
 function Check({ check }: { check: CheckBlock }): ReactNode {
   const stands = check.pass_stands.answer;
   const roles = check.pass_stands.roles ?? [];
+  // A recorded check names the newest result of each role at what it compared with, in the words
+  // `dispatch results` prints, since the roles of the passes that stand, alone, read as a verdict
+  // and hide a newer fail beside a pass. A check CI proves has one derived result, drawn below,
+  // and keeps the role its pass stands from.
+  const newest = check.ci === undefined ? newestResultsText(check) : undefined;
   const results = check.results ?? [];
   // The pull requests whose head Dispatch has not read, and those it does not know are this
   // issue's. The server omits each list where it is empty, and so does the tab.
@@ -322,12 +328,20 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
           >
             {PASS_STANDS_LABELS[stands]}
           </span>
-          {roles.length === 0 ? null : (
+          {check.ci !== undefined && roles.length > 0 ? (
             <span
               className={`text-sm ${textMutedOnSurface}`}
               data-testid="verification-check-roles"
             >
               from {roles.join(", ")}
+            </span>
+          ) : null}
+          {newest === undefined ? null : (
+            <span
+              className={`text-sm ${textMutedOnSurface}`}
+              data-testid="verification-check-newest"
+            >
+              {newest}
             </span>
           )}
         </span>

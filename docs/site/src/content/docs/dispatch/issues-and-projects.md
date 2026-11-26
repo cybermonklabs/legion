@@ -334,7 +334,9 @@ agents using it stop working at once.
   the issue has a plan document.
 - **Verification** is the issue's Verification document and, under it, each check the document
   marks, with every result recorded against that check, newest first. Each check says whether a
-  pass stands and from which roles, and names what Dispatch compared the results with: each head
+  pass stands and, beside that answer, the newest result of each role at the commit it compared
+  with, pass and fail alike, as `dispatch results` prints it (a check CI proves names the role
+  its pass stands from), and names what Dispatch compared the results with: each head
   of the issue's pull requests for a before-merge check, the branches for the other two kinds,
   or the reason there is nothing to compare with, which is that the issue has no pull request
   and no branch, or that Dispatch could not read the repository. Each result carries the whole
