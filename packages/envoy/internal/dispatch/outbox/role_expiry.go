@@ -376,8 +376,11 @@ func recordKeptExpiry(ctx context.Context, deps Deps, instance uuid.UUID, stored
 //     passed over: no row is written, so nothing is kept again and nothing is recorded
 //     undelivered;
 //   - a lane that holds nothing there lost the copy to the stream's retention only when the
-//     sequence is below the first message the stream still holds: the stream drops its oldest
-//     messages first, by its age and its limits. That copy is gone, and the expiry pass ends its
+//     sequence is below the first message the stream still holds. The stream removes its messages
+//     oldest first by its age alone: it discards new messages at its byte limit
+//     (nats.DiscardNew), so that limit removes none. This assumes the stream has no per-subject
+//     limit (MaxMsgsPerSubject), which this repository's programs never set and which would remove
+//     a subject's older messages mid-stream. That copy is gone, and the expiry pass ends its
 //     pair over it (readExpiredCopy, copy_gone). A sequence at or past that first message where
 //     the lane holds nothing - a message of another subject stands there, or none does - is one no
 //     copy of the lane's expired at, and the notice is passed over.
@@ -831,8 +834,8 @@ func readExpiredCopy(ctx context.Context, deps Deps, held expiredCopy) (contract
 	}
 	switch read.state {
 	case laneCopyUndecodable:
-		slog.Error("dispatch outbox: an expired copy cannot be decoded; it is gone", "event_id", held.eventID, "role", held.role,
-			"sequence", held.sequence, "error", read.decodeErr)
+		slog.Error("dispatch outbox: the stream holds a message no read can decode at the expired copy's sequence, which only a stream created again since the notice's record holds there; the expired copy is gone",
+			"event_id", held.eventID, "role", held.role, "sequence", held.sequence, "error", read.decodeErr)
 	case laneCopyOther:
 		slog.Error("dispatch outbox: the stream holds another copy than the expired one at its sequence; the expired copy is gone",
 			"event_id", held.eventID, "role", held.role, "sequence", held.sequence, "dedupe_key", held.dedupeKey,

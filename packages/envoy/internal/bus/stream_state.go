@@ -19,6 +19,15 @@ type sessionStreamState struct {
 	firstSeq, lastSeq uint64
 }
 
+// streamID is the stream's identity as s read it, and ErrNoStreamID for a stream that carries none:
+// the one answer of Client.StreamID and SessionConsumers.StreamID.
+func (s sessionStreamState) streamID() (string, error) {
+	if s.id == "" {
+		return "", ErrNoStreamID
+	}
+	return s.id, nil
+}
+
 // sessionStreamReadWait bounds one read of the stream's state (streamState).
 const sessionStreamReadWait = 5 * time.Second
 
@@ -129,8 +138,5 @@ func (c *Client) StreamID(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if state.id == "" {
-		return "", ErrNoStreamID
-	}
-	return state.id, nil
+	return state.streamID()
 }

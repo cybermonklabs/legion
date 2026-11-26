@@ -146,7 +146,7 @@ func TestAnOutboxCopyWhoseHourEndsIsToldToDispatch(t *testing.T) {
 	})
 }
 
-// noticeStop is where a noticeSeam stops the walk of the listener it stops.
+// noticeStop is where stoppingNotices stops the walk of the listener it stops.
 type noticeStop int
 
 const (

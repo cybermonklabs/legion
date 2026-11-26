@@ -739,7 +739,9 @@ on another role's expiry subject, whose event was never routed to that role, or 
 name that event's copy: the notice's sequence is not below its own; the role's kept lane holds a
 message there that no read can decode, or another copy than Dispatch's copy of that event under
 the notice's dedupe key; or the lane holds nothing there, and the sequence is at or past the
-first message the stream still holds, so the stream's retention did not remove a copy there. A
+first message the stream still holds, so the stream's retention did not remove a copy there: the
+stream removes messages oldest first by its age alone, since it discards new messages at its byte
+limit, and this assumes it has no per-subject limit, which would remove older messages mid-stream. A
 passed-over notice writes no row, so nothing is kept again and nothing is recorded undelivered.
 It records each other notice in `outbox_role_copy_expiries`, keyed by the event, the role and
 the attempt, which is the outbox's own next attempt for that pair (the notice's own attempt is

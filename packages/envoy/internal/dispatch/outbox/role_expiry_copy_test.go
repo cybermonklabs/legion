@@ -189,7 +189,7 @@ func TestAnExpiredCopyWhoseSequenceHoldsAnotherCopyIsGone(t *testing.T) {
 // since, which numbers its notices from its own first message - is set back to this stream's
 // start: the notice this stream holds below the old cursor is recorded and kept again, and the
 // cursor then stands at that notice and names this stream. With the identity check taken away
-// (readKeptExpiries), the read starts past the old cursor and the notice is never recorded.
+// (keptExpiryStart), the read starts past the old cursor and the notice is never recorded.
 func TestACursorOfAnotherStreamIsSetBackToThisStreamsStart(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
@@ -225,5 +225,44 @@ func TestACursorOfAnotherStreamIsSetBackToThisStreamsStart(t *testing.T) {
 	}
 	if lane := keptLane(t, rig.client, role); len(lane) != 2 {
 		t.Fatalf("role %s's kept lane holds %d copies, want the scan's one and the keep again", role, len(lane))
+	}
+}
+
+// noIdentity reads the lane and the cursor as its reader does, and answers that the stream carries
+// no identity (bus.ErrNoStreamID).
+type noIdentity struct{ KeptLaneReader }
+
+func (noIdentity) StreamID(context.Context) (string, error) { return "", bus.ErrNoStreamID }
+
+// A stream with no identity cannot be told from one created again, so the outbox reads no notice
+// from it (keptExpiryStart): the pass fails, the notice records nothing and the cursor is not
+// written. A pass whose reader answers the stream's identity then records the same notice and
+// keeps the event again, which is the control that the notice is one a pass records. With the
+// missing identity taken as "" - the answer bus.Client.StreamID gave before - the first pass
+// records the notice.
+func TestAStreamWithNoIdentityHasNoNoticeRead(t *testing.T) {
+	ctx := context.Background()
+	rig := newRoleRig(t)
+	const role = "expiry-no-identity"
+	deps := rig.deps()
+	deps.KeptLanes = noIdentity{rig.client}
+	blind := holding(t, deps)
+	event := expiredOnce(t, rig, blind, role)
+
+	if _, failed := blind.passKeptExpiries(ctx, unfenced{}); !failed {
+		t.Fatal("the pass over a stream with no identity did not report failed")
+	}
+	if rows := expiryRows(t, rig.database, event.ID, role); len(rows) != 0 {
+		t.Fatalf("the outbox recorded %+v from a stream with no identity, want nothing", rows)
+	}
+	var written bool
+	if err := rig.database.Pool.QueryRow(ctx, `select exists (select 1 from outbox_kept_expiry_cursor)`).Scan(&written); err != nil || written {
+		t.Fatalf("the expiry cursor was written (%v, %v), want no row", written, err)
+	}
+
+	seeing := holding(t, rig.deps())
+	seeing.passKeptExpiries(ctx, unfenced{})
+	if rows := expiryRows(t, rig.database, event.ID, role); len(rows) != 1 || rows[0].outcome == nil || *rows[0].outcome != expiryKept {
+		t.Fatalf("event %d's expiries are %+v once the reader answers the identity, want its notice recorded and kept again", event.ID, rows)
 	}
 }

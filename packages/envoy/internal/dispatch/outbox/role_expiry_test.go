@@ -310,24 +310,18 @@ func TestTheSameExpiryNoticeTwiceReopensTheRowOnce(t *testing.T) {
 // (cmd/listener, TestAnExpiryNoticeReachesDispatchWhenAListenerStopsBetweenItsWrites). Their two
 // walks store one copy's notice as a listener does, through bus.Client.PublishKeptCopyExpiry
 // under the copy's own message id (bus.KeptExpiryMsgID): the stopped walk, and the walk that took
-// its claim over. Here the notice is stored twice that way before the outbox reads it, and once
-// more after, as a walk that took over late would store it. The stream holds one notice, and the
-// outbox records one expiry, at attempt 1, and keeps the event again once. With the reopen taken
-// away (recordExpiry records nothing), no row is recorded and the lane holds the scan's copy
-// alone.
+// its claim over. Here the notice is stored twice that way before the outbox reads it - the scan's
+// copy expires once (expiredOnce) and its notice is stored again - and once more after, as a walk
+// that took over late would store it. The stream holds one notice, and the outbox records one
+// expiry, at attempt 1, and keeps the event again once. With the reopen taken away (recordExpiry
+// records nothing), no row is recorded and the lane holds the scan's copy alone.
 func TestANoticeStoredAgainByTheWalkThatTookTheClaimOverReopensTheRowOnce(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
 	const role = "expiry-stored-again"
-	rig.silent(t, contracts.RoleTopicPrefix+role)
-	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
 	outbox := holding(t, rig.deps())
-	outbox.scan(ctx, unfenced{})
+	event := expiredOnce(t, rig, outbox, role)
 	lane := keptLane(t, rig.client, role)
-	if len(lane) != 1 {
-		t.Fatalf("role %s's kept lane holds %d copies, want the scan's one", role, len(lane))
-	}
-	expire(t, rig.client, role, lane[0])
 	expire(t, rig.client, role, lane[0])
 	if notices := storedCopies(t, rig.client, bus.KeptExpiredSubject(role)); notices != 1 {
 		t.Fatalf("the stream holds %d notices of the copy, want the one both stores make", notices)
@@ -354,7 +348,8 @@ func TestANoticeStoredAgainByTheWalkThatTookTheClaimOverReopensTheRowOnce(t *tes
 // takeover's copy of a forward, which keeps the event's envelope under a key of its own, so its
 // message id names no attempt and it reads as attempt 1 - is a later expiry, not a repeat: the
 // outbox counts it as the attempt after the last one it recorded and keeps the event again. The
-// repeat the previous test sends is told from it by the copy's stream sequence.
+// repeat TestTheSameExpiryNoticeTwiceReopensTheRowOnce sends is told from it by the copy's stream
+// sequence.
 func TestAnExpiryOfAnotherCopyUnderARecordedAttemptCountsAsTheNextAttempt(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)

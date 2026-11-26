@@ -6,10 +6,11 @@ body: |-
   `envoy_role_kept_expiry_notices_total`. Dispatch's outbox reads the notices and keeps the event
   again, up to three keeps in all, or forwards it to a session that holds the role by then. After
   the third keep ends, the outbox appends a `role.undelivered` event on the event's issue,
-  document or project. A keep or a forward of such a copy that NATS refuses for good, or a copy
-  the stream's retention has removed, ends the event the same way after fewer than three keeps,
-  with reason `expired` or `copy_gone`, unless another copy of the event still carries its
-  delivery to the role. Once an hour for each role, the outbox also posts one message on the
+  document or project. A keep or a forward of such a copy that NATS refuses for good, a copy the
+  stream's retention has removed, or a copy whose sequence holds another message in a stream
+  created again since ends the event the same way after fewer than three keeps, with reason
+  `expired` or `copy_gone`, unless another copy of the event still carries its delivery to the
+  role. Once an hour for each role, the outbox also posts one message on the
   issue, or on the document's issue, that names every event the role did not take. Some expiry
   notices are passed over with one Error line, and only the outbox's notice cursor moves past
   them: one whose role is not a valid role name, one stored on another role's subject, and one
