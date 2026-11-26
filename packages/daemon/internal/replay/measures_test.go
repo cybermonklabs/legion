@@ -240,9 +240,9 @@ func TestUrgentWorkWaits(t *testing.T) {
 
 // The record of the fixture window urgent-work-waits gives the wait of urgent work its README works
 // out by hand, which its expect.json holds under main: the record gives ACME-2 its slot at 09:30,
-// as a replay under a rule that starts a P0 issue above the cap does, and every wait is cut at
-// 10:15, the end of the window's run-out, not at 10:00. The window's replay under main waits for
-// that start (pendingUntilBuilt); the record reads the waits by the same code (Measure).
+// as a replay under a rule that starts a P0 issue outside the cap does, and every wait is cut at
+// 10:15, the end of the window's run-out, not at 10:00. The window's replay under main makes that
+// start since cybermonklabs/legion#5488; the record reads the waits by the same code (Measure).
 func TestTheRecordOfUrgentWorkWaitsGivesItsHandWorkedWaits(t *testing.T) {
 	t.Parallel()
 	window, expect := readFixture(t, "urgent-work-waits")

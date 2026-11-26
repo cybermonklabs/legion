@@ -89,6 +89,7 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.DispatchAskOpened{}, intake.DispatchAskRestored{}, intake.DispatchAskClosed{}, intake.DispatchAskReply{},
 		intake.DispatchApprovalMoved{}, intake.DispatchAskTurn{}, intake.DispatchDefaultAssignee{}, intake.ApprovalsBootRead{},
 		intake.DispatchConsumerPosition{}, intake.EntrySweep{}, intake.ProjectResumed{}, intake.SignalDeadline{},
+		intake.P0BoundChanged{},
 		intake.PullRequestOpened{}, intake.PullRequestSynchronized{}, intake.PullRequestReview{}, intake.PullRequestChecks{},
 		intake.PullRequestMergeability{}, intake.PullRequestMerged{}, intake.PullRequestClosed{}, intake.PullRequestDequeued{},
 		intake.PullRequestEnqueued{}, intake.QueueTimeline{}, intake.QueueBootStatus{}, intake.ModelRequests{}, intake.TurnEdge{},

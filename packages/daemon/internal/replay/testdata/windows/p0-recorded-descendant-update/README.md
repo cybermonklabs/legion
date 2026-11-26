@@ -21,22 +21,22 @@ ACMEAUX-1 is no required ancestor, since every event of ACME-2 carries the value
 
 ## What happens
 
-| time (UTC) | fact | `main`, the record | `p0-at-once` |
+| time (UTC) | fact | the record, `main` before cybermonklabs/legion#5488 | `p0-at-once`, and `main` since cybermonklabs/legion#5488 |
 | --- | --- | --- | --- |
 | 09:00 | the daemon boots | | |
 | 09:05 | ACME-1 filed `todo`, `legion` | promoted: slot 1 of 1, architect turn from 09:05, open at 10:00 | the same |
 | 09:10 | ACME-2 filed under ACMEAUX-1, resolved P1 | the cap is full: ACME-2 waits | waits: a P1 issue needs a slot of the cap |
 | 09:30 | Dispatch's update of ACME-2: resolved P0 | nothing moves | ACME-2 is P0: the pass of the update starts it outside the cap, its slot held with no turn |
 
-Under `main`, which starts an issue outside the cap on no priority but the issue's own, the replay is the record.
-The record never started ACME-2, so under `p0-at-once` and the `none` scenario it takes its slot and its architect's start opens a segment with no turn and no end.
+Under the recorded rule, `main` before cybermonklabs/legion#5488, which starts an issue outside the cap on no priority but the issue's own, the replay is the record.
+The record never started ACME-2, so under `p0-at-once`, `main` since cybermonklabs/legion#5488, and the `none` scenario it takes its slot and its architect's start opens a segment with no turn and no end.
 
 ## The scorecards, worked by hand
 
 The span is 60 minutes. No issue finishes, returns a slot, waits on another issue, or enters a loop; no issue stands past its review.
 `waitOnlyForSlot`, `startedWithoutSlot`, `pastReviewHolding` and `pastReviewNotHolding` are 0, and `loops`, `waits` and `doneAt` are empty.
 
-**Under `main`.**
+**Under the recorded rule, `main` before cybermonklabs/legion#5488.**
 
 - ACME-1 holds a slot from 09:05 to 10:00, 55 minutes, in a turn throughout: `slotHoursInTurn` and `inFlight` 55/60 = 0.91666…, at most 1 in flight, `slotHoursNoTurn` 0; one slot, `firstSlot` ACME-1 09:05, its wait 0; `workLeft` 1.
 - Priority taken by rank: ACME-1 (`a00`) above ACME-2 (`a01`): 0.
@@ -44,7 +44,7 @@ The span is 60 minutes. No issue finishes, returns a slot, waits on another issu
 - The wait of urgent work: ACME-2, `todo` at 09:10 at P1 and P0 from 09:30, counts in P0, the highest before its first slot; no slot and not done by 10:00 (no run-out): 50 and 50 minutes, each cut.
 - `assumptions`: 1; 8 (ACME-2 is handed to Legion and the record never starts it); 9; 10 (the window holds a Dispatch child, ACME-2 under ACMEAUX-1); 15.
 
-**Under `p0-at-once`.**
+**Under `p0-at-once`, and `main` since cybermonklabs/legion#5488.**
 
 - Slots: ACME-1 09:05 to 10:00 (55 minutes, in a turn), ACME-2 09:30 to 10:00 (30, no turn): `slotHoursInTurn` 55/60 = 0.91666…, `slotHoursNoTurn` 30/60 = 0.5; two slots, `firstSlot` ACME-1 09:05, ACME-2 09:30.
   The waits: ACME-1 0, ACME-2 20 (from its filing at 09:10): the median of two, (0 + 20)/2 = 10.
@@ -53,6 +53,26 @@ The span is 60 minutes. No issue finishes, returns a slot, waits on another issu
 - Priority taken banded by resolved priority: from 09:10 to 09:30 ACME-2, at P1, ranks above ACME-1: 20/60 = 0.33333….
 - The wait of urgent work: ACME-2, P0 at its first slot at 09:30 (the reading counts the priority at the slot's moment): 20 minutes to its slot, and 50 to the window's end with no `done`, cut.
 - `assumptions`: 1, 8, 9, 10, 15.
+
+## What moved with cybermonklabs/legion#5488
+
+The record was made under `main` at `0d3786da`, before R10 reached the daemon.
+Since cybermonklabs/legion#5488, `main` starts a P0 issue outside the cap and reads the priority Dispatch resolves (`record.SlotRule.StartsNow`), as `p0-at-once` does; the two now differ only in name, so the run under `main` is the one worked above under `p0-at-once`.
+Worked from the events: at 09:10 ACME-2, resolved P1, needs a slot of the cap of 1, which ACME-1 holds, and waits; Dispatch's update at 09:30 carries `resolved_priority` 0, and the pass of that update starts ACME-2 outside the cap.
+The record never started ACME-2, so it holds its slot with no turn to 10:00, and from 09:30 nothing waits.
+
+| value under `main` | before | after |
+| --- | --- | --- |
+| `firstSlot` | ACME-1 09:05 | ACME-1 09:05, ACME-2 09:30 |
+| `slotsGivenByDay` | 1 on 2001-03-05 | 2 on 2001-03-05 |
+| `medianSlotWaitMinutes` | 0 | 10, the median of 0 (ACME-1) and 20 (ACME-2, 09:10 to 09:30) |
+| `slotHoursNoTurn` | 0 | 30/60 = 0.5 |
+| `inFlight` | 0.91666… on average and in hours, at most 1 | 85/60 = 1.41666… on average and in hours, at most 2 |
+| `workLeft` | 1 | 2 |
+| `priorityTakenBanded` | 0.83333… | 20/60 = 0.33333… (ACME-2, P1, waits above ACME-1 from 09:10 to 09:30) |
+| `urgentWaits.P0.firstSlot` | 50 and 50 minutes, cut | 20 and 20 minutes, not cut |
+
+`slotHoursInTurn`, `priorityTaken` and the wait to `done` stand as before.
 
 ## What the window shows
 

@@ -567,11 +567,6 @@ func blockedKeys(state api.State) []string {
 	return keys
 }
 
-// holdsSlot says whether key holds an admission slot in state.
-func holdsSlot(state api.State, key string) bool {
-	return slices.Contains(state.Admission.Active, key)
-}
-
 // queueReads says whether the queue's value in state is the recorded timeline's wait.
 func (r *admissionSignalsLive) queueReads(series store.SignalSeriesReading) bool {
 	return series.Value != nil && math.Abs(*series.Value-admissionSignalsQueueWait.Hours()) < 1e-9

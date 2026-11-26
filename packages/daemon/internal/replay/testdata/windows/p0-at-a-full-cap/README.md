@@ -7,8 +7,8 @@ Project ACME boots at 09:00 UTC with cap 1. No P0 bound is configured.
 - Under `before-p0`, ACME-2 waits for the whole 40 minutes after filing. ACME-1 is the sole holder and ranks behind ACME-2 throughout this wait.
 
 R10 is the start of a P0 issue outside the cap.
-`p0-at-once` runs it now, and `main` runs it once cybermonklabs/legion#5488 merges; until then `main` equals `before-p0`, and its run waits on the skip list (`pending_test.go`, ruling D16).
-So the values below under R10 are those of `p0-at-once` now, and of `main` after that merge.
+`p0-at-once` runs it, and so does `main`, which starts a P0 issue outside the cap since cybermonklabs/legion#5488; `before-p0` is the reference without that start.
+So the values below under R10 are those of `p0-at-once` and `main`.
 
 Under R10, both issues remain in flight. Their 55 + 40 = 95 minutes in flight are all slot time in turns. The maximum is 2 and the mean is 95/60. Under `before-p0` only ACME-1 starts: 55 minutes in flight and in a turn, maximum 1, mean 55/60. Priority taken is 40/60 under `before-p0` and zero under R10. Every slot granted has zero wait. No issue finishes, returns a slot, or enters a loop.
 

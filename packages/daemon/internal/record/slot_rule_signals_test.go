@@ -25,11 +25,11 @@ func TestOnlyTheTwoSignalRulesAdmitBySignals(t *testing.T) {
 		if _, signalRule := want[rule.Name]; !signalRule {
 			continue
 		}
-		if !rule.P0AboveCap {
+		if !rule.StartsNow {
 			t.Errorf("the rule %q starts no P0 issue outside the cap, and R10 holds under it", rule.Name)
 		}
 		plain := rule
-		plain.Name, plain.P0AboveCap, plain.Signals = MainRule.Name, MainRule.P0AboveCap, MainRule.Signals
+		plain.Name, plain.StartsNow, plain.Signals = MainRule.Name, MainRule.StartsNow, MainRule.Signals
 		if !reflect.DeepEqual(plain, MainRule) {
 			t.Errorf("the rule %q = %+v moves a choice off the daemon's own besides R10's start and its mode: %+v", rule.Name, rule, plain)
 		}
@@ -123,7 +123,7 @@ func TestOnlyTheSignalRulesKeepTheOwnersDirection(t *testing.T) {
 		name   string
 		change func(*SlotRule)
 	}{
-		{"no P0 outside the cap", func(r *SlotRule) { r.P0AboveCap = false }},
+		{"no P0 outside the cap", func(r *SlotRule) { r.StartsNow = false }},
 		{"no priority first", func(r *SlotRule) { r.PriorityFirst = false }},
 		{"no admission by signals", func(r *SlotRule) { r.Signals = signals.Off }},
 	} {

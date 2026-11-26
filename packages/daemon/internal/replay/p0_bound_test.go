@@ -7,8 +7,9 @@ import (
 )
 
 // A replay admits under R10's P0 bound in force at each pass, as the window records its changes
-// (Window.P0Bounds, p0BoundAt), and makes a pass at each change, as the daemon does, so a raise of
-// the bound starts at its own moment the P0 issue it lets in. The window runs a cap of 1 that
+// (Window.P0Bounds, each applied as the daemon's own change of the bound), and makes a pass at each
+// change, as the daemon does, so a raise of the bound starts at its own moment the P0 issue it lets
+// in. The window runs a cap of 1 that
 // ACME-1, with no priority, holds from 09:00, under a bound of 1 from 09:00. ACME-2, at P0, is filed
 // at 09:05 and takes its slot outside the cap; ACME-3, at P0, is filed at 09:10 and waits at the
 // bound, which is raised to 2 at 09:30, where the record starts it. No other fact falls after 09:10,

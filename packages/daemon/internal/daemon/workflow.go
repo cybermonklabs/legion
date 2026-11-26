@@ -857,6 +857,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	w.admission.UseReleasedWakes(func(ctx context.Context, tx pgx.Tx, claims []supervise.Claim) ([]workflow.ReleasedWake, error) {
 		return strandedReleaseWakes(ctx, st, tx, releaseToken, claims, clock().UTC())
 	})
+	// legion.yaml's P0 bound is the bound every pass admits under while no value set while the
+	// daemon runs stands (admit's UseP0Bound, config.Config.AdmissionP0Bound).
+	w.admission.UseP0Bound(cfg.AdmissionP0Bound)
 	// Each pass admits below P0 by the live signals, read in its own transaction from what the
 	// daemon keeps of their inputs (admit.LiveSignals), while the project's settings turn admission
 	// by signals on; a fresh project is off with no limit, and each change a person makes on the

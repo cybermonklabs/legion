@@ -30,12 +30,12 @@
         "max": 0,
         "hours": 0.0
       },
-      "priorityTaken": 0,
-      "priorityTakenBanded": 0.3333333333333333,
+      "priorityTaken": 0.3333333333333333,
+      "priorityTakenBanded": 0,
       "loops": {},
       "waits": {},
-      "slotHoursInTurn": 0.5,
-      "slotHoursNoTurn": 0.0,
+      "slotHoursInTurn": 0.0,
+      "slotHoursNoTurn": 0.5,
       "inFlight": {
         "average": 0.3333333333333333,
         "max": 1,
@@ -46,7 +46,7 @@
       },
       "medianSlotWaitMinutes": 0,
       "firstSlot": {
-        "ACME-1": "2001-03-05T10:00:00Z"
+        "ACME-2": "2001-03-05T10:00:00Z"
       },
       "doneAt": {},
       "assumptions": [1, 7, 8, 9, 10, 15],
@@ -55,9 +55,9 @@
         "P1": {
           "issues": 1,
           "firstSlot": {
-            "medianMinutes": 75,
-            "p90Minutes": 75,
-            "cut": 1
+            "medianMinutes": 45,
+            "p90Minutes": 45,
+            "cut": 0
           },
           "done": {
             "medianMinutes": 75,

@@ -11,20 +11,10 @@ import (
 // name, so that a run of this package stays a signal for every other test meanwhile. Each task's
 // code commit removes its own names, and the list is empty before the pull request goes to review.
 //
-// The three runs under main of R10's windows wait on another pull request rather than a task of
-// this plan (t27 under ruling D16): main starts no P0 issue outside the cap until
-// cybermonklabs/legion#5488 merges and the forward merge that brings it turns main's field on
-// (record.SlotRule.P0AboveCap), so their expected values, R10's, are those of each window's run
-// under p0-at-once meanwhile, which passes. That forward merge removes the three names.
-var pendingUntilBuilt = map[string]string{
-	"TestFixtureWindows/p0-at-a-full-cap/main":  d16Main,
-	"TestFixtureWindows/p0-at-its-bound/main":   d16Main,
-	"TestFixtureWindows/urgent-work-waits/main": d16Main,
-}
-
-// d16Main is the task of a run under main of a window of R10 (pendingUntilBuilt).
-const d16Main = "t27 under ruling D16: main starts no P0 issue outside the cap until cybermonklabs/legion#5488 merges; " +
-	"the window's run under p0-at-once holds R10 meanwhile"
+// The three runs under main of R10's windows that waited on cybermonklabs/legion#5488 (t27 under
+// ruling D16) pass since the forward merge that brought it turned main's field on
+// (record.SlotRule.StartsNow), and the list names none of them.
+var pendingUntilBuilt = map[string]string{}
 
 // runPendingEnv is the environment variable that, set to 1, makes skipUntilBuilt skip nothing, so
 // a check can run the pending tests to read what still fails.

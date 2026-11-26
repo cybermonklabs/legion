@@ -17,7 +17,7 @@ import (
 // issue's own priority, else that of the nearest issue above it on its Dispatch parent chain that
 // has one, in any project, up to ancestorLevels levels, else none. The measures read it under every
 // rule (ranksOf, Timeline.readUrgency), so every rule is judged on one set of urgent issues and one
-// banding of the line, and a rule with the new P0 start (record.SlotRule.P0AboveCap) reads it for
+// banding of the line, and a rule with the new P0 start (record.SlotRule.StartsNow) reads it for
 // its admissions, through the replay's copy of Dispatch (shadow.priorities) and its start state
 // (Trace.shownPriorities). A recorded rule reads each issue's own, as its release did.
 type resolvedPriorities struct {
@@ -295,18 +295,20 @@ func keyAnd(keys []string) string {
 }
 
 // refuseMissing is the refusal of a replay under rule of a window whose priorities are p, where the
-// rule starts a P0 issue outside the cap (record.SlotRule.P0AboveCap), which orders its line and
+// rule starts a P0 issue outside the cap (record.SlotRule.StartsNow), which orders its line and
 // counts its holders by the priority Dispatch resolves too, and the window lacks the history of an
 // ancestor on which that priority rests (spec R10: "If the record lacks a required ancestor's
 // history, report the missing input and make no comparison that depends on it"): the refusal names
-// each such ancestor with the issues resting on it. Nil where the rule reads no resolved priority
-// or the window lacks no ancestor: a recorded rule still runs on such a window.
+// each such ancestor with the issues resting on it, and says to collect the window again with
+// their history. Nil where the rule reads no resolved priority or the window lacks no ancestor: a
+// recorded rule still runs on such a window.
 func (p resolvedPriorities) refuseMissing(rule record.SlotRule) error {
-	if rule = rule.OrMain(); !rule.P0AboveCap || len(p.lacking) == 0 {
+	if rule = rule.OrMain(); !rule.StartsNow || len(p.lacking) == 0 {
 		return nil
 	}
 	return fmt.Errorf("replay: the rule %s starts an issue outside the cap, orders its line and counts its holders by the priority Dispatch resolves for each issue, "+
-		"and the window lacks the history of the Dispatch ancestors that priority rests on: %s; no replay of the window under %s is made (spec R10)",
+		"and the window lacks the history of the Dispatch ancestors that priority rests on: %s; no replay of the window under %s is made; "+
+		"collect the window again with the history of those ancestors (spec R10)",
 		rule.Name, p.missingText(), rule.Name)
 }
 
@@ -323,19 +325,10 @@ func restsOnResolved(name string) bool {
 
 // gives says whether the window r gives the measure name: every measure but one that rests on the
 // priority Dispatch resolves (restsOnResolved) where the window lacks the history of an ancestor
-// such a priority rests on (MissingAncestors), which a report leaves out (spec R10).
+// such a priority rests on (MissingAncestors), which a validation of the window under a recorded
+// rule leaves out (Runs.Validation, spec R10).
 func (r windowRecord) gives(name string) bool {
 	return len(r.MissingAncestors) == 0 || !restsOnResolved(name)
-}
-
-// writeMissing writes, for a window that lacks the history of an ancestor a resolved priority
-// rests on, the line a report gives in place of the measures that rest on it
-// (MissingAncestorsLine), and a blank line after it; nothing for any other window.
-func (r windowRecord) writeMissing(p *printer) {
-	if len(r.MissingAncestors) > 0 {
-		p.line("%s", MissingAncestorsLine(r.Name, r.MissingAncestors))
-		p.line("")
-	}
 }
 
 // MissingAncestorsLine is the sentence a report gives in place of the measures of window that rest

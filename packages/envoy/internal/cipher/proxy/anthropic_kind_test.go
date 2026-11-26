@@ -186,7 +186,7 @@ func newAnthropicRig(t *testing.T) *anthropicRig {
 		}).Mint},
 		// Two strings the release carries to the session unread: the session here is the rig's
 		// own client, which is pointed at the rig's proxy and trusts its authority.
-		AirlockProxyURL: "http://127.0.0.1:13381", AirlockCACertificate: "-----BEGIN CERTIFICATE-----\nanthropic-rig\n-----END CERTIFICATE-----\n",
+		AirlockProxyURL: "http://127.0.0.1:13381", ProxyRoots: func() string { return "-----BEGIN CERTIFICATE-----\nanthropic-rig\n-----END CERTIFICATE-----\n" },
 	}
 	k.machine.Chain = requests.NewChainVerifier(k.st, profileAudience, time.Minute, k.machine.Policy)
 	grants := &rolledGrants{}

@@ -80,7 +80,7 @@ func signalRuleReaders() []slotRuleReader {
 	return []slotRuleReader{
 		{
 			reader:  "admit's capHold under signals: a signal at its limit holds every start below P0, and a P0 issue still starts",
-			changes: []string{"P0AboveCap", "Signals"},
+			changes: []string{"Signals"},
 			rule:    keptSlotRule("signals"),
 			outcome: func(t *testing.T, rule record.SlotRule) string {
 				t.Helper()
@@ -99,7 +99,7 @@ func signalRuleReaders() []slotRuleReader {
 		},
 		{
 			reader:  "admit's capHold under signals: a snapshot under every limit starts at an event's and a deadline's pass and not at a tick's",
-			changes: []string{"P0AboveCap", "Signals"},
+			changes: []string{"Signals"},
 			rule:    keptSlotRule("signals"),
 			outcome: func(t *testing.T, rule record.SlotRule) string {
 				t.Helper()
@@ -122,7 +122,7 @@ func signalRuleReaders() []slotRuleReader {
 		},
 		{
 			reader:  "admit's capHold under signals-backoff: the allowance holds a start the ceiling lets",
-			changes: []string{"P0AboveCap", "Signals"},
+			changes: []string{"Signals"},
 			rule:    keptSlotRule("signals-backoff"),
 			outcome: func(t *testing.T, rule record.SlotRule) string {
 				t.Helper()

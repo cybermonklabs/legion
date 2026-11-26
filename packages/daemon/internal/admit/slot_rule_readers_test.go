@@ -272,15 +272,15 @@ func statusIn(stands phase.Phase) string {
 //     the counts of a band and the priority of each member come off the entries, and the
 //     sentence names the priority that placed a member only under a rule that bands the line.
 //     A row.
-//   - R10's start outside the cap (record.SlotRule.P0AboveCap) is read through one seam in record
-//     (record.SlotRule.StartsOutsideCap and record.SlotRule.HoldersOf, AddHolder), by four
-//     readers, each with rows under p0-at-once, the kept rule that changes that choice alone:
+//   - R10's start outside the cap (record.SlotRule.StartsNow) is read through one seam in record
+//     (record.SlotRule.StartsOutsideCap and record.SlotRule.CapCounted, over record.HoldersOf), by four
+//     readers, each with rows under main, which starts a P0 outside the cap since
+//     cybermonklabs/legion#5488, and under before-p0, the kept rule that changes that choice alone:
 //     admit's capLets, in the promotion and in lineCanMove, which lets a P0 entry through under
 //     the P0 bound and no other through but under the cap; promoteHolds, whose count of the
 //     holders leaves a P0 holder out of the cap's and whose line of each start and refusal names
 //     it; lineCanMove, whose count of the holders is the promotion's; and slotFree, which counts
-//     neither a P0 holder nor a P0 candidate against the cap. Each row's main run is the daemon's
-//     own rule, whose field is off, as before-p0's is, until cybermonklabs/legion#5488 merges. The
+//     neither a P0 holder nor a P0 candidate against the cap. The
 //     intake's decode, admit's record of each observation and the engine's write of a fact carry
 //     the priority to the record and read no rule. No row.
 func slotRuleReaders() []slotRuleReader {
@@ -992,8 +992,8 @@ func slotRuleReaders() []slotRuleReader {
 		},
 		slotRuleReader{
 			reader:  "admit's capLets in the promotion: a P0 starts outside the cap",
-			changes: []string{"P0AboveCap"},
-			rule:    keptSlotRule("p0-at-once"),
+			changes: []string{"StartsNow"},
+			rule:    keptSlotRule("before-p0"),
 			outcome: func(t *testing.T, rule record.SlotRule) string {
 				t.Helper()
 				pool := migratedPool(t)
@@ -1012,15 +1012,16 @@ func slotRuleReaders() []slotRuleReader {
 				tickThrough(t, pool, admission, "the pass")
 				return openedWord(t, pool, ranked, urgent) + "; " + slotWord(t, pool, child) + "; " + slotWord(t, pool, holder)
 			},
-			main:    "the trees open of [ACME-221 ACME-222] are []; ACME-224 holds no slot; ACME-220 holds a slot",
-			changed: "the trees open of [ACME-221 ACME-222] are [ACME-222]; ACME-224 holds no slot; ACME-220 holds a slot",
-			why: "a full cap lets no start through that needs a slot; under a rule that starts a P0 outside the cap, an issue whose own " +
-				"priority is P0 starts whatever the slots in use, and one that takes P0 from its tree root alone, or is P1, waits",
+			main:    "the trees open of [ACME-221 ACME-222] are [ACME-222]; ACME-224 holds no slot; ACME-220 holds a slot",
+			changed: "the trees open of [ACME-221 ACME-222] are []; ACME-224 holds no slot; ACME-220 holds a slot",
+			why: "under main, which starts a P0 outside the cap, an issue whose own priority is P0 starts whatever the slots in use, " +
+				"and one that takes P0 from its tree root alone, or is P1, waits; under a rule that starts none there, a full cap lets " +
+				"no start through that needs a slot",
 		},
 		slotRuleReader{
 			reader:  "admit's capLets in lineCanMove: a P0 starts outside the cap",
-			changes: []string{"P0AboveCap"},
-			rule:    keptSlotRule("p0-at-once"),
+			changes: []string{"StartsNow"},
+			rule:    keptSlotRule("before-p0"),
 			outcome: func(t *testing.T, rule record.SlotRule) string {
 				t.Helper()
 				pool := migratedPool(t)
@@ -1037,17 +1038,18 @@ func slotRuleReaders() []slotRuleReader {
 				tickThrough(t, pool, admission, "the measure")
 				return stalledWord(stalledRoots(t, pool))
 			},
-			main:    "the controller is told that [ACME-225] stopped",
-			changed: "the controller is told of no stopped tree",
-			why: "the stall measure's free-slot term asks the cap what the promotion asks it: a root that never ran is held by a full " +
-				"cap and the line is stopped, and under a rule that starts a P0 outside the cap a root at P0 starts and the line moves",
+			main:    "the controller is told of no stopped tree",
+			changed: "the controller is told that [ACME-225] stopped",
+			why: "the stall measure's free-slot term asks the cap what the promotion asks it: under main, which starts a P0 outside " +
+				"the cap, a root at P0 starts and the line moves; under a rule that starts none there, a root that never ran is held " +
+				"by a full cap and the line is stopped",
 		},
 		slotRuleReader{
 			// The holders' count of the stall measure: the one holder is a P0 root that waits on
 			// a person, and the root that waits in the line is at P1, so only the count decides.
 			reader:  "admit's lineCanMove: the cap counts no P0 holder",
-			changes: []string{"P0AboveCap"},
-			rule:    keptSlotRule("p0-at-once"),
+			changes: []string{"StartsNow"},
+			rule:    keptSlotRule("before-p0"),
 			outcome: func(t *testing.T, rule record.SlotRule) string {
 				t.Helper()
 				pool := migratedPool(t)
@@ -1064,18 +1066,18 @@ func slotRuleReaders() []slotRuleReader {
 				tickThrough(t, pool, admission, "the measure")
 				return stalledWord(stalledRoots(t, pool))
 			},
-			main:    "the controller is told that [ACME-227] stopped",
-			changed: "the controller is told of no stopped tree",
-			why: "the stall measure counts the holders the cap counts: a holder that waits on a person fills the cap of one and the " +
-				"line is stopped, and under a rule that starts a P0 outside the cap a P0 holder fills none of it, so the root at P1 " +
-				"starts and the line moves",
+			main:    "the controller is told of no stopped tree",
+			changed: "the controller is told that [ACME-227] stopped",
+			why: "the stall measure counts the holders the cap counts: under main, which starts a P0 outside the cap, a P0 holder " +
+				"fills none of it, so the root at P1 starts and the line moves; under a rule that starts none there, a holder that " +
+				"waits on a person fills the cap of one and the line is stopped",
 		},
 		slotRuleReader{
 			// The holders' count of the promotion and the P0 bound: a P0 holder fills the cap of
-			// one under main, and two P0 roots and one at P1 wait, under a bound of two.
+			// one under before-p0, and two P0 roots and one at P1 wait, under a bound of two.
 			reader:  "admit's promoteHolds: the cap counts the holders below P0, and the P0 bound the rest",
-			changes: []string{"P0AboveCap"},
-			rule:    keptSlotRule("p0-at-once"),
+			changes: []string{"StartsNow"},
+			rule:    keptSlotRule("before-p0"),
 			outcome: func(t *testing.T, rule record.SlotRule) string {
 				t.Helper()
 				pool := migratedPool(t)
@@ -1089,24 +1091,25 @@ func slotRuleReaders() []slotRuleReader {
 				admission := ruledAdmission(t, 1, rule, slog.New(slog.NewJSONHandler(&logged, nil)))
 				admission.store = prioritized{Store: admission.store, of: map[string]record.Priority{holder: record.P0, first: record.P0,
 					ranked: record.P1, second: record.P0}}
-				admission.UseP0Bound(func() *int { return new(2) })
+				admission.UseP0Bound(new(2))
 				tickThrough(t, pool, admission, "the pass")
 				return openedWord(t, pool, first, ranked, second) + "; " + p0LinesWord(t, &logged)
 			},
-			main: "the trees open of [ACME-241 ACME-242 ACME-243] are []; the pass logs no P0 line",
-			changed: "the trees open of [ACME-241 ACME-242 ACME-243] are [ACME-241 ACME-242]; the pass logs [" +
+			main: "the trees open of [ACME-241 ACME-242 ACME-243] are [ACME-241 ACME-242]; the pass logs [" +
 				"admission starts a P0 issue outside the cap: ACME-241, 2 P0 holders, 0 other holders, cap 1, bound 2; " +
 				"admission holds a P0 issue at the P0 bound: ACME-243, 2 P0 holders, 0 other holders, cap 1, bound 2]",
-			why: "a holder fills the cap and no root starts; under a rule that starts a P0 outside the cap, the cap counts no P0 " +
-				"holder, so the root at P1 starts, and the P0 bound counts the P0 holders, so the first P0 root starts outside the " +
-				"cap and the second waits at the bound, each logged with the holders, the cap and the bound",
+			changed: "the trees open of [ACME-241 ACME-242 ACME-243] are []; the pass logs no P0 line",
+			why: "under main, which starts a P0 outside the cap, the cap counts no P0 holder, so the root at P1 starts, and the P0 " +
+				"bound counts the P0 holders, so the first P0 root starts outside the cap and the second waits at the bound, each " +
+				"logged with the holders, the cap and the bound; under a rule that starts none there, a holder fills the cap and no " +
+				"root starts",
 		},
 		slotRuleReader{
 			// The read of a free slot the controller is woken by: a P0 holder and a P0 root in the
 			// line at a cap of one.
 			reader:  "admit's slotFree: a P0 holder and a P0 candidate take none of the cap's slots",
-			changes: []string{"P0AboveCap"},
-			rule:    keptSlotRule("p0-at-once"),
+			changes: []string{"StartsNow"},
+			rule:    keptSlotRule("before-p0"),
 			outcome: func(t *testing.T, rule record.SlotRule) string {
 				t.Helper()
 				pool := migratedPool(t)
@@ -1120,10 +1123,11 @@ func slotRuleReaders() []slotRuleReader {
 				}
 				return "no slot of the cap stands free"
 			},
-			main:    "no slot of the cap stands free",
-			changed: "a slot of the cap stands free",
-			why: "the holder fills the cap of one and the root in the line would take a slot; under a rule that starts a P0 outside " +
-				"the cap, neither the P0 holder nor the P0 root in the line counts against the cap, so its one slot stands free",
+			main:    "a slot of the cap stands free",
+			changed: "no slot of the cap stands free",
+			why: "under main, which starts a P0 outside the cap, neither the P0 holder nor the P0 root in the line counts against " +
+				"the cap, so its one slot stands free; under a rule that starts none there, the holder fills the cap of one and the " +
+				"root in the line would take a slot",
 		},
 		slotRuleReader{
 			reader:  "admit's releaseIdleSlots: a holder idle while its children work",

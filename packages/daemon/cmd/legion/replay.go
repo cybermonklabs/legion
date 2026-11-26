@@ -1572,7 +1572,7 @@ func newReplayRulesCommand(stdout, _ io.Writer) *cobra.Command {
 			fmt.Fprintf(stdout, "  a start takes: %s\n", rule.Take)
 			fmt.Fprintf(stdout, "  a conflicting head: %s\n", rule.Conflict)
 			fmt.Fprintf(stdout, "  the slot goes back at the ready mark: %t\n", rule.ReleaseAtReady)
-			fmt.Fprintf(stdout, "  a P0 starts outside the cap: %t\n", rule.P0AboveCap)
+			fmt.Fprintf(stdout, "  a P0 starts outside the cap: %t\n", rule.StartsNow)
 			fmt.Fprintf(stdout, "  an idle wait on children or a person gives the slot back after: %s\n", rule.IdleReturn)
 			if rule.Signals != signals.Off {
 				fmt.Fprintf(stdout, "  admits below P0 by signals: %s\n", rule.Signals)
@@ -1599,7 +1599,7 @@ type slotRuleView struct {
 	Take                  record.StartTake    `json:"take"`
 	Conflict              record.ConflictPath `json:"conflict"`
 	ReleaseAtReady        bool                `json:"releaseAtReady"`
-	P0AboveCap            bool                `json:"p0AboveCap"`
+	StartsNow             bool                `json:"startsNow"`
 	IdleReturn            string              `json:"idleReturn"`
 	Signals               signals.Mode        `json:"signals,omitempty"`
 }
@@ -1609,7 +1609,7 @@ func slotRuleViewOf(rule record.SlotRule) slotRuleView {
 	return slotRuleView{Name: rule.Name, Commit: rule.Commit, KeepsSlotIn: rule.KeepsSlotIn, LinkWaitGivesBack: rule.LinkWaitGivesBack,
 		ChildrenWaitGivesBack: rule.ChildrenWaitGivesBack, WaitGrace: rule.WaitGrace.String(), WaitStopsPhase: rule.WaitStopsPhase,
 		Order: rule.Order, PriorityFirst: rule.PriorityFirst, Take: rule.Take, Conflict: rule.Conflict, ReleaseAtReady: rule.ReleaseAtReady,
-		P0AboveCap: rule.P0AboveCap, Signals: rule.Signals,
+		StartsNow: rule.StartsNow, Signals: rule.Signals,
 		IdleReturn: rule.IdleReturn.String()}
 }
 
