@@ -2,7 +2,9 @@ package record
 
 import (
 	"context"
+	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"sort"
 	"time"
@@ -28,6 +30,19 @@ func RankLess(a, b Issue) bool {
 // (blockers.Unfinished). It lives here because the rules that read a record's own status for
 // the same question are here too (cycleAncestor).
 const DoneStatus = "done"
+
+// AcceptedStatus says whether Dispatch shows an issue accepted: retro, the head the step before its
+// retro passed accepted, or done (DoneStatus). It is the Dispatch half of R1's first condition for
+// a basis (dispatch://INFRA-3320): register_gate refuses an ancestor Dispatch shows so, and the
+// daemon ends a step's wait on such an ancestor's request, wherever it reads the status.
+func AcceptedStatus(status string) bool {
+	return status == DoneStatus || status == "retro"
+}
+
+// BasisNotYetAccepted is what every BASIS_ACCEPTED refusal of a registration on a basis ends with:
+// register_gate's of an ancestor that Dispatch shows accepted or the daemon records so (api's
+// registrationBasis), and the daemon's of one accepted since that read (workflow's acceptedBasis).
+const BasisNotYetAccepted = "a basis is an ancestor not yet accepted, so request a person's approval of the issue's own document"
 
 // OutOfWorkflowStatuses are the four Dispatch statuses that take an issue out of the workflow,
 // and the one list of them: OutOfWorkflow is this list read as a predicate, so a status added
@@ -90,13 +105,13 @@ const EndChildRule = "End a child with your own status write in Dispatch. " +
 	"After each move, read the child back (dispatch read --issue <KEY>). " +
 	"When the daemon set the move back, write it again."
 
-// StatusNotTakenYet is the sentence that each refusal and notice over children still in the
-// workflow adds: sign_off's and close_root's (workflow's endChildrenFirst), the pr-merged notice
-// (workflow's waitingForTree) and the retro-held notice (workflow's retroHeldNotice). The daemon
-// reads the architect's status write on a child from that write's Dispatch event, and the event
-// consumer can deliver the event after the architect calls again. Until then the record holds the
-// child in the workflow and the refusal names it, so the architect waits for read_record to show
-// its move (dispatch://INFRA-3178 R1).
+// StatusNotTakenYet is the sentence that the architect's refusals over children still in the
+// workflow, the pr-merged notice and the retro-held notice carry; workflow's endChildWords holds
+// it with EndChildRule and names each text that carries them. The daemon reads the architect's
+// status write on a child from that write's Dispatch event, and the event consumer can deliver
+// the event after the architect calls again. Until then the record holds the child in the
+// workflow and the refusal names it, so the architect waits for read_record to show its move
+// (dispatch://INFRA-3178 R1).
 //
 // It lives here, beside EndChildRule, because the legion tool's description carries both texts
 // (packages/pi-legion/src/tools.ts). The tests that hold EndChildRule to that description
@@ -137,8 +152,9 @@ func Stopped(issue Issue) bool { return !InWorkflow(issue) || issue.Lingers() }
 //
 // It is the one reading of where an issue stands, and the rules that must never read a held
 // issue differently all take it: the phase half of the slot rule (PhaseKeepsSlot, through
-// KeepsSlot) and the acceptance rules (StandsIn, and Accepted over it). A hold the record names
-// no phase for answers phase.Held itself, which is all the daemon knows of it.
+// KeepsSlot) and the acceptance rules (StandsIn, and Accepted, which reads AcceptedPhase of it).
+// A hold the record names no phase for answers phase.Held itself, which is all the daemon knows
+// of it.
 func StandsAt(issue Issue) phase.Phase {
 	if issue.Phase == phase.Held && issue.Hold != nil {
 		return issue.Hold.From
@@ -147,20 +163,30 @@ func StandsAt(issue Issue) phase.Phase {
 }
 
 // StandsIn says whether issue stands in one of phases (StandsAt), counting a hold from one of
-// them as standing there. It is the one shape every question about where an issue stands is
-// written over — Accepted here, and the workflow's own awaitsMerge, its close of a merged issue
-// and its open review round — so no two of those questions read a held issue differently.
+// them as standing there. It is the one shape every question about where an issue stands in a
+// list of phases is written over — the workflow's own awaitsMerge, its close of a merged issue
+// and its open review round — so no two of those questions read a held issue differently;
+// Accepted and InSlotlessPhase read StandsAt as they do, Accepted through AcceptedPhase.
 func StandsIn(issue Issue, phases ...phase.Phase) bool {
 	return slices.Contains(phases, StandsAt(issue))
 }
 
+// AcceptedPhase says whether p is one of the phases past the daemon's acceptance of an issue's
+// head: its retro and its merge. The two phases are named here and nowhere else, so that no rule
+// of the acceptance order can read a list of its own: one that did is what let a child held from
+// retro through. Accepted reads it of where an issue stands, and the workflow reads it of the
+// phase a move left (workflow's acceptedEntry) and of the phase a move enters.
+func AcceptedPhase(p phase.Phase) bool {
+	return p == phase.Retro || p == phase.Merging
+}
+
 // Accepted says whether the daemon has already accepted issue's head, the head the last step of
 // its task passed, and the issue has not closed: it stands in its retro or in its merge, or is
-// held from one of them (StandsIn). The head is the reviewed one only where the task has a
-// reviewer step; a plan with no reviewer step has no reviewed head. Work entering the workflow
-// beneath an issue in one of those phases would let that issue merge first, which is the one
-// thing a parent must not do (dispatch://INFRA-980, "Children first"). The head of a root whose
-// worker died in retro or merging is accepted still, so the hold must not let work in beneath
+// held from one of them (StandsAt, AcceptedPhase). The head is the reviewed one only where the
+// task has a reviewer step; a plan with no reviewer step has no reviewed head. Work entering the
+// workflow beneath an issue in one of those phases would let that issue merge first, which is the
+// one thing a parent must not do (dispatch://INFRA-980, "Children first"). The head of a root
+// whose worker died in retro or merging is accepted still, so the hold must not let work in beneath
 // it: the line held no issue under such a root, the two doors let one in, and the close of a
 // root held from retro handed over nobody.
 //
@@ -170,15 +196,64 @@ func StandsIn(issue Issue, phases ...phase.Phase) bool {
 // accepted, it would hold a child at admitted until the parent closed (HeldUnderAccepted), leave
 // that child out of the wait (OpenBeneath), and start its retro and merge without the child's work.
 //
-// The two phases are named here and nowhere else, so that no rule of the acceptance order can
-// read a list of its own: one that did is what let a child held from retro through. Every one
-// of those rules asks this predicate instead, through the nearest accepted ancestor
+// Every rule of the acceptance order asks this predicate, through the nearest accepted ancestor
 // (AcceptedAncestor): the waiting line's hold (HeldUnderAccepted), the doors' refusal (api's
 // CHILD_UNDER_ACCEPTED_PARENT, AcceptedAncestorIn) and the wait a merged issue's close keeps
 // (OpenBeneath, which leaves out what that hold stopped) — so none of them can count a root as
 // accepted that another counts as still at work.
 func Accepted(issue Issue) bool {
-	return StandsIn(issue, phase.Retro, phase.Merging) && !HeldForChildren(issue)
+	return AcceptedPhase(StandsAt(issue)) && !HeldForChildren(issue)
+}
+
+// BasisAcceptance says why ancestor no longer meets the daemon's half of R1's first condition for
+// a basis (dispatch://INFRA-3320), as the daemon's own store shows it now, or "" where it still
+// does: what the daemon last read of Dispatch shows it done or retro (AcceptedStatus), in its
+// mirror of Dispatch's issues or in its record of the ancestor; the record's own status is done
+// (DoneStatus); or the daemon records it in its retro or its merge (Accepted). Where neither the
+// mirror nor the record knows the ancestor, nothing the daemon holds says that it is accepted. A
+// root a person moved to the backlog or to icebox stands at phase done while its tree lingers
+// (workflow's beginLinger), and R1 counts backlog and icebox as not accepted, so the phase alone
+// says nothing: a real close is the status Dispatch shows, or the record's own status, which the
+// daemon's own close of a root (workflow's closeRoot) writes done in the transaction that queues
+// the status write to Dispatch, so a reader inside a later transaction sees the close before
+// Dispatch's event of it comes back to the mirror. The answer is a sentence's subject and verb,
+// naming the ancestor and what holds it ("Dispatch shows LEGION-100 done").
+//
+// It answers the daemon's record of the ancestor too, nil where it records none, and nil where the
+// mirror alone answered, which reads no record: a caller that reads more of the record where the
+// ancestor is not accepted reads it here, in the same read.
+//
+// It is the one reading of that half of the condition inside a transaction of the daemon's own: a
+// registration on a basis reads it again under the lock every fact applies under (workflow's
+// gateRegistered), so it and an ancestor's sign-off or close, whose hold reads the roots that rest
+// on the ancestor (RestingRoots), apply in one order; the pending-basis seed's read and the
+// person's approval as its live event read it before either opens a step; and a step carried onto
+// a child keeps a basis or a rest only on an ancestor it passes (admit's carriedGate).
+func BasisAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor string) (string, *Issue, error) {
+	mirrored, err := store.DispatchIssuesOf(ctx, tx, []string{ancestor})
+	if err != nil {
+		return "", nil, fmt.Errorf("read the Dispatch mirror of ancestor %s: %w", ancestor, err)
+	}
+	for _, row := range mirrored {
+		if row.Key == ancestor && AcceptedStatus(row.Status) {
+			return fmt.Sprintf("Dispatch shows %s %s", ancestor, row.Status), nil, nil
+		}
+	}
+	recorded, err := store.Issue(ctx, tx, ancestor)
+	if err != nil {
+		return "", nil, fmt.Errorf("read the record of ancestor %s: %w", ancestor, err)
+	}
+	switch {
+	case recorded == nil:
+		return "", nil, nil
+	case AcceptedStatus(recorded.DispatchStatus):
+		return fmt.Sprintf("Dispatch shows %s %s", ancestor, recorded.DispatchStatus), recorded, nil
+	case recorded.Status == DoneStatus:
+		return fmt.Sprintf("The daemon records %s %s", ancestor, recorded.Status), recorded, nil
+	case Accepted(*recorded):
+		return fmt.Sprintf("The daemon records %s in %s", ancestor, StandsAt(*recorded)), recorded, nil
+	}
+	return "", recorded, nil
 }
 
 // HeldFor says whether issue stands in held for reason.
@@ -263,18 +338,77 @@ func OwnsUnder(members []Issue, tree, architectIssue string, target Issue) bool 
 	return target.Key != architectIssue && descends(target, architectIssue, byKey(members))
 }
 
-// chainOf is the records one admission pass walks its parent chains over (Ancestors): the pass's
+// chainOf is the records an admission pass walks its parent chains over (Ancestors): the pass's
 // own records, by key, and the records above them that its read leaves out (LineFacts.Parents),
-// which is how a walk crosses an ancestor already done rather than stopping at it. It is one
-// statement of the one map, because the two walks of a pass must answer alike about one chain —
-// the line's hold under an accepted ancestor (Waiting) and the children-first cycle
-// (ChildWaits) — and because a reader of either must not mistake it for the pass's own records,
-// which say what runs and what each issue ranks against: a done ancestor says neither.
+// which is how a walk crosses an ancestor already done rather than stopping at it. It is not the
+// pass's own records, which say what runs and what each issue ranks against: a done ancestor in
+// it says neither.
 func chainOf(byKey, above map[string]Issue) map[string]Issue {
 	chain := make(map[string]Issue, len(byKey)+len(above))
 	maps.Copy(chain, byKey)
 	maps.Copy(chain, above)
 	return chain
+}
+
+// passChain is the one chain of an admission pass (ReadLineFacts, and the engine's judgement of
+// one parent's children, OpenChildWaits): the pass's own records, issues, by key (own) and the
+// records it walks its parent chains over (chain, chainOf with above, LineFacts.Parents). Each is
+// built the first time a walk reads it and kept for every walk after. ReadLineFacts walks the
+// chain for the cycle of each child (childWaits), for the child left out of the started parents'
+// waits and of the retro-held parents' (withoutHeldUnderAccepted) and for the issues beneath each
+// parent held before its retro (retroHoldsOf), and hands it on in its facts (LineFacts.pass), so
+// the line (Waiting) and the held list's ladder (HeldList) judged from those facts read it too
+// wherever they are handed the very records it was built over (passOver). One pass so builds it
+// once, and builds it not at all before the line where it reads no Dispatch child and holds no
+// parent before its retro. Every walk only reads the two maps, which every walk after the first
+// shares, so none may write them. own and chain fill on first read, through any copy of the facts,
+// so the facts of one pass are read on one goroutine.
+type passChain struct {
+	issues         []Issue
+	above          map[string]Issue
+	keyed, chained map[string]Issue
+}
+
+// own is the pass's own records, by key.
+func (p *passChain) own() map[string]Issue {
+	if p.keyed == nil {
+		p.keyed = byKey(p.issues)
+	}
+	return p.keyed
+}
+
+// chain is the records the pass walks its parent chains over (chainOf).
+func (p *passChain) chain() map[string]Issue {
+	if p.chained == nil {
+		p.chained = chainOf(p.own(), p.above)
+	}
+	return p.chained
+}
+
+// over says whether p was built over issues and above: the very slice of records it holds, at the
+// same length, and the same map of the records above them, or no record above either. It compares
+// identity and not content, which answers for the records only while no caller writes one of them
+// in place between the build and the read, and none does: a pass that changes a record reads the
+// records and their facts again together (admit's reread).
+func (p *passChain) over(issues []Issue, above map[string]Issue) bool {
+	switch {
+	case p == nil || len(issues) != len(p.issues) || len(above) != len(p.above):
+		return false
+	case len(issues) > 0 && &issues[0] != &p.issues[0]:
+		return false
+	}
+	return len(above) == 0 || reflect.ValueOf(above).UnsafePointer() == reflect.ValueOf(p.above).UnsafePointer()
+}
+
+// passOver is the chain a walk reads for issues under facts: the pass's one chain (passChain,
+// LineFacts.pass) where it was built over these very records and the same records above them
+// (passChain.over), and otherwise one of its own over issues and facts.Parents, built as the
+// pass builds its own. A chain built over other records is never read.
+func passOver(issues []Issue, facts LineFacts) *passChain {
+	if facts.pass.over(issues, facts.Parents) {
+		return facts.pass
+	}
+	return &passChain{issues: issues, above: facts.Parents}
 }
 
 // AcceptedAncestor is the nearest issue above issue (Ancestors) that the daemon has already
@@ -532,11 +666,10 @@ type LineFacts struct {
 	Held map[string][]string
 	// ChildWaits is the children-first judgement of this pass, by parent key: the issues whose
 	// own first phase the line must not offer a slot to because Dispatch still shows an open
-	// child under them. Only the caller can fill it — the judgement reads the Dispatch mirror's
-	// parent column against the daemon's own records, which takes the transaction the line itself
-	// is never given (ChildWaitsOf) — and a caller that fills it with nothing says that nothing
-	// waits for its children. It is never stored: each admission pass computes it again, so a
-	// mirror row that has gone stale costs one pass and no more.
+	// child under them. Only the caller can fill it — from the judgement ReadLineFacts made in
+	// the transaction the line itself is never given (ChildWaitsOf) — and a caller that fills it
+	// with nothing says that nothing waits for its children. It is never stored: each admission
+	// pass computes it again, so a mirror row that has gone stale costs one pass and no more.
 	ChildWaits map[string]ChildWait
 	// Waits is what each issue the daemon has started waits on, by issue key, for the started
 	// issues that wait on another issue and for no other: the two waits are the unfinished
@@ -547,10 +680,39 @@ type LineFacts struct {
 	// LineWaitingOnIssue until the wait ends. Only the caller can fill it, for the reason Held
 	// gives, and it is read again on every pass as ChildWaits is (blockers.startedWaits).
 	Waits map[string][]string
+	// StartedParentWaits is the open Dispatch children of each issue whose phases have started,
+	// by parent key (readChildWaits over StartedParents): an issue in planning through
+	// accepting, held from one of them, owing a start, or waiting in awaiting_children, with no
+	// entry for one no open child holds. It is what the admission pass moves a started parent into
+	// awaiting_children by and returns one by, to the step ReturnStep gives its held start (admit's
+	// childrenWaits), and the children the held word awaiting_children names (HeldReasonOf). It is
+	// apart from ChildWaits, the wait of an issue whose first phase has not started: a started
+	// parent's children hold no first phase, so no children-first notice, no children_first word
+	// and no wait of a started issue on another issue (Waits) reads them. ReadLineFacts fills it,
+	// since the judgement reads the mirror against the daemon's records in the transaction the line
+	// is never given; it is never stored, and each read of the facts judges it again.
+	StartedParentWaits map[string]ChildWait
+	// RetroHolds is the three holds on the acceptance of each parent held before its retro
+	// (HoldForChildren, RetroHeldParents), by parent key (retroHoldsOf): the issues beneath it
+	// still in the workflow (OpenBeneath), the roots still in the workflow that rest on its
+	// approval (RestingRootsOn) and its open Dispatch children, judged as StartedParentWaits is
+	// (readChildWaits). They are the three that hold its retro (workflow's acceptanceHeld), which
+	// the held word children_before_retro names in R8's order (HeldReasonOf) and the admission
+	// pass compares from one pass to the next (admit's childrenWaits). ReadLineFacts fills it, and
+	// reads nothing for it where no parent is held before its retro.
+	RetroHolds map[string]RetroHolds
+	// childrenFirst is the children-first judgement ReadLineFacts made from the read of the
+	// children it judged StartedParentWaits from (readChildWaits), which ChildWaitsOf hands the
+	// caller to fill ChildWaits with; nil in facts ReadLineFacts did not read.
+	childrenFirst map[string]ChildWait
+	// pass is the pass's one chain (passChain), which ReadLineFacts built and its facts hand on
+	// (passOver); nil in facts ReadLineFacts did not read. Its maps fill on first read, so the
+	// facts of one pass are read on one goroutine.
+	pass *passChain
 }
 
 // ChildWait is why one parent's own first phase waits: the open Dispatch children under it, in
-// Dispatch key order. It is data alone — the rule that fills it is ChildWaits — so that the
+// Dispatch key order. It is data alone — the rule that fills it is childWaits — so that the
 // waiting line, the state's `blocked` and the architect's notice all read one judgement.
 type ChildWait struct {
 	Parent string
@@ -566,7 +728,7 @@ type OpenChild struct {
 	Status string
 	// Released says the daemon records the child and that record is in the workflow
 	// (InWorkflow): the child was released and the daemon runs it. An open child with no record
-	// of its own is work its architect filed and has not released. It is set by ChildWaits, from
+	// of its own is work its architect filed and has not released. It is set by childWaits, from
 	// the same record ChildOpen reads, so that one judgement of the child answers both.
 	Released bool
 	Cycle    string
@@ -703,9 +865,15 @@ func gatesOf(ctx context.Context, tx pgx.Tx, store Store, roots []string, steps 
 
 // ReadLineFacts reads the facts of one admission pass for issues: one tree-lifecycle read
 // (ReadLifecycles), one read of the records above the pass's own (ReadParents), one read of the
-// tree roots it leaves out (ReadTreeRoots), one gate read (gatesOf) and one read of the starts
-// the project owes, whatever the number of trees, gates and issues involved. project is the
-// Dispatch project key and steps the design-gate steps the deployment gates.
+// tree roots it leaves out (ReadTreeRoots), one gate read (gatesOf), one read of the starts the
+// project owes, the three judgements of a parent's open children — the started parents'
+// (LineFacts.StartedParentWaits), the children-first waits ChildWaitsOf hands on and those of the
+// parents held before their retro (LineFacts.RetroHolds) — from one read of the children
+// (readChildWaits: no read where no issue can wait on its children, and two where any can), and
+// after the children, where any parent is held before its retro, the roots resting on them
+// (RestingRootsOn: two reads, and none where no parent is held so), whatever the number of trees,
+// gates and issues involved. project is the Dispatch project key and steps the design-gate steps
+// the deployment gates.
 //
 // The roots are read before the gates because the gates cover both sets of roots: the roots
 // among the pass's own issues (treeRoots) and the roots those issues leave out, which this read
@@ -745,33 +913,36 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 			owed[row.Issue] = row
 		}
 	}
-	return LineFacts{Lifecycles: lifecycles, Gates: gates, Parents: parents, Roots: roots, Owed: owed, OwedRows: rows}, nil
+	facts := LineFacts{Lifecycles: lifecycles, Gates: gates, Parents: parents, Roots: roots, Owed: owed, OwedRows: rows}
+	// The children are read after the rest, since the gates say which issues are children-first
+	// candidates, an issue owing a start is a started parent (StartedParents), and the cycle walk
+	// crosses the records above the pass's own. The parents held before their retro
+	// (RetroHeldParents) are found once, for that read and for the read of the roots that rest on
+	// them (RestingRootsOn) after it, which reads nothing where no parent is held so, and the three
+	// holds of each are put together from the two reads once (retroHoldsOf). Their walks of the
+	// parent chain read the pass's one chain (passChain), which the facts carry (LineFacts.pass).
+	held := RetroHeldParents(issues)
+	pass := &passChain{issues: issues, above: facts.Parents}
+	facts.pass = pass
+	var children map[string]ChildWait
+	if facts.childrenFirst, facts.StartedParentWaits, children, err = readChildWaits(ctx, tx, store, project, held, facts, pass); err != nil {
+		return LineFacts{}, err
+	}
+	resting, err := RestingRootsOn(ctx, tx, store, held)
+	if err != nil {
+		return LineFacts{}, err
+	}
+	facts.RetroHolds = retroHoldsOf(pass, held, children, resting)
+	return facts, nil
 }
 
-// GateOpen is whether a person's approval stands on the gate's current document version: the one
-// statement of it, which classify.DesignGateOpen and Store.PutGate's own write both call.
-// internal/classify reads this package, so the rule lives here, where every reader can reach it.
+// GateOpen is whether an approval stands on the gate's current document version: a person's, or
+// the ancestor's approval a basis opened the step on, which sets ApprovedVersion to the version the
+// root registered (OpenOnBasis), so this one rule reads both. It is the one statement of it, which
+// classify.DesignGateOpen and Store.PutGate's own write both call. internal/classify reads this
+// package, so the rule lives here, where every reader can reach it.
 func GateOpen(gate DesignGate) bool {
 	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion
-}
-
-// RequiredSteps is the steps a root must hold an open gate at before its tree works: the steps
-// it is given, in their order, or the single step spec when it is given none. It is the one
-// statement of the rule, which classify.RequiredSteps calls; internal/classify reads this
-// package, so the rule lives here, where every reader can reach it. It takes no rows, so a
-// caller that holds a root's rows gives it the steps that tree is gated on (TreeSteps) rather
-// than the deployment's list.
-//
-// The empty list keeps its own hold. A deployment that gates no step asks no person to approve
-// anything, and its registration opens the gate at once; but the registration itself is still
-// what says the architect has written the spec, and a rule reading "every gated step is open"
-// would be true of a tree whose architect had registered nothing and would start it. So the
-// empty list requires the spec step's record, which the registration writes and opens in one act.
-func RequiredSteps(configured []DesignStep) []DesignStep {
-	if len(configured) == 0 {
-		return []DesignStep{DesignStepSpec}
-	}
-	return configured
 }
 
 // TreeSteps is the steps one tree is gated on: the steps the deployment gates, in the order it
@@ -819,13 +990,13 @@ func TakesStep(deployment []DesignStep, step DesignStep) bool {
 }
 
 // TreeGate is one tree's design gate as every rule over it reads it: the steps the deployment
-// gates (Steps, the empty list standing for the single step spec, RequiredSteps) and the row the
+// gates (Steps, the empty list standing for the single step spec, Required) and the row the
 // tree's root holds for each step its architect has registered (Rows, nil for a root that has
 // registered none). The gate is a list of steps and the work waits on all of them, so a rule
 // that used to read one row reads this instead and no reader can answer from one step where the
 // deployment gates three. The steps the work waits on are the ones the tree is gated on
 // (TreeSteps over Steps and Rows), which Open, EverOpened and OpenedAt all read in the one form
-// (required).
+// (Required).
 //
 // The zero value is the gate of a root with nothing registered, which is the answer a reader
 // wants for a tree the pass holds no gate row for: it is open at no step and has opened at none.
@@ -834,19 +1005,31 @@ type TreeGate struct {
 	Rows  map[DesignStep]DesignGate
 }
 
-// required is the steps the tree's work waits on: RequiredSteps over the steps the tree is gated
-// on (TreeSteps), so a criteria row its architect registered beside a deployment's spec holds the
-// tree in every rule of the gate alike.
-func (g TreeGate) required() []DesignStep {
-	return RequiredSteps(TreeSteps(g.Steps, g.Rows))
+// Required is the steps the tree's work waits on: the steps the tree is gated on (TreeSteps), so a
+// criteria row its architect registered beside a deployment's spec holds the tree in every rule of
+// the gate alike, or the single step spec where that list is empty. It is the one statement of the
+// rule, and every reader of the steps a tree's work waits on reads them here.
+//
+// The empty list keeps its own hold. A deployment that gates no step asks no person to approve
+// anything, and its registration opens the gate at once; but the registration itself is still
+// what says the architect has written the spec, and a rule reading "every gated step is open"
+// would be true of a tree whose architect had registered nothing and would start it. So the
+// empty list requires the spec step's record, which the registration writes and opens in one act.
+func (g TreeGate) Required() []DesignStep {
+	steps := TreeSteps(g.Steps, g.Rows)
+	if len(steps) == 0 {
+		return []DesignStep{DesignStepSpec}
+	}
+	return steps
 }
 
-// Open is whether the gate lets the tree's work run: a person's approval stands on the current
-// document version of every required step (GateOpen). A required step with no row holds the
-// work, as an unregistered gate always has, so a root with no row at all is held too. It is the
-// one rule for the question, which classify.DesignGatesOpen reads it through.
+// Open is whether the gate lets the tree's work run: an approval stands on the current document
+// version of every required step (GateOpen), a person's or the one a basis opened the step on. A
+// required step with no row holds the work, as an unregistered gate always has, so a root with no
+// row at all is held too. It is the one rule for the question, which classify.DesignGatesOpen
+// reads it through.
 func (g TreeGate) Open() bool {
-	for _, step := range g.required() {
+	for _, step := range g.Required() {
 		if row, registered := g.Rows[step]; !registered || !GateOpen(row) {
 			return false
 		}
@@ -863,7 +1046,7 @@ func (g TreeGate) Open() bool {
 // before its architect registered its Verification document still reads as released; one
 // registered before the first opening holds this answer until a person approves it.
 func (g TreeGate) EverOpened() bool {
-	for _, step := range g.required() {
+	for _, step := range g.Required() {
 		if row, registered := g.Rows[step]; !registered || !row.EverOpened {
 			return false
 		}
@@ -872,20 +1055,23 @@ func (g TreeGate) EverOpened() bool {
 }
 
 // OpenedAt is when a root's work came back to it through its design gate: the moment the last of
-// its required steps was approved (DesignGate.ApprovedMark), zero for a gate that is not open.
-// It is the waiting line's ordering key for a root whose own first phase can start, merged on
-// the same time axis as an owed start row's creation and an answered root's answer. A step whose
-// approval carries no moment — one a registration read from Dispatch rather than from an event —
-// gives the zero time, which puts that root at the head of its part when it is the only step:
-// the line knows its work came back and not when, and the alternative, dropping it to the back
-// by rank, loses what it does know.
+// its required steps opened, zero for a gate that is not open. A step a person's approval opened
+// gives where Dispatch recorded that approval (DesignGate.ApprovedMark); a step a basis opened
+// gives the daemon's own time of the registration (GateBasis.RegisteredAt), never a zero time,
+// since the ancestor's approval is a place in another issue's event log. It is the waiting line's
+// ordering key for a root whose own first phase can start, merged on the same time axis as an
+// owed start row's creation and an answered root's answer. A step whose approval carries no
+// moment — one a registration read from Dispatch rather than from an event — gives the zero
+// time, which puts that root at the head of its part when it is the only step: the line knows
+// its work came back and not when, and the alternative, dropping it to the back by rank, loses
+// what it does know.
 func (g TreeGate) OpenedAt() time.Time {
 	if !g.Open() {
 		return time.Time{}
 	}
 	var at time.Time
-	for _, step := range g.required() {
-		at = later(at, g.Rows[step].ApprovedMark.At)
+	for _, step := range g.Required() {
+		at = later(at, g.Rows[step].openedAt())
 	}
 	return at
 }
@@ -919,7 +1105,7 @@ func later(a, b time.Time) time.Time {
 // a root whose design gate has never opened at every step the deployment gates, where its
 // architect is writing the design; after that opening the root's own turns start no phase
 // worker, and its children do the work. Every other phase is a wait: a child at admitted,
-// accepting, held, awaiting_person, done.
+// accepting, held, awaiting_person, awaiting_children, done.
 func AtWork(issue Issue, gate TreeGate) bool {
 	switch issue.Phase {
 	case phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Retro:
@@ -940,9 +1126,10 @@ func AtWork(issue Issue, gate TreeGate) bool {
 // awaiting_person; the four phases a step's worker runs besides the owner's acceptance —
 // planning, implementing, testing and reviewing; and held, which is reached here only where the
 // record names no earlier phase for the hold (StandsAt). Every other phase holds none: accepting,
-// retro and merging (in the default steps, the phases after the review), and done, which has
-// finished. A step after accepting whose phase keeps a slot waits for one again
-// (workflow.StartOrOwe).
+// retro and merging (in the default steps, the phases after the review); done, which has
+// finished; and awaiting_children, a parent waiting on its open children, which work under slots
+// of their own (dispatch://INFRA-3320 R11). A step after accepting whose phase keeps a slot waits
+// for one again (workflow.StartOrOwe).
 //
 // It is written as one list so that a later change adds or removes one entry and every reader of
 // the rule moves with it. Two read it, and a phase in one and not the other would be a deadlock:
@@ -961,16 +1148,19 @@ func PhaseKeepsSlot(at phase.Phase) bool {
 }
 
 // KeepsSlot is the phase half of the admission rule: an issue holds one of the cap's slots from
-// the moment the daemon starts it until it stands in accepting, retro or merging, which hold
-// none, or until it is done or Dispatch takes it out of the workflow (InWorkflow). Every other
-// phase keeps the row — admitted, awaiting_person, the four worker phases and a hold the record
-// names no phase for (PhaseKeepsSlot) — so an issue waiting for a person or for its review keeps
-// its place against the cap and wins none back from the line when the wait ends. A wait on
-// another issue is the one wait that is not read here: an issue the daemon has started that waits
-// on one gives its row back and stands in the line for one again, by the rule beside this
-// (blockers.waitsOf, admit's releaseSlotsForWaits), save the roots that rule names as keepers.
-// That rule reads this one first, so an issue in accepting, retro or merging waits on nothing
-// there (blockers.waitsOf). The rule whole is "Admission and the `legion` label" in
+// the moment the daemon starts it until it stands in accepting, retro, merging or
+// awaiting_children, which hold none, or until it is done or Dispatch takes it out of the
+// workflow (InWorkflow). Every other phase keeps the row — admitted, awaiting_person, the four
+// worker phases and a hold the record names no phase for (PhaseKeepsSlot) — so an issue waiting
+// for a person or for its review keeps its place against the cap and wins none back from the line
+// when the wait ends. A parent in awaiting_children gives its row back while its open children
+// work under slots of their own, and a start of planning through reviewing that its return makes
+// waits in the line for one again (workflow's ReturnFromChildren). Any other wait on another
+// issue is not read here: an issue the daemon has started that waits on one gives its row back
+// and stands in the line for one again, by the rule beside this (blockers.waitsOf, admit's
+// releaseSlotsForWaits), save the roots that rule names as keepers. That rule reads this one
+// first, so an issue in accepting, retro, merging or awaiting_children waits on nothing there
+// (blockers.waitsOf). The rule whole is "Admission and the `legion` label" in
 // docs/site/src/content/docs/legion/concepts.md.
 //
 // The cap bounds the work in progress, and an issue in accepting, retro or merging writes no more
@@ -1196,15 +1386,12 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	for _, slot := range slots {
 		slotted[slot.Issue] = struct{}{}
 	}
-	byKey := make(map[string]Issue, len(issues))
-	for _, issue := range issues {
-		byKey[issue.Key] = issue
-	}
 	// The parent chain is walked over the records above these as well (chainOf): a parent
 	// already done is no part of the live read, and a walk that stopped at it would hide every
 	// issue above it, so the line would offer a slot to a child the acceptance rules hold
-	// (AcceptedAncestor).
-	chain := chainOf(byKey, facts.Parents)
+	// (AcceptedAncestor). It is the pass's one chain (passChain), through passOver.
+	pass := passOver(issues, facts)
+	byKey, chain := pass.own(), pass.chain()
 	queued := queuedRoots(issues, facts)
 	live := liveRoots(issues, facts, queued)
 	queuedKeys := make(map[string]struct{}, len(queued))

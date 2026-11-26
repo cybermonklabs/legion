@@ -54,7 +54,7 @@ legion state	--config string	--json bool	--operator-token-file string	--port int
 legion status
 legion stop	--config string
 legion version	--contracts bool
-legion worker-shim	hidden	--agent-secrets-bin string	--agent-secrets-key-dir string	--boot-token-file string	--connect string	--pod-safety bool	--pod-token-file string	--provider-env-dir string	--stop-grace duration	--warm-codegraph bool
+legion worker-shim	hidden	--agent-secrets-bin string	--agent-secrets-key-dir string	--boot-token-file string	--connect string	--pod-safety bool	--pod-token-file string	--provider-env-dir string	--reap-orphans bool	--stop-grace duration	--warm-codegraph bool
 legion workspace-init	hidden
 legion workspace-init cache	hidden	--listen string	--refresh duration	--repo string	--root string
 legion workspace-init fetch	hidden	--cache-url string	--feed string	--repo string

@@ -445,8 +445,8 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// one judgement admission itself promotes from (blockers.JudgeLine): the rows of every issue
 	// a blocker can hold, the children-first wait, the line those two leave, and the rows of the
 	// issues the line names. The deciders' own judgement (blockers.Blocked) then names exactly
-	// the roots admission skips, the issues it holds back and the parents whose children go
-	// first.
+	// the roots admission skips, the issues it holds back, the parents whose children go first
+	// and the parents waiting in awaiting_children on their open children (blockers.ChildRows).
 	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, in.Tx, in.Store, in.Project, own, slots, facts, nil, in.Now)
 	if err != nil {
 		return api.State{}, err
@@ -534,7 +534,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		view.WaitingLine.Reason = waitingLineReason(entry, parts[standsIn], parts[other])
 		projected.Issues[key] = view
 	}
-	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
+	projected.Admission.Blocked = blockers.Blocked(rows, own, line, facts)
 	// What the daemon runs nothing of and queues nowhere, beside the two lists above: every
 	// record of this project the daemon holds in the workflow (record.InWorkflow) that stands in
 	// neither the active set nor the line, with the one word for why (record.HeldList). The rows
@@ -560,7 +560,24 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// records and the facts this pass already holds, so the reading costs no query, and they
 	// are the same roots record.LiveRoots is read from above — live is wider than running,
 	// and a parked root's tree is neither.
-	whyStates(&projected, own, record.RunningRoots(own, facts), in.Stranded, rows, facts.ChildWaits)
+	running := record.RunningRoots(own, facts)
+	whyStates(&projected, own, running, in.Stranded, rows, facts)
+	// Every root of this project's own records carries whether its tree runs (`treeRuns`), read
+	// from the same running roots, so the state serves the daemon's own rule (record.TreeRuns)
+	// rather than leaving a reader to rebuild it from the fields beside it, which decide it in no
+	// case alone: a root a re-admission left waiting in the line runs nothing whatever its
+	// architect's claim reads, and a root a person answered runs while it waits there for its
+	// resume (dispatch://INFRA-3320, R4). Another project's root carries none, since this pass
+	// reads the lifecycles of this daemon's project alone.
+	for _, issue := range own {
+		if !claim.IsTreeRoot(issue.Key, issue.Tree) {
+			continue
+		}
+		_, runs := running[issue.Key]
+		view := projected.Issues[issue.Key]
+		view.TreeRuns = &runs
+		projected.Issues[issue.Key] = view
+	}
 	// Every issue of a live tree carries that tree's quiet time (contract 111): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
 	// it has been still at the instant the rest of this state is measured at. The pair is the
