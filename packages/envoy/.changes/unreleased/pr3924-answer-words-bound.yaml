@@ -11,15 +11,19 @@ body: |-
   each, and a test of the server and one of the web each hold their side to it. A reply of 120
   words or more gets one more model call, its rewrite, which tells the model that count and asks
   for the same facts in at most 90 words as the person sees them, without repeating the key,
-  status and title that each link already shows, or for the same answer again where the person's
+  status and title that each issue's chip already shows, or for the same answer again where the person's
   words ask for more than a short answer. The rewrite is no new run: it is given a short system
   message of the answer's rules, the person's words, the first reply and that note, and none of
   the run's reads, earlier steps or tools; it asks for low reasoning effort whatever the run's
   level, and has 20 seconds of its own within what is left of the run's working time. It may
   shorten the first reply and add nothing to it: a rewrite whose reply links an item or an
   address the first reply does not link, or names an issue key the first reply does not name,
-  or that runs out of its time or fails, ends the turn with the first reply shown whole, never
-  cut. There is at most one rewrite in a turn of the run,
+  or that runs out of its time, fails, is cut at its output tokens or writes no words, ends the
+  turn with the first reply shown whole, never cut. A run whose grant ends (a sign-out, an
+  expired sign-in, a revoked token) as the rewrite's reply is counted shows the first reply whole
+  before it stops, and a run stopped during its rewrite, by its person or past its budget, stops
+  with the first reply shown whole as its answer. The first reply shown so tells, as any answer
+  does, which tool results the run withheld from the model. There is at most one rewrite in a turn of the run,
   and a reply still long after it is shown whole, as is a reply whose count the server does not
   give within 10 seconds. The `reply` frame says the count (`drawn_words`) and marks a reply held
   back for length (`held_long`). A tool result whose body is
