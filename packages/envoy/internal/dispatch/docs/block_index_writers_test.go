@@ -815,6 +815,7 @@ var indexPasses = map[string]string{
 	"refs/blocks.go#Queue":                  "the version's render, each decision's stored decided_by, and where another release indexed the document since the store stated it, what the store still asserts against that render",
 	"refs/block_nodes.go#queueBlockParents": "the version's render",
 	"refs/block_nodes.go#queueBlockRefs":    "the version's render, and each decision's stored decided_by",
+	"refs/block_nodes.go#queueRehomed":      "the version's render, which says the node each surviving row's pair hangs on now",
 	// The typed-node pass: the decision and reading nodes of the version, their values and their
 	// authors, from the version's render and the credential the version's write proved, and above
 	// the deferral bound their part_of and the rows of their own ties, and the shaped ties of the
