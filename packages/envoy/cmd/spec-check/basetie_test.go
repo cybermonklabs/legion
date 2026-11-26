@@ -1,5 +1,10 @@
 package main
 
+//ci:reads .github/scripts/go-test-reads.sh TestTheBaseTieReadsGitsListOfTheBase copies it into a fixture repository.
+//ci:reads .github/scripts/ci_filter_coverage.py TestTheBaseTieReadsGitsListOfTheBase copies it into a fixture repository.
+//ci:reads .github/scripts/workflow_paths.py TestTheBaseTieReadsGitsListOfTheBase copies it into a fixture repository.
+//ci:reads .github/scripts/go_build_tags.py TestTheBaseTieReadsGitsListOfTheBase copies it into a fixture repository.
+
 import (
 	"encoding/hex"
 	"io/fs"
@@ -399,8 +404,9 @@ func TestTheBaseTieReadsGitsListOfTheBase(t *testing.T) {
 	repo := t.TempDir()
 	files := map[string]string{
 		".github/scripts/ci_job_reads.py": "file from ci_filter_coverage import Read, repo_files\n\n" +
-			"RULES = {\"mod/lib/lib_test.go\": [Read(path, \"lib_test.go reads the files under ../../fixtures\")\n" +
-			"                                 for path in repo_files() if path.startswith(\"fixtures/\")]}\n",
+			"RULES = {\"mod/lib/lib_test.go\": [Read(\"fixtures/*.json\", \"lib_test.go reads fixture JSON\"),\n" +
+			"                                 *[Read(path, \"lib_test.go reads the files under ../../fixtures\")\n" +
+			"                                   for path in repo_files() if path.startswith(\"fixtures/\")]]}\n",
 		"go.work":             "file go 1.21\n\nuse ./mod\n",
 		"mod/go.mod":          "file module example.com/m\n\ngo 1.21\n",
 		"mod/lib/lib.go":      "file package lib\n\nfunc Hello() {}\n",

@@ -812,8 +812,25 @@ def apply_rules(session: Session, rules: dict, source: str, seen: set) -> list:
     return reads
 
 
+TIE_WILD = re.compile(r"[*?\\[]")
+
+
+def tie_entry(glob: str) -> str | None:
+    """The narrowest Tie entry that contains every repository path glob can select."""
+    parts = glob.split("/")
+    wild = next((i for i, part in enumerate(parts) if TIE_WILD.search(part)), None)
+    if wild is None:
+        return glob
+    if wild == 0:
+        return None
+    if wild == len(parts) - 1:
+        return "/".join(parts[:wild] + ["*" if parts[wild] != "**" else "**"])
+    return "/".join(parts[:wild] + ["**"])
+
+
 def test_reads(workdir: str, pkgs: list, env: dict) -> tuple:
     """Read the closure of `go test <pkgs>` in workdir for spec-check citations."""
+    # ci_job_reads imports this module, so import its rules only after this module loads.
     import ci_job_reads as data
 
     session = Session()
@@ -825,7 +842,16 @@ def test_reads(workdir: str, pkgs: list, env: dict) -> tuple:
             cause = " ".join((pkg.get("Error") or {}).get("Err", "").split())[:300]
             session.problems.append(error(None, f"go list finds no directory of {pkg.get('ImportPath')} for {why}, so "
                                                 f"its closure is unknown: {cause}"))
-    return sorted({read.glob for read in reads if read.glob}), [problem.message for problem in session.problems]
+    entries = set()
+    for read in reads:
+        if not read.glob:
+            continue
+        entry = tie_entry(read.glob)
+        if entry is None:
+            session.problems.append(error(None, f"{read.glob} has no form of a tie, so the closure of {why} is unknown"))
+        else:
+            entries.add(entry)
+    return sorted(entries), [problem.message for problem in session.problems]
 
 
 GO_FILE_NAMES = ("go.mod", "go.sum", "go.work", "go.work.sum")
