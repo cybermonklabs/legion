@@ -770,8 +770,8 @@ AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
 # package a third time for the detector alone.
 CLEANUP_DETECTOR = "GODEBUG=checkfinalizers=1"
 CLEANUP_DETECTOR_PACKAGES = ("internal/dispatch/docs",)
-# The document service's race step runs under .github/scripts/race_memory.py, which fails it with
-# a log when the race binary's memory passes RACE_MEM_LIMIT_KB (the step's comment in
+# The document service's race step runs under .github/scripts/go-test.sh --race-memory, whose
+# race_memory.py fails it with a log when the race binary's memory passes RACE_MEM_LIMIT_KB (the step's comment in
 # ci-job-envoy-go-race-docs.yaml says why), and under the cleanup detector, so its line is shell
 # assignments and a script, not a go command the simple form reduces. GODEBUG is a GO* name,
 # ---------------------------------------------------------------- a job whose steps run in legs
@@ -810,12 +810,12 @@ def legs_script(module, job, command):
 RACE_DOCS_STEP = "Race-test the document service"
 # The document service's legs: as the API's, with the memory sampler and the cleanup detector the
 # one job carried. xargs runs a program and not a shell, so `env` is what carries the two
-# variables to the sampler.
+# variables to the runner and its sampler.
 RACE_DOCS_LEGS_JOB = "envoy-go-race-docs-legs"
 RACE_DOCS_SCRIPT = legs_script(ENVOY, "envoy-go-race-docs",
                                f"env {CLEANUP_DETECTOR} RACE_MEM_LIMIT_KB=8388608 "
-                               "../../.github/scripts/race_memory.py "
-                               "go test -json -race -count=1 -timeout 60m")
+                               "../../.github/scripts/go-test.sh --race-memory "
+                               "go test -race -count=1 -timeout 60m")
 # Every lane whose tests start a Dispatch process checks its Postgres service's max_connections in
 # its CEILING_STEP, which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's
 # run: line, not what the script runs, so each such gate declares the script, and the go run on the

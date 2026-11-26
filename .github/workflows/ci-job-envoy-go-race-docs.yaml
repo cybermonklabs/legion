@@ -87,6 +87,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The race step runs its go test under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
       # go-envoy: its modules are the envoy module's, though this job builds the document
       # service's race test binary rather than the listener and natsd ci-caches.yaml builds.
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
@@ -112,10 +114,10 @@ jobs:
       # running at that moment, so a step the kernel does take still says what it reached. After
       # the run it writes the peak, and fails this step when the peak passed RACE_MEM_LIMIT_KB,
       # 8388608 kB, half the runner, naming the tests that were running at the highest sample.
-      # -json is the stream the sampler reads to know them; it writes every Output field back
-      # out, so the log still carries the --- FAIL lines and the package's own line. -count=1
-      # because the job restores the Go build cache above, and a cached pass must not stand in
-      # for a run.
+      # .github/scripts/go-test.sh --race-memory runs gotestsum under it, and the sampler reads the
+      # tests running from gotestsum's jsonfile as it grows, while the log carries each test's
+      # --- FAIL line and the package's own line. -count=1 because the job restores the Go build
+      # cache above, and a cached pass must not stand in for a run.
       # Under Go's cleanup detector too, GODEBUG=checkfinalizers=1: at each collection the runtime
       # reports a cleanup or a finalizer whose closure or argument reaches the object it is
       # attached to, a cycle that keeps that object alive for the life of the process, which is the
@@ -139,8 +141,14 @@ jobs:
       - name: Race-test the document service
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-docs ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r env GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m
+          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-docs ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r env GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory go test -race -count=1 -timeout 60m
         working-directory: packages/envoy
+
+      - name: Upload this leg's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: envoy-go-race-docs-legs-${{ matrix.leg }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

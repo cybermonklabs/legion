@@ -3268,10 +3268,10 @@ The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-hold.sh, ci-ok-r
 the gh-read.sh and runner-shutdown.sh they source, and the retry report's action, ci-ok-retries.sh
 and the go-test.jq it includes, so the .github cone is the whole checkout it needs.
 
-The retry report, "Name each Go test that passed only on its retry", runs after the verdict and
-before the hold, under `!cancelled()`, with `continue-on-error`: it downloads the go-test-*
-artifacts the Go jobs uploaded and writes the job's summary, and what it reads or fails to read
-changes no verdict.
+The retry report, "Name each Go test that passed only on its retry", runs before the verdict,
+so the hold stays the step right after it, under `!cancelled()`, with `continue-on-error`: it
+downloads the go-test-* artifacts the Go jobs uploaded and writes the job's summary, and what it
+reads or fails to read changes no verdict.
 
 ## Why a draft pull request is refused in a step
 

@@ -93,8 +93,8 @@ check "a bare assignment is left in place" "$(is "$(command_of 'NAME=value')" "N
 echo "case: the step whose line this harness exists for is read as ci.yaml writes it"
 file=.github/workflows/ci-job-envoy-go-race-docs.yaml
 # Its go test is behind an xargs now: the step pipes go_legs.py's lines into `env NAME=value …
-# race_memory.py go test …`, so the reading is the xargs tail with the variables and the wrapper
-# dropped.
+# go-test.sh --race-memory go test …`, so the reading is the xargs tail with the variables, the
+# wrapper and its option dropped.
 found=$(py 'import pathlib, yaml
 document = yaml.safe_load(pathlib.Path(ex.ROOT / sys.argv[1]).read_text())
 lines = [line.strip() for job in document["jobs"].values() for step in job["steps"] if "run" in step

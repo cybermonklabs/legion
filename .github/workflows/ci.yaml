@@ -1086,6 +1086,12 @@ jobs:
           echo "::error::ci-ok is failure on attempt $RUN_ATTEMPT of this merge-group run, whatever the jobs of it did: a merge group is tested once, the queue builds a new group rather than re-running one, and this attempt judges a tree the queue is no longer waiting on."
           exit 1
 
+      # why: .github/ci-notes/ci.md#the-job-reads-nothing-of-the-tree-but-ci-oksh-ci-okjq-ci-ok-reconcilesh-and
+      - name: Name each Go test that passed only on its retry
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: ./.github/actions/ci-ok-retries
+
       # why: .github/ci-notes/ci.md#needs-is-tojsonneeds-changes-result-and-outputs-with-every-other-jobs-result
       - name: Judge every job of this run
         id: verdict
@@ -1100,12 +1106,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: .github/scripts/ci-ok.sh
-
-      # why: .github/ci-notes/ci.md#the-job-reads-nothing-of-the-tree-but-ci-oksh-ci-okjq-ci-ok-reconcilesh-and
-      - name: Name each Go test that passed only on its retry
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        uses: ./.github/actions/ci-ok-retries
 
       # why: .github/ci-notes/ci.md#why-a-failing-verdict-of-a-group-behind-the-front-waits-for-the-front
       - name: Hold a failing verdict until this group is the front of the queue
