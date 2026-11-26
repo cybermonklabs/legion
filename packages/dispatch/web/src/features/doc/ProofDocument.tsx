@@ -947,6 +947,10 @@ export function ProofDocument({
             onStatus: (status) => {
               if (!failed) {
                 setConnection(status);
+                // A document that cannot reach Dispatch does not draw until it can, which may be
+                // never, so the shell's wait for it ends here, not at its limit
+                // (`features/shell/content-drawn.ts`).
+                if (status === "offline") contentDrawn();
               }
             },
             onPending: (state) => {

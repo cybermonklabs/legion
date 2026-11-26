@@ -19,6 +19,12 @@ import type { Artifact, Ask, IssueDetails, IssueReferenceSummary, Version } from
 import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import {
+  contentDrawn,
+  HOLD_LIMIT_MS,
+  holdUntilContentDraws,
+  whenContentDrawn,
+} from "../shell/content-drawn";
 import { appKeymap } from "../shell/keymap";
 import { colorForLogin } from "./connection";
 
@@ -428,6 +434,44 @@ test("ProofDocument reports connection status and pending edits through the tool
     ).toBeDefined();
   } finally {
     view.unmount();
+  }
+});
+
+/** "ended" if no hold on the shell's extras is on within `ms` from now, else "still on". */
+async function holdWithin(ms: number): Promise<"ended" | "still on"> {
+  const late = Promise.withResolvers<"still on">();
+  const timer = setTimeout(() => late.resolve("still on"), ms);
+  try {
+    return await Promise.race([whenContentDrawn().then(() => "ended" as const), late.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// A live connection that goes offline before its first sync - `/ws/doc` unreachable, for a reader
+// offline or a server that does not answer - leaves a document that does not draw until it can
+// reach Dispatch, which may be never. It ends the shell's hold on the margin and the rest
+// (`features/shell/content-drawn.ts`) then, not at the hold's limit. A tenth of that limit tells
+// the two apart on a busy machine, and a failing run stops after one second, not after ten.
+test("a document whose live connection goes offline before it syncs ends the shell's hold, not at the hold's limit", async () => {
+  // `preloadRouteChunk` in `app.tsx` starts this hold from a landing's address, before React
+  // renders.
+  holdUntilContentDraws();
+  const { connections, editors, status, view } = renderProofDocument();
+  try {
+    await waitFor(() => expect(connections).toHaveLength(1));
+    // The connection is open and has not synced, so the hold is still on: the row cannot pass on
+    // a hold that ended before the connection went offline.
+    expect(await holdWithin(0)).toBe("still on");
+    act(() => status("offline"));
+    expect(await act(() => holdWithin(HOLD_LIMIT_MS / 10))).toBe("ended");
+    // No editor was built, so the hold ended for the offline connection, not for a drawn document.
+    expect(editors).toHaveLength(0);
+  } finally {
+    view.unmount();
+    // A hold this row left on would hold every row after it: end it, and wait for its frame.
+    contentDrawn();
+    await whenContentDrawn();
   }
 });
 

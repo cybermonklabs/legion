@@ -1538,7 +1538,12 @@ test("a pending-writes indicator whose chunk fails to download online at every a
       changesNotSent(page),
       "the line in the indicator's place did not say the refused change is not saved"
     ).toHaveText("1 change not sent — Not saved");
-    expect(failed(), "the refusal did not ask for the indicator's chunk again").toBeGreaterThan(0);
+    // The line says so while the chunk's next download is still out (`WhileIndicatorLoads`,
+    // `web/src/features/writes/write-hosts.tsx`), and the route counts that download only once it
+    // has failed it, so the count is read again until it has.
+    await expect
+      .poll(() => failed(), "the refusal did not ask for the indicator's chunk again")
+      .toBeGreaterThan(0);
     await expect(pendingWrites(page)).toHaveCount(0);
     await expect(page.getByTestId("error-boundary")).toHaveCount(0);
     expect(await tabReloads(page), "the failures reloaded the page").toEqual(spent);
