@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"strings"
 	"time"
 
@@ -15,7 +13,6 @@ import (
 	"github.com/sjawhar/envoy/internal/clock"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -180,54 +177,6 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 			fmt.Sprintf("session %s (%s) does not advertise %s", target.SessionID, target.Title, delivery), false
 	}
 	return target.SessionID, target.Title, "", false
-}
-
-// roleHolderHidden reports whether role, held by session (empty for a role the listener says no
-// session holds), must be answered as a role no session holds: the request's reader may not see
-// the holder (access.SessionClause, as sessionHiddenFrom reads it), or the role works for a
-// private project the reader does not see (access.RoleProjectClause over contracts.RoleProject),
-// or the resolve has no reader while a project is private (roleResolvesWithoutAReader). A reader makes
-// one statement for every role and every holder, an empty id and a role of no project included,
-// so a role held by a hidden session, a role of a hidden project and an unheld role cost the same;
-// an open reader of a deployment that holds no private project makes none (R9).
-func (s *server) roleHolderHidden(ctx context.Context, role, session string) (bool, error) {
-	reader, ok := readerFromContext(ctx)
-	if !ok {
-		return s.roleResolvesWithoutAReader(ctx)
-	}
-	if viewer := reader.Viewer; viewer != nil && viewer.Open && !viewer.AnyPrivate {
-		return false, nil
-	}
-	if s.deps.Store == nil || s.deps.Store.Pool == nil {
-		return true, nil
-	}
-	var project *string
-	if key := contracts.RoleProject(role); key != contracts.NoProject {
-		project = &key
-	}
-	var reaches bool
-	err := s.deps.Store.Pool.QueryRow(ctx, roleReachesReaderSQL, session, refs.VisibilityArg(reader), project).Scan(&reaches)
-	return !reaches, err
-}
-
-// roleReachesReaderSQL answers whether a role reaches the reader whose viewer $2 binds: its holder,
-// session $1, as the Envoy listener named it, passes access.SessionClause, and the project its
-// name works for, $3 (null for none), passes access.RoleProjectClause - the role rule's own
-// name half, which access.RoleClause splices beside the held_by holders it reads instead.
-var roleReachesReaderSQL = `select ` + access.SessionClause("$1::text", "$2") + ` and ` + access.RoleProjectClause("$3::text", "$2")
-
-// roleResolvesWithoutAReader reports whether a role resolved with no reader in ctx must answer as
-// one no session holds: the deployment holds a private project, so the holder could be a session
-// the mention's author may not see. A resolve with a reader answers false at the cost of no read;
-// a resolve with none reads whether any project is private, one statement, and answers false
-// where none is.
-func (s *server) roleResolvesWithoutAReader(ctx context.Context) (bool, error) {
-	if _, ok := readerFromContext(ctx); ok || s.deps.Store == nil || s.deps.Store.Pool == nil {
-		return false, nil
-	}
-	var private bool
-	err := s.deps.Store.Pool.QueryRow(ctx, `select exists (select 1 from projects where visibility = 'private')`).Scan(&private)
-	return private, err
 }
 
 // advertisesDelivery reports whether target takes this delivery mode, by the rule the listener

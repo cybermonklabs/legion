@@ -416,20 +416,12 @@ func (w *revocableSocketWriter) hidden() bool {
 	return w.refused
 }
 
-// preUpgradeBodyHeaders makes the HTTP response that ygo writes before a WebSocket upgrade plain
-// text. The upgrade itself hijacks the connection and writes its handshake there, so it does not
-// use these headers.
-func (w *revocableSocketWriter) preUpgradeBodyHeaders() {
-	if w.Header().Get("Content-Type") == "" {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	}
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-}
-
 func (w *revocableSocketWriter) WriteHeader(code int) {
 	if !w.hidden() {
-		w.preUpgradeBodyHeaders()
-		w.ResponseWriter.WriteHeader(code)
+		rw := w.ResponseWriter
+		rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		rw.Header().Set("X-Content-Type-Options", "nosniff")
+		rw.WriteHeader(code)
 	}
 }
 
@@ -437,8 +429,10 @@ func (w *revocableSocketWriter) Write(body []byte) (int, error) {
 	if w.hidden() {
 		return len(body), nil
 	}
-	w.preUpgradeBodyHeaders()
-	return w.ResponseWriter.Write(body)
+	rw := w.ResponseWriter
+	rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	rw.Header().Set("X-Content-Type-Options", "nosniff")
+	return rw.Write(body)
 }
 
 // Hijack takes the connection for ygo's upgrade, unless the socket's person has lost the room, and
