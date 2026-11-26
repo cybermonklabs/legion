@@ -50,7 +50,6 @@ import type {
   ReplyParent,
   ReplyTarget,
 } from "./composer-model";
-import { COMPOSER_WORDS } from "./composer-words";
 import type { OutlineLook } from "./MentionComposer";
 import { MentionComposer } from "./MentionComposer";
 import { unsentDraftsOf } from "./unsent-drafts";
@@ -4070,7 +4069,6 @@ test("a pasted file answered KEY_COMMITTED says it was stored and adds no refere
  *  to a send it takes as its own words (`COMPOSER_WORDS`). */
 const hostLook: OutlineLook = {
   cancelReply: "Write on the issue",
-  deletedReplyWay: "Press Write on the issue to send it on the issue.",
   discardDraft: "Drop the draft",
   end: () => {},
   endMark: "×",
@@ -4081,7 +4079,6 @@ const hostLook: OutlineLook = {
   sending: "Posting…",
   uploadedUnanswered: "The file was stored, and its reference was not added.",
   uploading: "Uploading the file…",
-  words: COMPOSER_WORDS,
 };
 
 // The issue page's box says each word its host gives it (`OutlineLook`), its Retry among them:

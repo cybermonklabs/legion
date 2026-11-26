@@ -11,7 +11,7 @@ import {
   textOptionDescription,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { AgentName } from "./AgentName";
+import { AgentName, type AgentStateWords } from "./AgentName";
 import { RefKindIcon } from "./kind-icons";
 import { PlainText } from "./plain-text";
 import {
@@ -160,10 +160,24 @@ export function RefPartsControl({
  * part of it: that mark would otherwise put the state into the row's accessible name, before the
  * agent's name.
  */
-function RowAgent({ agent, className }: { agent: RefPickerAgent; className?: string }): ReactNode {
+function RowAgent({
+  agent,
+  className,
+  marks,
+}: {
+  agent: RefPickerAgent;
+  className?: string;
+  /** The words the agent's state mark says (`RefPickerWords.marks`); with none, its own. */
+  marks?: AgentStateWords;
+}): ReactNode {
   return (
     <span aria-label={agent.words} className={className} role="img">
-      <AgentName kind="static" sessionId={agent.sessionId} storedTitle={agent.storedTitle} />
+      <AgentName
+        kind="static"
+        sessionId={agent.sessionId}
+        stateWords={marks}
+        storedTitle={agent.storedTitle}
+      />
     </span>
   );
 }
@@ -177,10 +191,16 @@ function RowAgent({ agent, className }: { agent: RefPickerAgent; className?: str
  * in. Until the reader's engine answers, and for a row the server sent no tree for, it draws
  * `label`, the words as written, which `headRefs` cut where no reference crosses the cut.
  */
-export function RefRowLabel({ row }: { row: RefPickerRow }): ReactNode {
+export function RefRowLabel({
+  marks,
+  row,
+}: {
+  marks?: AgentStateWords;
+  row: RefPickerRow;
+}): ReactNode {
   const className = `truncate font-medium ${textPrimaryOnSurface}`;
   if (row.kind === "agent" && row.agent !== undefined) {
-    return <RowAgent agent={row.agent} className={className} />;
+    return <RowAgent agent={row.agent} className={className} marks={marks} />;
   }
   if (row.prose === undefined) return <span className={className}>{row.label}</span>;
   return (
@@ -200,11 +220,17 @@ export function RefRowLabel({ row }: { row: RefPickerRow }): ReactNode {
  * A row's detail line, in both the hosts that draw the picker's rows. A role's row starts its
  * line with the session that holds the role, which it draws as an agent (`RowAgent`).
  */
-export function RefRowDetail({ row }: { row: RefPickerRow }): ReactNode {
+export function RefRowDetail({
+  marks,
+  row,
+}: {
+  marks?: AgentStateWords;
+  row: RefPickerRow;
+}): ReactNode {
   if (row.kind !== "role" || row.agent === undefined) return row.detail;
   return (
     <>
-      <RowAgent agent={row.agent} />
+      <RowAgent agent={row.agent} marks={marks} />
       {row.detail.slice(row.agent.words.length)}
     </>
   );
@@ -291,16 +317,16 @@ export function RefPickerList({
     >
       <RefKindIcon kind={one.kind} />
       <span className="flex min-w-0 flex-1 flex-col">
-        <RefRowLabel row={one} />
+        <RefRowLabel marks={words.marks} row={one} />
         {one.detail === "" ? null : tooltips ? (
           // The stronger muted role, which clears AA over the sky fill a highlighted row wears
           // as well as over the list's own surface.
           <TruncatedText className={`text-xs ${textOptionDescription}`} title={one.detail}>
-            <RefRowDetail row={one} />
+            <RefRowDetail marks={words.marks} row={one} />
           </TruncatedText>
         ) : (
           <span className={WRAPPED_LINE}>
-            <RefRowDetail row={one} />
+            <RefRowDetail marks={words.marks} row={one} />
           </span>
         )}
         {sessionLine(one)}
