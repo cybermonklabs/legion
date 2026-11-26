@@ -454,7 +454,7 @@ func TestTheHandoverGateRefusesWhatNoRegistrationAttests(t *testing.T) {
 		}
 	}
 	unrecorded := func(sessionID string) string {
-		return "no registration through a listener of this build has recorded a principal for " + sessionID
+		return "the record of " + sessionID + " names no principal that a registration through a listener of this build recorded"
 	}
 
 	t.Run("case: an open store holds no record of the replaced session", func(t *testing.T) {
@@ -999,7 +999,7 @@ func TestARegistrationThroughAListenerWhoseKnownSessionBucketIsNotOpenIsAdmitted
 		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &answer) != nil {
 			t.Fatalf("%s claims %s naming %s: status %d %s; want 200", gateClaimant, role, shut, recorder.Code, recorder.Body.String())
 		}
-		want := "no message of " + shut + " is handed over to this session: no registration through a listener of this build has recorded a principal for " + shut
+		want := "no message of " + shut + " is handed over to this session: the record of " + shut + " names no principal that a registration through a listener of this build recorded"
 		if !slices.Contains(answer.Warnings, want) {
 			t.Errorf("the claim's warnings are %q; want %q", answer.Warnings, want)
 		}

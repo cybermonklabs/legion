@@ -188,7 +188,7 @@ func handoverRefusal(ctx context.Context, r *http.Request, known *session.KnownS
 	case principalAbsent:
 		return fmt.Sprintf("this listener holds no record of the principal %s last registered as", replaced), nil
 	case principalUnrecorded:
-		return fmt.Sprintf("no registration through a listener of this build has recorded a principal for %s", replaced), nil
+		return fmt.Sprintf("the record of %s names no principal that a registration through a listener of this build recorded", replaced), nil
 	}
 	own, state, err := recordedPrincipal(ctx, known, claimant)
 	if err != nil {
