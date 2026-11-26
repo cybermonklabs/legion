@@ -132,89 +132,74 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	flags := secretFlags(form, stderr)
 	newOwner := flags.String("owner", "", "the new owner: me (the email of the person your AWS or Google sign-in names), shared, a person's email, or group: and a Google group's lowercase email")
 	newTier := flags.String("tier", "", "the new tier: agent or human")
-	newType := flags.String("type", "", strings.Join(policy.Types, ", ")+" or none")
-	newGitHubOwners := flags.String("github-owners", "", `the GitHub accounts a github-app secret mints for, or a github-installations secret hands stored tokens over for, separated by spaces ("<login> <login>"), or none`)
-	newRequesters := flags.String("requesters", "", `the people (each by their lowercase sign-in email), Google groups (each as group: and its lowercase email) and registered services that may ask for this secret at all, separated by spaces ("<email> group:<email> <service>"), or none; an admin secret, a google-service-account one and an anthropic-federation one each need a --max-grant of an hour or less, and a secret that only lists who may ask keeps its own cap, or none`)
-	newScopes := flags.String("scopes", "", `the OAuth scopes the token a google-service-account secret mints carries, each the part of a Google scope after https://www.googleapis.com/auth/, separated by spaces ("cloud-platform bigquery"), or none; read on that type alone, and a secret without it mints cloud-platform`)
-	newAdmin := flags.String("admin", "", "true marks a secret whose grant is an administrator's, or none removes the mark: such a secret is human tier, so a person approves each release, names its requesters, and bounds its grants to an hour with --max-grant")
-	newProject := flags.String("project", "", "the key of the Dispatch project the secret belongs to (PRIV), whose private secret goes only to a session naming the project in AGENT_SECRETS_PROJECTS, or none: the secret then belongs to no project")
-	newProjectChannels := flags.String("project-channels", "", "slack (a session or pod whose credential names a private Dispatch project spends the secret only through the airlock, on a Slack post to a channel that project's owner named) or none")
-	newMaxGrant := flags.String("max-grant", "", "the longest grant duration this secret allows, or none")
-	newDefaultGrant := flags.String("default-grant", "", "session (no --ttl lasts until the session ends) or none (12 hours)")
-	newJudge := flags.String("judge", "", "whole seconds from 1 to 900, the longest grant the model judge makes of this secret when it decides a request for it against its guidance, or none: a person decides it")
-	newGuidance := flags.String("guidance", "", "the instruction the model judge follows when it decides a request for this secret, in at most 2000 characters (on AWS Secrets Manager at most 256, of letters, digits, spaces and _ . : / = + - @), or none")
-	newProxy := flags.String("proxy", "", "the kind of the broker's profiles file this secret is served behind, one lowercase word such as github or anthropic, or none: the secret is then released as its value")
-	newProxyNarrowed := flags.String("proxy-narrowed", "", "true (the secret is served only through its one profile, whose allow narrows its kind's) or none")
+	// f is every tag flag's value, each registered straight into its field, so the tags the retag
+	// sets and removes read the flags themselves (tagFlagTable), and the checks below write each
+	// value's canonical form back into it.
+	var f tagFlags
+	flags.StringVar(&f.Type, "type", "", strings.Join(policy.Types, ", ")+" or none")
+	flags.StringVar(&f.GitHubOwners, "github-owners", "", `the GitHub accounts a github-app secret mints for, or a github-installations secret hands stored tokens over for, separated by spaces ("<login> <login>"), or none`)
+	flags.StringVar(&f.Requesters, "requesters", "", `the people (each by their lowercase sign-in email), Google groups (each as group: and its lowercase email) and registered services that may ask for this secret at all, separated by spaces ("<email> group:<email> <service>"), or none; an admin secret, a google-service-account one and an anthropic-federation one each need a --max-grant of an hour or less, and a secret that only lists who may ask keeps its own cap, or none`)
+	flags.StringVar(&f.Scopes, "scopes", "", `the OAuth scopes the token a google-service-account secret mints carries, each the part of a Google scope after https://www.googleapis.com/auth/, separated by spaces ("cloud-platform bigquery"), or none; read on that type alone, and a secret without it mints cloud-platform`)
+	flags.StringVar(&f.Admin, "admin", "", "true marks a secret whose grant is an administrator's, or none removes the mark: such a secret is human tier, so a person approves each release, names its requesters, and bounds its grants to an hour with --max-grant")
+	flags.StringVar(&f.Project, "project", "", "the key of the Dispatch project the secret belongs to (PRIV), whose private secret goes only to a session naming the project in AGENT_SECRETS_PROJECTS, or none: the secret then belongs to no project")
+	flags.StringVar(&f.ProjectChannels, "project-channels", "", "slack (a session or pod whose credential names a private Dispatch project spends the secret only through the airlock, on a Slack post to a channel that project's owner named) or none")
+	flags.StringVar(&f.MaxGrant, "max-grant", "", "the longest grant duration this secret allows, or none")
+	flags.StringVar(&f.DefaultGrant, "default-grant", "", "session (no --ttl lasts until the session ends) or none (12 hours)")
+	flags.StringVar(&f.Judge, "judge", "", "whole seconds from 1 to 900, the longest grant the model judge makes of this secret when it decides a request for it against its guidance, or none: a person decides it")
+	flags.StringVar(&f.Guidance, "guidance", "", "the instruction the model judge follows when it decides a request for this secret, in at most 2000 characters (on AWS Secrets Manager at most 256, of letters, digits, spaces and _ . : / = + - @), or none")
+	flags.StringVar(&f.Proxy, "proxy", "", "the kind of the broker's profiles file this secret is served behind, one lowercase word such as github or anthropic, or none: the secret is then released as its value")
+	flags.StringVar(&f.ProxyNarrowed, "proxy-narrowed", "", "true (the secret is served only through its one profile, whose allow narrows its kind's) or none")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
-	// given is the tag flags as they stand: the checks below write the canonical form of some of
-	// them back, so the tags are read through it once they have run.
-	given := func() tagFlags {
-		return tagFlags{
-			Type:            *newType,
-			GitHubOwners:    *newGitHubOwners,
-			Requesters:      *newRequesters,
-			Scopes:          *newScopes,
-			Admin:           *newAdmin,
-			Project:         *newProject,
-			ProjectChannels: *newProjectChannels,
-			MaxGrant:        *newMaxGrant,
-			DefaultGrant:    *newDefaultGrant,
-			Judge:           *newJudge,
-			Guidance:        *newGuidance,
-			Proxy:           *newProxy,
-			ProxyNarrowed:   *newProxyNarrowed,
-		}
-	}
 	name, slug, err := secretName(positional)
-	if err == nil && *newOwner == "" && *newTier == "" && given() == (tagFlags{}) {
+	if err == nil && *newOwner == "" && *newTier == "" && f == (tagFlags{}) {
 		err = retagFlagsRequired()
 	}
 	if err == nil {
 		*newOwner, err = checkOwnerTier(*newOwner, *newTier)
 	}
 	if err == nil {
-		err = checkType(*newType)
+		err = checkType(f.Type)
 	}
 	if err == nil {
-		*newGitHubOwners, err = checkGitHubOwners(*newGitHubOwners, true)
+		f.GitHubOwners, err = checkGitHubOwners(f.GitHubOwners, true)
 	}
 	if err == nil {
-		*newRequesters, err = checkRequesters(*newRequesters, true)
+		f.Requesters, err = checkRequesters(f.Requesters, true)
 	}
 	if err == nil {
-		*newScopes, err = checkScopes(*newScopes, true)
+		f.Scopes, err = checkScopes(f.Scopes, true)
 	}
 	if err == nil {
-		err = checkAdmin(*newAdmin, true)
+		err = checkAdmin(f.Admin, true)
 	}
 	if err == nil {
-		err = checkProject(*newProject, true)
+		err = checkProject(f.Project, true)
 	}
 	if err == nil {
-		err = checkProjectChannels(*newProjectChannels, true)
+		err = checkProjectChannels(f.ProjectChannels, true)
 	}
 	if err == nil {
-		err = checkMaxGrant(*newMaxGrant, true)
+		err = checkMaxGrant(f.MaxGrant, true)
 	}
 	if err == nil {
-		err = checkDefaultGrant(*newDefaultGrant, true)
+		err = checkDefaultGrant(f.DefaultGrant, true)
 	}
 	if err == nil {
-		err = checkJudge(*newJudge, true)
+		err = checkJudge(f.Judge, true)
 	}
 	if err == nil {
-		err = checkGuidance(*newGuidance, true)
+		err = checkGuidance(f.Guidance, true)
 	}
 	if err == nil {
-		err = checkProxy(*newProxy, true)
+		err = checkProxy(f.Proxy, true)
 	}
 	if err == nil {
-		err = checkProxyNarrowed(*newProxyNarrowed, true)
+		err = checkProxyNarrowed(f.ProxyNarrowed, true)
 	}
-	remove := noneRemoves(given())
-	set := optionalTags(given())
+	remove := noneRemoves(f)
+	set := optionalTags(f)
 	if err == nil && len(remove) > 0 && (*newOwner != "" || *newTier != "" || len(set) > 0) {
 		err = usageErr{errors.New("none removes a tag in a retag of its own: run the removal and the other changes as two retags")}
 	}
@@ -252,7 +237,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
-	named := *newGitHubOwners != "" && *newGitHubOwners != tagNone
+	named := f.GitHubOwners != "" && f.GitHubOwners != tagNone
 	if err := checkGitHubOwnersFor(policy.TypeFromTags(after), after[policy.TagGitHubOwners], named); err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}

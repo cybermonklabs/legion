@@ -1433,19 +1433,22 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	flags := secretFlags(form, stderr)
 	owner := flags.String("owner", "", "me (the email of the person your AWS or Google sign-in names), shared, a person's email, or group: and a Google group's lowercase email")
 	tier := flags.String("tier", "", "agent (its owner's agents use it without asking) or human (a person approves each use)")
-	secretType := flags.String("type", "", strings.Join(policy.Types, ", ")+" or none (the default)")
-	githubOwners := flags.String("github-owners", "", `the GitHub accounts a github-app secret mints for, or a github-installations secret hands stored tokens over for, separated by spaces ("<login> <login>")`)
-	requesters := flags.String("requesters", "", `the people (each by their lowercase sign-in email), Google groups (each as group: and its lowercase email) and registered services that may ask for this secret at all, separated by spaces ("<email> group:<email> <service>"); an admin secret, a google-service-account one and an anthropic-federation one each need a --max-grant of an hour or less, and a secret that only lists who may ask keeps its own cap, or none`)
-	scopes := flags.String("scopes", "", `the OAuth scopes the token a google-service-account secret mints carries, each the part of a Google scope after https://www.googleapis.com/auth/, separated by spaces ("cloud-platform bigquery"); read on that type alone, and a secret without it mints cloud-platform`)
-	admin := flags.String("admin", "", "true marks a secret whose grant is an administrator's: such a secret is human tier, so a person approves each release, names its requesters, and bounds its grants to an hour with --max-grant")
-	project := flags.String("project", "", "the key of the Dispatch project the secret belongs to (PRIV): a private project's secret goes only to a session that names the project in AGENT_SECRETS_PROJECTS, and only a broker that can ask Dispatch serves it. Unset, the secret belongs to no project")
-	projectChannels := flags.String("project-channels", "", "slack: the secret is a Slack bot token, which a session or pod whose credential names a private Dispatch project spends only through the airlock, on a Slack post to a channel that project's owner named. Unset, no project's owner limits it")
-	maxGrant := flags.String("max-grant", "", "the longest grant duration this secret allows")
-	defaultGrant := flags.String("default-grant", "", "session: a request with no --ttl lasts until its session ends, not 12 hours")
-	judge := flags.String("judge", "", "whole seconds from 1 to 900: the model judge decides a request for this secret, granting at most that long, against its --guidance. Unset, a person decides it")
-	guidance := flags.String("guidance", "", "the instruction the model judge follows when it decides a request for this secret: when to grant it, in at most 2000 characters; on AWS Secrets Manager at most 256, of letters, digits, spaces and _ . : / = + - @")
-	proxyKind := flags.String("proxy", "", "the kind of the broker's profiles file this secret is served behind, one lowercase word such as github or anthropic: a session gets a placeholder and the broker's proxy puts the credential into the calls the kind allows. Unset, the secret is released as its value")
-	proxyNarrowed := flags.String("proxy-narrowed", "", "true: the secret is served only through its one profile, whose allow narrows its kind's")
+	// f is every tag flag's value, each registered straight into its field, so the tags the create
+	// writes and the command line it prints read the flags themselves (tagFlagTable).
+	var f tagFlags
+	flags.StringVar(&f.Type, "type", "", strings.Join(policy.Types, ", ")+" or none (the default)")
+	flags.StringVar(&f.GitHubOwners, "github-owners", "", `the GitHub accounts a github-app secret mints for, or a github-installations secret hands stored tokens over for, separated by spaces ("<login> <login>")`)
+	flags.StringVar(&f.Requesters, "requesters", "", `the people (each by their lowercase sign-in email), Google groups (each as group: and its lowercase email) and registered services that may ask for this secret at all, separated by spaces ("<email> group:<email> <service>"); an admin secret, a google-service-account one and an anthropic-federation one each need a --max-grant of an hour or less, and a secret that only lists who may ask keeps its own cap, or none`)
+	flags.StringVar(&f.Scopes, "scopes", "", `the OAuth scopes the token a google-service-account secret mints carries, each the part of a Google scope after https://www.googleapis.com/auth/, separated by spaces ("cloud-platform bigquery"); read on that type alone, and a secret without it mints cloud-platform`)
+	flags.StringVar(&f.Admin, "admin", "", "true marks a secret whose grant is an administrator's: such a secret is human tier, so a person approves each release, names its requesters, and bounds its grants to an hour with --max-grant")
+	flags.StringVar(&f.Project, "project", "", "the key of the Dispatch project the secret belongs to (PRIV): a private project's secret goes only to a session that names the project in AGENT_SECRETS_PROJECTS, and only a broker that can ask Dispatch serves it. Unset, the secret belongs to no project")
+	flags.StringVar(&f.ProjectChannels, "project-channels", "", "slack: the secret is a Slack bot token, which a session or pod whose credential names a private Dispatch project spends only through the airlock, on a Slack post to a channel that project's owner named. Unset, no project's owner limits it")
+	flags.StringVar(&f.MaxGrant, "max-grant", "", "the longest grant duration this secret allows")
+	flags.StringVar(&f.DefaultGrant, "default-grant", "", "session: a request with no --ttl lasts until its session ends, not 12 hours")
+	flags.StringVar(&f.Judge, "judge", "", "whole seconds from 1 to 900: the model judge decides a request for this secret, granting at most that long, against its --guidance. Unset, a person decides it")
+	flags.StringVar(&f.Guidance, "guidance", "", "the instruction the model judge follows when it decides a request for this secret: when to grant it, in at most 2000 characters; on AWS Secrets Manager at most 256, of letters, digits, spaces and _ . : / = + - @")
+	flags.StringVar(&f.Proxy, "proxy", "", "the kind of the broker's profiles file this secret is served behind, one lowercase word such as github or anthropic: a session gets a placeholder and the broker's proxy puts the credential into the calls the kind allows. Unset, the secret is released as its value")
+	flags.StringVar(&f.ProxyNarrowed, "proxy-narrowed", "", "true: the secret is served only through its one profile, whose allow narrows its kind's")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -1457,66 +1460,51 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 		*owner, err = checkOwnerTier(*owner, *tier)
 	}
 	if err == nil {
-		err = checkType(*secretType)
+		err = checkType(f.Type)
 	}
 	if err == nil {
-		*githubOwners, err = checkGitHubOwners(*githubOwners, false)
+		f.GitHubOwners, err = checkGitHubOwners(f.GitHubOwners, false)
 	}
 	if err == nil {
-		err = checkGitHubOwnersFor(*secretType, *githubOwners, *githubOwners != "")
+		err = checkGitHubOwnersFor(f.Type, f.GitHubOwners, f.GitHubOwners != "")
 	}
 	if err == nil {
-		*requesters, err = checkRequesters(*requesters, false)
+		f.Requesters, err = checkRequesters(f.Requesters, false)
 	}
 	if err == nil {
-		*scopes, err = checkScopes(*scopes, false)
+		f.Scopes, err = checkScopes(f.Scopes, false)
 	}
 	if err == nil {
-		err = checkAdmin(*admin, false)
+		err = checkAdmin(f.Admin, false)
 	}
 	if err == nil {
-		err = checkProject(*project, false)
+		err = checkProject(f.Project, false)
 	}
 	if err == nil {
-		err = checkProjectChannels(*projectChannels, false)
+		err = checkProjectChannels(f.ProjectChannels, false)
 	}
 	if err == nil {
-		err = checkMaxGrant(*maxGrant, false)
+		err = checkMaxGrant(f.MaxGrant, false)
 	}
 	if err == nil {
-		err = checkDefaultGrant(*defaultGrant, false)
+		err = checkDefaultGrant(f.DefaultGrant, false)
 	}
 	if err == nil {
-		err = checkJudge(*judge, false)
+		err = checkJudge(f.Judge, false)
 	}
 	if err == nil {
-		err = checkGuidance(*guidance, false)
+		err = checkGuidance(f.Guidance, false)
 	}
 	if err == nil {
-		err = checkProxy(*proxyKind, false)
+		err = checkProxy(f.Proxy, false)
 	}
 	if err == nil {
-		err = checkProxyNarrowed(*proxyNarrowed, false)
+		err = checkProxyNarrowed(f.ProxyNarrowed, false)
 	}
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	given := tagFlags{
-		Type:            *secretType,
-		GitHubOwners:    *githubOwners,
-		Requesters:      *requesters,
-		Scopes:          *scopes,
-		Admin:           *admin,
-		Project:         *project,
-		ProjectChannels: *projectChannels,
-		MaxGrant:        *maxGrant,
-		DefaultGrant:    *defaultGrant,
-		Judge:           *judge,
-		Guidance:        *guidance,
-		Proxy:           *proxyKind,
-		ProxyNarrowed:   *proxyNarrowed,
-	}
-	tags := optionalTags(given)
+	tags := optionalTags(f)
 	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
 		return secretFail(stderr, form, err)
@@ -1545,14 +1533,14 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	if err := s.backend.checkTagValues(tags); err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
-	command := createCommand(name, *owner, *tier, given)
+	command := createCommand(name, *owner, *tier, f)
 	// Install cleanup before the first store call: a signal can arrive after the store has
 	// created the empty secret but before its answer reaches the form.
 	pending := &pendingCreate{s: s, form: form, name: name, secretType: policy.TypeFromTags(tags), owner: ownerValue, tier: *tier, stdout: stdout, stderr: stderr, created: s.backend.prepareCreate(slug, tags)}
 	return runCreate(pending, func(deadline time.Time) (string, error) {
 		value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), command...), deadline, stderr)
-		if err == nil && policy.ValidType(*secretType) {
-			err = checkValueFor(*secretType, value)
+		if err == nil && policy.ValidType(f.Type) {
+			err = checkValueFor(f.Type, value)
 		}
 		return value, err
 	})

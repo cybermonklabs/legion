@@ -498,10 +498,12 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 	return usageErr{fmt.Errorf("the broker refuses a secret carrying these tags as %s, and this agent-secrets has no message naming the flag that fixes it: write tags the broker accepts", reason)}
 }
 
-// tagFlags is the value of each tag flag a create or a retag names, one field per flag. It is a
-// struct rather than thirteen string parameters for the reason policy.TagSet is one: a caller
-// passing that many values in order would transpose two of them, and every transposition
-// compiles and writes each value as another tag. tagFlagTable names each field's flag and tag.
+// tagFlags is the value of each tag flag a create or a retag names, one field per flag: each form
+// registers every flag straight into its field (flags.StringVar), so no second copy of the flags
+// stands between what a command line names and what is written. It is a struct rather than
+// thirteen string parameters for the reason policy.TagSet is one: a caller passing that many
+// values in order would transpose two of them, and every transposition compiles and writes each
+// value as another tag. tagFlagTable names each field's flag and tag.
 type tagFlags struct {
 	Type            string
 	GitHubOwners    string

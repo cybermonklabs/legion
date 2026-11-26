@@ -26,9 +26,11 @@ func bothGuarded(list string) string { return policy.WithGuards(list, true, true
 // TestTheTagFlagTableHoldsEveryTagFlag: tagFlagTable is the one list of the tag flags, and each
 // field of tagFlags is in it once. For each field, set alone, the table's flag is what the create's
 // printed command names (createCommand), its tag is what optionalTags writes, and what a retag's
-// none removes (noneRemoves), and the flag is one create and retag register, their synopses name
-// and a retag naming no flag asks for. The fields are read from tagFlags itself, so a field the
-// table leaves out fails here rather than drop out of a printed command or a retag's removal.
+// none removes (noneRemoves), and the flag is one create and retag register and their synopses
+// name. Create and retag register each flag straight into its field of tagFlags, so a field whose
+// flag one of them does not register fails the -h check here. The fields are read from tagFlags
+// itself, so a field the table leaves out fails here rather than drop out of a printed command or
+// a retag's removal.
 func TestTheTagFlagTableHoldsEveryTagFlag(t *testing.T) {
 	fields := reflect.TypeOf(tagFlags{})
 	if len(tagFlagTable) != fields.NumField() {
@@ -42,7 +44,6 @@ func TestTheTagFlagTableHoldsEveryTagFlag(t *testing.T) {
 		}
 		help["secret "+form] = stderr
 	}
-	required := retagFlagsRequired().Error()
 	for i := range fields.NumField() {
 		field := fields.Field(i).Name
 		var f tagFlags
@@ -82,9 +83,6 @@ func TestTheTagFlagTableHoldsEveryTagFlag(t *testing.T) {
 			if !strings.Contains(text, "  -"+strings.TrimPrefix(row.flag, "--")+" string") {
 				t.Errorf("%s -h registers no %s", form, row.flag)
 			}
-		}
-		if !strings.Contains(required, row.flag+",") && !strings.Contains(required, row.flag+" or") {
-			t.Errorf("a retag naming no flag is refused %q, which names no %s", required, row.flag)
 		}
 	}
 	if removed := noneRemoves(tagFlags{Type: tagNone}); !slices.Equal(removed, []string{policy.TagType, policy.LegacyTypeTag, policy.TagRollbackGuard}) {
