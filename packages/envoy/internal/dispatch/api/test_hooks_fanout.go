@@ -452,7 +452,9 @@ type testHookOK struct {
 }
 
 // runTestHookEverywhere runs call on every process and writes the answer. A server with no
-// database shares nothing with any other process, so it runs the hook on itself.
+// database shares nothing with any other process, so it runs the hook on itself. A failure with no
+// body is one the error writer answered with nothing (runTestHook): the request's client went
+// away, and admission.WriteUnserved marked its access line 499, so nothing is written.
 func (s *server) runTestHookEverywhere(w http.ResponseWriter, r *http.Request, call testHookCall) {
 	var status int
 	var body []byte
@@ -465,13 +467,17 @@ func (s *server) runTestHookEverywhere(w http.ResponseWriter, r *http.Request, c
 		WriteJSON(w, http.StatusOK, testHookOK{OK: true})
 		return
 	}
+	if len(body) == 0 {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
 }
 
 // runTestHook is a hook's local action on this process, answering 200 or the status and body a
-// failure writes.
+// failure writes. A failure the error writer answered with nothing, under a context its client
+// left, answers no status and no body, which runTestHookEverywhere writes nothing for.
 func (s *server) runTestHook(ctx context.Context, call testHookCall) (int, []byte) {
 	switch call.Hook {
 	case hookDisconnectSockets:

@@ -509,9 +509,13 @@ func adviceReport[T any](
 // advice's own savepoint (adviceReport): a failed statement aborts the savepoint it ran in, so run
 // on the advice's, a failed step would take every step after it. A step writes nothing, so its
 // savepoint is always rolled back, on a context of its own (endAdviceSavepoint). It answers read's
-// result, or the error of read or of the savepoint, which the step logs and survives: a savepoint
-// that could not be rolled back has ended the write's transaction, and the advice's own rollback,
-// which adviceReport always runs after it, answers that to the write.
+// result, or the error of read or of that rollback, which its caller logs, leaving the step's line
+// out. A rollback that failed is left to the advice's own, which adviceReport always runs after
+// the steps. Where Postgres refused the step's rollback on a connection still open, the
+// transaction stands aborted, so the step after it, if any, fails at its own savepoint and is left
+// out too; the advice's rollback to its own savepoint, which encloses the step's, then ends that
+// state, and the write goes on with the advice read before the failure. Where pgconn closed the
+// connection under the call, the advice's rollback fails too, and its error is the write's.
 func adviceStep[T any](ctx context.Context, tx pgx.Tx, field string, read func(step pgx.Tx) (T, error)) (T, error) {
 	var none T
 	step, err := tx.Begin(ctx)

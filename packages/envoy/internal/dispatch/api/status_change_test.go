@@ -33,6 +33,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/stacktest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -1245,6 +1247,51 @@ func TestAStatusChangeRefusedMidwayNamesWhatItChanged(t *testing.T) {
 	}))
 }
 
+// TestAStatusChangeWhoseClientLeavesIsAnsweredNothingOnce: a status change whose client goes away
+// while it runs is answered nothing, once. The step after the client left meets the cancelled
+// request, which every route answers as admission.WriteUnserved answers a client gone: nothing
+// written, and the access line marked 499 (accesslog.ClientGone). The route reads its refusal back
+// from a buffer (writeStatusChangeRefusal); it read that empty answer as a refusal it could not
+// decode and answered it again through the same writer, which wrote nothing again, so it called
+// itself until the stack overflowed: a fatal error no recover catches, which ended the process with
+// every request it served. The row runs under a capped stack in a run of the test binary of its
+// own (stacktest.Under), so such a recursion fails it by name and the package's run goes on.
+func TestAStatusChangeWhoseClientLeavesIsAnsweredNothingOnce(t *testing.T) {
+	stacktest.Under(t, 16<<20, func(t *testing.T) {
+		logged := captureLog(t)
+		rig := newStatusChangeRig(t, true)
+		named := rig.file(t, "Issue started as its client leaves", "backlog", "")
+		child := rig.file(t, "Child the call never reaches", "backlog", named)
+		ctx, leave := context.WithCancel(context.Background())
+		defer leave()
+		// The client leaves once the first step, the named issue's own, has committed.
+		rig.afterStep(t, func(_ context.Context, step int) {
+			if step == 0 {
+				leave()
+			}
+		})
+		write := statusChangeOf(named, map[string]any{"status": "todo", "include_children": true})
+		data, err := json.Marshal(write.body)
+		if err != nil {
+			t.Fatalf("encode %s: %v", write, err)
+		}
+		request := httptest.NewRequest(write.method, write.path, bytes.NewReader(data)).WithContext(ctx)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Dispatch-User", "alice")
+		response := httptest.NewRecorder()
+		rig.handler.ServeHTTP(response, request)
+		if response.Body.Len() != 0 {
+			t.Fatalf("%s whose client left after its first step was answered %d %s, want nothing written",
+				write, response.Code, response.Body.String())
+		}
+		if line := accessLineOfRoute(t, logged, "/api/v1/issues/{key}/status-change"); !strings.Contains(line, "status=499") {
+			t.Fatalf("%s whose client left after its first step logged:\n%s\nwant status=499", write, line)
+		}
+		rig.requireIssue(t, named, "todo", "")
+		rig.requireIssue(t, child, "backlog", named)
+	})
+}
+
 // TestAStatusChangeRefusedByItsRequestKeyAnswersChanged: every refusal that the route's handler
 // answers carries changed beside its code, [] when no step committed before it (plan v19, "The
 // contract"; the check c-route-fence: "a call refused before its first step answers an empty
@@ -1935,6 +1982,53 @@ func TestAStatusChangeChecksItsPlanUnderItsLocks(t *testing.T) {
 	})
 }
 
+// TestAStatusChangesCloseSweepsTheIssuesDocumentsUnderTheirWriterGates: the ask sweep of a close a
+// status change made runs after the call's last step, once the close's own step has released the
+// writer gates of the issue's documents, so the sweep takes them again before its transaction opens
+// (statusChangeRun.sweep), as the PATCH's sweep runs under the gates its write holds. A decision
+// block that no settlement indexed before the close, which only the sweep marks, is stored
+// resolved once the call has answered, keyed or not, and nothing is logged at ERROR. A sweep
+// without the gates is refused at its first document write (joinLiveWrite's ErrWriterGateNotHeld)
+// and rolls back, leaving the block open, with the sweep's ERROR line.
+func TestAStatusChangesCloseSweepsTheIssuesDocumentsUnderTheirWriterGates(t *testing.T) {
+	logs := captureLogs(t)
+	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
+		documentService := docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		testcleanup.Add(t, func() { _ = documentService.Shutdown(context.Background()) })
+		return failingSettlement{API: documentService}
+	})
+	createTestProject(t, handler, "TEST")
+	for _, key := range []string{"", "status-change-swept-under-gates"} {
+		t.Run(fmt.Sprintf("keyed %t", key != ""), func(t *testing.T) {
+			issue := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+				"project": "TEST", "title": fmt.Sprintf("A late decision closed by a status change, keyed %t", key != ""),
+				"spec": "Context\n", "force": true,
+			}))
+			edited := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+				"actor": sessionActor(),
+				"ops": []map[string]string{{
+					"op": "insert", "after": "end",
+					"markdown": ":::ask{#late-decision urgency=\"high\" multiple=\"false\"}\nShip late?\n:::\n",
+				}},
+			})
+			if edited.Code != http.StatusOK {
+				t.Fatalf("write the decision block: status=%d body=%s", edited.Code, edited.Body.String())
+			}
+			if id := findBlockAsk(t, handler, issue.Key, issue.PrimaryArtifactID, "late-decision"); id != "" {
+				t.Fatalf("the decision block is ask %s before any settlement", id)
+			}
+			write := statusChangeOf(issue.Key, map[string]any{"status": "done"})
+			if closed := keyedRequest(t, handler, write.method, write.path, write.body, "alice", key); closed.Code != http.StatusOK {
+				t.Fatalf("%s: status=%d body=%s, want 200", write, closed.Code, closed.Body.String())
+			}
+			requireLiveText(t, handler, issue.PrimaryArtifactID, `#late-decision urgency="high" multiple="false" state="resolved"`)
+			if failed := logs.Lines("level=ERROR"); failed != "" {
+				t.Fatalf("%s logged at ERROR:\n%s", write, failed)
+			}
+		})
+	}
+}
+
 // repeatRig is a status change rig, the rule on, whose keyed calls a test stops as a process that
 // died leaves them: the lease of a stopped holder is never renewed, and the test lapses it itself
 // (lapse). sweeps records each ask sweep of a closed issue.
@@ -1954,7 +2048,10 @@ func newRepeatRig(t *testing.T) repeatRig {
 
 // sweptAsks is the document service with each ask sweep of a closed issue recorded: every write of
 // an issue's ask states that marks its unindexed blocks resolved, which only that sweep makes
-// (sweepIssueAskBlocksTx), as the ids of the asks it wrote, by issue.
+// (sweepIssueAskBlocksTx), as the ids of the asks it wrote, by issue. A write the document service
+// refused is no sweep and is not recorded: a sweep run without the writer gates of the issue's
+// documents is refused at its first document (joinLiveWrite's ErrWriterGateNotHeld), and counted
+// before that write it would read as a sweep that ran.
 type sweptAsks struct {
 	docs.API
 	mu    sync.Mutex
@@ -1962,7 +2059,8 @@ type sweptAsks struct {
 }
 
 func (s *sweptAsks) WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]docs.BlockRef, error) {
-	if markUnindexed {
+	written, err := s.API.WriteIssueAskStates(ctx, issueKey, asks, actor, markUnindexed)
+	if markUnindexed && err == nil {
 		ids := make([]string, 0, len(asks))
 		for _, ask := range asks {
 			ids = append(ids, ask.ID)
@@ -1971,7 +2069,7 @@ func (s *sweptAsks) WriteIssueAskStates(ctx context.Context, issueKey string, as
 		s.swept[issueKey] = append(s.swept[issueKey], ids)
 		s.mu.Unlock()
 	}
-	return s.API.WriteIssueAskStates(ctx, issueKey, asks, actor, markUnindexed)
+	return written, err
 }
 
 // sweptOf is each ask sweep of issue, as the ids of the asks it wrote.

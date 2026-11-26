@@ -246,10 +246,13 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 // repair's interval pass sweeps a closed issue's document that still owes a settlement when it
 // runs (RunIssueAskRepair).
 //
-// ctx must not end when the client goes away (outlivingTheClient), and no transaction is open. It
-// carries the writer gates of the issue's documents the close took before its transaction
-// (docs.Service.AcquireDocumentWriter): no document is added to a closed issue, so those are every
-// document the sweep writes, and it takes no gate of its own.
+// ctx must not end when the client goes away (outlivingTheClient), and no transaction is open. The
+// sweep writes the issue's documents, and joinLiveWrite refuses a document write whose writer gate
+// (docs.Service.AcquireDocumentWriter) its context does not carry, so ctx carries the gates of the
+// issue's documents: the gates the PATCH that closed the issue took before its transaction and
+// holds until its sweep has run (writeIssue). No document is added to a closed issue, so those are
+// every document the sweep writes. A caller that holds none, a status change, sweeps through
+// gateAndSweepClosedIssueAsks instead, which takes them first.
 func (s *server) sweepClosedIssueAsks(ctx context.Context, issueKey string, withdrawn []model.Ask, actor model.Actor) {
 	if err := s.sweepClosedIssueAsksTx(ctx, issueKey, withdrawn, actor); err != nil {
 		slog.Error("dispatch: sweep the ask blocks of a closed issue", "issue", issueKey, "error", err)
@@ -257,32 +260,105 @@ func (s *server) sweepClosedIssueAsks(ctx context.Context, issueKey string, with
 }
 
 func (s *server) sweepClosedIssueAsksTx(ctx context.Context, issueKey string, withdrawn []model.Ask, actor model.Actor) error {
-	tx, err := s.begin(ctx)
+	sweep, err := s.beginClosedIssueSweep(ctx, issueKey)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
-	defer ledger.Discard()
-	var closed bool
-	// The issue's owner lock, then its read in a statement of its own (store.LockOwnerAndRead). The
-	// sweep's document writes are queued for its commit: it writes nothing else.
+	return s.commitClosedIssueSweep(ctx, sweep, issueKey, withdrawn, actor)
+}
+
+// gateAndSweepClosedIssueAsks is sweepClosedIssueAsks for a caller that holds no writer gate of
+// the issue's documents: a status change, whose close's step released them when it returned, since
+// the call sweeps after its last step (statusChangeRun.sweep). It takes them as the PATCH takes its
+// own (gatedWrite): it names the issue's documents with no transaction open and queues for their
+// gates, then opens the sweep's transaction, takes the issue's owner lock and names them again
+// under it, and gates them once more when they moved; an issue reopened in the meantime is left
+// alone, as the sweep leaves it. ctx is the request's, outliving its client, so the wait for a gate
+// is that request's write's wait: it gives the request's admission units back while it waits and
+// holds no connection, and it takes them back within what is left of the request's admission wait.
+// The gates end once the sweep has committed or rolled back. Its failure is logged as the sweep's.
+func (s *server) gateAndSweepClosedIssueAsks(ctx context.Context, issueKey string, withdrawn []model.Ask, actor model.Actor) {
+	sweep, gatedCtx, release, err := gatedWrite(ctx, s.deps.Docs,
+		func(ctx context.Context) ([]string, error) {
+			return issueDocuments(ctx, s.documentQueryer(), issueKey)
+		},
+		func(ctx context.Context, gated []string) (closedIssueSweep, error) {
+			sweep, err := s.beginClosedIssueSweep(ctx, issueKey)
+			if err != nil || !sweep.closed {
+				return sweep, err
+			}
+			named, err := issueDocuments(ctx, sweep.tx, issueKey)
+			if err == nil && !sameDocuments(gated, named) {
+				err = errDocumentsMoved
+			}
+			if err != nil {
+				sweep.end(ctx)
+				return closedIssueSweep{}, err
+			}
+			return sweep, nil
+		})
+	if err == nil {
+		defer release()
+		err = s.commitClosedIssueSweep(gatedCtx, sweep, issueKey, withdrawn, actor)
+	}
+	if err != nil {
+		slog.Error("dispatch: sweep the ask blocks of a closed issue", "issue", issueKey, "error", err)
+	}
+}
+
+// closedIssueSweep is a close's final sweep's open transaction, joined to the document service
+// (documentCtx, ledger) and holding the issue's owner lock, and whether the issue still reads
+// closed under that lock.
+type closedIssueSweep struct {
+	tx          pgx.Tx
+	documentCtx context.Context
+	ledger      *docs.Ledger
+	closed      bool
+}
+
+// end discards what the sweep queued and rolls its transaction back; after its commit it does
+// nothing.
+func (sweep closedIssueSweep) end(ctx context.Context) {
+	sweep.ledger.Discard()
+	_ = sweep.tx.Rollback(ctx)
+}
+
+// beginClosedIssueSweep opens the transaction of issueKey's final sweep, joins it to the document
+// service, and takes the issue's owner lock in it, then reads whether the issue is closed in a
+// statement of its own (store.LockOwnerAndRead). The sweep's document writes are queued for its
+// commit: it writes nothing else.
+func (s *server) beginClosedIssueSweep(ctx context.Context, issueKey string) (closedIssueSweep, error) {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return closedIssueSweep{}, err
+	}
+	sweep := closedIssueSweep{tx: tx}
+	sweep.documentCtx, sweep.ledger = s.deps.Docs.Join(ctx, tx)
 	if err := store.LockOwnerAndRead(ctx, tx, store.IssueOwner(issueKey), `
 		select closed_at is not null from issues where key = $1
-	`, []any{issueKey}, &closed); err != nil {
-		return fmt.Errorf("lock the closed issue: %w", err)
+	`, []any{issueKey}, &sweep.closed); err != nil {
+		sweep.end(ctx)
+		return closedIssueSweep{}, fmt.Errorf("lock the closed issue: %w", err)
 	}
-	if !closed {
+	return sweep, nil
+}
+
+// commitClosedIssueSweep writes the sweep of issueKey's documents in sweep, the transaction
+// beginClosedIssueSweep opened, and commits it, or writes nothing for an issue reopened before the
+// sweep took its lock. It ends sweep either way.
+func (s *server) commitClosedIssueSweep(ctx context.Context, sweep closedIssueSweep, issueKey string, withdrawn []model.Ask, actor model.Actor) error {
+	defer sweep.end(ctx)
+	if !sweep.closed {
 		return nil
 	}
 	ids := make([]string, len(withdrawn))
 	for index, ask := range withdrawn {
 		ids[index] = ask.ID
 	}
-	if _, err := s.sweepIssueAskBlocksTx(documentCtx, tx, issueKey, ids, nil, actor); err != nil {
+	if _, err := s.sweepIssueAskBlocksTx(sweep.documentCtx, sweep.tx, issueKey, ids, nil, actor); err != nil {
 		return err
 	}
-	return ledger.Commit(ctx)
+	return sweep.ledger.Commit(ctx)
 }
 
 // sweepIssueAskBlocksTx is the close's final sweep of issueKey's documents (sweepClosedIssueAsks)

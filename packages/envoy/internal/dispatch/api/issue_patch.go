@@ -99,8 +99,10 @@ type issueWriteCall struct {
 	// credential that names none (callerProject).
 	callerProject string
 	// outliving is a context that does not end when the client goes away (outlivingTheClient):
-	// the close's settlement before the transaction, and its ask sweep after the commit, run on
-	// it.
+	// the close's settlement before the transaction runs on it. The close's ask sweep after the
+	// commit runs on the context that carries the write's writer gates instead, which outlives the
+	// client too (outlivingTheContext); a step whose caller sweeps later leaves it to that caller
+	// (issueWriteCallStep.sweepsLater).
 	outliving context.Context
 	// adviceRoute is the route that the write's advice names (writeAdviceBefore).
 	adviceRoute string
