@@ -620,12 +620,15 @@ func heldFetches(held *heldPullRequests, number string) int64 {
 }
 
 // awaitDurableTakenOver waits for the process standing by to hold the delivery durable while the
-// other process is cut off, and names what each of the two is when it never does. The wait covers
-// the hold's whole lapse (intakeHoldTTL, 15 s), the standby's poll (durableBindInterval, 2 s) and
-// the take-over's own delete, subscribe and create under the consumer lease.
+// other process is cut off, and names what each of the two is when it never does. What it reads is
+// the standby's own subscription, live from the take-over's subscribe, which comes after its delete
+// of the durable and before its create (finishTakeOver). The wait covers the hold's whole lapse
+// (intakeHoldTTL, 15 s), the standby's poll (durableBindInterval, 2 s) and those steps under the
+// consumer lease, each of which a loaded machine slows with nothing wrong, so its one bound is what
+// the test binary's deadline leaves (untilTheBinaryDeadline).
 func awaitDurableTakenOver(t *testing.T, holder, keeper *Intake, keeperClient *bus.Client) {
 	t.Helper()
-	waitFor(t, 45*time.Second, func() bool {
+	waitFor(t, untilTheBinaryDeadline(t), func() bool {
 		return intakeHoldsSubscription(keeper)
 	}, func() string {
 		return fmt.Sprintf("the standby process never took the delivery durable over while the holder was cut off: the holder's subscription is live = %t, the standby's = %t, and the server reports the durable bound = %t",

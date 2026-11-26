@@ -741,9 +741,10 @@ func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing
 }
 
 // A holder cut off from NATS and Postgres loses its hold, and the standby takes the durable over.
-// When the holder's connection comes back, its client sends its subscription again on the deliver
-// subject it had; the standby's take-over moved the durable to another, so the holder is handed
-// nothing, and each later message is handled by exactly one process.
+// When the holder's connection comes back, nothing it subscribed to before the cut delivers to it:
+// the lost hold stopped its delivery, which unsubscribes a subscription whose link is down, and the
+// standby's take-over deleted the durable and created it again on another deliver subject. So the
+// holder is handed nothing, and each later message is handled by the standby alone, exactly once.
 func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) {
 	t.Parallel()
 	shrinkIntakeFlowControl(t)
@@ -768,27 +769,31 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 	relay.Cut()
 	holder.leases.cut.Store(true)
 	cut := time.Now()
-	// The standby delivering the durable, which it can do only once the holder's hold has lapsed.
+	// The standby's take-over under way: it has deleted the durable the holder was bound to and
+	// subscribed to a fresh deliver subject, which it can do only once the holder's hold has lapsed.
 	awaitDurableTakenOver(t, holder.intake, standby.intake, publisher)
 	t.Logf("the standby took the durable over %s after the holder was cut off", time.Since(cut))
 
 	relay.Restore()
 	holder.leases.cut.Store(false)
-	// The holder's connection on a session nats.go began after the cut: connected, with a reconnect
-	// count past the one read before it. A flush on the session the cut ended is answered "nats:
-	// connection closed" once nats.go acts on the cut, since it drops every flush still waiting
-	// when it starts to reconnect.
-	waitFor(t, 20*time.Second, func() bool {
-		return holder.client.Connection() == holderConn && holderConn.Status() == natsgo.CONNECTED &&
-			holderConn.Stats().Reconnects > reconnectsBeforeCut
+	// The holder's connection on a session nats.go began after the cut: a reconnect count past the
+	// one read before the cut, and then the same connection connected. The count is read first:
+	// nats.go counts a reconnect as soon as it has a socket, before the handshake that can still
+	// fail, so only a status read after the count says the session it counted is up. A flush on the
+	// session the cut ended is answered "nats: connection closed" once nats.go acts on the cut,
+	// since it drops every flush still waiting when it starts to reconnect.
+	waitFor(t, untilTheBinaryDeadline(t), func() bool {
+		reconnected := holderConn.Stats().Reconnects > reconnectsBeforeCut
+		return reconnected && holder.client.Connection() == holderConn && holderConn.Status() == natsgo.CONNECTED
 	}, func() string {
-		return fmt.Sprintf("the holder's NATS connection did not come back after the cut: the client still holds the connection it had = %t, its status is %v, and nats.go counts %d reconnect(s) since the cut",
-			holder.client.Connection() == holderConn, holderConn.Status(), holderConn.Stats().Reconnects-reconnectsBeforeCut)
+		return fmt.Sprintf("the holder's NATS connection did not come back after the cut: nats.go counts %d reconnect(s) since the cut, the client still holds the connection it had = %t, and its status is %v",
+			holderConn.Stats().Reconnects-reconnectsBeforeCut, holder.client.Connection() == holderConn, holderConn.Status())
 	})
-	// The holder's client sends its subscriptions again as it reconnects, before anything else it
-	// writes; a round trip on that connection (a flush) returns only once the server has read them,
-	// so from here the holder's old deliver subject is subscribed on the server.
-	if err := holder.client.Connection().FlushTimeout(10 * time.Second); err != nil {
+	// The holder's client sends again, as it reconnects, every subscription it still holds, before
+	// anything else it writes; a round trip on that connection (a flush) returns only once the
+	// server has read them, so whatever the holder could still be handed is in place before the
+	// later messages are published.
+	if err := holder.client.Connection().FlushTimeout(untilTheBinaryDeadline(t)); err != nil {
 		t.Fatalf("flush the holder's restored connection: %v", err)
 	}
 
@@ -797,7 +802,7 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 		later[i] = 200 + i
 		publishMergedPullRequest(t, publisher, later[i])
 	}
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, untilTheBinaryDeadline(t), func() bool {
 		for _, number := range later {
 			if standby.fetches(number)+holder.fetches(number) == 0 {
 				return false
@@ -811,13 +816,13 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 	// Every message is acknowledged and none is pending, so the server has nothing left to send of
 	// them; a flush of the holder's connection then returns only once anything the server sent the
 	// holder has reached its client. A short window still lets a handler the holder started finish.
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, untilTheBinaryDeadline(t), func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.NumAckPending == 0 && info.NumPending == 0
 	}, func() string {
 		return "the later messages were not all acknowledged: " + consumerState(publisher)
 	})
-	if err := holder.client.Connection().FlushTimeout(10 * time.Second); err != nil {
+	if err := holder.client.Connection().FlushTimeout(untilTheBinaryDeadline(t)); err != nil {
 		t.Fatalf("flush the holder's connection: %v", err)
 	}
 	time.Sleep(time.Second)
@@ -825,6 +830,10 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 		if got := standby.fetches(number) + holder.fetches(number); got != 1 {
 			t.Errorf("message %d was handled %d times (standby %d, holder %d), want exactly once",
 				number, got, standby.fetches(number), holder.fetches(number))
+		}
+		if got := holder.fetches(number); got != 0 {
+			t.Errorf("the holder the standby took the durable over from handled message %d %d times, want never: standby %d",
+				number, got, standby.fetches(number))
 		}
 	}
 }
