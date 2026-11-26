@@ -121,16 +121,21 @@ func requestsOf(refs *githubtest.Refs, method, branch string) []int {
 
 // The deletion of the branches beside a fix deletes the three beside fix 1 and no other: the
 // branch beside fix 2, the one beside another task and the issue's own branch stand. A delete
-// GitHub answers 404 finishes that branch as absent with a line of its own. The row of fix 0 then
-// deletes the branch beside fix 2 too, and leaves the other task's and the issue's. A delete GitHub
-// answers 422 is read again by the branch's exact ref: where the ref still stands, the row fails
-// and is kept for its retry, logging a failure and no deletion of it, and its replay deletes it;
-// where the ref reads 404, the branch finishes as absent, not as deleted. A 500 keeps the row for
-// its retry too. Each runs on a whole daemon (besideDaemon), the row on its role-message lane.
+// GitHub answers 404 finishes that branch as absent with a line of its own. The row of fix 0
+// through fix 2 then deletes the branch beside fix 2 too, and leaves the other task's and the
+// issue's. A delete GitHub answers 422 is read again by the branch's exact ref: where the ref still
+// stands, the row fails and is kept for its retry, logging a failure and no deletion of it, and its
+// replay deletes it; where the ref reads 404, the branch finishes as absent, not as deleted. A 500
+// keeps the row for its retry too. Each runs on a whole daemon (besideDaemon), the row on its
+// role-message lane.
 //
 // The controls, kept subtests: the row of fix 2 leaves fix 1's three branches, and with a 422 taken
 // as gone (the seam delete422AsGone) the branch that still stands is finished and logged as
-// deleted, which the subtest asserts.
+// deleted, which the subtest asserts. On the daemon of the row of fix 2, a row of every fix through
+// fix 1 then deletes fix 1's three and leaves a branch pushed under fix 2 after it, as a fix the
+// task opens later in the generation pushes one (a later version adds the task again, or a move
+// back takes it out of its retro), and GitHub is asked no delete of it; the row of fix 0 through
+// fix 2 in the first subtest is its control, which deletes fix 2's branch.
 func TestTheBranchesBesideAFixAreDeleted(t *testing.T) {
 	t.Parallel()
 	t.Run("fix 1's branches go, a 404 is an absence, and fix 0 takes the task's rest", func(t *testing.T) {
@@ -160,7 +165,7 @@ func TestTheBranchesBesideAFixAreDeleted(t *testing.T) {
 		if held := standing(refs, b.fix2, b.other, b.issue); len(held) != 3 {
 			t.Fatalf("after fix 1's row %v stand, want fix 2's, the other task's and the issue's", held)
 		}
-		task := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default"})
+		task := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default", Through: 2})
 		d.until("", "the task's row to finish", func() bool { return !d.rowLeft(task) })
 		if held := standing(refs, b.fix2, b.other, b.issue); !slices.Equal(held, []string{b.other, b.issue}) {
 			t.Fatalf("after the task's row %v stand, want the other task's and the issue's alone", held)
@@ -221,6 +226,23 @@ func TestTheBranchesBesideAFixAreDeleted(t *testing.T) {
 		if held := standing(refs, b.fix1...); len(held) != 3 || len(standing(refs, b.fix2)) != 0 {
 			t.Fatalf("fix 2's row left %v of fix 1 and %v of fix 2; want fix 1's three and none of fix 2", held, standing(refs, b.fix2))
 		}
+		t.Run("a row of every fix through fix 1 leaves a later fix's branch", func(t *testing.T) {
+			refs.Set(liveRepo, b.fix2, "e000000000000000000000000000000000000000")
+			if planted := standing(refs, b.fix2); len(planted) != 1 {
+				t.Fatalf("UNKNOWN: the planting holds %v beside fix 2, want its one branch: a row that never reached fix 2 would pass", planted)
+			}
+			id := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default", Through: 1})
+			d.until("", "the row through fix 1 to finish", func() bool { return !d.rowLeft(id) })
+			if held := standing(refs, b.fix1...); len(held) != 0 {
+				t.Fatalf("after the row through fix 1 %v of fix 1 stand, want none", held)
+			}
+			if held := standing(refs, b.fix2, b.other, b.issue); !slices.Equal(held, []string{b.fix2, b.other, b.issue}) {
+				t.Fatalf("after the row through fix 1 %v stand, want fix 2's, the other task's and the issue's", held)
+			}
+			if deletes := requestsOf(refs, http.MethodDelete, b.fix2); len(deletes) != 1 {
+				t.Fatalf("GitHub answered the deletes of %s %v, want the one of fix 2's row and none of the row through fix 1", b.fix2, deletes)
+			}
+		})
 	})
 	t.Run("control: delete422AsGone finishes a branch that still stands as deleted", func(t *testing.T) {
 		t.Parallel()

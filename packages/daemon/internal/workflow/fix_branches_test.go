@@ -168,7 +168,8 @@ func TestAStepBesideAFixIsToldToPushToItsOwnBranch(t *testing.T) {
 }
 
 // deletions is each deletion of branches beside a fix queued for LEGION-208, oldest first, as
-// `<generation> <task> fix <n>` (record.BesideBranchesDelete, fix 0 for every fix of the task).
+// `<generation> <task> fix <n>`, and `<generation> <task> fix 0 through <m>` for every fix of the
+// task to m, the newest fix it held when the row was queued (record.BesideBranchesDelete).
 func (r *fixRig) deletions() []string {
 	r.t.Helper()
 	var lines []string
@@ -177,7 +178,11 @@ func (r *fixRig) deletions() []string {
 		if err := json.Unmarshal(row.payload, &deletion); err != nil {
 			r.t.Fatalf("decode the deletion %s: %v", row.payload, err)
 		}
-		lines = append(lines, fmt.Sprintf("%d %s fix %d", deletion.Generation, deletion.Task, deletion.Fix))
+		line := fmt.Sprintf("%d %s fix %d", deletion.Generation, deletion.Task, deletion.Fix)
+		if deletion.Fix == 0 {
+			line += fmt.Sprintf(" through %d", deletion.Through)
+		}
+		lines = append(lines, line)
 	}
 	return lines
 }
@@ -237,7 +242,7 @@ func (r *fixRig) parks() {
 // with deleteAfterEveryCompletion the no-commit way 2 and the way 3 each do.
 func TestBesideBranchesAreDeletedAtTheirEnds(t *testing.T) {
 	fix1 := []string{"1 a fix 1"}
-	task := []string{"1 a fix 0"}
+	task := []string{"1 a fix 0 through 1"}
 	t.Run("a new-commit way 2 deletes none", func(t *testing.T) {
 		r := fixAtTheEnd(t, returnEngine())
 		r.fixEnds(headTwo)
@@ -328,6 +333,7 @@ func TestBesideBranchesAreDeletedAtTheirEnds(t *testing.T) {
 		})
 		assertStrings(t, "the deletions", r.deletions(), task)
 	})
+
 	t.Run("a version that removes the stopped task deletes its branches", func(t *testing.T) {
 		r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
 		r.stop()
@@ -378,6 +384,101 @@ func TestBesideBranchesAreDeletedAtTheirEnds(t *testing.T) {
 		r.fixEnds(fixHead)
 		assertStrings(t, "the deletions of the way 3", r.deletions(), fix1)
 	})
+}
+
+// A new generation ends its old starts through settleRuns. Its deletion must wait until that
+// transaction ended every old start, so a tester's own push while its start remains open is
+// recorded before the task-wide deletion is queued.
+func TestANewGenerationQueuesDeletionAfterItsLastOldStartEnds(t *testing.T) {
+	engine := returnEngine()
+	r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+	r.fails(fixHead, "k-ci")
+	r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+
+	const pushed = "5555555555555555555555555555555555555555"
+	called := 0
+	engine.afterOldGenerationRunEnd = func(ctx context.Context, tx pgx.Tx, row record.IssueStepRun) error {
+		if row.Generation != 1 || row.Place.Task != "a" {
+			return nil
+		}
+		called++
+		tester, err := engine.store.StepStarts(ctx, tx, "LEGION-208", record.StepPlace{Task: "a", Kind: record.PlaceStep, Place: 2})
+		if err != nil {
+			return err
+		}
+		if tester.Run == record.RunOpen {
+			if err := engine.store.RecordBesidePush(ctx, tx, "LEGION-208", 1, "a", 1, string(claim.RoleTester), pushed); err != nil {
+				return err
+			}
+		}
+		var queued int
+		if err := tx.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = $2`, "LEGION-208", string(record.OutboxKindBesideBranchesDelete)).Scan(&queued); err != nil {
+			return err
+		}
+		if queued != 0 {
+			return fmt.Errorf("the old-generation start %s/%d ended with %d branch deletion rows already queued", row.Place.Kind, row.Place.Place, queued)
+		}
+		return nil
+	}
+
+	onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		issue.Generation++
+		issue.Phase, issue.Hold = phase.Admitted, nil
+		issue.Status, issue.DispatchStatus = "todo", "todo"
+		if err := r.engine.store.PutIssue(ctx, tx, issue); err != nil {
+			return err
+		}
+		return r.engine.store.ClearTreeGeneration(ctx, tx, issue.Tree, stepClock.Add(time.Hour))
+	})
+
+	if called == 0 {
+		t.Fatal("the generation ended no old start through the hook")
+	}
+	assertStrings(t, "the deletion after every old start ended", r.deletions(), []string{"1 a fix 0 through 1"})
+	if fix := r.latestFix(); fix.Pushed[string(claim.RoleTester)] != pushed {
+		t.Fatalf("the old tester's push = %+v, want %s before its start ended", fix.Pushed, pushed)
+	}
+}
+
+// A leave ends the old starts through the same settle. Its deletion waits for every old start of
+// the task, so a push of that tester's branch is recorded before deletion is queued.
+func TestALeaveQueuesDeletionAfterItsLastOldStartEnds(t *testing.T) {
+	engine := returnEngine()
+	r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+	r.fails(fixHead, "k-ci")
+	r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+
+	const pushed = "6666666666666666666666666666666666666666"
+	called := 0
+	engine.afterOldGenerationRunEnd = func(ctx context.Context, tx pgx.Tx, row record.IssueStepRun) error {
+		if row.Generation != 1 || row.Place.Task != "a" {
+			return nil
+		}
+		called++
+		if called == 1 {
+			if err := engine.store.RecordBesidePush(ctx, tx, "LEGION-208", 1, "a", 1, string(claim.RoleTester), pushed); err != nil {
+				return err
+			}
+		}
+		var queued int
+		if err := tx.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = $2`, "LEGION-208", string(record.OutboxKindBesideBranchesDelete)).Scan(&queued); err != nil {
+			return err
+		}
+		if queued != 0 {
+			return fmt.Errorf("the leaving start %s/%d ended with %d branch deletion rows already queued", row.Place.Kind, row.Place.Place, queued)
+		}
+		return nil
+	}
+
+	r.parks()
+
+	if called == 0 {
+		t.Fatal("the leave ended no old start through the hook")
+	}
+	assertStrings(t, "the deletion after every old start ended", r.deletions(), []string{"1 a fix 0 through 1"})
+	if fix := r.latestFix(); fix.Pushed[string(claim.RoleTester)] != pushed {
+		t.Fatalf("the leaving tester's push = %+v, want %s before its start ended", fix.Pushed, pushed)
+	}
 }
 
 // testerWaitReasons is the reason of each phase-finished notice of LEGION-208's tester whose testing
