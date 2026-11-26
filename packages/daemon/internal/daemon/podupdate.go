@@ -1315,12 +1315,11 @@ type roundCall struct {
 // (recordRoundReplacement), so the last word is the last decision before the suspension, and a last
 // word that refuses takes it away again (recordedDue), which also says whether the runtime asked
 // the last word (asked). The call is bounded to one sweep interval. A last word that refuses is the
-// daemon's own and is logged only, and the round stays open. A call that the project release
-// refused (runtime.ErrProjectReleased) refuses before any suspension, so its record is forgotten,
-// one line is logged and no late round is told, and the round stays open. A call that fails
-// otherwise is logged and its record left for the next sweep (finishReplacements), and past the
-// bound it holds the round, so it is told to the operator's side once (tellLateRound,
-// failedReplacementReason).
+// daemon's own and is logged only, and the round stays open. The project release's refusal
+// (runtime.ErrProjectReleased) comes before any suspension, so the call's record is forgotten, one
+// line is logged, no late round is told, and the round stays open. A call that fails otherwise is
+// logged and its record left for the next sweep (finishReplacements), and past the bound it holds
+// the round, so it is told to the operator's side once (tellLateRound, failedReplacementReason).
 //
 // A call that answers nil made the replacement, or found the round's pod already taken and asked
 // no last word. Such a call took nothing, and the round ends as the act that did take the pod: as
@@ -2003,9 +2002,10 @@ func (s *supervision) issuePodKept(group []supervise.Claim, round string, clock 
 // a claim that records a process in the pod, or what holds the pod. Nothing then ends, and the
 // next sweep decides the round afresh. The runtime asks the same last word again under the pod's
 // launch turn (issueReplacementDue), and a refusal there is the daemon's own and is logged only. A
-// replacement the runtime refused for any other reason is retried at the next sweep. Past the
-// bound it holds the round, so it is told to the operator's side once, as a refused ReplacePod is
-// (tellLateRound, failedReplacementReason).
+// refusal for the project release (runtime.ErrProjectReleased) forgets its record and tells nothing
+// (replaceForRound). A replacement the runtime refused for any other reason is retried at the next
+// sweep. Past the bound it holds the round, so it is told to the operator's side once, as a refused
+// ReplacePod is (tellLateRound, failedReplacementReason).
 //
 // A replacement made ends the round as a replacement the round made (endPodUpdates). The runtime's
 // nil for a pod it found no longer there took nothing, and ends the round as the act that took the
@@ -2188,9 +2188,11 @@ func (s *supervision) issueReplacementDue(issue, round string, readAt time.Time,
 // pod's roles can keep working under, keeps the pod, ends the round with no replacement
 // (keepPodForRound), and answers no, so the launch starts its role in the kept pod. A read that
 // finds nothing, or a round over a drift that breaks the pod, answers yes, and the read is kept
-// with the replacement for the sweep's end of the round (endRoundALaunchReplaced). No turn voids
-// this read: the launch holds the pod's launch turn, so no role can start in the pod before the
-// launch replaces it.
+// with the replacement for the sweep's end of the round (endRoundALaunchReplaced). Where the
+// project release sets its mark while that read runs, the replacement's record is forgotten before
+// anything is marked for the sweep, and the hook refuses with runtime.ErrProjectReleased. No turn
+// voids this read: the launch holds the pod's launch turn, so no role can start in the pod before
+// the launch replaces it.
 //
 // Each answer is kept for the round (podUpdateLaunchReplaced), under a mutex that no runtime call
 // is made under: a keep for token, which the next launch into the pod reads, and a replacement,
@@ -2253,6 +2255,10 @@ func (s *supervision) roundPodEndsAtLaunch(ctx context.Context, token claim.Toke
 	recorded, ok := s.recordRoundReplacement(ctx, issue, round, podUID, reasons, read)
 	if !ok {
 		return s.keepAtLaunch(issue, round, token, "the record of the replacement cannot be written")
+	}
+	if s.plan.release.held() {
+		s.forgetReplacement(ctx, recorded)
+		return false, fmt.Errorf("launch into the pod of round %s: %w", round, runtime.ErrProjectReleased)
 	}
 	s.replacedAtLaunch(issue, round, replacedLaunch{ended: readRoundEnd(group, round, clock), read: read, record: recorded})
 	s.log.Info("supervise: no role process runs in the pod of this update round, and nothing holds the pod; the launch replaces the pod and starts its role in a new pod",

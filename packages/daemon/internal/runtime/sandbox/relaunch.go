@@ -434,16 +434,16 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	}
 	if replace {
 		// A pod this launch would replace or make is refused while the project release holds
-		// every pod, before a launcher of the pod reads its workspace for the replacement
-		// (launchTaken), before the daemon records what it takes, and before the live pod is
-		// suspended under it: the release reads and deletes that pod itself, and a launch that
-		// ended its processes would leave it with nothing to read.
+		// every pod, before a launcher of the pod reads its workspace for a launch's own
+		// replacement (launchTaken), before the daemon records what that launch takes (a round's
+		// own replacement was recorded in RoundPodEnds, which forgets it where the release
+		// holds), and before the live pod is suspended under it: the release reads and deletes
+		// that pod itself, and a launch that ended its processes would leave it with nothing to
+		// read.
 		if err := r.releaseHolds("launch " + string(spec.Claim)); err != nil {
 			return runtime.Locator{}, err
 		}
-	}
-	taken := r.launchTaken(bounded, l, s, pod, kind, replacement, took, live)
-	if replace {
+		taken := r.launchTaken(bounded, l, s, pod, kind, replacement, took, live)
 		// The daemon records what the replacement is about to take before anything takes it
 		// (Options.LaunchTakes), so a launch, or a daemon, that stops once the disk is taken
 		// still leaves the daemon its word of it (GPT-6.1 Sol's points 1 and 2 on #5285). A
@@ -579,9 +579,10 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// The release's hold is read once more before the role starts, whether the pod was kept or
 	// replaced: the claim's launching write came before this launch reached the runtime, so either
 	// the release's mark is set before its stop set is read, which then holds this claim and stops
-	// it, or this read sees the mark and the launch waits (errProjectReleased, uncharged). Without
-	// it a launch into a kept pod that passed the launch gate just before the mark would start its
-	// role after the release read its stop set, and the release would delete the pod under it.
+	// it, or this read sees the mark and the launch waits (runtime.ErrProjectReleased, uncharged).
+	// Without it a launch into a kept pod that passed the launch gate just before the mark would
+	// start its role after the release read its stop set, and the release would delete the pod
+	// under it.
 	if err := r.releaseHolds("launch " + string(spec.Claim) + ": start its role"); err != nil {
 		return runtime.Locator{}, err
 	}

@@ -9,13 +9,13 @@ import (
 
 // MaxAnswerErrorBytes is the most of a refusal's reason that a one-line answer to the daemon
 // carries: the answer to `workspace-work` (AnswerWorkspaceWork) and the shim's answers to
-// `read-unpushed` (readUnpushed) and to `adopt-working-copy`. A failed command's reason holds
-// all of jj's standard error (workspace.RunCommand), which has no bound of its own. Such an
-// answer goes out as one line, and the writer refuses a line over MaxFrameBytes: the outbox then
-// closes the connection and sends that line first again at each reconnect, so the role's stream
-// stays down (ASVS v5.0.0-15.2.2). A cut reason keeps its start, which names the command, its
-// exit and jj's first words, and its end, where workspace.RunCommand puts the note it adds to a
-// failure (workspace.StaleGitLockNote, which tells the role what to do about a git lock). The
+// `read-unpushed` (internal/shim's readUnpushed) and to `adopt-working-copy`. A failed command's
+// reason holds all of jj's standard error (workspace.RunCommand), which has no bound of its own.
+// Such an answer goes out as one line, and the writer refuses a line over MaxFrameBytes: the outbox
+// then closes the connection and sends that line first again at each reconnect, so the role's
+// stream stays down (ASVS v5.0.0-15.2.2). A cut reason keeps its start, which names the command,
+// its exit and jj's first words, and its end, where workspace.RunCommand puts the note it adds to
+// a failure (workspace.StaleGitLockNote, which tells the role what to do about a git lock). The
 // daemon names the reason on its log lines, and for the read in the message on the issue too,
 // which a short reason keeps readable.
 const MaxAnswerErrorBytes = 4 << 10

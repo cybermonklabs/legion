@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -65,4 +66,32 @@ func TestARoundReplacementRefusedByProjectReleaseForgetsItsRecordAndTellsNoLateR
 			t.Errorf("the log does not record the project release refusal:\n%s", rig.logs.String())
 		}
 	})
+}
+
+// A launch into a live pod an update round covers can see the project release set its mark while
+// roundPodEndsAtLaunch reads the workspace through the pod's launcher. The hook then forgets the
+// replacement record it wrote before marking anything for the sweep and refuses with
+// runtime.ErrProjectReleased, so no record stands and the launch does not replace the pod.
+func TestARoundPodEndsAtLaunchRefusedByProjectReleaseForgetsItsRecord(t *testing.T) {
+	t.Parallel()
+	rig := podlessBreakingRound(t)
+	release := &projectRelease{}
+	rig.s.plan.release = release
+	rig.rt.OnWorkspaceWork(func() { release.mark() })
+	rig.intoRoundPod(claim.RoleImplementer)
+
+	token := rig.tokens[claim.RoleImplementer]
+	_, err := rig.rt.Resume(rig.ctx, nil, runtime.SpawnSpec{Claim: token, Issue: podUpdateIssue, Role: claim.RoleImplementer})
+	if !release.held() {
+		t.Fatal("the workspace read did not run to set the project release mark")
+	}
+	if !errors.Is(err, runtime.ErrProjectReleased) {
+		t.Fatalf("the launch whose RoundPodEnds read raced with the project release = %v, want runtime.ErrProjectReleased", err)
+	}
+	if records := rig.replacementRecords(); records != 0 {
+		t.Fatalf("the store holds %d pod_replacements record(s) after RoundPodEnds saw the project release, want none", records)
+	}
+	if got, marked := rig.s.launchReplaced(podUpdateIssue, podUpdateRound); marked {
+		t.Fatalf("launchReplaced marked %+v after RoundPodEnds saw the project release, want none", got)
+	}
 }
