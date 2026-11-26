@@ -143,7 +143,9 @@ func newRigDaemonLive(t *testing.T, req rigDaemonRequest, world rigWorldFile) *r
 	local.paneLogs = req.PaneLogs
 	local.envoyURL, local.natsURLs = req.EnvoyURL, proof.cfg.NatsURLs
 	local.dispatchURL, local.dispatchTokenFile = req.DispatchURL, req.DispatchTokenFile
-	// The gh stand-in comes first on the pane's PATH, and reads its run from SKILL_SCENARIO_RUN.
+	// The run's gh, bun and pod-tool stand-ins read their run from SKILL_SCENARIO_RUN. Their
+	// directory comes before the inherited PATH; the pane's shell prefix adds the launcher's
+	// directory before it, where rigPaneGH replaces that launcher's gh with the gh stand-in.
 	// The local runtime passes no launch secret on, so the Envoy bearer is named here.
 	local.environment = []string{
 		"PATH=" + filepath.Join(req.RunDir, "bin") + string(os.PathListSeparator) + workerbin.Path(os.Getenv("PATH"), proof.cfg.StateDir),
@@ -198,6 +200,9 @@ func newRigDaemonLive(t *testing.T, req rigDaemonRequest, world rigWorldFile) *r
 		l.paneURL = proxy.URL
 	}
 	local.daemonURL = l.paneURL
+	if err := rigPaneGH(proof.cfg.StateDir, req.RunDir); err != nil {
+		t.Fatal(err)
+	}
 	return l
 }
 

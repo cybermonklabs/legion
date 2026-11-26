@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,6 +21,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
+	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 )
 
 // The parts of TestRigDaemonLive (rig_daemon_live_test.go) that need no Oh My Pi, in a file with
@@ -466,6 +469,20 @@ func passAtHead(d rigDispatch, issue, head string, passes []string) error {
 	return nil
 }
 
+// rigPaneGH makes the rig's gh stand-in, <runDir>/bin/gh, the real pane's gh. A tmux daemon's
+// boot writes Legion's gh wrapper into the launcher directory under stateDir (workerbin.Install),
+// and the pane's PI_SHELL_PREFIX puts that directory first on PATH before every command
+// (shellprefix.For), so a directory earlier on the pane's PATH never wins. This replaces that
+// wrapper, after the boot wrote it, with a script that runs the stand-in.
+func rigPaneGH(stateDir, runDir string) error {
+	gh := filepath.Join(workerbin.LauncherDir(stateDir), "gh")
+	script := "#!/bin/sh\nexec " + shellprefix.Literal(filepath.Join(runDir, "bin", "gh")) + " \"$@\"\n"
+	if err := os.WriteFile(gh, []byte(script), 0o755); err != nil {
+		return fmt.Errorf("make the pane's gh the rig's stand-in: %w", err)
+	}
+	return os.Chmod(gh, 0o755)
+}
+
 // acmeToken is the claim token of role on issue in the rig's project ACME.
 func acmeToken(t *testing.T, issue string, role claim.Role) claim.Token {
 	t.Helper()
@@ -701,8 +718,10 @@ func TestRigDaemonLiveNeedsARequest(t *testing.T) {
 	env := func(set map[string]string) func(string) string {
 		return func(name string) string { return set[name] }
 	}
-	if _, err := rigDaemonLiveFiles(env(nil)); err == nil || !strings.Contains(err.Error(), "RIG_TEXTS_REQUEST") {
-		t.Errorf("no request is answered %v, want a refusal naming RIG_TEXTS_REQUEST", err)
+	// The refusal of a missing file's variable names RIG_TEXTS_REQUEST too, so the refusal of no
+	// request is told apart by its own words.
+	if _, err := rigDaemonLiveFiles(env(nil)); err == nil || !strings.HasPrefix(err.Error(), "RIG_TEXTS_REQUEST is unset") {
+		t.Errorf("no request is answered %v, want the refusal that RIG_TEXTS_REQUEST is unset", err)
 	}
 	all := map[string]string{"RIG_TEXTS_REQUEST": "/run/request.json", "RIG_TEXTS_READY": "/run/ready.json",
 		"RIG_TEXTS_STATUS": "/run/status.json", "RIG_TEXTS_RECORD": "/run/record.json"}
@@ -788,5 +807,49 @@ func TestRigDaemonLiveRefusesAHeadWithoutItsPasses(t *testing.T) {
 	}
 	if err := passAtHead(d, "ACME-1", head, []string{"c-missing"}); err == nil || !strings.Contains(err.Error(), "c-missing") {
 		t.Errorf("a pass of a check the document lacks is answered %v, want a refusal naming c-missing", err)
+	}
+}
+
+// The real pane's gh is the rig's stand-in. A tmux daemon's boot writes Legion's gh wrapper into
+// the launcher directory (workerbin.Install), and Oh My Pi runs the pane's PI_SHELL_PREFIX before
+// each command, which puts that directory first on PATH (shellprefix.For). So the test runs a
+// command as the pane's shell runs it, under that prefix and the pane's PATH, after the boot's
+// install, and requires the stand-in to answer it.
+func TestTheRigPanesGhIsTheStandIn(t *testing.T) {
+	t.Parallel()
+	stateDir, runDir, tools := t.TempDir(), t.TempDir(), t.TempDir()
+	legion := filepath.Join(tools, "legion")
+	if err := os.WriteFile(legion, []byte("#!/bin/sh\necho \"legion $*\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := workerbin.Install(stateDir, legion, os.Getenv("PATH")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(runDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "bin", "gh"), []byte("#!/bin/sh\necho \"stand-in $*\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "bin", "kubectl"), []byte("#!/bin/sh\necho kubectl\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rigPaneGH(stateDir, runDir); err != nil {
+		t.Fatal(err)
+	}
+
+	panePath := filepath.Join(runDir, "bin") + string(os.PathListSeparator) + workerbin.Path(os.Getenv("PATH"), stateDir)
+	pane := exec.Command("bash", "-c", shellprefix.For(workerbin.LauncherDir(stateDir))+" gh pr merge 41")
+	pane.Env = []string{"PATH=" + panePath}
+	answered, err := pane.CombinedOutput()
+	if got := strings.TrimSpace(string(answered)); err != nil || got != "stand-in pr merge 41" {
+		t.Errorf("the pane's `gh pr merge 41` answered %q (%v), want the stand-in's %q", got, err, "stand-in pr merge 41")
+	}
+	kubectl := exec.Command("bash", "-c", shellprefix.For(workerbin.LauncherDir(stateDir))+" command -v kubectl")
+	kubectl.Env = []string{"PATH=" + panePath}
+	located, err := kubectl.CombinedOutput()
+	if got, want := strings.TrimSpace(string(located)), filepath.Join(runDir, "bin", "kubectl"); err != nil || got != want {
+		t.Errorf("the pane's `command -v kubectl` answered %q (%v), want the rig stand-in %q", got, err, want)
 	}
 }
