@@ -114,7 +114,7 @@ type Options struct {
 	// Grants is the broker's own two reads, in production a *requests.Machine.
 	Grants GrantSource
 	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
-	// again (hold.Gate.Check). Nil is a broker with no Dispatch to ask, which holds nobody.
+	// again (hold.Gate.Decide). Nil is a broker with no Dispatch to ask, which holds nobody.
 	Hold *hold.Gate
 	// CA signs the certificate of each bound host.
 	CA *Authority
@@ -712,32 +712,27 @@ func (s *Server) grantRefusal(read string, err error) (int, string, string) {
 const holdUnreadable = "airlock proxy: whether Dispatch holds a person could not be read"
 
 // holdRefusal is the status, the code and the words a request is refused with when the person
-// its grant's session acts for (requests.AirlockConnection's Operator) is one the hold refuses
-// (hold.Gate.Check), and zero for a person it serves and for a grant whose enrollment names no
-// person - a pod's own, a machine's own session. A held person is 403 MEMBERSHIP_HELD. A check
-// that decides nothing is 503 HOLD_UNCHECKABLE, and it is read first, since a held answer the
-// broker could not keep matches both, and the broker could serve that person in a later outage
-// of Dispatch. A request reads it after the connection read and before any value of the grant,
-// so a held person's request reaches neither the values this pod holds nor the store's.
+// its grant's session acts for (requests.AirlockConnection's Operator) is one the hold refuses,
+// by the gate's Verdict (hold.Verdict.Refusal), and zero for a person it serves and for a grant
+// whose enrollment names no person - a pod's own, a machine's own session. A held person is 403
+// MEMBERSHIP_HELD. Every kind that decides nothing is 503 HOLD_UNCHECKABLE, a held answer the
+// broker could not keep among them, since the broker could serve that person in a later outage of
+// Dispatch. A request reads it after the connection read and before any value of the grant, so a
+// held person's request reaches neither the values this pod holds nor the store's.
 //
-// The 503 names the failure by its kind (hold.Reason) and never in the gate's own words,
-// which hold a Postgres error's database user, name and address when the broker could not read
-// or keep an answer, as grantRefusal's 503 holds none of the read's: those words go to the log.
+// The 503 names the failure by its kind in fixed words (hold.Verdict.Words) and never in the
+// gate's own words, which hold a Postgres error's database user, name and address when the broker
+// could not read or keep an answer, as grantRefusal's 503 holds none of the read's: those words go
+// to the log.
 func (s *Server) holdRefusal(ctx context.Context, person string) (int, string, string) {
 	if person == "" {
 		return 0, "", ""
 	}
-	err := s.hold.Check(ctx, person)
-	switch {
-	case err == nil:
-		return 0, "", ""
-	case errors.Is(err, hold.ErrUncheckable):
-		// Refused below, with any other error of the check, which decides nothing either.
-	case errors.Is(err, hold.ErrHeld):
-		return http.StatusForbidden, "MEMBERSHIP_HELD", s.hold.HeldWords(person)
+	v := s.hold.Decide(ctx, person)
+	if v.Kind != hold.Served && v.Kind != hold.Held {
+		s.log.Error(holdUnreadable, "person", person, "error", v.Err)
 	}
-	s.log.Error(holdUnreadable, "person", person, "error", err)
-	return http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", "whether Dispatch holds " + person + " cannot be read: " + hold.Reason(err)
+	return v.Refusal()
 }
 
 // servePlain answers an absolute-URL proxy request, which is plain HTTP: a command that asked

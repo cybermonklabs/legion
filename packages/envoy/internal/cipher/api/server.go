@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/cipher/answer"
@@ -165,7 +164,7 @@ type Deps struct {
 	// broker that signs nobody in, and a test rig that wires no page, answer each of them 404.
 	Approval *approval.Page
 	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
-	// again (hold.Gate.Check), which cmd/cipherd builds where BROKER_PROJECT_ACCESS_URL is set, on
+	// again (hold.Gate.Decide), which cmd/cipherd builds where BROKER_PROJECT_ACCESS_URL is set, on
 	// the Dispatch client the token exchange asks. Nil is a broker with no Dispatch to ask, which
 	// holds nobody.
 	Hold *hold.Gate
@@ -348,25 +347,24 @@ func Register(mux *http.ServeMux, deps Deps) {
 }
 
 // handle is route as a handler of s's listener: the caller authenticated as the row's class
-// requires, the answer's record told who it is, and the row's handler run. Register mounts every
-// row through it, and RegisterEdge the edge's three behind its gates, so a row runs one way on
-// either listener.
+// requires, the answer's record told who it is, the row's hold step run (routeHandler.hold), and
+// the row's handler run. Register mounts every row through it, and RegisterEdge the edge's three
+// behind its gates, so a row runs one way on either listener.
 func (s *server) handle(route apiRoute) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		recorder := answer.FromContext(r.Context())
 		who, ok := s.authenticate(w, r, route)
 		if !ok {
-			// A refusal raised in authentication names no caller, none having been
-			// established, but for one raised after the credential proved its caller (the
-			// hold's, and the reads it makes), which names that caller.
-			if who.proved {
-				recorder.NoteCaller(who.answerCaller(route.Handler))
-			} else {
-				recorder.NoteCaller(answer.CallerUnauthenticated, "")
-			}
+			// A refusal raised in authentication names no caller, none having been established.
+			recorder.NoteCaller(answer.CallerUnauthenticated, "")
 			return
 		}
+		// The caller is named before the hold step, so its refusal, and the reads it makes, name
+		// the caller the credential proved.
 		recorder.NoteCaller(who.answerCaller(route.Handler))
+		if route.Handler.hold != nil && route.Handler.hold(s, w, r, who) {
+			return
+		}
 		route.Handler.serve(s, w, r, who)
 	}
 }
@@ -395,11 +393,8 @@ const (
 // (edgeListenerCaller). The NATS writer hold's routes (operatorAuth) spend that bucket before the
 // operator's token is verified, for the same reason, and the approval page's routes spend it
 // too: see the authSignIn case.
-// A session route and a launcher route then ask the hold gate about the person the credential
-// names (refuseHeld), after the credential's own checks and before the route runs, so the route
-// opens no transaction and takes no lock for a person Dispatch holds; the routes that only end
-// access or list what to end, and the lease renewal, ask nothing (sessionEndAuth,
-// launcherEndAuth, renewAuth).
+// A session route and a launcher route ask the hold gate after authenticate, as their own step in
+// handle (routeHandler.hold).
 func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiRoute) (caller, bool) {
 	auth := route.Handler.auth
 	switch auth {
@@ -457,28 +452,8 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 		session, ok := s.deps.Approval.Authenticate(w, r)
 		return caller{signIn: session}, ok
 	case authLauncher:
-		who, ok := s.launcherCaller(w, r)
-		if !ok {
-			return caller{}, false
-		}
-		if s.refuseHeld(w, r, derefOr(who.launcher.Operator, "")) {
-			who.proved = true
-			return who, false
-		}
-		return who, true
-	case authLauncherEnd:
 		return s.launcherCaller(w, r)
 	case authProof:
-		who, ok := s.sessionCaller(w, r, "PROOF_INVALID", "proof invalid: not live")
-		if !ok {
-			return caller{}, false
-		}
-		if s.refuseHeldSession(w, r, who.enrollment) {
-			who.proved = true
-			return who, false
-		}
-		return who, true
-	case authProofEnd:
 		return s.sessionCaller(w, r, "PROOF_INVALID", "proof invalid: not live")
 	case authRenewProof:
 		return s.sessionCaller(w, r, "ENROLLMENT_NOT_LIVE", "enrollment is not live")
@@ -496,9 +471,9 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 // class over this one (tokenLogin, and rereadSecret for a session's proof).
 func (c caller) answerCaller(route routeHandler) (class, id string) {
 	switch route.auth {
-	case authLauncher, authLauncherEnd:
+	case authLauncher:
 		return answer.CallerLauncher, c.launcher.ID.String()
-	case authProof, authProofEnd, authRenewProof:
+	case authProof, authRenewProof:
 		return answer.CallerSession, c.enrollment
 	case authAccount:
 		return answer.CallerAccount, c.account.Name
@@ -597,21 +572,31 @@ func (s *server) sessionCaller(w http.ResponseWriter, r *http.Request, notLiveCo
 	return caller{enrollment: subject.EnrollmentID}, true
 }
 
+// refuseHeldLauncher is launcherAuth's hold step: refuseHeld of the person the machine login's
+// credential names as its operator, none for a service's login.
+func (s *server) refuseHeldLauncher(w http.ResponseWriter, r *http.Request, who caller) bool {
+	return s.refuseHeld(w, r, derefOr(who.launcher.Operator, ""))
+}
+
+// refuseHeldProof is sessionAuth's hold step: refuseHeldSession of the session's enrollment.
+func (s *server) refuseHeldProof(w http.ResponseWriter, r *http.Request, who caller) bool {
+	return s.refuseHeldSession(w, r, who.enrollment)
+}
+
 // refuseHeldSession is refuseHeld for a session proof, whose proof row names no operator: it reads
-// the enrollment's own, by its id, in one statement, and only when the broker has a gate to ask.
-// An enrollment gone since its proof verified is refused as a proof that is not live. A pod's
+// the enrollment's own (enroll.Service.EnrollmentOperator), and only when the broker has a gate to
+// ask. An enrollment gone since its proof verified is refused as a proof that is not live. A pod's
 // enrollment names the person BROKER_POD_OPERATORS mapped its account to when its login was made,
 // and is asked about that person, as a person's session is; any other pod's names none, and is
-// asked nothing. authenticate calls it on every session route but those that only end access or
-// renew, and rereadSecret on a reread a session signs.
+// asked nothing. sessionAuth's hold step calls it on every session route but those that only end
+// access or renew, and rereadSecret on a reread a session signs.
 func (s *server) refuseHeldSession(w http.ResponseWriter, r *http.Request, enrollmentID string) bool {
 	if s.deps.Hold == nil {
 		return false
 	}
-	var operator string
-	err := s.deps.Enroll.Store.Pool.QueryRow(r.Context(), `select coalesce(operator, '') from enrollments where id = $1`, enrollmentID).Scan(&operator)
+	operator, err := s.deps.Enroll.EnrollmentOperator(r.Context(), enrollmentID)
 	switch {
-	case errors.Is(err, pgx.ErrNoRows):
+	case errors.Is(err, enroll.ErrNoEnrollment):
 		writeError(w, http.StatusUnauthorized, "PROOF_INVALID", "proof invalid: not live")
 		return true
 	case err != nil:
@@ -623,24 +608,25 @@ func (s *server) refuseHeldSession(w http.ResponseWriter, r *http.Request, enrol
 
 // refuseHeld asks the hold gate (Deps.Hold) whether Dispatch holds person, the operator a
 // session's enrollment or a machine login's credential names, and writes the refusal when it does
-// or cannot tell, reporting whether it refused: 403 MEMBERSHIP_HELD naming the person in the gate's
-// words (hold.Gate.HeldWords), or 503 HOLD_UNCHECKABLE, tested first, so a held answer the gate
-// could not keep is a 503. The 503 says why in hold.Reason's fixed words, and the gate's own error
-// goes to the log alone. No person (an unmapped pod's enrollment, a service's login) is asked
-// nothing, and neither is anyone on a broker with no gate.
+// or cannot tell, reporting whether it refused, by the gate's Verdict: 403 MEMBERSHIP_HELD naming
+// the person in the gate's words for hold.Held, and 503 HOLD_UNCHECKABLE, saying why in fixed
+// words, for every kind that decides nothing, a held answer the gate could not keep among them
+// (hold.Verdict.Words). The gate's own error goes to the log alone. No person (an unmapped pod's
+// enrollment, a service's login) is asked nothing, and neither is anyone on a broker with no
+// gate. The codes are written here, not taken from hold.Verdict.Refusal, because broker-refgen
+// reads each refusal's code from writeError's own argument.
 func (s *server) refuseHeld(w http.ResponseWriter, r *http.Request, person string) bool {
 	if person == "" {
 		return false
 	}
-	err := s.deps.Hold.Check(r.Context(), person)
-	switch {
-	case err == nil:
+	switch v := s.deps.Hold.Decide(r.Context(), person); v.Kind {
+	case hold.Served:
 		return false
-	case errors.Is(err, hold.ErrUncheckable), !errors.Is(err, hold.ErrHeld):
-		slog.Error("broker: whether Dispatch holds a person cannot be read, so their credential is refused", "person", person, "error", err)
-		writeError(w, http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", fmt.Sprintf("whether Dispatch holds %s cannot be read: %s", person, hold.Reason(err)))
+	case hold.Held:
+		writeError(w, http.StatusForbidden, "MEMBERSHIP_HELD", v.Words())
 	default:
-		writeError(w, http.StatusForbidden, "MEMBERSHIP_HELD", s.deps.Hold.HeldWords(person))
+		slog.Error("broker: whether Dispatch holds a person cannot be read, so their credential is refused", "person", person, "error", v.Err)
+		writeError(w, http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", v.Words())
 	}
 	return true
 }

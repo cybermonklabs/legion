@@ -232,7 +232,7 @@ type ExchangeConfig struct {
 	// mints as before, the operator's own setting having chosen its project.
 	Projects projectaccess.Access
 	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
-	// again (hold.Gate.Check), built on the Dispatch client Projects is, so the two share one
+	// again (hold.Gate.Decide), built on the Dispatch client Projects is, so the two share one
 	// cache of person answers. Nil is a broker with no Dispatch to ask, which holds nobody.
 	Hold *hold.Gate
 }
@@ -1063,30 +1063,29 @@ func personOf(session *oauthstore.ExchangeSession) string {
 
 // heldRefusal is the token endpoint's answer for a credential of person, whose hold the gate
 // (ExchangeConfig.Hold) is asked here and the caller applies once the credential's own checks have
-// passed: nil for a person Dispatch does not hold, for no person and on a broker with no gate;
-// membership_held, naming the person in the gate's words (hold.Gate.HeldWords), for a held one; and
-// server_error while the gate cannot tell (hold.ErrUncheckable), tested first, so a held answer the
-// gate could not keep is server_error. That one is refusedByDispatch when Dispatch refused the
-// broker's own account, and otherwise says why in hold.Reason's fixed words; the gate's own error
-// goes to the log alone.
+// passed, by the gate's Verdict: nil for a person the gate serves, for no person and on a broker
+// with no gate; membership_held, naming the person in the gate's words, for hold.Held; and for
+// every kind that decides nothing, a held answer the gate could not keep among them, server_error
+// saying why in fixed words (hold.Verdict.Words), or refusedByDispatch when Dispatch refused the
+// broker's own account. The gate's own error goes to the log alone.
 func (p *Provider) heldRefusal(ctx context.Context, person string) error {
 	if person == "" {
 		return nil
 	}
-	err := p.exchange.Hold.Check(ctx, person)
-	switch {
-	case err == nil:
+	switch v := p.exchange.Hold.Decide(ctx, person); {
+	case v.Kind == hold.Served:
 		return nil
-	case errors.Is(err, dispatchread.ErrBrokerRefused):
-		return refusedByDispatch(err)
-	case errors.Is(err, hold.ErrUncheckable), !errors.Is(err, hold.ErrHeld):
-		return oauth2.ErrServerError.WithHintf("whether Dispatch holds %s cannot be read: %s", person, hold.Reason(err)).WithWrap(err).WithDebugError(err)
+	case v.Kind == hold.Held:
+		return (&oauth2.RFC6749Error{
+			ErrorField:       oauthwire.MembershipHeld,
+			DescriptionField: v.Words(),
+			CodeField:        http.StatusBadRequest,
+		}).WithWrap(v.Err).WithDebugError(v.Err)
+	case errors.Is(v.Err, dispatchread.ErrBrokerRefused):
+		return refusedByDispatch(v.Err)
+	default:
+		return oauth2.ErrServerError.WithHint(v.Words()).WithWrap(v.Err).WithDebugError(v.Err)
 	}
-	return (&oauth2.RFC6749Error{
-		ErrorField:       oauthwire.MembershipHeld,
-		DescriptionField: p.exchange.Hold.HeldWords(person),
-		CodeField:        http.StatusBadRequest,
-	}).WithWrap(err).WithDebugError(err)
 }
 
 // approverUnreachable is a machine login's trade's refusal when Dispatch could not be asked what

@@ -131,7 +131,8 @@ func handlerDir(file *ast.File, handler *ast.SelectorExpr) (string, bool) {
 }
 
 // authClass is one route adapter: the credential its routes need and the refusals
-// server.authenticate answers for it.
+// server.authenticate answers for it, with those of the adapter's hold step (its routeHandler's
+// hold), which server.handle runs after authenticate.
 type authClass struct {
 	Wrapper, Label, Doc string
 	Refusals            []outcome
@@ -154,7 +155,9 @@ var credentialLabels = map[string]string{
 }
 
 // readAuthClasses reads each adapter a route uses: its doc comment, the routeAuth constant it
-// builds its routeHandler with, and what authenticate's case for that constant can refuse.
+// builds its routeHandler with, and what authenticate's case for that constant can refuse; and,
+// for an adapter that sets its routeHandler's hold to a method of the server, what that method
+// can refuse.
 func (g *graph) readAuthClasses(routes []route) ([]authClass, error) {
 	authenticate, err := g.funcs.decl("authenticate")
 	switch {
@@ -200,17 +203,36 @@ func (g *graph) readAuthClasses(routes []route) ([]authClass, error) {
 		if !ok {
 			return nil, fmt.Errorf("%s: adapter %s has no reader label in refgen's credentialLabels", r.At, r.Wrapper)
 		}
-		constant := ""
+		constant, holdStep := "", ""
+		var holdErr error
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			if kv, ok := n.(*ast.KeyValueExpr); ok {
-				if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "auth" {
-					if v, ok := kv.Value.(*ast.Ident); ok {
-						constant = v.Name
-					}
-				}
+			kv, ok := n.(*ast.KeyValueExpr)
+			if !ok {
+				return true
 			}
-			return constant == ""
+			switch key, _ := kv.Key.(*ast.Ident); {
+			case key == nil:
+			case key.Name == "auth":
+				if v, ok := kv.Value.(*ast.Ident); ok {
+					constant = v.Name
+				}
+			case key.Name == "hold":
+				method, ok := kv.Value.(*ast.SelectorExpr)
+				if !ok {
+					holdErr = fmt.Errorf("%s: %s's hold is %s, not a method expression (*server).name", g.src.at(kv), r.Wrapper, g.src.text(kv.Value))
+					return false
+				}
+				if dir, server := handlerDir(g.src.fileOf(fn), method); !server || dir != apiDir {
+					holdErr = fmt.Errorf("%s: %s's hold is %s, not a method expression (*server).name", g.src.at(kv), r.Wrapper, g.src.text(kv.Value))
+					return false
+				}
+				holdStep = method.Sel.Name
+			}
+			return false
 		})
+		if holdErr != nil {
+			return nil, holdErr
+		}
 		cc, ok := cases[constant]
 		if !ok {
 			return nil, fmt.Errorf("%s: authenticate has no case for %s, %s's authentication", g.src.at(authenticate), constant, r.Wrapper)
@@ -223,9 +245,32 @@ func (g *graph) readAuthClasses(routes []route) ([]authClass, error) {
 		if err != nil {
 			return nil, err
 		}
+		if holdStep != "" {
+			held, err := g.stepRefusals(holdStep)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %s's hold step: %w", r.At, r.Wrapper, err)
+			}
+			refusals = append(refusals, held...)
+		}
 		out = append(out, authClass{Wrapper: r.Wrapper, Label: label, Doc: prose(fn.Doc), Refusals: refusals})
 	}
 	return out, nil
+}
+
+// stepRefusals is everything the API package's method name can refuse, read as a handler is.
+func (g *graph) stepRefusals(name string) ([]outcome, error) {
+	fn, err := g.funcs.decl(name)
+	switch {
+	case err != nil:
+		return nil, err
+	case fn == nil:
+		return nil, fmt.Errorf("%s declares no %s", apiDir, name)
+	}
+	info, err := g.collect(g.src.fileOf(fn), fn.Body, fn.Type.Params)
+	if err != nil {
+		return nil, err
+	}
+	return g.resolve(info, map[string][]string{}, map[string]bool{name: true})
 }
 
 // graph is one of the broker's packages' functions, read for what each one can answer: the API

@@ -280,7 +280,7 @@ func openDirectionReason(direction string) string {
 const sessionNamePrefix = "session/"
 
 // decideSession decides a session's connection from the broker's introspection of its token, the
-// provider's own in this process, which asks the hold gate (hold.Gate.CheckUntil) about the
+// provider's own in this process, which asks the hold gate (hold.Gate.Decide) about the
 // person the token names. After the credential's own checks (live, bound to the key the proof is
 // signed with, a session's shape, an expiry, a session id that is one subject token), a person
 // Dispatch holds is refused, as every broker route refuses them; a not-held answer whose deadline

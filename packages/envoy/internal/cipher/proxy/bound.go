@@ -822,13 +822,13 @@ func cutJoined(cut *cutConn, c net.Conn) {
 // airlock carries.
 //
 // The hold is read as a request reads it (holdRefusal) but for two things: any answer that holds
-// the person ends the call, a held answer the broker could not keep among them, since that answer
-// still says Dispatch holds them; and of the checks that decide nothing, one whose person's last
-// not-held answer has passed its deadline (hold.ErrDeadlinePassed) ends the call too, 503
-// HOLD_UNCHECKABLE in hold.Reason's fixed words, since that deadline is the bound the broker
-// serves the person to and a call opened before it must not outlive it. Every other check that
-// decides nothing - Dispatch refusing the broker's own account, an answer the broker can neither
-// ask for nor read - leaves the call to the reads after it, logged, as a read that failed does.
+// the person ends the call, a held answer the broker could not keep among them (hold.HeldUnkept),
+// since that answer still says Dispatch holds them; and of the checks that decide nothing, one
+// whose person's last not-held answer has passed its deadline (hold.DeadlinePassed) ends the call
+// too, 503 HOLD_UNCHECKABLE in fixed words, since that deadline is the bound the broker serves the
+// person to and a call opened before it must not outlive it. Every other check that decides
+// nothing - Dispatch refusing the broker's own account, an answer the broker can neither ask for
+// nor read - leaves the call to the reads after it, logged, as a read that failed does.
 // The hold is asked whatever the connection read answers: of the operator that read names, and,
 // when the read fails with no refusal of the grant, of the operator the call was admitted under
 // (connInfo.grant). A read that fails so is the requests package's project check that cannot ask
@@ -865,21 +865,22 @@ func (s *Server) carryRefusal(ctx context.Context, info connInfo, chosen pair) *
 	return nil
 }
 
-// carryHold is carryRefusal's hold of operator, the person a carried call's grant acts for: nil
-// for no person (an unmapped pod's grant, a service's) and while the gate serves them, else the
-// cut a held answer or a passed deadline makes, as carryRefusal says.
+// carryHold is carryRefusal's hold of operator, the person a carried call's grant acts for, by the
+// gate's Verdict: nil for no person (an unmapped pod's grant, a service's) and while the gate
+// serves them, else the cut a held answer or a passed deadline makes, as carryRefusal says.
 func (s *Server) carryHold(ctx context.Context, operator string) *cutCall {
 	if operator == "" {
 		return nil
 	}
-	switch err := s.hold.Check(ctx, operator); {
-	case errors.Is(err, hold.ErrHeld):
-		return &cutCall{http.StatusForbidden, "MEMBERSHIP_HELD", s.hold.HeldWords(operator)}
-	case errors.Is(err, hold.ErrDeadlinePassed):
-		s.log.Error(holdUnreadable, "person", operator, "error", err)
-		return &cutCall{http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", "whether Dispatch holds " + operator + " cannot be read: " + hold.Reason(err)}
-	case err != nil:
-		s.log.Error(holdUnreadable, "person", operator, "error", err)
+	switch v := s.hold.Decide(ctx, operator); v.Kind {
+	case hold.Held, hold.HeldUnkept:
+		return &cutCall{http.StatusForbidden, hold.CodeHeld, v.HeldWords()}
+	case hold.DeadlinePassed:
+		s.log.Error(holdUnreadable, "person", operator, "error", v.Err)
+		status, code, words := v.Refusal()
+		return &cutCall{status, code, words}
+	case hold.Uncheckable:
+		s.log.Error(holdUnreadable, "person", operator, "error", v.Err)
 	}
 	return nil
 }
