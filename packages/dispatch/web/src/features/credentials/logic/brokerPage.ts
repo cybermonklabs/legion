@@ -1,4 +1,4 @@
-import { safeExternalHref } from "../../lib/external-href";
+import { safeExternalHref } from "../../../lib/external-href";
 
 /** A secret request's page on the secrets broker, where a person signed in to the broker decides
  *  it. The broker names it as `approve_url` on every answer that names a pending secret request,
