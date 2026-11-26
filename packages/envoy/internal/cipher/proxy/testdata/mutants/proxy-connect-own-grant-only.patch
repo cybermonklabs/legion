@@ -1,20 +1,20 @@
-# proxy-connect-own-grant-only: what is bound is what the password's own grant binds, so a
-# CONNECT to a host only another live grant of the session binds is tunnelled unread, and plain
-# HTTP to it is forwarded.
+# proxy-connect-own-grant-only: what is bound is what the password's own grant binds, so a CONNECT
+# to a host only another live grant of the session binds is tunnelled unread, and plain HTTP to it
+# is forwarded.
 # must fail: TestAConnectToAHostOnlyAnotherGrantOfTheEnrollmentBindsIsRead
 # must fail: TestPlainHTTPToAHostOnlyAnotherGrantOfTheEnrollmentBindsIsRefused
 # Applied with patch -p1 from a copy.
 
 --- a/packages/envoy/internal/cipher/proxy/enrollment.go
 +++ b/packages/envoy/internal/cipher/proxy/enrollment.go
-@@ -103,6 +103,10 @@
- 	if len(s.candidates(grant, host, port)) > 0 {
+@@ -110,6 +110,10 @@ func (s *Server) sessionBinds(ctx context.Context, rules proxyrules.Rules, grant
+ 	if len(candidates(rules, grant, host, port)) > 0 {
  		return true, nil
  	}
 +	// MUTANT: what is bound is what the password's own grant binds.
 +	if true {
 +		return false, nil
 +	}
- 	others, err := s.otherGrantsBinding(ctx, grant, host, port)
+ 	others, err := s.otherGrantsBinding(ctx, rules, grant, host, port)
  	if err != nil {
  		return false, err

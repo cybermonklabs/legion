@@ -28,9 +28,10 @@ const gitHost = "github.com"
 // githubRules binds the rig's one name, made a github-app name by useGitHubAppGrant, to the bound
 // host and to github.com, with no method or path rule, so every path below is decided alike.
 func githubRules() proxyrules.Rules {
-	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
-		Name: workerName, Hosts: []string{boundHost, gitHost}, Headers: []string{"authorization"},
-	}}}
+	return proxyrules.Rules{
+		Kinds: []proxyrules.Kind{swapKind("github", []string{boundHost, gitHost}, "authorization")},
+		Names: []proxyrules.Binding{swapBinding(workerName, "github")},
+	}
 }
 
 // serveGitHost puts a stand-in service behind github.com, signed by the authority the proxy
@@ -61,7 +62,7 @@ func gitBasic(token string) string {
 // names the slot whose token went to the service. The named revert: proxy-account-from-placeholder
 // (the token of the carried placeholder's account alone).
 func TestTheTokenIsTheAccountsThePathNames(t *testing.T) {
-	r := newRig(t, Options{Rules: githubRules()})
+	r := newRuledRig(t, githubRules(), Options{})
 	r.useGitHubAppGrant()
 	for i, row := range []struct {
 		path, carried, token, slot string
@@ -121,7 +122,7 @@ func TestAccountSlotFoldsAGitHubOwnerWithGitHubSlot(t *testing.T) {
 func TestARenewedGitHubGrantsEndedPlaceholderIsRefused(t *testing.T) {
 	const endedGrant = "grant-00000007"
 	ended := placeholder.Prefix + "renewedrenewedrenewedrenewedrene"
-	r := newRig(t, Options{Rules: githubRules()})
+	r := newRuledRig(t, githubRules(), Options{})
 	r.useGitHubAppGrant()
 	r.grants.setConnection(ended, requests.AirlockConnection{
 		GrantID: endedGrant, EnrollmentID: testEnrollID, RequestID: "request-00000007", Issue: testIssue,
@@ -151,7 +152,7 @@ func TestARenewedGitHubGrantsEndedPlaceholderIsRefused(t *testing.T) {
 // git sends its token as the password of a Basic credential, which the swap reaches inside. A path
 // of one segment names no repository, so it is no account's.
 func TestGitsPathNamesTheAccountOnGitHub(t *testing.T) {
-	r := newRig(t, Options{Rules: githubRules()})
+	r := newRuledRig(t, githubRules(), Options{})
 	r.useGitHubAppGrant()
 	git := r.serveGitHost()
 	for i, row := range []struct {

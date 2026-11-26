@@ -6,15 +6,15 @@
 
 --- a/packages/envoy/internal/cipher/proxy/enrollment.go
 +++ b/packages/envoy/internal/cipher/proxy/enrollment.go
-@@ -132,6 +132,13 @@
+@@ -137,6 +137,13 @@ func (s *Server) otherGrantsBinding(ctx context.Context, rules proxyrules.Rules,
  		return nil, nil
  	}
- 	names := s.boundEntries(host, port)
+ 	names := boundEntries(rules, host, port)
 +	// MUTANT: every grant of the session is read for a bound host, whatever names it holds.
 +	if len(names) > 0 {
 +		names = nil
-+		for i := range s.rules.Secrets {
-+			names = append(names, s.rules.Secrets[i].Name)
++		for _, binding := range rules.Names {
++			names = append(names, binding.Name)
 +		}
 +	}
  	if len(names) == 0 {

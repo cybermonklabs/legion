@@ -5,7 +5,7 @@
 
 --- a/packages/envoy/internal/cipher/proxy/leftover.go
 +++ b/packages/envoy/internal/cipher/proxy/leftover.go
-@@ -77,7 +77,8 @@
+@@ -136,7 +136,8 @@ func headerPlaceholder(prefixes []placeholderPrefix, v string) string {
  	}
  	if scheme, payload, ok := strings.Cut(v, " "); ok && strings.EqualFold(scheme, "basic") {
  		payload = strings.Trim(payload, " \t")
@@ -13,5 +13,5 @@
 +		// MUTANT: a Basic credential is read only with its base64 padded.
 +		for _, encoding := range [...]*base64.Encoding{base64.StdEncoding} {
  			if decoded, err := encoding.DecodeString(payload); err == nil {
- 				return placeholderIn(string(decoded))
+ 				return placeholderInPrefixes(string(decoded), prefixes)
  			}

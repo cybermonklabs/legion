@@ -8,10 +8,11 @@
 // stand-in's 200, its 404 and its 401 are what say which token the proxy swapped in and how far
 // that token reaches.
 //
-// The profile's proxy block is the proxy's whole rules file (policy.Profiles.ProxyRules), as a
-// broker's is, so what these rows read is the profile a person wrote, carried through every layer
-// a release crosses: the policy, the target in the signed request, the minter, the split into
-// slots and the swap.
+// The proxy reads its rules from that broker (requests.Machine.AirlockRules): the profiles file's
+// github kind on the rig's bound host, which the profile's source is behind by its proxy tag, and
+// the profile's own allow, which narrows it. So what these rows read is the profile a person
+// wrote, carried through every layer a release crosses: the policy, the target in the signed
+// request, the minter, the split into slots and the swap.
 package proxy
 
 import (
@@ -33,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -44,7 +46,9 @@ import (
 // The profile every row serves, and what its request names. profileSource is the github-app
 // secret it is a profile of, an agent-tier secret of profileOperator, so a request is granted at
 // once; its github-owners tag is policytest.FixtureGitHubOwners, acme and ada, and the App is
-// installed on both (profileInstallations). The target is one repository of ada's.
+// installed on both (profileInstallations); its proxy tag names profileKind and it carries
+// proxy-narrowed=true, since its one profile has an allow of its own. The target is one
+// repository of ada's.
 const (
 	profileName       = "GITHUB_READ"
 	profileSource     = "PROFILE_APP_KEY"
@@ -58,17 +62,29 @@ const (
 // token route reads an installation id as.
 var profileInstallations = map[string]int64{"acme": 41, "ada": 42}
 
-// readProfile is the profiles file of the one profile: permissions (readOnly, contents and
-// metadata read, unless a row edits them) on both accounts, the value form value ("" for none,
-// which is installations), and a proxy block on the rig's bound host holding allow, the block's
-// own allow list as JSON.
+// profileKind is the kind the profile's source is behind: the github kind as a profiles file
+// declares it, on the rig's bound host, with no allow of its own and the default header, so the
+// profile's allow alone bounds where the token may go.
+const profileKind = "github"
+
+// profileKindsJSON is the kinds part of every profiles file of these rows.
+const profileKindsJSON = `[{"name": "` + profileKind + `", "hosts": ["` + boundHost + `"], "ways": ["swap", "mint"]}]`
+
+// readProfile is the profiles file of the one profile under profileKindsJSON: permissions
+// (readOnly, contents and metadata read, unless a row edits them) on both accounts, the value form
+// value ("" for none, which is installations), and allow, the profile's own allow as JSON.
 func readProfile(value, permissions, allow string) string {
 	github := `"accounts": ["acme", "ada"], "permissions": ` + permissions
 	if value != "" {
 		github += `, "value": "` + value + `"`
 	}
-	return policytest.ProfilesFile(`{"name": "` + profileName + `", "source": "` + profileSource + `", "github": {` + github + `}, ` +
-		`"proxy": {"hosts": ["` + boundHost + `"], "allow": ` + allow + `}}`)
+	return policytest.KindsFileOf(profileKindsJSON, `{"name": "`+profileName+`", "source": "`+profileSource+`", "github": {`+github+`}, "allow": `+allow+`}`)
+}
+
+// profiledSource is the github-app secret stored as source holds it: of profileOperator at agent
+// tier, holding value, behind profileKind by its proxy tag and narrowed by its one profile.
+func profiledSource(source, secretType, value string) secrets.LocalSecret {
+	return policytest.Narrowed(policytest.Proxied(policytest.TypeSecret(source, profileOperator, policy.TierAgent, secretType, value), profileKind))
 }
 
 // readOnly is the permissions every row's profile asks for until a row edits them: contents at
@@ -104,6 +120,7 @@ func (g *rolledGrants) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID
 func (g *rolledGrants) ProxyPlaceholderGrant(ctx context.Context, placeholder string) (string, error) {
 	return g.machine.Load().ProxyPlaceholderGrant(ctx, placeholder)
 }
+func (g *rolledGrants) AirlockRules() proxyrules.Rules { return g.machine.Load().AirlockRules() }
 
 // profileRig is the rig with a broker behind its proxy: the store, the stored App key, the GitHub
 // stand-in and the plain service its minter reaches it at, the grant source the proxy reads, and
@@ -119,14 +136,13 @@ type profileRig struct {
 	key          *ecdsa.PrivateKey
 }
 
-// newProfileRig builds one serving file, with o as newRig takes it but for its rules and its
-// grant source, which are the profiles' proxy blocks and the broker that serves file.
+// newProfileRig builds one serving file, with o as newRig takes it but for its grant source, which
+// is the broker that serves file and whose rules the proxy reads.
 func newProfileRig(t *testing.T, file string, o Options) *profileRig {
 	t.Helper()
 	pr := &profileRig{
-		st: storetest.Open(t),
-		local: secrets.NewLocal(policytest.TypeSecret(profileSource, profileOperator, policy.TierAgent, policy.TypeGitHubApp,
-			policytest.TypeValue(policy.TypeGitHubApp))),
+		st:     storetest.Open(t),
+		local:  secrets.NewLocal(profiledSource(profileSource, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))),
 		stand:  proxyrulestest.NewGitHubStand(proxyrulestest.GitHubOptions{Installations: profileInstallations, DistinctTokens: true}),
 		grants: &rolledGrants{},
 	}
@@ -138,7 +154,6 @@ func newProfileRig(t *testing.T, file string, o Options) *profileRig {
 	minting.AnswerWith(pr.stand.Answer)
 	pr.minting = minting
 	pr.grants.machine.Store(pr.machine(t, file))
-	o.Rules = policytest.Profiles(t, file).ProxyRules()
 	o.Grants = pr.grants
 	pr.rig = newRig(t, o)
 	pr.answerWith(pr.stand.Answer)
@@ -147,8 +162,8 @@ func newProfileRig(t *testing.T, file string, o Options) *profileRig {
 }
 
 // machine is a broker serving file over the rig's store and stored App key, as cmd/cipherd wires
-// one: the profiles' proxy blocks as its airlock rules, and a github-app minter, the production
-// one, aimed at the plain stand-in.
+// one: the live policy's rules as its airlock's, and a github-app minter, the production one,
+// aimed at the plain stand-in.
 func (pr *profileRig) machine(t *testing.T, file string) *requests.Machine {
 	t.Helper()
 	m := &requests.Machine{
@@ -156,12 +171,11 @@ func (pr *profileRig) machine(t *testing.T, file string) *requests.Machine {
 		PendingTTL: 12 * time.Hour, Audience: profileAudience, Skew: time.Minute,
 		Replay:  (&enroll.Service{Store: pr.st}).Replay,
 		Minters: map[string]requests.Minter{policy.TypeGitHubApp: secrets.GitHubApp{Base: pr.minting.URL()}.Mint},
-		Airlock: policytest.Profiles(t, file).ProxyRules(),
 		// Two strings the release carries to the session unread: the session in these rows is
 		// the rig's own client, which is pointed at the rig's proxy and trusts its authority.
 		AirlockProxyURL: "http://127.0.0.1:13381", AirlockCACertificate: "-----BEGIN CERTIFICATE-----\nprofile-rig\n-----END CERTIFICATE-----\n",
 	}
-	m.Chain = requests.NewChainVerifier(pr.st, profileAudience, time.Minute, m.Airlock)
+	m.Chain = requests.NewChainVerifier(pr.st, profileAudience, time.Minute, m.Policy)
 	return m
 }
 
@@ -313,8 +327,9 @@ func TestTheProxyMintsTheProfilesScopeForTheTargetSlot(t *testing.T) {
 // header but the ones the block names. That refusal's line names the grant, as the broker's own
 // read of the placeholder answers it (ProxyPlaceholderGrant).
 //
-// The named revert: drop the proxy block's allow list on its way into the rules
-// (policy.Profiles.ProxyRules), and the refused calls are carried with the token, so this fails.
+// The named revert: drop the profile's allow on its way into its binding (policy's proxyRules), or
+// the decision's read of it (proxyrules.check), and the refused calls are carried with the token,
+// so this fails.
 func TestTheProxySwapsAProfileTokenOnlyIntoAllowedRequests(t *testing.T) {
 	pr := newProfileRig(t, readProfile(githubname.ValueToken, readOnly, `[{"method": "GET", "pathPrefix": "/repos/ada/"}]`), Options{})
 	grantID, released := pr.grant(t)
@@ -335,8 +350,8 @@ func TestTheProxySwapsAProfileTokenOnlyIntoAllowedRequests(t *testing.T) {
 	}
 
 	for _, refused := range []struct{ name, method, path, reason string }{
-		{"a method the block does not allow", http.MethodPost, profileRepository, "not allowed by rule"},
-		{"a path the block does not allow", http.MethodGet, "/repos/acme/proofs", "not allowed by rule"},
+		{"a method the profile does not allow", http.MethodPost, profileRepository, "not allowed by the profile's rule"},
+		{"a path the profile does not allow", http.MethodGet, "/repos/acme/proofs", "not allowed by the profile's rule"},
 		{"a dot segment back out of the allowed prefix", http.MethodGet, "/repos/ada/../acme/proofs", "path has a dot segment"},
 	} {
 		sent := len(pr.requests())

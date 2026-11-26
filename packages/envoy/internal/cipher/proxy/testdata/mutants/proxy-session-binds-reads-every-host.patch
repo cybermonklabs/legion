@@ -1,4 +1,4 @@
-# proxy-session-binds-reads-every-host: a CONNECT to a host no entry of the rules binds reads the
+# proxy-session-binds-reads-every-host: a CONNECT to a host no binding of the rules binds reads the
 # enrollment's other grants all the same, so a read of them that does not happen refuses a tunnel to
 # a public host they had no part in.
 # must fail: TestAFailedReadOfTheEnrollmentsGrantsDecidesOnlyWhatItCouldChange
@@ -6,12 +6,12 @@
 
 --- a/packages/envoy/internal/cipher/proxy/enrollment.go
 +++ b/packages/envoy/internal/cipher/proxy/enrollment.go
-@@ -132,7 +132,8 @@
+@@ -141,7 +141,8 @@ func (s *Server) otherGrantsBinding(ctx context.Context, rules proxyrules.Rules,
  		return nil, nil
  	}
- 	names := s.boundEntries(host, port)
+ 	names := boundEntries(rules, host, port)
 -	if len(names) == 0 {
-+	// MUTANT: the enrollment's grants are read for every host, one no entry binds included.
++	// MUTANT: the enrollment's grants are read for every host, one no binding binds included.
 +	if len(names) == 0 && false {
  		return nil, nil
  	}

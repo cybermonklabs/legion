@@ -152,12 +152,20 @@ func (f *fakeGrants) failGrantCheck(grantID string, why error) {
 // bound host, each in a header of its own so one request can carry two of them, and chatName to
 // chatHost alone.
 func enrollmentRules() proxyrules.Rules {
-	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-		{Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
-		{Name: peerName, Hosts: []string{boundHost}, Headers: []string{"x-second"}},
-		{Name: foreignName, Hosts: []string{boundHost, tunnelHost}, Headers: []string{"x-foreign"}},
-		{Name: chatName, Hosts: []string{chatHost}, Headers: []string{"authorization"}},
-	}}
+	return proxyrules.Rules{
+		Kinds: []proxyrules.Kind{
+			swapKind("worker", []string{boundHost}, "authorization"),
+			swapKind("peer", []string{boundHost}, "x-second"),
+			swapKind("foreign", []string{boundHost, tunnelHost}, "x-foreign"),
+			swapKind("chat", []string{chatHost}, "authorization"),
+		},
+		Names: []proxyrules.Binding{
+			swapBinding(workerName, "worker"),
+			swapBinding(peerName, "peer"),
+			swapBinding(foreignName, "foreign"),
+			swapBinding(chatName, "chat"),
+		},
+	}
 }
 
 // TestARequestIsHandledForTheLiveGrantOfTheEnrollmentWhosePlaceholderItCarries: a connection is
@@ -170,7 +178,7 @@ func enrollmentRules() proxyrules.Rules {
 // swapped by no grant and reach no service (every such case is a row of
 // TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused).
 func TestARequestIsHandledForTheLiveGrantOfTheEnrollmentWhosePlaceholderItCarries(t *testing.T) {
-	r := newRig(t, Options{Rules: enrollmentRules()})
+	r := newRuledRig(t, enrollmentRules(), Options{})
 	r.addGrant(peerPlaceholder, peerGrantID, testEnrollID, peerName, peerValue)
 	r.addGrant(foreignPlaceholder, foreignGrantID, foreignEnrollment, foreignName, foreignValue)
 	client := r.client(workerPlaceholder)
@@ -215,7 +223,7 @@ func TestARequestIsHandledForTheLiveGrantOfTheEnrollmentWhosePlaceholderItCarrie
 // command's trust here, so a tunnel would reach it too and show the placeholder unswapped. The
 // controls: a host only another enrollment's grant binds, and a host no grant binds, are tunnels.
 func TestAConnectToAHostOnlyAnotherGrantOfTheEnrollmentBindsIsRead(t *testing.T) {
-	r := newRig(t, Options{Rules: enrollmentRules()})
+	r := newRuledRig(t, enrollmentRules(), Options{})
 	r.grants.connections = map[string]requests.AirlockConnection{}
 	r.addGrant(chatPlaceholder, testGrantID, testEnrollID, chatName, "the-real-chat-token")
 	r.addGrant(peerPlaceholder, peerGrantID, testEnrollID, peerName, peerValue)
@@ -278,7 +286,7 @@ func TestAConnectToAHostOnlyAnotherGrantOfTheEnrollmentBindsIsRead(t *testing.T)
 // live grant of the session binds, for plain HTTP as for a CONNECT, so a request in the clear to
 // such a host is refused as one to a host the connection's own grant binds is.
 func TestPlainHTTPToAHostOnlyAnotherGrantOfTheEnrollmentBindsIsRefused(t *testing.T) {
-	r := newRig(t, Options{Rules: enrollmentRules()})
+	r := newRuledRig(t, enrollmentRules(), Options{})
 	r.grants.connections = map[string]requests.AirlockConnection{}
 	r.addGrant(chatPlaceholder, testGrantID, testEnrollID, chatName, "the-real-chat-token")
 	r.addGrant(peerPlaceholder, peerGrantID, testEnrollID, peerName, peerValue)
@@ -296,7 +304,7 @@ func TestPlainHTTPToAHostOnlyAnotherGrantOfTheEnrollmentBindsIsRefused(t *testin
 // only a request that carries none of them reads those, and a read of them that did not happen is
 // refused 503 in the broker's own words rather than forwarded.
 func TestARequestOfTheConnectionsOwnGrantReadsNoOtherGrant(t *testing.T) {
-	r := newRig(t, Options{Rules: enrollmentRules()})
+	r := newRuledRig(t, enrollmentRules(), Options{})
 	client := r.client(workerPlaceholder)
 	r.get(client, "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+workerPlaceholder)
 	if reads := r.grants.enrollmentReads(); reads != 0 {
@@ -324,7 +332,7 @@ func TestARequestOfTheConnectionsOwnGrantReadsNoOtherGrant(t *testing.T) {
 // which holds no name of the call and so cuts it at once, while the grant it is handled for
 // still lives.
 func TestACallCarriedForAnotherGrantOfTheEnrollmentEndsWithThatGrant(t *testing.T) {
-	r := newRig(t, Options{Rules: enrollmentRules(), Watch: watchFast})
+	r := newRuledRig(t, enrollmentRules(), Options{Watch: watchFast})
 	r.addGrant(peerPlaceholder, peerGrantID, testEnrollID, peerName, peerValue)
 	ended := streamStandIn(r)
 	client := r.client(workerPlaceholder)
@@ -405,7 +413,7 @@ func TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused(t *testing.T)
 	// A minted capability's placeholder (placeholder.MintedPrefix), which its own host's dpop
 	// path swaps and no other request's.
 	minted := placeholder.MintedPrefix("dispatch") + "mintedmintedmintedmintedmintedmi"
-	r := newRig(t, Options{Rules: enrollmentRules()})
+	r := newRuledRig(t, enrollmentRules(), Options{})
 	r.addGrant(peerPlaceholder, peerGrantID, testEnrollID, peerName, peerValue)
 	r.addGrant(foreignPlaceholder, foreignGrantID, foreignEnrollment, foreignName, foreignValue)
 	r.addGrant(endedSame, endedSameGrant, testEnrollID, workerName, "the-real-worker-token-of-the-ended-grant")
@@ -514,7 +522,7 @@ func TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused(t *testing.T)
 // another grant's placeholder on the own grant's connection is refused 503, since each needs the
 // read; and the read count shows the two allowed calls read nothing.
 func TestAFailedReadOfTheEnrollmentsGrantsDecidesOnlyWhatItCouldChange(t *testing.T) {
-	r := newRig(t, Options{Rules: enrollmentRules()})
+	r := newRuledRig(t, enrollmentRules(), Options{})
 	r.grants.connections = map[string]requests.AirlockConnection{}
 	r.addGrant(chatPlaceholder, testGrantID, testEnrollID, chatName, "the-real-chat-token")
 	r.addGrant(peerPlaceholder, peerGrantID, testEnrollID, peerName, peerValue)
@@ -587,12 +595,21 @@ func TestAGrantThatCannotBindTheHostDoesNotDecideTheCall(t *testing.T) {
 		chatGrant    = "grant-00000008"
 	)
 	failing := placeholder.Prefix + "failingfailingfailingfailingfail"
-	r := newRig(t, Options{Rules: proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-		{Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
-		{Name: peerName, Hosts: []string{boundHost}, Headers: []string{"x-second"}},
-		{Name: chatName, Hosts: []string{chatHost}, Headers: []string{"authorization"}},
-		{Name: failingName, Hosts: []string{tunnelHost}, Headers: []string{"authorization"}},
-	}}})
+	rules := proxyrules.Rules{
+		Kinds: []proxyrules.Kind{
+			swapKind("worker", []string{boundHost}, "authorization"),
+			swapKind("peer", []string{boundHost}, "x-second"),
+			swapKind("chat", []string{chatHost}, "authorization"),
+			swapKind("failing", []string{tunnelHost}, "authorization"),
+		},
+		Names: []proxyrules.Binding{
+			swapBinding(workerName, "worker"),
+			swapBinding(peerName, "peer"),
+			swapBinding(chatName, "chat"),
+			swapBinding(failingName, "failing"),
+		},
+	}
+	r := newRuledRig(t, rules, Options{})
 	r.addGrant(peerPlaceholder, peerGrantID, testEnrollID, peerName, peerValue)
 	r.addGrant(chatPlaceholder, chatGrant, testEnrollID, chatName, "the-real-chat-token")
 	r.addGrant(failing, failingGrant, testEnrollID, failingName, "the-real-failing-token")

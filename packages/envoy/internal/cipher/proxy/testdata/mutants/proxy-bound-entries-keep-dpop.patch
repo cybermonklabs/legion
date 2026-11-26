@@ -1,19 +1,19 @@
-# proxy-bound-entries-keep-dpop: a dpop entry's name is asked for in the read of the session's other
-# grants, though no grant released since the name became dpop holds it and a grant holding an older
-# row of it is not read for that host on main, so a stored grant's call to a dpop host reads the
-# store on every CONNECT and answers 503 when that read fails, where it tunnelled.
+# proxy-bound-entries-keep-dpop: a dpop binding's name is asked for in the read of the session's
+# other grants, though no grant released since the name became dpop holds it and a grant holding an
+# older row of it is not read for that host on main, so a stored grant's call to a dpop host reads
+# the store on every CONNECT and answers 503 when that read fails, where it tunnelled.
 # must fail: TestAStoredGrantsConnectToADPoPHostReadsNoOtherGrant
 # Applied with patch -p1 from a copy.
 
 --- a/packages/envoy/internal/cipher/proxy/enrollment.go
 +++ b/packages/envoy/internal/cipher/proxy/enrollment.go
-@@ -149,7 +149,8 @@
+@@ -157,7 +157,8 @@ func boundEntries(rules proxyrules.Rules, host string, port uint16) []string {
  	var names []string
- 	for i := range s.rules.Secrets {
- 		entry := &s.rules.Secrets[i]
--		if entry.Kind != proxyrules.KindDPoP && entryBinds(entry, host, port) {
-+		// MUTANT: a dpop entry's name is read for too.
-+		if entryBinds(entry, host, port) {
- 			names = append(names, entry.Name)
+ 	for _, binding := range rules.Names {
+ 		kind := rules.KindOf(&binding)
+-		if kind != nil && binding.Way != proxyrules.WayDPoP && proxyrules.HostBound(kind.Hosts, host) {
++		// MUTANT: a dpop binding's name is read for too.
++		if kind != nil && proxyrules.HostBound(kind.Hosts, host) {
+ 			names = append(names, binding.Name)
  		}
  	}

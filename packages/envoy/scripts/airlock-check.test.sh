@@ -91,6 +91,7 @@ done
 source "$script_dir/airlock/k7-consumers.sh"
 add_fake_secret() {
   printf '%s\n' "$1" >>"$work/k7-names"
+  printf '%s %s\n' "$1" "$(jq -r '.proxy // "untagged"' <<<"$2")" >>"$work/k7-tags"
   case "$1" in
     k7-fixture-gcloud-example-login | k7-fixture-gws-example-view-2 | k7-fixture-gws-example-admin-2)
       printf '%s\n' "$3" >>"$work/k7-google-logins"
@@ -98,20 +99,29 @@ add_fake_secret() {
   esac
 }
 : >"$work/k7-names"
+: >"$work/k7-tags"
 : >"$work/k7-google-logins"
 AIRLOCK_GCLOUD_SECRET=GCLOUD_EXAMPLE_LOGIN
 AIRLOCK_GWS_READ_SECRET=GWS_EXAMPLE_VIEW_2
 AIRLOCK_GWS_ADMIN_SECRET=GWS_EXAMPLE_ADMIN_2
 AIRLOCK_GWS_TIER_KEY="operator.with space's [key]"
 AIRLOCK_PROFILES_FILE="$work/k7-profiles.json"
-printf '{"profiles":[]}\n' >"$AIRLOCK_PROFILES_FILE"
+printf '{"kinds":[{"name":"stest","hosts":["s.airlock.test"],"ways":["swap"]}],"profiles":[]}\n' >"$AIRLOCK_PROFILES_FILE"
 STACK_SECRETS_PREFIX=k7-fixture-
 K7_CONSUMER_WORK_DIR="$work/k7"
 k7_consumer_add_fixtures
-jq -e --arg gcloud "$AIRLOCK_GCLOUD_SECRET" --arg read "$AIRLOCK_GWS_READ_SECRET" --arg admin "$AIRLOCK_GWS_ADMIN_SECRET" \
-  'any(.profiles[]; .name == $gcloud and .proxy.hosts == ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"])
-   and any(.profiles[]; .name == $read and .proxy.hosts == ["www.googleapis.com", "oauth2.googleapis.com"])
-   and any(.profiles[]; .name == $admin and .proxy.hosts == ["admin.googleapis.com"])' "$work/k7/profiles.json" >/dev/null
+# The fixtures are in the kinds form: the stack's own kind kept, one kind per consumer with the
+# hosts it calls and the way its value takes, no profile and no proxy object, and each consumer's
+# fake secret tagged with its own kind.
+jq -e '(.kinds | map(.name)) == ["stest", "slack", "github", "tailscale", "gcloud", "gwsread", "gwsadmin"]
+   and any(.kinds[]; .name == "gcloud" and .hosts == ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"] and .ways == ["mint"])
+   and any(.kinds[]; .name == "gwsread" and .hosts == ["www.googleapis.com", "oauth2.googleapis.com"] and .ways == ["mint"])
+   and any(.kinds[]; .name == "gwsadmin" and .hosts == ["admin.googleapis.com"] and .ways == ["mint"])
+   and any(.kinds[]; .name == "github" and .hosts == ["api.github.com", "github.com"] and .ways == ["swap"])
+   and .profiles == [] and ([.. | objects | select(has("proxy"))] | length) == 0' "$work/k7/profiles.json" >/dev/null
+[[ "$(sort "$work/k7-tags")" == "$(printf '%s\n' 'k7-fixture-gcloud-example-login gcloud' 'k7-fixture-github-admin-pat github' \
+  'k7-fixture-gws-example-admin-2 gwsadmin' 'k7-fixture-gws-example-view-2 gwsread' 'k7-fixture-slack-bot-token slack' \
+  'k7-fixture-tailscale-api-key tailscale' | sort)" ]]
 # Each login's fake secret is stored under policy.NameToSlug's slug of the operator's name.
 for slug in gcloud-example-login gws-example-view-2 gws-example-admin-2; do
   grep -qFx "k7-fixture-$slug" "$work/k7-names"
@@ -262,9 +272,9 @@ for wrong in DOTFILES_DIR:wrong-dotfiles XDG_CONFIG_HOME:wrong-xdg PATH:wrong-pa
   label="that refusal names ${wrong%%:*}"; check test "${output#*"setup: ${wrong%%:*}"}" != "$output"
 done
 
-# --- k8a's broker start, read out of airlock-check.sh and run on its own: broker_env copies the
+# --- k8's broker start, read out of airlock-check.sh and run on its own: broker_env copies the
 # environment of a stand-in for the stack's broker, whose BROKER_DATABASE_URL holds a password,
-# and k8a_start_broker starts a stand-in broker on it under `timeout`. Every argument list of that
+# and k8_start_broker starts a stand-in broker on it under `timeout`. Every argument list of that
 # start (a stand-in env first on PATH records its own, as env -i would have carried the copy) and
 # the stand-in broker's own arguments hold no password, and the stand-in broker's environment is
 # exactly the copy and the overrides, no variable of this test's own among them.
@@ -301,26 +311,26 @@ eval "$(grep -m1 '^contains() {' "$script_dir/airlock-check.sh")"
 # with_broker_env is lib/exec-env.sh's, which airlock-check.sh sources, as this test does.
 # shellcheck source-path=SCRIPTDIR source=lib/exec-env.sh
 . "$script_dir/lib/exec-env.sh"
-for function in broker_env k8a_start_broker; do
+for function in broker_env k8_start_broker; do
   definition="$(sed -n "/^${function}() {/,/^}/p" "$script_dir/airlock-check.sh")"
   [[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no %s()\n' "$function"; exit 1; }
   eval "$definition"
 done
-# shellcheck disable=SC2034 # WORK_DIR and BROKER_BIN are read by k8a_start_broker, eval'd above
+# shellcheck disable=SC2034 # WORK_DIR and BROKER_BIN are read by k8_start_broker, eval'd above
 STACK_LOG="$start_dir/stack.log" WORK_DIR="$start_dir" BROKER_BIN="$start_dir/broker"
 printf '  broker 1: api 127.0.0.1:1, proxy 127.0.0.1:2, pid %s, log x\n' "$stand_in" >"$STACK_LOG"
 status=0
-PATH="$start_dir/bin:$PATH" k8a_start_broker "$start_dir/profiles.json" label || status=$?
+PATH="$start_dir/bin:$PATH" k8_start_broker "$start_dir/profiles.json" label || status=$?
 kill "$stand_in" 2>/dev/null || true
 output="$(cat "$start_dir/argv" "$start_dir/broker-cmdline" 2>/dev/null || true)"
-label="k8a's broker start puts the stack broker's password in no process's arguments"
+label="k8's broker start puts the stack broker's password in no process's arguments"
 passed=false
 [[ "$status" -eq 0 && -s "$start_dir/broker-cmdline" ]] && ! grep -q not-a-secret "$start_dir/broker-cmdline" &&
   ! grep -qs not-a-secret "$start_dir/argv" && passed=true
 check "$passed"
 output="$(cat "$start_dir/broker-environ" 2>/dev/null || true)"
 want_environ="$(printf '%s\n' BROKER_AIRLOCK_LISTEN_ADDR BROKER_DATABASE_URL BROKER_LISTEN_ADDR BROKER_METRICS_LISTEN_ADDR BROKER_PROFILES_FILE BROKER_PUBLIC_URL PATH STAND_IN | sort)"
-label="k8a's broker start gives the broker exactly the stack broker's environment and its overrides"
+label="k8's broker start gives the broker exactly the stack broker's environment and its overrides"
 check test "$output" = "$want_environ"
 
 # --- k6's az wrapper, read out of airlock-check.sh and run on its own, on a box whose az on PATH
@@ -558,6 +568,194 @@ for stand in running exited; do
     check test "$output" = "status $want; left: nothing; stand-in: stopped"
   done
 done
+
+# --- k47's readers, read out of airlock-check.sh and run on fixtures of the shapes the stack writes:
+# the kind of dev-airlock.sh's profiles file, broker log lines, the Admin API stand's records, the
+# token exchange stand's records and lists, and the field reader every judgement of k47 goes
+# through. Each has a control in which the fixture is wrong in the one way the reader is there to
+# see, and the reader must say so.
+for function in k47_kind k47_lines k47_api k47_exchanges k47_hits k47_secrets_json k47_field k47_control_edit k8_copies k8_names k8_named k8_untagged; do
+  definition="$(sed -n "/^${function}() {/,/^}/p" "$script_dir/airlock-check.sh")"
+  [[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no %s()\n' "$function"; exit 1; }
+  eval "$definition"
+done
+eval "$(grep -m1 '^K47_KIND_WANT=' "$script_dir/airlock-check.sh")"
+k47="$work/k47"
+mkdir -p "$k47"
+allow3='[{"method":"GET","pathPrefix":"/v1/organizations/"},{"method":"POST","pathPrefix":"/v1/organizations/"},{"method":"DELETE","pathPrefix":"/v1/organizations/"}]'
+# The kind as dev-airlock.sh writes it, read out of that script's own heredoc so a change there
+# reaches this row.
+kind_line="$(sed -n '/^  {"name": "anthropic"/{s/^  {"name": "anthropic", \(.*\)$/\1/p;n;s/^ *\(.*\)}$/\1/p}' "$script_dir/dev-airlock.sh" | tr '\n' ' ')"
+kind_json="{\"name\": \"anthropic\", ${kind_line}}"
+kind_json="${kind_json//\$ANTHROPIC_HOST/api.anthropic.com}"
+kind_json="${kind_json//\$ANTHROPIC_MAX_GRANT/1h}"
+kind_json="${kind_json//\$ANTHROPIC_ALLOW/$allow3}"
+printf '{"kinds": [%s], "profiles": []}\n' "$kind_json" >"$k47/profiles.json"
+output="$(k47_kind "$k47/profiles.json")"
+label="k47_kind reads dev-airlock.sh's anthropic kind as the spec's: $K47_KIND_WANT"
+check test "$output" = "$K47_KIND_WANT"
+jq '(.kinds[0].allow) = [{"method":"GET","pathPrefix":"/v1/organizations/"}]' "$k47/profiles.json" >"$k47/get-only.json"
+output="$(k47_kind "$k47/get-only.json")"
+label="control: a kind that allows GET alone is not read as the spec's"
+check test "$output" != "$K47_KIND_WANT"
+output="$(k47_kind <(printf '{"kinds": [], "profiles": []}'))"
+label="control: a file with no anthropic kind reads as nothing"
+check test -z "$output"
+
+# Broker lines: three carried calls naming the way mint, three refusals naming an allow rule, one
+# mint line with a hash, and lines of another secret and another host the reader must leave out.
+n=AIRLOCK_ANTHROPIC_NARROWED
+hash="$(printf '%s' 'sk-ant-oat01-fix-not-a-secret' | sha256sum | cut -d' ' -f1)"
+{
+  for m in GET POST DELETE; do
+    printf '{"message":"airlock proxy: a call to a bound host","secret":"%s","host":"api.anthropic.com","method":"%s","path":"/v1/organizations/workspaces","allowed":true,"way":"mint","grant":"g1"}\n' "$n" "$m"
+  done
+  for p in "POST /v1/oauth/token" "POST /v1/messages" "PUT /v1/organizations/workspaces/w1"; do
+    printf '{"message":"broker: answer refused","caller_class":"airlock","host":"api.anthropic.com","secrets":["%s"],"method":"%s","path":"%s","reason":"not allowed by rule"}\n' "$n" "${p%% *}" "${p#* }"
+  done
+  printf '{"message":"broker: a token was minted for a call","secret":"%s","way":"mint","sha256":"%s"}\n' "$n" "$hash"
+  printf '{"message":"airlock proxy: a call to a bound host","secret":"OTHER","host":"api.anthropic.com","allowed":true,"way":"mint"}\n'
+  printf '{"message":"airlock proxy: a call to a bound host","secret":"%s","host":"s.airlock.test","allowed":true,"way":"mint"}\n' "$n"
+  printf 'not a JSON line\n'
+} >"$k47/log.jsonl"
+lines="$(k47_lines "$n" <"$k47/log.jsonl")"
+output="$lines"
+label="k47_lines counts one secret's six lines at api.anthropic.com, three carried by mint, three refused naming the rule, and its one hashed mint line"
+check test "$(k47_field "$lines" lines) $(k47_field "$lines" allowed) $(k47_field "$lines" allowed_mint) $(k47_field "$lines" refused) $(k47_field "$lines" refused_rule) $(k47_field "$lines" mints) $(k47_field "$lines" mints_hashed) $(k47_field "$lines" mint_hashes)" = "6 3 3 3 3 1 1 $hash"
+label="k47_field reads a value that holds spaces whole: the refused methods and paths"
+check test "$(k47_field "$lines" refused_methods)" = "POST /v1/oauth/token,POST /v1/messages,PUT /v1/organizations/workspaces/w1"
+sed 's/,"way":"mint","grant":"g1"/,"grant":"g1"/' "$k47/log.jsonl" | sed '2s/"reason":"[^"]*"/"reason":"host not bound"/' >"$k47/log-control.jsonl"
+lines="$(k47_lines "$n" <"$k47/log-control.jsonl")"
+output="$lines"
+label="control: carried lines that name no way and a refusal that names no allow rule are not counted as such"
+check test "$(k47_field "$lines" allowed_mint) $(k47_field "$lines" refused_rule)" = "0 3"
+
+# The Admin API stand's records and the exchange's list: three allowed requests carrying one token
+# the exchange answered for svac_x, against a placeholder and a refused request reaching the stand.
+printf '[{"access_token":"sk-ant-oat01-fix-not-a-secret","expires_in":3600,"service_account_id":"svac_x"},{"access_token":"sk-ant-oat01-oth-not-a-secret","expires_in":3600,"service_account_id":"svac_y"}]\n' >"$k47/tokens.json"
+jq -n '[("GET /v1/organizations/workspaces"), ("POST /v1/organizations/workspaces"), ("DELETE /v1/organizations/workspaces/w1")]
+  | map(split(" ") | {method: .[0], path: .[1], query: "", host: "api.anthropic.com", header: {Authorization: ["Bearer sk-ant-oat01-fix-not-a-secret"]}, body: ""})' >"$k47/api.json"
+api="$(k47_api "$k47/api.json" "$k47/tokens.json" svac_x)"
+output="$api"
+label="k47_api counts three allowed records carrying the token the exchange answered for the secret, one value, no placeholder and no refused request"
+check test "$(k47_field "$api" allowed) $(k47_field "$api" token_ok) $(k47_field "$api" distinct) $(k47_field "$api" placeholders) $(k47_field "$api" refused_reached)" = "3 3 1 0 0"
+api="$(k47_api "$k47/api.json" "$k47/tokens.json" svac_y)"
+output="$api"
+label="control: the same records read against another secret's tokens carry none of its tokens"
+check test "$(k47_field "$api" token_ok)" = 0
+jq '. + [{method: "POST", path: "/v1/messages", query: "", host: "api.anthropic.com", header: {Authorization: ["Bearer agent-secrets-placeholder-not-a-secret"]}, body: ""}]' "$k47/api.json" >"$k47/api-control.json"
+api="$(k47_api "$k47/api-control.json" "$k47/tokens.json" svac_x)"
+output="$api"
+label="control: a refused request that reached the stand with a placeholder is counted as both"
+check test "$(k47_field "$api" refused_reached) $(k47_field "$api" placeholders)" = "1 1"
+
+# The exchange's records against the iam stand's list.
+printf '[{"account":"a@p.iam.gserviceaccount.com","audience":"https://api.anthropic.com","token":"idt-1"}]\n' >"$k47/identities.json"
+jq -n '[{method: "POST", path: "/v1/oauth/token", body: ({grant_type: "g", assertion: "idt-1", organization_id: "org", federation_rule_id: "fdrl_r", service_account_id: "svac_x", workspace_id: "wrkspc_w"} | tojson)}]' >"$k47/exchange.json"
+exchanges="$(k47_exchanges "$k47/exchange.json" "$k47/identities.json" a@p.iam.gserviceaccount.com svac_x org fdrl_r wrkspc_w)"
+output="$exchanges"
+label="k47_exchanges reads one exchange with the reader's token and the stored value's ids"
+check test "$(k47_field "$exchanges" exchanges) $(k47_field "$exchanges" matching) $(k47_field "$exchanges" identity_tokens) $(k47_field "$exchanges" other_audiences)" = "1 1 1 0"
+exchanges="$(k47_exchanges "$k47/exchange.json" "$k47/identities.json" a@p.iam.gserviceaccount.com svac_x other-org fdrl_r wrkspc_w)"
+output="$exchanges"
+label="control: an exchange that names another organization is not read as matching"
+check test "$(k47_field "$exchanges" matching)" = 0
+
+# The token search, and the list the rules test reads tags from.
+printf 'X=sk-ant-oat01-a\n' >"$k47/env-with.txt"
+printf 'X=agent-secrets-placeholder-a\n' >"$k47/env-without.txt"
+output="$(k47_hits "$k47/env-with.txt") / $(k47_hits "$k47/env-without.txt") / $(k47_hits "$k47/nothing-here")"
+label="k47_hits finds the token where it is, not where it is not, and a file it could not read is zero bytes, never a clean search"
+check test "$output" = "hits=1 bytes=17 / hits=0 bytes=30 / hits=0 bytes=0"
+printf '{"secrets":[{"name":"example/agent-secrets/airlock-anthropic-narrowed","tags":{"proxy":"anthropic","proxy-narrowed":"true"},"value":"v"}]}\n' >"$k47/fake.json"
+output="$(k47_secrets_json "$k47/fake.json" | jq -c .)"
+label="k47_secrets_json lists each fake secret as gcloud lists it, its tags as its annotations, and no value"
+check test "$output" = '[{"name":"projects/000000000000/secrets/agent-secrets-airlock-anthropic-narrowed","annotations":{"proxy":"anthropic","proxy-narrowed":"true"}}]'
+printf '[{"name":"a","annotations":{"owner":"o","proxy":"aws"}},{"name":"b","annotations":{"owner":"o","proxy":"stest"}},{"name":"c","annotations":{"owner":"o"}}]\n' >"$k47/store.json"
+output="$(k8_untagged "$k47/store.json" aws | jq -c .)"
+label="k8_untagged takes the proxy tag off the named kind's secrets alone and keeps every other tag and secret"
+check test "$output" = '[{"name":"a","annotations":{"owner":"o"}},{"name":"b","annotations":{"owner":"o","proxy":"stest"}},{"name":"c","annotations":{"owner":"o"}}]'
+output="$(k8_untagged "$k47/store.json" glogin | jq -c .)"
+label="control: k8_untagged of a kind no secret carries changes nothing"
+check test "$output" = "$(jq -c . "$k47/store.json")"
+
+# The two control edits, on copies of the files they edit: each takes its text out of this tree's
+# file, and refuses a file it has already been made on, whose build would be the stack's own.
+envoy_dir="$(cd "$script_dir/.." && pwd)"
+for defect in kind-allow lifetime; do
+  ctl="$work/ctl-$defect"
+  mkdir -p "$ctl/internal/cipher/proxyrules" "$ctl/internal/cipher/secrets"
+  cp "$envoy_dir/internal/cipher/proxyrules/airlock.go" "$ctl/internal/cipher/proxyrules/"
+  cp "$envoy_dir/internal/cipher/secrets/anthropicfederation.go" "$ctl/internal/cipher/secrets/"
+  status=0
+  k47_control_edit "$ctl" "$defect" || status=$?
+  output="status $status"
+  label="k47's $defect edit applies to this tree's file and takes its text out"
+  check test "$status" -eq 0
+  status=0
+  k47_control_edit "$ctl" "$defect" || status=$?
+  output="status $status"
+  label="control: the $defect edit refuses a file that no longer holds its text"
+  check test "$status" -ne 0
+done
+
+# --- k8's copies of a profiles file of the stack's shape: each of the nine it writes differs from
+# the head's file, the malformed one is no JSON, and each passing copy's output names what k8_named
+# wants. The control is a head with none of the kinds the copies edit, whose copies are the head.
+k8d="$work/k8"
+mkdir -p "$k8d"
+jq -n --argjson allow "$allow3" '{kinds: [{name: "stest", hosts: ["s.airlock.test"], ways: ["swap"]},
+  {name: "scoped", hosts: ["s.airlock.test"], headers: ["authorization", "x-key"], ways: ["swap"], allow: [{method: "GET", pathPrefix: "/read"}]},
+  {name: "aws", hosts: ["aws.airlock.test"], ways: ["sign"]},
+  {name: "anthropic", hosts: ["api.anthropic.com"], ways: ["mint"], allow: $allow}],
+  profiles: [{name: "AIRLOCK_ANTHROPIC_NARROWED", allow: $allow}]}' >"$k8d/head.json"
+k8_copies "$k8d/head.json" "$k8d"
+same=""
+while read -r copy want; do
+  [[ "$want" == unknown || "$copy" == malformed ]] && continue
+  [[ "$(jq -cS . "$k8d/$copy.json")" != "$(jq -cS . "$k8d/head.json")" ]] || same+=" $copy"
+done <"$k8d/copies"
+output="copies equal to the head:${same:- none}; listed: $(tr '\n' ',' <"$k8d/copies")"
+label="k8_copies writes nine copies, each changed from the head's file, and lists fields as not run"
+check test -z "$same" -a "$(wc -l <"$k8d/copies")" -eq 10 -a "$(grep -c ' unknown$' "$k8d/copies")" -eq 1
+status=0
+jq . "$k8d/malformed.json" >/dev/null 2>&1 || status=$?
+output="jq exited $status"
+label="the malformed copy is no JSON"
+check test "$status" -ne 0
+mkdir -p "$k8d/empty"
+printf '{"kinds": [], "profiles": []}\n' >"$k8d/empty/head.json"
+k8_copies "$k8d/empty/head.json" "$k8d/empty"
+output="$(jq -cS . "$k8d/empty/no-host.json")"
+label="control: on a head with none of the kinds it edits, k8_copies' no-host copy is the head itself, which the row above would report"
+check test "$output" = "$(jq -cS . "$k8d/empty/head.json")"
+output='kind "stest": hosts extra.airlock.test added'
+label="k8_named reads a passing copy's added host off the report line"
+check k8_named new-host "$output"
+label="control: k8_named does not read another kind's line as the copy's"
+check test "$(k8_named new-host 'kind "scoped": hosts extra.airlock.test added' && echo yes || echo no)" = no
+label="k8_named reads the parse position of the malformed copy"
+check k8_named malformed 'profiles check: k8/malformed.json: invalid character ] after object key:value pair at byte 74'
+
+# --- The verdict: a property this head does not build is no pass, and a run that judged nothing
+# is no pass either.
+for function in pass fail unknown deferred report; do
+  definition="$(sed -n "/^${function}() {/,/^}/p" "$script_dir/airlock-check.sh")"
+  [[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no %s()\n' "$function"; exit 1; }
+  eval "$definition"
+done
+verdict() { # <steps...>: runs them on fresh counters, answers report's last line and exit status
+  local step out
+  EXPECTED=() OBSERVED=() CONTROL=() VERDICTS=() PASSED=0 TOTAL=0 NOT_JUDGED=0 CHECK_ID=kx
+  for step in "$@"; do $step what slice seen; done
+  out="$(report)"
+  printf '%s %s' "$?" "$(printf '%s' "$out" | tail -n 1)"
+}
+output="$(verdict pass)"; label="a run whose every property passed passes"; check test "${output%% *}" = 0
+output="$(verdict pass unknown)"; label="a run with an UNKNOWN property exits 3, not 0"; check test "${output%% *}" = 3
+output="$(verdict pass deferred)"; label="a run with a DEFERRED property exits 3, not 0"; check test "${output%% *}" = 3
+output="$(verdict)"; label="a run that judged nothing exits 3, not 0"; check test "${output%% *}" = 3
+output="$(verdict pass fail unknown)"; label="a run with a failed property exits 1"; check test "${output%% *}" = 1
 
 if [[ "$failed" -ne 0 ]]; then
   printf 'airlock-check inputs: failed (%s checks)\n' "$failed"

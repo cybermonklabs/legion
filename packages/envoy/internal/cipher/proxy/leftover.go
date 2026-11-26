@@ -1,16 +1,18 @@
 // packages/envoy/internal/cipher/proxy/leftover.go
-// The refusal of a request that still carries a placeholder after the swap (serveBound runs
-// leftoverPlaceholder last, before anything goes upstream): what is read as a placeholder, where
-// it is looked for, and the grant its refusal line names.
+// The refusal of a whole placeholder the proxy did not replace (serveBound runs
+// leftoverPlaceholder last, before anything goes upstream): what the command wrote is scanned,
+// where it is looked for, and the grant its refusal line names.
 package proxy
 
 import (
 	"context"
 	"encoding/base64"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
 // placeholderLeft is the words a request that still carries a placeholder after the swap is
@@ -18,37 +20,47 @@ import (
 // names the grant.
 const placeholderLeft = "this request still carries a placeholder after the swap - one no live grant of this session swaps on this host, or one outside the headers its entry names - so it is not sent: send a live grant's placeholder, in the header its entry names"
 
-// leftoverPlaceholder is the first placeholder a request about to go upstream still carries, and
-// false when it carries none: in a header or a trailer, in the value itself or inside the Basic
-// credential it is - which reads at least what the swap reads, a Basic scheme in any case, a
-// payload with or without base64 padding and one that is no UTF-8 among them, the safe side for
-// a refusal - and then in the path, its raw form, the query as written and the query unescaped
-// (lenientUnescape), so no escape that is no escape, and no pair url.ParseQuery would skip,
-// hides a placeholder. A placeholder is one as the broker mints it (placeholderIn). Each map is
-// read in headersOf's order only once one of its values has been found to carry one, so which
-// placeholder a line names does not depend on the run, and a request that carries none - every
-// request the swap served - costs no sort. The unescape is read last and only where it says
-// something the query as written did not: a query the unescape leaves as written has been read
-// already, and one it changes is not unescaped at all once an earlier text has answered.
-//
-// The trailer map holds the trailers of a request whose body this proxy has already read - an
-// AWS call it signs, a Limited name's post it reads - which net/http fills as it reads the last
-// chunk. A request whose body is streamed to the service sends its trailers after this point,
-// so they are not in the map and no scan before the forward could hold them (the comment at the
-// call in serveBound says which paths those are).
-func leftoverPlaceholder(header, trailer http.Header, path, rawPath, rawQuery string) (string, bool) {
+// placeholderPrefix is one prefix a leftover scan recognizes. The default prefix is unbounded:
+// a placeholder immediately after a letter is still a proxy password. A kind's own prefix is
+// bounded on the left, since a short service prefix such as tml- can occur inside a word (html-).
+type placeholderPrefix struct {
+	text        string
+	leftBounded bool
+}
+
+// placeholderPrefixes is the default prefix and every distinct placeholder_prefix the kinds part
+// names. The default remains first and unbounded; a kind prefix equal to it does not add a bounded
+// second interpretation.
+func placeholderPrefixes(rules proxyrules.Rules) []placeholderPrefix {
+	prefixes := []placeholderPrefix{{text: placeholder.Prefix}}
+	for _, kind := range rules.Kinds {
+		if kind.PlaceholderPrefix == "" || kind.PlaceholderPrefix == placeholder.Prefix {
+			continue
+		}
+		if !slices.ContainsFunc(prefixes, func(prefix placeholderPrefix) bool { return prefix.text == kind.PlaceholderPrefix }) {
+			prefixes = append(prefixes, placeholderPrefix{text: kind.PlaceholderPrefix, leftBounded: true})
+		}
+	}
+	return prefixes
+}
+
+// leftoverPlaceholder is the first whole placeholder a request would send, and false when it
+// carries none. It scans the command-written headers whose kind did not rewrite, trailers where
+// the body is already read, and the path and query forms. prefixes holds the default prefix and
+// every kind prefix of the rules this request was decided under.
+func leftoverPlaceholder(prefixes []placeholderPrefix, header, trailer http.Header, path, rawPath, rawQuery string) (string, bool) {
 	for _, fields := range [...]http.Header{header, trailer} {
-		if placeholder, carried := fieldsPlaceholder(fields); carried {
+		if placeholder, carried := fieldsPlaceholder(prefixes, fields); carried {
 			return placeholder, true
 		}
 	}
 	for _, text := range [...]string{path, rawPath, rawQuery} {
-		if placeholder := placeholderIn(text); placeholder != "" {
+		if placeholder := placeholderInPrefixes(text, prefixes); placeholder != "" {
 			return placeholder, true
 		}
 	}
 	if unescaped := lenientUnescape(rawQuery); unescaped != rawQuery {
-		if placeholder := placeholderIn(unescaped); placeholder != "" {
+		if placeholder := placeholderInPrefixes(unescaped, prefixes); placeholder != "" {
 			return placeholder, true
 		}
 	}
@@ -56,17 +68,15 @@ func leftoverPlaceholder(header, trailer http.Header, path, rawPath, rawQuery st
 }
 
 // fieldsPlaceholder is the first placeholder one map of header fields carries, read in
-// headersOf's order once any value of the map has been found to carry one, and "" when none
-// does. The two passes are what keeps the line's placeholder the same between two runs of one
-// request while a request that carries none sorts nothing.
-func fieldsPlaceholder(fields http.Header) (string, bool) {
+// headersOf's order once any value of the map has been found to carry one, and "" when none does.
+func fieldsPlaceholder(prefixes []placeholderPrefix, fields http.Header) (string, bool) {
 	for _, values := range fields {
 		for _, v := range values {
-			if headerPlaceholder(v) == "" {
+			if headerPlaceholder(prefixes, v) == "" {
 				continue
 			}
 			for _, h := range headersOf(fields) {
-				if placeholder := headerPlaceholder(h[1]); placeholder != "" {
+				if placeholder := headerPlaceholder(prefixes, h[1]); placeholder != "" {
 					return placeholder, true
 				}
 			}
@@ -119,51 +129,65 @@ func unhex(c byte) byte {
 // headerPlaceholder is the first placeholder a header value carries, in the value itself or in
 // the Basic credential it is, as git sends a token, with its base64 padded or not, and "" when it
 // carries none.
-func headerPlaceholder(v string) string {
-	if placeholder := placeholderIn(v); placeholder != "" {
+func headerPlaceholder(prefixes []placeholderPrefix, v string) string {
+	if placeholder := placeholderInPrefixes(v, prefixes); placeholder != "" {
 		return placeholder
 	}
 	if scheme, payload, ok := strings.Cut(v, " "); ok && strings.EqualFold(scheme, "basic") {
 		payload = strings.Trim(payload, " \t")
 		for _, encoding := range [...]*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding} {
 			if decoded, err := encoding.DecodeString(payload); err == nil {
-				return placeholderIn(string(decoded))
+				return placeholderInPrefixes(string(decoded), prefixes)
 			}
 		}
 	}
 	return ""
 }
 
-// placeholderIn is the first placeholder text holds, and "" when it holds none. A placeholder is
-// one as the broker mints it (placeholderAt): a secret's release, placeholder.Prefix and Length
-// letters and digits of Alphabet, and a minted capability's grant, the same after a kind's word
-// and hyphen (placeholder.MintedPrefix). The prefix with fewer of them after it is no placeholder
-// and opens nothing - a code search for the prefix itself is one - so it is not read as one. A
-// whole placeholder is, whether or not a grant holds it: the broker deletes an ended grant's rows,
-// so a placeholder it no longer knows and one it never minted cannot be told apart.
-//
-// It scans placeholder.Prefix alone, the one prefix every placeholder has today, a minted kind's
-// among them. A kind that sets a prefix of its own (placeholder_prefix) adds that prefix to what
-// this scans, or a placeholder of that kind left after the swap would go upstream.
+// placeholderIn is the first default-prefix placeholder text holds, and "" when it holds none.
 func placeholderIn(text string) string {
-	for rest := text; ; {
-		i := strings.Index(rest, placeholder.Prefix)
-		if i < 0 {
-			return ""
-		}
-		rest = rest[i:]
-		if found := placeholderAt(rest); found != "" {
-			return found
-		}
-		rest = rest[len(placeholder.Prefix):]
-	}
+	return placeholderInPrefixes(text, []placeholderPrefix{{text: placeholder.Prefix}})
 }
 
-// placeholderAt is the whole placeholder text opens with, and "" when it opens with none: the
-// prefix; where 1 to MaxMintedWord lower-case letters and a hyphen follow it, that minted kind's
-// word and hyphen, as the log mask reads one; and then Length characters of Alphabet, whatever
-// follows them. A release's placeholder holds no hyphen, so a word is read only where a minted
-// kind's prefix put one.
+// placeholderInPrefixes is the first placeholder text holds under prefixes, and "" when it holds
+// none. A kind prefix needs a non-letter, non-digit byte before it; the default prefix does not.
+func placeholderInPrefixes(text string, prefixes []placeholderPrefix) string {
+	for i := range len(text) {
+		for _, prefix := range prefixes {
+			if !strings.HasPrefix(text[i:], prefix.text) || prefix.leftBounded && i > 0 && asciiLetterOrDigit(text[i-1]) {
+				continue
+			}
+			if found := placeholderAtPrefix(text[i:], prefix); found != "" {
+				return found
+			}
+		}
+	}
+	return ""
+}
+
+// placeholderAtPrefix is the whole placeholder text opens with under prefix, and "" when it opens
+// with none. The default prefix also recognizes #5190's minted form; a kind prefix takes its own
+// 32 letters and digits directly.
+func placeholderAtPrefix(text string, prefix placeholderPrefix) string {
+	if prefix.text == placeholder.Prefix {
+		return placeholderAt(text)
+	}
+	end := len(prefix.text) + placeholder.Length
+	if end > len(text) || !alphabetOnly(text[len(prefix.text):end]) {
+		return ""
+	}
+	return text[:end]
+}
+
+// asciiLetterOrDigit is whether b is one ASCII letter or digit, the left-boundary rule for a
+// kind's own placeholder_prefix.
+func asciiLetterOrDigit(b byte) bool {
+	return 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z' || '0' <= b && b <= '9'
+}
+
+// placeholderAt is the whole default-prefix placeholder text opens with, and "" when it opens
+// with none: the prefix; where 1 to MaxMintedWord lower-case letters and a hyphen follow it, that
+// minted kind's word and hyphen; and then Length characters of Alphabet, whatever follows them.
 func placeholderAt(text string) string {
 	opening := len(placeholder.Prefix)
 	word := 0

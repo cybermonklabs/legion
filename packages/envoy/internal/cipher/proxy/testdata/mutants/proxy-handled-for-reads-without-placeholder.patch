@@ -6,13 +6,10 @@
 
 --- a/packages/envoy/internal/cipher/proxy/enrollment.go
 +++ b/packages/envoy/internal/cipher/proxy/enrollment.go
-@@ -59,7 +59,8 @@
- func (s *Server) handledFor(ctx context.Context, own requests.AirlockConnection, request *proxyrules.Request) (handling, bool, error) {
- 	host, port := request.ConnectHost, request.ConnectPort
- 	fallback, found := s.handlingFor(own, host, port, request)
--	if found && (fallback.holdsPlaceholder || !headersHoldPlaceholder(request.Headers)) {
+@@ -70,4 +70,5 @@ func (s *Server) handledFor(ctx context.Context, rules proxyrules.Rules, own req
+-	if found && (fallback.holdsPlaceholder || !headersHoldPlaceholder(prefixes, request.Headers)) {
 +	// MUTANT: a request holding no placeholder reads the enrollment's grants too.
-+	if found && fallback.holdsPlaceholder {
++	if found && (fallback.holdsPlaceholder || !headersHoldPlaceholder(prefixes, request.Headers) && false) {
  		return fallback, true, nil
  	}
- 	others, err := s.otherGrantsBinding(ctx, own, host, port)
+ 	others, err := s.otherGrantsBinding(ctx, rules, own, host, port)

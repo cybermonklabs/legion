@@ -20,7 +20,7 @@ import (
 // with its query as the command wrote it. The control, in the same run: the prefix followed by a
 // whole placeholder's worth of letters and digits that no grant holds is still refused.
 func TestThePrefixWithNoPlaceholderAfterItIsNotRefused(t *testing.T) {
-	r := newRig(t, Options{Rules: enrollmentRules()})
+	r := newRuledRig(t, enrollmentRules(), Options{})
 	client := r.client(workerPlaceholder)
 	for i, query := range []string{
 		placeholder.Prefix + " repo:acme-org/x",

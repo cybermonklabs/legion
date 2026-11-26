@@ -24,8 +24,8 @@ type handling struct {
 // handlingFor is what a request would be handled for under grant alone: false when no name of
 // grant binds host on port (candidates), and otherwise the pair choosePair chooses and whether the
 // request carries its placeholder.
-func (s *Server) handlingFor(grant requests.AirlockConnection, host string, port uint16, request *proxyrules.Request) (handling, bool) {
-	candidates := s.candidates(grant, host, port)
+func handlingFor(rules proxyrules.Rules, grant requests.AirlockConnection, host string, port uint16, request *proxyrules.Request) (handling, bool) {
+	candidates := candidates(rules, grant, host, port)
 	if len(candidates) == 0 {
 		return handling{}, false
 	}
@@ -57,24 +57,25 @@ func (s *Server) handlingFor(grant requests.AirlockConnection, host string, port
 //     reads. A placeholder in only one of those proxy-only headers is removed before forwarding.
 //     Where own binds nothing here, it is the first candidate of the first other grant that binds
 //     the host, and a request that holds no placeholder anywhere goes on with nothing swapped, so
-//     the entry's rules bound it as they bound any request.
+//     the kind's and profile's rules bound it as they bound any request.
 //
 // One request is still handled for one (name, slot) pair of one grant: a request that carries
 // placeholders of two grants is handled for own when one of them is own's, and otherwise for the
 // first of them in grant id order. The second answer is false when no live grant of the
 // enrollment binds the host.
-func (s *Server) handledFor(ctx context.Context, own requests.AirlockConnection, request *proxyrules.Request) (handling, bool, error) {
+func (s *Server) handledFor(ctx context.Context, rules proxyrules.Rules, own requests.AirlockConnection, request *proxyrules.Request) (handling, bool, error) {
 	host, port := request.ConnectHost, request.ConnectPort
-	fallback, found := s.handlingFor(own, host, port, request)
-	if found && (fallback.holdsPlaceholder || !headersHoldPlaceholder(request.Headers)) {
+	prefixes := placeholderPrefixes(rules)
+	fallback, found := handlingFor(rules, own, host, port, request)
+	if found && (fallback.holdsPlaceholder || !headersHoldPlaceholder(prefixes, request.Headers)) {
 		return fallback, true, nil
 	}
-	others, err := s.otherGrantsBinding(ctx, own, host, port)
+	others, err := s.otherGrantsBinding(ctx, rules, own, host, port)
 	if err != nil {
 		return handling{}, false, err
 	}
 	for _, other := range others {
-		handled, binds := s.handlingFor(other, host, port, request)
+		handled, binds := handlingFor(rules, other, host, port, request)
 		if !binds {
 			continue
 		}
@@ -88,11 +89,11 @@ func (s *Server) handledFor(ctx context.Context, own requests.AirlockConnection,
 	return fallback, found, nil
 }
 
-// headersHoldPlaceholder is whether a header of the request holds a whole placeholder
-// (headerPlaceholder), which is the one thing that can hand a request to another grant.
-func headersHoldPlaceholder(headers [][2]string) bool {
+// headersHoldPlaceholder is whether a header of the request holds a whole placeholder under one
+// of the default or kind prefixes. It is the one thing that can hand a request to another grant.
+func headersHoldPlaceholder(prefixes []placeholderPrefix, headers [][2]string) bool {
 	for _, header := range headers {
-		if headerPlaceholder(header[1]) != "" {
+		if headerPlaceholder(prefixes, header[1]) != "" {
 			return true
 		}
 	}
@@ -106,16 +107,16 @@ func headersHoldPlaceholder(headers [][2]string) bool {
 // and a request on it is handled for the grant whose placeholder it carries (handledFor). The
 // enrollment's other grants are read only where grant binds nothing, and then only those that
 // hold a name an entry binds to host (otherGrantsBinding).
-func (s *Server) sessionBinds(ctx context.Context, grant requests.AirlockConnection, host string, port uint16) (bool, error) {
-	if len(s.candidates(grant, host, port)) > 0 {
+func (s *Server) sessionBinds(ctx context.Context, rules proxyrules.Rules, grant requests.AirlockConnection, host string, port uint16) (bool, error) {
+	if len(candidates(rules, grant, host, port)) > 0 {
 		return true, nil
 	}
-	others, err := s.otherGrantsBinding(ctx, grant, host, port)
+	others, err := s.otherGrantsBinding(ctx, rules, grant, host, port)
 	if err != nil {
 		return false, err
 	}
 	for _, other := range others {
-		if len(s.candidates(other, host, port)) > 0 {
+		if len(candidates(rules, other, host, port)) > 0 {
 			return true, nil
 		}
 	}
@@ -123,44 +124,42 @@ func (s *Server) sessionBinds(ctx context.Context, grant requests.AirlockConnect
 }
 
 // otherGrantsBinding is the live grants of own's enrollment, but own, that hold a placeholder of a
-// name an entry binds to host on port (ProxyGrantsOfEnrollment with boundEntries' names). The
+// name whose kind binds host on port (ProxyGrantsOfEnrollment with boundEntries' names). The
 // broker reads and checks only those, so a grant that holds no such placeholder - whose project
 // check may need Dispatch, which may not answer - is not read for a call to this host, and a host
-// no entry binds reads nothing at all: a tunnel to a package registry, or to a git host the session
-// holds no secret for, cannot fail for a read of other grants. A grant that holds such a
-// placeholder is read and checked whole, a name of it its operator withheld included, so its
-// failed check can still answer such a call 503, failing closed.
+// no kind binds reads nothing at all: a tunnel to a package registry, or to a git host the session
+// holds no secret for, cannot fail for a read of other grants. A grant that holds such a placeholder
+// is read and checked whole, a name of it its operator withheld included, so its failed check can
+// still answer such a call 503, failing closed.
 //
 // A minted capability's connection reads none: a minted grant is not one of the grants the
 // one-connection swap reads, and it belongs to no enrollment (its EnrollmentID is empty), so a
 // request on it is decided by its own grant alone, as on a broker without this read.
-func (s *Server) otherGrantsBinding(ctx context.Context, own requests.AirlockConnection, host string, port uint16) ([]requests.AirlockConnection, error) {
+func (s *Server) otherGrantsBinding(ctx context.Context, rules proxyrules.Rules, own requests.AirlockConnection, host string, port uint16) ([]requests.AirlockConnection, error) {
 	if own.Minted {
 		return nil, nil
 	}
-	names := s.boundEntries(host, port)
+	names := boundEntries(rules, host, port)
 	if len(names) == 0 {
 		return nil, nil
 	}
 	return s.grants.ProxyGrantsOfEnrollment(ctx, own.EnrollmentID, own.GrantID, names)
 }
 
-// boundEntries is the name of every entry of the rules that binds host on port (entryBinds), in
-// the rules' order, but a dpop entry's. The rules are read once at New, and an entry binds a host
-// for a grant only through them (candidates), so a grant that holds none of these names binds host
-// for no request. A dpop entry's name is left out because a minted capability's grant holds it in
-// its kind's own table, and a stored secret's release under a dpop entry writes no placeholder
-// (requests.ErrMintedOnly), so no grant released since the name became dpop holds it. A grant
-// holding an older row of it, released before its block became dpop, is not read for that host,
-// as on main: another grant's CONNECT to the dpop host tunnels, and its own connection is read and
-// refused. So a stored grant's call to a dpop host reads nothing more, and gets the answer it gets
-// on a broker without this read.
-func (s *Server) boundEntries(host string, port uint16) []string {
+// boundEntries is the name of every binding whose kind binds host on port, but a dpop binding's.
+// The rules are read once at the request or CONNECT, and a grant that holds none of these names
+// binds host for no request. A dpop binding's name is left out because a minted capability's grant
+// holds it in its kind's own table, and a stored secret's release under a dpop binding writes no
+// placeholder (requests.ErrMintedOnly).
+func boundEntries(rules proxyrules.Rules, host string, port uint16) []string {
+	if port != 443 {
+		return nil
+	}
 	var names []string
-	for i := range s.rules.Secrets {
-		entry := &s.rules.Secrets[i]
-		if entry.Kind != proxyrules.KindDPoP && entryBinds(entry, host, port) {
-			names = append(names, entry.Name)
+	for _, binding := range rules.Names {
+		kind := rules.KindOf(&binding)
+		if kind != nil && binding.Way != proxyrules.WayDPoP && proxyrules.HostBound(kind.Hosts, host) {
+			names = append(names, binding.Name)
 		}
 	}
 	return names

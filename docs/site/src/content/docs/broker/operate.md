@@ -590,6 +590,18 @@ a rules file that gives an entry `guidance` or no `hosts` (`unknown field "guida
 entry's `no host`) and does not start with one. Put the rules file back to one without either
 before you roll the broker back past this release.
 
+Rolling the broker back past the release in which a key's judge and guidance became its own tags
+gives the judge nothing: an older broker reads them from the profiles file's `proxy` blocks, and
+ignores the `judge` and `guidance` tags, so every request goes to its person until the file sets
+them again. A broker of this release refuses a profiles file that still sets `judge` or
+`guidance` on a profile, naming the tag to write instead, and does not start with one: tag the
+keys (`agent-secrets secret retag <NAME> --judge <seconds> --guidance '<text>'`) and take the two
+fields out of the file before you roll this release out. A profile behind a kind is served with
+its source's `judge` seconds in its fingerprint, where its block held them, so tagging the source
+with the seconds its block held and then taking the two fields out ends no grant. Tag it with
+other seconds, or leave it untagged, and each live grant of that profile ends at the first broker
+of this release.
+
 Whoever can get a token for a listed account logs in as its service. Kubernetes access control on
 the daemon's namespace is that boundary: anyone who may create pods there naming the account,
 create `serviceaccounts/token` for it, or exec into the daemon's pod and read its token file can
@@ -1129,10 +1141,11 @@ those clients go on running while the deployment moves to a client with `--targe
 
 **Which Apps leave the airlock.** `BROKER_GITHUB_APP_FIELD_SECRETS` names the stored
 `github-app` secrets whose release this answer hands over outside the airlock, separated by
-commas or spaces; unset, it names none and the field is answered for no secret. The answer
-removes the profile's proxy block, and the broker this field comes from refused a narrowed
-release of a name its airlock held, so a deployment names the Apps that broker handed over raw
-and no others. Each entry is an agent-secret name, and the start is refused for anything else.
+commas or spaces; unset, it names none and the field is answered for no secret. The answer is
+outside the airlock: it hands over the minted token, not a placeholder, whatever kind the secret
+is behind. The broker this field comes from refused a narrowed release of a name its airlock
+held, so a deployment names the Apps that broker handed over raw and no others. Each entry is an
+agent-secret name, and the start is refused for anything else.
 
 **Who it is answered for.** `BROKER_GITHUB_APP_FIELD_REQUESTERS` names them: registered services
 and people, separated by commas or spaces, such as
@@ -1497,6 +1510,56 @@ the second count finds, run `agent-secrets secret retag NAME --project <KEY>` (o
 `--project-channels slack`) to write the guard, or remove the tag. After the rollback, every guarded
 secret is refused, so no session gets one until the broker is rolled forward again.
 
+## Rolling back past the kinds
+
+A broker from before the kinds reads neither a `kinds` list nor the `proxy` and `proxy-narrowed`
+tags. It refuses to start on a profiles file in the kinds form, so a rollback also puts the file
+back to its proxy-block form. And it serves a secret that is behind the airlock by its `proxy` tag
+alone, with no proxy block in that older file, as its value: an agent-tier secret then goes out
+with no approval. **No rollback past this release while any secret carries `proxy` or
+`proxy-narrowed` without its guard, and no rollback past legion-envoy-v29.23.0 while any secret
+carries either at all.**
+
+The guard is the entry `rollback-guard:kinds` in the secret's `requesters` tag
+(`policy.KindsRollbackGuard`). `agent-secrets secret create` and `retag` write it beside a
+`proxy` or a `proxy-narrowed` tag, after the people and services the `requesters` tag lists and
+after a project tags' guard, keep it while either tag remains, and take it out with the last of
+the two. A broker from legion-envoy-v29.23.0, the first release that reads `requesters`, up to
+the release before the kinds reads every `requesters` entry as a person's email, a registered
+service or the project tags' guard, and no service name holds a colon, so it refuses a secret that
+carries this guard as `requesters-malformed`. A broker older than legion-envoy-v29.23.0 reads no
+`requesters` tag, so the guard does not stop it. This broker takes the entry out before it reads
+the list, so the guard changes nothing here, and `secret show` and `secret list --json` print the
+list without it, with a `kinds_rollback_guard` field saying whether the secret carries it.
+
+The guard covers the tags the CLI writes. A `proxy` or `proxy-narrowed` tag written by a console
+or an infra-applier without the guard is served as its value by every earlier broker. Before a
+rollback, read the stored `requesters` tag as the older broker will. On Google Secret Manager,
+with the project the broker reads:
+
+```sh
+gcloud secrets list --project <project> --filter='name~agent-secrets-' --format='json(name,annotations)' > secrets.json
+jq 'length' secrets.json
+jq '[.[] | select((.annotations.proxy != null or .annotations["proxy-narrowed"] != null) and ((.annotations.requesters // "") | split(" ") | index("rollback-guard:kinds") | not)) | .name]' secrets.json
+```
+
+On AWS Secrets Manager, list the same tags with
+`aws secretsmanager list-secrets --filters Key=name,Values=<prefix>` and select each secret whose
+`Tags` hold `proxy` or `proxy-narrowed` and whose `requesters` tag holds no `rollback-guard:kinds`.
+On either store, `agent-secrets` built from this release gives the same answer from its own read
+of the tags:
+
+```sh
+agent-secrets secret list --json > secrets.json
+jq 'length' secrets.json
+jq '[.[] | select((.proxy != "" or .proxy_narrowed != "") and (.kinds_rollback_guard | not)) | .name]' secrets.json
+```
+
+In each read, the first count must be more than 0, or the list read nothing. The second list must
+be empty. For each secret it names, run `agent-secrets secret retag NAME --proxy <kind>` to write
+the guard, or remove the tag. After the rollback, every guarded secret is refused, so no session
+gets one until the broker is rolled forward again.
+
 ## Network and trust
 
 - Agents, their helpers and launchers, and Dispatch's server reach the broker at
@@ -1573,12 +1636,14 @@ secret is refused, so no session gets one until the broker is rolled forward aga
   without which `agent-secrets` writes no typed secret
   ([People who manage secrets](#people-who-manage-secrets)).
   It names no Kubernetes exchange audience: a pod's trade mints no launcher credential, so no
-  machine could register a session under it. When the profiles' proxy blocks give the model judge
-  seconds of any profile it also answers `judge_keys`: each such name with its judge seconds and its
-  `guidance` — the profiles file's own words, never a value. It is the profiles file's answer, the
+  machine could register a session under it. When a key's `judge` tag gives the model judge
+  seconds of it it also answers `judge_keys`: each such name with its judge seconds and its
+  `guidance` tag — the key owner's own words, never a value — and, for a profile made from a
+  stored secret of another name, that secret as `source`. It is the live policy's answer, the
   same on a broker that runs no judge, and `agent-secrets secret show` reads it to say who decides a
-  request for a secret and what the judge looks for. An administrator's secret is listed there when
-  a proxy block gives it seconds, and its person decides it all the same; `secret show` reads its tag and
+  request for a secret and what the judge looks for: for a source the broker serves only through
+  its profiles, it names the judged profiles made from it. An administrator's secret is listed there when
+  its `judge` tag gives it seconds, and its person decides it all the same; `secret show` reads its tag and
   says so. The route answers any caller, so it tells anyone who can reach the broker which secrets
   the judge may take and on what guidance. Guidance is no secret: write nothing in it that a
   caller of the broker may not read.
@@ -2023,7 +2088,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `broker metrics listening addr=<host:port>` | After `broker listening`, after `airlock proxy listening` where the deployment has an airlock, and after `broker edge listening` where it has an edge: the metrics port is bound at this address ([Metrics](#metrics)). A pod that cannot bind it does not start, and logs `broker: fatal` naming the address. |
 | `session account pairs state=on pairs=<pairs>` / `session account pairs state=off detail=…` | At INFO, at startup, after `broker metrics listening` and before the broker serves its first request: `state=on` names each pair `BROKER_SESSION_ACCOUNT_PAIRS` gives, as `<account>=<account>` in the setting's order, joined by one space, and `state=off` says the setting is unset, so an account is refused a session name another account holds. |
 | `broker: fatal error=…` | Startup refused; the error names the variable or dependency. The process exits 1. |
-| `agent secret policy refused name=<secret's name in the store> reason=<reason> owner=<owner tag> first_load=<true or false>` | At ERROR, when a secret becomes one the broker refuses to serve, and when it is refused for another reason than before, with `was=<the reason before>`: one line at the change, not one for each read of the store. A pod's first load writes one for each secret it refuses, each with `first_load=true`. A load or a reread that finds a secret refused for the reason it had writes nothing, and `broker_unservable_secrets` ([Metrics](#metrics)) holds every secret refused now. `name` is the secret's whole name in the store, such as `production/agent-secrets/deel-api-key`, or `profile:<NAME>` for a profile of the profiles file that the broker refuses against its source. `owner` is its owner tag (a profile's is its source's), and empty for `owner-tag-missing` and `owner-tag-malformed`. A refusal of the profiles file's ends with `detail=<what fails>`: the source and its own reason, the account or scope a block names that the source does not, the looser tier, requester or `maxGrant`. Reasons include `owner-tag-missing`, `owner-tag-malformed` (among others, a `group:` owner whose address is no lowercase email), `tier-tag-missing`, `tier-tag-malformed`, `name-malformed`, `service-owner-human-tier`, `not-on-agent-secrets-key`, `no-current-value`, `type-unknown`, `github-owners-missing`, `github-owners-malformed`, `requesters-malformed` (a `requesters` list holding a comma, naming nobody, carrying an email with a capital letter, holding a `group:` entry whose address is no lowercase email, or naming a service the deployment does not register), `type-human-tier` (an `anthropic-federation` secret that is not human tier), `max-grant-required` (an `admin` secret, or a `google-service-account` or `anthropic-federation` one, with no `max-grant` or one longer than an hour), `requesters-not-owner` (a `google-service-account` or `anthropic-federation` secret whose `requesters` do not name its owner once, a person or a group, and no other person or group, or that lists a service it may not: any service at agent tier, and any service at all on a secret `BROKER_SERVICE_ACCOUNT_SECRETS` binds to a `dev-<name>` account), `admin-malformed` (an `admin` tag set to anything but `true`), `admin-tier` (an `admin` secret that is not human tier), `admin-requesters` (an `admin` secret with no `requesters` list), `scopes-malformed` (a `scopes` list holding a comma, naming no scope, naming one twice, or holding an entry that is no scope name, a whole `https://www.googleapis.com/auth/…` URL among them), `scopes-type` (a `scopes` tag on a secret that is not a `google-service-account` one), `project-tag-misspelled` (a tag key that differs from `dispatch-project` or `project-channels` only in case or in its separators, such as `Dispatch-Project`, `dispatch_project` or `PROJECT-CHANNELS`, which the broker would otherwise read as no project tag at all), `project-malformed` (a `dispatch-project` tag that is not one Dispatch project key), `project-unchecked` (a `dispatch-project` tag on a broker with no `BROKER_PROJECT_ACCESS_URL`), `project-channels-malformed` (a `project-channels` tag set to anything but `slack`), `max-grant-malformed`, `default-grant-malformed` and `value-malformed` (a `github-app`, `github-installations`, `google-login`, `google-service-account`, `azure-login` or `anthropic-federation` secret whose stored value that type's minter could not mint from, among them a `github-installations` value of a `shapeVersion` other than 1 or of none: [the value read](#the-value-read)); and, of the profiles file, `profile-source-missing` (the profile's source is no secret the broker serves: absent, refused, waiting for its value, or itself a profile), `profile-name-taken` (the profile's name is a stored secret's other than its source, and that stored secret carries no `superseded-by` tag whose value is exactly the profile's source; that stored secret is refused by its own name too. With such a tag the profile is served by the name and the stored secret is not), `profile-block-mismatch` (a `github` or `google` block that does not fit the source's type, `github-owners` or `scopes`, or a `github-app` or `github-installations` source's profile with no `github` block), `profile-looser` (agent tier on a human-tier source, a requester the source's `requesters` does not name, or a `maxGrant` above the source's `max-grant`), `profile-needs-proxy` (no `proxy` block on a stored value, a `google-login` or an `azure-login` source), `github-app-no-profile` (a `github-app` secret no profile names, which the broker refuses by its own name) and `github-installations-no-profile` (the same of a `github-installations` secret). A profile is held to the tag rules on its own tags over its source's, so a profile of an `admin` source can be refused `admin-tier`, and an agent-tier profile of an `anthropic-federation` source `type-human-tier`. |
+| `agent secret policy refused name=<secret's name in the store> reason=<reason> owner=<owner tag> first_load=<true or false>` | At ERROR, when a secret becomes one the broker refuses to serve, and when it is refused for another reason than before, with `was=<the reason before>`: one line at the change, not one for each read of the store. A pod's first load writes one for each secret it refuses, each with `first_load=true`. A load or a reread that finds a secret refused for the reason it had writes nothing, and `broker_unservable_secrets` ([Metrics](#metrics)) holds every secret refused now. `name` is the secret's whole name in the store, such as `production/agent-secrets/deel-api-key`, or `profile:<NAME>` for a profile of the profiles file that the broker refuses against its source. `owner` is its owner tag (a profile's is its source's), and empty for `owner-tag-missing` and `owner-tag-malformed`. A refusal of the profiles file's ends with `detail=<what fails>`: the source and its own reason, the account or scope a block names that the source does not, the looser tier, requester or `maxGrant`. Reasons include `owner-tag-missing`, `owner-tag-malformed` (among others, a `group:` owner whose address is no lowercase email), `tier-tag-missing`, `tier-tag-malformed`, `name-malformed`, `service-owner-human-tier`, `not-on-agent-secrets-key`, `no-current-value`, `type-unknown`, `github-owners-missing`, `github-owners-malformed`, `requesters-malformed` (a `requesters` list holding a comma, naming nobody, carrying an email with a capital letter, holding a `group:` entry whose address is no lowercase email, or naming a service the deployment does not register), `type-human-tier` (an `anthropic-federation` secret that is not human tier), `max-grant-required` (an `admin` secret, or a `google-service-account` or `anthropic-federation` one, with no `max-grant` or one longer than an hour), `requesters-not-owner` (a `google-service-account` or `anthropic-federation` secret whose `requesters` do not name its owner once, a person or a group, and no other person or group, or that lists a service it may not: any service at agent tier, and any service at all on a secret `BROKER_SERVICE_ACCOUNT_SECRETS` binds to a `dev-<name>` account), `admin-malformed` (an `admin` tag set to anything but `true`), `admin-tier` (an `admin` secret that is not human tier), `admin-requesters` (an `admin` secret with no `requesters` list), `scopes-malformed` (a `scopes` list holding a comma, naming no scope, naming one twice, or holding an entry that is no scope name, a whole `https://www.googleapis.com/auth/…` URL among them), `scopes-type` (a `scopes` tag on a secret that is not a `google-service-account` one), `project-tag-misspelled` (a tag key that differs from `dispatch-project` or `project-channels` only in case or in its separators, such as `Dispatch-Project`, `dispatch_project` or `PROJECT-CHANNELS`, which the broker would otherwise read as no project tag at all), `project-malformed` (a `dispatch-project` tag that is not one Dispatch project key), `project-unchecked` (a `dispatch-project` tag on a broker with no `BROKER_PROJECT_ACCESS_URL`), `project-channels-malformed` (a `project-channels` tag set to anything but `slack`), `max-grant-malformed`, `default-grant-malformed` and `value-malformed` (a `github-app`, `github-installations`, `google-login`, `google-service-account`, `azure-login` or `anthropic-federation` secret whose stored value that type's minter could not mint from, among them a `github-installations` value of a `shapeVersion` other than 1 or of none: [the value read](#the-value-read)); of the airlock's kinds, `proxy-kind-unknown` (a `proxy` tag that names no kind of the profiles file; the detail names the tag's value), `proxy-way-not-in-kind` (the way the secret's type takes, `swap`, `mint`, `sign` or `exchange`, is not one of its kind's `ways`; the detail names both), `proxy-max-grant-above-kind` (a secret of a kind with a `max_grant` that sets no `max-grant`, or one above the kind's; the detail names both), `proxy-kind-conflict` (a profile whose `proxy` string names another kind than its source's `proxy` tag), `proxy-narrowed-malformed` (a `proxy-narrowed` tag set to anything but `true`), `proxy-narrowed-profiles` (a secret tagged `proxy-narrowed=true` that no profile names, whose one profile has no `allow`, or that more than one profile names; the secret and each such profile are refused); and, of the profiles file, `profile-source-missing` (the profile's source is no secret the broker serves: absent, refused, waiting for its value, or itself a profile), `profile-name-taken` (the profile's name is a stored secret's other than its source, and that stored secret carries no `superseded-by` tag whose value is exactly the profile's source; that stored secret is refused by its own name too. With such a tag the profile is served by the name and the stored secret is not), `profile-block-mismatch` (a `github` or `google` block that does not fit the source's type, `github-owners` or `scopes`, or a `github-app` or `github-installations` source's profile with no `github` block), `profile-looser` (agent tier on a human-tier source, a requester the source's `requesters` does not name, or a `maxGrant` above the source's `max-grant`), `profile-source-not-proxied` (a profile whose source is a stored token, a `google-login`, an `azure-login` or an `anthropic-federation` secret with no `proxy` tag and no `proxy` string; the source is refused by its own name too), `profile-allow-not-narrowed` (a profile with an `allow` of its own whose source carries no `proxy-narrowed=true` tag), `profile-allow-outside-kind` (a row of a profile's `allow` that no row of its kind's `allow` covers; the detail names the row), `profile-allow-host` (a row of a profile's `allow` naming a host its kind does not bind), `github-app-no-profile` (a `github-app` secret no profile names, which the broker refuses by its own name) and `github-installations-no-profile` (the same of a `github-installations` secret). A profile is held to the tag rules on its own tags over its source's, so a profile of an `admin` source can be refused `admin-tier`, and an agent-tier profile of an `anthropic-federation` source `type-human-tier`. Every secret behind a kind whose `max_grant` is set needs a `max-grant` tag no longer than it, or it is refused `proxy-max-grant-above-kind`: before a deployment adds a `max_grant` to a kind, it gives each secret of that kind such a tag (`agent-secrets secret retag NAME --max-grant <duration>`). |
 | `broker: profiles applied served=<count> refused=<count> file_digest=<SHA-256 of the file>` | At INFO, once for each broker process, at its first load: how many of the profiles file's entries the broker serves and how many it refuses, each refused one beside it as an `agent secret policy refused` line named `profile:<NAME>`, and the SHA-256 of the file it read (empty when `BROKER_PROFILES_FILE` names none). A pod that wrote it read its profiles; one that did not has not loaded its policy. |
 | `broker: answered the github_app field of an earlier agent-secrets at=<request or release> name=<stored secret> profile=<profile served> request=… state=… grant=… enrollment=… kind=… person=… service=… owner=… repositories=[…] read_only=<true or false>` | At INFO, once for each request and each release that answered the `github_app` field of an `agent-secrets` of a release before `--target` ([Earlier clients' github_app field](#earlier-clients-github_app-field)). A release line names the grant and no request or state. When none has been written for long enough that no released client still runs, set `BROKER_GITHUB_APP_FIELD=off`. |
 | `agent secret policy no longer refused name=<secret's name in the store> reason=<the reason it had> owner=<owner tag> now=<servable, pending or absent>` | At INFO, when a secret the broker refused is refused no longer: `now=servable` when the broker serves it, `now=pending` when it is a new secret of that name waiting for its value (the line below), and `now=absent` when the store no longer holds it (deleted, or scheduled for deletion). |
@@ -2172,12 +2237,35 @@ A refusal of the airlock's proxy port has more fields:
 The proxy port's `method`, `path`, `host`, `reason` and `correlation_id` are the command's own
 text, and each has a placeholder in it written as `[placeholder]` (below).
 
-A refused call to a bound host writes this line in place of its call line,
-`airlock proxy: a call to a bound host`, so each such call still writes one line
+A call the proxy carried, or could not carry, writes `airlock proxy: a call to a bound host` at
+INFO, with `answer_id`, `enrollment`, `grant`, `secret`, `issue`, `host`, `method`, `path`
+(without its query), `status` and `allowed`; `slot` where the secret has more than one value;
+`way`, how its credential went in or would have (`swap`, `mint`, `sign`, `exchange` or `dpop`),
+for each call the proxy chose a name for; and `reason` for a call that was not carried. A refused
+call to a bound host writes its refusal line in place of that call line, so each such call still
+writes one line
 ([Run the broker locally](/legion/broker/guides/run-locally/#reach-a-secret-behind-the-airlock)
 shows both). A `429` that the Azure token endpoint answers and the proxy forwards is no refusal:
 it keeps its call line at INFO, which names its answer id and its status, and writes no refusal
 line.
+
+Each credential the broker mints for a grant writes `broker: a token was minted for a call` at
+INFO: each token a minter makes on a release, one for each slot of its value (so one for each
+account of a GitHub App's installations), and each access token the proxy gets at an exchange.
+Its fields are `enrollment`, `grant`, `secret`, `way` (`mint` or `exchange`), `type` (the
+secret's type), `slot`, and, where the broker knows them, `app` (the GitHub App's id), `account`
+(the GitHub account of the slot, or the service account the token was minted as), `repositories`
+and `permissions` (what the GitHub mint asked for), and `sha256`, the hex SHA-256 of the
+credential. No field holds the credential or any part of it: a scan compares the hash against a
+token found somewhere, to tell which grant's mint it came from. A session's own release of a
+minted name writes the line too, since it mints to learn the name's slots, so one grant can write
+one line at its release and one when the proxy mints for its first call.
+
+A profile whose `proxy` string names the kind its source's `proxy` tag names too writes
+`profile's proxy string names its source's proxy kind; drop the string` at WARN, with `profile`,
+`source` and `kind`, once at each full policy load and never at a reread. The profile is served
+behind that kind; the line stays until the profiles file drops the string, which then changes
+nothing a grant was decided under.
 
 Beside those, the proxy writes one line for each socket it opens for a tunnel or a plain-HTTP
 request and one for each dial it does not make, which is the whole of what the broker records
@@ -2259,9 +2347,13 @@ writes again each string whose decoded text holds a placeholder, with each place
 by `[placeholder]`, and leaves every other byte as the handler wrote it. A placeholder is
 `agent-secrets-placeholder-`, in any case, and the letters and digits after it, at most the 32
 the broker mints and up to where another placeholder starts, so two placeholders written
-together are two. A line of one JSON object that holds no `\u` escape, no byte past ASCII and no
-`agent-secrets-placeholder-` in any ASCII case cannot hold a placeholder, and is handed on as it
-came: every other escape JSON has decodes to a character no placeholder holds. So a value is
+together are two; or a kind's own `placeholder_prefix` and the 32 letters and digits after it,
+where the character before the prefix is no ASCII letter or digit, so a word such as `html-`
+that only holds a prefix like `tml-` is not one. The broker reads every kind's prefix at boot. A
+line of one JSON object that holds no `\u` escape, no byte past ASCII and no
+`agent-secrets-placeholder-` and no kind's `placeholder_prefix` in any ASCII case cannot hold a
+placeholder, and is handed on as it came: every other escape JSON has decodes to a character no
+placeholder holds. So a value is
 masked in the one form the line holds it, and a name a command chose
 changes no other field of its line, whatever bytes it holds. That holds for every line the
 broker writes through slog or Go's `log`
@@ -2850,7 +2942,10 @@ A decision the model judge made names `judge:<model id>` in the event's `actor` 
 request's `decided_by`, with no login beside it, and writes one `request.judged` row of its own.
 That row is there for every judge run that reached a verdict, the hand-overs to a person and the
 failed checks included, so it is where a request the judge did not take says why
-([Concepts](/legion/broker/concepts/#the-model-judge)):
+([Concepts](/legion/broker/concepts/#the-model-judge)). Its `verdict` is what became of the
+request (`granted`, `refused`, `handed to the person`, `not pending` or `unknown`), and its `calls`
+say what each judge key's model call did (`granted`, `denied`, or `failed` with its error), so a
+model that timed out reads `failed` beside a request handed to its person, never a deny:
 
 ```sql
 select at, actor, request_id, detail

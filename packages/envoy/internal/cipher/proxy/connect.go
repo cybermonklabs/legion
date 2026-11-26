@@ -32,7 +32,7 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 		target = net.JoinHostPort(target, "443")
 	}
 	// The authority, with its host ASCII lower-cased: it is the URL and the Host header of
-	// every request this connection carries, and the one string the entry's hosts and the
+	// every request this connection carries, and the one string a kind's hosts and the
 	// request's own Host header are compared against. The reason quotes it lowercased too, as
 	// every line names a host the command wrote: a command may write anything here, its own
 	// placeholder among it.
@@ -71,9 +71,9 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	// reaches that service exactly as it reaches every host the rules say nothing about. A minted
 	// capability's grant is the one exception, refused above (mintedHostOnly). The
 	// port is in it because every name the decision compares - the CONNECT host, the TLS name
-	// and the Host header - carries no port, so 443 is the only port an entry's hosts speak
+	// and the Host header - carries no port, so 443 is the only port a kind's hosts speak
 	// about and another port of one name is another service.
-	bound, err := s.sessionBinds(r.Context(), grant, host, connectPort)
+	bound, err := s.sessionBinds(r.Context(), s.grants.AirlockRules(), grant, host, connectPort)
 	if err != nil {
 		s.refuseRead(w, r, call{grant: grant, host: host}, "enrollment", err)
 		return
@@ -130,7 +130,7 @@ func portNumber(port string) (uint16, bool) {
 // blocks nothing it does not bind. It is answered before anything is resolved or dialled, with
 // codeMintedHostOnly and the rule's words.
 func (s *Server) mintedHostOnly(w http.ResponseWriter, r *http.Request, grant requests.AirlockConnection, host string, port uint16) bool {
-	if !grant.Minted || len(s.candidates(grant, host, port)) > 0 {
+	if !grant.Minted || len(candidates(s.grants.AirlockRules(), grant, host, port)) > 0 {
 		return false
 	}
 	s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codeMintedHostOnly,

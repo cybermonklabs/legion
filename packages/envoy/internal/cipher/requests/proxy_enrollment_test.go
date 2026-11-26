@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
 // TestProxyGrantsOfEnrollmentAnswersEveryLiveGrantOfTheEnrollment: the proxy reads the live grants
@@ -25,7 +24,7 @@ import (
 // withheld are not answered, and an enrollment with no grant, or a read naming no name, answers
 // none.
 func TestProxyGrantsOfEnrollmentAnswersEveryLiveGrantOfTheEnrollment(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", ""), rule("SECOND_TOKEN", "")}})
+	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", ""), rule("SECOND_TOKEN", "")))
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	_, first := grantOf(t, m, enr, key, "read the first for ACME-7", "AUTO_TOKEN")
 	_, second := grantOf(t, m, enr, key, "read the second", "SECOND_TOKEN")
@@ -109,7 +108,7 @@ func TestProxyGrantsOfEnrollmentAnswersEveryLiveGrantOfTheEnrollment(t *testing.
 // in answered 503. The control: a read whose names include TEAM_TOKEN still fails closed,
 // ErrProjectAccessUnavailable, and once Dispatch answers it answers both grants.
 func TestAGrantHoldingNoBoundNameIsNotCheckedWhileDispatchIsDown(t *testing.T) {
-	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", ""), rule("TEAM_TOKEN", "")}}, publicTeam)
+	m, enr, key, _ := newProjectFixture(t, bound(rule("AUTO_TOKEN", ""), rule("TEAM_TOKEN", "")), publicTeam)
 	_, untagged := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 	_, tagged := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
 	for _, grantID := range []string{untagged, tagged} {
@@ -140,7 +139,7 @@ func TestAGrantHoldingNoBoundNameIsNotCheckedWhileDispatchIsDown(t *testing.T) {
 // each grant's own placeholder would end it. The control: the same read while Dispatch calls the
 // person a full member answers both grants and ends neither.
 func TestARestrictedMembersEnrollmentGrantsAreEndedNotAnswered(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", ""), rule("SECOND_TOKEN", "")}})
+	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", ""), rule("SECOND_TOKEN", "")))
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	_, first := grantOf(t, m, enr, key, "read the first", "AUTO_TOKEN")
 	_, second := grantOf(t, m, enr, key, "read the second", "SECOND_TOKEN")
@@ -184,7 +183,7 @@ func TestARestrictedMembersEnrollmentGrantsAreEndedNotAnswered(t *testing.T) {
 // healthy grant out as well. The controls: before the tag, and with the tag while TEAM is public,
 // the same read answers both grants and ends neither.
 func TestAGrantTheProjectRuleEndsIsLeftOutBesideAHealthyGrant(t *testing.T) {
-	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", ""), rule("SECOND_TOKEN", "")}}, publicTeam)
+	m, enr, key, _ := newProjectFixture(t, bound(rule("AUTO_TOKEN", ""), rule("SECOND_TOKEN", "")), publicTeam)
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	both := []string{"AUTO_TOKEN", "SECOND_TOKEN"}
 	nameOf := map[string]string{}
@@ -225,7 +224,7 @@ func TestAGrantTheProjectRuleEndsIsLeftOutBesideAHealthyGrant(t *testing.T) {
 // sweep deletes its rows; a placeholder the broker never minted names none, and so does an ended
 // grant's once its rows are gone.
 func TestProxyPlaceholderGrantNamesTheGrantOfAPlaceholderLiveOrEnded(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "")))
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 	if err != nil {
@@ -257,7 +256,7 @@ func TestProxyPlaceholderGrantNamesTheGrantOfAPlaceholderLiveOrEnded(t *testing.
 // under another entry digest than this broker's, nor a minted placeholder of a kind this broker
 // does not serve.
 func TestProxyPlaceholderGrantNamesAMintedGrantWhileItLives(t *testing.T) {
-	m, _, _, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+	m, _, _, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "")))
 	grants := &memoryGrants{}
 	withMintedKind(m, grants, &mintedTokens{})
 	live, grant := grants.grant(t, testEntryDigest, time.Now().Add(time.Hour))

@@ -70,7 +70,7 @@ const (
 	codePlaceholderLeft = "PLACEHOLDER_NOT_SWAPPED"
 	// serveBound: a request proxyrules.Decide refuses, in its own words.
 	codeNotAllowed = "REQUEST_NOT_ALLOWED"
-	// serveBound: a request to a host whose entry is of kind dpop that does not carry the grant's
+	// serveBound: a request to a host a dpop block binds that does not carry the grant's
 	// placeholder as its one Authorization header, DPoP <placeholder>.
 	codeNoPlaceholder = "NO_PLACEHOLDER"
 	// serveBound: an AWS call the airlock will not sign again (signAWS).
