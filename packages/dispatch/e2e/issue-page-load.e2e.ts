@@ -9,13 +9,14 @@ import type { BrowserContext } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import type { Preset } from "../web/src/features/issue-page/page-words";
-import { getIssueDecisions, listIssueAsks } from "./api";
+import { listIssueAsks } from "./api";
 import {
   ACT_MS,
   AFTER_LOAD_TITLE,
   actAddress,
   actRowTitle,
   afterLoadOrder,
+  answeredQuestion,
   boundWord,
   FIRST_SCREEN_MS,
   fiveLoads,
@@ -35,15 +36,14 @@ import {
   outlineRowSelector,
   outlineRows,
   printReading,
-  questionAndDecision,
   test,
 } from "./issue-page-load";
 import { WAITING_QUESTION } from "./issue-page-t-scale";
 import { owedUnless } from "./issue-page-t-tree";
 import { typefaceAddress } from "./issue-page-typeface";
 import {
+  ANSWER_GROUP,
   actReading,
-  BESIDE_GROUP,
   boxesMoved,
   firstScreenOf,
   firstScreenPaint,
@@ -80,16 +80,17 @@ import { expect } from "./test";
  *   header, nor the header's band, nor a row in the viewport changes its box after its first
  *   drawing, but in a frame of the typeface's swap. Dashboard, Threads and Documents are owed
  *   until their parts add them to the view row's list.
- * - Row 2 (R3): three named loads, each named in a line before its bounds. In each, every row the
- *   load names stands in the viewport under the header at the first drawing of the rows and keeps
- *   its place and its size until the load has ended. The first names the
- *   last row Conversation draws as the load ends - a child issue's row on the seed, named at
- *   `?node=` of its key - or, where no address names that row, the last row before it that one
- *   does (`named-row.last-row` or `named-row.last-addressed-row`). The second names an answered
- *   question of the seed's spec by its own address, with the decision that settles it
- *   (`from_ask`), and records both (`named-row.question-and-decision`); where the seed holds no
- *   such pair, the row fails and says so. The third names the ask the root's first focus names
- *   (`named-row.first-focus`).
+ * - Row 2 (R3): three named loads, each named in a line before its bounds. In each, every part
+ *   the load names stands in the viewport under the header at the first drawing of the rows and
+ *   keeps its place and its size until the load has ended. The first names the last row
+ *   Conversation draws as the load ends - a child issue's row on the seed, named at `?node=` of
+ *   its key - or, where no address names that row, the last row before it that one does
+ *   (`named-row.last-row` or `named-row.last-addressed-row`). The second names an answered
+ *   question of the seed's spec by its own address, and records the question's row and its
+ *   answer, which the page draws as the person's decision (root R4; no separate decision is made
+ *   from an answer, decision 534) (`named-row.answered-question`); where the seed holds no
+ *   answered question in its spec, the row fails and says so. The third names the ask the root's
+ *   first focus names (`named-row.first-focus`).
  * - Row 3 (R3): with the typeface's file answered 3 s late, the layout shift is at most 0.1.
  * - Row 4 (R2): each act of the width, made at the first moment it can be made, shows its result
  *   within 200 ms, as `holdAct` reads an act that needs a read; no Event Timing entry and no task
@@ -538,51 +539,46 @@ test("a load draws the named row in the viewport at once and keeps it there", as
       ended
     )
   );
-  // An answered question of the seed's spec and the decision its answer made, named by the
-  // question's own address so both stand in the viewport: the case part N's implementer measured
-  // on N's base (Job `e2e-rows-wbfwg`), where the asks read answered first, and the page drew the
-  // question whole and folded it under its decision about a second later.
-  const [asks, decisions] = await Promise.all([
-    listIssueAsks(seeded.key),
-    getIssueDecisions(seeded.key),
-  ]);
-  const found = questionAndDecision(
+  // An answered question of the seed's spec, named by its own address so the question and its
+  // answer - the person's decision (root R4, decision 534) - both stand in the viewport: the case
+  // part N's implementer measured on N's base (Job `e2e-rows-wbfwg`), where the asks read answered
+  // first, and the page drew the question whole and folded it about a second later.
+  const question = answeredQuestion(
     seeded.key,
     seeded.specArtifactId,
-    asks,
-    decisions.decisions ?? []
+    await listIssueAsks(seeded.key)
   );
-  if ("missing" in found) {
-    printReading(`named-row.question-and-decision rate=${rate} none: ${found.missing}`);
+  if (question === null) {
+    printReading(`named-row.answered-question rate=${rate} none`);
     expect
       .soft(
-        found.missing,
-        "Row 2's third load has no question and decision to name: the seed's gap goes to " +
-          "INFRA-1196's architect"
+        question,
+        "Row 2's third load has no question to name: the seed holds no answered question " +
+          "written in its spec"
       )
-      .toBeUndefined();
+      .not.toBeNull();
   } else {
     printReading(
-      `named-row.question-and-decision rate=${rate} rows=${found.pair.named} ` +
-        `address=${found.pair.address}`
+      `named-row.answered-question rate=${rate} row=${question.named} ` +
+        `address=${question.address}`
     );
     holdNamedRow(
-      "named-row.question-and-decision",
+      "named-row.answered-question",
       rate,
       await fiveLoads(
         browser,
         rate,
         {
-          address: found.pair.address,
-          beside: { selector: found.pair.decision, text: null },
+          address: question.address,
+          answer: { selector: question.answer, text: null },
           boxes: "named",
-          named: { selector: found.pair.question, text: null },
+          named: { selector: question.question, text: null },
         },
         ended
       ),
       [
         { group: NAMED_GROUP, name: "the question" },
-        { group: BESIDE_GROUP, name: "its decision" },
+        { group: ANSWER_GROUP, name: "its answer" },
       ]
     );
   }

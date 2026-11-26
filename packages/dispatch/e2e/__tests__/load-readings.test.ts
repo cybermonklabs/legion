@@ -11,19 +11,20 @@ import { readFileSync } from "node:fs";
 import { errors, type Page } from "@playwright/test";
 
 import {
+  answeredQuestion,
   HEADER_SELECTORS,
   LOAD_ACTS,
   LOAD_ROW_SELECTOR,
   makeSteps,
   namedRow,
-  questionAndDecision,
   rowAddress,
   VIEW_ROW_SELECTOR,
 } from "../issue-page-load";
+import { TYPEFACE } from "../issue-page-typeface";
 import {
+  ANSWER_GROUP,
   actBounds,
   actReading,
-  BESIDE_GROUP,
   BOX_GROUPS,
   type BoxEntry,
   boundHolds,
@@ -35,6 +36,7 @@ import {
   groupsUndrawn,
   instrumentPage,
   type LoadCapture,
+  type LoadRecord,
   largestContentfulPaint,
   layoutShift,
   loadEnd,
@@ -53,7 +55,8 @@ import {
 } from "../load-instruments";
 
 /** A frame stamped `time` by `requestAnimationFrame`, read at `at` in its callback and shown 10 ms
- *  after its start, with the header's foot at 120 px of a 900 px viewport. */
+ *  after its start, with the header's foot at 120 px of a 900 px viewport and no face of the
+ *  typeface loaded. */
 function frame(time: number, marks: Partial<FrameEntry> = {}): FrameEntry {
   return {
     at: time + 1,
@@ -62,6 +65,7 @@ function frame(time: number, marks: Partial<FrameEntry> = {}): FrameEntry {
     rows: false,
     shown: time + 10,
     time,
+    typeface: 0,
     viewRow: false,
     ...marks,
   };
@@ -253,37 +257,38 @@ test("the first screen is painted at the latest paint of its rows, and a row wit
   expect(firstScreenPaint([])).toEqual({ reading: null, unpainted: [] });
 });
 
-test("a change of a box in a frame where the typeface's loadingdone fired is the swap; any other change is a move naming the element and its box before and after", () => {
-  const frames = [frame(16), frame(33), frame(50), frame(66), frame(83), frame(100)];
+test("a change of a box in the frame whose callback first counts a face of the typeface loaded, in the frame after it, or in a frame next to a loadingdone, is the swap; any other change is a move naming the element and its box before and after", () => {
+  // A face of the typeface turned loaded before frame 2's callback.
+  const frames = [16, 33, 50, 66, 83, 100, 116, 133].map((time, index) =>
+    frame(time, { typeface: index >= 2 ? 1 : 0 })
+  );
   const spec = { group: "view row's controls", id: 1, label: "Spec" };
   const row = { group: "rows in the viewport", id: 2, label: "comment c-1" };
   const box = (y: number) => ({ height: 20, width: 80, x: 10, y });
   const boxes: BoxEntry[] = [
     { ...spec, box: box(100), frame: 0 },
     { ...row, box: box(300), frame: 1 },
-    // The typeface's face loaded between frame 1 and frame 3, so frame 2's change is its swap.
+    // Frame 2 counts the face loaded, with no loadingdone near it: its change, and frame 3's,
+    // where the page laid the text out in the face only at its next layout, are the swap.
     { ...spec, box: box(101), frame: 2 },
-    // Frame 4 is two frames past that loadingdone: both of its changes are moves, each named
-    // with the read that answered since frame 3.
+    { ...row, box: box(320), frame: 3 },
+    // Frame 4 is neither: both of its changes are moves, each named with the read that answered
+    // since frame 3.
     { ...row, box: box(340), frame: 4 },
     { ...spec, box: box(130), frame: 4 },
+    // A loadingdone came at 110, after frame 5's callback and by frame 6's: a relayout in frame 6,
+    // the frame after the event, is the swap too.
+    { ...row, box: box(341), frame: 6 },
     // After the load has ended a box may move: the reader reads up to the end it is given.
-    { ...spec, box: box(150), frame: 5 },
+    { ...spec, box: box(150), frame: 7 },
   ];
-  const moves = boxesMoved(
-    {
-      boxes,
-      fontsDone: [45],
-      frames,
-      resource: [read("/api/v1/issues/LAY-1/tree?view=spec", 60, 70)],
-    },
-    90
-  );
+  const resource = [read("/api/v1/issues/LAY-1/tree?view=spec", 60, 70)];
+  const moves = boxesMoved({ boxes, fontsDone: [110], frames, resource }, 120);
   expect(moves).toEqual([
     {
       after: box(340),
       at: 84,
-      before: box(300),
+      before: box(320),
       frame: 4,
       group: "rows in the viewport",
       label: "comment c-1",
@@ -299,10 +304,14 @@ test("a change of a box in a frame where the typeface's loadingdone fired is the
       reads: ["/api/v1/issues/LAY-1/tree?view=spec"],
     },
   ]);
-  // With no loadingdone at all, frame 2's change is a move too.
-  expect(
-    boxesMoved({ boxes, fontsDone: [], frames, resource: [] }, 90).map((move) => move.frame)
-  ).toEqual([2, 4, 4]);
+  const unloaded = frames.map((each) => ({ ...each, typeface: 0 }));
+  const movedFrames = (record: Pick<LoadRecord, "fontsDone" | "frames">) =>
+    boxesMoved({ ...record, boxes, resource }, 120).map((move) => move.frame);
+  // Each mark alone: the face count holds frames 2 and 3, the loadingdone frame 6.
+  expect(movedFrames({ fontsDone: [], frames })).toEqual([4, 4, 6]);
+  expect(movedFrames({ fontsDone: [110], frames: unloaded })).toEqual([2, 3, 4, 4]);
+  // With neither, every change up to the end is a move.
+  expect(movedFrames({ fontsDone: [], frames: unloaded })).toEqual([2, 3, 4, 4, 6]);
 });
 
 test("an act reads from its event's timeStamp to the stamp of the frame that shows its result, taken after that frame's rendering, not to the frame's start", () => {
@@ -554,7 +563,7 @@ class QueuedObserver {
 
 /** The init script's config, as `installInstruments` gives it from the load rows' selectors. */
 const PAGE_CONFIG: PageConfig = {
-  besideGroup: BESIDE_GROUP,
+  answerGroup: ANSWER_GROUP,
   boxes: "none",
   groups: BOX_GROUPS,
   header: HEADER_SELECTORS,
@@ -562,6 +571,7 @@ const PAGE_CONFIG: PageConfig = {
   namedGroup: NAMED_GROUP,
   rows: LOAD_ROW_SELECTOR,
   rowsGroup: ROWS_GROUP,
+  typeface: TYPEFACE,
   viewRow: BOX_GROUPS["view row's controls"].join(", "),
   viewRows: VIEW_ROW_SELECTOR,
 };
@@ -729,13 +739,15 @@ function standInElement(
 /**
  * A stand-in of a browser that draws `drawn` (topmost first) in a viewport `height` px tall,
  * answers each selector of `selected` with its elements, and does `press` with what a press at
- * its point reaches, the page hearing its pointerdown whatever it reached. The page's frames run
- * each time the stand-in of Playwright waits on the page, and the messages a frame posts are
+ * its point reaches, the page hearing its pointerdown whatever it reached. Its font set holds
+ * `faces`, none unless given, and `loadingDone` dispatches its `loadingdone`. The page's frames
+ * run each time the stand-in of Playwright waits on the page, and the messages a frame posts are
  * delivered once its callbacks have run. Answers the globals the init script runs against
  * (`withStandIns`), the stand-in of Playwright's page and the name of what each press reached.
  */
 function standInBrowser(world: {
   readonly drawn: () => readonly StandInElement[];
+  readonly faces?: () => readonly { readonly family: string; readonly status: string }[];
   readonly height: number;
   readonly press: (hit: StandInElement | null) => void;
   readonly selected: Record<string, () => readonly StandInElement[]>;
@@ -757,6 +769,7 @@ function standInBrowser(world: {
     for (const index of messages.splice(0)) port.onmessage?.({ data: index });
   };
   const listeners = new Map<string, ((event: unknown) => void)[]>();
+  const fontListeners: (() => void)[] = [];
   const pressed: string[] = [];
   const playwright = {
     keyboard: { press: async () => {} },
@@ -786,7 +799,14 @@ function standInBrowser(world: {
     },
     document: {
       elementFromPoint,
-      fonts: { addEventListener: () => {} },
+      fonts: {
+        addEventListener: (type: string, listener: () => void) => {
+          if (type === "loadingdone") fontListeners.push(listener);
+        },
+        forEach: (each: (face: { readonly family: string; readonly status: string }) => void) => {
+          for (const face of world.faces?.() ?? []) each(face);
+        },
+      },
       querySelector: (selector: string) => world.selected[selector]?.()[0] ?? null,
       querySelectorAll: (selector: string) => world.selected[selector]?.() ?? [],
     },
@@ -798,7 +818,10 @@ function standInBrowser(world: {
       innerHeight: world.height,
     },
   };
-  return { elementFromPoint, globals, page: playwright as unknown as Page, pressed };
+  const loadingDone = () => {
+    for (const listener of fontListeners) listener();
+  };
+  return { elementFromPoint, globals, loadingDone, page: playwright as unknown as Page, pressed };
 }
 
 // Row 5 of builds Job `e2e-rows-7pffd`, at 1440 px, made a fold, an unfold, `j` and `k`, and then
@@ -959,7 +982,7 @@ test("Row 2 names the last row Conversation draws by its own address, a child is
   expect(() => namedRow("LAY-1", [foreign])).toThrow(/no address names any of the 1 rows/);
 });
 
-test("Row 2's third load names the first answered question of the spec that a decision settles, by the question's own address, with both rows", () => {
+test("Row 2's third load names the first answered question written in the spec, by its own address, with its row and its answer", () => {
   const spec = "artifact-spec";
   const ask = (
     id: string,
@@ -980,50 +1003,46 @@ test("Row 2's third load names the first answered question of the spec that a de
     ask("ask-q2", "q2", "answered"),
     ask("ask-q3", "q3", "answered"),
   ];
-  const decisions = [
-    // A person's answer is a decision of the read too, whose `asks` is the ask itself.
-    { asks: ["ask-q2"], block_id: "q2", kind: "person" },
-    { asks: ["ask-open"], block_id: "d1", kind: "agent" },
-    { asks: null, block_id: "d2", kind: "agent" },
-    { asks: ["ask-q3"], block_id: "d5", kind: "agent" },
-  ];
-  expect(questionAndDecision("LAY-1", spec, asks, decisions)).toEqual({
-    pair: {
-      address: "/issues/LAY-1/asks/ask-q3",
-      decision:
-        '[data-issue-body] [data-node-row][data-node-type="decision"][data-node-id$="#b-d5"]',
-      named: "question ask-q3 (block q3) and decision d5",
-      question: '[data-issue-body] [data-node-row][data-node-type="ask"][data-node-id$="#b-q3"]',
-    },
+  const row = '[data-issue-body] [data-node-row][data-node-type="ask"][data-node-id$="#b-q2"]';
+  expect(answeredQuestion("LAY-1", spec, asks)).toEqual({
+    address: "/issues/LAY-1/asks/ask-q2",
+    answer: `${row} [data-node-answer]`,
+    named: "question ask-q2 (block q2)",
+    question: row,
   });
-  // The seed's shape: answered questions, and decisions that settle none of them.
-  expect(questionAndDecision("LAY-1", spec, asks, decisions.slice(0, 3))).toEqual({
-    missing:
-      "the seed holds no answered question of its spec with the decision that settles it: 2 " +
-      "answered questions of the spec, and 1 decisions that settle a question (`from_ask`), " +
-      "none of them one of those",
-  });
+  // A seed with no answered question in its spec gives none, and the row fails saying so.
+  expect(answeredQuestion("LAY-1", spec, asks.slice(0, 3))).toBeNull();
 });
 
-test("a load that names a row beside the named one records both, and a change of the place or the size of either is a move", async () => {
+test("a load that names an answered question records its row and its answer, and a change of the place or the size of either is a move", async () => {
+  let choices = false;
   let folded = false;
-  // Folded under its decision, the question is drawn short below it, and the decision, drawn above
-  // it, moves down to where the question stood.
-  const question = standInElement("the question", () => boxAt(0, 300, 1000, folded ? 24 : 180), {
-    attributes: { "data-node-id": "spec#b-q3", "data-node-type": "ask" },
-  });
-  const decision = standInElement("its decision", () => boxAt(0, folded ? 276 : 200, 1000, 96), {
-    attributes: { "data-node-id": "spec#b-d5", "data-node-type": "decision" },
-  });
+  // The question's row, and its answer drawn inside it: the answer's chosen options drawn a
+  // moment late lengthen both, and the fold N's base made a second on (control 11 of
+  // `c-load-1440`) draws the question one line high and its answer not at all, as a removed
+  // element's box reads.
+  const question = standInElement(
+    "the question",
+    () => boxAt(0, 300, 1000, folded ? 24 : choices ? 200 : 180),
+    { attributes: { "data-node-id": "spec#b-q3", "data-node-type": "ask" } }
+  );
+  const answer = standInElement(
+    "its answer",
+    () => (folded ? boxAt(0, 0, 0, 0) : boxAt(0, 380, 1000, choices ? 110 : 90)),
+    { around: () => question }
+  );
   const browser = standInBrowser({
-    drawn: () => [decision, question],
+    drawn: () => [answer, question],
     height: 900,
     press: () => {},
-    selected: { "[data-ask]": () => [question], "[data-decision]": () => [decision] },
+    selected: {
+      "[data-ask]": () => [question],
+      "[data-ask] [data-node-answer]": () => (folded ? [] : [answer]),
+    },
   });
   const config: PageConfig = {
     ...PAGE_CONFIG,
-    beside: { selector: "[data-decision]", text: null },
+    answer: { selector: "[data-ask] [data-node-answer]", text: null },
     boxes: "named",
     named: { selector: "[data-ask]", text: null },
   };
@@ -1036,43 +1055,133 @@ test("a load that names a row beside the named one records both, and a change of
     browser.globals,
     async (instruments) => {
       await frames(3);
-      // The page folds the answered question under its decision, as N's base did a second on.
-      folded = true;
+      choices = true;
       await frames(6);
+      folded = true;
+      await frames(9);
       const record = instruments.record();
+      // The answer is part of the question's row, and named by it.
       expect(record.boxes.map((entry) => [entry.group, entry.label])).toEqual([
         [NAMED_GROUP, "ask spec#b-q3"],
-        [BESIDE_GROUP, "decision spec#b-d5"],
+        [ANSWER_GROUP, "ask spec#b-q3"],
         [NAMED_GROUP, "ask spec#b-q3"],
-        [BESIDE_GROUP, "decision spec#b-d5"],
+        [ANSWER_GROUP, "ask spec#b-q3"],
+        [NAMED_GROUP, "ask spec#b-q3"],
       ]);
-      expect(namedRowAt(record, 0, BESIDE_GROUP)).toEqual({
-        height: 96,
+      expect(namedRowAt(record, 0, ANSWER_GROUP)).toEqual({
+        height: 90,
         width: 1000,
         x: 0,
-        y: 200,
+        y: 380,
       });
       expect(
         boxesMoved(record, Number.POSITIVE_INFINITY).map((move) => [
-          move.label,
+          move.group,
           move.before,
           move.after,
         ])
       ).toEqual([
         [
-          "ask spec#b-q3",
+          NAMED_GROUP,
           { height: 180, width: 1000, x: 0, y: 300 },
-          { height: 24, width: 1000, x: 0, y: 300 },
+          { height: 200, width: 1000, x: 0, y: 300 },
         ],
         [
-          "decision spec#b-d5",
-          { height: 96, width: 1000, x: 0, y: 200 },
-          { height: 96, width: 1000, x: 0, y: 276 },
+          ANSWER_GROUP,
+          { height: 90, width: 1000, x: 0, y: 380 },
+          { height: 110, width: 1000, x: 0, y: 380 },
+        ],
+        // The fold: Row 2's third load fails on the question's box.
+        [
+          NAMED_GROUP,
+          { height: 200, width: 1000, x: 0, y: 300 },
+          { height: 24, width: 1000, x: 0, y: 300 },
         ],
       ]);
     },
     config
   );
+});
+
+/** Loads a stand-in page whose view row control "Spec" widens as the page lays its text out in
+ *  the typeface and whose row moves 30 px down a while after: the face of the typeface counts
+ *  loaded from frame `loaded` on, the control is drawn wide from frame `relayout` on, a
+ *  `loadingdone` is dispatched after frame `done`'s callback, and the row moves at frame 8.
+ *  Answers each frame's face count and the frame of each move. */
+async function swapLoad(marks: {
+  readonly done: number;
+  readonly loaded: number;
+  readonly relayout: number;
+}): Promise<{ readonly moved: number[]; readonly typeface: number[] }> {
+  let frame = 0;
+  const spec = standInElement("Spec", () => boxAt(208, 97, frame >= marks.relayout ? 47 : 46, 33), {
+    words: "Spec",
+  });
+  const row = standInElement("a row", () => boxAt(378, frame >= 8 ? 840 : 810, 1000, 150), {
+    attributes: { "data-node-id": "spec#b-c29", "data-node-type": "check" },
+  });
+  const browser = standInBrowser({
+    drawn: () => [spec, row],
+    // Chromium names a family as its rule wrote it, quoted or not; another family's face counts
+    // for nothing.
+    faces: () => [
+      { family: "Other", status: "loaded" },
+      { family: `"${TYPEFACE}"`, status: frame >= marks.loaded ? "loaded" : "loading" },
+    ],
+    height: 900,
+    press: () => {},
+    selected: { "[data-control]": () => [spec], "[data-row]": () => [row] },
+  });
+  let result: { readonly moved: number[]; readonly typeface: number[] } | null = null;
+  await withStandIns(
+    browser.globals,
+    async (instruments) => {
+      // Frame `frame` is the next the page runs: each wait runs one frame.
+      for (; frame < 11; frame += 1) {
+        await browser.page.waitForFunction(
+          (at) => (window.__loadInstruments?.record().frames.length ?? 0) > at,
+          frame
+        );
+        if (frame === marks.done) browser.loadingDone();
+      }
+      const record = instruments.record();
+      result = {
+        moved: boxesMoved(record, Number.POSITIVE_INFINITY).map((move) => move.frame),
+        typeface: record.frames.map((each) => each.typeface),
+      };
+    },
+    {
+      ...PAGE_CONFIG,
+      boxes: "all",
+      groups: { "view row's controls": ["[data-control]"] },
+      rows: "[data-row]",
+    }
+  );
+  if (result === null) throw new Error("the stand-in load read no record");
+  return result;
+}
+
+// CI run 45850876213 at da175e7a, `chromium-load`: in Row 1 of each view every text control of
+// the view row and the header widened by a few px in one frame with no read answered since the
+// frame before (`Conversation` from 104x33 to 108x33 at 1100 ms), and every control after it slid
+// right: the page laying its text out in the typeface, which the box reader took for moves since
+// no `loadingdone` came next to that frame.
+test("the frame whose callback first counts the typeface's face loaded, and the frame after it, are its swap though loadingdone comes two frames later, and a relayout in the frame after a loadingdone is the swap too; any other change is a move", async () => {
+  // The face turns loaded before frame 3's callback and frame 3 lays the text out in it; the
+  // event comes after frame 5's.
+  expect(await swapLoad({ done: 5, loaded: 3, relayout: 3 })).toEqual({
+    moved: [8],
+    typeface: [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+  });
+  // The face is counted loaded at frame 3 and the text is laid out in it at the next layout, in
+  // frame 4, with no event near.
+  expect((await swapLoad({ done: 9, loaded: 3, relayout: 4 })).moved).toEqual([8]);
+  // The face is counted loaded from frame 1 on, the event comes after frame 3's callback, and the
+  // text is laid out in the face one frame after the event, in frame 4.
+  expect((await swapLoad({ done: 3, loaded: 1, relayout: 4 })).moved).toEqual([8]);
+  // With the face counted loaded from frame 1 on and no event near frame 4, a widening there is a
+  // move like any other.
+  expect((await swapLoad({ done: 9, loaded: 1, relayout: 4 })).moved).toEqual([4, 8]);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -1265,6 +1374,7 @@ test("on each captured load the box recorder drew every group and kept a box onl
       changes.push({ before: before.box, entry });
     }
     // A frame of the swap: a `loadingdone` came after the frame before it and by the frame after.
+    // These captures count no faces of the typeface loaded (below), so that is their one mark.
     const swap = (frame: number) =>
       record.fontsDone.some(
         (done) =>
@@ -1288,6 +1398,30 @@ test("on each captured load the box recorder drew every group and kept a box onl
     boxesMoved({ ...held.record, fontsDone: [] }, held.end).length -
       boxesMoved(held.record, held.end).length
   ).toBeGreaterThan(0);
+  // The captures were taken before each frame counted the typeface's faces loaded
+  // (`FrameEntry.typeface`). In `conversation-1440.json` that misses the swap: frame 36, at
+  // 1,886 ms, laid every text control out wider in the face, 107 ms after its file answered and
+  // 140 ms before the `loadingdone`, which came after frame 37's callback, so those changes read
+  // as moves, as in CI run 45850876213. Counted as the init script counts it now, the face turned
+  // loaded by frame 35's callback or by frame 36's, and either way frame 36's changes are the swap.
+  const wide = captures["conversation-1440"];
+  expect(wide.record.frames.some((frame) => "typeface" in frame)).toBe(false);
+  const movedAt36 = (loaded: number) =>
+    boxesMoved(
+      {
+        ...wide.record,
+        frames: wide.record.frames.map((frame, index) => ({
+          ...frame,
+          typeface: index >= loaded ? 1 : 0,
+        })),
+      },
+      wide.end
+    )
+      .filter((move) => move.frame === 36)
+      .map((move) => move.label);
+  expect(movedAt36(Number.POSITIVE_INFINITY)).toContain("Conversation");
+  expect(movedAt36(35)).toEqual([]);
+  expect(movedAt36(36)).toEqual([]);
 });
 
 test("the press on Spec of the first capture drew its result from what the page held: its view read answered after the callback of the frame that found the result", () => {

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { errors, expect, type Page, type Request } from "@playwright/test";
 import type * as WebVitals from "web-vitals";
+import { TYPEFACE } from "./issue-page-typeface";
 
 /**
  * The instruments of a load of the new issue page, shared by the load rows
@@ -13,14 +14,16 @@ import type * as WebVitals from "web-vitals";
  * `largest-contentful-paint`, `longtask`, `event` (Event Timing, `durationThreshold: 16`) and
  * `resource`; `web-vitals`' `onCLS` with `reportAllChanges: true`, loaded from the installed
  * package's IIFE build; each `loadingdone` of `document.fonts`; and a `requestAnimationFrame` loop
- * that stamps each frame, with the time `requestAnimationFrame` gives it and with the time it was
- * shown (`FrameEntry.shown`), and, where the load asks for it, records the boxes of the view row's
- * controls, the header's controls and band, the rows in the viewport and the row the load names
- * (`BOX_GROUPS`). A box is recorded at the frame it is first drawn in and at each frame it
- * differs, rounded to whole pixels. The same loop watches the act a row armed (`armStep`): the
- * event's `timeStamp` comes from a capturing listener of the first trusted `pointerdown` or
- * `keydown` after the arming, the act's result is looked for in each frame's callback after it,
- * and the act is read to the time the first frame that holds the result was shown.
+ * that stamps each frame, with the time `requestAnimationFrame` gives it, with the time it was
+ * shown (`FrameEntry.shown`) and with how many faces of the typeface the app ships the document's
+ * font set holds loaded (`FrameEntry.typeface`), and, where the load asks for it, records the
+ * boxes of the view row's controls, the header's controls and band, the rows in the viewport and
+ * the row the load names (`BOX_GROUPS`). A box is recorded at the frame it is first drawn in and
+ * at each frame it differs, rounded to whole pixels. The same loop watches the act a row armed
+ * (`armStep`): the event's `timeStamp` comes from a capturing listener of the first trusted
+ * `pointerdown` or `keydown` after the arming, the act's result is looked for in each frame's
+ * callback after it, and the act is read to the time the first frame that holds the result was
+ * shown.
  *
  * **What the readers take**: plain arrays of those entries, in the shapes the observers give
  * them, serialised (`LoadRecord`), so a load's capture (`LoadCapture`) can be read back from a
@@ -116,6 +119,10 @@ export interface FrameEntry {
    *  frame handles before its callbacks has a `timeStamp` after it. It is kept for the first
    *  drawings (`firstDrawing`), which are frames, not acts. */
   readonly time: number;
+  /** How many faces of the typeface the app ships (`TYPEFACE`) the document's font set held
+   *  loaded at the frame's callback: the frame in which it grows and the frame after it are the
+   *  typeface's swap (`boxesMoved`). */
+  readonly typeface: number;
   /** Whether the document holds the view row's controls. */
   readonly viewRow: boolean;
 }
@@ -231,8 +238,9 @@ export const ROWS_GROUP = "rows in the viewport";
 /** The group of the row a load names. */
 export const NAMED_GROUP = "the named row";
 
-/** The group of the row a load names beside the named one (`InstrumentConfig.beside`). */
-export const BESIDE_GROUP = "the row named beside it";
+/** The group of the answer of the row a load names, where it names an answered question
+ *  (`InstrumentConfig.answer`). */
+export const ANSWER_GROUP = "the named row's answer";
 
 /** When the load ended: one second after the later of the end of the last task longer than
  *  50 ms and the end of the last request, or null where a request is in flight or that second
@@ -409,15 +417,26 @@ export interface BoxMove {
   readonly reads: readonly string[];
 }
 
-/** Whether frame `index` laid out the typeface's swap: a `loadingdone` came after the frame
- *  before it and by the frame after it. The event is dispatched after the layout that used the
- *  face, which may be the layout this frame's own recorder made, so a change in the frame just
- *  before the event is the swap as much as one in the frame just after it. */
+/** Whether frame `index` laid out the typeface's swap. A face of the typeface turns loaded in the
+ *  task that takes its file, which marks the page's text for a new layout in that face: the first
+ *  frame whose callback counts more faces loaded than the frame before it (`FrameEntry.typeface`)
+ *  lays the text out in it, or the frame after it where the page's next layout comes after that
+ *  callback, so both frames are the swap. `loadingdone` marks no frame for certain: Chromium may
+ *  dispatch it a frame or more after that layout (in `conversation-1440.json`, 140 ms after the
+ *  frame that laid the face out). A frame is still the swap where a `loadingdone` came after the
+ *  frame before it and by the frame after it, for a relayout in the frame just before the event
+ *  or just after it. */
 function swapFrame(
   frames: readonly FrameEntry[],
   fontsDone: readonly number[],
   index: number
 ): boolean {
+  const grew = (at: number): boolean => {
+    const frame = frames[at];
+    const before = frames[at - 1];
+    return frame !== undefined && before !== undefined && frame.typeface > before.typeface;
+  };
+  if (grew(index) || grew(index - 1)) return true;
   const after = frames[index - 1]?.at ?? Number.NEGATIVE_INFINITY;
   const by = frames[index + 1]?.at ?? Number.POSITIVE_INFINITY;
   return fontsDone.some((time) => time > after && time <= by);
@@ -682,9 +701,10 @@ export interface InstrumentConfig {
   /** The row a load names, by the selector that finds it and words it holds, where it names
    *  one. */
   readonly named: NamedTarget | null;
-  /** A row the load names beside the named one, whose box is recorded with it
-   *  (`BESIDE_GROUP`): the decision of an answered question the load names. */
-  readonly beside?: NamedTarget | null;
+  /** The element that draws the answer of the row the load names, where it names an answered
+   *  question: the person's decision (root R4), drawn inside the question's row. Its box is
+   *  recorded with the row's (`ANSWER_GROUP`). */
+  readonly answer?: NamedTarget | null;
   /** Every row whose first line Element Timing reads: each view's and the children's
    *  section's. */
   readonly rows: string;
@@ -701,10 +721,12 @@ export interface NamedTarget {
 
 /** The config the init script reads: the caller's, with the groups it records. */
 export interface PageConfig extends InstrumentConfig {
-  readonly besideGroup: string;
+  readonly answerGroup: string;
   readonly groups: Readonly<Record<string, readonly string[]>>;
   readonly namedGroup: string;
   readonly rowsGroup: string;
+  /** The family of the typeface the app ships, whose faces each frame counts loaded. */
+  readonly typeface: string;
   /** The view row's controls, whose first frame is the first drawing of the view row. */
   readonly viewRow: string;
 }
@@ -985,10 +1007,13 @@ export function instrumentPage(config: PageConfig): void {
     }
     for (const [wanted, group] of [
       [config.named, config.namedGroup],
-      [config.beside, config.besideGroup],
+      [config.answer, config.answerGroup],
     ] as const) {
-      const row = findNamed(wanted, group);
-      if (row !== null) keep(index, row, group, () => rowLabel(row));
+      const found = findNamed(wanted, group);
+      if (found === null) continue;
+      // An answer is part of its question's row and no row of its own: it is named by that row.
+      const row = found.closest(config.rows) ?? found;
+      keep(index, found, group, () => rowLabel(row));
     }
   };
 
@@ -1096,6 +1121,14 @@ export function instrumentPage(config: PageConfig): void {
   const tick = (time: number) => {
     requestAnimationFrame(tick);
     const at = performance.now();
+    // The script reads the font set in the page itself: a face's status is the page's own as
+    // this frame lays it out, and no Playwright probe of a state still to come.
+    let typeface = 0;
+    document.fonts.forEach((face) => {
+      if (face.status === "loaded" && face.family.replace(/["']/g, "") === config.typeface) {
+        typeface += 1;
+      }
+    });
     const index = frames.length;
     stamps.port2.postMessage(index);
     const top = foot();
@@ -1110,6 +1143,7 @@ export function instrumentPage(config: PageConfig): void {
       rows,
       shown: null,
       time,
+      typeface,
       viewRow,
     });
     if (config.boxes !== "none") recordBoxes(index, top);
@@ -1215,9 +1249,10 @@ export async function installInstruments(page: Page, config: InstrumentConfig): 
   await page.addInitScript(instrumentPage, {
     ...config,
     groups: BOX_GROUPS,
-    besideGroup: BESIDE_GROUP,
+    answerGroup: ANSWER_GROUP,
     namedGroup: NAMED_GROUP,
     rowsGroup: ROWS_GROUP,
+    typeface: TYPEFACE,
     viewRow: BOX_GROUPS["view row's controls"].join(", "),
   } satisfies PageConfig);
 }
