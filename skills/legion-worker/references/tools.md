@@ -17,6 +17,10 @@ go run github.com/nats-io/nats-server/v2@v2.15.1 -js -p 14222 -m 18222 -sd "$TMP
 export LEGION_TEST_NATS_URL=nats://127.0.0.1:14222 LEGION_TEST_NATS_MONITOR_URL=http://127.0.0.1:18222
 ```
 
+## Reading a shared database
+
+Read a database outside your pod through the read-only login whose URL is in the file that `SESSION_READER_DSN_FILE` names. Put no URL on a command line, which any process of the pod can read. Pipe its parts to psql as a service file, with the command in `skill://legion-worker/references/tools-steps.md#reading-a-shared-database`.
+
 ## A tool the image lacks
 
 Run it pinned through a runner the image carries: `uvx --from <package>@<version>`, `bunx --package <name>@<version>`, `go run <module>@<version>`. Never vendor a binary or put an extraction on your own `PATH`. A test harness may keep its own prefix under `$TMPDIR` and export its `PATH` only around its own commands. A tool that no runner reaches is a change of the image: tell your architect.

@@ -4,7 +4,7 @@
 
 Release a child that a person filed under your issue at once, as it is.
 A refused release writes nothing: release the rest again without the child that the refusal names.
-A child that runs in another tree is that tree's architect's, or the controller's.
+A child that runs as a tree of its own stays where it stands. A child that runs in another tree is that tree's architect's: ask it by a mention on its issue.
 
 ## Creating children
 

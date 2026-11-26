@@ -13,9 +13,15 @@ No worker holds `accepting`. Read, against the goal:
 - A head that GitHub reads `CONFLICTING` is accepted as any other ("A conflicting head").
 - A finding ask holds the acceptance: one a worker sent you, or one that `dispatch read` lists under `Open asks:` whose question starts `Finding from ` or `Clear defect from `.
   Follow it (`dispatch follow --ask <id> --action follow`), and publish its reference to the controller topic.
-  Accept only when it is resolved, or when it carries the controller's reply (`Filed dispatch://`, `Handed dispatch://` or `Not filed:`).
+  Accept only when it is resolved, or when it carries the controller's reply (`Filed dispatch://` or `Not filed:`).
   A closed issue hides its open questions from the controller.
 - An `after_merge` check gets its result after the close. It holds no acceptance.
+
+## A merge hold
+
+Before every `sign_off`, read the project's merge holds, `merge-holds-md`. A line that names the pull request's repository, or `all`, and whose end is not past holds the sign-off.
+While one holds, end the turn with a WAITING line that names it. Send the controller no message about a hold: it lifts a hold by deleting its line.
+Read `skill://legion-architect/references/acceptance-steps.md#a-merge-hold` before every `sign_off`: it says how to read the document and a line, and what each wake does.
 
 ## The last round
 

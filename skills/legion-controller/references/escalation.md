@@ -1,10 +1,8 @@
 # Architect escalation
 
-Three matters of an architect are yours: a child that looks independent of its tree, capacity, and a conflict between trees. Send an issue-design question back to its architect with `envoy_publish`. It is not yours to decide.
+Two matters of an architect are yours: a child that looks independent of its tree, and capacity. A conflict between trees is not yours: the architect that finds it writes to the other tree's architect itself. Send an issue-design question back to the architect that sent it, as a Dispatch comment on the owning issue that mentions its role. It is not yours to decide.
 
-**Capacity.** Order is your only lever. `admission.cap` is the operator's `legion.yaml` setting, and a tree's children compete for it with every other tree's issues. Tell the architect where its issues stand in `admission.waiting`. Open a finding ask when the deployment needs a larger cap.
-
-**A conflict between trees.** Read both roots. Publish what you read to both architects. Open a finding ask when they need a person's decision.
+**Capacity.** Order is your only lever. `admission.cap` is the operator's `legion.yaml` setting, and a tree's children compete for it with every other tree's issues. Tell the architect where its tree's issues stand in `admission.waiting`, as a Dispatch comment on the owning issue that mentions its role. Open a finding ask when the deployment needs a larger cap.
 
 ## An escalated hold
 
@@ -26,6 +24,12 @@ Check the child and its parent in `read_state` and Dispatch. When the child stil
 
 ## An update round that is not finishing (`update-stalled`)
 
-The daemon replaces a pod whose configuration moved only after an update round. This wake says that the round's bound has passed, and `reason` names what still holds the round. Work that a role did not push goes with the pod.
+The daemon replaces a pod whose configuration moved, or one that you asked `replace_pod` for, only after an update round. This wake says that the round's bound has passed, and `reason` names what still holds the round. At the end of the round the daemon reads the workspace. Where that read finds work that no branch or tag on origin holds, or fails, the round keeps the pod and ends with no replacement, unless the round is over a drift that breaks the pod. A round that you asked for is never over such a drift. Work that a role did not push goes with a pod that the daemon replaces.
 
-Open a finding ask that names the issue, the round and `reason`, so that an operator acts on it. Send no role a message about the round, park nothing and write no status. The daemon replaces the pod once the hold clears.
+For each hold that `reason` names:
+
+- The operator's suspension: open a finding ask that names the issue and each role that the operator suspended.
+- Your own suspension: `resume_agent` the agent once its cause is gone, or keep the agent held. Open no ask.
+- Anything else (a refused pod replacement, no process in the pod, two pods): open a finding ask that names the issue, the round and `reason`, so that an operator acts on it.
+
+Send no role a message about the round, park nothing and write no status. The round ends once the hold clears.

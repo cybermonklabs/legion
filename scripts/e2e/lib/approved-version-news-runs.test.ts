@@ -447,7 +447,7 @@ esac
 printf '%s\\n' "$*" >>"$LIVE_DAEMON_STAND_IN_DIR/curl-calls"
 n=$(($(cat "$LIVE_DAEMON_STAND_IN_DIR/minted" 2>/dev/null || echo 0) + 1))
 echo "$n" >"$LIVE_DAEMON_STAND_IN_DIR/minted"
-payload=$(printf '{"aud":"model-gateway-gce","exp":%d,"n":%d}' "$(($(date +%s) + ${keepSeconds + 4}))" "$n" |
+payload=$(printf '{"aud":"model-gateway.example.com","exp":%d,"n":%d}' "$(($(date +%s) + ${keepSeconds + 4}))" "$n" |
   base64 -w0 | tr '+/' '-_' | tr -d '=')
 token=$(printf '%s.%s.%s' '${tokenHeader}' "$payload" "fixtureSignatureOfMint$n")
 printf '%s\\n' "$token" >>"$LIVE_DAEMON_STAND_IN_DIR/tokens"
@@ -657,11 +657,11 @@ const seen = (dir: string, name: string) => readFileSync(join(dir, "seen", name)
 // anything is built.
 gitHost.describe("part two's model key", () => {
   const identityRoute =
-    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=model-gateway-gce&format=full";
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=model-gateway.example.com&format=full";
 
   test("is the key file's key where the file holds one, with an audience beside it, and nothing is minted", () => {
     const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {
-      audience: "model-gateway-gce",
+      audience: "model-gateway.example.com",
     });
     expect(run.code).toBe(0);
     expect(run.last).toMatch(/^approved version news e2e: PASS in \d+s \(/);
@@ -678,7 +678,7 @@ gitHost.describe("part two's model key", () => {
   test("is the pod's identity token where the key file holds none, minted again while part two runs", () => {
     const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {
       keyFile: false,
-      audience: "model-gateway-gce",
+      audience: "model-gateway.example.com",
     });
     expect(run.code).toBe(0);
     expect(run.last).toMatch(/^approved version news e2e: PASS in \d+s \(/);
@@ -700,7 +700,7 @@ gitHost.describe("part two's model key", () => {
     expect(Number(later?.[1])).toBeGreaterThan(Number(first?.[1]));
     expect(run.out).toContain("\n== gateway-token\n");
     expect(run.out).toMatch(
-      /^ {3}the identity token for the audience model-gateway-gce was minted again at \S+ into \S+ \(not printed\), with \d+ seconds left$/m
+      /^ {3}the identity token for the audience model-gateway\.example\.com was minted again at \S+ into \S+ \(not printed\), with \d+ seconds left$/m
     );
     expect(run.out).toContain(
       "   the headers of the identity tokens the run minted occur 0 times in "
@@ -712,7 +712,7 @@ gitHost.describe("part two's model key", () => {
   test("fails at key-leak where a token the run minted is in the evidence directory", () => {
     const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {
       keyFile: false,
-      audience: "model-gateway-gce",
+      audience: "model-gateway.example.com",
       leak: true,
     });
     expect(run.code).toBe(1);
@@ -732,7 +732,7 @@ gitHost.describe("part two's model key", () => {
   test("traces no part of a token the run minted under bash -x", () => {
     const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {
       keyFile: false,
-      audience: "model-gateway-gce",
+      audience: "model-gateway.example.com",
       xtrace: true,
     });
     // The run is traced, the trace comes back on after the mint, and the driver read a minted

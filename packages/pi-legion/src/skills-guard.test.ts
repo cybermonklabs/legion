@@ -165,6 +165,37 @@ test("every legion-worker reference is linked from a skill or a prompt", () => {
   expect(unlinked).toEqual([]);
 });
 
+// Where a tree owns a clear defect, the controller's reply under the finder's comment or ask names
+// the owner: the finder writes to it, or, for a person's `Hand it to the owning tree` on an old
+// ask, the reply mentions the owner, which reads the answer and the evidence in that thread, and
+// the finder writes nothing. A finder that reads a reply it has no rule for opens a second ask, so
+// every `Not filed:` reply of the controller's that names a role is one the finder's findings.md,
+// or its steps file, acts on, word for word but its placeholders.
+test("every Not filed reply the controller writes that names an owner is one the finder acts on", () => {
+  // Both sides are read by one map, so they are parsed alike. Each side is its reference and the
+  // steps file its detail moved to under the skill budget.
+  const [controller = new Set<string>(), finder = new Set<string>()] = [
+    [
+      "legion-controller/references/finding-asks.md",
+      "legion-controller/references/finding-asks-steps.md",
+    ],
+    ["legion-worker/references/findings.md", "legion-worker/references/findings-steps.md"],
+  ].map(
+    (files) =>
+      new Set(
+        files.flatMap((file) =>
+          [
+            ...readFileSync(path.join(staged, file), "utf8").matchAll(
+              /`(Not filed: [^`]*role:[^`]*)`/g
+            ),
+          ].map((match) => (match[1] ?? "").replace(/<[^>]*>/g, "<>"))
+        )
+      )
+  );
+  expect(controller.size).toBeGreaterThan(0);
+  expect([...controller].filter((form) => !finder.has(form))).toEqual([]);
+});
+
 // Whitespace is collapsed before a match, as shipped-agents.test.ts collapses it, so a pin survives
 // a rewrap of the file it reads.
 const collapsed = (file: string) => readFileSync(file, "utf8").replace(/\s+/g, " ");

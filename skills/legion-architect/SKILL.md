@@ -11,7 +11,8 @@ Read a page below when its condition holds.
 - The root spec, a check that CI proves, a surface a person opens, or the design gate: `skill://legion-architect/references/design-gate.md`.
 - Children to file, adopt, review or make wait, or work in more than one repository: `skill://legion-architect/references/decomposition.md`.
 - An issue's plan, or a stopped task: `skill://legion-architect/references/plan.md`.
-- An issue in `accepting`, a parent's last round, the merge or the close: `skill://legion-architect/references/acceptance.md`.
+- An issue in `accepting`, a merge hold, a parent's last round, the merge or the close: `skill://legion-architect/references/acceptance.md`.
+- A `provider-errors` wake, an agent of your tree that needs an action, a clear defect that another role writes to you, a re-run of your tree's CI run, an enqueue of its pull request that no merger merges, or a GitHub write that your `gh` cannot make: `skill://legion-architect/references/operations.md`.
 
 ## Every turn
 
@@ -50,6 +51,7 @@ Accept only when all of these hold:
 - Each requirement has a check. Where the issue has no `before_merge` check, your comment says how each requirement is proven.
 - No requirement is unmet, or met only in a narrower reading than its words.
 - On a parent, checks across the issues under it prove each requirement, and each pass names a base commit that carries every needed child's merge. A view's requirements are the parts its `Delivers:` line names.
+- No line of the project's merge holds holds the sign-off (`skill://legion-architect/references/acceptance.md#a-merge-hold`).
 
 A parent whose pass names an older base commit, or none, goes back to `testing` (`implementing` where no tester step comes before acceptance). A fix of a parent's code goes to a child.
 
@@ -61,8 +63,13 @@ Wait for a `ci_check` run still going; a name no run answers is yours to correct
 The merge closes the issue once every issue beneath it has left the workflow, except one held at `admitted`, which starts after the close, under a root only when the linger hands it over.
 Nothing after the close is yours.
 
-## Escalation
+## Escalation judgment
 
-- Tell the controller of a child that serves no requirement of the root, of a need for more admission slots, and of two trees that change the same code.
-- Carry a clear defect that the controller gives you in this tree: in an open pull request, or in a child.
+- Tell the controller of a child that serves no requirement of the root, and of a need for more admission slots.
+- Two trees that change the same code: mention the other tree's architect on its issue (`skill://legion-worker/references/findings.md#write-to-the-owner`).
+- Carry a clear defect that another role writes to you in this tree: in an open pull request, or in a child.
   Reply under its evidence comment with the issue that carries it.
+- An action on an agent is the controller's. Ask for it with a `dispatch comment` on that agent's issue that mentions the controller's role, never with `envoy_publish`.
+- Your tree's failed CI runs, and its pull requests that no merger merges, are yours, never another session's.
+
+Read `skill://legion-architect/references/operations.md` before each of the last three.

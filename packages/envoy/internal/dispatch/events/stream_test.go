@@ -14,6 +14,7 @@ import (
 // slowest reader of any open page, and silently skipping the event would leave that page wrong
 // with no resubscribe to repair it.
 func TestStreamDropsASubscriberThatCannotKeepUp(t *testing.T) {
+	t.Parallel()
 	const buffer = 8
 	stream := NewStream[model.Event]()
 	subscription, cancel := stream.Subscribe(buffer)
@@ -39,6 +40,7 @@ func TestStreamDropsASubscriberThatCannotKeepUp(t *testing.T) {
 // TestStreamBuffersAsManyValuesAsItsSubscriberAsked: each subscriber chooses how far behind it may
 // fall, so a slow consumer with a large buffer survives a burst that drops one with a small buffer.
 func TestStreamBuffersAsManyValuesAsItsSubscriberAsked(t *testing.T) {
+	t.Parallel()
 	stream := NewStream[int]()
 	small, cancelSmall := stream.Subscribe(1)
 	defer cancelSmall()
@@ -68,6 +70,7 @@ func TestStreamBuffersAsManyValuesAsItsSubscriberAsked(t *testing.T) {
 // subscriptions this way when the event log is reset under its cursor, so each page subscribes
 // again against the log as it now stands.
 func TestStreamCloseAllEndsEverySubscription(t *testing.T) {
+	t.Parallel()
 	stream := NewStream[model.Event]()
 	first, cancelFirst := stream.Subscribe(1)
 	defer cancelFirst()

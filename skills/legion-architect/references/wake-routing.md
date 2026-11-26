@@ -1,8 +1,9 @@
 # Wake routing
 
 A notice about an issue reaches its own architect while that architect holds its role, else the nearest architect above it that does.
-A `child-status` or `child-closed`, and a `worker-died` or `worker-stalled` about a child's own architect, reach the architect above the child.
+A `child-status` or `child-closed`, and a `worker-died` or `worker-stalled` about a child's own architect, reach the architect above the child. A root architect's own stall takes the same two finding asks as a child's own architect's (`worker-stalled`).
 For a notice that this table does not list, act on its reason and on the `legion` tool's description.
+When a wake leaves an issue in `accepting` waiting on no child, run its last round (`skill://legion-architect/references/acceptance.md#the-last-round`).
 
 Start nothing for `carried-gate-opened`, `checks-red`, `pr-merged` or `child-status`: the daemon does what follows.
 
@@ -15,17 +16,20 @@ Start nothing for `carried-gate-opened`, `checks-red`, `pr-merged` or `child-sta
 | `task-stopped` | As "A stopped task" in `skill://legion-architect/references/plan.md` says. |
 | `review-stuck` | Read the issue with `read_record` first: an issue that has left `reviewing` needs nothing. With a `topic`: tell the reviewer on that topic to approve the head or request changes; ask a person when it answers again with no review. With no `topic`: GitHub will not merge the approved head, and the reason names the merge state. |
 | `pr-closed-unmerged` | Decide whether the work reopens, restarts or ends, and give the reason in a `dispatch comment`. A phase worker makes each change to the repository. |
-| `child-closed` | Read the child's handoff, and edit the spec of each open child that it changes. File each new child it calls for, and release it at once. When it was the last child that an issue in `accepting` waits on, run that issue's last round (`skill://legion-architect/references/acceptance.md#the-last-round`). |
+| `child-closed` | Read the child's handoff, and edit the spec of each open child that it changes. File each new child it calls for, and release it at once. |
 | `children-first` | Release each child that should run. For a child that should not run now, ask the person on the root when it should run, and sign off neither issue until they answer. A `blocked_by` link up the parent chain never ends: ask a person to remove it. |
 | `awaiting-children` | A parent whose phases started waits in `awaiting_children`, its phase stopped, while Dispatch shows an open child under it, one you filed and have not released included. File every child at once, release each child that should run, and move each other child out, so the parent's own work follows theirs. |
 | `worker-died` | A phase worker: the issue is held. Use `retry_or_escalate` with `retry` for an agent failure or a transient one, its reason naming what changed; with `escalate` for a failure of the environment or a prompt too large for its pod. A child's own architect: the child is yours until it runs again; read its record and handoffs, and tell the role working its phase to send its questions to you. A finished role: nothing is held; read its handoff. |
-| `worker-stalled` | Judge from the reason whether the work needs a decision of yours. Tell the controller of a stop that the runtime did not confirm. |
-| `worker-silent` | The daemon already sent the work again: start nothing. Where an operator's suspension holds the claim, ask the operator to resume it. |
+| `worker-stalled` | Judge from the reason whether the work needs a decision of yours. A stop that the runtime did not confirm, or one worker that stalls again and again, is a finding: open its ask yourself. |
+| `worker-silent` | The daemon already sent the work again: start nothing. Where a suspension holds the agent, ask its holder to resume it (`skill://legion-architect/references/operations.md#an-agent-of-your-tree-that-needs-an-action`). |
 | `worker-background-stalled` | Read what the session waits on. A missing surface or a person needs your decision; a long build does not. |
-| `held` | No `reason`: answer the `worker-died` that comes with it. `reason: "escalated"`: the controller has it; start nothing. |
+| `session-lost`, `session-forgotten` | Yours alone: the worker's session is gone, and a fresh agent runs the role. Bring it up to date as `skill://legion-architect/references/wake-routing-steps.md#a-lost-session` says. |
+| `provider-errors` | As `skill://legion-architect/references/operations.md#an-agent-of-your-tree-that-needs-an-action` says. |
+| `merge-holds-changed` | The merge holds changed while an issue of yours is in `accepting`. It wakes you also when the daemon released your pod. Read the holds again as `skill://legion-architect/references/acceptance.md#a-merge-hold` says. |
+| `held` | No `reason`: answer the `worker-died` that comes with it. Only your `escalate` hands it to the controller. `reason: "escalated"`: the controller has it; start nothing. |
 | `message-refused` | Post yourself what a person still needs. Where Dispatch refused the status itself, ask a person to set it. |
 | `status-reasserted` | A session outside the tree wrote a status on the root, and the daemon set it back. Ask a person when the write reads as a wish to stop the tree. |
-| `volume-near-full` | Where most bytes are cold, in `scratch/tmp` or a workspace, tell the pod's roles on their topics to delete by exact path what they made and no longer need. Otherwise send the sizes to the controller: `issue_volume` is the operator's. |
+| `volume-near-full` | Free or report the bytes as `skill://legion-architect/references/wake-routing-steps.md#a-full-issue-volume` says. |
 | A reply on an ask you follow | Answer in its thread (`dispatch comment --reply-to <comment id>`) when it carries a question, a disagreement, a correction or a fact you lack. Under an approval request you must revise or hand back, `--reply-to-ask <ask id> --turn agent`, since a default reply gives the turn to the person. An approval or a settled answer draws no reply. Relay it to the responsible role. |
 
 ## A capped pull request

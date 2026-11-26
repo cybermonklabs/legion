@@ -4,7 +4,7 @@ Run it on your first turn of each six-hour UTC block, after the wake's work. It 
 
 ## The block
 
-Blocks start at 00:00, 06:00, 12:00 and 18:00 UTC. Read the report issue's record, `dispatch doc-read --issue <REPORT KEY> --artifact consolidation.md`. A section `## Consolidation pass <block start>`, by any controller session, means that this block ran. `not found` means that no pass has run yet.
+Blocks start at 00:00, 06:00, 12:00 and 18:00 UTC. Read the report issue's record, `dispatch doc-read --issue <REPORT KEY> --artifact consolidation.md`. A section `## Consolidation pass <block start>`, by any controller session, means that this block ran. `not found` means that no pass has run yet. Any other failed read decides nothing: run no pass, name the failed read in your summary, and read the record again at your next turn.
 
 ## 1. Duplicates
 
@@ -17,13 +17,13 @@ dispatch related --project <PROJECT> --title '<its title>' --text-file - \
   --exclude-issue <KEY> --exclude-issue <each ancestor> --exclude-issue <each descendant>
 ```
 
-Skip a pair that the issues already settle: one closed as a duplicate of the other, one reopened after such a close (both in `dispatch read --issue <KEY> --all-events`), or one a child of the other (`Links:`, `Referenced by:`). Check each finding against its records. Then fold each pair that is the same work by the duplicate rule of `skill://dispatch-first`. An issue with the `legion` label, or with another holder's claim, gets a comment that names the kept issue instead of a close. Send a pair inside a Legion tree to that tree's architect with `envoy_publish`.
+Skip a pair that the issues already settle: one closed as a duplicate of the other, one reopened after such a close (both in `dispatch read --issue <KEY> --all-events`), or one a child of the other (`Links:`, `Referenced by:`). Check each finding against its records. Then fold each pair that is the same work by the duplicate rule of `skill://dispatch-first`. An issue with the `legion` label, or with another holder's claim, gets a comment that names the kept issue instead of a close. Send a pair inside a Legion tree to that tree's architect: a Dispatch comment on the tree's root that names both issues and mentions the architect's role.
 
 ## 2. Recurring causes
 
 Ask each agent also, for each issue of its shard that changed in the last 24 hours and fails, what it fails on (the broken tool, check, rule or component), its evidence, and the records read. Shard the issues closed in that time too (`dispatch issues --project <PROJECT> --status done --updated-since "$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)" --all`). Group the issues that fail for one cause yourself. Keep a group of three or more whose issues each need their own change. A group that one fix clears is a set of duplicates.
 
-Root each cause once, as `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect` says, with `controller` as the role. Comment the result on each issue of the group, and close none of them.
+Root each cause once. Comment its evidence on the open issue that tracks it. Else write it to the architect of the running tree that owns the code, as `skill://legion-worker/references/findings.md#write-to-the-owner` says. Else post its evidence on the report issue with `controller` as the role, and take it as `skill://legion-controller/references/finding-asks.md#file-a-clear-defect-no-tree-owns` says. Comment the result on each issue of the group, and close none of them.
 
 ## The record
 

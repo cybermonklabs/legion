@@ -13,6 +13,7 @@ import (
 // versions the floor takes is natsversion's own test (TestRefusalNamesEveryServerThatCanSkipAFilter);
 // this one holds the command to answering with that rule and in the shape its callers read.
 func TestNatsfloorAnswersWithNatsversionsRule(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"2.15.1", "v2.10.22"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("natsfloor 2.15.1 v2.10.22 exited %d, want 0; stderr: %s", code, stderr.String())

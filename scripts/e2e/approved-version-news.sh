@@ -81,10 +81,11 @@
 #
 # Part two's model key is a file: APPROVED_VERSION_NEWS_MODEL_KEY_FILE, by default
 # /var/run/model-gateway-key/key, where a role pod mounts the gateway's key. Where that file holds
-# no key, APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE=model-gateway-gce asks for the pod's own Google
-# identity token for that audience in its place: the GKE metadata server mints it, it lasts an
-# hour, and the cluster model gateway takes it from a pod it lets in so, such as a Job of the
-# builds namespace labelled builds.theorem.dev/model-gateway: "true", which holds no key. The
+# no key, APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE names the audience the cluster model gateway
+# takes a pod's identity token for, and part two runs on the pod's own Google identity token for
+# that audience in its place: the GKE metadata server mints it, it lasts an hour, and the gateway
+# takes it from a pod it lets in so, such as a Job of the builds namespace that carries the
+# deployment's gateway label (<deployment domain>/model-gateway: "true"), which holds no key. The
 # gateway-token check mints it into a key file of the run's own scratch, mode 600, before anything
 # is built, and a refresher in the background mints it again whenever the token in that file has
 # gateway_keep_seconds left, until the script ends (mint_gateway_token, refresh_gateway_token). A
@@ -124,7 +125,7 @@
 #   LEGION_OMP_PATH=/opt/omp/bin/omp ANTHROPIC_BASE_URL=<model gateway> \
 #     LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [APPROVED_VERSION_NEWS_MODEL_KEY_FILE=<file>] \
-#     [APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE=model-gateway-gce] \
+#     [APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE=<gateway audience>] \
 #     [APPROVED_VERSION_NEWS_STEP=a4|off|answers] [APPROVED_VERSION_NEWS_ARM=head] \
 #     [APPROVED_VERSION_NEWS_RUNS=<n>] \
 #     bash scripts/e2e/approved-version-news.sh [--part one|both] [--control | --base-commit <rev>]
@@ -462,7 +463,7 @@ jwt_exp() {
 }
 
 # mint_gateway_token mints the pod's identity token for gateway_audience from the GKE metadata
-# server (format=full), as theorem-labs/agent-infra's cluster-grants/methodrun.sh does
+# server (format=full), as the deployment repository's cluster-grants/methodrun.sh does
 # (read_gateway_token), and writes it alone to key_file, mode 600, beside it first and then moved
 # over, so the driver never reads half a token. It sets gateway_exp to the token's exp claim, and
 # adds the token's header, the part before its first dot, to the list the key-leak check reads
@@ -809,7 +810,7 @@ if [ "$parts" = both ]; then
   else
     gateway_audience=${APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE:-}
     [ -n "$gateway_audience" ] ||
-      refuse "the model key file $key_file is not a readable file with a key in it, and APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE names no audience of the pod's identity token to run on in its place: part two's sessions run their turns on one of the two (APPROVED_VERSION_NEWS_MODEL_KEY_FILE names another key file; APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE=model-gateway-gce mints the token in a pod the cluster model gateway lets in so)"
+      refuse "the model key file $key_file is not a readable file with a key in it, and APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE names no audience of the pod's identity token to run on in its place: part two's sessions run their turns on one of the two (APPROVED_VERSION_NEWS_MODEL_KEY_FILE names another key file; APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE names the audience the cluster model gateway takes, and mints the token in a pod the gateway lets in so)"
     case "$gateway_audience" in
       *[!A-Za-z0-9._~:/-]*)
         refuse "APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE holds a character other than letters, digits and ._~:/-, which the metadata server's URL would need escaped"

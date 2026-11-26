@@ -6,7 +6,7 @@ Dispatch and `read_state` decide triage, not the wake text.
 
 1. List the triage issues handed to Legion: `dispatch issues --project <PROJECT> --status triage --label legion --all`.
 2. `dispatch read` each, and follow `Links:` up through each `child_of` parent. A `child_of` under `Referenced by:` is a child, not the parent.
-3. Leave a row whose `issues.<KEY>.tree`, or an ancestor, is a root in `admission.trees`: that tree's architect owns it.
+3. Leave a row whose `issues.<KEY>.tree`, or an ancestor, is the root of a live tree (`skill://legion-controller/references/admission.md`): that tree's architect owns it.
 4. Each other row with no `issues.<KEY>` in `read_state` is a root: [triage it](#triage-a-root).
 5. A root that `read_state` records and that is back in `triage` was pulled back by a person. Re-admit nothing. Ask in your summary: "<KEY> was pulled back to triage. What do you want?"
 

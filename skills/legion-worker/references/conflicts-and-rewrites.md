@@ -1,6 +1,6 @@
 # Conflicts and retargets
 
-Merge the base into the issue branch only when GitHub reports the pull request conflicting, the daemon's merge-forward message asks for it, the change needs something only the base has, or the pull request was retargeted. Each merge is a new head that runs CI again and can void a review.
+Merge the base into the issue branch only when GitHub reports the pull request conflicting, the daemon's merge-forward message asks for it, your own architect asks because of a conflict that another tree reported, the change needs something only the base has, or the pull request was retargeted. Each merge is a new head that runs CI again and can void a review.
 
 What jj does here that an agent may not expect:
 
