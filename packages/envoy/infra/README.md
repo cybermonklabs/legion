@@ -5000,6 +5000,10 @@ namespace and ServiceAccount to one identity on every cluster of the pool, so th
 project's `gcloud container clusters list`, and each GKE member of the fleet): a pool cluster the
 list leaves out is a finding naming it, and a listed cluster the pool lacks, or a cluster or fleet
 list not read whole, is `UNKNOWN`.
+A cluster being deleted stays in the list until it is gone, so remove it from
+`MINTERS_AUDITOR_CLUSTERS` only after the delete completes, never before. A run in between fails
+closed either way: a finding while the list still holds it and the env does not, and `UNKNOWN`
+while the env still names it and the list does not.
 A non-GKE fleet member remains UNKNOWN: the auditor has no Connect gateway permission, so it cannot
 mistake a member whose cloud authorizers it did not read for an RBAC-only member.
 If the GKE Hub membership listing returns HTTP 403 with structured `SERVICE_DISABLED` details for
