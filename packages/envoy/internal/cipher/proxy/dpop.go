@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dpopproof"
 )
 
-// mintedTransport is what a request to a host whose rules entry is of kind dpop leaves the proxy
+// mintedTransport is what a request to a host a dpop block's inline binding binds leaves the proxy
 // through: a capability the broker mints for a grant and holds (requests.MintedKind), so that no
 // process of the command ever holds the access token or the key it is bound to. serveBound has
 // already swapped the grant's token in for the placeholder (proxyrules.Rewrite); this signs the

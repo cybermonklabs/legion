@@ -1,0 +1,21 @@
+# go-double-encoding-raw-literals: check reads the double-encoding rule as three literal
+# spellings in the raw path ("%252f", "%252e", "%255c"), as it did before it read the decoded
+# path, so "%25%32%46", "%252%46" and "%25%32%45", which decode to "%2F" and "%2E", reach a
+# server that decodes twice as "/" and ".". Caught by the comparison fuzz test: the model reads
+# the decoded path and still answers "path has a double-encoded character". Applied with patch
+# -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxyrules/airlock.go
++++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
+@@ -701,7 +701,10 @@
+ 		return nil, "path has a backslash"
+ 	case listed && hasDotSegmentParameter(r.Path):
+ 		return nil, "path has a parameter on a dot segment"
+-	case listed && hasDoubleEncoding(r.Path):
++	// MUTANT: the rule reads three literal spellings in the raw path, as it did before it read
++	// the decoded one, so "%25%32%46", "%252%46" and "%25%32%45" reach a twice-decoding server as
++	// "/" and ".".
++	case listed && (strings.Contains(fold.ASCII(r.RawPath), "%252f") || strings.Contains(fold.ASCII(r.RawPath), "%252e") || strings.Contains(fold.ASCII(r.RawPath), "%255c")):
+ 		return nil, "path has a double-encoded character"
+ 	case !allowOK(k.Allow, r):
+ 		return nil, "not allowed by rule"

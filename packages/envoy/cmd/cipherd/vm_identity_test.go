@@ -23,7 +23,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/judge"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -184,7 +183,7 @@ func TestTheEnrollmentServiceCarriesTheMachineServices(t *testing.T) {
 	if want := map[string]string{exampleVMAccount: "example-fleet"}; !maps.Equal(enr.VMServicesByAccount, want) {
 		t.Fatalf("the enrollment service's VMServicesByAccount = %v, want %v", enr.VMServicesByAccount, want)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, nil, nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, "", nil, nil, nil)
 	if want := map[string]string{"system:serviceaccount:example:example-sa": "example-service"}; !maps.Equal(m.ServicesByAccount, want) {
 		t.Fatalf("request Machine's ServicesByAccount = %v, want %v", m.ServicesByAccount, want)
 	}
@@ -208,7 +207,7 @@ func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 	if dispatch := judgeDispatch(cfg); dispatch != nil {
 		t.Fatalf("judgeDispatch = %#v with no BROKER_JUDGE_DISPATCH_URL; want none", dispatch)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, judgeDispatch(cfg), nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, "", nil, judgeDispatch(cfg), nil)
 	if want := map[string]string{exampleVMAccount: "ada@example.com"}; !maps.Equal(m.VMPersonsByAccount, want) {
 		t.Fatalf("request Machine's VMPersonsByAccount = %v, want %v", m.VMPersonsByAccount, want)
 	}
@@ -222,7 +221,7 @@ func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 	if dispatch == nil || dispatch.BaseURL != cfg.JudgeDispatchURL || dispatch.Account == nil {
 		t.Fatalf("judgeDispatch = %#v; want a read of Dispatch at %s", dispatch, cfg.JudgeDispatchURL)
 	}
-	m = newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, dispatch, nil)
+	m = newRequestMachine(cfg, nil, nil, nil, nil, "", nil, dispatch, nil)
 	if got, ok := m.Assignees.(*judge.Dispatch); !ok || got != dispatch {
 		t.Fatalf("request Machine's Assignees = %#v; want the one read of Dispatch judgeDispatch built, %p", m.Assignees, dispatch)
 	}
