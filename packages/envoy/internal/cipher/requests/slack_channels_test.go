@@ -5,10 +5,12 @@ package requests
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
@@ -121,6 +123,64 @@ func TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels(t *testing.T) {
 		}
 		if calls != 0 {
 			t.Fatalf("a session naming no project made %d calls to Dispatch's project route for %s; want none", calls, slackToken)
+		}
+	})
+}
+
+// TestAJobPodsSlackTokenIsLimitedByItsList: a job entry's pod names its entry's list and no
+// person, and the project-channels rule reads that list as it reads every credential's
+// (policy.Requester.ListsPrivate). A list naming a private project limits the Slack token to no
+// channel, whatever channels the project's owner named, since the pod sees no private project, and
+// asks Dispatch nothing about a person; where no proxy profile serves the token, the pod is denied
+// it project-channels-need-airlock. A list of public projects alone leaves it unlimited, as for a
+// person's pod of a public project.
+func TestAJobPodsSlackTokenIsLimitedByItsList(t *testing.T) {
+	privateLists := []string{privProject, "public," + privProject}
+	// released grants the Slack token to pod and reads it as the proxy does.
+	released := func(t *testing.T, m *Machine, pod jobPod) AirlockSecret {
+		t.Helper()
+		_, grantID := grantOf(t, m, pod.enrollmentID, pod.key, "post the release notes", slackToken)
+		values, _, err := m.AirlockValues(t.Context(), grantID)
+		if err != nil {
+			t.Fatalf("AirlockValues(%s) for the pod of the job list %s: %v", slackToken, pod.list, err)
+		}
+		return values[slackToken]
+	}
+
+	t.Run("a list naming a private project is limited to no channel, and Dispatch is asked nothing about a person", func(t *testing.T) {
+		m, _, _, _ := slackFixture(t, slackRows(projectaccesstest.Row{SlackChannels: []string{"C0ALLOWED1"}}, publicTeam))
+		asked := &askLog{inner: m.Projects}
+		m.Projects = asked
+		for _, pod := range jobPods(t, m, privateLists...) {
+			if got := released(t, m, pod); !got.Limited || got.Channels == nil || len(got.Channels) != 0 {
+				t.Errorf("%s released to the pod of the job list %s = Limited %v Channels %#v; want Limited to no channel", slackToken, pod.list, got.Limited, got.Channels)
+			}
+		}
+		if about := asked.askedAbout(); len(about) != 0 {
+			t.Errorf("the job pods' releases asked Dispatch's access route about %q; want no access question, since their credentials name no person", about)
+		}
+		questions := asked.questions()
+		for _, q := range questions {
+			if !strings.HasPrefix(q, "states of ") {
+				t.Errorf("the job pods' releases asked Dispatch %q (they asked %v); want the listed projects' visibility and nothing else", q, questions)
+			}
+		}
+	})
+
+	t.Run("a list of public projects alone is unlimited", func(t *testing.T) {
+		m, _, _, _ := slackFixture(t, slackRows(projectaccesstest.Row{SlackChannels: []string{"C0ALLOWED1"}}, publicTeam))
+		for _, pod := range jobPods(t, m, teamProject, "public,"+teamProject, "public") {
+			if got := released(t, m, pod); got.Limited || got.Channels != nil {
+				t.Errorf("%s released to the pod of the job list %s = Limited %v Channels %#v; want unlimited, as for a person's pod of a public project", slackToken, pod.list, got.Limited, got.Channels)
+			}
+		}
+	})
+
+	t.Run("with no proxy profile a list naming a private project is denied project-channels-need-airlock", func(t *testing.T) {
+		m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+		for _, pod := range jobPods(t, m, privateLists...) {
+			request, err := m.Create(t.Context(), pod.enrollmentID, signRequest(t, m, pod.key, "post the release notes", slackToken), "")
+			deniedFor(t, "a request for "+slackToken+", which no proxy profile serves, from the pod of the job list "+pod.list, request, err, slackToken, policy.ReasonProjectChannelsNeedAirlock)
 		}
 	})
 }

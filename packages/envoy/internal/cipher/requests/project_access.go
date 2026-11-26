@@ -63,7 +63,10 @@ type projectFacts struct {
 	// result of, resolved only when a requested name carries a project-channels tag, which is the
 	// one rule that reads them (policy.Requester.ListsPrivate).
 	named []string
-	// person is who the credential acts for, for the channel limit's own reads.
+	// person is who the credential acts for, for the channel limit's own reads. It is empty for a
+	// credential that acts for no person, a job entry's pod or machine among them, whose list is
+	// its entry's (credentialProjects): such a credential sees no private project, so projects
+	// holds none of its list and the channel limit asks Dispatch nothing about it.
 	person string
 	// asked is when the oldest answer of Dispatch's these facts rest on was asked, and zero for
 	// facts that asked Dispatch nothing: the age a decision made on them is checked by
@@ -140,7 +143,12 @@ func anyProjectTagged(set *policy.Set, granted []requestedSecret) bool {
 // that issuer's URL, read as its name in BROKER_K8S_OIDC_ISSUER (Issuers, oidc.IssuerName): one
 // recording none was enrolled before enrollments recorded one, under the first issuer, and a URL
 // the setting no longer holds is no issuer's, so such a pod names no project. A machine's own
-// session names the one its fleet's Google account maps to; anything else names none.
+// session names the one its fleet's Google account maps to; anything else names none. A job entry
+// (BROKER_EXCHANGE_JOB_ACCOUNTS for a pod, BROKER_VM_EXCHANGE_JOB_ACCOUNTS for a machine) maps
+// its identity to its whole list and no person: a named list's one project, or a public list's
+// private projects, the list its token carries. A pod's job entry gives that list only while it
+// names the issuer whose token enrolled the pod, as every pod's entry does. Such a credential acts
+// for no person, so it sees no private project of its list (collectProjectFacts).
 func (m *Machine) credentialProjects(e enrollmentRow) (person string, projects []string) {
 	switch {
 	case e.Kind == "session" && e.Operator != nil:
@@ -241,6 +249,13 @@ func (m *Machine) collectProjectFacts(ctx context.Context, e enrollmentRow, name
 		default:
 			return projectFacts{}, fmt.Errorf("%w: %w: %q for %s", ErrProjectAccessUnavailable, projectaccess.ErrUnknownVisibility, answer.Visibility, project)
 		}
+	}
+	// A credential that names no person, a job entry's pod or machine among them, sees no private
+	// project, so none of its list joins the facts and Dispatch is asked nothing on its behalf:
+	// whether nobody may see a private project has one answer, and asking it would add a question
+	// and nothing else.
+	if person == "" {
+		return facts, nil
 	}
 	for _, project := range named {
 		if facts.states[project] != policy.ProjectPrivate {

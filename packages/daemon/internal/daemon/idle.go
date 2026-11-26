@@ -181,10 +181,10 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 }
 
 // releaseUnownedPods decides each pod of the project that no claim of its issue can use: an
-// issue whose every claim is failed, retired or suspended holds a pod of 3 CPU and 19 GiB that
-// no role can take a turn in, and this is the pass that releases it. One issue's failure is
-// logged and the rest are decided, as the idle pass has it: a release is a saving, never a
-// correctness step, and nothing waits on it.
+// issue whose every claim is failed, retired or suspended holds a pod no role can take a turn
+// in, and the pod's reservation with it (2 CPU and 8 GiB at the defaults), and this is the pass
+// that releases it. One issue's failure is logged and the rest are decided, as the idle pass has
+// it: a release is a saving, never a correctness step, and nothing waits on it.
 //
 // It writes one line saying what the whole pass did — how many issues it decided, how many it
 // released and how many it held under each reason — whenever it decided at least one. That line
@@ -493,10 +493,11 @@ func (w *workflowRuntime) runningPod(issue string) string {
 // The second rule's other three — IdleHoldUnownedClaimProcess, IdleHoldUnownedOperatorSuspended
 // and IdleHoldUnownedDelivery — are recorded for the same reason, and it is the sharpest one
 // here: each names a pod that stands, past the quiet period, with no live claim in it, and such
-// a pod holds 3 CPU and 19 GiB for as long as it stands. A deployment that sees one of the three
-// every tick is reading capacity held by something that is not work. IdleHoldUnownedUnpushedWork
-// is recorded too: its pod stands with no live claim because its disk holds work origin does not
-// hold, and the record is where an operator finds the pod whose roles must come back to push it.
+// a pod holds its reservation (2 CPU and 8 GiB at the defaults) for as long as it stands. A
+// deployment that sees one of the three every tick is reading capacity held by something that is
+// not work. IdleHoldUnownedUnpushedWork is recorded too: its pod stands with no live claim
+// because its disk holds work origin does not hold, and the record is where an operator finds
+// the pod whose roles must come back to push it.
 //
 // A project's pause's three holds are recorded too (IdleHoldPaused, IdleHoldPauseHeld,
 // IdleHoldUnownedPauseHeld, decision 12 of dispatch://INFRA-3759): each is a pod release would

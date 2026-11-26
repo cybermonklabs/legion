@@ -88,13 +88,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -368,19 +365,12 @@ func (r *lateCompletionLive) pushedHead() string {
 	return r.workspaceJJ("log", "-r", fmt.Sprintf("remote_bookmarks(exact:%q, exact:\"origin\")", "legion/"+r.key), "--no-graph", "-T", "commit_id")
 }
 
-// overrides is the daemon this proof boots: the local runtime over the real worker stream, the
-// API listener the fixture holds, the workflow's App tokens stood in for, and GitHub's stand-in.
+// overrides is the daemon this proof boots: the local runtime's own wiring (daemonOverrides), the
+// workflow's App tokens stood in for, and GitHub's stand-in.
 func (r *lateCompletionLive) overrides() overrides {
-	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
-			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository, _ func() bool) (runtime.Runtime, error) {
-			r.rt.conns, r.rt.stream = listener, address
-			return r.rt, nil
-		},
-		listen:         heldListen,
-		workflowTokens: r.tokens,
-		githubAPI:      r.github.url,
-	}
+	o := r.rt.daemonOverrides(r.rt)
+	o.workflowTokens, o.githubAPI = r.tokens, r.github.url
+	return o
 }
 
 // seed records the issue as the daemon would hold it at the moment its implementer began: a root

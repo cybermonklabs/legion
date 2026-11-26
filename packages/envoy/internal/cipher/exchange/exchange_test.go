@@ -58,6 +58,29 @@ const (
 	signInDomain = "example.com"
 	otherDomain  = "other.example"
 	stranger     = "mallory@other.example"
+	// The job entries the set lists, each naming its identity and a job list and no person.
+	// jobAccount's pods name their sessions and write ACME, publicJobAccount's name theirs and
+	// reach every public project and the private projects publicJobs names, and
+	// fixedJobAccount's write ACME under the session the entry fixes. jobWorkflow is public and
+	// names its sessions, and fixedJobWorkflow writes ACME under the session its entry fixes;
+	// the same goes for the two Google accounts of the service jobService, the fixed one pinned
+	// as pinnedAccount is.
+	jobAccount             = "system:serviceaccount:example-ns:example-job"
+	publicJobAccount       = "system:serviceaccount:example-ns:example-public-job"
+	fixedJobAccount        = "system:serviceaccount:example-ns:example-fixed-job"
+	jobWorkflow            = ".github/workflows/dispatch-job.yaml"
+	fixedJobWorkflow       = ".github/workflows/dispatch-nightly.yaml"
+	jobMachineAccount      = "example-job@example-project.iam.gserviceaccount.com"
+	fixedJobMachineAccount = "example-fixed-job@example-project.iam.gserviceaccount.com"
+	jobService             = "example-jobs"
+	jobPodSession          = "example-job-pod"
+	jobRunSession          = "example-job-run"
+	jobMachineSession      = "example-job-machine"
+	// publicJobs is the public entries' job list as a setting may spell it, its keys unsorted,
+	// and privA and privB are the private projects it names.
+	publicJobs = "public,PRIVB,PRIVA"
+	privA      = "PRIVA"
+	privB      = "PRIVB"
 )
 
 // The principals the listed entries' session names belong to, as the exchange spells them.
@@ -71,30 +94,47 @@ const (
 	pinnedPrincipal  = "google:" + pinnedAccount
 	poolPrincipal    = "google:" + poolAccount
 	fixedPrincipal   = "google:" + fixedAccount
+
+	jobPrincipal              = "account:" + jobAccount
+	publicJobPrincipal        = "account:" + publicJobAccount
+	fixedJobPrincipal         = "account:" + fixedJobAccount
+	jobWorkflowPrincipal      = "workflow:" + repository + "/" + jobWorkflow + "@" + ref
+	fixedJobWorkflowPrincipal = "workflow:" + repository + "/" + fixedJobWorkflow + "@" + ref
+	jobMachinePrincipal       = "google:" + jobMachineAccount
+	fixedJobMachinePrincipal  = "google:" + fixedJobMachineAccount
 )
 
 // listed is the set every decision test asks: one account whose sessions name themselves, whose
 // pods exchange from both clusters, one account whose session the entry fixes, whose pods exchange
 // from the first alone, one read entry, whose pods exchange from the first alone too, the same
-// pair for one workflow of one repository on one ref, and three Google accounts — one pinned to a
+// pair for one workflow of one repository on one ref, three Google accounts — one pinned to a
 // project and an instance-name pattern that writes for a person, one pinned to nothing that names
-// no person, and one that fixes the session its machines write under.
+// no person, and one that fixes the session its machines write under — and the job entries: three
+// accounts, whose pods exchange from the first cluster alone, two workflows and two Google
+// accounts that name a job list and no person.
 func listed(t *testing.T) *exchange.Set {
 	t.Helper()
 	set, err := exchange.NewSet(
 		[]exchange.AccountEntry{
 			{Account: workerAccount, Project: project, Person: person, Issuers: []string{firstIssuer, secondIssuer}},
 			{Account: daemonAccount, Project: project, Person: person, Session: fixedSession, Issuers: []string{firstIssuer}},
+			{Account: jobAccount, Job: jobList(t, project), Issuers: []string{firstIssuer}},
+			{Account: publicJobAccount, Job: jobList(t, publicJobs), Issuers: []string{firstIssuer}},
+			{Account: fixedJobAccount, Job: jobList(t, project), Session: jobPodSession, Issuers: []string{firstIssuer}},
 		},
 		[]exchange.ReadEntry{{Account: readerAccount, Service: readerService, Session: readerSession, Issuers: []string{firstIssuer}}},
 		[]exchange.WorkflowEntry{
 			{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 			{Repository: repository, Workflow: nightly, Ref: ref, Project: project, Person: person, Session: nightlySession},
+			{Repository: repository, Workflow: jobWorkflow, Ref: ref, Job: jobList(t, publicJobs)},
+			{Repository: repository, Workflow: fixedJobWorkflow, Ref: ref, Job: jobList(t, project), Session: jobRunSession},
 		},
 		[]exchange.GoogleEntry{
 			{Account: pinnedAccount, Service: pinnedService, CloudProject: cloudProject, Instance: instanceGlob, Project: project, Person: person},
 			{Account: poolAccount, Service: poolService},
 			{Account: fixedAccount, Service: poolService, Session: machineSession},
+			{Account: jobMachineAccount, Service: jobService, Job: jobList(t, publicJobs)},
+			{Account: fixedJobMachineAccount, Service: jobService, CloudProject: cloudProject, Instance: instanceGlob, Job: jobList(t, project), Session: jobMachineSession},
 		},
 		signInDomain,
 	)
@@ -279,6 +319,39 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 		{name: "a session name a read entry and an account fix",
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = readerSession })},
 			reads:    []exchange.ReadEntry{reader}, names: `read entry 1, "` + readerAccount + `"`},
+		// An entry names a person and its project, or a job list, and never both; a workflow entry
+		// that names neither mints a token answerable to nobody. An account entry that names
+		// neither acts as the account itself (TestAnAccountEntryMayNameNoPerson).
+		{name: "a job account that names a person too",
+			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Project, e.Job = "", jobList(t, project) })}, names: workerAccount},
+		{name: "a job account that names a project too",
+			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Person, e.Job = "", jobList(t, project) })}, names: workerAccount},
+		{name: "a job account whose fixed session carries whitespace",
+			accounts: []exchange.AccountEntry{{Account: workerAccount, Job: jobList(t, publicJobs), Session: "example job", Issuers: []string{firstIssuer}}}, names: workerAccount},
+		{name: "an account a person entry and a job entry both list",
+			accounts: []exchange.AccountEntry{account, {Account: workerAccount, Job: jobList(t, project), Issuers: []string{firstIssuer}}}, names: "account entry 2"},
+		{name: "an account a job entry and a read entry both list",
+			accounts: []exchange.AccountEntry{{Account: workerAccount, Job: jobList(t, project), Issuers: []string{firstIssuer}}},
+			reads:    []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Account = workerAccount })}, names: `read entry 1, "` + workerAccount + `"`},
+		{name: "a job workflow that names a person too",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Project, e.Job = "", jobList(t, publicJobs) })}, names: workflow},
+		{name: "a job workflow that names a project too",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Person, e.Job = "", jobList(t, publicJobs) })}, names: workflow},
+		{name: "a workflow naming neither a person nor a job list",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Project, e.Person = "", "" })}, names: workflow},
+		{name: "a job workflow whose fixed session is unprintable",
+			workflows: []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Job: jobList(t, project), Session: "example\x00job"}}, names: workflow},
+		{name: "a session name a job account and a job workflow fix",
+			accounts:  []exchange.AccountEntry{{Account: workerAccount, Job: jobList(t, project), Session: jobPodSession, Issuers: []string{firstIssuer}}},
+			workflows: []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Job: jobList(t, project), Session: jobPodSession}}, names: workerAccount},
+		{name: "a Google job entry that names a person too",
+			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Person, e.Job = person, jobList(t, project) })}, names: pinnedAccount},
+		{name: "a Google job entry that names a project too",
+			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Project, e.Job = project, jobList(t, project) })}, names: pinnedAccount},
+		{name: "a Google job entry that names a person and a project too",
+			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Project, e.Person, e.Job = project, person, jobList(t, publicJobs) })}, names: pinnedAccount},
+		{name: "a Google job entry whose fixed session carries whitespace",
+			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Session, e.Job = "example job", jobList(t, project) })}, names: pinnedAccount},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			set, err := exchange.NewSet(c.accounts, c.reads, c.workflows, c.machines, signInDomain)
@@ -319,9 +392,9 @@ func TestAnAccountEntryWithNoProjectNamesNone(t *testing.T) {
 	}
 }
 
-// TestAnAccountEntryMayNameNoPerson: an account entry may name neither a person nor a project,
-// which is a job's own entry (<service account>==): its tokens act as the account itself. The set
-// boots with it, and its pods' tokens are named, name no person and no project, and carry the
+// TestAnAccountEntryMayNameNoPerson: an account entry may name neither a person nor a project
+// (<service account>==), an account whose tokens act as the account itself. The set boots with
+// it, and its pods' tokens are named, name no person and no project, and carry the
 // account as their service, which is what Dispatch records their writes under, beside the account
 // as the principal their session names belong to. An entry that fixes a session answers that
 // session and no pod uid, and its session is reserved for the account as any fixed one is. A
@@ -359,11 +432,12 @@ func TestAnAccountEntryMayNameNoPerson(t *testing.T) {
 	}
 }
 
-// TestAPersonlessEntryNamesNoProject: only an account entry that names no project may name no
-// person: an entry that names a project names its person, so no token held to a project is
-// personless. An account entry naming a project and no person is refused, naming the entry and
-// that rule; a person that is blank without being empty is refused whatever the project; and a
-// workflow entry still needs a person, whether or not it names a project.
+// TestAPersonlessEntryNamesNoProject: of the entries that name no job list, only an account entry
+// that names no project may name no person: an account entry that names a project names its
+// person, so no account entry's token held to a project is personless. An account entry naming a
+// project and no person is refused, naming the entry and that rule; a person that is blank without
+// being empty is refused whatever the project; and a workflow entry still needs a person, whether
+// or not it names a project.
 func TestAPersonlessEntryNamesNoProject(t *testing.T) {
 	for _, c := range []struct {
 		name      string
@@ -440,14 +514,18 @@ func TestNewSetTakesAManagedUsersRepository(t *testing.T) {
 
 // TestTheReservationsAreTheNamesTheEntriesFix: every session name an entry fixes is reserved for
 // that entry's principal, in the order the entries were listed, and a name no entry fixes is not
-// reserved at all. The answer is the caller's own copy, so the set stays as it was built.
+// reserved at all. A job entry of each kind that fixes a session reserves it as every other entry
+// does. The answer is the caller's own copy, so the set stays as it was built.
 func TestTheReservationsAreTheNamesTheEntriesFix(t *testing.T) {
 	set := listed(t)
 	want := []exchange.Reservation{
 		{Session: fixedSession, Principal: daemonPrincipal},
+		{Session: jobPodSession, Principal: fixedJobPrincipal},
 		{Session: readerSession, Principal: readerPrincipal},
 		{Session: nightlySession, Principal: nightlyPrincipal},
+		{Session: jobRunSession, Principal: fixedJobWorkflowPrincipal},
 		{Session: machineSession, Principal: fixedPrincipal},
+		{Session: jobMachineSession, Principal: fixedJobMachinePrincipal},
 	}
 	got := set.Reservations()
 	if !slices.Equal(got, want) {
@@ -513,6 +591,8 @@ func TestPodAnswersTheListedAccount(t *testing.T) {
 //   - an entry that names no project and fixes legion-daemon: alone;
 //   - an entry of ACME that fixes a Legion role's session;
 //   - an entry of CASE that fixes Legion-Daemon:CASE, since the comparison holds the case;
+//   - a job entry whose list is JOB and that fixes legion-daemon:JOB, since a job entry names no
+//     Project (its projects are its job list);
 //   - a read entry that fixes legion-daemon:READ.
 //
 // The decision reads the session the entry fixes, and never the session the request names.
@@ -532,6 +612,7 @@ func TestPodGivesLegionStatusToTheDaemonsEntryAlone(t *testing.T) {
 			{Account: noProjectAccount, Person: person, Session: "legion-daemon:", Issuers: []string{firstIssuer}},
 			{Account: roleAccount, Project: project, Person: person, Session: roleSession, Issuers: []string{firstIssuer}},
 			{Account: caseAccount, Project: "CASE", Person: person, Session: "Legion-Daemon:CASE", Issuers: []string{firstIssuer}},
+			{Account: jobAccount, Job: jobList(t, "JOB"), Session: "legion-daemon:JOB", Issuers: []string{firstIssuer}},
 		},
 		[]exchange.ReadEntry{{Account: readerAccount, Service: readerService, Session: "legion-daemon:READ", Issuers: []string{firstIssuer}}},
 		nil, nil, signInDomain)
@@ -552,6 +633,7 @@ func TestPodGivesLegionStatusToTheDaemonsEntryAlone(t *testing.T) {
 		{name: "an account naming no project, fixing legion-daemon:", account: noProjectAccount, claimed: "legion-daemon:"},
 		{name: "an account of ACME fixing the role's session", account: roleAccount, claimed: roleSession},
 		{name: "an account of CASE fixing Legion-Daemon:CASE", account: caseAccount, claimed: "Legion-Daemon:CASE"},
+		{name: "a job entry of JOB fixing legion-daemon:JOB", account: jobAccount, claimed: "legion-daemon:JOB"},
 		{name: "a read entry fixing legion-daemon:READ", account: readerAccount, claimed: "legion-daemon:READ"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -628,11 +710,14 @@ func TestPodRefusesWhatItCannotDecide(t *testing.T) {
 // with, and an entry that fixes a session writes under the configuration's name, so registering
 // one of its pods would say something no exchange reads. A read entry always fixes its session,
 // so its account is refused as such an entry is, 409 SESSION_FIXED at the route, never as an
-// account no entry lists.
+// account no entry lists. A job account is held to the same rule as a person's: its pod is
+// registered when its entry fixes no session, and refused when it fixes one.
 func TestRegistrationRefusesWhatNeedsNoRegistration(t *testing.T) {
 	set := listed(t)
-	if err := set.Registration(workerAccount, podUID, "implementer-g1"); err != nil {
-		t.Fatalf("Registration of a pod of %s for a name of its own = %v, want it accepted", workerAccount, err)
+	for _, account := range []string{workerAccount, jobAccount} {
+		if err := set.Registration(account, podUID, "implementer-g1"); err != nil {
+			t.Fatalf("Registration of a pod of %s for a name of its own = %v, want it accepted", account, err)
+		}
 	}
 	for _, c := range []struct {
 		name         string
@@ -649,6 +734,8 @@ func TestRegistrationRefusesWhatNeedsNoRegistration(t *testing.T) {
 			want: exchange.ErrSessionFixed, names: fixedSession},
 		{name: "a read entry, which fixes its session", account: readerAccount, uid: podUID, session: readerSession,
 			want: exchange.ErrSessionFixed, names: readerSession},
+		{name: "a job entry that fixes a session", account: fixedJobAccount, uid: podUID, session: jobPodSession,
+			want: exchange.ErrSessionFixed, names: jobPodSession},
 		{name: "a read entry asked for another name", account: readerAccount, uid: podUID, session: "implementer-g1",
 			want: exchange.ErrSessionFixed, names: readerAccount},
 		{name: "a session carrying whitespace", account: workerAccount, uid: podUID, session: "implementer g1",
@@ -779,7 +866,9 @@ func TestMachineActsForTheApproverAndWritesEveryProjectThePersonMay(t *testing.T
 // carries, so no constructor may answer it; a named scope carries its entry's one project and a
 // person scope the list its trade asked for, so a later reader never has to guess which a list
 // is. A read entry's decision says that it writes nothing, carries no project, and reads apart
-// from the zero value in a refusal or a log line too.
+// from the zero value in a refusal or a log line too. A job entry's decision carries its entry's
+// scope and whole list, the public scope included, which reads apart from every other in a
+// refusal or a log line.
 func TestEveryDecisionCarriesItsProjects(t *testing.T) {
 	set := listed(t)
 	pod, err := set.Pod(podToken(workerAccount, podUID), firstIssuer, "implementer-g1", nil)
@@ -810,6 +899,22 @@ func TestEveryDecisionCarriesItsProjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Person: %v", err)
 	}
+	jobPod, err := set.Pod(podToken(jobAccount, podUID), firstIssuer, "example-job-1", nil)
+	if err != nil {
+		t.Fatalf("Pod of a named job account: %v", err)
+	}
+	publicPod, err := set.Pod(podToken(publicJobAccount, podUID), firstIssuer, "example-job-2", nil)
+	if err != nil {
+		t.Fatalf("Pod of a public job account: %v", err)
+	}
+	jobRun, err := set.Workflow(actionsToken(repository, jobWorkflow, ref), "example-run-1", nil)
+	if err != nil {
+		t.Fatalf("Workflow of a public job: %v", err)
+	}
+	jobMachine, err := set.Google(googleToken(fixedJobMachineAccount, true, cloudProject, instanceName), "", nil)
+	if err != nil {
+		t.Fatalf("Google of a named job: %v", err)
+	}
 	for _, c := range []struct {
 		name     string
 		claims   exchange.Claims
@@ -823,6 +928,10 @@ func TestEveryDecisionCarriesItsProjects(t *testing.T) {
 		{name: "Machine", claims: machine, scope: exchange.ProjectScopePerson, projects: []string{"PRIV", "PUB"}},
 		{name: "Person", claims: signIn, scope: exchange.ProjectScopePerson, projects: []string{"PRIV"}},
 		{name: "Pod of the read account", claims: read, scope: exchange.ProjectScopeNone, projects: nil},
+		{name: "Pod of a named job account", claims: jobPod, scope: exchange.ProjectScopeNamed, projects: []string{project}},
+		{name: "Pod of a public job account", claims: publicPod, scope: exchange.ProjectScopePublic, projects: []string{privA, privB}},
+		{name: "Workflow of a public job", claims: jobRun, scope: exchange.ProjectScopePublic, projects: []string{privA, privB}},
+		{name: "Google of a named job", claims: jobMachine, scope: exchange.ProjectScopeNamed, projects: []string{project}},
 	} {
 		if c.claims.Scope != c.scope || !slices.Equal(c.claims.Projects, c.projects) {
 			t.Errorf("%s = scope %v, projects %v; want scope %v, projects %v", c.name, c.claims.Scope, c.claims.Projects, c.scope, c.projects)
@@ -833,6 +942,15 @@ func TestEveryDecisionCarriesItsProjects(t *testing.T) {
 	}
 	if none, unset := exchange.ProjectScopeNone.String(), exchange.ProjectScopeUnset.String(); none == unset || strings.Contains(none, "no project scope") {
 		t.Errorf("ProjectScopeNone.String() = %q beside ProjectScopeUnset's %q, want a decision that writes nothing to read apart from one never made", none, unset)
+	}
+	public := exchange.ProjectScopePublic.String()
+	if !strings.Contains(public, "public") {
+		t.Errorf("ProjectScopePublic.String() = %q, want it to say the token reaches the public projects", public)
+	}
+	for _, other := range []exchange.ProjectScope{exchange.ProjectScopeUnset, exchange.ProjectScopeNamed, exchange.ProjectScopePerson, exchange.ProjectScopeNone} {
+		if other.String() == public {
+			t.Errorf("ProjectScopePublic.String() = %q, which %d reads as too", public, int(other))
+		}
 	}
 }
 

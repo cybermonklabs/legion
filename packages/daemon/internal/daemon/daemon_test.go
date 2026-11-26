@@ -1037,11 +1037,14 @@ func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
 
 // The other lane of the same wave (api.State.WakesWaiting): a re-admission whose architect is
 // already running writes it a catch-up in place of a launch, and that wake waits on its outbox row
-// rather than in a machine (workflow.QueueCatchUp, record.Notice.PacedAt). The state names it like
-// any other — the root architect's claim, its issue, architect, kind `catch-up` and the row's own
-// moment — and names it no longer once that moment has passed, since the wake the pacing was
-// holding is then out. Without this lane a state read during a re-admission wave would show an
-// empty queue while every architect of it still waited.
+// rather than in a machine (record.Notice.PacedAt). The row here is one a release before the
+// pacing's two queues wrote, which reserved a moment for it and which this release still finds in
+// an outbox it is upgraded over: the state names it like any other — the root architect's claim,
+// its issue, architect, kind `catch-up` and the row's own moment — and names it no longer once
+// that moment has passed, since the wake the pacing was holding is then out. Without this lane a
+// state read during a re-admission wave would show an empty queue while every architect of it
+// still waited. A row this release holds in its queue is named with the pacer's estimate for its
+// place instead (TestHeldCatchUpsRejoinInIDOrderAndADeletedRowGivesUpItsPlace).
 func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)
@@ -1061,18 +1064,11 @@ func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	due := now.Add(30 * time.Second)
 	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		root := runningRoot(issue, phase.Implementing)
-		if err := records.PutIssue(ctx, tx, root); err != nil {
-			return err
-		}
-		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), root, 1, "", now, due)
+		return records.PutIssue(ctx, tx, runningRoot(issue, phase.Implementing))
 	}); err != nil {
-		t.Fatalf("record the running root and the catch-up its re-admission's start wrote: %v", err)
+		t.Fatalf("record the running root: %v", err)
 	}
-	var row int64
-	if err := st.Pool().QueryRow(ctx, "select id from outbox where issue = $1 and kind = $2", issue, string(record.OutboxKindNotice)).Scan(&row); err != nil {
-		t.Fatalf("read the catch-up's row: %v", err)
-	}
+	row := pacedCatchUp(t, st.Pool(), records, issue, 1, now, due)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatal(err)

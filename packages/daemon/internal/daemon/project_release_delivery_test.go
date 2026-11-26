@@ -421,9 +421,9 @@ func TestADeliveryHeldThroughAProjectReleaseWaitsOutThePacingOfItsStart(t *testi
 			stored := stoppedByRelease(t, tc.role)
 			rig := newReleaseDeliveryRig(t, stored)
 			// A machine takes its deps where it is built, so the pacing goes in before the claim
-			// is supervised: it gives every wake a turn parkedTurn ahead, and the rig's clock fires
-			// that turn's timer only when a test fires it.
-			rig.sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
+			// is supervised: it lets the first paced launch out parkedTurn after the rig's now
+			// (parkedFor), and the rig's clock fires that let-out's timer only when a test fires it.
+			rig.sup.deps.WakePace = parkedFor(rig.clock, parkedTurn)
 			machine := rig.supervise(t, stored)
 			rig.publisher.setAbsent(notify.RoleTopicPrefix + string(stored.Token))
 			rig.start(t, machine, stored)

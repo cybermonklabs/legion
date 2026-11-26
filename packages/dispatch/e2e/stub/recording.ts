@@ -150,6 +150,12 @@ function withoutFields<T extends Record<string, unknown>>(
   return kept;
 }
 
+/** Whether `entry` was answered with a body Playwright never read: `content.size` -1 and no
+ *  text, because the page that asked went before the body arrived. `routeFromHAR` replays such an
+ *  answer as an empty body, which the page cannot parse. */
+export function bodyUnread({ response }: HarEntry): boolean {
+  return response.status > 0 && response.content.size === -1 && response.content.text === undefined;
+}
 /** The recording to commit: the volatile transport and every credential gone, the entries in an
  *  order two recordings of one row agree on, and every URL on the placeholder origin.
  *
@@ -159,7 +165,20 @@ function withoutFields<T extends Record<string, unknown>>(
  *  The sort is stable within one `(method, url)` group, so a row that asks for one URL twice and
  *  is answered twice keeps the two answers in the order it was given them: `routeFromHAR` serves
  *  the first matching entry, and reversing them would answer the first read with the second
- *  answer. */
+ *  answer.
+ *
+ *  And of the entries that repeat one request's method, URL, body and headers, one is kept: the
+ *  first that was answered with its body, else the first that was answered (a status above 0),
+ *  or the first of them when none was. Playwright picks among a URL's entries the one whose
+ *  request headers match the most, the first of equals (`_harFindResponse`, playwright-core 1.64.1
+ *  coreBundle.js), so a later repeat can never be served. A read the page cancelled (status -1,
+ *  which the router passes over without an answer) would hide the answered one behind it, and an
+ *  answer whose body Playwright never read (`content.size` -1 and no text: the page that asked
+ *  went before the body arrived) is served as an empty body, which the page cannot parse - seen
+ *  in dispatch://INFRA-5200, where the Agents row's first load reloads at once and the sidebar's
+ *  pinned issues and projects were kept bodiless, so its replay drew "Could not load navigation."
+ *  at every wide width. A row that loads one page at five widths would otherwise keep every read
+ *  five times. */
 export function normalise(har: Har, from: string): Har {
   const entries = har.log.entries.map((entry, index) => ({ entry, index }));
   entries.sort((a, b) => {
@@ -199,6 +218,24 @@ export function normalise(har: Har, from: string): Har {
       }),
     },
   };
+  const keyOf = ({ request }: HarEntry) =>
+    JSON.stringify([
+      request.method,
+      request.url,
+      request.postData?.text ?? "",
+      request.headers.map(({ name, value }) => `${name.toLowerCase()}: ${value}`).sort(),
+    ]);
+  // 2: answered with its body; 1: answered, its body never read; 0: cancelled.
+  const rank = (entry: HarEntry) => (entry.response.status <= 0 ? 0 : bodyUnread(entry) ? 1 : 2);
+  const kept = new Map<string, HarEntry>();
+  for (const entry of normalised.log.entries) {
+    const key = keyOf(entry);
+    const held = kept.get(key);
+    if (held === undefined || rank(entry) > rank(held)) kept.set(key, entry);
+  }
+  normalised.log.entries = normalised.log.entries.filter(
+    (entry) => kept.get(keyOf(entry)) === entry
+  );
   refuseACredential(normalised);
   return normalised;
 }

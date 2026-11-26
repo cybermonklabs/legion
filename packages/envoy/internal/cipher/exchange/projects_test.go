@@ -76,9 +76,76 @@ func TestATradeNamesOnlyProjectsItsPersonSeesUnderItsEntry(t *testing.T) {
 	})
 }
 
+// TestAJobTradeNamesOnlyProjectsOfItsEntry: a job entry's token carries the entry's scope and
+// whole list whatever the trade names, since the entry is the deployment's grant, so a request
+// naming no project, or only keys of the list, gets that whole list. A request naming a key the
+// list does not name is refused, a public project's under a public list included: the broker
+// cannot tell a public project's key from one no project holds. It holds for a pod, a workflow
+// and a machine alike, and each token's list is its own: the taken rows change the list each
+// answer carries before the next row asks.
+func TestAJobTradeNamesOnlyProjectsOfItsEntry(t *testing.T) {
+	set := listed(t)
+	type decision struct {
+		name   string
+		decide func([]string) (exchange.Claims, error)
+	}
+	for _, list := range []struct {
+		name      string
+		decisions []decision
+		scope     exchange.ProjectScope
+		projects  []string
+		taken     [][]string
+		// refused holds requests the list does not answer, each naming last the key it lacks.
+		refused [][]string
+	}{
+		{name: "named ACME", decisions: []decision{
+			{"a pod", func(p []string) (exchange.Claims, error) {
+				return set.Pod(podToken(jobAccount, podUID), firstIssuer, "example-job-1", p)
+			}},
+			{"a workflow", func(p []string) (exchange.Claims, error) {
+				return set.Workflow(actionsToken(repository, fixedJobWorkflow, ref), "", p)
+			}},
+			{"a machine", func(p []string) (exchange.Claims, error) {
+				return set.Google(googleToken(fixedJobMachineAccount, true, cloudProject, instanceName), "", p)
+			}},
+		}, scope: exchange.ProjectScopeNamed, projects: []string{project},
+			taken: [][]string{nil, {project}, nil}, refused: [][]string{{"OTHER"}, {project, "OTHER"}}},
+		{name: "public [PRIVA PRIVB]", decisions: []decision{
+			{"a pod", func(p []string) (exchange.Claims, error) {
+				return set.Pod(podToken(publicJobAccount, podUID), firstIssuer, "example-job-2", p)
+			}},
+			{"a workflow", func(p []string) (exchange.Claims, error) {
+				return set.Workflow(actionsToken(repository, jobWorkflow, ref), "example-run-1", p)
+			}},
+			{"a machine", func(p []string) (exchange.Claims, error) {
+				return set.Google(googleToken(jobMachineAccount, true, "", ""), "example-job-machine-1", p)
+			}},
+		}, scope: exchange.ProjectScopePublic, projects: []string{privA, privB},
+			taken: [][]string{nil, {privA}, {privA, privB}, nil}, refused: [][]string{{"PUB"}, {privA, "PUB"}}},
+	} {
+		for _, d := range list.decisions {
+			t.Run(list.name+", "+d.name, func(t *testing.T) {
+				for _, asked := range list.taken {
+					claims, err := d.decide(asked)
+					if err != nil || claims.Scope != list.scope || !slices.Equal(claims.Projects, list.projects) {
+						t.Fatalf("a request naming %v = %+v, %v; want the scope %v and the entry's whole list %v", asked, claims, err, list.scope, list.projects)
+					}
+					claims.Projects[0] = "CHANGED"
+				}
+				for _, asked := range list.refused {
+					claims, err := d.decide(asked)
+					if !errors.Is(err, exchange.ErrProjectsFixed) || !strings.Contains(err.Error(), asked[len(asked)-1]) {
+						t.Fatalf("a request naming %v = %+v, %v; want ErrProjectsFixed naming %s, which the list does not name", asked, claims, err, asked[len(asked)-1])
+					}
+				}
+			})
+		}
+	}
+}
+
 // TestMappedProjects: the person and projects an operator's entry gives a principal, which a
 // release reads for a pod or a machine with no token in hand; a principal no entry lists, and a
-// person's own, are answered false.
+// person's own, are answered false. A job entry of each kind answers no person and its whole list.
 func TestMappedProjects(t *testing.T) {
 	set := listed(t)
 	for _, c := range []struct {
@@ -96,6 +163,11 @@ func TestMappedProjects(t *testing.T) {
 		{personPrincipal, "", nil, false},
 		{"account:system:serviceaccount:example-ns:example-other", "", nil, false},
 		{"google:" + strangerAccount, "", nil, false},
+		{jobPrincipal, "", []string{project}, true},
+		{publicJobPrincipal, "", []string{privA, privB}, true},
+		{fixedJobWorkflowPrincipal, "", []string{project}, true},
+		{jobWorkflowPrincipal, "", []string{privA, privB}, true},
+		{jobMachinePrincipal, "", []string{privA, privB}, true},
 		{workerAccount, "", nil, false},
 	} {
 		gotPerson, gotProjects, ok := set.MappedProjects(c.principal)
@@ -103,9 +175,12 @@ func TestMappedProjects(t *testing.T) {
 			t.Errorf("MappedProjects(%q) = %q, %v, %v; want %q, %v, %v", c.principal, gotPerson, gotProjects, ok, c.person, c.projects, c.ok)
 		}
 	}
-	_, projects, _ := set.MappedProjects(workerPrincipal)
-	projects[0] = "CHANGED"
-	if _, again, _ := set.MappedProjects(workerPrincipal); !slices.Equal(again, []string{project}) {
-		t.Fatalf("MappedProjects after the caller changed its copy = %v, want [%s]: the set stays as it was built", again, project)
+	for _, principal := range []string{workerPrincipal, publicJobPrincipal} {
+		_, projects, _ := set.MappedProjects(principal)
+		want := slices.Clone(projects)
+		projects[0] = "CHANGED"
+		if _, again, _ := set.MappedProjects(principal); !slices.Equal(again, want) {
+			t.Fatalf("MappedProjects(%s) after the caller changed its copy = %v, want %v: the set stays as it was built", principal, again, want)
+		}
 	}
 }

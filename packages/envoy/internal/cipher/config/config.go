@@ -748,13 +748,15 @@ type Config struct {
 	// person's pod would then choose the session names other pods exchange under. It refuses a
 	// mapped account that a BROKER_EXCHANGE_READ_ACCOUNTS entry names, because the exchange would
 	// mint the person's pod a token that names a service and no person. It refuses a mapped
-	// account that a BROKER_API_ACCOUNTS entry names, because that caller's routes relay decisions
-	// in the name the caller gives. It refuses a mapped account that a BROKER_NATS_SERVICES entry
-	// names, because the NATS auth service would then answer a connection of the person's pod
-	// with a service's NATS grant. It refuses a mapped account that either side of a
-	// BROKER_SESSION_ACCOUNT_PAIRS pair names, because a pair lets the session names the token
-	// exchange binds for the account and for the other account cross. Unset, the setting maps no
-	// account.
+	// account that a BROKER_EXCHANGE_JOB_ACCOUNTS entry names, because the exchange would mint the
+	// person's pod a token that names the account as its service and no person. It refuses a
+	// mapped account that a BROKER_API_ACCOUNTS entry names, because that caller's routes relay
+	// decisions in the name the caller gives. It refuses a mapped account that a
+	// BROKER_NATS_SERVICES entry names, because the NATS auth service would then answer a
+	// connection of the person's pod with a service's NATS grant. It refuses a mapped account that
+	// either side of a BROKER_SESSION_ACCOUNT_PAIRS pair names, because a pair lets the session
+	// names the token exchange binds for the account and for the other account cross. Unset, the
+	// setting maps no account.
 	PodOperators map[string]string
 	// BROKER_SESSION_ACCOUNT_PAIRS: pairs of Kubernetes service accounts that take each other's
 	// session names, whitespace-separated <account>=<account> entries, each account
@@ -770,8 +772,9 @@ type Config struct {
 	// account and keep the launcher's. A pair works both ways, so moving the pods back needs no
 	// change here. A pair does not chain: with A=B and B=C, C does not take a name A holds. A
 	// name the configuration fixes for a principal, the session an entry of
-	// BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS, BROKER_EXCHANGE_WORKFLOWS or
-	// BROKER_VM_EXCHANGE_ACCOUNTS names, is never taken. An account may be in several pairs. An
+	// BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS, BROKER_EXCHANGE_JOB_ACCOUNTS,
+	// BROKER_EXCHANGE_WORKFLOWS, BROKER_EXCHANGE_JOB_WORKFLOWS, BROKER_VM_EXCHANGE_ACCOUNTS or
+	// BROKER_VM_EXCHANGE_JOB_ACCOUNTS names, is never taken. An account may be in several pairs. An
 	// entry not of that form, a namespace's default account, an account paired with itself and a
 	// pair given twice, in either order, are refused, and so is an account BROKER_POD_OPERATORS
 	// maps to a person, on either side, since a person's account shares no session name with
@@ -831,7 +834,8 @@ type Config struct {
 	// exchange accepts only accounts listed in BROKER_VM_SERVICES, and
 	// BROKER_SIGNIN_DEVICE_AUDIENCE needs a VM service for its machine actor token. Unset, the
 	// broker accepts no Google identity token, and BROKER_VM_SERVICES, BROKER_VM_PROJECTS,
-	// BROKER_VM_INSTANCES, BROKER_VM_EXCHANGE_ACCOUNTS and BROKER_SIGNIN_DEVICE_AUDIENCE are refused.
+	// BROKER_VM_INSTANCES, BROKER_VM_EXCHANGE_ACCOUNTS, BROKER_VM_EXCHANGE_JOB_ACCOUNTS and
+	// BROKER_SIGNIN_DEVICE_AUDIENCE are refused.
 	GoogleOIDCAudience string
 	// BROKER_VM_SERVICES: the VM services, whitespace-separated name=<service account email>
 	// entries, such as example-service=example-fleet@example-project.iam.gserviceaccount.com. A name
@@ -849,23 +853,43 @@ type Config struct {
 	// by account, each answering its service. Needs BROKER_GOOGLE_OIDC_AUDIENCE. Unset, no VM service
 	// is listed.
 	VMServicesByAccount map[string]string
-	// BROKER_VM_EXCHANGE_ACCOUNTS: the person and the Dispatch project each fleet writes for,
-	// whitespace-separated <service account email>=<project>=<person>[=<session>] entries, such
-	// as example-fleet@example-project.iam.gserviceaccount.com=EXAMPLE=ada@example.com. A token the
+	// BROKER_VM_EXCHANGE_ACCOUNTS, BROKER_VM_EXCHANGE_JOB_ACCOUNTS: what the token a machine of each
+	// fleet is minted writes for. BROKER_VM_EXCHANGE_ACCOUNTS names the person and the Dispatch
+	// project each fleet writes for, whitespace-separated
+	// <service account email>=<project>=<person>[=<session>] entries, such as
+	// example-fleet@example-project.iam.gserviceaccount.com=EXAMPLE=ada@example.com. A token the
 	// exchange mints for a machine of that account may write that one project, acts for that
 	// person, and writes under the session the entry fixes; an entry that fixes none requires the
 	// machine to name its own session. The session is everything after the third "=", so it alone
-	// may carry one. Each account is named at most once and must be one BROKER_VM_SERVICES lists.
-	// An account BROKER_VM_SERVICES lists and this setting does not gets a token that names its
-	// service and no person at all, which a resource server holds to what a service may do. Needs
-	// BROKER_GOOGLE_OIDC_AUDIENCE. Unset, every listed account's machines get such a token. The
-	// person an entry names is also the one whose Dispatch Inbox lists a request one of that
-	// fleet's machines makes for a shared human-tier secret; it reaches no secret.
+	// may carry one. The person an entry names is also the one whose Dispatch Inbox lists a request
+	// one of that fleet's machines makes for a shared human-tier secret; it reaches no secret.
+	//
+	// BROKER_VM_EXCHANGE_JOB_ACCOUNTS names a job's projects in place of a person,
+	// whitespace-separated <service account email>=<projects>[=<session>] entries, such as
+	// example-fleet@example-project.iam.gserviceaccount.com=public,PRIVA, the projects spelled as
+	// BROKER_EXCHANGE_JOB_ACCOUNTS spells them and no issuer field, since Google issues the
+	// machine's token. A token the exchange mints for a machine of that account names the
+	// account's address as its service and no person, holds no OAuth scope, and carries the
+	// entry's projects whatever the request names, as a job account's token does; the launcher
+	// credential the exchange mints beside it still records the account's BROKER_VM_SERVICES
+	// service. Every machine of such an account then writes to Dispatch with no person signed in,
+	// under the session the entry fixes or, where it fixes none, the one the machine names, so list
+	// an account here only when every machine that runs as it is that job's. The session is
+	// everything after the second "=", so it alone may carry one.
+	//
+	// Refused at start, naming the setting and the entry: an entry of either setting not of its
+	// form or with a blank field, an account no VM service may name, as BROKER_VM_SERVICES refuses
+	// one, an account named twice, a job entry's projects of any other spelling, an account
+	// BROKER_VM_SERVICES does not list, and an account both settings name, since one account has
+	// one answer. An account BROKER_VM_SERVICES lists and neither setting names gets a token that
+	// names its service and no person at all, which a resource server holds to what a service may
+	// do. Both need BROKER_GOOGLE_OIDC_AUDIENCE. With both unset, every listed account's machines
+	// get such a token.
 	//
 	// The entries this answers are the whole of what the exchange decides a machine's token on:
 	// each one carries its account's service (BROKER_VM_SERVICES), the pins (BROKER_VM_PROJECTS
-	// and BROKER_VM_INSTANCES) and, where this setting names them, the person, the project and
-	// the session.
+	// and BROKER_VM_INSTANCES) and, where the two settings name them, the person and the project
+	// or the job's projects, and the session.
 	ExchangeGoogleAccounts []exchange.GoogleEntry
 	// BROKER_EXCHANGE_K8S_AUDIENCE: the audience a pod's projected service-account token must
 	// carry to be exchanged (RFC 8693) for a Dispatch access token. Its issuers are those of
@@ -907,33 +931,33 @@ type Config struct {
 	// account>==<person>==<issuer names> where it names its issuers): the shared public-session
 	// account's, whose tokens act for that person and name no project. An entry may name neither a
 	// project nor a person (<service account>==, or <service account>====<issuer names> where it
-	// names its issuers): a job's own account, whose tokens name no person and no project and act
-	// as the account itself, which Dispatch records their writes under. An entry naming a project
-	// and no person is refused: an entry that names a project names its person, so no token held to
-	// a project is personless. An entry whose fixed session is legion-daemon:<its own project> is a
-	// Legion daemon's own: the token minted for its pods holds the OAuth scope legion-status too.
-	// Dispatch reads that scope (DISPATCH_LEGION_STATUS_SCOPE): where the setting is on, a write of
-	// a Legion issue's status needs it or the person scope, but for a status write of the architect
-	// of an issue above, which writes with its own broker token. No other token the exchange mints
-	// holds legion-status, whatever session it carries. An entry names its issuers, by their names
-	// in BROKER_K8S_OIDC_ISSUER, in a fifth "="-separated field, after its session field (empty for
-	// none). A session may hold "=", so the broker reads everything after an entry's third "=" as
-	// its session where that holds no "=", and otherwise as the session up to its last "=" and the
-	// issuer field after it. So an entry written as four fields whose session holds "=" is read as
-	// five, and a fixed session that holds "=" is kept only where BROKER_K8S_OIDC_ISSUER names its
-	// issuers, with the issuer field written after it. An entry of three fields fixes no session.
-	// The exchange takes the account's token only from the issuers its entry names, and an entry
-	// that names none takes the first issuer of BROKER_K8S_OIDC_ISSUER alone, so an entry written
-	// for one cluster keeps its meaning while that cluster stays first in the list. A token of an
-	// issuer its entry does not name is refused with 400 invalid_request. A namespace's default
-	// account is refused, as is an account listed twice. The broker refuses to boot, naming this
-	// setting and BROKER_EXCHANGE_K8S_ISSUER, for an entry that names an issuer
-	// BROKER_EXCHANGE_K8S_ISSUER does not name, names one issuer twice, or names none while
-	// BROKER_EXCHANGE_K8S_ISSUER leaves out the list's first issuer; naming this setting and
-	// BROKER_K8S_OIDC_ISSUER, for any issuer name while BROKER_K8S_OIDC_ISSUER is one bare URL;
-	// and, naming this setting, for an entry that gives no issuer field and whose session is only
-	// names of BROKER_K8S_OIDC_ISSUER's issuers, separated by commas, since the entry reads that
-	// text as its session: its issuers go in the fifth field, after an empty session, <service
+	// names its issuers): an account whose tokens name no person and no project and act as the
+	// account itself, which Dispatch records their writes under. An entry naming a project and no
+	// person is refused: an entry that names a project names its person, so no account entry's
+	// token held to a project is personless. An entry whose fixed session is legion-daemon:<its own
+	// project> is a Legion daemon's own: the token minted for its pods holds the OAuth scope
+	// legion-status too. Dispatch reads that scope (DISPATCH_LEGION_STATUS_SCOPE): where the
+	// setting is on, a write of a Legion issue's status needs it or the person scope, but for a
+	// status write of the architect of an issue above, which writes with its own broker token. No
+	// other token the exchange mints holds legion-status, whatever session it carries. An entry
+	// names its issuers, by their names in BROKER_K8S_OIDC_ISSUER, in a fifth "="-separated field,
+	// after its session field (empty for none). A session may hold "=", so the broker reads
+	// everything after an entry's third "=" as its session where that holds no "=", and otherwise
+	// as the session up to its last "=" and the issuer field after it. So an entry written as four
+	// fields whose session holds "=" is read as five, and a fixed session that holds "=" is kept
+	// only where BROKER_K8S_OIDC_ISSUER names its issuers, with the issuer field written after it.
+	// An entry of three fields fixes no session. The exchange takes the account's token only from
+	// the issuers its entry names, and an entry that names none takes the first issuer of
+	// BROKER_K8S_OIDC_ISSUER alone, so an entry written for one cluster keeps its meaning while
+	// that cluster stays first in the list. A token of an issuer its entry does not name is refused
+	// with 400 invalid_request. A namespace's default account is refused, as is an account listed
+	// twice. The broker refuses to boot, naming this setting and BROKER_EXCHANGE_K8S_ISSUER, for an
+	// entry that names an issuer BROKER_EXCHANGE_K8S_ISSUER does not name, names one issuer twice,
+	// or names none while BROKER_EXCHANGE_K8S_ISSUER leaves out the list's first issuer; naming this
+	// setting and BROKER_K8S_OIDC_ISSUER, for any issuer name while BROKER_K8S_OIDC_ISSUER is one
+	// bare URL; and, naming this setting, for an entry that gives no issuer field and whose session
+	// is only names of BROKER_K8S_OIDC_ISSUER's issuers, separated by commas, since the entry reads
+	// that text as its session: its issuers go in the fifth field, after an empty session, <service
 	// account>=<project>=<person>==<issuer names>. Needs BROKER_K8S_OIDC_ISSUER and
 	// BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present. A broker of a build older than
 	// the entry naming no person refuses to start on one. Unset, no account exchanges.
@@ -972,6 +996,52 @@ type Config struct {
 	// pods present. A broker of a build older than this setting does not read it, so it mints those
 	// accounts no token at all. Unset, no account exchanges for a read-only token.
 	ExchangeReadAccounts []exchange.ReadEntry
+	// BROKER_EXCHANGE_JOB_ACCOUNTS: the Kubernetes service accounts whose pods run a job that
+	// writes for no person, whitespace-separated <service account>=<projects>[=<session>] entries,
+	// such as system:serviceaccount:example-ns:example-job=EXAMPLE or
+	// system:serviceaccount:example-ns:example-sweeper=public,PRIVA,PRIVB=example-sweeper, or
+	// <service account>=<projects>=[<session>]=<issuer name>[,<issuer name>…] entries, such as
+	// system:serviceaccount:example-ns:example-job=EXAMPLE==first,second. The projects are one
+	// project key, or public followed by ,<key> for each of at most 16 private projects, the keys
+	// in any order, public counting toward none (exchange.ParseJobProjects). The token minted for a
+	// pod of the account names the account as its service and no person, holds no OAuth scope, so
+	// a route that needs one refuses it before Dispatch's project check runs, and carries the
+	// entry's projects whatever the exchange request names: the project scope named and its one
+	// project, for which that check judges the token as it judges a person's named token for that
+	// project, or the project scope public and the private projects, beside which it reaches every
+	// public project. At this release Dispatch does not read a public token's list, so such a token
+	// writes wherever a token that names no project may. A request may name no project or only
+	// projects of the entry, and one naming any other is refused. It writes under the session the
+	// entry fixes; an entry that fixes none requires the pod to name its own session, which a
+	// registration (BROKER_POD_REGISTRARS) may choose for it. An entry names its issuers, by their
+	// names in BROKER_K8S_OIDC_ISSUER, in a fourth "="-separated field, after its session field
+	// (empty for none). A session may hold "=", so the broker reads everything after an entry's
+	// second "=" as its session where that holds no "=", and otherwise as the session up to its
+	// last "=" and the issuer field after it. So an entry written as three fields whose session
+	// holds "=" is read as four, and a fixed session that holds "=" is kept only where
+	// BROKER_K8S_OIDC_ISSUER names its issuers, with the issuer field written after it. An entry of
+	// two fields fixes no session. The exchange takes the account's token only from the issuers its
+	// entry names, and an entry that names none takes the first issuer of BROKER_K8S_OIDC_ISSUER
+	// alone, as a BROKER_EXCHANGE_ACCOUNTS entry that names none does, so an entry written for one
+	// cluster keeps its meaning while that cluster stays first in the list. A token of an issuer
+	// its entry does not name is refused with 400 invalid_request. Refused at start, naming the
+	// setting and the entry: an entry not of that form, with a blank account or an empty issuer
+	// field; an account that is not system:serviceaccount:<namespace>:<name>, or is a namespace's
+	// default account; an account listed twice; projects of any other spelling; an account
+	// BROKER_EXCHANGE_ACCOUNTS or BROKER_EXCHANGE_READ_ACCOUNTS lists too, since one account has one
+	// answer; and an account BROKER_POD_OPERATORS maps to a person. The broker refuses to boot,
+	// naming this setting and BROKER_EXCHANGE_K8S_ISSUER, for an entry that names an issuer
+	// BROKER_EXCHANGE_K8S_ISSUER does not name, names one issuer twice, or names none while
+	// BROKER_EXCHANGE_K8S_ISSUER leaves out the list's first issuer; naming this setting and
+	// BROKER_K8S_OIDC_ISSUER, for any issuer name while BROKER_K8S_OIDC_ISSUER is one bare URL;
+	// and, naming this setting, for an entry that gives no issuer field and whose session is only
+	// names of BROKER_K8S_OIDC_ISSUER's issuers, separated by commas, since the entry reads that
+	// text as its session: its issuers go in the fourth field, after an empty session, <service
+	// account>=<projects>==<issuer names>. Needs BROKER_K8S_OIDC_ISSUER and
+	// BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present. A broker of a build older than
+	// this setting does not read it, so it mints those accounts no token at all. Unset, no account
+	// exchanges for a job's token.
+	ExchangeJobAccounts []exchange.AccountEntry
 	// BROKER_EXCHANGE_WORKFLOWS: the GitHub workflows whose runs exchange their token,
 	// whitespace-separated <repository>=<workflow path>=<ref>=<project>=<person>[=<session>]
 	// entries, such as
@@ -982,6 +1052,24 @@ type Config struct {
 	// BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs
 	// present. Unset, no workflow exchanges.
 	ExchangeWorkflows []exchange.WorkflowEntry
+	// BROKER_EXCHANGE_JOB_WORKFLOWS: the GitHub workflows whose runs are a job that writes for no
+	// person, whitespace-separated <repository>=<workflow path>=<ref>=<projects>[=<session>]
+	// entries, such as example-org/example-repo=.github/workflows/sweep.yaml=refs/heads/main=public.
+	// The repository, the workflow and the ref are compared exactly, as BROKER_EXCHANGE_WORKFLOWS
+	// compares them, and the projects are spelled as BROKER_EXCHANGE_JOB_ACCOUNTS spells them, with
+	// no issuer field, since BROKER_EXCHANGE_GITHUB_ISSUER issues every run's token. The token
+	// minted for a run names the workflow, <repository>/<workflow path>@<ref>, as its service and
+	// no person, holds no OAuth scope, and carries the entry's projects whatever the request names,
+	// as a job account's token does. It writes under the session the entry fixes; an entry
+	// that fixes none requires the run to name its own session. The session is everything after the
+	// fourth "=", so it alone may carry one. Refused at start, naming the setting and the entry: an
+	// entry not of that form or with a blank repository, workflow or ref; a workflow listed twice;
+	// projects of any other spelling; and a workflow BROKER_EXCHANGE_WORKFLOWS lists too, since one
+	// workflow run has one answer. Needs BROKER_EXCHANGE_GITHUB_ISSUER and
+	// BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present. A broker of a build older than
+	// this setting does not read it, so it mints those runs no token at all. Unset, no workflow
+	// exchanges for a job's token.
+	ExchangeJobWorkflows []exchange.WorkflowEntry
 	// BROKER_PRIVATE_PROJECTS: the Dispatch projects the operator declares private,
 	// whitespace-separated project keys, such as PRIV ACME, each an uppercase letter, then 1 to 9
 	// uppercase letters or digits. A key that is not one, and a key named twice, refuse the
@@ -1432,8 +1520,9 @@ func k8sIssuerForm(setting, text string) error {
 // ServiceAccount subject and a Google address hold no "=", so an entry's second "=" is where its
 // names begin. ok is false for an entry that ends in that "=" and names nothing after it.
 // BROKER_API_ACCOUNTS, BROKER_SERVICE_LOGINS and BROKER_NATS_SERVICES (parseNATSService) cut their
-// entries here. BROKER_EXCHANGE_ACCOUNTS and BROKER_EXCHANGE_READ_ACCOUNTS read their issuer field
-// after the entry's last "=" instead (exchangeIssuerFields).
+// entries here. BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS and
+// BROKER_EXCHANGE_JOB_ACCOUNTS read their issuer field after the entry's last "=" instead
+// (exchangeIssuerFields).
 func CutIssuerNames(text string) (head string, names []string, ok bool) {
 	fields := strings.SplitN(text, "=", 3)
 	switch {
@@ -1530,15 +1619,16 @@ func exchangeIssuers(value, audience string, issuers []oidc.NamedIssuer) ([]oidc
 	return taken, nil
 }
 
-// exchangeIssuerForm says where an entry of BROKER_EXCHANGE_ACCOUNTS or of
-// BROKER_EXCHANGE_READ_ACCOUNTS names its issuers, for the refusals of an entry not of its
-// setting's form and of the issuer names an entry gives: field is the field that holds them, and
-// sessionWithIssuers the form of an entry whose fixed session holds "=", which is written with the
-// issuer field after it.
+// exchangeIssuerForm says where an entry of BROKER_EXCHANGE_ACCOUNTS, of
+// BROKER_EXCHANGE_READ_ACCOUNTS or of BROKER_EXCHANGE_JOB_ACCOUNTS names its issuers, for the
+// refusals of an entry not of its setting's form and of the issuer names an entry gives: field is
+// the field that holds them, and sessionWithIssuers the form of an entry whose fixed session holds
+// "=", which is written with the issuer field after it.
 type exchangeIssuerForm struct{ field, sessionWithIssuers string }
 
-// accountIssuerForm is the exchangeIssuerForm of a BROKER_EXCHANGE_ACCOUNTS entry, and
-// readIssuerForm that of a BROKER_EXCHANGE_READ_ACCOUNTS entry.
+// accountIssuerForm is the exchangeIssuerForm of a BROKER_EXCHANGE_ACCOUNTS entry, readIssuerForm
+// that of a BROKER_EXCHANGE_READ_ACCOUNTS entry, and jobIssuerForm that of a
+// BROKER_EXCHANGE_JOB_ACCOUNTS entry.
 var (
 	accountIssuerForm = exchangeIssuerForm{
 		field:              `an entry names its issuers in a fifth "="-separated field, after its session field (empty for none), which the broker reads after the entry's last "="`,
@@ -1548,20 +1638,24 @@ var (
 		field:              `an entry names its issuers in a fourth "="-separated field, after its session, which the broker reads after the entry's last "="`,
 		sessionWithIssuers: "<service account>=<service>=<session>=<issuer name>",
 	}
+	jobIssuerForm = exchangeIssuerForm{
+		field:              `an entry names its issuers in a fourth "="-separated field, after its session field (empty for none), which the broker reads after the entry's last "="`,
+		sessionWithIssuers: "<service account>=<projects>=<session>=<issuer name>",
+	}
 )
 
 // exchangeAccountIssuers answers the names of the issuers whose tokens the exchange takes for the
-// entry text of setting, BROKER_EXCHANGE_ACCOUNTS or BROKER_EXCHANGE_READ_ACCOUNTS, which names
-// names: AccountIssuers' answer, so the first of issuers alone where it names none, each of which
-// must be one of exchangeTakes, the issuers BROKER_EXCHANGE_K8S_ISSUER names. It refuses, naming
-// setting and the entry: an entry naming none whose first issuer exchangeTakes does not hold,
-// naming BROKER_EXCHANGE_K8S_ISSUER; what AccountIssuers refuses of the names an entry gives; and
-// a name exchangeTakes does not hold. A refusal of the names an entry gives also says which field
-// holds them, form's, after the session, which the broker reads after the entry's last "=",
-// because an entry whose fixed session holds "=" and gives no issuer field reads the session's
-// last part as issuer names; and, where the issuers have names, it lists the issuers
-// BROKER_EXCHANGE_K8S_ISSUER names. With no exchange issuers it answers none, and Load refuses the
-// entry for the audience it needs.
+// entry text of setting, BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS or
+// BROKER_EXCHANGE_JOB_ACCOUNTS, which names names: AccountIssuers' answer, so the first of issuers
+// alone where it names none, each of which must be one of exchangeTakes, the issuers
+// BROKER_EXCHANGE_K8S_ISSUER names. It refuses, naming setting and the entry: an entry naming none
+// whose first issuer exchangeTakes does not hold, naming BROKER_EXCHANGE_K8S_ISSUER; what
+// AccountIssuers refuses of the names an entry gives; and a name exchangeTakes does not hold. A
+// refusal of the names an entry gives also says which field holds them, form's, after the
+// session, which the broker reads after the entry's last "=", because an entry whose fixed session
+// holds "=" and gives no issuer field reads the session's last part as issuer names; and, where
+// the issuers have names, it lists the issuers BROKER_EXCHANGE_K8S_ISSUER names. With no exchange
+// issuers it answers none, and Load refuses the entry for the audience it needs.
 func exchangeAccountIssuers(setting, text string, form exchangeIssuerForm, names []string, issuers, exchangeTakes []oidc.NamedIssuer) ([]string, error) {
 	if len(exchangeTakes) == 0 {
 		return nil, nil
@@ -2002,13 +2096,14 @@ func podAccountRefusal(setting, text, account string) error {
 }
 
 // exchangeIssuerFields splits an entry of BROKER_EXCHANGE_ACCOUNTS (want 4: its account, project,
-// person and session) or of BROKER_EXCHANGE_READ_ACCOUNTS (want 3: its account, service and
-// session) into its want fields, the last its session, and the issuer names of the field after
-// its session, nil where it gives none. A session may hold "=", so it reads everything after the
-// entry's (want-1)th "=" as the session where that holds no "=", and otherwise as the session up
-// to its last "=" and the issuer field after it, <issuer name>[,<issuer name>…]; an entry one
-// field short gives a blank session (exchangeFields). ok is false for an entry of fewer fields,
-// and for one whose issuer field is empty.
+// person and session), of BROKER_EXCHANGE_READ_ACCOUNTS (want 3: its account, service and
+// session) or of BROKER_EXCHANGE_JOB_ACCOUNTS (want 3: its account, projects and session) into
+// its want fields, the last its session, and the issuer names of the field after its session,
+// nil where it gives none. A session may hold "=", so it reads everything after the entry's
+// (want-1)th "=" as the session where that holds no "=", and otherwise as the session up to its
+// last "=" and the issuer field after it, <issuer name>[,<issuer name>…]; an entry one field short
+// gives a blank session (exchangeFields). ok is false for an entry of fewer fields, and for one
+// whose issuer field is empty.
 func exchangeIssuerFields(text string, want int) (fields, names []string, ok bool) {
 	fields, ok = exchangeFields(text, want)
 	if !ok {
@@ -2028,9 +2123,10 @@ func exchangeIssuerFields(text string, want int) (fields, names []string, ok boo
 }
 
 // sessionNamesIssuers reports whether session, the session of an exchange entry that gives no
-// issuer field, is only names of issuers' issuers, separated by commas: what an entry of four
-// fields that meant to name its issuers, <service account>=<project>=<person>=<issuer names>,
-// reads as its session. One bare issuer URL has no name, so no session names it.
+// issuer field, is only names of issuers' issuers, separated by commas: what an entry that meant
+// to name its issuers and left out its empty session field, <service account>=<project>=<person>=
+// <issuer names>, or <service account>=<projects>=<issuer names> for a job entry, reads as its
+// session. One bare issuer URL has no name, so no session names it.
 func sessionNamesIssuers(session string, issuers []oidc.NamedIssuer) bool {
 	if len(issuers) == 0 || issuers[0].Name == "" {
 		return false
@@ -2089,11 +2185,12 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // caller, a token of its own, a registrar's choice of session names or another account's session
 // names, since a mapped account acts for its person and for nothing else. The settings it checks
 // are BROKER_SERVICE_LOGINS, BROKER_SERVICES, BROKER_VM_SERVICES, BROKER_EXCHANGE_ACCOUNTS,
-// BROKER_POD_REGISTRARS, BROKER_EXCHANGE_READ_ACCOUNTS, BROKER_API_ACCOUNTS, BROKER_NATS_SERVICES
-// and BROKER_SESSION_ACCOUNT_PAIRS, in the order it checks them. A setting that Load reads through
-// getenv on the two configurations of TestEveryBrokerSettingLoadReadsIsMarked (the person sign-in
-// on and off, each with every condition in front of a read set) fails that test until its author
-// marks it, as giving a Kubernetes account a role, beside its refusal here and its row in
+// BROKER_POD_REGISTRARS, BROKER_EXCHANGE_READ_ACCOUNTS, BROKER_EXCHANGE_JOB_ACCOUNTS,
+// BROKER_API_ACCOUNTS, BROKER_NATS_SERVICES and BROKER_SESSION_ACCOUNT_PAIRS, in the order it
+// checks them. A setting that Load reads through getenv on the two configurations of
+// TestEveryBrokerSettingLoadReadsIsMarked (the person sign-in on and off, each with every condition
+// in front of a read set) fails that test until its author marks it, as giving a Kubernetes
+// account a role, beside its refusal here and its row in
 // TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole, or as giving none. A setting read
 // under a condition those configurations do not set, or read other than through getenv, is outside
 // the test: cmd/cipherd's BROKER_FAKE_SECRETS_FILE and the PG* variables pgconn.ParseConfig reads in
@@ -2114,17 +2211,21 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // (oauthstore.Store.RegisterPodSession), so the person's pod would choose the session names other
 // pods exchange under. The registration routes refuse a mapped account already (api's
 // serviceCaller, 403 PERSON_ACCOUNT), so such an entry could register nothing. A mapped account on
-// the pod side of an entry is not refused: a registration of its pod is admitted only under a
-// BROKER_EXCHANGE_ACCOUNTS entry that fixes no session (the pod-session policy's 409
-// SESSION_FIXED), and every BROKER_EXCHANGE_ACCOUNTS entry for the account names the same person
-// (the refusal above), so the pod acts for that person alone. It refuses a mapped
-// account that a BROKER_EXCHANGE_READ_ACCOUNTS entry names (cfg.ExchangeReadAccounts), because the
-// exchange would then mint the person's pod a read-only token that names that entry's service and
-// no person. It refuses a mapped account that a BROKER_API_ACCOUNTS entry names (cfg.APIAccounts),
-// because the named-caller routes it reaches act on the caller's word: the approval relays take the
-// deciding person's name from the caller, so the person's pod could decide any request in any
-// person's name. It refuses a mapped account that a BROKER_NATS_SERVICES entry names, because the
-// person's pod would then be answered as that entry's service: by the NATS auth service
+// the pod side of an entry is not refused: a registration of its pod is admitted only under an
+// exchange entry that fixes no session (the pod-session policy's 409 SESSION_FIXED), every
+// BROKER_EXCHANGE_ACCOUNTS entry for the account names the same person (the refusal above), and
+// no BROKER_EXCHANGE_JOB_ACCOUNTS entry names it (the refusal below), so the pod acts for that
+// person alone. It refuses a mapped account that a BROKER_EXCHANGE_READ_ACCOUNTS entry names
+// (cfg.ExchangeReadAccounts), because the exchange would then mint the person's pod a read-only
+// token that names that entry's service and no person. It refuses a mapped account that a
+// BROKER_EXCHANGE_JOB_ACCOUNTS entry names (cfg.ExchangeJobAccounts), because the exchange would
+// then mint the person's pod a job's token that names the account as its service and no person
+// and reaches the entry's projects. It refuses a mapped account that a BROKER_API_ACCOUNTS entry
+// names (cfg.APIAccounts), because the named-caller routes it reaches act on the caller's word:
+// the approval relays take the deciding person's name from the caller, so the person's pod could
+// decide any request in any person's name. It refuses a mapped account that a
+// BROKER_NATS_SERVICES entry names, because the person's pod would then be answered as that
+// entry's service: by the NATS auth service
 // (internal/cipher/natscallout) with that entry's service grant and, for an edge-listener entry, also by
 // GET /v1/project-repositories with the repositories of the projects the entry lists. It reads
 // each entry's account from cfg.NATS.Services, the one parse of that setting (ParseNATSServices),
@@ -2175,6 +2276,10 @@ func mappedAccountRefusal(cfg *Config) error {
 	for _, entry := range cfg.ExchangeReadAccounts {
 		readServices[entry.Account] = entry.Service
 	}
+	jobProjects := make(map[string]exchange.JobProjects, len(cfg.ExchangeJobAccounts))
+	for _, entry := range cfg.ExchangeJobAccounts {
+		jobProjects[entry.Account] = entry.Job
+	}
 	for _, account := range slices.Sorted(maps.Keys(cfg.PodOperators)) {
 		person := cfg.PodOperators[account]
 		login, listed := cfg.ServiceLogins[account]
@@ -2202,6 +2307,9 @@ func mappedAccountRefusal(cfg *Config) error {
 		if service, reads := readServices[account]; reads {
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_EXCHANGE_READ_ACCOUNTS names it as a reader of the service %q; the exchange would mint the person's pod a read-only token that names that service and no person, so take the account out of BROKER_EXCHANGE_READ_ACCOUNTS or out of %s", setting, account, person, service, setting)
 		}
+		if job, runs := jobProjects[account]; runs {
+			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_EXCHANGE_JOB_ACCOUNTS names it as a job's account for the projects %s; the exchange would mint the person's pod a job's token that names the account as its service and no person, so take the account out of BROKER_EXCHANGE_JOB_ACCOUNTS or out of %s", setting, account, person, job, setting)
+		}
 		if caller, calls := cfg.APIAccounts[account]; calls {
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_API_ACCOUNTS names it as the caller %q; that caller's routes act on the caller's word, and the approval relays take the deciding person's name from it, so take the account out of BROKER_API_ACCOUNTS or out of %s", setting, account, person, caller.Name, setting)
 		}
@@ -2215,22 +2323,77 @@ func mappedAccountRefusal(cfg *Config) error {
 	return nil
 }
 
+// exchangeListingRefusal refuses an identity two exchange settings list: a Kubernetes service
+// account that BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS and
+// BROKER_EXCHANGE_JOB_ACCOUNTS list more than once between them, or a workflow that
+// BROKER_EXCHANGE_WORKFLOWS and BROKER_EXCHANGE_JOB_WORKFLOWS both list. One identity has one
+// answer: listed in two settings, it would mint two kinds of token. exchange.NewSet refuses it
+// too, but only this refusal can name both settings. Each setting's parser refuses an identity
+// that setting lists twice, so a second listing is in a later setting: the refusal names that
+// setting, then the one that lists the identity first, then the identity, and says why a token of
+// the later setting cannot share it. Load calls it once, after it reads all five settings. An
+// account BROKER_VM_EXCHANGE_JOB_ACCOUNTS and BROKER_VM_EXCHANGE_ACCOUNTS both name is refused
+// where Load merges the two into the machines of BROKER_VM_SERVICES.
+func exchangeListingRefusal(cfg *Config) error {
+	const account, workflow = "service account", "workflow"
+	// workflowName is a workflow as a refusal names it and as both workflow settings key it.
+	workflowName := func(entry exchange.WorkflowEntry) string {
+		return entry.Repository + "=" + entry.Workflow + "=" + entry.Ref
+	}
+	// listedBy is the setting that lists each identity, keyed by its kind and the identity as a
+	// refusal names it.
+	listedBy := map[[2]string]string{}
+	for _, entry := range cfg.ExchangeAccounts {
+		listedBy[[2]string{account, entry.Account}] = "BROKER_EXCHANGE_ACCOUNTS"
+	}
+	for _, entry := range cfg.ExchangeWorkflows {
+		listedBy[[2]string{workflow, workflowName(entry)}] = "BROKER_EXCHANGE_WORKFLOWS"
+	}
+	// list indexes identity, of kind, by setting, and refuses it when an earlier setting lists it,
+	// with reason, which says why a token of setting cannot share it.
+	list := func(setting, kind, identity, reason string) error {
+		key := [2]string{kind, identity}
+		if first, listed := listedBy[key]; listed {
+			return fmt.Errorf("%s and %s both name the %s %s; %s, so name it in one of them", setting, first, kind, identity, reason)
+		}
+		listedBy[key] = setting
+		return nil
+	}
+	for _, entry := range cfg.ExchangeReadAccounts {
+		if err := list("BROKER_EXCHANGE_READ_ACCOUNTS", account, entry.Account, "one account mints one kind of token, a read-only one or one that writes as its person or as the account"); err != nil {
+			return err
+		}
+	}
+	for _, entry := range cfg.ExchangeJobAccounts {
+		if err := list("BROKER_EXCHANGE_JOB_ACCOUNTS", account, entry.Account, "one account mints one kind of token, and only a job's names the account as its service and carries projects"); err != nil {
+			return err
+		}
+	}
+	for _, entry := range cfg.ExchangeJobWorkflows {
+		if err := list("BROKER_EXCHANGE_JOB_WORKFLOWS", workflow, workflowName(entry), "one workflow run has one answer, a token that acts for its person or a job's that names none"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // parseExchangeAccounts reads setting's whitespace-separated entries, the identities
 // BROKER_EXCHANGE_ACCOUNTS lists, in order: <service account>=<project>=<person>[=<session>], or
 // <service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…] where the entry
 // names the issuers its pods' tokens come from (exchangeIssuerFields). The project may be empty
 // (<service account>==<person>), which is the shared public-session account's entry: its named
 // tokens act for the person and name no project. The person may be empty with it (<service
-// account>==), a job's own account, whose tokens act as the account itself. Each entry's issuers
-// are exchangeAccountIssuers' answer over issuers, BROKER_K8S_OIDC_ISSUER, and exchangeTakes, the
+// account>==), an account whose tokens act as the account itself. Each entry's issuers are
+// exchangeAccountIssuers' answer over issuers, BROKER_K8S_OIDC_ISSUER, and exchangeTakes, the
 // issuers BROKER_EXCHANGE_K8S_ISSUER names. It refuses, naming the entry: one not of that form,
 // with a blank account, or naming a project and no person, since an entry that names a project
-// names its person, so no token held to a project is personless; an account that is not
-// system:serviceaccount:<namespace>:<name>, or a namespace's default account (podAccountRefusal);
-// an account listed twice, since one account writes as one identity; an entry that gives no issuer
-// field and whose session is only issuer names (sessionNamesIssuers), which it would write under as
-// a session while taking the first issuer alone; and what exchangeAccountIssuers refuses.
-// exchange.NewSet is the second gate, and the session name's own form is its to refuse.
+// names its person, so no account entry's token held to a project is personless; an account that
+// is not system:serviceaccount:<namespace>:<name>, or a namespace's default account
+// (podAccountRefusal); an account listed twice, since one account writes as one identity; an
+// entry that gives no issuer field and whose session is only issuer names (sessionNamesIssuers),
+// which it would write under as a session while taking the first issuer alone; and what
+// exchangeAccountIssuers refuses. exchange.NewSet is the second gate, and the session name's own
+// form is its to refuse.
 func parseExchangeAccounts(setting, value string, issuers, exchangeTakes []oidc.NamedIssuer) ([]exchange.AccountEntry, error) {
 	var entries []exchange.AccountEntry
 	seen := map[string]bool{}
@@ -2240,7 +2403,7 @@ func parseExchangeAccounts(setting, value string, issuers, exchangeTakes []oidc.
 			return nil, fmt.Errorf(`%s must be <service account>=<project>=<person>[=<session>] or <service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…] entries, the project empty for an entry naming none and the person empty only beside it: %s, got %q`, setting, accountIssuerForm.field, text)
 		}
 		if fields[1] != "" && fields[2] == "" {
-			return nil, fmt.Errorf("%s names a project and no person in %q; an entry names no person only when it names no project either (<service account>==): an entry that names a project names its person, so no token held to a project is personless", setting, text)
+			return nil, fmt.Errorf("%s names a project and no person in %q; an entry names no person only when it names no project either (<service account>==): an entry that names a project names its person, so no account entry's token held to a project is personless", setting, text)
 		}
 		if err := podAccountRefusal(setting, text, fields[0]); err != nil {
 			return nil, err
@@ -2277,9 +2440,9 @@ func parseExchangeAccounts(setting, value string, issuers, exchangeTakes []oidc.
 // (podAccountRefusal); a service that is not a service's name, or is policy.OwnerShared, the rule
 // parseServiceAccounts holds a service to; an account listed twice, since one account reads as
 // one identity; and what exchangeAccountIssuers refuses. An account BROKER_EXCHANGE_ACCOUNTS
-// lists too is Load's to refuse, since it reads both settings. With no exchange issuers an entry
-// takes none, and Load refuses it for the audience it needs. exchange.NewSet is the second gate,
-// and the session name's own form is its to refuse.
+// lists too is exchangeListingRefusal's to refuse, since it reads both settings. With no exchange
+// issuers an entry takes none, and Load refuses it for the audience it needs. exchange.NewSet is
+// the second gate, and the session name's own form is its to refuse.
 func parseExchangeReadAccounts(setting, value string, issuers, exchangeTakes []oidc.NamedIssuer) ([]exchange.ReadEntry, error) {
 	var entries []exchange.ReadEntry
 	seen := map[string]bool{}
@@ -2309,6 +2472,105 @@ func parseExchangeReadAccounts(setting, value string, issuers, exchangeTakes []o
 		entries = append(entries, exchange.ReadEntry{Account: account, Service: service, Session: session, Issuers: taken})
 	}
 	return entries, nil
+}
+
+// parseExchangeJobAccounts reads setting's whitespace-separated entries, the job accounts
+// BROKER_EXCHANGE_JOB_ACCOUNTS lists, in order: <service account>=<projects>[=<session>], or
+// <service account>=<projects>=[<session>]=<issuer name>[,<issuer name>…] where the entry names
+// the issuers its pods' tokens come from, each with its projects as Job and no person and no
+// project. It reads them as parseExchangeAccounts reads its entries (exchangeIssuerFields): the
+// session is everything after the second "=" where that holds no "=", and otherwise the session
+// up to its last "=" and the issuer field after it. Each entry's issuers are
+// exchangeAccountIssuers' answer over issuers, BROKER_K8S_OIDC_ISSUER, and exchangeTakes, the
+// issuers BROKER_EXCHANGE_K8S_ISSUER names, as a BROKER_EXCHANGE_ACCOUNTS entry's are: the
+// issuers it names, or the first of issuers alone where it names none. It refuses what
+// parseJobEntries refuses, an account podAccountRefusal refuses and an empty issuer field among
+// them; an entry that gives no issuer field and whose session is only issuer names
+// (sessionNamesIssuers), as parseExchangeAccounts does; and what exchangeAccountIssuers refuses.
+// An account another exchange setting lists too is exchangeListingRefusal's to refuse, since it
+// reads them all. With no exchange issuers an entry takes none, and Load refuses it for the
+// audience it needs. exchange.NewSet is the second gate, and the session name's own form is its to
+// refuse.
+func parseExchangeJobAccounts(setting, value string, issuers, exchangeTakes []oidc.NamedIssuer) ([]exchange.AccountEntry, error) {
+	const form = "<service account>=<projects>[=<session>] or <service account>=<projects>=[<session>]=<issuer name>[,<issuer name>…] entries: "
+	parsed, err := parseJobEntries(setting, value, form+jobIssuerForm.field, true, podAccountRefusal)
+	if err != nil {
+		return nil, err
+	}
+	var entries []exchange.AccountEntry
+	for _, entry := range parsed {
+		if entry.names == nil && sessionNamesIssuers(entry.session, issuers) {
+			return nil, fmt.Errorf(`%s gives the entry %q no issuer field, so the entry reads %q, which names issuers of BROKER_K8S_OIDC_ISSUER, as its session: write its issuers in a fourth field, after an empty session, <service account>=<projects>==<issuer names>, or, for a session of that text, write the issuer field after it`, setting, entry.text, entry.session)
+		}
+		taken, err := exchangeAccountIssuers(setting, entry.text, jobIssuerForm, entry.names, issuers, exchangeTakes)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, exchange.AccountEntry{Account: entry.account, Job: entry.job, Session: entry.session, Issuers: taken})
+	}
+	return entries, nil
+}
+
+// jobEntry is one entry of a job setting (BROKER_EXCHANGE_JOB_ACCOUNTS,
+// BROKER_VM_EXCHANGE_JOB_ACCOUNTS): the account it names, the job list its tokens carry, the
+// session name it fixes, if any, the issuer names it gives, nil where it gives none, and its text
+// as the setting gave it.
+type jobEntry struct {
+	account       string
+	job           exchange.JobProjects
+	session, text string
+	names         []string
+}
+
+// parseJobEntries reads setting's whitespace-separated entries, an account, its projects and an
+// optional session, in order, and, where issuerField is set, as for a Kubernetes account, an
+// issuer field after the session. Without an issuer field the session is everything after the
+// second "=", so it alone may carry one (exchangeFields); with one, the session is that up to its
+// last "=" where it holds one, and the issuer field after it (exchangeIssuerFields). A Google
+// account's entry gives no issuer field, since Google issues its token. It refuses, naming the
+// setting and the entry: one not of the setting's form, which form says in the refusal's words,
+// or with a blank account or an empty issuer field; an account accountRefusal refuses; projects
+// parseJobProjects refuses; and an account named twice, since one account writes as one identity.
+func parseJobEntries(setting, value, form string, issuerField bool, accountRefusal func(setting, text, account string) error) ([]jobEntry, error) {
+	var entries []jobEntry
+	seen := map[string]bool{}
+	for _, text := range strings.Fields(value) {
+		var fields, names []string
+		var ok bool
+		if issuerField {
+			fields, names, ok = exchangeIssuerFields(text, 3)
+		} else {
+			fields, ok = exchangeFields(text, 3)
+		}
+		if !ok || fields[0] == "" {
+			return nil, fmt.Errorf("%s must be %s, got %q", setting, form, text)
+		}
+		account := fields[0]
+		if err := accountRefusal(setting, text, account); err != nil {
+			return nil, err
+		}
+		job, err := parseJobProjects(setting, text, fields[1])
+		if err != nil {
+			return nil, err
+		}
+		if seen[account] {
+			return nil, fmt.Errorf("%s names the service account %s twice, got %q again; one account writes as one identity, so name it once", setting, account, text)
+		}
+		seen[account] = true
+		entries = append(entries, jobEntry{account: account, job: job, session: fields[2], text: text, names: names})
+	}
+	return entries, nil
+}
+
+// parseJobProjects reads projects, the projects field of the job setting's entry text, through
+// exchange.ParseJobProjects, and refuses projects it refuses, naming the setting and the entry
+// beside the rule they break.
+func parseJobProjects(setting, text, projects string) (exchange.JobProjects, error) {
+	job, err := exchange.ParseJobProjects(projects)
+	if err != nil {
+		return exchange.JobProjects{}, fmt.Errorf("%s names projects no job entry may name, got %q: %w", setting, text, err)
+	}
+	return job, nil
 }
 
 // vmExchangeGrant is one BROKER_VM_EXCHANGE_ACCOUNTS entry: the account it names, the Dispatch
@@ -2791,6 +3053,40 @@ func parseExchangeWorkflows(setting, value string) ([]exchange.WorkflowEntry, er
 	return entries, nil
 }
 
+// parseExchangeJobWorkflows reads setting's whitespace-separated
+// <repository>=<workflow path>=<ref>=<projects>[=<session>] entries, the job workflows
+// BROKER_EXCHANGE_JOB_WORKFLOWS lists, in order, each with its projects as Job and no person and
+// no project. It refuses, naming the setting and the entry: one not of that form or with a blank
+// repository, workflow or ref; projects parseJobProjects refuses; and a repository, workflow and
+// ref listed twice, since one workflow run writes as one identity. A workflow
+// BROKER_EXCHANGE_WORKFLOWS lists too is exchangeListingRefusal's to refuse, since it reads both
+// settings. exchange.NewSet is the second gate, and the repository's and the session name's own
+// forms are its to refuse.
+func parseExchangeJobWorkflows(setting, value string) ([]exchange.WorkflowEntry, error) {
+	var entries []exchange.WorkflowEntry
+	seen := map[string]bool{}
+	for _, text := range strings.Fields(value) {
+		fields, ok := exchangeFields(text, 5)
+		if !ok || fields[0] == "" || fields[1] == "" || fields[2] == "" {
+			return nil, fmt.Errorf("%s must be <repository>=<workflow path>=<ref>=<projects>[=<session>] entries, the session everything after the fourth =, got %q", setting, text)
+		}
+		job, err := parseJobProjects(setting, text, fields[3])
+		if err != nil {
+			return nil, err
+		}
+		key := strings.Join(fields[:3], "=")
+		if seen[key] {
+			return nil, fmt.Errorf("%s names the workflow %s twice, got %q again; one workflow run writes as one identity, so name it once", setting, key, text)
+		}
+		seen[key] = true
+		entries = append(entries, exchange.WorkflowEntry{
+			Repository: fields[0], Workflow: fields[1], Ref: fields[2],
+			Job: job, Session: fields[4],
+		})
+	}
+	return entries, nil
+}
+
 // databasePasswordPlaceholder is the removed BROKER_DATABASE_PASSWORD's placeholder. Load refuses a
 // BROKER_DATABASE_URL that names it, as it refuses the variable, rather than sign in with it as a
 // literal password.
@@ -3211,7 +3507,7 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	cfg.SignInDeviceAudience = strings.TrimSpace(getenv("BROKER_SIGNIN_DEVICE_AUDIENCE"))
 	if cfg.GoogleOIDCAudience == "" {
-		for _, setting := range []string{"BROKER_VM_SERVICES", "BROKER_VM_PROJECTS", "BROKER_VM_INSTANCES", "BROKER_VM_EXCHANGE_ACCOUNTS", "BROKER_SIGNIN_DEVICE_AUDIENCE"} {
+		for _, setting := range []string{"BROKER_VM_SERVICES", "BROKER_VM_PROJECTS", "BROKER_VM_INSTANCES", "BROKER_VM_EXCHANGE_ACCOUNTS", "BROKER_VM_EXCHANGE_JOB_ACCOUNTS", "BROKER_SIGNIN_DEVICE_AUDIENCE"} {
 			if strings.TrimSpace(getenv(setting)) != "" {
 				return Config{}, fmt.Errorf("%s needs BROKER_GOOGLE_OIDC_AUDIENCE, whose Google identity tokens it configures", setting)
 			}
@@ -3262,6 +3558,26 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		granted[grant.account] = grant
 	}
+	// BROKER_VM_EXCHANGE_JOB_ACCOUNTS gives job lists to the accounts BROKER_VM_SERVICES lists:
+	// an account it names that is not listed, or that BROKER_VM_EXCHANGE_ACCOUNTS names too, is
+	// refused here, and exchange.NewSet is the second gate.
+	jobGrants, err := parseJobEntries("BROKER_VM_EXCHANGE_JOB_ACCOUNTS", getenv("BROKER_VM_EXCHANGE_JOB_ACCOUNTS"), "<service account email>=<projects>[=<session>] entries, the session everything after the second =", false, vmAccountRefusal)
+	if err != nil {
+		return Config{}, err
+	}
+	jobGranted := map[string]jobEntry{}
+	for _, grant := range jobGrants {
+		if _, listed := cfg.VMServicesByAccount[grant.account]; !listed {
+			return Config{}, fmt.Errorf("BROKER_VM_EXCHANGE_JOB_ACCOUNTS names %s, got %q, but BROKER_VM_SERVICES does not list it; a job's projects are given to a listed VM account", grant.account, grant.text)
+		}
+		// One account has one answer: named in both settings, its machines would act for a
+		// person and be a job that names none. exchange.NewSet refuses the entry too, but only
+		// this refusal can name both settings.
+		if person, named := granted[grant.account]; named {
+			return Config{}, fmt.Errorf("BROKER_VM_EXCHANGE_JOB_ACCOUNTS and BROKER_VM_EXCHANGE_ACCOUNTS both name the service account %s, got %q and %q; one account has one answer, a token that acts for its person or a job's that names none, so name it in one of them", grant.account, grant.text, person.text)
+		}
+		jobGranted[grant.account] = grant
+	}
 	for _, entry := range vmServices {
 		// Each pin is optional and the two go together: an account pinned to a project but no
 		// instance name, or the other way round, says nothing clear about which machines it
@@ -3282,6 +3598,9 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		if grant, found := granted[entry.account]; found {
 			machine.Project, machine.Person, machine.Session = grant.project, grant.person, grant.session
+		}
+		if grant, found := jobGranted[entry.account]; found {
+			machine.Job, machine.Session = grant.job, grant.session
 		}
 		cfg.ExchangeGoogleAccounts = append(cfg.ExchangeGoogleAccounts, machine)
 	}
@@ -3360,28 +3679,29 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.ExchangeReadAccounts, err = parseExchangeReadAccounts("BROKER_EXCHANGE_READ_ACCOUNTS", getenv("BROKER_EXCHANGE_READ_ACCOUNTS"), cfg.K8sOIDCIssuers, cfg.ExchangeK8sIssuers); err != nil {
 		return Config{}, err
 	}
-	if len(cfg.ExchangeReadAccounts) > 0 {
-		if cfg.ExchangeK8sAudience == "" {
-			return Config{}, fmt.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present")
-		}
-		// One account mints one kind of token: listed in both settings, it would have two
-		// answers, a token that writes as its person and one that only reads. exchange.NewSet
-		// refuses it too, but only this refusal can name both settings.
-		writers := make(map[string]bool, len(cfg.ExchangeAccounts))
-		for _, entry := range cfg.ExchangeAccounts {
-			writers[entry.Account] = true
-		}
-		for _, entry := range cfg.ExchangeReadAccounts {
-			if writers[entry.Account] {
-				return Config{}, fmt.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS and BROKER_EXCHANGE_ACCOUNTS both name the service account %s; one account mints one kind of token, a read-only one or one that writes as its person, so name it in one of them", entry.Account)
-			}
-		}
+	if len(cfg.ExchangeReadAccounts) > 0 && cfg.ExchangeK8sAudience == "" {
+		return Config{}, fmt.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present")
+	}
+	if cfg.ExchangeJobAccounts, err = parseExchangeJobAccounts("BROKER_EXCHANGE_JOB_ACCOUNTS", getenv("BROKER_EXCHANGE_JOB_ACCOUNTS"), cfg.K8sOIDCIssuers, cfg.ExchangeK8sIssuers); err != nil {
+		return Config{}, err
+	}
+	if len(cfg.ExchangeJobAccounts) > 0 && cfg.ExchangeK8sAudience == "" {
+		return Config{}, fmt.Errorf("BROKER_EXCHANGE_JOB_ACCOUNTS needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present")
 	}
 	if cfg.ExchangeWorkflows, err = parseExchangeWorkflows("BROKER_EXCHANGE_WORKFLOWS", getenv("BROKER_EXCHANGE_WORKFLOWS")); err != nil {
 		return Config{}, err
 	}
 	if len(cfg.ExchangeWorkflows) > 0 && cfg.ExchangeGitHubIssuer == "" {
 		return Config{}, fmt.Errorf("BROKER_EXCHANGE_WORKFLOWS needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present")
+	}
+	if cfg.ExchangeJobWorkflows, err = parseExchangeJobWorkflows("BROKER_EXCHANGE_JOB_WORKFLOWS", getenv("BROKER_EXCHANGE_JOB_WORKFLOWS")); err != nil {
+		return Config{}, err
+	}
+	if len(cfg.ExchangeJobWorkflows) > 0 && cfg.ExchangeGitHubIssuer == "" {
+		return Config{}, fmt.Errorf("BROKER_EXCHANGE_JOB_WORKFLOWS needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present")
+	}
+	if err := exchangeListingRefusal(&cfg); err != nil {
+		return Config{}, err
 	}
 	if cfg.PrivateProjects, err = exchange.ParsePrivateProjects(getenv("BROKER_PRIVATE_PROJECTS")); err != nil {
 		return Config{}, fmt.Errorf("BROKER_PRIVATE_PROJECTS: %w", err)
