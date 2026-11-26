@@ -1,9 +1,9 @@
 package api
 
-// read_class_drive_seed_test.go builds the one seeded store the drives of read_class_drive_test.go
-// read: every kind of state a GET row of the table can read, written through the API's own write
-// routes where it has one and through the package's own fixtures where it has none, so the data is
-// the data the server writes.
+// read_class_drive_seed_test.go builds the seeded store each world of the read drive in
+// read_class_drive_test.go reads: every kind of state a GET row of the table can read, written
+// through the API's own write routes where it has one and through the package's own fixtures where
+// it has none, so the data is the data the server writes.
 
 import (
 	"context"
@@ -439,10 +439,12 @@ func (w *driveWorld) seed(t *testing.T) {
 	}
 	w.values["nearCopy"] = nearCopy
 
-	// The pre-check's prose: a document no other test of this process has shown. A write stores
-	// the tree of every text it writes in the latest mode, and only a read of a version stores a
-	// tree in the version mode, so the pre-check's read of this version is where its tree first
-	// reaches the table.
+	// The pre-check's prose: a document no other test or world of this process has shown. A write
+	// stores the tree of every text it writes in the latest mode, and only a read of a version
+	// stores a tree in the version mode, so the pre-check's read of this version is where its tree
+	// first reaches the table. The text is this world's own: the display cache is the process's,
+	// keyed by the text's sum (pmdoc.HeldDisplayTree), and a read of a text another world has
+	// shown takes the tree from it and stores none.
 	prose := uploadDocument(t, w.rig.handler, owner, "prose.md", "# Prose\n\nProse no other test of this process has shown: "+uuid.NewString()+".\n")
 	w.values["prose"] = prose.Artifact.ID
 

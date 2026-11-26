@@ -100,11 +100,7 @@ func TestSendCoreGivesNoVerdictForASendAReconnectOvertook(t *testing.T) {
 	}
 	thaw()
 	if !done {
-		select {
-		case got = <-answered:
-		case <-time.After(10 * time.Second):
-			t.Fatal("sendCore gave no answer")
-		}
+		got = testwait.Receive(t, "sendCore to answer", answered)
 	}
 	testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to reconnect", func() bool {
 		return conn.Status() == nats.CONNECTED && conn.Stats().Reconnects > reconnects
@@ -222,14 +218,9 @@ func TestSendCoreGivesNoVerdictAndDrainsASendItsConnectionReconnectedUnder(t *te
 		t.Fatalf("sendCore answered accepted=%v, error %v, for a send its connection reconnected under; want errSendSuperseded and no subscription", accepted, err)
 	}
 	let()
-	for n := range 2 {
-		select {
-		case got := <-handled:
-			if got != topic {
-				t.Fatalf("the handler was handed %s, want %s", got, topic)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatalf("the handler was handed %d of the 2 messages the new server delivered to the subscription the send made", n)
+	for _, which := range []string{"first", "second"} {
+		if got := testwait.Receive(t, "the "+which+" of the 2 messages the new server delivered to the subscription the send made to reach the handler", handled); got != topic {
+			t.Fatalf("the handler was handed %s, want %s", got, topic)
 		}
 	}
 }
@@ -304,11 +295,7 @@ func TestAReleasedAttemptIsNotSentAgainByAReconnectDuringItsDrain(t *testing.T) 
 	if !errors.Is(err, errSendSuperseded) || sub != nil {
 		t.Fatalf("sendCore answered error %v, subscription %v; want errSendSuperseded and no subscription, the drain this test needs", err, sub)
 	}
-	select {
-	case <-entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the handler was handed no message; the drain has nothing pending and the test proves nothing")
-	}
+	testwait.Receive(t, "the handler to be handed a message, without which the drain has nothing pending and the test proves nothing", entered)
 
 	restartAndReconnect("the connection to reconnect during the drain")
 	trace := server.Log()
@@ -413,24 +400,15 @@ func TestALateReconnectCallbackDoesNotCutAReleasedAttemptsDrain(t *testing.T) {
 		t.Fatalf("sendCore answered error %v, subscription %v; want errSendSuperseded and no subscription, the drain this test needs", err, sub)
 	}
 	unhold()
-	select {
-	case <-callbackRan:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the reconnect's callback never ran; the test proves nothing")
-	}
+	testwait.Receive(t, "the reconnect's callback to run, without which the test proves nothing", callbackRan)
 	// The watch wakes at the event the callback reported; this gives it the time to act on it
 	// before the handler is let go. A watch slower than this could let a cut drain pass here,
 	// never fail one that is kept.
 	time.Sleep(200 * time.Millisecond)
 	let()
-	for n := range 2 {
-		select {
-		case got := <-handled:
-			if got != topic {
-				t.Fatalf("the handler was handed %s, want %s", got, topic)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatalf("the handler was handed %d of the 2 messages the new server delivered to the attempt; the late callback of the reconnect the drain began after ended the drain", n)
+	for _, which := range []string{"first", "second"} {
+		if got := testwait.Receive(t, "the "+which+" of the 2 messages the new server delivered to the attempt to reach the handler (a drain the late callback of the reconnect it began after ended hands it none)", handled); got != topic {
+			t.Fatalf("the handler was handed %s, want %s", got, topic)
 		}
 	}
 }

@@ -868,7 +868,7 @@ func (b *backgroundWork) wait() {
 
 // register is Register, answering the server it mounted, whose delivery hub and event stream
 // relay a test waits out before its database closes. It is also called with an empty Deps, as
-// TestTheDeploymentsSuggestionAllowanceIsTheDocumentedBound does, so it must stay cheap and must
+// TestTheDeploymentsRelatedCheckAllowanceIsTheDocumentedBound does, so it must stay cheap and must
 // not dial or read the nil Store: whatever reaches the database or the network starts later, from
 // a handler, the relay's first subscriber or the hub's, or on a goroutine of its own, as the event
 // log's boot mark does (takeBootMark), for a server that has a Store. The test hooks' listener is
@@ -976,14 +976,15 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 		// withinSessionScope, writeNeedsASignedInPerson).
 		handler = s.withinProjectScope(route, handler)
 		handler = s.withinSessionScope(route, handler)
-		// Outermost of the three, so a machine whose credential names a service and no person
-		// is told it may make no write at all rather than which session the write it tried
-		// belongs to. The project check has nothing to tell it: a token naming a service is
-		// held to no one project (broker_token.go). An account entry's token naming no person
-		// passes it, recorded under its account, and meets the two checks behind it as any
-		// credential naming no project does. A read-only token, which may name a service and no
-		// person too, never reaches here: the read-only gate further out has answered it on every
-		// write (refuseReadOnlyToken).
+		// Outermost of the three, so a machine's credential that names a service and no person,
+		// and that no job entry and no personless account entry minted, is told it may make no
+		// write at all rather than which session the write it tried belongs to. The project check
+		// has nothing to tell it: such a token is held to no one project (broker_token.go). A
+		// job's token names a service and no person too, under the project scope named or public,
+		// and an account entry's token naming no person does under named; each passes this check
+		// to the two inside it, recorded under its service. A read-only token, which may name a
+		// service and no person as well, never reaches here: the read-only gate further out has
+		// answered it on every write (refuseReadOnlyToken).
 		handler = s.writeNeedsASignedInPerson(handler)
 		handler = s.refuseChangedLogin(handler)
 	}
@@ -2040,8 +2041,25 @@ func refuseUndeclaredMembers(value any, body []byte) error {
 
 // readJSONBody decodes r's body, at most limit bytes of it, into value and returns the bytes it
 // read, for the caller to judge the members value does not declare by. A body past limit is
-// tooLarge, the 413 the route answers one with.
+// tooLarge, the 413 the route answers one with. A string the body holds anywhere that carries
+// U+0000 is refused (unstorableJSON).
 func readJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) ([]byte, error) {
+	body, err := readJSONBodyAllowingNUL(r, value, limit, tooLarge)
+	if err != nil {
+		return nil, err
+	}
+	if refusal := unstorableJSON("", body); refusal != nil {
+		return nil, refusal
+	}
+	return body, nil
+}
+
+// readJSONBodyAllowingNUL is readJSONBody without its refusal of U+0000, for the two routes that
+// check what their body carries as another route checks it, under that route's name for it: the
+// markdown round trips (decodeRoundTrip), the inline one refusing its text's U+0000 as the upload
+// refuses its content's (postMarkdownRoundTrip) and the file one its bytes' as the upload refuses
+// its file part's (documentTextRefusal).
+func readJSONBodyAllowingNUL(r *http.Request, value any, limit int64, tooLarge *apiError) ([]byte, error) {
 	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || (contentType != "application/json" && !strings.HasSuffix(contentType, "+json")) {
 		return nil, errorf(http.StatusUnsupportedMediaType, "JSON_CONTENT_TYPE", "JSON mutations require Content-Type application/json")
@@ -2058,9 +2076,6 @@ func readJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) (
 	}
 	if decoder.More() {
 		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "request body must contain one JSON value")
-	}
-	if refusal := unstorableJSON("", read.Bytes()); refusal != nil {
-		return nil, refusal
 	}
 	return read.Bytes(), nil
 }

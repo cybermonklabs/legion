@@ -1,0 +1,4 @@
+kind: Fixed
+body: |-
+  A Dispatch frame whose event type names a member of `Object.prototype` (`constructor`,
+  `toString`) renders its card; the renderer read that member as the type's schema and threw.
