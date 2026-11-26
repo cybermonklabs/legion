@@ -766,6 +766,70 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
   });
 });
 
+// The Outline sheet draws a new list each time it opens. After a choice there, the reader moves
+// in the outline into another entry, the thread they began, down to a reply in it, which is no
+// entry, and opens the sheet again: the list marks that thread, which holds the node the focus
+// was last on (`useLastFocusedNodeId`), rather than the entry the sheet last chose, and Focus
+// branch there draws the thread's branch.
+// SLOW(>=2s): the whole seeded issue, a load of the page at 390 px, a choice in the Outline
+// sheet, a zoom and two moves of the focus, each waited on until the outline redraws.
+test("the Outline sheet opened again marks the entry the focus was last in rather than its last choice, and Focus branch draws that branch @phone @phone-only", async ({
+  browser,
+}) => {
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const question = blockNodeId(specSlug, seeded.openQuestion.blockId);
+    const thread = seeded.comments.threads[0] ?? "";
+    const reply = seeded.comments.replies[0] ?? "";
+    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+
+    await outlineControl(page).click();
+    const entry = (id: string) => outlineSheet(page).locator(`[data-contents-entry="${id}"]`);
+    await expect(entry(question), "the Outline sheet does not list the open question").toHaveCount(
+      1
+    );
+    await entry(question).click();
+    await expect(outlineSheet(page), "a choice in the Outline sheet left it open").toHaveCount(0);
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "a choice in the Outline sheet went to no node",
+      })
+      .toBe(question);
+
+    // Into the reader's first thread, which below 1024 px the right arrow zooms into, and down
+    // to the first reply under it.
+    await focusRow(page, thread);
+    await page.keyboard.press("ArrowRight");
+    await expect(nodeRow(page, reply), "the zoom into the thread drew no reply").toHaveCount(1);
+    await focusRow(page, reply);
+
+    await outlineControl(page).click();
+    await expect(entry(thread), "the Outline sheet does not list the reader's thread").toHaveCount(
+      1
+    );
+    await expect(entry(reply), "the reply the focus was last on is an entry").toHaveCount(0);
+    await expect(
+      entry(thread),
+      "the reopened Outline sheet did not mark the entry the focus was last in"
+    ).toHaveAttribute("aria-selected", "true");
+    await expect(
+      entry(question),
+      "the reopened Outline sheet marked its last choice, which the focus had left"
+    ).toHaveAttribute("aria-selected", "false");
+    const sheetBranch = focusBranchControl(outlineSheet(page));
+    await expect(sheetBranch).toHaveAttribute("aria-pressed", "false");
+    await sheetBranch.click();
+    await expect(sheetBranch).toHaveAttribute("aria-pressed", "true");
+    await expect
+      .poll(async () => (await drawnRows(page)).find((row) => row.visible)?.id, {
+        message: "Focus branch in the reopened Outline sheet did not draw the thread's branch",
+      })
+      .toBe(thread);
+  });
+});
+
 // Row (4)'s choice in the Outline sheet, by pointer and by Enter from the foot of the page,
 // leaves the focused row below the sticky view row, not behind it. Where the row stands is the
 // page's `scroll-padding-top` - the larger of the band's and the view row's heights - and the

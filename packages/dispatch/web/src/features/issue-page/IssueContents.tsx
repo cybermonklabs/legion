@@ -23,7 +23,7 @@ import {
 import { EVENT_FRESH } from "../refs/reference-target";
 import { isContentsEntry } from "./contents-entries";
 import { drawnLine, firstLineOf } from "./first-line";
-import { useFocusedNode } from "./focused-node";
+import { useFocusedNode, useLastFocusedNodeId } from "./focused-node";
 import { MenuMark } from "./IssuePresets";
 import { isCheck, isStatement, lineWordsRaw, type TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
@@ -198,27 +198,31 @@ export function ContentsList({
     return ids;
   }, [entries]);
   // The entry the reader is in: the nearest entry at or above the node the focus is on. The
-  // focus leaving the outline - for this list, say - leaves the entry the reader was last in.
-  // A list drawn again has seen no focus of its own: the Outline sheet draws a new one each time
-  // it opens, after the focus left the outline for the Outline control. Where the focus is in no
-  // entry and was in none the list saw, the reader is in the entry the list last took the outline
-  // to, which the page keeps across the sheet's openings (`useOutlineRequest`). The last two hold
-  // only while they are entries the list draws, so Focus branch draws no branch the words filter
-  // left out, or one that is gone.
+  // focus leaving the outline - for this list, say - leaves the entry the reader was last in:
+  // the last this list saw the focus in, else the nearest entry at or above the node the page
+  // last saw the focus on (`useLastFocusedNodeId`). A list drawn again has seen no focus of its
+  // own: the Outline sheet draws a new one each time it opens, after the focus left the outline
+  // for the Outline control, and the reader may have moved on from the entry the sheet last took
+  // the outline to. Where neither is an entry, the reader is in the entry the list last took the
+  // outline to, which the page keeps across the sheet's openings (`useOutlineRequest`). Each of
+  // the three holds only while it is an entry the list draws, so Focus branch draws no branch the
+  // words filter left out, or one that is gone.
   const focused = useFocusedNode()?.id;
+  const lastFocused = useLastFocusedNodeId();
   const requested = useOutlineRequest()?.id;
   const [lastIn, setLastIn] = useState<string | undefined>(undefined);
-  const inEntry = useMemo(
-    () => nearestAtOrAbove(root, focused, (id) => entryIds.has(id)),
-    [entryIds, focused, root]
+  const retained = focused ?? lastFocused;
+  const retainedEntry = useMemo(
+    () => nearestAtOrAbove(root, retained, (id) => entryIds.has(id)),
+    [entryIds, retained, root]
   );
+  const inEntry = focused === undefined ? undefined : retainedEntry;
   useEffect(() => {
     if (inEntry !== undefined) setLastIn(inEntry);
   }, [inEntry]);
   const current =
     inEntry ??
-    (lastIn !== undefined && entryIds.has(lastIn) ? lastIn : undefined) ??
-    (requested !== undefined && entryIds.has(requested) ? requested : undefined);
+    [lastIn, retainedEntry, requested].find((id) => id !== undefined && entryIds.has(id));
 
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
   const rows = useMemo(() => {
