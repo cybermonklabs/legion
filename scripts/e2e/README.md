@@ -386,6 +386,12 @@ Each item below names a script, then what it proves.
   The composer, the role prompt files below the state directory and the recorded launch specification each hold those rules before any process took them, and the unit tests already read them there, so none of the three says a role was launched with them.
   Needs an Oh My Pi (`LEGION_OMP_PATH`), `git` and `jj` 0.38 or later; no cluster, no Claude Code and no tmux, so a Legion pod and a devbox both run it
 
+- `prompt-inputs.sh`
+
+  measures the first model input of each Legion launch with the subject checkout's prompt files and packaged plugins.
+  It records one row per launch and checks reference resolution with a loopback model stand-in.
+  Run it as a build Job. The default run needs no model credentials.
+
 - `late-completion.sh`
 
   a completion the `legion` tool sends after the issue moved on is answered for the phase the role left (dispatch://INFRA-3146), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names, a `nats-server` of the run's own and the real Dispatch server this checkout builds, with three real `omp --mode rpc` panes under the real `legion worker-shim`, each answered by a model stand-in of the driver's own that calls the `legion` tool's `handoff_complete` with a `tool_use` block, so every completion is the request the shipped plugin builds:
@@ -5003,6 +5009,48 @@ Against one whose order sentence in that paragraph has `, then report completion
 What the proof stands in for lies outside the rule, and is what [`claim-compaction.sh`](#claim-compactionsh) stands in for: the broker is a native `nats-server`, GitHub is the REST stand-in the whole-daemon drivers share, Dispatch is their board, Envoy's listener is the package's `noticeListener`, the two Apps' tokens are placeholders, and each pane's provider is a stand-in of the driver's own, which answers every turn alike.
 `ROLE_PROMPT_RULE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own and the driver's output;
 the run's work directory, the driver binary among it, is under `TMPDIR` too.
+
+## prompt-inputs.sh
+
+```sh
+LEGION_OMP_PATH=/opt/omp/bin/omp \
+  LEGION_TEST_PG_DSN='postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable' \
+  PROMPT_INPUTS_EVIDENCE_DIR=<output-dir> \
+  bash scripts/e2e/prompt-inputs.sh --base ecd967b17a4e --subject <checkout> --refs <file>
+```
+
+Run this proof as a build Job, not in the issue pod.
+The build needs Go, Bun, npm, git, jj, Python with libpq, and loopback PostgreSQL with pgvector and permission to create databases.
+Install the subject's dependencies with `bun install --frozen-lockfile` before the run.
+The driver installs Claude Code from the worker image's release lockfile and verifies its version.
+The script starts a local NATS server as [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) does.
+
+The driver uses the subject's prompt files and built plugins.
+It checks the composer and backend inventories against `--base`, and refuses a change to `.github/CODEOWNERS`.
+Each process runs in the same pinned public fixture.
+The daemon launches the supervised panes with the real worker shim.
+The interactive controller runs in a separate Oh My Pi process, with the prompt composed as in `legion controller start` and the first message supplied through RPC.
+
+The model stand-in keeps the first request and asks each pane to read the two references from `--refs`.
+The reference table maps each launch under `launches` to `retained` and `removed` `skill://` paths.
+It names `planner/omp` under `withheld_control_launch`.
+On the base both paths must resolve. On the candidate only the retained path must resolve.
+The withheld-file control repeats the planner launch in a separate profile without the retained file.
+
+`rows.jsonl` holds one row per launch, with prompt part hashes, byte counts, and reference outcomes.
+`requests/` holds the original request bodies. `splits/` accounts for the wire bytes separately from the input totals.
+Input totals count the decoded system and message text specified by the row, tool definitions, and observed reads.
+`argv/` and `prompts/` show which prompt file each process received.
+`control-withheld.json` and `control-extra-read.json` hold the two controls.
+
+Without `--reads`, the proof makes no real model calls and reports required reads as `not observed`.
+Run `--reads` only after the model spend is approved for the Job.
+It measures the Oh My Pi launches at `xhigh` on `claude-opus-5-5` using `ANTHROPIC_BASE_URL`.
+The proxy authenticates with `ANTHROPIC_AUTH_TOKEN` and does not pass it to the panes.
+It limits the run to 1,850,000 tokens, including cached input, and writes the usage to `usage/total.json`.
+It records each session's read results up to the first non-read call or the end of the turn.
+The extra-read control repeats the planner launch with a mandatory read added to a copy of a subject prompt part.
+It checks that the new read appears and that the total increases.
 
 ## late-completion.sh
 

@@ -118,8 +118,17 @@ type localRuntime struct {
 	// environment is what a proof gives its panes beyond what a pane is told: the model key of a
 	// proof whose panes call a real model, which reaches the pane's process and nothing else.
 	environment []string
-	conns       runtime.Conns
-	stream      string
+	// workDirOf, when non-nil and returning a non-empty path, picks the working directory of a
+	// claim in place of `<state>/workspaces/<issue>` (used by proofs that run every pane in one
+	// fixed fixture checkout).
+	workDirOf func(spec runtime.SpawnSpec) string
+	// agent, when non-nil, overrides the agent command behind `legion worker-shim --` and appends
+	// per-claim environment variables. Used by proofs that launch another backend (such as Claude
+	// Code through claudelaunch.Argv) or switch HOME/OMP_PROFILE for a control launch. Returning
+	// nil argv keeps the default Oh My Pi command while still applying env.
+	agent  func(spec runtime.SpawnSpec, promptFile string) (argv []string, env []string, err error)
+	conns  runtime.Conns
+	stream string
 	// paneLogs is the directory each worker's stdout and stderr is written under, one file per
 	// launch, kept for the run's evidence.
 	paneLogs string
@@ -345,6 +354,11 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	r.mu.Unlock()
 
 	workDir := r.workDir(spec.Issue)
+	if r.workDirOf != nil {
+		if custom := r.workDirOf(spec); custom != "" {
+			workDir = custom
+		}
+	}
 	if err := os.MkdirAll(workDir, 0o700); err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: make its working directory: %w", spec.Claim, err)
 	}
@@ -377,10 +391,24 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 		r.legion, "worker-shim",
 		"--connect", r.stream,
 		"--boot-token-file", bootToken.Path,
-		"--", r.omp, "--mode", "rpc", "--append-system-prompt", promptFile,
+		"--",
 	}
-	if spec.ResumeSessionFile != "" {
-		argv = slices.Insert(argv, len(argv)-4, "--resume="+spec.ResumeSessionFile)
+	var extraEnv []string
+	if r.agent != nil {
+		customArgv, customEnv, err := r.agent(spec, promptFile)
+		if err != nil {
+			return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
+		}
+		extraEnv = customEnv
+		if len(customArgv) > 0 {
+			argv = append(argv, customArgv...)
+		}
+	}
+	if len(argv) == 7 {
+		argv = append(argv, r.omp, "--mode", "rpc", "--append-system-prompt", promptFile)
+		if spec.ResumeSessionFile != "" {
+			argv = slices.Insert(argv, len(argv)-4, "--resume="+spec.ResumeSessionFile)
+		}
 	}
 	logPath := filepath.Join(r.paneLogs, fmt.Sprintf("%s.%d.log", spec.Claim, seq))
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -389,7 +417,7 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = workDir
-	cmd.Env = r.paneEnvironment(variables, workDir)
+	cmd.Env = append(r.paneEnvironment(variables, workDir), extraEnv...)
 	// A resume is held to its session as every runtime holds it (runtime.SessionExclusiveVariable).
 	if spec.ResumeSessionFile != "" {
 		cmd.Env = append(cmd.Env, runtime.SessionExclusiveVariable+"="+runtime.SessionExclusiveValue)
@@ -409,13 +437,17 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 		logFile.Close()
 		return runtime.Locator{}, fmt.Errorf("spawn %s: read pid %d's start ticks: %w", spec.Claim, pid, err)
 	}
+	window := strings.ToLower(spec.Issue)
+	if spec.Role == claim.RoleController {
+		window = "controller"
+	}
 	pane := &localPane{
 		spec: spec, cmd: cmd, pid: pid, log: logPath, done: make(chan struct{}),
 		locator: runtime.Locator{
 			Runtime:     runtime.RuntimeTmux,
 			Claim:       spec.Claim,
 			Incarnation: strconv.Itoa(pid) + ":" + strconv.FormatUint(ticks, 10),
-			Tmux:        &runtime.TmuxLocator{Window: strings.ToLower(spec.Issue), Pane: "%" + strconv.Itoa(pid)},
+			Tmux:        &runtime.TmuxLocator{Window: window, Pane: "%" + strconv.Itoa(pid)},
 		},
 	}
 	r.mu.Lock()

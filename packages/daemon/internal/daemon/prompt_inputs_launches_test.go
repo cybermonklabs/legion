@@ -95,6 +95,11 @@ type promptInputsRow struct {
 	FirstRequest promptInputsRequest `json:"first_request"`
 	// RequiredReads are the files the launch is told to read before its first act.
 	RequiredReads []promptInputsRead `json:"required_reads"`
+	// ReadsObserved is whether RequiredReads came from a live model run of this launch ("observed")
+	// or was carried from another backend / omitted when --reads was off ("not observed").
+	ReadsObserved string `json:"reads_observed,omitempty"`
+	// References records each retained or removed reference exercised from its packaged call site.
+	References []promptInputsRefResult `json:"references,omitempty"`
 	// TotalBytes is the first request's five parts and every required read, summed.
 	TotalBytes int `json:"total_bytes"`
 }
@@ -123,6 +128,16 @@ type promptInputsRequest struct {
 type promptInputsRead struct {
 	Path  string `json:"path"`
 	Bytes int    `json:"bytes"`
+}
+
+// promptInputsRefResult is the outcome of exercising one skill:// reference (retained or removed)
+// from a launch's packaged call site.
+type promptInputsRefResult struct {
+	Kind     string `json:"kind"`
+	Path     string `json:"path"`
+	Resolved bool   `json:"resolved"`
+	Bytes    int    `json:"bytes"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 // The table names every launch the daemon composes a prompt for, and no other, each with the parts

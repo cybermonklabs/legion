@@ -1,0 +1,62 @@
+{
+  "description": "Base-run reference exercise table for scripts/e2e/prompt-inputs.sh --refs. On the pinned base checkout (ecd967b17a4e), both the retained and removed skill:// paths exist in the packaged plugins. Once a candidate head removes references, supply a candidate refs file naming each launch's retained and removed paths.",
+  "withheld_control_launch": "planner/omp",
+  "launches": {
+    "architect-root/omp": {
+      "retained": "skill://legion-architect/references/design-gate.md",
+      "removed": "skill://legion-architect/references/wake-routing.md"
+    },
+    "architect-child/omp": {
+      "retained": "skill://legion-architect/references/plan-changes.md",
+      "removed": "skill://legion-architect/references/surface-round.md"
+    },
+    "planner/omp": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/plan-tests.md"
+    },
+    "implementer/omp": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/withheld-capability.md"
+    },
+    "tester/omp": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/results.md"
+    },
+    "reviewer/omp": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/review-threads.md"
+    },
+    "merger/omp": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/merge-gate.md"
+    },
+    "controller-headless/omp": {
+      "retained": "skill://legion-controller/references/triage.md",
+      "removed": "skill://legion-controller/references/weekly-audit.md"
+    },
+    "controller-interactive/omp": {
+      "retained": "skill://legion-controller/references/triage.md",
+      "removed": "skill://legion-controller/references/weekly-audit.md"
+    },
+    "planner/claude": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/plan-tests.md"
+    },
+    "implementer/claude": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/withheld-capability.md"
+    },
+    "tester/claude": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/results.md"
+    },
+    "reviewer/claude": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/review-threads.md"
+    },
+    "merger/claude": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/merge-gate.md"
+    }
+  }
+}

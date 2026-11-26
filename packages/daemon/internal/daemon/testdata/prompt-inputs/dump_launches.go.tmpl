@@ -1,0 +1,119 @@
+package prompts_test
+
+import (
+	"encoding/json"
+	"fmt"
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/prompts"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+)
+
+func TestPromptInputsDumpComposedLaunches(t *testing.T) {
+	stateDir := t.TempDir()
+	composer, err := prompts.New(stateDir)
+	if err != nil {
+		t.Fatalf("prompts.New: %v", err)
+	}
+	toPart := func(path string) string {
+		rel, err := filepath.Rel(filepath.Join(stateDir, "prompts"), path)
+		if err != nil {
+			t.Fatalf("rel %s: %v", path, err)
+		}
+		dir, file, _ := strings.Cut(filepath.ToSlash(rel), "/")
+		switch dir {
+		case "shared":
+			return "roles/" + file
+		case "go":
+			return "go/" + file
+		default:
+			t.Fatalf("unexpected part dir %s in %s", dir, path)
+			return ""
+		}
+	}
+	type entry struct {
+		Name    string   `json:"name"`
+		Role    string   `json:"role"`
+		Backend string   `json:"backend"`
+		Parts   []string `json:"parts"`
+	}
+	var out []entry
+	add := func(shape string, role claim.Role, backend runtime.Backend, paths []string) {
+		parts := make([]string, len(paths))
+		for i, p := range paths {
+			parts[i] = toPart(p)
+		}
+		out = append(out, entry{
+			Name:    shape + "/" + string(backend),
+			Role:    string(role),
+			Backend: string(backend),
+			Parts:   parts,
+		})
+	}
+	for _, backend := range slices.Sorted(maps.Keys(runtime.Backends)) {
+		info := runtime.Backends[backend]
+		if len(info.Runtimes) == 0 {
+			continue
+		}
+		withBackend := func(paths []string) []string {
+			cloned := slices.Clone(paths)
+			if info.PromptPart != "" {
+				cloned = append(cloned, composer.Part(info.PromptPart))
+			}
+			return cloned
+		}
+		for _, role := range append(slices.Clone(claim.Roles), claim.RoleController) {
+			if !info.Runs(role) {
+				continue
+			}
+			switch role {
+			case claim.RoleArchitect:
+				rootParts, err := composer.Compose(role, true)
+				if err != nil {
+					t.Fatalf("Compose root architect: %v", err)
+				}
+				add("architect-root", role, backend, withBackend(rootParts.RolePromptPaths))
+				childParts, err := composer.Compose(role, false)
+				if err != nil {
+					t.Fatalf("Compose child architect: %v", err)
+				}
+				add("architect-child", role, backend, withBackend(childParts.RolePromptPaths))
+			case claim.RoleController:
+				ctrlParts, err := composer.ControllerPromptPaths(true)
+				if err != nil {
+					t.Fatalf("ControllerPromptPaths(true): %v", err)
+				}
+				add("controller-headless", role, backend, withBackend(ctrlParts))
+			default:
+				roleParts, err := composer.Compose(role, false)
+				if err != nil {
+					t.Fatalf("Compose %s: %v", role, err)
+				}
+				add(string(role), role, backend, withBackend(roleParts.RolePromptPaths))
+			}
+		}
+	}
+	ctrlInteractive, err := composer.ControllerPromptPaths(false)
+	if err != nil {
+		t.Fatalf("ControllerPromptPaths(false): %v", err)
+	}
+	add("controller-interactive", claim.RoleController, runtime.BackendOmp, ctrlInteractive)
+
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dest := os.Getenv("LEGION_PROMPT_INPUTS_DUMP_OUT"); dest != "" {
+		if err := os.WriteFile(dest, encoded, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	fmt.Println(string(encoded))
+}
