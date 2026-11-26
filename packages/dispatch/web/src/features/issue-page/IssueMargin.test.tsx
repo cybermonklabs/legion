@@ -8379,6 +8379,7 @@ function stubRelations(
   };
   return {
     getIssue: stub.getIssue,
+    getMyState: stub.getMyState,
     items,
     restore: () => {
       for (const spy of Object.values(items)) spy.mockRestore();
@@ -8878,6 +8879,56 @@ test("a failed read of the filed item's own text says so in Filed from with Retr
   } finally {
     stopBlurring();
     unmount();
+    restore();
+  }
+});
+
+// While the read Retry sent for the filed item's own text is still out, another read can take
+// that failure line away without answering the press: here the names read answers the message
+// deleted, so Filed from draws its deleted line instead. Because the item's read still holds no
+// answer, Retry hands no focus to the row's link; the focus stays on the page's body, as for
+// every loss the reader did not cause.
+test("Filed from's text Retry leaves the focus on the page's body where a delete takes its line away while its read is out", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  const { items, restore, titles } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  items.message.mockRejectedValueOnce(readFailure());
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const stopBlurring = emulateChromiumFocusFixup();
+  const held = Promise.withResolvers<MessageRead>();
+
+  try {
+    const retry = await waitFor(() =>
+      filedRow().getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    items.message.mockImplementationOnce(() => held.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(items.message).toHaveBeenCalledTimes(2));
+    expect(document.activeElement, "Retry lost the focus while its read is out").toBe(retry);
+
+    // While the press's read is still out, an event refreshes the names read with the message
+    // deleted, taking the failure line away with no answer to the press.
+    titles.mockImplementation(async (refs) =>
+      filedMarked(refs, "", { deleted_at: FILED_DELETED_AT, deleted_by: UNNAMED_SESSION })
+    );
+    await act(() => queryClient.refetchQueries({ queryKey: ["reference-targets"] }));
+    await waitFor(() => expect(filedRow().queryByRole("alert")).toBeNull());
+    expect(
+      filedRow().getByRole("link").querySelector("[data-post-deleted]"),
+      "Filed from did not draw the deleted line"
+    ).toBeInTheDocument();
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "Retry handed the focus to the row's link although its read never answered"
+    ).toBe(document.body);
+  } finally {
+    stopBlurring();
+    unmount();
+    held.resolve(messageReadOf("CORE-2", FILED_ID, { text: FILED_BODY }));
     restore();
   }
 });
@@ -9628,6 +9679,67 @@ test.each(
     );
     expect(link, "Filed from does not link the message").toHaveAttribute("href", FILED_PATH);
     expect(link, "the kind's word is not the page's own").toHaveAttribute("data-page-chrome");
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The filed item's own read is kept fresh by events (`EVENT_FRESH` in `useFiledText`), so a
+// window focus past the app's 30 s staleness reads it again no more than it reads the relations'
+// names.
+test("in Details, a window focus past 30 s reads the filed item's own text no more", async () => {
+  const { getMyState, items, restore, titles } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  const client = appClient();
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER, client);
+
+  try {
+    await waitFor(() => {
+      expect(detailsRow(PROPERTY_LABELS.filed_from)).toHaveTextContent(FILED_LINE);
+      expect(items.message).toHaveBeenCalledTimes(1);
+      expect(client.isFetching()).toBe(0);
+    });
+    await focusPastStaleness(client);
+    await waitFor(() => expect(getMyState).toHaveBeenCalledTimes(2));
+    expect(
+      items.message,
+      "a window focus past 30 s read the filed message's own text again"
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      namesReads(titles),
+      "a window focus past 30 s read the relations' names again"
+    ).toHaveLength(1);
+  } finally {
+    unmount();
+    restore();
+    restoreWindowFocus();
+  }
+});
+
+// Filed from draws the item's line from the server's reading of its text (`body_tree`) beside
+// the stored Markdown, rather than parsing the stored text again (`FiledItemLine`'s `tree`). The
+// tree here reads differently from the stored body beside it, so a line drawn from the stored
+// text alone would read the stored words instead.
+test("Filed from draws the message's first line from the server's reading of its body", async () => {
+  await warmMarkdownRenderer();
+  const stored = "Stored words nobody drew. Then wait.";
+  const readLine = "Server reading of the message.";
+  const { restore } = stubRelations(
+    relatedIssue,
+    async (refs) => filedMarked(refs, stored),
+    filedStored(stored, displayTree(`${readLine} More.`))
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const link = await waitFor(() => filedRow().getByRole("link", { name: readLine }));
+    expect(link).toHaveAttribute("href", FILED_PATH);
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from did not draw the server's reading of the message"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${readLine}`);
   } finally {
     unmount();
     restore();
