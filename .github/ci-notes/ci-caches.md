@@ -5,6 +5,53 @@ the Actions caches ci.yaml's jobs restore. A `# why:` line of that file that nam
 the section here that holds the derivation or the record its text rests on; its other `# why:`
 lines name sections of `.github/ci-notes/ci.md`.
 
+## The Go families, their readers and their runners
+
+Seven Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
+architecture and on the Go version the family's own module installs (go-envoy-infra on the hash
+of its module files too, for the reason its job gives): go-notices (lint's notices step),
+go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-build,
+envoy-go-checks, listener-server-change, envoy-e2e-local and envoy-session-stall, and the embedder
+job of .github/workflows/dispatch-browser.yaml), go-envoy-test (envoy-go, envoy-go-claim-model,
+which builds the API's test binary of that set, the binaries, multiprocess and visual jobs of
+.github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser and dispatch-browser-pr
+jobs call: those three build the Dispatch server and the real broker's commands, whose packages
+the go-envoy entry's build of the listener and natsd alone does not hold, the two jobs of
+.github/workflows/ci-job-dispatch-two-builds.yaml, whose ceiling step and twobuild test step build
+out of that same set, and dispatch-memory and dispatch-multiprocess, whose ceiling step and tests
+read its modules and objects), go-envoy-race (every leg of envoy-go-race, envoy-go-race-api and
+envoy-go-race-docs, the envoy race lane), go-envoy-darwin-vet (envoy-go-build's darwin vet, whose
+build cache is a directory of its own, the GOCACHE of that step's env) and go-envoy-infra
+(envoy-infra-build and envoy-infra-go, and the build job of release-envoy-infra.yaml).
+
+The key carries `runner.arch` because Go's build cache holds the objects of the architecture that
+compiled them: an entry an x86_64 runner filled gives an arm64 job its modules and none of its
+objects. So each family is filled on every architecture one of its readers runs on, one matrix
+leg per runner: go-notices and go-envoy-race on ubuntu-24.04-arm alone, where lint and the race
+lane run; go-daemon, go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on
+ubuntu-24.04 both, since each has a reader on each (typecheck and the envoy lanes but one on the
+first; daemon-go, plugin-pack, pi-legion, envoy-go-build, envoy-go-checks, envoy-go-claim-model,
+the browser lane, the two-build jobs and the release builds on the second); and
+go-envoy-darwin-vet on ubuntu-24.04 alone, where envoy-go-build runs. A leg builds what that
+runner's readers build and no more: go-daemon's arm64 reader is typecheck alone, so its arm64 leg
+runs typecheck's vet and leaves the test and race builds to the x86_64 leg.
+
+go-notices carries the architecture before the OS (go-notices-<arch>-<os>-go<version>) and the
+other six after it: the go-notices entry holds go-licenses, a program lint's notices step runs,
+and a run of a workflow file older than the architecture in the key restores by go-notices-<os>-,
+which an <os>-<arch> key starts with (ci-job-lint.yaml's restore step says what that did). One Go
+setup per leg, since the key carries the version that module's go.mod names: the daemon's go.mod
+for go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy module's for
+go-envoy, go-envoy-test, go-envoy-race and go-envoy-darwin-vet; the infra module's for
+go-envoy-infra.
+
+A fill's restore asks for the readers' key, with that key and a `-` as its restore-keys. GitHub
+matches the key itself as a prefix too, so an entry of another Go version is restored only when
+that version's text starts with this one's (go1.27.30 for go1.27.3), and Go keys every object of
+its build cache on the toolchain that compiled it, so such an entry costs only its download. No
+entry carries the readers' key itself, so GitHub's matching gives a reader the newest entry whose
+key starts with it: the last fill's.
+
 ## Why each fill builds on the newest entry of its family
 
 These keys used to name the Go version alone, and the fill saved only when that exact key was
@@ -31,6 +78,64 @@ module version it has downloaded (Go removes none by itself), so it grows only w
 module file, until a Go bump starts the family again: after a bump the fill finds no entry of the
 new Go (unless an older version's text starts with the new one's, as the workflow's prefix note
 says) and builds from nothing.
+
+## The envoy race lane's family
+
+go-envoy-race holds what the envoy race lane builds: the race build of every package of
+ci_job_reads.py's ENVOY_RACE_LANE (envoy-go-race's, envoy-go-race-api's and envoy-go-race-docs'),
+the modules they need, and the plain build of the connection sizing program each of those jobs'
+pg-connection-ceiling.sh step runs (`go run ./internal/dispatch/store/cmd/connections`). The
+envoy-race job fills it on ubuntu-24.04-arm, the runner of all three jobs, on every push to main,
+as the other families are filled; every leg of the three jobs restores it. Before it, no cache
+held a race object of the envoy module: envoy-go-race and envoy-go-race-api restored nothing, and
+envoy-go-race-docs restored go-envoy, which holds the modules and the listener's plain objects.
+
+Why, measured. A race step's longest package cannot start its test binary until that binary is
+compiled and linked, so the time from the step's start to the start of that binary is the cost
+of compiling from nothing. In three green merge groups of 2026-11-26 (runs 45762627143,
+45762613215 and 45762607670) it was 143 to 150 s of envoy-go-race's 1,069 to 1,075 s step (13 to
+14%), 108 to 113 s of envoy-go-race-api's 1,562 to 1,715 s (7%) and 50 to 51 s of
+envoy-go-race-docs' 1,370 to 1,388 s (4%). In legs it is paid once per leg, on a step that is
+shorter: 51 to 101 s of each of envoy-go-race's five legs of 271 to 598 s (run 45739249062), 112 to
+122 s of each of envoy-go-race-api's three legs of 539 to 743 s and 52 to 57 s of each of
+envoy-go-race-docs' three of 503 to 547 s (run 45735800190), 9 to 23% of each leg. On the lane's
+runner, from an empty module and build cache, `go test -count=1 -race -run '^$'` over each job's
+packages took 106 s (envoy-go-race, 13 test binaries), 107 s (envoy-go-race-api) and 46 s
+(envoy-go-race-docs), and the same command again on the warm cache 7.3 s, 3.5 s and 1.9 s: no
+compile, only the links (probe run 45779631560). The sizing program took 15 s more from nothing,
+and the module downloads 3 to 12 s.
+
+With the family restored (scratch run 45785768352, the fill as written, then each job whole on
+its entry): the time before the longest package starts fell to 20 s in envoy-go-race (job
+139794598025), 3 s in envoy-go-race-api (job 139794598088) and 1 s in envoy-go-race-docs (job
+139794597972), and the ceiling step to 3 s from 9 to 22 s, for a restore of 10 to 11 s. The race
+steps took 937, 1,605 and 1,341 s, within the spread of the tests' own times. A restored entry
+with internal/oidc's product code changed compiled exactly internal/oidc and its test main, and
+the test binary ran the changed code (job 139794597881).
+
+The entry's size. The race build of the whole lane leaves 1.52 GB of build cache and 1.03 GB of
+module cache on disk, 327 MB and, without the module zips the fill deletes, 129 MB compressed
+(probe run 45779631560, job 139771656168): about 0.46 GB saved, one entry, kept alone by
+refill-superseded.
+The repository held 18.6 GB in 369 entries on 2026-11-26 at 08:20Z, above the 10 GB GitHub's
+default allows, and the limit set for it is not readable with a workflow's token
+(actions/cache/storage-limit answers 403). Over its limit GitHub evicts the least recently used
+entries first; on that day those were BuildKit blobs last read on 2026-11-25 at 21:10Z, not an
+entry of a Go family, each of which is read on every run that restores it.
+
+Why it is safe to restore an older entry. Go keys every object of its build cache on its inputs:
+the source of the package and of everything it imports, the flags, the toolchain. An entry filled
+on an older commit gives a reader the objects of every package that did not change since and
+nothing else; a package that changed, or that imports one that did, compiles again, and the test
+binary links from what is current. So a reader never links an object of another closure, whatever
+entry it restored, and the per-push refill and refill-superseded keep the entry the last fill's:
+what was wrong with the entries of 2026-11-18 was that nothing refilled them, not that they could
+be read. A run that finds no entry at all (the first one after a Go version change) compiles
+everything, as every run did before this family.
+
+forced-order.sh's builds (envoy-go-race's last two steps) compile a hooked copy of nats-server
+under the odatrace tag; this entry gives them the race standard library and the modules below
+nats-server, and they compile the hooked copy and what imports it as before.
 
 ## Why the go-envoy-test fill starts each test binary
 
@@ -67,16 +172,16 @@ tree came from, under ~/go/pkg/mod/cache/download/<module>/@v/, is read only to 
 again when it is missing, and by `go mod download` and `go mod verify`: a build checks that the
 tree and its .ziphash exist (cmd/go/internal/modfetch/fetch.go, DownloadDir), and the .info, .mod
 and .ziphash files beside the zip stay. No job that restores these entries runs `go mod verify`.
-One step ran `go mod download` on a module they hold: daemon-go's forced-order step in its leg 2,
-which restores go-daemon (packages/envoy/scripts/forced-order.sh; envoy-go-race runs the same
-script on a module cache it restores from no entry). The script took nats-server's tree from
+One script ran `go mod download` on a module they hold: packages/envoy/scripts/forced-order.sh,
+in daemon-go's leg 2, which restores go-daemon, and in envoy-go-race's two forced-order steps,
+which restore go-envoy-race. The script took nats-server's tree from
 `go mod download -json`, which fetches the zip whenever the cache holds none
 (cmd/go/internal/modcmd/download.go calls DownloadZip), so on an entry without zips it would have
 fetched that zip on every run. The script now reads the tree's directory from `go list -m -json`,
 which fetches nothing, and keeps `go mod download` for a version no cache holds (its -server
 2.10.29 run). So every fill that saves a module cache deletes its zips before the save: the end
-command of .github/scripts/go-cache-working-set.sh does it for go-daemon, go-notices, go-envoy and
-go-envoy-test, and its zips command alone for go-envoy-infra, which builds from nothing and runs
+command of .github/scripts/go-cache-working-set.sh does it for go-daemon, go-notices, go-envoy,
+go-envoy-test and go-envoy-race, and its zips command alone for go-envoy-infra, which builds from nothing and runs
 no begin. The go-envoy-darwin-vet fill runs end too, on the go-envoy entry it restores for its
 module cache; its save holds only its own darwin build cache directory, so the zips it deletes
 are in no entry and the delete changes nothing it saves. A job that does need a zip downloads it
@@ -161,8 +266,9 @@ them.
 
 ## What the refill-superseded job deletes, and why it is a job of its own
 
-The entries of go-daemon, go-notices, go-envoy, go-envoy-test and go-envoy-darwin-vet that the
-fills replaced, deleted once each fill has saved its new one. Each fill saves a new entry, over a
+The entries of go-daemon, go-notices, go-envoy, go-envoy-test, go-envoy-race and
+go-envoy-darwin-vet that the fills replaced, deleted once each fill has saved its new one. Each
+fill saves a new entry, over a
 gigabyte for most families, so without this the entries would pile up: GitHub drops an entry only
 after seven days unread, and over the repository's cache limit it evicts the least recently used
 entries, which can be another family's live one. For each family and architecture this keeps one
