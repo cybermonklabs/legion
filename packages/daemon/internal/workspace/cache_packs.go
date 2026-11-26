@@ -123,7 +123,7 @@ type BucketObject struct {
 // manifest that does not hold (invalid: a member the fetch refuses, before any object is asked for);
 // a download that failed or stalled; an object of another size or SHA-256 than the manifest's; a
 // write of what the bucket gave to the volume that failed; and a git verification of the result
-// that failed.
+// that failed, or that the attempt's bound ended.
 const (
 	reasonNotServed   = "/packs is not served"
 	reasonUnavailable = "unavailable manifest"
@@ -245,10 +245,14 @@ func (r *FetchReport) fromBucket(ctx context.Context, run Runner, request FetchR
 	}
 	verifying := request.Clock.Now()
 	if err := verifyCache(ctx, run, request, staging, deadline, BucketFetchTimeout, false); err != nil {
+		switch {
 		// git's own words for a history that is not whole name the objects the refs reach, which
 		// are the refs' contents: the reason names the check alone.
-		if errors.Is(err, errHistoryNotWhole) {
+		case errors.Is(err, errHistoryNotWhole):
 			err = fmt.Errorf("%w: git fsck --connectivity-only failed", errHistoryNotWhole)
+		// A check the attempt's bound ended has shown nothing missing: the reason names the bound.
+		case errors.Is(err, errHistoryCheckRanOut):
+			err = fmt.Errorf("the bucket attempt's %s bound ran out while checking the history is whole", BucketFetchTimeout)
 		}
 		return &bucketFailure{reasonGit, err}
 	}

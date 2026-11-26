@@ -324,11 +324,13 @@ func moved(t *testing.T, address, host string) string {
 // another size; a pack and an index whose bytes the bucket changed; a download the bucket refuses
 // for want of the object, one cut off mid-body, one whose signature the bucket refuses, one past
 // its expiry, and one that stalls below the low-speed bound; a pack whose bytes the manifest's
-// SHA-256 vouches for and whose own trailer git refuses; and refs naming a commit the packs do not
-// hold. No reason names an address or its query. An answer naming another repository and one that
-// refuses the pod's token are refusals, as /tar's are, outside the issue's volume, and nothing
-// asks /tar. A /tar the cache then refuses, or whose history does not verify, keeps the failure and
-// its classification it has without the bucket, and the report still says why /tar was asked.
+// SHA-256 vouches for and whose own trailer git refuses; refs naming a commit the packs do not
+// hold; and a history check that runs past what is left of the attempt's bound, whose reason names
+// that bound and not a history that is not whole. No reason names an address or its query. An
+// answer naming another repository and one that refuses the pod's token are refusals, as /tar's
+// are, outside the issue's volume, and nothing asks /tar. A /tar the cache then refuses, or whose
+// history does not verify, keeps the failure and its classification it has without the bucket, and
+// the report still says why /tar was asked.
 func TestFetchFallsBackFromPacksToTar(t *testing.T) {
 	notFound := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) }
 	unavailable := func(w http.ResponseWriter, _ *http.Request) {
@@ -339,6 +341,10 @@ func TestFetchFallsBackFromPacksToTar(t *testing.T) {
 		name string
 		// edit makes the row's fault once the stand-in is built, before the fetch.
 		edit func(t *testing.T, run *recordingRunner, c *packsCache)
+		// took, when set, is the clock time each step bucketFirst(cacheFetchStep) names takes on a
+		// test clock (slowSteps), and the fetch runs on that clock; otherwise it runs on the local
+		// runner and the wall clock.
+		took map[string]time.Duration
 		// source is where the report says the feed's history came from; reason is how its
 		// TarReason begins, and says what else it holds.
 		source, reason, says string
@@ -474,6 +480,8 @@ func TestFetchFallsBackFromPacksToTar(t *testing.T) {
 				m.Refs = append(m.Refs, PackRef{Path: "refs/heads/broken", Bytes: []byte(strings.Repeat("1234567890", 4) + "\n")})
 			})
 		}, source: SourceTar, reason: reasonGit, says: "the repository cache's history is not whole: git fsck --connectivity-only failed"},
+		{name: "a history check that runs past what is left of the attempt's bound", took: map[string]time.Duration{"bucket fsck": BucketFetchTimeout + time.Second},
+			source: SourceTar, reason: reasonGit + ": the bucket attempt's " + BucketFetchTimeout.String() + " bound ran out while checking the history is whole"},
 		{name: "an answer naming another repository is refused", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) {
 			c.answer(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set(CacheRepositoryHeader, "acme/gadgets")
@@ -503,7 +511,13 @@ func TestFetchFallsBackFromPacksToTar(t *testing.T) {
 			if tc.edit != nil {
 				tc.edit(t, run, c)
 			}
-			report, err := Fetch(context.Background(), run, req)
+			var runner Runner = run
+			if tc.took != nil {
+				clock := newTestClock()
+				req.Clock = clock
+				runner = &slowSteps{recordingRunner: run, clock: clock, step: bucketFirst(cacheFetchStep), took: tc.took, timeouts: map[string][]time.Duration{}}
+			}
+			report, err := Fetch(context.Background(), runner, req)
 			t.Logf("the feed's source: %q, because %q; the fetch's failure: %v", report.Source, report.TarReason, err)
 			if tc.fails == "" && err != nil {
 				t.Fatalf("Fetch = %+v, %v", report, err)

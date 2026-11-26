@@ -83,7 +83,7 @@ cache_dir=$scratch/cache
 fetch_dir=$scratch/fetchers
 fixtures=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/testdata/repository-cache-burst
 
-repo=${BURST_REPO:-mozilla-firefox/firefox}
+repo=${BURST_REPO:-nodejs/node}
 double_listen=127.0.0.1:8480
 cache_listen=127.0.0.1:8418
 fixture_bucket=example-legion-packs

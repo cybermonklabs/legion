@@ -60,14 +60,20 @@
 #   --service-account <name>        the pod's ServiceAccount, a deployment's own account that holds
 #                                   no grant where its namespace has one (default none: the
 #                                   namespace's default account). The pod mounts no token either way.
-#   --disk <quantity>               the disk volume's size (default 200Gi). The default repository's
-#                                   one pack and index take about 6.2 GB; the cache's clone, the
+#   --disk <quantity>               the disk volume's size (default 120Gi). The default repository's
+#                                   one pack and index are 1,777,396,269 bytes (measured 2026-11-26
+#                                   in Job infra-5789-cache-burst-fbmgg); the cache's clone, the
 #                                   double's copy of both and 20 fresh feeds at once are 22 copies,
-#                                   about 136 GB, and the 200Gi (215 GB) leaves about 58% over. The
-#                                   probe reads the clone's real size and refuses (void) when the
-#                                   volume cannot hold 20 feeds beside it.
-#   --fetch-cpu <quantity>          the fetchers container's CPU, request and limit (default 8).
-#   --fetch-memory <quantity>       its memory, request and limit (default 32Gi). Neither is a
+#                                   about 39 GB, and the 120Gi (129 GB) leaves room. The probe reads
+#                                   the clone's real size and refuses (void) when the volume cannot
+#                                   hold 20 feeds beside it.
+#   --fetch-cpu <quantity>          the fetchers container's CPU, request and limit (default 16),
+#                                   sized for 20 `git fsck --connectivity-only` runs at once: on
+#                                   firefox's history, 20 of them on 8 CPU ran out of both the
+#                                   bucket attempt's 15-minute bound and /tar's 30-minute bound;
+#                                   on the default repository, 16 CPU ran each of the 20 fetches
+#                                   in 91 to 208 s (Job infra-5789-cache-burst-fbmgg).
+#   --fetch-memory <quantity>       its memory, request and limit (default 32Gi), which is no
 #                                   measurement: 20 `git fsck --connectivity-only` and 20 SHA-256
 #                                   passes over one pack run in this container at once.
 #   --double-cpu <quantity>         the double's CPU (default 4) and memory (--double-memory, default
@@ -76,8 +82,8 @@
 #                                   (default 21600; at most 43200, which docs/kubernetes.md allows).
 #   --prefix <generateName prefix>  the Job's metadata.generateName, ending in a hyphen (default
 #                                   infra-5789-cache-burst-).
-#   --repo <owner>/<name>           the public repository the cache clones (default
-#                                   mozilla-firefox/firefox: one 5.86 GB pack).
+#   --repo <owner>/<name>           the public repository the cache clones (default nodejs/node:
+#                                   one pack and index of 1,777,396,269 bytes).
 #   --dry-run                       render the manifest, validate it with kubectl (the namespace's
 #                                   admission where this pod may create a Job, else kubectl's own
 #                                   schema), read back the cache container's CPU request after
@@ -118,11 +124,11 @@
 # (skills/legion-worker/references/tools.md). With a retry, the log read is the newest pod's whole
 # log, read once its container has terminated.
 #
-# This script is synchronous, runs for as long as the Job does (about two to three hours on the
-# default repository, which is its first clone, two uploads and two bursts), and its clean-up is a
-# trap, so a role that runs it from its own bash tool runs it detached, the way docs/kubernetes.md,
-# "Running a workload in the cluster from a role", sets out: the tool kills a call that runs past its
-# timeout faster than any trap runs. Run it with `--dry-run` first:
+# This script is synchronous, runs for as long as the Job does (about ten minutes on the default
+# repository, which is its first clone, two uploads and two bursts), and its clean-up is a trap, so
+# a role that runs it from its own bash tool runs it detached, the way docs/kubernetes.md, "Running
+# a workload in the cluster from a role", sets out: the tool kills a call that runs past its timeout
+# faster than any trap runs. Run it with `--dry-run` first:
 #
 #   log=$(mktemp "${TMPDIR:-/tmp}/repository-cache-burst.XXXXXX")
 #   flock "$log" setsid -f bash scripts/e2e/repository-cache-burst-job.sh \
@@ -151,14 +157,14 @@ service_account=""
 settings_file=""
 labels=()
 annotations=()
-disk=200Gi
-fetch_cpu=8
+disk=120Gi
+fetch_cpu=16
 fetch_memory=32Gi
 double_cpu=4
 double_memory=4Gi
 deadline=21600
 prefix=infra-5789-cache-burst-
-repo=mozilla-firefox/firefox
+repo=nodejs/node
 dry_run=0
 
 usage() {
@@ -183,14 +189,14 @@ usage: scripts/e2e/repository-cache-burst-job.sh --image <ref>@sha256:<64 hex>
   --label            a label on the Job and on its pod template; repeatable.
   --annotation       an annotation on the Job and on its pod template; repeatable.
   --service-account  the pod's ServiceAccount (default none: the namespace's default account).
-  --disk             the disk volume's size (default 200Gi).
-  --fetch-cpu        the fetchers container's CPU, request and limit (default 8).
+  --disk             the disk volume's size (default 120Gi).
+  --fetch-cpu        the fetchers container's CPU, request and limit (default 16).
   --fetch-memory     its memory, request and limit (default 32Gi).
   --double-cpu       the double's CPU, request and limit (default 4).
   --double-memory    its memory, request and limit (default 4Gi).
   --deadline         activeDeadlineSeconds of the Job and its pod, at most 43200 (default 21600).
   --prefix           the Job's metadata.generateName, ending in a hyphen.
-  --repo             the public repository the cache clones (default mozilla-firefox/firefox).
+  --repo             the public repository the cache clones (default nodejs/node).
   --dry-run          render the manifest, validate it with kubectl (the namespace's admission where
                      this pod may create a Job, else kubectl's own schema), create nothing, and exit.
 

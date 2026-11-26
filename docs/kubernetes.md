@@ -6272,6 +6272,8 @@ It checks each object's size and SHA-256 as the bytes reach the disk, stops a do
 It then writes each ref's bytes and checks the result as it does a tar that carried every index: each pack and its index against the checksums git wrote into them, and every object the refs reach.
 It indexes no pack: each index comes from the bucket, held to the SHA-256 the cache sent.
 The whole attempt, the ask of `/packs`, the downloads and the checks, has 15 minutes, the addresses' own life (`workspace.BucketFetchTimeout`), a bound of its own within the fetch's budget, so an attempt that fails late leaves `/tar`'s verification and the delta from GitHub their whole bounds.
+A verification that runs out of those minutes falls back to `/tar` like any other failure, with the reason `failed git verification: the bucket attempt's 15m0s bound ran out while checking the history is whole`.
+A repository of a short history verifies in seconds; one of a very long history, such as firefox's, can run past the 15 minutes on a pod short of CPU.
 
 Any failure of the attempt removes everything it wrote, and the fetch fills the feed from `/tar` instead, asked afresh with the cache's token, exactly as without a bucket; its log's `source=/tar reason=` line says why ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)):
 
@@ -6287,7 +6289,7 @@ Any failure of the attempt removes everything it wrote, and the fetch fills the 
 
 - `failed write: …`: a write of what the bucket gave to the issue's volume failed.
 
-- `failed git verification: …`: a pack or an index whose checksums do not hold, or a history the refs reach that is not whole.
+- `failed git verification: …`: a pack or an index whose checksums do not hold, a history the refs reach that is not whole, or a check of that history the attempt's 15 minutes ran out in.
 
 No reason names a signed address, its query, a token, or a ref's contents.
 A `/packs` that refuses the pod's token (401), and an answer that names another repository, fail the fetch as a `/tar` that does so fails it, and nothing falls back.

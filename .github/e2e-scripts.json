@@ -310,7 +310,7 @@
     },
     {
       "script": "repository-cache-burst-job.sh",
-      "needs": "a pod whose projected Kubernetes credential may create a Job (kubectl -n <namespace> auth can-i create jobs answers yes), kubectl, jq and a checkout of the head measured, whose double of Cloud Storage it writes into the Job's command, the worker image digest to test (--image, from the Worker Image run's Record digest step), and the deployment's compute class, storage class, labels and annotations (--node-selector, --storage-class, --label, --annotation, or --job-settings); it starts one gVisor Job of that image with a disk volume of 200Gi by default, two to three hours on the default repository, and nothing of its own"
+      "needs": "a pod whose projected Kubernetes credential may create a Job (kubectl -n <namespace> auth can-i create jobs answers yes), kubectl, jq and a checkout of the head measured, whose double of Cloud Storage it writes into the Job's command, the worker image digest to test (--image, from the Worker Image run's Record digest step), and the deployment's compute class, storage class, labels and annotations (--node-selector, --storage-class, --label, --annotation, or --job-settings); it starts one gVisor Job of that image with a disk volume of 120Gi and 16 CPU for its fetchers by default, about ten minutes on the default repository (nodejs/node), and nothing of its own"
     },
     {
       "script": "repository-cache-burst-probe.sh",

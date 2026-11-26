@@ -851,7 +851,10 @@ func unpackCache(ctx context.Context, run Runner, request FetchRequest, staging 
 // not whole (errHistoryNotWhole) are refused, naming what failed. Each git command runs within
 // what remains before deadline, the verification's own bound, which is bound long: for /tar,
 // FetchTimeout counted from the stream's end (fromCache); for the bucket, what is left of its
-// attempt's BucketFetchTimeout (fromBucket). One with nothing left fails, naming the bound.
+// attempt's BucketFetchTimeout (fromBucket). One with nothing left fails, naming the bound. A
+// history check that what remained ended before it answered has shown no object missing, so it is
+// no history that is not whole: it fails naming the bound (errHistoryCheckRanOut), with none of
+// git's words.
 func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging string, deadline time.Time, bound time.Duration, indexHere bool) error {
 	packs, err := filepath.Glob(filepath.Join(staging, "objects", "pack", "pack-*.pack"))
 	if err != nil {
@@ -888,7 +891,14 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	if err != nil {
 		return err
 	}
-	if _, err := FeedGitWithin(ctx, run, staging, left, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"); err != nil {
+	// The check runs as FeedGitWithin would, but keeps the run's Result: a checked run's error does
+	// not say whether its bound ended it.
+	fsck := slices.Concat(feedGit, []string{"--git-dir=" + staging, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"})
+	result, err := runCommandTimeout(ctx, run, fsck, isolatedGitConfig, staging, left)
+	if err == nil && result.TimedOut {
+		return fmt.Errorf("the fetch's %s bound %w", bound, errHistoryCheckRanOut)
+	}
+	if _, err := checkedResult(fsck, result, err); err != nil {
 		return fmt.Errorf("%w: %w", errHistoryNotWhole, err)
 	}
 	return nil
@@ -897,6 +907,14 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 // errHistoryNotWhole is verifyCache's refusal of a history whose refs reach an object the feed
 // does not hold, with git's own words after it.
 var errHistoryNotWhole = errors.New("the repository cache's history is not whole")
+
+// errHistoryCheckRanOut is verifyCache's failure where what remained of the verification's bound
+// ended `git fsck --connectivity-only` before it answered, wrapped after that bound: "the fetch's
+// <bound> bound ran out while checking the repository cache's history is whole". It says nothing of
+// the history, which a long one checked on a pod short of CPU outlasts while whole: 20 fetches at
+// once in one pod of 8 CPU each ran out of both the bucket attempt's bound and /tar's in this check
+// on firefox's history.
+var errHistoryCheckRanOut = errors.New("ran out while checking the repository cache's history is whole")
 
 // objectHash is the hash function the repository at gitDir names its objects with, as git reports
 // it (`git rev-parse --show-object-format`). Every checksum a pack and its index carry is that
