@@ -1403,7 +1403,7 @@ func TestAZeroRepositoryNeverReachesTheVolume(t *testing.T) {
 	}
 	fetch := fetchRequest(t)
 	fetch.Root, fetch.Repo = state, ghrepo.Repository{}
-	if _, err := Fetch(context.Background(), run, fetch); err == nil || err.Error() != "workspace repository is required" {
+	if err := Fetch(context.Background(), run, fetch); err == nil || err.Error() != "workspace repository is required" {
 		t.Errorf("Fetch with the zero Repository = %v, want it refused", err)
 	}
 	if calls := run.Calls(); len(calls) != 0 {

@@ -136,11 +136,11 @@ func StreamCache(ctx context.Context, run Runner, stream CacheStream, gitDir str
 	}
 	started := stream.Clock.Now()
 	bytes, err := unpackCacheInto(ctx, run, stream, gitDir)
-	if err != nil {
-		return StreamReport{}, err
-	}
 	verifying := stream.Clock.Now()
-	if err := verifyCache(ctx, run, stream, gitDir, verifying.Add(stream.bound())); err != nil {
+	if err == nil {
+		err = verifyCache(ctx, run, stream, gitDir, verifying.Add(stream.bound()))
+	}
+	if err != nil {
 		return StreamReport{}, fmt.Errorf("fill the clone from the repository cache %s: %w", stream.URL, err)
 	}
 	return StreamReport{
@@ -191,15 +191,6 @@ type outsideVolume struct{ err error }
 func (e outsideVolume) Error() string   { return e.err.Error() }
 func (e outsideVolume) Unwrap() []error { return []error{e.err, ErrOutsideVolume} }
 
-// FetchReport records the repository cache's fetch: whether it was cloned whole from GitHub and how
-// much its objects grew across a GitHub transfer, with how many refs that transfer made, moved or
-// deleted.
-type FetchReport struct {
-	Cloned      bool
-	GitHubBytes int64
-	Refs        int
-}
-
 // Fetch fills the repository cache's bare clone with the provisioning token and no configuration
 // but the one-shot credential's and the pins. The cache process (repocache) owns its volume and
 // reaches GitHub as the tmux runtime's Source does, so the token's holders share one credential
@@ -229,62 +220,68 @@ type FetchReport struct {
 // A failure whose cause is outside the issue's volume wraps ErrOutsideVolume, and keeps its text: a
 // read of the provisioning token that failed, or a transfer or ref listing from GitHub that
 // outsideVolumeFailure reads so, retried or not. Every other failure is the answer unchanged.
-func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, error) {
+func Fetch(ctx context.Context, run Runner, request FetchRequest) error {
 	cache, err := CacheRepository(request.Root, request.Repo)
 	if err != nil {
-		return FetchReport{}, err
+		return err
 	}
 	if request.Token == nil {
-		return FetchReport{}, errors.New("workspace fetch token is required")
+		return errors.New("workspace fetch token is required")
 	}
 	token, err := request.Token()
 	if err != nil {
-		return FetchReport{}, OutsideVolume(err)
+		return OutsideVolume(err)
 	}
 	github := gitHubSource{token: func() (string, error) { return token, nil }, credentialDir: request.CredentialDir}
 	if err := github.check(request.Repo); err != nil {
-		return FetchReport{}, err
+		return err
 	}
 	if request.Log == nil {
-		return FetchReport{}, errors.New("workspace fetch log is required")
+		return errors.New("workspace fetch log is required")
 	}
 	if request.Clock == nil {
-		return FetchReport{}, errors.New("workspace fetch clock is required")
+		return errors.New("workspace fetch clock is required")
 	}
 	credential, err := github.open(request.Repo, "", "")
 	if err != nil {
-		return FetchReport{}, OutsideVolume(err)
+		return OutsideVolume(err)
 	}
 	defer func() {
 		_ = credential.remove()
 	}()
 	present, err := OwnCacheRepository(cache, request.Repo, request.Clock.Now(), request.Log)
 	if err != nil {
-		return FetchReport{}, err
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(cache), 0o700); err != nil {
-		return FetchReport{}, fmt.Errorf("create cache parent: %w", err)
+		return fmt.Errorf("create cache parent: %w", err)
 	}
 	held := &fetchCredential{remote: credential, env: merge(credential.env, isolatedGitConfig), read: request.Token, held: []string{token}}
-	report := FetchReport{}
 	if present {
 		deadline := request.Clock.Now().Add(request.bound())
 		target, err := remoteHead(ctx, run, request, cache, held, deadline)
 		if err != nil {
-			return FetchReport{}, err
+			return err
 		}
 		if target == "" {
-			return FetchReport{}, fmt.Errorf("GitHub names no default branch for %s", request.Repo)
+			return fmt.Errorf("GitHub names no default branch for %s", request.Repo)
 		}
-		if err := report.fromGitHub(ctx, run, request, cacheFetchInto(cache, request.Repo, target), cache, held, deadline); err != nil {
-			return FetchReport{}, err
+		if _, err := transferWithRetries(ctx, run, request, cacheFetchInto(cache, request.Repo, target), held, deadline); err != nil {
+			return err
 		}
-		return report, credential.remove()
+		fetched, err := repositoryRefs(ctx, run, cache)
+		if err != nil {
+			return err
+		}
+		if err := followHead(ctx, run, request, cache, fetched, held, deadline); err != nil {
+			return err
+		}
+		return credential.remove()
 	}
 
 	staging, err := stageBeside(cache, request.Log)
 	if err != nil {
-		return FetchReport{}, err
+		return err
 	}
 	defer func() {
 		_ = rolefile.RemoveTree(staging)
@@ -298,15 +295,13 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 		destination: staging,
 		dir:         filepath.Dir(staging),
 	}
-	report.Cloned = true
-	deadline := request.Clock.Now().Add(request.bound())
-	if err := report.fromGitHub(ctx, run, request, clone, staging, held, deadline); err != nil {
-		return FetchReport{}, err
+	if _, err := transferWithRetries(ctx, run, request, clone, held, request.Clock.Now().Add(request.bound())); err != nil {
+		return err
 	}
 	if err := settleCache(ctx, run, staging, cache); err != nil {
-		return FetchReport{}, err
+		return err
 	}
-	return report, credential.remove()
+	return credential.remove()
 }
 
 // cacheFetchInto refreshes the one branch the cache retains. repocache narrows any pre-existing
@@ -331,49 +326,6 @@ func settleCache(ctx context.Context, run Runner, staging, cache string) error {
 	}
 	if err := os.Rename(staging, cache); err != nil {
 		return fmt.Errorf("move the fetched repository into the cache at %s: %w", cache, err)
-	}
-	return nil
-}
-
-// fromGitHub runs transfer into the bare repository gitDir under the one-shot credential held,
-// with Fetch's retries, all before deadline, and records how much the repository's objects grew
-// across it and how many refs it made, moved or deleted. A clone's gitDir holds no repository
-// before it runs: nothing, and no ref.
-func (r *FetchReport) fromGitHub(ctx context.Context, run Runner, request FetchRequest, transfer gitHubTransfer, gitDir string, held *fetchCredential, deadline time.Time) error {
-	refsBefore, err := repositoryRefs(ctx, run, gitDir, transfer.verb == "fetch")
-	if err != nil {
-		return err
-	}
-	sizeBefore, err := objectsSize(gitDir)
-	if err != nil {
-		return err
-	}
-	if _, err := transferWithRetries(ctx, run, request, transfer, held, deadline); err != nil {
-		return err
-	}
-	refsAfter, err := repositoryRefs(ctx, run, gitDir, true)
-	if err != nil {
-		return err
-	}
-	if transfer.verb == "fetch" {
-		if err := followHead(ctx, run, request, gitDir, refsAfter, held, deadline); err != nil {
-			return err
-		}
-	}
-	sizeAfter, err := objectsSize(gitDir)
-	if err != nil {
-		return err
-	}
-	r.GitHubBytes = sizeAfter - sizeBefore
-	for ref, id := range refsAfter {
-		if refsBefore[ref] != id {
-			r.Refs++
-		}
-	}
-	for ref := range refsBefore {
-		if _, kept := refsAfter[ref]; !kept {
-			r.Refs++
-		}
 	}
 	return nil
 }
@@ -450,17 +402,13 @@ func followHead(ctx context.Context, run Runner, request FetchRequest, gitDir st
 	return nil
 }
 
-// repositoryRefs is every ref of gitDir with the object it names, or none when held is unset: a
-// repository a clone is yet to make.
-func repositoryRefs(ctx context.Context, run Runner, gitDir string, held bool) (map[string]string, error) {
-	refs := map[string]string{}
-	if !held {
-		return refs, nil
-	}
+// repositoryRefs is every ref of gitDir with the object it names.
+func repositoryRefs(ctx context.Context, run Runner, gitDir string) (map[string]string, error) {
 	listed, err := CacheGit(ctx, run, gitDir, "for-each-ref", "--format=%(refname) %(objectname)")
 	if err != nil {
 		return nil, err
 	}
+	refs := map[string]string{}
 	for _, line := range strings.Split(strings.TrimSpace(listed.Stdout), "\n") {
 		if ref, id, ok := strings.Cut(line, " "); ok {
 			refs[ref] = id

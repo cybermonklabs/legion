@@ -202,13 +202,14 @@ type Workspace struct {
 	DefaultBranch string
 }
 
-// In a pod, the one process that holds the provisioning token, Fetch, runs in a container that
-// mounts nothing a tree agent can write, and every process that touches the tree volume runs in a
-// container the provisioning Secret is not mounted in: that boundary, not what the runner adds
-// below, is what keeps the token from a tree agent. On the tmux runtime the credentialed clone and
-// fetch run in the shared clone, and panes share the daemon's uid and can read the daemon's files
-// anyway, so there what the runner adds is defence, not a boundary: it holds the settings it names
-// below, and does not claim that nothing else the shared clone's configuration names can run.
+// No runtime keeps the provisioning token from a tree agent with a boundary. In a Kubernetes issue
+// pod, workspace-init holds the token and runs git in the clone the issue's agents write on the
+// issue's volume; on the tmux runtime the credentialed clone and fetch run in the shared clone, and
+// panes share the daemon's uid and can read the daemon's files anyway. On both, what the runner
+// adds below is defence: no hook runs, no git starts its automatic maintenance (pinnedGitConfig),
+// git reaches a remote over https alone (transportEnvironment), and each legacy configuration file
+// jj would migrate is removed before jj runs (disarmLegacyConfig). The clone's other git
+// configuration applies to its fetch, and nothing here claims that nothing else it names can run.
 
 // pinnedGitConfig is git configuration every process provisioning starts reads last, after the
 // shared clone's and after the command's own: no hook runs, wherever the clone's hooks directory

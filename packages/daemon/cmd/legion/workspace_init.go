@@ -50,6 +50,11 @@ func init() {
 	programbound.Register(&commandBudget)
 }
 
+// provisionClock is the clock `provision`'s waits read and sleep on: its polls of a repository
+// cache that is not ready, and its backoff between transfers from GitHub. This package's tests give
+// it one whose waits pass at once.
+var provisionClock workspace.Clock = clock.Real()
+
 // secretFileFromEnv is the secret file the environment variable name points at, once it reads
 // (config.ReadSecretPointer); an error when name is not set or its file does not read.
 func secretFileFromEnv(name string) (string, error) {
@@ -139,7 +144,7 @@ func workspaceInit(ctx context.Context, issue, repo, defaultBranch, root, creden
 	run := newProvisionRunner(programbound.Of(&commandBudget), inputs.tools)
 	provisioned, err := workspace.Provision(ctx, run, workspace.Request{
 		StateDir: root, Repo: inputs.repository, Issue: issue, DefaultBranch: defaultBranch, CredentialHelper: credentialHelper,
-		Source: workspace.ForIssuePod(inputs.token, os.TempDir(), inputs.cacheURL, inputs.cacheToken, clock.Real(), log), Log: log,
+		Source: workspace.ForIssuePod(inputs.token, os.TempDir(), inputs.cacheURL, inputs.cacheToken, provisionClock, log), Log: log,
 	})
 	if err != nil {
 		return err

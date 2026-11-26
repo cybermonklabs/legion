@@ -519,7 +519,7 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 			return time.Time{}, first, err
 		}
 	}
-	_, fetchErr := workspace.Fetch(ctx, c.opts.Run, workspace.FetchRequest{
+	fetchErr := workspace.Fetch(ctx, c.opts.Run, workspace.FetchRequest{
 		Repo: c.opts.Repo, CredentialDir: c.opts.CredentialDir, Root: c.opts.Root,
 		Token: func() (string, error) { return config.ReadSecretPointer(tokenFileEnv, c.opts.TokenFile) },
 		Log:   c.opts.Log, Clock: clock.Real(), Bound: bound,

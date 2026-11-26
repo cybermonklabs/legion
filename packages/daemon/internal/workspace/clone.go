@@ -37,12 +37,13 @@ const provisioningTokenFileEnv = "LEGION_PROVISIONING_TOKEN_FILE"
 // the token. git asks it for https://github.com alone (the helper is
 // credential.https://github.com.helper, set after a reset of every helper configured before it),
 // so a remote rewritten to another scheme, host, or port gets nothing, and no askpass is asked in
-// its place. In a pod the one process holding it, Fetch, reads no configuration a tree agent can
-// write, so the only remote it asks for is the one its own argv names. On the tmux runtime the
-// credentialed clone and fetch read the shared clone's configuration, so there the scope is
-// defence, not a boundary (config.go). One example of what it leaves open: an http.proxy the tree
-// wrote with http.sslVerify off still sees the token on its way to github.com. It is an example,
-// not the whole list.
+// its place. A credentialed fetch of an issue's clone reads that clone's own configuration, which
+// the issue's agents write: the tmux runtime's shared clone, and a Kubernetes issue pod's clone,
+// which workspace-init fills on the issue's volume. So there the scope is defence, not a boundary
+// (config.go). One example of what it leaves open: an http.proxy the tree wrote with
+// http.sslVerify off still sees the token on its way to github.com. It is an example, not the whole
+// list. The repository cache's Fetch reads a configuration that holds only keys it writes itself
+// (cacheConfigKeys).
 const provisioningHelper = `#!/bin/sh
 [ "$1" = get ] || exit 0
 printf 'username=x-access-token\npassword=%s\n' "$(cat "$LEGION_PROVISIONING_TOKEN_FILE")"
@@ -59,8 +60,9 @@ type remote struct {
 }
 
 // scrub is text with the credential's token replaced by ***, so that nothing a run under the
-// credential returns carries it, wherever git echoed it. Fetch, which rewrites the token before each
-// transfer (setToken), scrubs every token it has held itself (fetchCredential.scrub).
+// credential returns carries it, wherever git echoed it. A transfer from GitHub that rewrites the
+// token before each attempt (setToken, transferWithRetries) scrubs every token it has held itself
+// (fetchCredential.scrub).
 func (r remote) scrub(text string) string {
 	if r.token == "" {
 		return text
@@ -72,11 +74,11 @@ func (r remote) scrub(text string) string {
 // credential. The Go daemon keeps the token in a 0600 file under parent, so the processes it is
 // handed to receive only a file pointer and never a secret environment value. GIT_ASKPASS is set
 // empty, which git reads as no askpass at all — neither core.askPass nor SSH_ASKPASS — and terminal
-// prompts are off. parent is the operator's root, not a role's: the tmux daemon's state
-// directory (FromGitHub) or a pod's TMPDIR (Fetch, the repository cache), either of which may be
-// reached through a symlink. It is resolved once here, so the credential directory is made, and
-// removed (rolefile.RemoveTree, which refuses a parent that is a link), under the directory the
-// operator's link names, and no link below it is followed.
+// prompts are off. parent is the operator's root, not a role's: the tmux daemon's state directory
+// (FromGitHub), or a pod's TMPDIR (ForIssuePod in workspace-init's provision, Fetch in the
+// repository cache), either of which may be reached through a symlink. It is resolved once here, so
+// the credential directory is made, and removed (rolefile.RemoveTree, which refuses a parent that is
+// a link), under the directory the operator's link names, and no link below it is followed.
 func newProvisioningCredential(parent, token string) (remote, error) {
 	if token == "" {
 		return remote{}, errors.New("workspace provisioning token is required")
@@ -129,7 +131,7 @@ func newProvisioningCredential(parent, token string) (remote, error) {
 const provisioningTokenName = "token"
 
 // setToken writes token over the one-shot credential's, which git's helper reads at each request
-// for it: Fetch's, before each transfer from GitHub, with the token as it stands then.
+// for it: before each transfer from GitHub (transferWithRetries), with the token as it stands then.
 func (r remote) setToken(token string) error {
 	if token == "" {
 		return errors.New("workspace provisioning token is required")
@@ -480,7 +482,7 @@ func fetchIssuePod(ctx context.Context, run Runner, cloneDir string, source remo
 	if err != nil {
 		return 0, 0, "", err
 	}
-	refsBefore, err := repositoryRefs(ctx, run, gitDir, true)
+	refsBefore, err := repositoryRefs(ctx, run, gitDir)
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -492,7 +494,7 @@ func fetchIssuePod(ctx context.Context, run Runner, cloneDir string, source remo
 	if err != nil {
 		return 0, 0, "", err
 	}
-	refsAfter, err := repositoryRefs(ctx, run, gitDir, true)
+	refsAfter, err := repositoryRefs(ctx, run, gitDir)
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -597,7 +599,7 @@ func setIssueHeads(ctx context.Context, run Runner, gitDir, current string, defa
 }
 
 func keepIssueRefs(ctx context.Context, run Runner, gitDir, current string, defaults []string, bookmark string) error {
-	refs, err := repositoryRefs(ctx, run, gitDir, true)
+	refs, err := repositoryRefs(ctx, run, gitDir)
 	if err != nil {
 		return err
 	}

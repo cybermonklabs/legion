@@ -85,7 +85,7 @@ func TestFetchKillsGitsWholeProcessTreeWhenItsTimeoutFires(t *testing.T) {
 	timeout := 3 * time.Second
 
 	start := time.Now()
-	_, err := Fetch(context.Background(), &shortTimeoutRunner{remote: server.URL + "/widgets.git", timeout: timeout, run: run}, req)
+	err := Fetch(context.Background(), &shortTimeoutRunner{remote: server.URL + "/widgets.git", timeout: timeout, run: run}, req)
 	elapsed := time.Since(start)
 
 	if err == nil {
