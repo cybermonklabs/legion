@@ -1,10 +1,15 @@
 package api
 
+//ci:reads packages/contracts/fixtures/daemon-api/state.json TestAnIssuesLegionRead os.ReadFile (daemonStateGoldenPath, ../../../../contracts/fixtures/daemon-api): the state document the daemon's own internal/api/state_golden_test.go writes, whose waitingOn the read must answer under the API's names
+
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -14,20 +19,22 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // The read of one issue's Legion state, GET /api/v1/issues/{key}/legion (dispatch://INFRA-4869):
 // whether the issue's project names a daemon, the issue's phase, when Dispatch stored it and
 // whether Dispatch saw it start, each role with a claim and its state, its slot, its place in the
-// daemon's waiting line, what admission.blocked names for it, the daemon's waitingOn, the newest
-// read of the project's daemon, and the runs' revision the live view moves on. The rows read the
-// route over the wire, through dispatchRequest, and decode its body into the structs below rather
-// than the route's own type, so a row holds what a page reads. Each row states its answer as
-// literal values of its own seed, never as the shared per-issue function computes them, so
-// removing the place, the blockers, a role or a field of waitingOn from that function fails the
-// rows that seed them (a-c-read-route's negative control). Each case that is a state of a whole
-// project (no admission row, no read answered, no daemon named, a failed newest read, the full
-// state) has a project of its own, since no two of those hold of one project at one moment.
+// daemon's waiting line, what admission.blocked names for it, what it waits on from a person (the
+// daemon's waitingOn under the API's names, dispatch://INFRA-4870's D3), the newest read of the
+// project's daemon, and the runs' revision the live view moves on. The rows read the route over
+// the wire, through dispatchRequest, and decode its body into the structs below rather than the
+// route's own type, so a row holds what a page reads. Each row states its answer as literal values
+// of its own seed, never as the shared per-issue function computes them, so removing the place,
+// the blockers, a role or a member of waiting_on from that function fails the rows that seed them
+// (a-c-read-route's negative control). Each case that is a state of a whole project (no admission
+// row, no read answered, no daemon named, a failed newest read, the full state) has a project of
+// its own, since no two of those hold of one project at one moment.
 
 // issueLegionKind is the live view kind of one issue's Legion state by the name a page sends it
 // under (the plan's decision 7). The tests write the wire's word, so they hold the name a page
@@ -49,8 +56,9 @@ type wireLegionIssue struct {
 }
 
 // wireLegionIssueState is the state of an issue the daemon records. WaitingOn stays the bytes the
-// route sent, which a row decodes before it compares them: jsonb orders an object's keys its own
-// way, so the bytes say nothing a page reads.
+// route sent, which a row decodes into a map before it compares them, so a member the answer
+// should not carry fails the row rather than vanishing in a decode into a struct that does not
+// name it.
 type wireLegionIssueState struct {
 	Phase          string                 `json:"phase"`
 	PhaseSince     time.Time              `json:"phase_since"`
@@ -163,6 +171,76 @@ type legionIssueWant struct {
 	blockedBy []string
 	waitingOn map[string]any
 }
+
+// answerWaitMembers is each member of the daemon's waitingOn (WaitingOnView of
+// packages/daemon/internal/api/state.go) by the name the answer's waiting_on gives it
+// (dispatch://INFRA-4870's D3).
+var answerWaitMembers = map[string]string{
+	"kind": "kind", "ask": "ask", "artifactId": "artifact_id", "gateVersion": "gate_version",
+	"since": "since", "answeredAt": "answered_at", "answeredBy": "answered_by",
+}
+
+// answerWaitOf is a daemon's waitingOn object as the answer's waiting_on carries it: each member
+// answerWaitMembers names, under the answer's name and with the daemon's value, and no other.
+func answerWaitOf(daemon map[string]any) map[string]any {
+	answer := map[string]any{}
+	for name, value := range daemon {
+		if renamed, named := answerWaitMembers[name]; named {
+			answer[renamed] = value
+		}
+	}
+	return answer
+}
+
+// daemonStateGoldenPath is the state document the Legion daemon's own code writes
+// (packages/daemon/internal/api/state_golden_test.go, fixture F1 of dispatch://INFRA-4870's
+// plan), so its waitingOn is the daemon's wire shape rather than a reading of it.
+func daemonStateGoldenPath() string {
+	return filepath.Join("..", "..", "..", "..", "contracts", "fixtures", "daemon-api", "state.json")
+}
+
+// goldenDaemonWait is the waitingOn of the one issue of the daemon's state golden that waits on a
+// person, as the daemon wrote it, and that object decoded. The golden holds an ask a person
+// answered; one that holds no wait, two, or a wait that is not an ask fails the row, which would
+// otherwise not test what it names.
+func goldenDaemonWait(t *testing.T) (string, map[string]any) {
+	t.Helper()
+	body, err := os.ReadFile(daemonStateGoldenPath())
+	if err != nil {
+		t.Fatalf("read the daemon's state golden: %v", err)
+	}
+	var golden struct {
+		Issues map[string]struct {
+			WaitingOn json.RawMessage `json:"waitingOn"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal(body, &golden); err != nil {
+		t.Fatalf("decode the daemon's state golden: %v", err)
+	}
+	var waits []json.RawMessage
+	for _, key := range slices.Sorted(maps.Keys(golden.Issues)) {
+		if wait := golden.Issues[key].WaitingOn; len(wait) != 0 && string(wait) != "null" {
+			waits = append(waits, wait)
+		}
+	}
+	if len(waits) != 1 {
+		t.Fatalf("the daemon's state golden holds %d waits on a person, want the one ask the rows read", len(waits))
+	}
+	var wait map[string]any
+	if err := json.Unmarshal(waits[0], &wait); err != nil || wait["kind"] != "ask" {
+		t.Fatalf("the daemon's state golden waits on %s (%v), want an ask", waits[0], err)
+	}
+	return string(waits[0]), wait
+}
+
+// The two stored waitingOn objects a read answers null for (D3): one whose gateVersion is a
+// string, which does not decode, and one that names no kind. TestAnIssuesLegionRead seeds both,
+// and TestAnIssuesLegionReadLogsAWaitItCannotRead reads the line each one logs, which may hold no
+// value of either.
+const (
+	waitWithAStringGateVersion = `{"kind":"gate","gateVersion":"7","artifactId":"2b5e9d10-4c3a-4f86-9d2e-b1a0c3e5f6d8","since":"2026-11-20T06:15:00Z"}`
+	waitThatNamesNoKind        = `{"ask":"d3c2b1a0-9e8f-4d6c-8b5a-0f1e2d3c4b5a","since":"2026-11-20T05:45:00Z"}`
+)
 
 // requireLegionConfigured requires key's answer to say whether its project names a daemon as want
 // does.
@@ -325,10 +403,12 @@ func legionCardDisagreements(card legionBoardCard, answer wireLegionIssue) []str
 // TestAnIssuesLegionRead is a-c-read-route: every read row of the plan, each against literal
 // values of its seed. FULL is the full state: a daemon named, an admission row with a line of five,
 // a blocked issue and a parent in `awaiting_children` that the block names as held by its open
-// child, and a good newest read after an older failed one. FAILED's newest read failed after a good
-// one; NOLINE recorded no admission row; UNREAD's daemon never answered; NEVERREAD's was never read
-// at all; and NODAEMON names no daemon, though an earlier one left its rows. Every answer of the
-// first five is configured, and every one of NODAEMON is not.
+// child, and a good newest read after an older failed one; FULL-5, FULL-6 and FULL-21 to FULL-27
+// wait on a person, each in one shape a stored waitingOn takes (dispatch://INFRA-4870's
+// b-c-wait-shape). FAILED's newest read failed after a good one; NOLINE recorded no admission row;
+// UNREAD's daemon never answered; NEVERREAD's was never read at all; and NODAEMON names no daemon,
+// though an earlier one left its rows. Every answer of the first five is configured, and every one
+// of NODAEMON is not.
 func TestAnIssuesLegionRead(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -368,6 +448,13 @@ func TestAnIssuesLegionRead(t *testing.T) {
 		{18, "The fifth in the line", "r", ""},
 		{19, "The parent waiting on its open child", "s", ""},
 		{20, "The waiting parent's open child", "t", "FULL-19"},
+		{21, "The root waiting on the ask of the daemon's own state golden", "u", ""},
+		{22, "The root waiting on a gate with no since", "v", ""},
+		{23, "The root whose stored wait holds a member of another name", "w", ""},
+		{24, "The root whose stored wait holds a gateVersion that is a string", "x", ""},
+		{25, "The root whose stored wait names no kind", "y", ""},
+		{26, "The root waiting on a gate of version -1", "z", ""},
+		{27, "The root whose wait ended", "za", ""},
 	} {
 		seedLegionIssue(t, database, "FULL", issue.number, issue.title, issue.rank, nil, issue.parent)
 	}
@@ -411,6 +498,27 @@ func TestAnIssuesLegionRead(t *testing.T) {
 	}
 	observe("FULL", "FULL-19", legion.FieldPhase, `"awaiting_children"`, hour(1))
 	observe("FULL", "FULL-20", legion.FieldPhase, `"admitted"`, hour(1))
+	// FULL-21 to FULL-27 wait on a person, or did. FULL-21's wait is the daemon's own, read from
+	// its state golden (fixture F1); FULL-22's is the shape production stored for a gate it holds no
+	// since of (fixture F2), with an id of this test's own.
+	goldenWait, goldenWaitMembers := goldenDaemonWait(t)
+	for key, wait := range map[string]string{
+		"FULL-21": goldenWait,
+		"FULL-22": `{"kind":"gate","artifactId":"5e8d0c6b-4a39-4b2c-9d1e-0f2a3b4c5d6e","gateVersion":12}`,
+		"FULL-23": `{"kind":"ask","ask":"c4d5e6f0-a8b9-4c0d-9e1f-2a3b4c5d6e8f","since":"2026-11-20T08:10:00Z",` +
+			`"url":"https://dispatch.example/issues/ACME-1/asks/c4d5e6f0-a8b9-4c0d-9e1f-2a3b4c5d6e8f"}`,
+		"FULL-24": waitWithAStringGateVersion,
+		"FULL-25": waitThatNamesNoKind,
+		"FULL-26": `{"kind":"gate","artifactId":"a1b2c3d4-e5f6-4a0b-8c9d-0e1f2a3b4c5d","gateVersion":-1,"since":"2026-11-20T06:00:00Z"}`,
+		"FULL-27": `{"kind":"ask","ask":"0a1b2c3d-4e5f-4a6b-8c9d-e0f1a2b3c4d5","since":"2026-11-20T08:00:00Z"}`,
+	} {
+		observe("FULL", key, legion.FieldPhase, `"awaiting_person"`, hour(1))
+		observe("FULL", key, legion.FieldWaitingOn, wait, hour(1))
+	}
+	// FULL-27's wait ended: the sampler writes null for the field the newest read no longer
+	// carries, and the issue is back at work.
+	observe("FULL", "FULL-27", legion.FieldPhase, `"implementing"`, hour(2))
+	observe("FULL", "FULL-27", legion.FieldWaitingOn, `null`, hour(2))
 	// The blockers in an order that is not their sorted one, so a read that sorted them is told
 	// from one that keeps the daemon's order. The daemon lists a parent in awaiting_children as
 	// blocked on its open children, and in neither the active nor the waiting list, since it keeps
@@ -497,21 +605,56 @@ func TestAnIssuesLegionRead(t *testing.T) {
 			phase: "admitted", since: hour(1), roles: []wireLegionRole{}, blockedBy: []string{"FULL-9", "FULL-7"},
 		})
 	})
-	t.Run("R-5 a root waiting on an ask", func(t *testing.T) {
-		requireLegionState(t, "FULL-5", legionIssueOf(t, handler, "FULL-5"), legionIssueWant{
-			phase: "awaiting_person", since: hour(1), roles: []wireLegionRole{}, blockedBy: []string{},
-			waitingOn: map[string]any{
-				"kind": "ask", "ask": "6f1c0f8e-3d4b-4a8e-9f51-2b7c1d9e0a11", "since": "2026-11-20T08:30:00Z",
-			},
-		})
+	// The wait's rows (dispatch://INFRA-4870's D3): each answer's waiting_on holds exactly the
+	// members its seed stored, under the API's names, and no member of another name.
+	waiting := legionIssueWant{phase: "awaiting_person", since: hour(1), roles: []wireLegionRole{}, blockedBy: []string{}}
+	waitingOn := func(wait map[string]any) legionIssueWant {
+		want := waiting
+		want.waitingOn = wait
+		return want
+	}
+	t.Run("R-5 waits on an ask", func(t *testing.T) {
+		requireLegionState(t, "FULL-5", legionIssueOf(t, handler, "FULL-5"), waitingOn(map[string]any{
+			"kind": "ask", "ask": "6f1c0f8e-3d4b-4a8e-9f51-2b7c1d9e0a11", "since": "2026-11-20T08:30:00Z",
+		}))
+		// The daemon's own answered ask, each member under the API's name.
+		requireLegionState(t, "FULL-21", legionIssueOf(t, handler, "FULL-21"), waitingOn(answerWaitOf(goldenWaitMembers)))
 	})
-	t.Run("R-6 a root waiting on a design gate a person answered", func(t *testing.T) {
-		requireLegionState(t, "FULL-6", legionIssueOf(t, handler, "FULL-6"), legionIssueWant{
-			phase: "awaiting_person", since: hour(1), roles: []wireLegionRole{}, blockedBy: []string{},
-			waitingOn: map[string]any{
-				"kind": "gate", "gateVersion": float64(7), "artifactId": "0c9d2e4f-5a6b-4c7d-8e9f-a0b1c2d3e4f5",
-				"since": "2026-11-20T07:00:00Z", "answeredAt": "2026-11-20T09:45:00Z", "answeredBy": "approved",
-			},
+	t.Run("R-6 waits on an answered gate", func(t *testing.T) {
+		requireLegionState(t, "FULL-6", legionIssueOf(t, handler, "FULL-6"), waitingOn(map[string]any{
+			"kind": "gate", "gate_version": float64(7), "artifact_id": "0c9d2e4f-5a6b-4c7d-8e9f-a0b1c2d3e4f5",
+			"since": "2026-11-20T07:00:00Z", "answered_at": "2026-11-20T09:45:00Z", "answered_by": "approved",
+		}))
+	})
+	t.Run("W-1 waits on a gate with no since", func(t *testing.T) {
+		requireLegionState(t, "FULL-22", legionIssueOf(t, handler, "FULL-22"), waitingOn(map[string]any{
+			"kind": "gate", "artifact_id": "5e8d0c6b-4a39-4b2c-9d1e-0f2a3b4c5d6e", "gate_version": float64(12),
+		}))
+	})
+	t.Run("W-2 a member of another name is not passed on", func(t *testing.T) {
+		requireLegionState(t, "FULL-23", legionIssueOf(t, handler, "FULL-23"), waitingOn(map[string]any{
+			"kind": "ask", "ask": "c4d5e6f0-a8b9-4c0d-9e1f-2a3b4c5d6e8f", "since": "2026-11-20T08:10:00Z",
+		}))
+	})
+	t.Run("W-3 a gateVersion that is a string answers null", func(t *testing.T) {
+		requireLegionState(t, "FULL-24", legionIssueOf(t, handler, "FULL-24"), waiting)
+	})
+	t.Run("W-4 an object with no kind answers null", func(t *testing.T) {
+		requireLegionState(t, "FULL-25", legionIssueOf(t, handler, "FULL-25"), waiting)
+	})
+	t.Run("W-5 a gateVersion of -1 is passed on", func(t *testing.T) {
+		requireLegionState(t, "FULL-26", legionIssueOf(t, handler, "FULL-26"), waitingOn(map[string]any{
+			"kind": "gate", "artifact_id": "a1b2c3d4-e5f6-4a0b-8c9d-0e1f2a3b4c5d", "gate_version": float64(-1),
+			"since": "2026-11-20T06:00:00Z",
+		}))
+	})
+	t.Run("W-6 waits on nothing answers null", func(t *testing.T) {
+		// FULL-27's wait ended, and FULL-7 never waited.
+		requireLegionState(t, "FULL-27", legionIssueOf(t, handler, "FULL-27"), legionIssueWant{
+			phase: "implementing", since: hour(2), seen: true, roles: []wireLegionRole{}, blockedBy: []string{},
+		})
+		requireLegionState(t, "FULL-7", legionIssueOf(t, handler, "FULL-7"), legionIssueWant{
+			phase: "accepting", since: hour(1), roles: []wireLegionRole{}, blockedBy: []string{},
 		})
 	})
 	t.Run("R-7 an issue in accepting", func(t *testing.T) {
@@ -642,6 +785,63 @@ func TestAnIssuesLegionRead(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestAnIssuesLegionReadLogsAWaitItCannotRead: a read whose stored waitingOn it answers null for,
+// one whose gateVersion is a string and one that names no kind (TestAnIssuesLegionRead's W-3 and
+// W-4), logs one warning that names the issue and holds no value of the object
+// (dispatch://INFRA-4870's D3): the daemon chooses those values, and a log is no place to keep them.
+func TestAnIssuesLegionReadLogsAWaitItCannotRead(t *testing.T) {
+	// Not parallel: it makes a recorder the default logger's handler (logtest.SetDefault), which
+	// every test of the process logs through.
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "WAIT")
+	nameLegionDaemon(t, handler, "WAIT", "http://legion-wait.internal:13370")
+	at := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	seedLegionRead(t, database, "WAIT", at, "")
+	waits := []string{waitWithAStringGateVersion, waitThatNamesNoKind}
+	for index, wait := range waits {
+		key := seedLegionIssue(t, database, "WAIT", index+1, "A root whose stored wait the read cannot read", string(rune('a'+index)), nil, "")
+		seedLegionObservation(t, database, "WAIT", key, legion.FieldPhase, `"awaiting_person"`, at)
+		seedLegionObservation(t, database, "WAIT", key, legion.FieldWaitingOn, wait, at)
+	}
+
+	for index, wait := range waits {
+		key := fmt.Sprintf("WAIT-%d", index+1)
+		requireLegionState(t, key, legionIssueOf(t, handler, key), legionIssueWant{
+			phase: "awaiting_person", since: at, roles: []wireLegionRole{}, blockedBy: []string{},
+		})
+		var named []slog.Record
+		for _, record := range records.Records() {
+			record.Attrs(func(attr slog.Attr) bool {
+				if attr.Key == "issue" && attr.Value.String() == key {
+					named = append(named, record)
+				}
+				return true
+			})
+		}
+		if len(named) != 1 || named[0].Level != slog.LevelWarn {
+			t.Fatalf("the read of %s logged %d lines naming it (%+v), want one warning", key, len(named), named)
+		}
+		texts := []string{named[0].Message}
+		named[0].Attrs(func(attr slog.Attr) bool {
+			texts = append(texts, attr.Key+"="+attr.Value.String())
+			return true
+		})
+		var stored map[string]any
+		if err := json.Unmarshal([]byte(wait), &stored); err != nil {
+			t.Fatal(err)
+		}
+		for _, value := range stored {
+			for _, text := range texts {
+				if strings.Contains(text, fmt.Sprint(value)) {
+					t.Errorf("the line %s's read logged holds %q, a value of its stored wait: %q", key, value, texts)
+				}
+			}
+		}
+	}
 }
 
 // TestAnIssuesLegionReadCountsTheRunsRevision: the runs' revision, the count of the tuples of the

@@ -174,8 +174,9 @@ func announce(t *testing.T, rig *hubRig, project string) time.Time {
 // TestAnIssuesLegionLiveView is the plan's live rows, one after another on one view of LIVE-1 and
 // one of BARE-1, each at hub A and at hub B: L-1 to L-12 on an issue of a project with a daemon,
 // L-15 to L-19 on an issue of a project whose daemon was removed and is named again and removed
-// again, and L-13, the listener of hub A cut and back, last. L-14 holds every frame of the test
-// (next, openLegionIssuePage).
+// again, and L-13, the listener of hub A cut and back, last. L-1 also opens a view of LIVE-5, which
+// waits on an ask, so the view carries the read's waiting_on (dispatch://INFRA-4870's D3). L-14
+// holds every frame of the test (next, openLegionIssuePage).
 func TestAnIssuesLegionLiveView(t *testing.T) {
 	t.Parallel()
 	// Hub A's listener's own connections, so L-13 ends the one it listens on by its backend's pid
@@ -204,6 +205,7 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 	for number, title := range map[int]string{
 		1: "The issue the page shows", 2: "Another issue of its project",
 		3: "The first root in the line", 4: "The second root in the line",
+		5: "The root waiting on an ask",
 	} {
 		seedLegionIssue(t, rig.database, "LIVE", number, title, string(rune('a'+number)), nil, "")
 	}
@@ -228,6 +230,9 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 	}
 	observe("LIVE", legion.AdmissionKey, legion.FieldAdmission,
 		`{"cap": 2, "active": [], "waiting": ["LIVE-3", "LIVE-4", "LIVE-1"], "blocked": []}`, started)
+	observe("LIVE", "LIVE-5", legion.FieldPhase, `"awaiting_person"`, started)
+	observe("LIVE", "LIVE-5", legion.FieldWaitingOn, `{"kind":"ask","ask":"8e7d6c5b-4a3f-4e2d-9c1b-0a9f8e7d6c5b",`+
+		`"since":"2026-11-23T08:40:00Z","answeredAt":"2026-11-23T08:55:00Z","answeredBy":"ask","url":"https://dispatch.example/asks/1"}`, started)
 	observe("OTHER", "OTHER-1", legion.FieldPhase, `"planning"`, started)
 	// BARE's daemon recorded BARE-1 and was removed, which leaves its rows.
 	observe("BARE", "BARE-1", legion.FieldPhase, `"implementing"`, started)
@@ -252,6 +257,18 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 	pages := []*legionIssuePage{openLegionIssuePage(t, "A", rig, "LIVE-1"), openLegionIssuePage(t, "B", rigB, "LIVE-1")}
 	for _, page := range pages {
 		requireLegionBody(t, page.what(), page.answer(t), body)
+	}
+	// L-1 of an issue that waits on an ask (dispatch://INFRA-4870's D3): the view's snapshot is the
+	// read's answer, whose waiting_on holds the stored wait's members under the API's names.
+	waits := legionIssueBody{configured: true, read: &wireLegionRead{At: firstRead, OK: true}, state: &legionIssueWant{
+		phase: "awaiting_person", since: started, roles: []wireLegionRole{}, blockedBy: []string{},
+		waitingOn: map[string]any{
+			"kind": "ask", "ask": "8e7d6c5b-4a3f-4e2d-9c1b-0a9f8e7d6c5b", "since": "2026-11-23T08:40:00Z",
+			"answered_at": "2026-11-23T08:55:00Z", "answered_by": "ask",
+		},
+	}}
+	for _, page := range []*legionIssuePage{openLegionIssuePage(t, "A", rig, "LIVE-5"), openLegionIssuePage(t, "B", rigB, "LIVE-5")} {
+		requireLegionBody(t, page.what(), page.answer(t), waits)
 	}
 	// No store below comes before each hub's listener holds its LISTEN, so none is sent unheard,
 	// and none before each hub ran the recompute that connection and its event feed mark every

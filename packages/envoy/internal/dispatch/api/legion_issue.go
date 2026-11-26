@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -85,15 +86,10 @@ type legionIssueState struct {
 	// daemon stored them, and [] where it names none: never null, so a page reads the list and
 	// needs no second rule for its absence.
 	BlockedBy []string `json:"blocked_by"`
-	// WaitingOn is what the issue waits on from a person, the daemon's object exactly as the
-	// sampler stored it, null where it waits on nothing. It stays bytes, as legion.IssueState holds
-	// it, so a field a later daemon adds reaches the page. rawFieldSchemas names the fields the
-	// daemon writes today (its WaitingOnView), which give the generated type its members, and the
-	// card of the board takes three of them (legionBoardWaitOf). The emitter leaves a field that
-	// table names out of `required` unless its tag says otherwise, since absent is one of the
-	// three states of a request's raw field; this one is always written, null or an object, so its
-	// tag says so.
-	WaitingOn json.RawMessage `json:"waiting_on" required:"true"`
+	// WaitingOn is what the issue waits on from a person, the daemon's stored waitingOn under the
+	// API's names (legionIssueWaitOf), null where it waits on nothing and where that object does
+	// not decode or names no kind.
+	WaitingOn *legionIssueWaitingOn `json:"waiting_on"`
 }
 
 // legionIssueWaitingLine is where an issue stands in the daemon's waiting line: Place counts from
@@ -101,6 +97,26 @@ type legionIssueState struct {
 type legionIssueWaitingLine struct {
 	Place  int `json:"place"`
 	Length int `json:"length"`
+}
+
+// legionIssueWaitingOn is what a root in `awaiting_person` waits on from a person: the daemon's
+// waitingOn (packages/daemon/internal/api/state.go's WaitingOnView) under the API's names. Kind is
+// `ask`, with Ask, the id of the oldest question of the issue's tree still with a person; or
+// `gate`, with ArtifactID and GateVersion, a document of the issue and its version no person has
+// reviewed; or a kind a later daemon names. Since is when the wait began, AnsweredAt when it was
+// answered, and AnsweredBy how, not always by a person. Each member but Kind is absent
+// where the daemon wrote none. A member the daemon writes that this type does not name is not
+// passed on, so a later daemon's member reaches a page only once Dispatch names it here, and a
+// page that links from one of these values checks it first (dispatch://INFRA-4870's "The wait's
+// link"): the daemon chooses them.
+type legionIssueWaitingOn struct {
+	Kind        string     `json:"kind"`
+	Ask         string     `json:"ask,omitempty"`
+	ArtifactID  string     `json:"artifact_id,omitempty"`
+	GateVersion *int       `json:"gate_version,omitempty"`
+	Since       *time.Time `json:"since,omitempty"`
+	AnsweredAt  *time.Time `json:"answered_at,omitempty"`
+	AnsweredBy  string     `json:"answered_by,omitempty"`
 }
 
 // legionIssueRead is the newest read of a project's daemon: when it was made, whether it succeeded,
@@ -195,10 +211,45 @@ func legionIssueStateOf(key string, current legion.IssueCurrent) *legionIssueSta
 	state := &legionIssueState{
 		Phase: current.State.Phase, PhaseSince: current.State.PhaseSince.UTC(), PhaseStartSeen: current.PhaseStartSeen,
 		Roles: current.State.Roles(), Slot: current.State.Slot,
-		BlockedBy: current.Admission.BlockersOf(key), WaitingOn: current.State.WaitingOn,
+		BlockedBy: current.Admission.BlockersOf(key), WaitingOn: legionIssueWaitOf(key, current.State.WaitingOn),
 	}
 	if place, length, ok := current.Admission.Place(key); ok {
 		state.WaitingLine = &legionIssueWaitingLine{Place: place, Length: length}
 	}
 	return state
+}
+
+// legionIssueWaitOf is the answer's wait of key from the daemon's stored waitingOn, nil where the
+// issue waits on nothing. The object is decoded through the daemon's own names (its WaitingOnView)
+// into the answer's. One that does not decode, such as a gateVersion that is no integer or a
+// since that is no time, or that names no kind, is nil too, as the board's card reads it
+// (legionBoardWaitOf), and logs one warning that names key and holds no value of the object, since
+// the daemon chooses those values. A negative gateVersion is passed on as stored: the page checks
+// a version before it links one.
+func legionIssueWaitOf(key string, stored json.RawMessage) *legionIssueWaitingOn {
+	if stored == nil {
+		return nil
+	}
+	// The daemon's names, in the order and with the types of legionIssueWaitingOn's members, so
+	// the one converts to the other.
+	var daemon struct {
+		Kind        string     `json:"kind"`
+		Ask         string     `json:"ask"`
+		ArtifactID  string     `json:"artifactId"`
+		GateVersion *int       `json:"gateVersion"`
+		Since       *time.Time `json:"since"`
+		AnsweredAt  *time.Time `json:"answeredAt"`
+		AnsweredBy  string     `json:"answeredBy"`
+	}
+	reason := "does not decode"
+	if err := json.Unmarshal(stored, &daemon); err == nil {
+		if daemon.Kind != "" {
+			wait := legionIssueWaitingOn(daemon)
+			return &wait
+		}
+		reason = "names no kind"
+	}
+	slog.Warn("dispatch: an issue's Legion read answers waiting_on null for a stored waitingOn it cannot read",
+		"issue", key, "reason", reason)
+	return nil
 }

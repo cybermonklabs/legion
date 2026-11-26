@@ -7274,7 +7274,7 @@
     },
     "/api/v1/issues/{key}/legion": {
       "get": {
-        "description": "One issue's Legion state, from what the sampler recorded of the daemon of the issue's project: {issue, project, configured, state, read, runs_revision}. project is the project of the issue. configured is true when that project names a Legion daemon. state is null when the daemon does not record the issue. Otherwise state is {phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}. phase_since is when Dispatch stored the phase. phase_start_seen is false when that phase is the first value that Dispatch stored for the issue. roles is [{role, state}], one entry for each role with a claim, or [] when no role has one. slot is the index of the slot that the issue holds, or null. waiting_line is {place, length}, or null when the daemon's waiting line does not name the issue. place counts from 1, and length is the number of issues in that line. blocked_by lists the issues that block the issue, in the order the daemon stored them, or [] when no issue blocks it. waiting_on is the daemon's object exactly as stored, or null. read is the newest read of the daemon, {at, ok, error}, or null when no read was recorded. runs_revision counts the tuples of the issue's runs. It is 0 for an issue with no run. Each write of a run that stores something new makes it larger, and a write sent again leaves it. A project that names no daemon is not refused. Its issue answers configured false, state null and read null, whatever rows an earlier daemon left, and its runs_revision. The one refusal is 404 NOT_FOUND, for a key that names no issue.",
+        "description": "One issue's Legion state, from what the sampler recorded of the daemon of the issue's project: {issue, project, configured, state, read, runs_revision}. project is the project of the issue. configured is true when that project names a Legion daemon. state is null when the daemon does not record the issue. Otherwise state is {phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}. phase_since is when Dispatch stored the phase. phase_start_seen is false when that phase is the first value that Dispatch stored for the issue. roles is [{role, state}], one entry for each role with a claim, or [] when no role has one. slot is the index of the slot that the issue holds, or null. waiting_line is {place, length}, or null when the daemon's waiting line does not name the issue. place counts from 1, and length is the number of issues in that line. blocked_by lists the issues that block the issue, in the order the daemon stored them, or [] when no issue blocks it. waiting_on is what the issue waits on from a person, {kind, ask, artifact_id, gate_version, since, answered_at, answered_by}: the daemon's waitingOn under these names, each member but kind absent where the daemon wrote none, and no member of another name. It is null when the issue waits on nothing, and when the daemon's stored object does not decode or names no kind. read is the newest read of the daemon, {at, ok, error}, or null when no read was recorded. runs_revision counts the tuples of the issue's runs. It is 0 for an issue with no run. Each write of a run that stores something new makes it larger, and a write sent again leaves it. A project that names no daemon is not refused. Its issue answers configured false, state null and read null, whatever rows an earlier daemon left, and its runs_revision. The one refusal is 404 NOT_FOUND, for a key that names no issue.",
         "operationId": "getApiV1IssuesByKeyLegion",
         "parameters": [
           {
@@ -25315,44 +25315,7 @@
           "waiting_on": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "description": "what the issue waits on from a person, the Legion daemon's waitingOn object exactly as Dispatch stored it; a field a later daemon adds is sent too",
-                "properties": {
-                  "answeredAt": {
-                    "description": "an RFC3339 timestamp",
-                    "format": "date-time",
-                    "type": "string"
-                  },
-                  "answeredBy": {
-                    "description": "how the wait was answered, once it was, and not always by a person",
-                    "type": "string"
-                  },
-                  "artifactId": {
-                    "description": "for a gate, the id of the document whose version no person has reviewed",
-                    "type": "string"
-                  },
-                  "ask": {
-                    "description": "for an ask, the id of the oldest question of the issue's tree still with a person",
-                    "type": "string"
-                  },
-                  "gateVersion": {
-                    "description": "for a gate, the spec version no person has reviewed",
-                    "type": "integer"
-                  },
-                  "kind": {
-                    "description": "the kind of wait: ask, gate, or a kind a later daemon names",
-                    "type": "string"
-                  },
-                  "since": {
-                    "description": "an RFC3339 timestamp",
-                    "format": "date-time",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "kind"
-                ],
-                "type": "object"
+                "$ref": "#/components/schemas/LegionIssueWaitingOn"
               },
               {
                 "type": "null"
@@ -25384,6 +25347,37 @@
         "required": [
           "place",
           "length"
+        ],
+        "type": "object"
+      },
+      "LegionIssueWaitingOn": {
+        "properties": {
+          "answered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "answered_by": {
+            "type": "string"
+          },
+          "artifact_id": {
+            "type": "string"
+          },
+          "ask": {
+            "type": "string"
+          },
+          "gate_version": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "since": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
         ],
         "type": "object"
       },

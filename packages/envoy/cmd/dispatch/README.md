@@ -5092,7 +5092,8 @@ Each item below names a path with its method and identity, then its purpose.
   `slot` is the index of the slot that the issue holds, or `null`.
   `waiting_line` is `{place, length}`, where `place` counts from 1 in the daemon's waiting line, or `null` when that line does not name the issue.
   `blocked_by` lists the issues that block the issue, in the order the daemon stored them, and is `[]` when no issue blocks it; for a parent in `awaiting_children` it names the open children that the daemon lists it as blocked on, not blocker links.
-  `waiting_on` is the daemon's object exactly as stored, or `null`.
+  `waiting_on` is what the issue waits on from a person, `{kind, ask, artifact_id, gate_version, since, answered_at, answered_by}`: the daemon's `waitingOn` under these names, each member but `kind` absent where the daemon wrote none, and no member of another name.
+  It is `null` when the issue waits on nothing, and when the daemon's stored object does not decode or names no `kind`, which Dispatch logs with the issue's key.
   `read` is the newest read of the daemon, `{at, ok, error}`, or `null` when no read was recorded.
   `runs_revision` counts the tuples of the issue's runs: it is `0` for an issue with no run.
   Each write of a run that stores something new makes it larger, and a write sent again leaves it.

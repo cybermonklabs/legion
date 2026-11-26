@@ -225,12 +225,6 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 		"description": "refused whenever present (400 INVALID_JSON): a broadcast's idempotency " +
 			"key is the Idempotency-Key header and never a body member",
 	}},
-	// GET /api/v1/issues/{key}/legion's waiting_on (legion_issue.go): null is an issue that waits
-	// on nothing, and an object is the daemon's own as the sampler stored it, which the answer
-	// sends unparsed so that a field a later daemon adds reaches the page. The fragment names the
-	// fields the daemon writes today and leaves the object open, so the generated type has them.
-	// The answer always carries the field, which its `required:"true"` says.
-	{reflect.TypeOf(legionIssueState{}), "waiting_on"}: rawField{Fragment: openAPILegionWaitingOn, Nullable: true},
 }
 
 // The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.
@@ -254,43 +248,6 @@ var (
 	openAPIRepository = map[string]any{
 		"type":        "string",
 		"description": `a GitHub repository as "owner/name"`,
-	}
-	// The daemon's api.WaitingOnView (packages/daemon/internal/api/state.go), what a root in
-	// awaiting_person waits on from a person: kind is `ask`, with the ask's id, or `gate`, with the
-	// spec version of a document no person reviewed; since is when the wait began; answeredAt and
-	// answeredBy come once the wait was answered. The daemon writes kind on every wait and each
-	// other field only where it has a value, and the object is open: a field a later daemon adds
-	// is sent as stored.
-	openAPILegionWaitingOn = map[string]any{
-		"type": "object",
-		"description": "what the issue waits on from a person, the Legion daemon's waitingOn " +
-			"object exactly as Dispatch stored it; a field a later daemon adds is sent too",
-		"properties": map[string]any{
-			"kind": map[string]any{
-				"type":        "string",
-				"description": "the kind of wait: ask, gate, or a kind a later daemon names",
-			},
-			"ask": map[string]any{
-				"type":        "string",
-				"description": "for an ask, the id of the oldest question of the issue's tree still with a person",
-			},
-			"gateVersion": map[string]any{
-				"type":        "integer",
-				"description": "for a gate, the spec version no person has reviewed",
-			},
-			"artifactId": map[string]any{
-				"type":        "string",
-				"description": "for a gate, the id of the document whose version no person has reviewed",
-			},
-			"since":      openAPITimestamp,
-			"answeredAt": openAPITimestamp,
-			"answeredBy": map[string]any{
-				"type":        "string",
-				"description": "how the wait was answered, once it was, and not always by a person",
-			},
-		},
-		"required":             []string{"kind"},
-		"additionalProperties": true,
 	}
 )
 

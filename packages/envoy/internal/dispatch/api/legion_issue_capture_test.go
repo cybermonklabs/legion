@@ -115,7 +115,10 @@ func capturedJSON(raw json.RawMessage) (any, error) {
 	return value, err
 }
 
-// compareCapturedIssue holds key's answer to the capture's record of it, C-1 to C-6.
+// compareCapturedIssue holds key's answer to the capture's record of it, C-1 to C-6. C-6 compares
+// the answer's waiting_on with the capture's waitingOn through the seven members the answer names
+// (answerWaitOf): the capture's gateVersion with the answer's gate_version, and so on, and no
+// member of another name.
 func compareCapturedIssue(report *captureDisagreements, key string, issue capturedIssue, blockedBy []string, answer wireLegionIssue) {
 	report.t.Helper()
 	if !answer.Configured {
@@ -170,13 +173,16 @@ func compareCapturedIssue(report *captureDisagreements, key string, issue captur
 		report.add("C-6 %s: decode the capture's waitingOn %s: %v", key, issue.WaitingOn, err)
 		return
 	}
+	if daemon, isObject := wantWait.(map[string]any); isObject {
+		wantWait = answerWaitOf(daemon)
+	}
 	gotWait, err := capturedJSON(state.WaitingOn)
 	if err != nil {
 		report.add("C-6 %s: decode the answer's waiting_on %s: %v", key, state.WaitingOn, err)
 		return
 	}
 	if !reflect.DeepEqual(gotWait, wantWait) {
-		report.add("C-6 %s: waiting_on decodes to %v, want the capture's %v", key, gotWait, wantWait)
+		report.add("C-6 %s: waiting_on decodes to %v, want the capture's waitingOn %s under the answer's names, %v", key, gotWait, issue.WaitingOn, wantWait)
 	}
 }
 

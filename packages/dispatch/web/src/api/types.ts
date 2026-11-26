@@ -203,6 +203,7 @@ export type {
   KnownSession,
   LauncherCredentialResp,
   LauncherCredentialsResponse,
+  LegionIssueWaitingOn,
   LegionSetting,
   LiveAgentFrame,
   LiveClientFrame,
