@@ -392,7 +392,7 @@ var prioritySummaryQuery = `with recursive ` + priorityMemberTerms + `, ` +
 // listing's `?moved=true` (issueSummaryJoins) both splice, so the two answer the same cells for
 // one issue. An issue whose events do not reach back to the move answers both null.
 //
-// The lateral walks the partial index events_parked_moves (migration 20261125131100), whose
+// The lateral walks the partial index events_backlog_moves (migration 20261125131100), whose
 // predicate is the lateral's own conditions on the event, backwards from the issue's newest move
 // and stops at the first row, so a read costs the issues it is asked for rather than the table.
 // gate, where it is not empty, is a condition the read runs under at all; it is written against

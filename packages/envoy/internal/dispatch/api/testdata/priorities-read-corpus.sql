@@ -337,7 +337,7 @@ left join (select key, jsonb_agg(jsonb_build_object('id', id, 'inherited', inher
 -- each at its share of the issue's life from created_at to updated_at, all of them in the order of
 -- their moments across the issues. Seq 1 is the issue.created, written by the issue's creator in
 -- todo. An issue in backlog or icebox has the issue.updated that moved it there at the seq drawn
--- for it, which the parked read (api's backlogMoveLateral) walks back to from the newest. A
+-- for it, which the backlog move read (api's backlogMoveLateral) walks back to from the newest. A
 -- finished issue has the issue.updated that moved it to in_progress at seq 2 and its issue.closed
 -- last, and an issue in any other status but todo the issue.updated that moved it there at seq 2.
 -- Of the other seqs every third is a comment.created and the rest an issue.updated of one field;

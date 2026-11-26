@@ -168,7 +168,7 @@ func askOpenedPayload(ask model.Ask) (string, error) {
 // a status move. The status is one of the fields an issue update can move (api's
 // issueChangedFields names fourteen: the title, the rank, the priority, the assignee, the labels,
 // the parent, the blockers and the rest). Legion's workflow moves an issue's status at each step
-// of its life: out of triage, into the queue or a parked status, and through each phase to
+// of its life: out of triage, into the queue or into backlog or icebox, and through each phase to
 // retro. So the status is a common field of an update, but the other fields together are moved
 // more often. One in three is the seed's own estimate of that share, not a count from
 // production. Each issue holds about ten filler `issue.updated` events at every scale (fifty
@@ -177,9 +177,9 @@ func askOpenedPayload(ask model.Ask) (string, error) {
 const statusMoveOneIn = 3
 
 // statusMoveEvent is the SQL predicate, on the event aliased e, that holds for a status move: an
-// `issue.updated` event whose payload names `status` in `changed`, which are the parked read's own
-// conditions on the event beside its status (api's backlogMoveLateral). The report counts the moves
-// by it, and the seed's test reads them by it.
+// `issue.updated` event whose payload names `status` in `changed`, which are the conditions the
+// backlog move read sets on the event beside its status (api's backlogMoveLateral). The report
+// counts the moves by it, and the seed's test reads them by it.
 const statusMoveEvent = `e.type = 'issue.updated' and e.payload->'changed' @> '"status"'::jsonb`
 
 // planStatusMoves chooses the filler `issue.updated` events that record a status move, and the
@@ -190,9 +190,9 @@ const statusMoveEvent = `e.type = 'issue.updated' and e.payload->'changed' @> '"
 // Each move goes to a status the issue does not stand in, as a status write must for its event
 // to name `status` in `changed` (api's issueChangedFields). The newest move, by seq, goes into
 // the status that the issue's row holds now. So the newest move of an issue in `backlog` or
-// `icebox` is into that status, which is the event the parked read finds (api's
-// backlogMoveLateral), and the moves before it go into and out of the other statuses, the two
-// parked statuses among them.
+// `icebox` is into that status, which is the event the backlog move read finds (api's
+// backlogMoveLateral), and the moves before it go into and out of the other statuses, backlog
+// and icebox among them.
 //
 // An issue that stands outside triage was moved there, so it takes at least one move: where the
 // odds chose none, one of its `issue.updated` events is drawn to be the move. An issue that
@@ -276,7 +276,7 @@ var movedIssueQuery = `with recursive subjects as (select key from issues), ` + 
 // which no other package can call), and no reader of an `issue.updated` event reads either: the
 // delivery hub reads its key, status and priority, the outbox and the graph census its route,
 // the keyword fill its title and primary document, the browser's refresh rules its `changed`,
-// `ancestors` and `thread_logins`, and the activity list and the parked read its status and
+// `ancestors` and `thread_logins`, and the activity list and the backlog move read its status and
 // `changed`. The seed writes no claim, no external link and no document of a role, so the issue
 // holds none of them.
 func (r *seedRun) statusMovePayloads(ctx context.Context) (map[string]model.IssueEventPayload, error) {

@@ -48,7 +48,7 @@ const (
 //     its walk keyed (mainPriorityNewestEventKeyedWalkQuery), and the move into backlog or icebox
 //     (backlogMoveLateral) in the second fault of the read's statement and in the listing with
 //     ?moved=true, each without and with
-//     events_parked_moves, with a reading of each walk over the members alone: main's
+//     events_backlog_moves, with a reading of each walk over the members alone: main's
 //     (memberWalkQuery) and the walk keyed through issues_parent_key (keyedMemberWalkQuery). The
 //     listing and the project list add no migration, agentLastActivity reads
 //     events_session_actor_created_at_idx, which migration 0026 built, the children read walks
@@ -57,11 +57,11 @@ const (
 //     issues_parent_key and events_issue_key_seq_key, which no
 //     migration of this release adds; so on a database at this release's schema both texts of
 //     each are measurable, and the pair is the committed regression check. The move's two
-//     sides are one text, and the before side drops events_parked_moves, which migration
+//     sides are one text, and the before side drops events_backlog_moves, which migration
 //     20261125131100 of this release adds, in its measuring transaction, which is rolled back; so
 //     the same database holds both of its sides too. The two related statements are gated on the
 //     document arm they share and reported whole beside it, for the reason given where that pair
-//     is measured. The newest event and the parked move are gated on their top plan node's shared
+//     is measured. The newest event and the backlog move are gated on their top plan node's shared
 //     buffers too, for the reason given where each is measured.
 //
 //   - Protocol 2, one side alone: listIssueAsksQueryAll, listIssueRootMessagesQuery and
@@ -296,12 +296,12 @@ func TestStatementTimings(t *testing.T) {
 		benchtime.Statement{SQL: mainRelatedProbeSQL, Args: probeArguments},
 		benchtime.Statement{SQL: relatedProbeSQL, Args: probeArguments})
 
-	// The newest event, the parked move and the walk all read the priorities read's live
+	// The newest event, the backlog move and the walk all read the priorities read's live
 	// priorities and their relations, read once here through a pool on the measurement database.
 	database := benchtime.OpenStore(t, os.Getenv(benchtime.DatabaseURLEnv))
 	ids, keys, priorities := priorityReadSeed(t, database)
 	measurePriorityNewestEvent(t, runner, database, ids, keys, priorities)
-	measureParkedMoveAndMemberWalk(t, runner, ids, keys, priorities)
+	measureBacklogMoveAndMemberWalk(t, runner, ids, keys, priorities)
 }
 
 // priorityNewestEventTiming names the pair of the priorities read's whole statement
@@ -515,17 +515,17 @@ func livePriorityIDs(t *testing.T, database *store.Store) []string {
 	return ids
 }
 
-// parkedMoveTiming names the group of the readings of the parked move (backlogMoveLateral)
-// without and with events_parked_moves, in the parked fault and in the listing with ?moved=true,
+// backlogMoveTiming names the group of the readings of the backlog move (backlogMoveLateral)
+// without and with events_backlog_moves, in the second fault and in the listing with ?moved=true,
 // and of each walk over the members alone, main's and the walk keyed through issues_parent_key.
 // Each reading is a subtest of the group, so one -run pattern of the group's name selects them
 // all. The other four names are those of the readings, and each reading of a top node's buffers
 // carries the name of its reading as a prefix. The keyed walk's name carries main's walk's as a
 // prefix too, so one -run pattern of memberWalkTiming selects both walks.
 const (
-	parkedMoveTiming      = "the parked move and the walk over the members"
-	parkedFaultTiming     = "the parked fault, without and with events_parked_moves"
-	parkedListingTiming   = "the listing with ?moved=true, without and with events_parked_moves"
+	backlogMoveTiming     = "the backlog move and the walk over the members"
+	backlogFaultTiming    = "the second fault, without and with events_backlog_moves"
+	backlogListingTiming  = "the listing with ?moved=true, without and with events_backlog_moves"
 	memberWalkTiming      = "the walk over the members alone"
 	keyedMemberWalkTiming = memberWalkTiming + ", keyed through issues_parent_key"
 )
@@ -562,7 +562,7 @@ const keyedMemberWalkQuery = `with recursive members_seed as (
 	)
 	select count(*) from members`
 
-// measureParkedMoveAndMemberWalk measures, in the group parkedMoveTiming:
+// measureBacklogMoveAndMemberWalk measures, in the group backlogMoveTiming:
 //
 //   - the second fault of the priorities read's statement (priorityReadQuery), over the arguments
 //     readPriorities binds for every live priority with no project named (ids, read by
@@ -577,10 +577,10 @@ const keyedMemberWalkQuery = `with recursive members_seed as (
 //     (keyedMemberWalkQuery), over their relations as two arrays (keys and priorities).
 //
 // Each of the first two is a pair whose two sides are one text. The before side drops
-// events_parked_moves in its measuring transaction, which every reading rolls back, so it reads as
+// events_backlog_moves in its measuring transaction, which every reading rolls back, so it reads as
 // on the schema of main, and the after side reads through the index. Each pair is gated on its top
 // plan node's shared buffers under the plan made for its values and under the generic plan
-// (benchtime.Runner.PairBuffers): the gain is the events the lateral no longer reads. The parked
+// (benchtime.Runner.PairBuffers): the gain is the events the lateral no longer reads. The second
 // fault is timed as a pair whose after side must be faster (benchtime.Runner.Pair). The listing is
 // timed within the bound of benchtime.Runner.PairWithin instead: the lateral is a small part of the
 // listing's work, a page of every row of a project, so its gain can sit inside the run-to-run
@@ -590,20 +590,20 @@ const keyedMemberWalkQuery = `with recursive members_seed as (
 // for each call. The two walks are read under the same two plans and by the same timing, so each
 // reading compares with the other directly; nothing here bounds either. Each text is logged with
 // its sha256.
-func measureParkedMoveAndMemberWalk(t *testing.T, runner *benchtime.Runner, ids, keys, priorities []string) {
+func measureBacklogMoveAndMemberWalk(t *testing.T, runner *benchtime.Runner, ids, keys, priorities []string) {
 	t.Helper()
-	t.Run(parkedMoveTiming, func(t *testing.T) {
+	t.Run(backlogMoveTiming, func(t *testing.T) {
 		project := runner.Subjects().Project
-		t.Logf("%s: the listing of project %s, with no other filter, and moved true", parkedListingTiming, project)
+		t.Logf("%s: the listing of project %s, with no other filter, and moved true", backlogListingTiming, project)
 		for _, text := range []struct{ name, sql string }{
-			{parkedFaultTiming + ": priorityReadQuery", priorityReadQuery},
-			{parkedListingTiming + ": listIssuesQuery", listIssuesQuery},
+			{backlogFaultTiming + ": priorityReadQuery", priorityReadQuery},
+			{backlogListingTiming + ": listIssuesQuery", listIssuesQuery},
 			{memberWalkTiming + ": memberWalkQuery", memberWalkQuery},
 			{keyedMemberWalkTiming + ": keyedMemberWalkQuery", keyedMemberWalkQuery},
 		} {
 			t.Logf("%s, sha256 %x:\n%s", text.name, sha256.Sum256([]byte(text.sql)), text.sql)
 		}
-		withoutIndex := []string{"drop index " + parkedMoveIndex}
+		withoutIndex := []string{"drop index " + backlogMoveIndex}
 		pairBuffers := func(name string, before, after benchtime.Statement) {
 			t.Run(name+", its top node's buffers", func(t *testing.T) {
 				runner.PairBuffers(t, name, before, after)
@@ -612,13 +612,13 @@ func measureParkedMoveAndMemberWalk(t *testing.T, runner *benchtime.Runner, ids,
 		fault := []any{ids, []string{}}
 		faultBefore := benchtime.Statement{SQL: priorityReadQuery, Args: fault, Setup: withoutIndex}
 		faultAfter := benchtime.Statement{SQL: priorityReadQuery, Args: fault}
-		runner.Pair(t, parkedFaultTiming, faultBefore, faultAfter)
-		pairBuffers(parkedFaultTiming, faultBefore, faultAfter)
+		runner.Pair(t, backlogFaultTiming, faultBefore, faultAfter)
+		pairBuffers(backlogFaultTiming, faultBefore, faultAfter)
 		listing := projectListingArguments(project, true)
 		listingBefore := benchtime.Statement{SQL: listIssuesQuery, Args: listing, Setup: withoutIndex}
 		listingAfter := benchtime.Statement{SQL: listIssuesQuery, Args: listing}
-		runner.PairWithin(t, parkedListingTiming, []benchtime.Statement{listingBefore}, []benchtime.Statement{listingAfter})
-		pairBuffers(parkedListingTiming, listingBefore, listingAfter)
+		runner.PairWithin(t, backlogListingTiming, []benchtime.Statement{listingBefore}, []benchtime.Statement{listingAfter})
+		pairBuffers(backlogListingTiming, listingBefore, listingAfter)
 		for _, walk := range []struct {
 			name, sql string
 			arguments []any

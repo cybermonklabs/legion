@@ -1127,6 +1127,26 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 	}
 }
 
+// pendingCensus is the census, under options, of the embedded set's migrations numbered up to
+// through, over a database at base. It answers the report, the index of version's entry in
+// report.Pending, and that entry. It fails the test when the census returns an error, and when
+// version is not pending.
+func pendingCensus(t *testing.T, base, through, version int, options pgmigrate.CensusOptions) (*pgmigrate.Report, int, *pgmigrate.MigrationCensus) {
+	t.Helper()
+	store := openMigratedTestStore(t, base)
+	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, through), options)
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	for i := range report.Pending {
+		if report.Pending[i].Migration.Version == version {
+			return report, i, &report.Pending[i]
+		}
+	}
+	t.Fatalf("%d is not pending; report:\n%s", version, reportText(report))
+	return nil, 0, nil
+}
+
 // queuedStateCensus is the census of INFRA-626's three migrations - the widened state checks and
 // connected_only (20261114081434), the index over a session's taken deliveries (20261114081435)
 // and the drop of the one it replaces (20261114081436) - over a database at 20261111212235, the
@@ -1138,31 +1158,19 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 // table the limit would not have refused anyway.
 func queuedStateCensus(t *testing.T, version int) *pgmigrate.MigrationCensus {
 	t.Helper()
-	store := openMigratedTestStore(t, 20261111212235)
-	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261114081436), pgmigrate.CensusOptions{TableLimit: 1})
-	if err != nil {
-		t.Fatalf("census: %v", err)
+	report, _, entry := pendingCensus(t, 20261111212235, 20261114081436, version, pgmigrate.CensusOptions{TableLimit: 1})
+	if len(entry.Refusals) != 0 {
+		t.Fatalf("%s refused: %v", entry.Migration.Name, entry.Refusals)
 	}
-	for i := range report.Pending {
-		entry := &report.Pending[i]
-		if entry.Migration.Version != version {
-			continue
-		}
-		if len(entry.Refusals) != 0 {
-			t.Fatalf("%s refused: %v", entry.Migration.Name, entry.Refusals)
-		}
-		if len(entry.Tables) == 0 {
-			t.Fatalf("%s touches no table; report:\n%s", entry.Migration.Name, reportText(report))
-		}
-		for _, table := range entry.Tables {
-			if !table.Exists || table.Bytes <= 1 {
-				t.Fatalf("%s: %s is %d bytes, which leaves the limit nothing to exempt it from", entry.Migration.Name, table.Name, table.Bytes)
-			}
-		}
-		return entry
+	if len(entry.Tables) == 0 {
+		t.Fatalf("%s touches no table; report:\n%s", entry.Migration.Name, reportText(report))
 	}
-	t.Fatalf("%d is not pending; report:\n%s", version, reportText(report))
-	return nil
+	for _, table := range entry.Tables {
+		if !table.Exists || table.Bytes <= 1 {
+			t.Fatalf("%s: %s is %d bytes, which leaves the limit nothing to exempt it from", entry.Migration.Name, table.Name, table.Bytes)
+		}
+	}
+	return entry
 }
 
 // 20261114081434 drops both delivery state checks without cascade, adds each back with queued as
@@ -1215,28 +1223,16 @@ func TestCensusExemptsTheDropOfTheSentDeliveriesIndexAtAnyTableSize(t *testing.T
 // reason TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives.
 func TestCensusAdmitsTheBtreeGinMigrationAtAnyTableSize(t *testing.T) {
 	t.Parallel()
-	store := openMigratedTestStore(t, 20261121060636)
-	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, btreeGinVersion), pgmigrate.CensusOptions{TableLimit: 1})
-	if err != nil {
-		t.Fatalf("census: %v", err)
+	report, i, entry := pendingCensus(t, 20261121060636, btreeGinVersion, btreeGinVersion, pgmigrate.CensusOptions{TableLimit: 1})
+	if i == 0 {
+		t.Fatalf("%s is the first pending migration, and the test needs another pending before it; report:\n%s", entry.Migration.Name, reportText(report))
 	}
-	for i := range report.Pending {
-		entry := &report.Pending[i]
-		if entry.Migration.Version != btreeGinVersion {
-			continue
-		}
-		if i == 0 {
-			t.Fatalf("%s is the first pending migration, and the test needs another pending before it; report:\n%s", entry.Migration.Name, reportText(report))
-		}
-		if len(entry.Refusals) != 0 || len(entry.Tables) != 0 {
-			t.Fatalf("%s at a table limit of 1 byte: refusals %q, tables %+v; want neither", entry.Migration.Name, entry.Refusals, entry.Tables)
-		}
-		if entry.Count == nil || *entry.Count != 0 {
-			t.Fatalf("%s's census does not count 0; report:\n%s", entry.Migration.Name, reportText(report))
-		}
-		return
+	if len(entry.Refusals) != 0 || len(entry.Tables) != 0 {
+		t.Fatalf("%s at a table limit of 1 byte: refusals %q, tables %+v; want neither", entry.Migration.Name, entry.Refusals, entry.Tables)
 	}
-	t.Fatalf("%d is not pending; report:\n%s", btreeGinVersion, reportText(report))
+	if entry.Count == nil || *entry.Count != 0 {
+		t.Fatalf("%s's census does not count 0; report:\n%s", entry.Migration.Name, reportText(report))
+	}
 }
 
 // answersDestinationsIndexVersion builds events_person_words_destinations, the partial GIN index of
@@ -1245,24 +1241,21 @@ func TestCensusAdmitsTheBtreeGinMigrationAtAnyTableSize(t *testing.T) {
 // btree_gin, which btreeGinVersion creates.
 const answersDestinationsIndexVersion = 20261125131000
 
-// parkedMovesIndexVersion builds events_parked_moves, the partial index of (issue_key, seq) that
+// backlogMovesIndexVersion builds events_backlog_moves, the partial index of (issue_key, seq) that
 // the lateral of the second fault (backlogMoveLateral in package api) reads an issue's newest move
 // into backlog or icebox through.
-const parkedMovesIndexVersion = 20261125131100
+const backlogMovesIndexVersion = 20261125131100
 
 // eventsIndexCensus is the census of the embedded migrations through `through` over a database at
-// `at`, with the limit at one byte, and the entry of each version of versions. It fails the test
-// when one of them is not pending, or when it touches another table than events, or events at one
+// `at`, with the limit at one byte, and the entry of each version of versions (pendingCensus takes
+// the census, and fails the test when the first of them is not pending). It fails the test when
+// another of them is not pending, or when one touches another table than events, or events at one
 // byte or less, which leaves the limit nothing to refuse or exempt. Only those entries are read,
 // never the verdict of the whole set, for the reason
 // TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives.
 func eventsIndexCensus(t *testing.T, at, through int, versions ...int) (*pgmigrate.Report, map[int]*pgmigrate.MigrationCensus) {
 	t.Helper()
-	store := openMigratedTestStore(t, at)
-	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, through), pgmigrate.CensusOptions{TableLimit: 1})
-	if err != nil {
-		t.Fatalf("census: %v", err)
-	}
+	report, _, _ := pendingCensus(t, at, through, versions[0], pgmigrate.CensusOptions{TableLimit: 1})
 	entries := make(map[int]*pgmigrate.MigrationCensus, len(versions))
 	for i := range report.Pending {
 		entry := &report.Pending[i]
@@ -1290,10 +1283,10 @@ func eventsIndexCensus(t *testing.T, at, through int, versions ...int) (*pgmigra
 // migration pending before it takes the concurrent index exemption away, so with the limit at one
 // byte each has no refusal and carries the exemption. The database is at btreeGinVersion, so the
 // two are the only pending migrations.
-func TestCensusAdmitsTheAnswersAndParkedIndexesOnceBtreeGinIsApplied(t *testing.T) {
+func TestCensusAdmitsTheAnswersAndBacklogIndexesOnceBtreeGinIsApplied(t *testing.T) {
 	t.Parallel()
-	_, entries := eventsIndexCensus(t, btreeGinVersion, parkedMovesIndexVersion, answersDestinationsIndexVersion, parkedMovesIndexVersion)
-	for _, version := range []int{answersDestinationsIndexVersion, parkedMovesIndexVersion} {
+	_, entries := eventsIndexCensus(t, btreeGinVersion, backlogMovesIndexVersion, answersDestinationsIndexVersion, backlogMovesIndexVersion)
+	for _, version := range []int{answersDestinationsIndexVersion, backlogMovesIndexVersion} {
 		if entry := entries[version]; len(entry.Refusals) != 0 || !entry.ConcurrentIndex {
 			t.Errorf("%s at a table limit of 1 byte: refusals %q, concurrent index %v; want no refusal and the concurrent build admitted",
 				entry.Migration.Name, entry.Refusals, entry.ConcurrentIndex)
@@ -1343,7 +1336,7 @@ func TestCensusRefusesTheAnswersIndexBesideItsPendingExtension(t *testing.T) {
 // reads the files themselves, and not the set pgmigrate.Load answers, so it fails on the words
 // whatever the loader makes of a second statement. The words match in any case, with each comment
 // read as a space (pgmigrate.WithoutComments) and white space folded.
-func TestTheAnswersAndParkedIndexMigrationsCreateNoExtension(t *testing.T) {
+func TestTheAnswersAndBacklogIndexMigrationsCreateNoExtension(t *testing.T) {
 	t.Parallel()
 	files, err := fs.ReadDir(migrationFiles, "migrations")
 	if err != nil {
@@ -1356,7 +1349,7 @@ func TestTheAnswersAndParkedIndexMigrationsCreateNoExtension(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", file.Name(), err)
 		}
-		if version != answersDestinationsIndexVersion && version != parkedMovesIndexVersion || !strings.HasSuffix(file.Name(), ".up.sql") {
+		if version != answersDestinationsIndexVersion && version != backlogMovesIndexVersion || !strings.HasSuffix(file.Name(), ".up.sql") {
 			continue
 		}
 		data, err := migrationFiles.ReadFile("migrations/" + file.Name())
@@ -1368,7 +1361,7 @@ func TestTheAnswersAndParkedIndexMigrationsCreateNoExtension(t *testing.T) {
 			t.Errorf("%s holds a create extension, comments aside: %q; want the one create index concurrently and nothing else", file.Name(), text)
 		}
 	}
-	for _, version := range []int{answersDestinationsIndexVersion, parkedMovesIndexVersion} {
+	for _, version := range []int{answersDestinationsIndexVersion, backlogMovesIndexVersion} {
 		if !read[version] {
 			t.Errorf("the embedded set has no migration file of version %d to read", version)
 		}
@@ -1453,28 +1446,16 @@ func requireCensusAdmitsLateIndexes(t *testing.T, versions ...int) {
 // less, which no limit the tests set could refuse.
 func blockRefsIndexCensus(t *testing.T, version int, options pgmigrate.CensusOptions) *pgmigrate.MigrationCensus {
 	t.Helper()
-	store := openMigratedTestStore(t, beforeBlockRefsSourceIndex)
-	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, dropBlockRefsTargetIndex), options)
-	if err != nil {
-		t.Fatalf("census: %v", err)
+	report, _, entry := pendingCensus(t, beforeBlockRefsSourceIndex, dropBlockRefsTargetIndex, version, options)
+	if len(entry.Tables) == 0 {
+		t.Fatalf("%s touches no table; report:\n%s", entry.Migration.Name, reportText(report))
 	}
-	for i := range report.Pending {
-		entry := &report.Pending[i]
-		if entry.Migration.Version != version {
-			continue
+	for _, table := range entry.Tables {
+		if !table.Exists || table.Bytes <= 1 {
+			t.Fatalf("%s: %s is %d bytes, which leaves the limit nothing to refuse or exempt it from", entry.Migration.Name, table.Name, table.Bytes)
 		}
-		if len(entry.Tables) == 0 {
-			t.Fatalf("%s touches no table; report:\n%s", entry.Migration.Name, reportText(report))
-		}
-		for _, table := range entry.Tables {
-			if !table.Exists || table.Bytes <= 1 {
-				t.Fatalf("%s: %s is %d bytes, which leaves the limit nothing to refuse or exempt it from", entry.Migration.Name, table.Name, table.Bytes)
-			}
-		}
-		return entry
 	}
-	t.Fatalf("%d is not pending; report:\n%s", version, reportText(report))
-	return nil
+	return entry
 }
 
 // blockRefsSourceIndex is a plain create index on block_refs, in the runner's one transaction. The

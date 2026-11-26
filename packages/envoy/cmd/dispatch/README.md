@@ -845,7 +845,7 @@ It calls the server's own indexers over what it writes
 the block index, the item blocks, the task counts, the reference excerpts and the event publication are all already done, and the per-owner `last_seq` counters match the seeded events, so the first comment, ask, message, upload or title edit written to a seeded issue does not fail the unique `(issue_key, seq)`.
 Every ask is written with its `ask.opened` event, in the ask's own transaction as the create route writes it, because every read of an ask resolves that event (`events.OpenedEventIDs`) and fails the whole request when the ask has none, which would answer 500 on the ask lists, the ask read, the Inbox and an issue's `open_asks`.
 Some of the `issue.updated` events of each issue record its status moves, each with the payload that the status write of Dispatch gives that event: the issue with its new `status`, and a `changed` list that names `status`.
-The newest move of an issue is into the status that the issue is in now, so the second fault of `GET /api/v1/priorities` and the listing with `?moved=true` read real moves, and the report counts the moves and the moves into `backlog` or `icebox`, which are the rows of `events_parked_moves`.
+The newest move of an issue is into the status that the issue is in now, so the second fault of `GET /api/v1/priorities` and the listing with `?moved=true` read real moves, and the report counts the moves and the moves into `backlog` or `icebox`, which are the rows of `events_backlog_moves`.
 It ends with one full `search_term_stats` build for every project, so no measured related-terms pass is a first-use full build, and with `vacuum (analyze)`, not `analyze`:
 a freshly loaded table has no all-visible pages, so the planner avoids an index-only scan on it however good the statistics are.
 
@@ -2538,11 +2538,11 @@ a pending migration that creates an extension takes the concurrent index exempti
 The build runs `concurrently`, outside the runner's transaction, for the reason `20261111002444` gives, and a start applies it before it serves, so its build is time the server is down at the deploy that carries it.
 Its census answers `0`.
 
-Migration `20261125131100_events_parked_moves` creates `events_parked_moves` on `events (issue_key, seq)`, partial on the conditions `backlogMoveLateral` (`internal/dispatch/api/priority_queries.go`) writes on the event: `type = 'issue.updated'`, `payload->'changed' @> '"status"'::jsonb` and `payload->>'status' in ('icebox', 'backlog')`.
+Migration `20261125131100_events_backlog_moves` creates `events_backlog_moves` on `events (issue_key, seq)`, partial on the conditions `backlogMoveLateral` (`internal/dispatch/api/priority_queries.go`) writes on the event: `type = 'issue.updated'`, `payload->'changed' @> '"status"'::jsonb` and `payload->>'status' in ('icebox', 'backlog')`.
 That lateral reads when an issue in `backlog` or `icebox` was moved there, for the second fault of `GET /api/v1/priorities` and for the listing's `?moved=true`.
 Postgres uses a partial index only where the query's conditions imply its predicate, so the predicate is written as the lateral writes its conditions and the lateral's text does not change;
 a change to `model.IssueStatusesParked` needs a new index whose predicate holds the new list.
-Through the index the lateral reads the issue's moves backwards from the newest and stops at the first, where before it read every event of each parked issue and sorted them.
+Through the index the lateral reads the issue's moves backwards from the newest and stops at the first, where before it read every event of each issue in backlog or icebox and sorted them.
 It is built `concurrently` too, after `20261125125703`, and a start applies it before it serves, so its build adds to the time the server is down at the deploy that carries it.
 Its census answers `0`.
 
