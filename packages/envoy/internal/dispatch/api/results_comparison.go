@@ -239,6 +239,15 @@ func (c comparison) served() []model.CheckBasis {
 	return slices.Concat(c.bases, c.linked)
 }
 
+// namedCommit is the one basis of a read at a commit a reader named (`?at=`), which comparedWith
+// makes the only basis of every check, and false for every other read.
+func (c comparison) namedCommit() (model.CheckBasis, bool) {
+	if len(c.bases) == 1 && c.bases[0].Kind == model.CheckBasisNamed {
+		return c.bases[0], true
+	}
+	return model.CheckBasis{}, false
+}
+
 // headSubject is one subject of a check compared with heads (comparison.subjects): its basis, as
 // the answer names it, and repo, the repository it is a head of, the pull request row's own. The
 // basis names a repository only where it is another than the issue's (headBasis), so the read of

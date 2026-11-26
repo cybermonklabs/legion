@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // closeRead reads Dispatch's states of the row's issue's checks for the judge of its close
@@ -31,7 +32,9 @@ import (
 //     PlanDocument), so the close can tell a check removed or reworded since the approval.
 //
 // A read that fails carries the fact with the failure and no answer, so the record says the read
-// failed, and fails the row, so the outbox reads again on its backoff.
+// failed, and fails the row, so the outbox reads again on its backoff. The failure is kept as the
+// daemon stores a far side's error text (storetext.FarSideError): an upstream error page is cut to
+// its start, since the record, the close's wait and its notices all carry it.
 func (r *outbox) closeRead(ctx context.Context, row record.OutboxRow, payload record.CloseRead) error {
 	if r.dispatch == nil {
 		return errors.New("close read executor has no Dispatch client")
@@ -52,7 +55,7 @@ func (r *outbox) closeRead(ctx context.Context, row record.OutboxRow, payload re
 	answer, readErr := r.readCloseChecks(ctx, row.Issue, issue.Merge.Head)
 	fact := intake.CloseChecksRead{Issue: row.Issue, Generation: payload.Generation, ReadAt: readAt}
 	if readErr != nil {
-		fact.Failure = readErr.Error()
+		fact.Failure = storetext.FarSideError(readErr.Error())
 	} else {
 		fact.Answer = &answer
 	}

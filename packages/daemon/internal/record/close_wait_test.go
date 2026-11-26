@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -336,20 +337,14 @@ func TestCloseWaitOfEachCase(t *testing.T) {
 		{name: "row 22: a before_merge check whose subject is the newest merge's final head",
 			facts: passing(oneCheck(cwBeforeMerge("c-before",
 				cwSubject(cwMergeHead, 7, true, dispatch.PassStandsYes, "", "r-head"))))},
+		{name: "row 22: that subject where the record names the head in capitals",
+			facts: with(passing(oneCheck(cwBeforeMerge("c-before",
+				cwSubject(cwMergeHead, 7, true, dispatch.PassStandsYes, "", "r-head")))),
+				func(f *CloseFacts) { f.Merge.Head = strings.ToUpper(cwMergeHead) })},
 		{name: "row 22: a read whose only subject is another head, with no read at the merge's head",
 			facts: passing(oneCheck(cwBeforeMerge("c-before",
 				cwSubject(cwOtherHead, 9, false, dispatch.PassStandsNo, dispatch.PassStandsReasonNoResult)))),
 			want: CloseWait{Unread: true}},
-		{name: "row 22: that read beside the read at the merge's head",
-			facts: passing(CheckReadAnswer{
-				Results: cwResults(cwBeforeMerge("c-before", cwSubject(cwOtherHead, 9, false, dispatch.PassStandsNo, dispatch.PassStandsReasonNoResult))),
-				AtMergeHead: &dispatch.IssueResults{Issue: "ACME-1", VerificationArtifactID: cwArtifact, Checks: []dispatch.CheckBlock{
-					cwCheck("c-before", dispatch.CheckBeforeMerge, dispatch.PassStands{Answer: dispatch.PassStandsNo, Reason: dispatch.PassStandsReasonFail,
-						Results: []string{"r-fail-at-head"}, Commit: cwMergeHead}, dispatch.CheckBasis{Kind: dispatch.BasisNamed, Commit: cwMergeHead}),
-				}},
-			}),
-			want: CloseWait{Checks: []CheckWait{{Check: "c-before", State: CheckStateFail, Answer: dispatch.PassStandsNo,
-				Reason: dispatch.PassStandsReasonFail, Result: "r-fail-at-head", Commit: cwMergeHead}}}},
 		{name: "row 23: a Verification document with no approved version",
 			facts: passing(CheckReadAnswer{Results: cwResults(cwAfterMerge("c-after", cwPass)),
 				Approval: &CheckApproval{Current: []dispatch.DocumentBlock{cwBlock("c-after", nil)}}})},
@@ -455,7 +450,9 @@ var cwFixtures = filepath.Join("..", "..", "..", "contracts", "fixtures", "dispa
 // results hold. An answer with no reason, which a Dispatch of the release before gives, is unknown.
 // The captured answers of the freshness cases are read by the predicate as Dispatch gave them: a
 // merge only in a linked repository, an issue merged into a branch that did or did not land on the
-// default branch, and a before_merge check whose merged head no subject names.
+// default branch, and a before_merge check whose merged head no subject names, beside Dispatch's
+// read at that head of a pass, a fail and no result there. The fail there is a fail with its
+// deciding result and that head, the one state that starts the next change.
 func TestCloseCheckOfReadsOnlyDispatchsState(t *testing.T) {
 	resultsOf := func(t *testing.T, fixture string) (dispatch.IssueResults, []byte) {
 		t.Helper()
@@ -481,6 +478,7 @@ func TestCloseCheckOfReadsOnlyDispatchsState(t *testing.T) {
 		deciding  = "00000000-0000-4000-8000-000000000002"
 		atMerge   = "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
 		laterMain = "2222222222222222222222222222222222222222"
+		firstHead = "1111111111111111111111111111111111111111"
 	)
 	for _, tc := range []struct {
 		fixture string
@@ -504,6 +502,8 @@ func TestCloseCheckOfReadsOnlyDispatchsState(t *testing.T) {
 		{fixture: "live-deploy-not-merged", answer: dispatch.PassStandsUnknown, state: CheckStateNoResult},
 		{fixture: "live-no-result-from-deploy", answer: dispatch.PassStandsUnknown, state: CheckStateNoResult},
 		{fixture: "before-merge-at-first-head", answer: dispatch.PassStandsYes, state: CheckStatePass},
+		{fixture: "before-merge-fail-at-first-head", answer: dispatch.PassStandsNo, state: CheckStateFail, result: deciding, commit: firstHead},
+		{fixture: "before-merge-no-result-at-first-head", answer: dispatch.PassStandsNo, state: CheckStateNoResult},
 	} {
 		t.Run(tc.fixture, func(t *testing.T) {
 			check, raw := read(t, tc.fixture)
@@ -555,7 +555,6 @@ func TestCloseCheckOfReadsOnlyDispatchsState(t *testing.T) {
 	const (
 		linkedMerge = "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
 		elsewhere   = "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"
-		firstHead   = "1111111111111111111111111111111111111111"
 	)
 	noResult := func(check string) CheckWait {
 		return CheckWait{Check: check, State: CheckStateNoResult, Answer: dispatch.PassStandsNo, Reason: dispatch.PassStandsReasonNoResult}
@@ -582,6 +581,15 @@ func TestCloseCheckOfReadsOnlyDispatchsState(t *testing.T) {
 			fixture: "before-merge-second-pull-request-open", merge: firstMerge, want: CloseWait{Unread: true}},
 		{name: "that check beside the read at the merged head",
 			fixture: "before-merge-second-pull-request-open", atHead: "before-merge-at-first-head", merge: firstMerge},
+		{name: "a before_merge check whose merged head holds a fail, read at that head",
+			fixture: "before-merge-fail-second-pull-request-open", atHead: "before-merge-fail-at-first-head", merge: firstMerge,
+			want: CloseWait{Checks: []CheckWait{{Check: "k1", State: CheckStateFail, Answer: dispatch.PassStandsNo,
+				Reason: dispatch.PassStandsReasonFail, Result: deciding, Commit: firstHead}}}},
+		{name: "that fail with no read at the merged head",
+			fixture: "before-merge-fail-second-pull-request-open", merge: firstMerge, want: CloseWait{Unread: true}},
+		{name: "a before_merge check with no result at its merged head, read at that head",
+			fixture: "before-merge-no-result-second-pull-request-open", atHead: "before-merge-no-result-at-first-head", merge: firstMerge,
+			want: CloseWait{Checks: []CheckWait{noResult("k1")}}},
 	} {
 		t.Run("the close reads: "+tc.name, func(t *testing.T) {
 			var answer CheckReadAnswer

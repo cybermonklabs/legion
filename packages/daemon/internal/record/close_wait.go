@@ -458,6 +458,7 @@ func withoutMarks(attributes map[string]string) map[string]string {
 	return kept
 }
 
-// sameCommit says whether two commits name one: both known and equal. An unknown commit names
-// none, so two unknown commits are not the same merge.
-func sameCommit(a, b string) bool { return a != "" && a == b }
+// sameCommit says whether two commits name one: both known and equal, in either case of their hex
+// digits, as the close read's needsReadAtHead compares them. An unknown commit names none, so two
+// unknown commits are not the same merge.
+func sameCommit(a, b string) bool { return a != "" && strings.EqualFold(a, b) }

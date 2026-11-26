@@ -1821,7 +1821,11 @@ type BasisLearnedAt struct {
 // at one commit, from any role, make that commit's state unknown (R4), and
 // PassStandsReasonReadFailed where it is unknown because a read Dispatch makes did not answer:
 // the check runs of a check CI proves that has no subject, or the time each merged pull request of
-// an issue with none open merged, so that Dispatch cannot tell which of them is the newest.
+// an issue with none open merged, so that Dispatch cannot tell which of them is the newest. Read at
+// one commit a reader named (`?at=`), a `before_merge` check has no subjects and answers as a
+// subject at that commit does: PassStandsReasonFail where only a fail stands there,
+// PassStandsReasonNoResult where nothing does and PassStandsReasonPassAndFail where both count
+// there, with Results and Commit as below.
 //
 // An `after_merge` or a `default_branch` check is decided by its newest result that counts
 // (R19): Reason is PassStandsReasonFail where that result is a fail, PassStandsReasonNoResult
@@ -1868,7 +1872,8 @@ type PassStandsSubject struct {
 // subject to name it at (CheckPassStands). PassStandsReasonFail, PassStandsReasonNoResult and
 // PassStandsReasonNotPlaced are an `after_merge` or `default_branch` check's own: its newest
 // result that counts is a fail, no result counts, or its newest result is one Dispatch could not
-// place.
+// place. A `before_merge` check read at one commit a reader named gives PassStandsReasonFail and
+// PassStandsReasonNoResult too, for that commit alone.
 const (
 	PassStandsReasonPassAndFail = "pass_and_fail"
 	PassStandsReasonReadFailed  = "read_failed"
