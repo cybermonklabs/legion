@@ -632,7 +632,8 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 // kill fails the test too, which gateUnder's budget (answerBudget, 20 s) keeps out of reach of the
 // fake's own run on a loaded box. The child stays in the probe's process group, so this row holds
 // the in-group side of a budget far away. An exit inside the budget whose pipe is held past it is
-// TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt's.
+// TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt's, and with the child
+// left in the group TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildInItsGroupHoldingItsPipePastIt's.
 func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutputPipe(t *testing.T) {
 	t.Parallel()
 	const gateBound = 10 * time.Second
@@ -710,7 +711,10 @@ func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutpu
 // (TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutputPipe). A deadline
 // that passes between the leader's reap and Wait's read of its context still meets exec's Cancel,
 // whose stop the child in the group takes, so the run reports a kill, as procgroup.Configure's doc
-// says. No fact outside os/exec orders that window, and no test asserts either answer there.
+// says. No fact outside os/exec orders that window, so a run in it is not judged by the row that
+// holds an exit inside main's 900 ms budget with the child still in the group
+// (TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildInItsGroupHoldingItsPipePastIt), which
+// tells the budget's stop inside Wait from a stop after the run by the pipe the stop found.
 func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt(t *testing.T) {
 	t.Parallel()
 	gate := pluginGate{env: map[string]string{"PATH": os.Getenv("PATH")}, workDir: t.TempDir(), timeout: procgroup.WaitDelay - 100*time.Millisecond}
@@ -754,6 +758,165 @@ func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt(t
 		}
 		return
 	}
+}
+
+// The same exit inside its budget, with the child that holds the probe's output pipe left in the
+// probe's process group, as main's form had it, and under main's budget: 900 ms on the gate's own
+// clock, 100 ms short of WaitDelay, so the run, which WaitDelay holds open past the leader's reap,
+// always returns past it. A gate that, once its budget has passed, stops what is left of the group
+// after the run and reads a stop that found a member as a kill would call this exit a budget kill.
+// The row above cannot see that gate: its child has left the group, which is empty by then.
+//
+// Main's form judged every run, and a loaded machine can reap the probe's leader past 900 ms. The
+// budget then passes inside Wait, procgroup.Configure's Cancel stops the group, the child takes its
+// SIGTERM, and a correct gate reports the kill it made. The row tells that stop from one after the
+// run by where it found the probe's output pipe. Wait closes the pipe's read end once WaitDelay has
+// run out, before it returns (os/exec's awaitGoroutines), and Cancel runs only before that wait has
+// begun: the read end is open then, and stays open until the child has left on the SIGTERM or the
+// grace's SIGKILL has ended it. The child ignores SIGPIPE, and its SIGTERM trap writes one byte to
+// the pipe and records what the write found:
+//   - EPIPE: no reader was left, so the stop came after the run, and the row fails.
+//   - the byte went through: os/exec still read the pipe, so the stop was the budget's own, inside
+//     Wait, which a loaded machine brought on. That run is not judged, and the row runs the probe
+//     again, within its bound (answerBudget, testwait.Bounded), until a run is judged.
+//   - no record, and the child gone: the grace's SIGKILL, which only the budget's own stop sends,
+//     ended it before its trap wrote. Not judged either.
+//
+// A run in which no SIGTERM reached the child by the run's return is judged as main judged it: the
+// probe's own exit, no kill, the answer. That none reached it is a fact of the run too, not a record
+// missing by some time. The child writes a beat, the time since boot (testexec.MarkNow), at each
+// turn of its loop, and dash runs a pending trap at the end of each command, the trap exits, and a
+// signal sent before the child reads the time is taken on that read's return: so a beat read past
+// the run's return, and one more after it, mean no SIGTERM was sent by then. /proc/<pid>/status
+// cannot say it: gVisor's has no SigPnd or ShdPnd, and a signal the shell has taken but whose trap
+// has not yet run is pending in neither. The leader exits only once the child has set its traps
+// (ready), so a run whose budget passed while the leader still ran has no ready mark and is not
+// judged. The child runs until the row releases it once the run is read, or a stop or the row's
+// kill ends it, never on a timer of its own.
+func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildInItsGroupHoldingItsPipePastIt(t *testing.T) {
+	t.Parallel()
+	gate := pluginGate{env: map[string]string{"PATH": os.Getenv("PATH")}, workDir: t.TempDir(), timeout: procgroup.WaitDelay - 100*time.Millisecond}
+	// The child: $1 its pid file, $2 ready, $3 what its trap found, $4 its beat, $5 its release, $6
+	// the test process. The probe: the child's script and then its arguments, as the child numbers
+	// them from $2 on.
+	child := `pidfile=$1 ready=$2 termed=$3 beat=$4 release=$5 owner=$6
+echo $$ >"$pidfile"
+onterm() { if printf x; then w=open; else w=closed; fi; ` + testexec.MarkNow(`"$termed.at"`) + `; echo "$w" >"$termed"; exit 0; }
+trap '' PIPE
+trap onterm TERM
+: >"$ready"
+while [ ! -e "$release" ] && kill -0 "$owner" 2>/dev/null; do ` + testexec.MarkNow(`"$beat"`) + `; sleep 0.01; done
+`
+	const probe = `echo answered >&2; sh -c "$1" child "$2" "$3" "$4" "$5" "$6" "$7" & while [ ! -e "$3" ] && kill -0 "$7" 2>/dev/null; do sleep 0.01; done; exit 0`
+	within := testwait.Bounded(t, answerBudget, cutRunMargin)
+	until := time.Now().Add(within)
+	for runs := 1; ; runs++ {
+		dir := t.TempDir()
+		pidFile, ready, termed, beat, release := filepath.Join(dir, "child.pid"), filepath.Join(dir, "ready"), filepath.Join(dir, "termed"), filepath.Join(dir, "beat"), filepath.Join(dir, "release")
+
+		r, err := gate.run(context.Background(), probe, child, pidFile, ready, termed, beat, release, strconv.Itoa(os.Getpid()))
+		returned := testexec.SinceBoot(t)
+
+		seen := childStopAfter(t, pidIn(pidFile), ready, termed, beat, returned, until)
+		// The run is read: its child is released, and killed in case the release does not reach it.
+		if err := os.WriteFile(release, nil, 0o644); err != nil {
+			t.Errorf("release run %d's child: %v", runs, err)
+		}
+		killPIDFile(t, pidFile)
+		if seen.afterRun {
+			t.Fatalf("run %d: the gate stopped the probe's process group after its run: the child the probe left in its group took a SIGTERM (its trap ran %s from the run's return), and its write to the probe's output pipe answered EPIPE: os/exec had already closed the pipe, which it does once WaitDelay runs out, and the budget's own stop comes only before that (run = %v, exit %d, timed out %t, stderr %q after %s)",
+				runs, seen.at-returned, err, r.exit, r.timedOut, r.stderr, r.elapsed)
+		}
+		if !seen.none {
+			if time.Now().Before(until) {
+				t.Logf("run %d is not judged: %s (run = %v, exit %d, timed out %t, after %s)", runs, seen.unjudged, err, r.exit, r.timedOut, r.elapsed)
+				continue
+			}
+			t.Fatalf("no run of %d over %s was judged: in the last, %s (run = %v, exit %d, timed out %t, stderr %q after %s)",
+				runs, within, seen.unjudged, err, r.exit, r.timedOut, r.stderr, r.elapsed)
+		}
+
+		if err != nil {
+			t.Fatalf("run %d = %v, want the probe's own exit", runs, err)
+		}
+		if r.elapsed < gate.timeout {
+			t.Fatalf("run %d returned after %s, inside its %s budget: nothing held the pipe past the deadline, so this run proves nothing", runs, r.elapsed, gate.timeout)
+		}
+		if r.timedOut || r.exit != 0 || !strings.Contains(r.stderr, "answered") {
+			t.Errorf("run %d = exit %d, timed out %t, stderr %q after %s; want exit 0, not timed out, and the answer: the probe exited on its own inside its %s budget, and no stop reached its child by the run's return",
+				runs, r.exit, r.timedOut, r.stderr, r.elapsed, gate.timeout)
+		}
+		return
+	}
+}
+
+// childStop is what the child a probe left in its group saw of a stop by its run's return
+// (childStopAfter): no SIGTERM (none); one whose trap's write found the probe's output pipe closed
+// (afterRun), with at the time since boot the trap ran; or, for a run the row cannot judge, why
+// (unjudged).
+type childStop struct {
+	none, afterRun bool
+	at             time.Duration
+	unjudged       string
+}
+
+// childStopAfter reads what the child (pid) of a run that returned at returned, a time since boot,
+// saw of a stop, from its ready mark, the record its SIGTERM trap writes to termed (and termed.at),
+// and its beat, as
+// TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildInItsGroupHoldingItsPipePastIt's doc says.
+// It waits until the child has recorded a SIGTERM, has ended, or has written a beat past returned
+// and one more after it, or until until passes, which it reports as a run it cannot judge.
+func childStopAfter(t *testing.T, pid int, ready, termed, beat string, returned time.Duration, until time.Time) childStop {
+	t.Helper()
+	if _, err := os.Stat(ready); err != nil {
+		return childStop{unjudged: "the probe was stopped before its child had set its traps, which the probe waits for before it exits: its budget passed while its leader still ran"}
+	}
+	var seen childStop
+	recorded := func() bool {
+		raw, err := os.ReadFile(termed)
+		if err != nil || !strings.HasSuffix(string(raw), "\n") {
+			return false
+		}
+		at, err := testexec.ReadNowMark(termed + ".at")
+		if err != nil {
+			t.Fatalf("read when the child's SIGTERM trap ran, which it records before what its write found: %v", err)
+		}
+		switch found := strings.TrimSpace(string(raw)); found {
+		case "closed":
+			seen = childStop{afterRun: true, at: at}
+		case "open":
+			seen = childStop{unjudged: "the child the probe left in its group took a SIGTERM while os/exec still read the probe's output pipe (its write went through), so the stop was the budget's own, inside Wait: the machine reaped the probe's leader past its budget"}
+		default:
+			t.Fatalf("the child's SIGTERM trap recorded %q, want open or closed", found)
+		}
+		return true
+	}
+	var past time.Duration
+	if !testwait.Holds(time.Until(until), testwait.Poll, func() bool {
+		if recorded() {
+			return true
+		}
+		if processEnded(t, pid) {
+			// It may have recorded a SIGTERM and left between the two reads.
+			if !recorded() {
+				seen = childStop{unjudged: "the child the probe left in its group ended before its SIGTERM trap recorded anything: the grace's SIGKILL, which only the budget's own stop sends, ended it"}
+			}
+			return true
+		}
+		at, err := testexec.ReadNowMark(beat)
+		if err != nil || at <= returned {
+			return false
+		}
+		if past == 0 {
+			past = at
+			return false
+		}
+		seen.none = at > past
+		return seen.none
+	}) {
+		return childStop{unjudged: "by the end of the row's bound the child the probe left in its group had neither recorded a SIGTERM, nor ended, nor run on past the run's return, so the row cannot tell whether a stop reached it"}
+	}
+	return seen
 }
 
 // cutRunMargin is what the rows bounded by answerBudget leave of the test binary's deadline
