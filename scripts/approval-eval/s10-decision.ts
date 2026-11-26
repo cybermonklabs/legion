@@ -69,7 +69,7 @@ import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "./reserve";
  */
 export const RESERVE_ASK_CLOSURE: Readonly<Record<string, string>> = {
   "../../packages/envoy-client/src/private-check.ts":
-    "a5a107bba56abbe901d8077087bacf5b746fe3eb71cbd5d9d88763d52981a6a2",
+    "e987daf18e44c9259555a1d2207e04cb315bb08384609be4c284f2cd8b8be02a",
   "corpus-io.ts": "fa89727871dcf12c849756f84a888e52c6141c81467a353277fbaf98aba03198",
   "decision-preload.ts": "50ff3dd835d4345aac95c64df7a3e820a30c625b1e1e63e1c0277ea278dccad3",
   "dispatch-read.ts": "1bb50157426ed2dbac9f3c1f4ec039bedac8b7b5a5326533242a74c5bd50cab0",

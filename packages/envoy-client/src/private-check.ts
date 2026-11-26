@@ -63,6 +63,14 @@ export const REFUSED_FOR_MS = 24 * 60 * MINUTE_MS;
 /** How long a whoami that names no private project admits its bearer without asking again. */
 export const ADMITTED_FOR_MS = 5 * MINUTE_MS;
 
+/** `url` with its trailing slashes off, read one character at a time: a `/+$` expression over a
+ *  caller's URL is a polynomial-time scan of a string of slashes (CodeQL js/polynomial-redos). */
+function withoutTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url[end - 1] === "/") end -= 1;
+  return url.slice(0, end);
+}
+
 /** The least advance of a trusted `0` that is written to the shared file on its own, so a busy
  *  process does not write the file once per response. A transition is written at once. */
 const ZERO_WRITTEN_EVERY_MS = MINUTE_MS;
@@ -314,12 +322,12 @@ export class PrivateCheck {
   readonly #warn: (line: string) => void;
 
   constructor(baseUrl: string, fetchImpl: DispatchFetch, settings: PrivateCheckSettings = {}) {
-    this.#url = baseUrl.replace(/\/+$/, "");
+    this.#url = withoutTrailingSlashes(baseUrl);
     // The URL as a line may name it: its origin and path, never its user info or query.
     let shown = "the configured Dispatch URL";
     try {
       const parsed = new URL(this.#url);
-      shown = `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`;
+      shown = `${parsed.origin}${withoutTrailingSlashes(parsed.pathname)}`;
     } catch {
       // Not a URL: named by the setting alone.
     }
