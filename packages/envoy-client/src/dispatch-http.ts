@@ -33,6 +33,9 @@ import type {
   CreateProjectInput,
   CreateVersionInput,
   CredentialPendingResponse,
+  DeployInput,
+  DeployResponse,
+  DeploysResponse,
   DispatchApiMethod,
   DispatchEvent,
   DispatchLimits,
@@ -2014,11 +2017,10 @@ export class DispatchClient {
     }
   }
 
-  /** Each check of an issue's Verification document with every result recorded against it, and
-   *  for a check CI proves the one result Dispatch derives from its check run.
-   *  `at` pins every check to that one commit, which `GET .../results?at=` takes as 40 lowercase
-   *  hex characters. Dispatch then reads GitHub for nothing but the check runs of a check CI
-   *  proves, at the issue's newest pull request head as on every read. */
+  /** Each check's complete results, compared with each open head or the final head of the last
+   *  pull request to merge. A branch result must hold its work's merge. The newest such result
+   *  decides, unless a pass and a fail both count at that commit. A live check reads its
+   *  program's current deploy. `at` names one 40-hex commit and leaves today's deploy out. */
   async issueResults(issue: string, at?: string): Promise<IssueCheckResults> {
     return this.#json(
       "GET",
@@ -2026,6 +2028,16 @@ export class DispatchClient {
       undefined,
       at === undefined ? undefined : { at }
     );
+  }
+
+  /** Record a build using the credential's own writer, never an actor selected in the body. */
+  async recordDeploy(input: DeployInput): Promise<DeployResponse> {
+    return this.#json("POST", ["api", "v1", "deploys"], input);
+  }
+
+  /** Each program's current deploy, including its source and the GitHub attempt when known. */
+  async deploys(repo: string): Promise<DeploysResponse> {
+    return this.#json("GET", ["api", "v1", "deploys"], undefined, { repo });
   }
 
   /**

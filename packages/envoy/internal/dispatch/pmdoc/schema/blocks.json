@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -104,8 +104,8 @@
         },
         "shaped": {
           "kind": "block[]",
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         }
       }
     },
@@ -168,6 +168,17 @@
           "kind": "string",
           "since": 4,
           "creatable_since": 4
+        },
+        "subject": {
+          "kind": "enum",
+          "choices": ["code", "production", "graph"],
+          "since": 6,
+          "creatable_since": 7
+        },
+        "program": {
+          "kind": "string",
+          "since": 6,
+          "creatable_since": 7
         }
       },
       "since": 3,
@@ -181,54 +192,54 @@
         "uncertainty": {
           "kind": "enum",
           "choices": ["low", "medium", "high"],
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         },
         "uncertainty_reason": {
           "kind": "string",
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         },
         "shaped": {
           "kind": "block[]",
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         },
         "from_ask": {
           "kind": "ask",
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         },
         "replaced": {
           "kind": "bool",
           "default": false,
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         },
         "decided_by": {
           "kind": "actor",
           "server": true,
           "markdown": false,
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         },
         "kept_by": {
           "kind": "actor",
           "server": true,
           "markdown": false,
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         },
         "kept_text_sum": {
           "kind": "string",
           "server": true,
           "markdown": false,
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         }
       },
-      "since": 6,
-      "creatable_since": 7
+      "since": 7,
+      "creatable_since": 8
     },
     {
       "name": "reading",
@@ -236,8 +247,8 @@
       "render": "host",
       "attributes": {},
       "parents": ["decision", "ask"],
-      "since": 6,
-      "creatable_since": 7
+      "since": 7,
+      "creatable_since": 8
     }
   ]
 }

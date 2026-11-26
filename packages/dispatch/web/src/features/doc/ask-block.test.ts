@@ -264,7 +264,7 @@ test("a block[] attribute pointing at no block is not drawn at all", () => {
   );
 });
 
-// The version-6 typed blocks: a decision, which a reading closes, as an ask is closed by one.
+// The version-7 typed blocks: a decision, which a reading closes, as an ask is closed by one.
 // Both are drawn as host blocks by their attributes, as a requirement and a check are.
 const decisionSchema = new Schema({
   nodes: {
