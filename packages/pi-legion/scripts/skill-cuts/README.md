@@ -330,6 +330,11 @@ skill's cases (`cases.ts`), one JSON object per line.
     extra-run rule does not replace it with a fresh run, and its stage stays running until that
     decision. A reply that acts, has no read the replay answers, or is undecided ends the run as
     the live rules say. Without it a continuation goes as far as the live rule does.
+    A run stopped by `--further-rounds` keeps only its earlier rounds' tool calls, as every saved
+    step does, and not the reply it stopped at, so a later `continue-mixed` cannot resume it:
+    it has no whole reply to send back, and the run takes the next step as a fresh run. The
+    stage's next step is therefore a fresh run of the stage on the same runner (the runner's
+    architect, 2026-11-26T11:15:56Z), and the continued `--out` stays as history.
   - Each case result in `--out` holds every stage its saved result holds. A stage keeps its
     unchanged runs as saved. Each continued run takes its saved run's place and number, and its
     `continueMixed` names the saved run (number, blind id, round, verdict and runner), this
