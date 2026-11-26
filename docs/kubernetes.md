@@ -3147,9 +3147,6 @@ The admission pass holds the given task for a parent whose start has not reached
 The design-gate basis of dispatch://INFRA-3320, in this same release, adds the basis and kept-approval columns of `design_gates` and the column `issues.view_of` (`20261114064234_design_gate_basis`), and the outbox kinds `pending_basis_seed` and `reparent_seed` (`20261122154643_outbox_kinds_with_the_basis_seeds`).
 That migration writes the kind check last, above the design news's `20261119203047_design_news`, and keeps `design_changes` and `phase_ended` in it, and this release queues rows of `phase_ended` again: the message that tells a parent's worker that the admission pass ended its phase.
 The release also queues the notice kinds `awaiting-children`, `basis-ended`, `basis-changes-requested` and `resting-root`, and the supervise operation `retire_task`.
-Before the daemon replaces a parent's accepted Dispatch status with `in_progress`, it checks acceptance in the same transaction.
-If accepted, it ends pending waits on the parent's approval request before it queues the status write.
-It leaves steps already open on that approval alone.
 
 **Before the deploy, list the parents that the first admission pass after it stops.**
 That pass (admit's `childrenWaits`) moves into `awaiting_children` every started parent of a running tree that has an open Dispatch child: an issue in `planning` through `accepting` whose pull request has not merged, with its tree's root in the workflow and not lingering.
@@ -4136,12 +4133,18 @@ The start asks that approval of that document, as it asks a kept decision of the
 Every row already there takes the empty string, and such a row is asked of whichever document the gate holds, as before.
 A root architect's start and a catch-up that name a kept approval carry the document too, as `artifact` beside the approval's `step`, `approved` and `latest` (`kept.artifact` on a `supervise` start, `catch_up.kept.artifact` on a catch-up `notice`).
 
+This release also ends the waits on an accepted parent's approval request before the daemon writes `in_progress` over the parent's accepted Dispatch status, which it writes as the parent enters `awaiting_children` (`endsAcceptedBases` in `internal/workflow/awaiting_children.go`).
+In the transaction that queues that write, the daemon reads whether the parent is accepted, and where it is, it ends each step of another root that waits on the parent's request, naming the acceptance as the pending-basis seed's read names it.
+A seed that the same event queued can run after the write and read the parent at work, so without this end such a wait would outlive the acceptance.
+A step already open on that approval stays open.
+
 To roll this release back, re-pin the earlier image: the release before this change, which is whichever release of `main` precedes this change's entry.
 `main` holds six contract entries before this change's: `20261125161436` (`role-identities`), `20261125181543` (`look-names-its-check`), `20261125211005` (`wake-due-earliest-moment`), `20261125174608` (`cyber-policy`), `20261125180842` (`launcher-workspace-read`) and `20261125161152` (`gate-basis`), in that merge order.
 The rollback image speaks contract 281, the contract of cybermonklabs/legion#4592.
 `legion version --contracts` of that image prints its entries.
 #4592 adds the gate-basis and parent-wait migrations and no `legion.yaml` key.
 A rollback to contract 281 keeps those migrations.
+It loses the end of the waits on an accepted parent's request: a release at contract 281 writes `in_progress` over the parent's accepted status and ends nothing there, so such a wait can outlive the parent's acceptance.
 A rollback below it also takes the steps in [Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open).
 Drain the waits as that section directs while the daemon still runs.
 Run its statements after this release's own block restores `phases.entry_verbatim` and before the earlier image is pinned.

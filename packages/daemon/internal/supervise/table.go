@@ -362,10 +362,11 @@ type PodUpdateOpen struct {
 // replacement the daemon makes. That keep has one exception, and the text names it where it holds
 // (GPT-6.1 Sol's non-blocking point on #5285 at 0259f8af): a round over a drift that breaks the
 // pod (runtime.Breaks: its recorded reasons open on runtime.BreakingDrift, today a drift of the
-// pod's service account or of its exchange identity) replaces the pod whatever the read finds and
-// tells the issue's architect what it took, so its ask promises no keep. A pod whose disk is a
-// kept volume that the issue's next pod mounts is no exception: R7 keeps it as it keeps any other
-// pod, so the text says that the keep holds there too.
+// pod's service account, of its exchange identity or of its repository, the last since a
+// repository correction breaks the pod, internal/daemon's repositoryReason) replaces the pod
+// whatever the read finds and tells the issue's architect what it took, so its ask promises no
+// keep. A pod whose disk is a kept volume that the issue's next pod mounts is no exception: R7
+// keeps it as it keeps any other pod, so the text says that the keep holds there too.
 //
 // The text is built in pieces, and reasons goes in a piece of its own. A reason is the JSON the
 // daemon read of a pod (internal/runtime/sandbox's shapeValue), so a reason can hold a quote
