@@ -335,10 +335,9 @@ under it. Each `web/src/` and `e2e/` path below is under `packages/dispatch`.
 
 Two rules set the edges of those layers:
 
-- A rule that the Go server and the browser both implement, such as how a markdown document is
-  read, is one row of a fixture table that both suites read:
-  `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/*.md` and the `fixtures.json` in
-  `pmdoc/testdata/`, beside the `corpus/` directory.
+- A rule that the Go server and the browser both implement is one row of a fixture table that both suites read.
+  How a markdown document is read is in `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/*.md` and the `fixtures.json` in `pmdoc/testdata/`, beside the `corpus/` directory.
+  How a text's references, its block ids and its code spans are read is in the JSON tables of `packages/envoy/internal/dispatch/text/testdata/`, one table for each rule, such as `code-ranges.json` for where a text's code is.
   Add the shape there, not a row on each surface.
 
 - A row that drives no browser is no browser row. A command-line row goes to the tests of the
