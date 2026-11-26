@@ -41,10 +41,7 @@ func kindFilterAddress(kind, id string) string { return kind + ":" + id }
 func pinnedSpecQueryVersion(t *testing.T, database *store.Store, key string) (string, int) {
 	t.Helper()
 	query := queryArtifactOf(t, database, key, graphstore.QuerySpec)
-	var pinned int
-	if err := database.Pool.QueryRow(context.Background(), `select coalesce(max(number), 0) from artifact_versions where artifact_id = $1::uuid`, query).Scan(&pinned); err != nil {
-		t.Fatalf("read the newest version of the spec query of %s: %v", key, err)
-	}
+	pinned := renderAtVersionNewest(t, database, query)
 	if treeReadViewsRecorded(t, database, query, pinned) != 1 {
 		t.Fatalf("version %d of the spec query of %s holds no record of the store revision it read: this case proves nothing", pinned, key)
 	}

@@ -24,7 +24,7 @@ import (
 // the rest of the test - a server_processes row with no capabilities, as a build before the column
 // registers none - so every issue the test creates is created as before the issue room, one room
 // per document (decision 7 of the issue-tree plan), and answers the process's instance, which a
-// test that holds it for one create takes back (createDigestChild). The process registers this
+// test that holds it for one create takes back (holdUnconverted). The process registers this
 // build's schema and this build's owner lock protocol, so it moves no other rule the fleet decides:
 // the ask roll window, which a process of an older schema opens (docs' anotherBuildServes), stays
 // shut as with this server alone, and the owner locks stay in this build's mode
@@ -332,30 +332,34 @@ func TestAPlanUploadedToAConvertedIssueLandsInItsFragment(t *testing.T) {
 	}
 }
 
-// A document write addressed through a parent issue that names, by its store address, a node of
-// its child issue - a criterion written into the child's own room - is refused 409
-// NODE_IN_OTHER_ISSUE naming the child, and writes nothing (D3 of the issue-tree plan).
-func TestAWriteThroughTheParentNamingAChildsNodeIsRefused(t *testing.T) {
-	ctx := context.Background()
+// childCriterionUnderParent creates, on a room project of its own, a parent issue and its child,
+// each born converted, and writes the criterion k1 into the child's own room as alice. It answers
+// the handler, both issues, their tree artifacts and the store address of the criterion's node.
+func childCriterionUnderParent(t *testing.T, project string) (handler http.Handler, parent, child model.Issue, parentTree, childTree, address string) {
+	t.Helper()
 	handler, database, _ := newTestServer(t, testServerOptions{})
-	createRoomProject(t, handler, "FAM")
-	parent, parentTree := createRoomIssue(t, handler, database, "FAM", "The parent", "The parent's spec.\n", "")
-	child, childTree := createRoomIssue(t, handler, database, "FAM", "The child", "The child's spec.\n", parent.Key)
+	createRoomProject(t, handler, project)
+	parent, parentTree = createRoomIssue(t, handler, database, project, "The parent", "The parent's spec.\n", "")
+	child, childTree = createRoomIssue(t, handler, database, project, "The child", "The child's spec.\n", parent.Key)
 	if parentTree == "" || childTree == "" {
 		t.Fatalf("the parent's tree is %q and the child's %q, want both", parentTree, childTree)
 	}
-	written := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+childTree+"/edits", map[string]any{
-		"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": ":::criterion{#k1}\nThe child's criterion.\n:::\n"}},
-	}, "alice")
-	if written.Code != http.StatusOK {
+	if written := editDocument(t, handler, childTree, insertAtEnd(":::criterion{#k1}\nThe child's criterion.\n:::\n")); written.Code != http.StatusOK {
 		t.Fatalf("write the child's criterion: status=%d body=%s", written.Code, written.Body.String())
 	}
-	var address string
-	if err := database.Pool.QueryRow(ctx, `
+	if err := database.Pool.QueryRow(context.Background(), `
 		select n.id from graph_nodes n
 		where n.kind = 'block' and n.id = $1 || '#k1'`, child.Key+"/tree").Scan(&address); err != nil {
 		t.Fatalf("read the child's criterion node: %v", err)
 	}
+	return handler, parent, child, parentTree, childTree, address
+}
+
+// A document write addressed through a parent issue that names, by its store address, a node of
+// its child issue - a criterion written into the child's own room - is refused 409
+// NODE_IN_OTHER_ISSUE naming the child, and writes nothing (D3 of the issue-tree plan).
+func TestAWriteThroughTheParentNamingAChildsNodeIsRefused(t *testing.T) {
+	handler, parent, child, parentTree, childTree, address := childCriterionUnderParent(t, "FAM")
 	before := artifactTextOf(t, handler, parentTree)
 	refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+parentTree+"/edits", map[string]any{
 		"ops": []map[string]any{{"op": "delete", "block": address}},

@@ -2484,7 +2484,7 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 				// one event past it is the version of the decisions query the step's drain wrote once
 				// the close, which withdrew the ask, had committed (R14).
 				closed := issueLastSeq(t, rig.database, named) - 1
-				requireDecisionsVersionEventAt(t, rig.database, named, closed+1, decisionsQueryDocument(t, rig.database, named))
+				requireDecisionsVersionEventAt(t, rig.database, named, closed+1, queryArtifactOf(t, rig.database, named, graphstore.QueryDecisions))
 				rig.lapse(t, key)
 				if swept := rig.sweptOf(named); len(swept) != 0 {
 					t.Fatalf("the close of %s was swept %v before its mark", named, swept)

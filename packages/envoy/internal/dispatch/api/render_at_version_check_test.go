@@ -23,7 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// c-render-at-version, the cases of the api package (R15 of this issue's spec, with R14 and R7). A
+// c-render-at-version, the cases of the api package (R15 of the issue-tree spec, with R14 and R7). A
 // version the writer rendered from the tree holds a version_renders row, and every read of it
 // renders it again as of the time that row records (docs.RenderVersion). A version of a document no
 // query record covers - an upload no role names, a project's document, the issue's tree artifact -
@@ -84,19 +84,16 @@ func (row renderAtVersionRow) words() (at, readSeq, digest string) {
 	return at, readSeq, digest
 }
 
-// renderAtVersionStored is the stored markdown of version number of artifactID, "" where the
-// version stores none.
-func renderAtVersionStored(t *testing.T, database *store.Store, artifactID string, number int) string {
+// storedVersionMarkdown is the stored markdown of version number of the document artifactID, ""
+// where the version stores none.
+func storedVersionMarkdown(t *testing.T, database *store.Store, artifactID string, number int) string {
 	t.Helper()
-	var markdown *string
+	var markdown string
 	if err := database.Pool.QueryRow(context.Background(),
-		`select markdown from artifact_versions where artifact_id = $1::uuid and number = $2`, artifactID, number).Scan(&markdown); err != nil {
+		`select coalesce(markdown, '') from artifact_versions where artifact_id = $1::uuid and number = $2`, artifactID, number).Scan(&markdown); err != nil {
 		t.Fatalf("read the stored markdown of version %d of %s: %v", number, artifactID, err)
 	}
-	if markdown == nil {
-		return ""
-	}
-	return *markdown
+	return markdown
 }
 
 // renderAtVersionNewest is the number of the newest version of artifactID, 0 where it holds none.
@@ -218,7 +215,7 @@ func TestADocumentNoQueryRecordCoversRecordsNoDigest(t *testing.T) {
 	} {
 		refKey := refKeyOf(t, database, document.id)
 		address := graphstore.VersionID(refKey, 1)
-		stored := renderAtVersionStored(t, database, document.id, 1)
+		stored := storedVersionMarkdown(t, database, document.id, 1)
 		if document.id == notes.Artifact.ID {
 			notesStored, notesRef = stored, refKey
 		}
@@ -338,7 +335,7 @@ func requireRenderAtVersionDecisionsVersion(t *testing.T, database *store.Store,
 		at, readSeq, _ := row.words()
 		t.Errorf("the version_renders row of %s holds the time %s and the seq %s, want a time and a seq", address, at, readSeq)
 	}
-	stored := renderAtVersionStored(t, database, decisions.id, number)
+	stored := storedVersionMarkdown(t, database, decisions.id, number)
 	for _, held := range words {
 		if !strings.Contains(stored, held) {
 			t.Errorf("version %d of %s stores %q, want %q in it", number, decisions.refKey, stored, held)
@@ -415,7 +412,7 @@ func TestTheDecisionsQueryVersionsRenderTheirAnswerAsOfTheirRow(t *testing.T) {
 	}
 	renderAtVersionQuiet(t, database, key, issue.PrimaryArtifactID)
 	movedTo := renderAtVersionNewest(t, database, decisions.id)
-	before, beforeRow := renderAtVersionStored(t, database, decisions.id, answered), renderAtVersionRowOf(t, database, decisions.id, answered)
+	before, beforeRow := storedVersionMarkdown(t, database, decisions.id, answered), renderAtVersionRowOf(t, database, decisions.id, answered)
 	if movedTo <= answered {
 		t.Errorf("the move of %s leaves %s at version %d, the version before it, want a version written for the moved record", decision, decisions.refKey, movedTo)
 	}

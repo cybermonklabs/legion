@@ -87,13 +87,7 @@ func TestTheTreeWalkLeavesOutTheWorkflowsRecords(t *testing.T) {
 	}
 
 	for _, record := range nodes[:len(kinds)] {
-		held, err := graphstore.CurrentOut(ctx, database.Pool, record.Kind, record.ID, []string{graphstore.TuplePartOf})
-		if err != nil {
-			t.Fatalf("read the part_of of the %s node %s: %v", record.Kind, record.ID, err)
-		}
-		if !slices.ContainsFunc(held, func(tuple graphstore.Tuple) bool {
-			return tuple.ToKind == graphstore.KindIssue && tuple.ToID == issue.Key
-		}) {
+		if !slices.Contains(farEnds(t, database, record.Kind, record.ID, graphstore.TuplePartOf), graphstore.KindIssue+"/"+issue.Key) {
 			t.Fatalf("the store holds no part_of from the %s node to %s", record.Kind, issue.Key)
 		}
 	}

@@ -835,7 +835,7 @@ func TestTheChangeSetReadsEachVersionAsTheOneRendererAnswersIt(t *testing.T) {
 			rendering.Markdown, rendering.Source, render)
 	}
 	for _, pair := range [][2]int{{1, 2}, {2, 3}} {
-		readStored, err := compareVersions(queryVersionMarkdown(t, database, plan, pair[0]), queryVersionMarkdown(t, database, plan, pair[1]))
+		readStored, err := compareVersions(storedVersionMarkdown(t, database, plan, pair[0]), storedVersionMarkdown(t, database, plan, pair[1]))
 		if err != nil {
 			t.Fatalf("compare the stored texts of versions %d and %d: %v", pair[0], pair[1], err)
 		}
@@ -915,7 +915,7 @@ func requireRenderedChanges(t *testing.T, handler http.Handler, database *store.
 	for index, number := range []int{from, to} {
 		rendering := renderedVersion(t, database, artifactID, number)
 		rendered[index] = rendering.Markdown
-		if stored := queryVersionMarkdown(t, database, artifactID, number); stored != rendering.Markdown {
+		if stored := storedVersionMarkdown(t, database, artifactID, number); stored != rendering.Markdown {
 			renderHolds, storedHolds := differingText(rendering.Markdown, stored)
 			apart = append(apart, fmt.Sprintf("version %d stores %q where its render from %s holds %q",
 				number, storedHolds, rendering.Source, renderHolds))

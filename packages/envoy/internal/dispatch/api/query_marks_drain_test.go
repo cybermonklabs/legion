@@ -226,9 +226,13 @@ const (
 // room's lock, reads the mark, and only then inserts the version and clears the mark, and commits.
 func requireDrainTrace(t *testing.T, what string, sent []storetest.SentStatement) {
 	t.Helper()
+	shapes := make([]string, len(sent))
+	for index, statement := range sent {
+		shapes[index] = normalizedStatement(statement.SQL)
+	}
 	at := func(from int, match func(string) bool) int {
-		for index := from; index < len(sent); index++ {
-			if match(normalizedStatement(sent[index].SQL)) {
+		for index := from; index < len(shapes); index++ {
+			if match(shapes[index]) {
 				return index
 			}
 		}

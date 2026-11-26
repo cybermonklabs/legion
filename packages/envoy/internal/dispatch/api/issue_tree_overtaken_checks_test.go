@@ -80,12 +80,10 @@ func TestTheTreeReadAndTheCoverageRouteCountTheChecksOfALiveRequirementUnderAnOv
 			ask := askOfBlock(t, database, key, "q1")
 			question := "dispatch://" + key + "/ask/" + ask
 			copied := readDecisionDocument(t, database, key, uploadDocument(t, handler, owner, "q-copy.md", overtakenQuestion).Artifact.Slug)
-			if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool {
+			testwait.UntilPolling(t, 20*time.Millisecond, "the copy's block "+copied.address("q1")+" to hold a current copied_from to q1's ask "+ask+", without which this case proves nothing", func() ([]graphstore.Tuple, bool) {
 				ties := currentTies(t, database, copied.address("q1"), graphstore.TupleCopiedFrom)
-				return len(ties) == 1 && ties[0].ToKind == graphstore.KindAsk && ties[0].ToID == ask
-			}) {
-				t.Fatalf("the copy's block %s never held a current copied_from to q1's ask %s: this case proves nothing", copied.address("q1"), ask)
-			}
+				return ties, len(ties) == 1 && ties[0].ToKind == graphstore.KindAsk && ties[0].ToID == ask
+			})
 			if owned := countRows(t, database, `select count(*) from asks where block_artifact_id = $1::uuid`, copied.id); owned != 0 {
 				t.Fatalf("the copy opened %d asks of its own, want none: this case proves nothing", owned)
 			}

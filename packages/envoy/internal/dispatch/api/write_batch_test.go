@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -21,10 +22,12 @@ var xidTakingStatement = regexp.MustCompile(`(?is)\b(insert\s+into|update\s+\S+\
 // record digests its versions owe and drains that mark, each in a transaction of its own and never
 // inside the route's (R7: docs.Service.DrainOwedQueries, docs' fillOwedDigests).
 const (
-	// queryDrainClearsMark is the drain's clear of the mark (docs' queryMarkClearStatement).
-	queryDrainClearsMark = "delete from issue_query_marks"
-	// digestFillRecordsDigest is the fill's record of an owed digest (docs' queueFilledDigest).
-	digestFillRecordsDigest = "update version_renders set record_sha256"
+	// sqlClearsQueryMark clears the mark of the queries a write left owed: the drain's alone
+	// (docs' queryMarkClearStatement).
+	sqlClearsQueryMark = "delete from issue_query_marks"
+	// sqlFillsDigest records the record digest a version's row owed: the fill's alone
+	// (docs' queueFilledDigest).
+	sqlFillsDigest = "update version_renders set record_sha256"
 )
 
 // requireOneWriteBatch finds, among the committed transactions report saw the request run, the
@@ -47,7 +50,7 @@ func requireOneWriteBatch(t *testing.T, report *storetest.XidReport, writes ...s
 	for _, transaction := range transactions {
 		switch {
 		case !ranStatement(transaction, "insert into events"):
-		case ranStatement(transaction, queryDrainClearsMark), ranStatement(transaction, digestFillRecordsDigest):
+		case ranStatement(transaction, sqlClearsQueryMark), ranStatement(transaction, sqlFillsDigest):
 			followers = append(followers, transaction)
 		default:
 			route = append(route, transaction)
@@ -69,12 +72,7 @@ func requireOneWriteBatch(t *testing.T, report *storetest.XidReport, writes ...s
 
 // ranStatement reports whether transaction ran a statement holding sql.
 func ranStatement(transaction storetest.XidTransaction, sql string) bool {
-	for _, statement := range transaction.Statements {
-		if strings.Contains(statement.SQL, sql) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(transaction.Statements, func(statement storetest.XidStatement) bool { return strings.Contains(statement.SQL, sql) })
 }
 
 // requireBatchedWritePhase fails unless everything transaction, named what, ran from its first
@@ -89,18 +87,18 @@ func requireBatchedWritePhase(t *testing.T, what string, transaction storetest.X
 			break
 		}
 	}
-	listing := statementListing(statements, first)
+	listing := func() string { return statementListing(statements, first) }
 	if first < 0 {
-		t.Fatalf("%s appended an event and ran no write:%s", what, listing)
+		t.Fatalf("%s appended an event and ran no write:%s", what, listing())
 	}
 	phase := statements[first:]
 	if len(phase) != 2 || !strings.EqualFold(strings.TrimSpace(phase[1].SQL), "commit") {
-		t.Fatalf("%s ran %d round trips in its write phase, with its COMMIT, want one batch and the COMMIT:%s", what, len(phase), listing)
+		t.Fatalf("%s ran %d round trips in its write phase, with its COMMIT, want one batch and the COMMIT:%s", what, len(phase), listing())
 	}
 	batch := phase[0].SQL
 	for _, write := range writes {
 		if !strings.Contains(batch, write) {
-			t.Errorf("the write phase's batch of %s carries no %q:%s", what, write, listing)
+			t.Errorf("the write phase's batch of %s carries no %q:%s", what, write, listing())
 		}
 	}
 }

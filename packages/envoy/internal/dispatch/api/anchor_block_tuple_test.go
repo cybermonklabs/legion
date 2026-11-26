@@ -8,8 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -161,12 +159,8 @@ func requireAnchoredInAgrees(t *testing.T, database *store.Store, documentID, co
 // through the store's writer, as a build that wrote the anchor's row without it left the store.
 func writeAnchoredIn(t *testing.T, database *store.Store, comment, block string, asserted bool) {
 	t.Helper()
-	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{
-			graphstore.AnchoredIn(comment, block, asserted, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), graphstore.NoEvent),
-		})
-	}); err != nil {
+	if err := graphstoreWrite(context.Background(), database,
+		graphstore.AnchoredIn(comment, block, asserted, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), graphstore.NoEvent)); err != nil {
 		t.Fatalf("write the anchored_in of comment %s: %v", comment, err)
 	}
 }

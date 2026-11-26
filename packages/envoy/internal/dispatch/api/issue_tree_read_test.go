@@ -325,6 +325,102 @@ func TestTheTreeReadAnswersARunsWholeQuestion(t *testing.T) {
 	}
 }
 
+// TestTheTreeReadAnswersAPostsEditAndDeleteMarks: on an issue born converted, whose read answers
+// from its head rows, and on one that has not converted, alice writes three comments; she edits
+// the first and deletes the second. The tree read with no view answers the edited comment with
+// edited_at, the time the edit answered, and no delete mark; the deleted one with deleted_at and
+// deleted_by as the delete answered them, and no text; and the third with none of the three, as
+// the read of the post carries them (model.GraphNode, R2: the read answers each node with its
+// values). Else it prints `<case>: the tree read answers the <comment> comment's marks
+// edited_at <a>, deleted_at <b>, deleted_by <c>, want <...>`.
+func TestTheTreeReadAnswersAPostsEditAndDeleteMarks(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	createReferenceAPIProject(t, handler, "MARK")
+	for _, unconverted := range []bool{false, true} {
+		what := fmt.Sprintf("an issue converted %t", !unconverted)
+		issue := createDigestIssue(t, handler, database, "MARK", "Marks of "+what, ":::requirement{#r1}\nThe list shows urgent asks first.\n:::\n", unconverted)
+		edited, _ := personComment(t, handler, database, issue.Key, "The first words.")
+		patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+edited, map[string]any{"body": "The corrected words."}, "alice")
+		if patched.Code != http.StatusOK {
+			t.Fatalf("%s: edit the comment %s: status=%d body=%s", what, edited, patched.Code, patched.Body.String())
+		}
+		editedAt := decodeBody[model.Comment](t, patched).EditedAt
+		if editedAt == nil {
+			t.Fatalf("%s: the edit of %s answers no edited_at: this case proves nothing", what, edited)
+		}
+		wantEdited, err := time.Parse(time.RFC3339Nano, *editedAt)
+		if err != nil {
+			t.Fatalf("%s: read the edit's edited_at %q: %v", what, *editedAt, err)
+		}
+		deleted, _ := personComment(t, handler, database, issue.Key, "Words to take back.")
+		gone := deleteThreadComment(t, handler, deleted, "alice")
+		if gone.DeletedAt == nil || gone.DeletedBy == nil {
+			t.Fatalf("%s: the delete of %s answers deleted_at %v and deleted_by %v: this case proves nothing", what, deleted, gone.DeletedAt, gone.DeletedBy)
+		}
+		standing, _ := personComment(t, handler, database, issue.Key, "Words that stand.")
+
+		read := treeRead(t, handler, issue.Key, "", "alice", false)
+		for _, want := range []struct {
+			name, id  string
+			editedAt  *time.Time
+			deletedAt *time.Time
+			deletedBy *model.Actor
+		}{
+			{"edited", edited, &wantEdited, nil, nil},
+			{"deleted", deleted, nil, gone.DeletedAt, gone.DeletedBy},
+			{"standing", standing, nil, nil, nil},
+		} {
+			node, _ := read.node(t, graphstore.KindComment, want.id)
+			sameTime := func(got, want *time.Time) bool {
+				return got == nil && want == nil || got != nil && want != nil && got.Equal(*want)
+			}
+			sameActor := func(got, want *model.Actor) bool {
+				return got == nil && want == nil || got != nil && want != nil && got.Kind == want.Kind && got.ID == want.ID
+			}
+			if !sameTime(node.EditedAt, want.editedAt) || !sameTime(node.DeletedAt, want.deletedAt) || !sameActor(node.DeletedBy, want.deletedBy) {
+				t.Errorf("%s: the tree read answers the %s comment's marks edited_at %v, deleted_at %v, deleted_by %v, want %v, %v, %v",
+					what, want.name, node.EditedAt, node.DeletedAt, node.DeletedBy, want.editedAt, want.deletedAt, want.deletedBy)
+			}
+			if want.name == "deleted" && node.Text != "" {
+				t.Errorf("%s: the tree read answers the deleted comment's text %q, want none", what, node.Text)
+			}
+		}
+	}
+}
+
+// TestTheKindReadAnswersAChangeOnADecisionTheSkeletonDoesNotOpen: an issue born converted holds
+// notes.md, a document the skeleton does not open (R8), and its decision d1; alice comments on the
+// decision's words, a Change. The read with no view answers the Change, as a node of the tree
+// under the issue, and no node of d1. The read with kind=comment, and with kind=comment and
+// kind=decision, take the Change out of that skeleton (R30): no node either answers can bring a
+// comment on d1's text in, since neither holds d1. Else it prints `<query> of <key> answers no
+// Change <id>, which the read with no view answers`.
+func TestTheKindReadAnswersAChangeOnADecisionTheSkeletonDoesNotOpen(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	createReferenceAPIProject(t, handler, "CHNG")
+	issue := createDigestIssue(t, handler, database, "CHNG", "A decision in notes", ":::requirement{#r1}\nThe list shows urgent asks first.\n:::\n", false)
+	notes := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "notes.md", "The notes.\n\n:::decision{#d1}\nWe ship the urgent list first.\n:::\n").Artifact.ID
+	change := createBlockAnchoredComment(t, handler, issue.Key, map[string]any{"artifact": notes, "quote": "urgent list", "block_id": "d1"}).ID
+	decision := blockKeyOf(t, database, notes) + "#d1"
+
+	whole := treeRead(t, handler, issue.Key, "", "alice", false)
+	if held := whole.nodesNamed(graphstore.KindComment, change); len(held) != 1 || len(whole.nodesNamed(refs.BlockNodeKind, decision)) != 0 {
+		t.Fatalf("the read with no view of %s answers the Change %s %d times and the decision %s %d times, want the Change once and no node of the decision: this case proves nothing",
+			issue.Key, change, len(held), decision, len(whole.nodesNamed(refs.BlockNodeKind, decision)))
+	}
+	for _, query := range []string{"?kind=comment", "?kind=comment&kind=decision"} {
+		read := treeRead(t, handler, issue.Key, query, "alice", false)
+		held := read.nodesNamed(graphstore.KindComment, change)
+		if len(held) != 1 {
+			t.Errorf("%s of %s answers no Change %s, which the read with no view answers: it answers %v", query, issue.Key, change, read.addresses())
+			continue
+		}
+		if held[0].Role != treeRoleTree {
+			t.Errorf("%s of %s answers the Change %s as %q, want a node of the tree, as a kind it names", query, issue.Key, change, held[0].Role)
+		}
+	}
+}
+
 // TestTheTreeReadAnswersTheCatalogueNodesItsTuplesNameAsContext: a pre-mortem lens on a requirement
 // and the requirement's constrained_by to a constraint of the catalogue. The tree read with no view
 // answers the lens as a node of the tree and, as context, the pre-mortem lens_kind and that

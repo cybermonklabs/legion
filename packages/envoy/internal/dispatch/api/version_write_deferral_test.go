@@ -274,15 +274,20 @@ func (d *deferralDocument) anchoredWrites(t *testing.T) {
 // take the edit back out, so the anchored comment's pin writes the approved text again and carries
 // her approval to it: the version is deferred, so no pass of the pin's transaction records its
 // version_renders row, and the review the carry writes pins the sha256 of the version's stored
-// markdown. It fails t unless that review - the first review of the version by the order their
+// markdown. The edit adds a requirement, a node the spec query takes, so in an issue room it moves
+// the spec's record and the approval reads stale: a paragraph moves nothing that query takes, and
+// R14's record carry would carry the approval to the edit's version at its first pass. It fails t
+// unless the review the pin's carry wrote - the first review of the version by the order their
 // events committed - holds that digest. The reconciliation that states the version afterwards
-// carries again where its text is the approved text (R14: the newest review is an approval of that
-// same version), and that second review pins the record's digest, whose own check is
+// carries again where its text is the approved text (R14: the newest review is an approval of
+// that same version), and that second review pins the record's digest, whose own check is
 // TestTheTreeRendersAPostCutoverVersionFromItsTuples.
 func (d *deferralDocument) carriedPin(t *testing.T) {
 	t.Helper()
 	approval := reviewDocument(t, d.handler, d.spec, "alice", "approved", "")
-	d.wrote(t, "the edit that stales the approval", func() { d.edit(t, "An edit the browser takes back out.", "") })
+	d.wrote(t, "the edit that stales the approval", func() {
+		d.edit(t, ":::requirement{#taken-back}\nA requirement the browser takes back out.\n:::", "")
+	})
 	pinned := d.wrote(t, "the anchored pin that restores the approved text", func() {
 		d.browserEdit(t, func(tree *pmdoc.Node) error {
 			tree.Children = tree.Children[:len(tree.Children)-1]

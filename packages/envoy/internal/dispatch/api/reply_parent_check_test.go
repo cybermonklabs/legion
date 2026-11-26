@@ -59,11 +59,12 @@ func replyParentValue(value *string) string {
 	return *value
 }
 
-// c-reply-parent, its first test (this issue's spec R8): a reply hangs under what it answers, its
-// parent coalesce(answers, reply_to, ask_id). In a thread of a head, a reply to the head and a reply
-// to that reply, the write flattens reply_to onto the head and keeps the comment the request named
-// in answers. The tree read hangs the reply to the head under the head and the reply to a reply
-// under the comment it answers, and the references read answers that comment as its parent.
+// c-reply-parent, its first test (R8 of the issue-tree spec): a reply hangs under what it
+// answers, its parent coalesce(answers, reply_to, ask_id). In a thread of a head, a reply to the
+// head and a reply to that reply, the write flattens reply_to onto the head and keeps the comment
+// the request named in answers. The tree read hangs the reply to the head under the head and the
+// reply to a reply under the comment it answers, and the references read answers that comment as
+// its parent.
 func TestAReplyToAReplyHangsUnderTheCommentItAnswers(t *testing.T) {
 	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)

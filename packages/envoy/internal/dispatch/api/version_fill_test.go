@@ -146,7 +146,7 @@ func TestVersionRecordDigestFillsAfterCommit(t *testing.T) {
 		t.Fatalf("the committed version_renders row of version %d holds at %v, read_seq %v, record_sha256 %v and digest_owed %t, want a time, a seq, no digest and digest_owed true",
 			number, row.at, row.readSeq, row.digest, row.owed)
 	}
-	stored := renderAtVersionStored(t, database, spec, number)
+	stored := storedVersionMarkdown(t, database, spec, number)
 	if got, want := versionFillDigest(t, database, spec, number), contentHash(stored); got != want {
 		t.Errorf("artifact_version_text_sha256 answers %s for version %d before the fill, want the stored markdown's %s", got, number, want)
 	}
@@ -195,7 +195,7 @@ func TestVersionRecordDigestFillsAfterCommit(t *testing.T) {
 	testwait.Receive(t, "the fill of the second edit's version", held)
 	second := renderAtVersionNewest(t, database, spec)
 	approval := reviewDocument(t, handler, spec, "alice", "approved", "")
-	if want := contentHash(renderAtVersionStored(t, database, spec, second)); approval.Version != second || approval.ContentSHA256 == nil || *approval.ContentSHA256 != want {
+	if want := contentHash(storedVersionMarkdown(t, database, spec, second)); approval.Version != second || approval.ContentSHA256 == nil || *approval.ContentSHA256 != want {
 		t.Errorf("alice's approval given before the fill is of version %d pinning %v, want version %d pinning the stored markdown's %s",
 			approval.Version, approval.ContentSHA256, second, want)
 	}

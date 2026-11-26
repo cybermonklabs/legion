@@ -105,7 +105,7 @@ func eventOf(t *testing.T, database *store.Store, eventType, ownerColumn, owner 
 // TestAnIssueCreateStoresItsNodeBeforeItsRow holds POST /api/v1/issues to writing the issue's node
 // and its spec's node before the rows that hold them, in the issue's project, caused by the
 // issue.created event the create appends. An issue is born converted, so its spec's node is the
-// query node of query spec (decision 2 of this branch's plan).
+// query node of query spec (decision 2 of the issue-tree plan).
 func TestAnIssueCreateStoresItsNodeBeforeItsRow(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)

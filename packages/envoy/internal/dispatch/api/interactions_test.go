@@ -17,8 +17,8 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -718,11 +718,7 @@ func TestAnchorsCaptureAnUnnamedVersionWhenLiveTextChanged(t *testing.T) {
 	// write marks the issue's queries owed, and the drain it runs once it has committed writes that
 	// version, with its own non-notifying artifact.version, after the ask's ask.opened
 	// (docs.Service.DrainOwedQueries).
-	var decisions string
-	if err := database.Pool.QueryRow(context.Background(),
-		`select a.id::text from artifacts a where a.issue_key = $1 and `+refs.DecisionsQuerySQL("a"), issue.Key).Scan(&decisions); err != nil {
-		t.Fatalf("read the decisions query of %s, which an issue born converted holds: %v", issue.Key, err)
-	}
+	decisions := queryArtifactOf(t, database, issue.Key, graphstore.QueryDecisions)
 	if len(log) != 4 || log[1].Type != "artifact.version" || log[1].Notify || log[1].Payload.ArtifactID != issue.PrimaryArtifactID ||
 		log[2].Type != "ask.opened" || !log[2].Notify ||
 		log[3].Type != "artifact.version" || log[3].Notify || log[3].Payload.ArtifactID != decisions {

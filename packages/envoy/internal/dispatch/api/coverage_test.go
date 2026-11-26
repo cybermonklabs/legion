@@ -247,8 +247,7 @@ const coverageReadFirstStatement = "from artifacts a where a.issue_key = $1 and 
 // coverageReadFault ends the coverage read's first statement, the batch that opens with
 // coverageReadFirstStatement, while armed, as a statement timeout or a reset pooled connection
 // ends it: that one batch is sent with a context already ended, and every other statement of the
-// approval request runs. The read sent `set local jit = off` before that batch while it read on
-// the pool, where the statement changed nothing, and the fault ended it there.
+// approval request runs.
 type coverageReadFault struct {
 	armed  atomic.Bool
 	failed atomic.Int64

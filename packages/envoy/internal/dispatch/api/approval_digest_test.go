@@ -108,11 +108,10 @@ func (r *digestRig) write(t *testing.T, nodes []graphstore.Node, tuples []graphs
 	}
 }
 
-// stateDrained appends tuples straight into the store as state does, marks the queries of the
-// issue key owed in the same batch (docs.QueueQueryMark), as every writer that moves a record does,
-// and runs the drain once the write has committed (docs.Service.DrainOwedQueries), which writes a
-// version of each query whose record moved: the version whose digest every gate reads.
-func (r *digestRig) stateDrained(t *testing.T, key string, tuples ...graphstore.Tuple) {
+// stateMarked appends tuples straight into the store as state does, and marks the queries of the
+// issue key owed in the same batch (docs.QueueQueryMark), as every writer that moves a record
+// does, failing unless the write committed and marked them.
+func (r *digestRig) stateMarked(t *testing.T, key string, tuples ...graphstore.Tuple) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := r.database.Pool.Begin(ctx)
@@ -135,6 +134,15 @@ func (r *digestRig) stateDrained(t *testing.T, key string, tuples ...graphstore.
 	if !marked {
 		t.Fatalf("the write of %+v marked no query of %s owed: %s is no converted issue", tuples, key, key)
 	}
+}
+
+// stateDrained is stateMarked, then the drain once the write has committed
+// (docs.Service.DrainOwedQueries), which writes a version of each query whose record moved: the
+// version whose digest every gate reads.
+func (r *digestRig) stateDrained(t *testing.T, key string, tuples ...graphstore.Tuple) {
+	t.Helper()
+	ctx := context.Background()
+	r.stateMarked(t, key, tuples...)
 	r.documents.DrainOwedQueries(ctx, key)
 	var owed bool
 	if err := r.database.Pool.QueryRow(ctx, `select exists (select 1 from issue_query_marks where issue_key = $1)`, key).Scan(&owed); err != nil || owed {
@@ -150,9 +158,18 @@ func blockTuple(address, kind, toKind, toID string, asserted bool) graphstore.Tu
 	}
 }
 
+// nodeValue is the value tuple of attribute on the node kind/id, as a write straight into the
+// store states one.
+func nodeValue(kind, id, attribute, value string) graphstore.Tuple {
+	return graphstore.Tuple{
+		FromKind: kind, FromID: id, Kind: attribute, ToKind: graphstore.KindValue, ToID: value,
+		At: time.Now().UTC(), Who: digestWriter, SourceEvent: graphstore.NoEvent, Asserted: true,
+	}
+}
+
 // blockValue is the value tuple of attribute on the block node at address.
 func blockValue(address, attribute, value string) graphstore.Tuple {
-	return blockTuple(address, attribute, graphstore.KindValue, value, true)
+	return nodeValue(refs.BlockNodeKind, address, attribute, value)
 }
 
 // walkAddresses is each node's store address, `<kind>:<id>`, in order.
@@ -210,20 +227,16 @@ func createDigestIssue(t *testing.T, handler http.Handler, database *store.Store
 
 // createDigestChild creates, as alice, an issue of project with spec under the issue parent, a
 // root issue where parent is "", born converted unless unconverted, in which case a live process
-// of the release before is beside the server for the create alone (holdIssuesUnconverted, taken
-// back once the issue is written).
+// of the release before is beside the server for the create alone (holdUnconverted, taken back
+// once the issue is written).
 func createDigestChild(t *testing.T, handler http.Handler, database *store.Store, project, title, spec, parent string, unconverted bool) model.Issue {
 	t.Helper()
-	var held string
+	release := func() {}
 	if unconverted {
-		held = holdIssuesUnconverted(t, database)
+		release = holdUnconverted(t, database)
 	}
 	issue, tree := createRoomIssue(t, handler, database, project, title, spec, parent)
-	if unconverted {
-		if _, err := database.Pool.Exec(context.Background(), `delete from server_processes where instance = $1::uuid`, held); err != nil {
-			t.Fatalf("take back the process of the release before: %v", err)
-		}
-	}
+	release()
 	if converted := tree != ""; converted == unconverted {
 		t.Fatalf("issue %s holds the tree %q, want it converted %t", issue.Key, tree, !unconverted)
 	}
@@ -1090,7 +1103,7 @@ func digestStepGate(t *testing.T, rig *digestRig) {
 
 	// Version 2, written by SQL with version 1's text: no pass states it, so it answers the sha256
 	// of its stored markdown, which the person's approval of it pins.
-	markdown := queryVersionMarkdown(t, rig.database, spec.id, 1)
+	markdown := storedVersionMarkdown(t, rig.database, spec.id, 1)
 	if _, err := rig.database.Pool.Exec(ctx, `
 		insert into artifact_versions (artifact_id, number, markdown, authors)
 		values ($1::uuid, 2, $2, '[{"kind":"user","id":"alice"}]')`, spec.id, markdown); err != nil {

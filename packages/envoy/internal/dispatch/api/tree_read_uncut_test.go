@@ -94,7 +94,7 @@ func (b *issueTreeBuilder) readWholeTree(version int) error {
 		return err
 	}
 	b.enterWalk()
-	if b.descend, err = refs.IssueDescendants(b.ctx, b.q, b.who, b.key); err != nil {
+	if err := b.readDescendants(); err != nil {
 		return err
 	}
 	if err := b.readOthers(); err != nil {
@@ -106,9 +106,7 @@ func (b *issueTreeBuilder) readWholeTree(version int) error {
 	if err := b.readFacts(b.candidates()); err != nil {
 		return err
 	}
-	if err := b.placeOthers(); err != nil {
-		return err
-	}
+	b.placeOthers()
 	b.keep()
 	if err := b.readContext(); err != nil {
 		return err
@@ -158,7 +156,7 @@ func (b *issueTreeBuilder) applySkeleton(version int, cursor string) error {
 		return err
 	}
 	b.enterWalk()
-	if b.descend, err = refs.IssueDescendants(b.ctx, b.q, b.who, b.key); err != nil {
+	if err := b.readDescendants(); err != nil {
 		return err
 	}
 	if err := b.readOthers(); err != nil {
@@ -170,9 +168,7 @@ func (b *issueTreeBuilder) applySkeleton(version int, cursor string) error {
 	if err := b.readFacts(b.candidates()); err != nil {
 		return err
 	}
-	if err := b.placeOthers(); err != nil {
-		return err
-	}
+	b.placeOthers()
 	b.keep()
 	if err := b.readContext(); err != nil {
 		return err

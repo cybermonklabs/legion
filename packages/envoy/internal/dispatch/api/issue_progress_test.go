@@ -241,11 +241,9 @@ func TestIssueProgressReconciliationCountsDriftedIssues(t *testing.T) {
 	// whose settlement writes the fragment's rendering as a version 3 wherever it differs from the
 	// latest version, so the count would read the room's text and not version 2's.
 	ctx := context.Background()
-	held := holdIssuesUnconverted(t, database)
+	release := holdUnconverted(t, database)
 	stale := createInteractionIssue(t, handler, "FOURTH", "Stale", "- [ ] one\n")
-	if _, err := database.Pool.Exec(ctx, `delete from server_processes where instance = $1::uuid`, held); err != nil {
-		t.Fatalf("take back the process of the release before: %v", err)
-	}
+	release()
 	if tree, err := issueTreeOf(ctx, database.Pool, stale.Key); err != nil || tree != "" {
 		t.Fatalf("issue %s holds the tree %q (%v), want none: it is created beside the release before", stale.Key, tree, err)
 	}

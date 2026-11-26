@@ -25,8 +25,8 @@ import (
 // and for a plan review's. writeCarriedReview writes it for every carry, as a row of
 // artifact_review_carries keyed by the review's id, in the transaction that writes the review. A
 // row the reads find is what they answer; a carried review that holds no row, one written before
-// this build, answers the version its reason's fixed sentence names (docs.CarriedFromVersion) until
-// the backfill's pass fills its row.
+// this build, answers the version its reason's fixed sentence names (model.CarriedFromVersion)
+// until the backfill's pass fills its row.
 //
 // The tests read the member off the JSON each route answers, where a member left out fails the
 // test: every review, approval and payload this build writes carries it, null for a person's own

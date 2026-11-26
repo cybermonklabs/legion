@@ -76,21 +76,11 @@ func connectBrowserPeer(t *testing.T, handler http.Handler, documentService *doc
 	return connectPeerAs(t, handler, documentService, artifactID, "alice")
 }
 
-// readArtifactModel is what GET /api/v1/artifacts/{id} answers alice for artifactID.
-func readArtifactModel(t *testing.T, handler http.Handler, artifactID string) model.Artifact {
-	t.Helper()
-	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID, nil, "alice")
-	if read.Code != http.StatusOK {
-		t.Fatalf("read the artifact %s: status=%d body=%s", artifactID, read.Code, read.Body.String())
-	}
-	return decodeBody[model.Artifact](t, read)
-}
-
 // artifactFragment is the fragment GET /api/v1/artifacts/{id} answers for artifactID, the room's
 // own where it answers none, as the page's fragmentOf reads it.
 func artifactFragment(t *testing.T, handler http.Handler, artifactID string) string {
 	t.Helper()
-	if fragment := readArtifactModel(t, handler, artifactID).Fragment; fragment != "" {
+	if fragment := readDocument(t, handler, artifactID).Fragment; fragment != "" {
 		return fragment
 	}
 	return model.ArtifactFragmentOwn
@@ -101,7 +91,7 @@ func artifactFragment(t *testing.T, handler http.Handler, artifactID string) str
 // room.
 func artifactRoom(t *testing.T, handler http.Handler, artifactID string) string {
 	t.Helper()
-	if room := readArtifactModel(t, handler, artifactID).Room; room != "" {
+	if room := readDocument(t, handler, artifactID).Room; room != "" {
 		return room
 	}
 	return artifactID

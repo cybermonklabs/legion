@@ -29,9 +29,9 @@ import (
 // itself a view. TestARequirementPastedIntoAViewIsAGapOfItsOwnKind, in coverage_tuples_test.go,
 // holds a requirement a client brings into a view through the room to the gap it reads as.
 
-// requirementMarkdown is a requirement block of id holding words.
+// requirementMarkdown is a requirement block of id holding words (queryBlockMarkdown).
 func requirementMarkdown(id, words string) string {
-	return ":::requirement{#" + id + "}\n" + words + "\n:::\n"
+	return queryBlockMarkdown("requirement", id, words)
 }
 
 // pasteRequirement writes a requirement block of id holding words at the end of the spec of issue

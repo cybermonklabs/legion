@@ -1,6 +1,6 @@
 package api
 
-//ci:builds packages/envoy ./cmd/dispatch convertIssues builds envoy-dispatch, whose convert-issues TestEveryPointerAtAMovedNodeIsATupleAndItsProjection runs as the conversion of this issue's spec R6
+//ci:builds packages/envoy ./cmd/dispatch convertIssues builds envoy-dispatch, whose convert-issues TestEveryPointerAtAMovedNodeIsATupleAndItsProjection runs as the conversion of R6 of the issue-tree spec
 
 import (
 	"context"
@@ -18,12 +18,12 @@ import (
 )
 
 // conversionCommit is the commit the conversion checks stamp the envoy-dispatch they convert with,
-// and name in the server_build_announcements row they write, so the fleet gate of this issue's
-// spec R6 passes.
+// and name in the server_build_announcements row they write, so the fleet gate of R6 of the
+// issue-tree spec passes.
 const conversionCommit = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
 
 // convertIssues runs `envoy-dispatch convert-issues --project <project>` over database, the
-// conversion of this issue's spec R6 by hand, which the checks take as its entry point: with
+// conversion of R6 of the issue-tree spec by hand, which the checks take as its entry point: with
 // dryRun, `--dry-run`, which writes as a real run does and rolls each issue's transaction back. It
 // fails t unless the command exits 0.
 func convertIssues(t *testing.T, database *store.Store, project string, dryRun bool) {
@@ -310,7 +310,7 @@ func TestEveryPointerAtAMovedNodeIsATupleAndItsProjection(t *testing.T) {
 
 // openTheConversionFleet takes away the live process holdIssuesUnconverted added, which lists no
 // issue room, and writes the announcement of the build the conversion runs as (conversionCommit),
-// so the conversion's fleet gate passes (this issue's spec R6): no live process serves another
+// so the conversion's fleet gate passes (R6 of the issue-tree spec): no live process serves another
 // build, and the newest announcement names the commit the conversion runs against.
 func openTheConversionFleet(t *testing.T, database *store.Store) {
 	t.Helper()

@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -34,18 +33,6 @@ func newQueryMarkRig(t *testing.T) *digestRig {
 	return rig
 }
 
-// decisionsQueryDocument is the id of the decisions query of the issue key, which an issue born
-// converted holds.
-func decisionsQueryDocument(t *testing.T, database *store.Store, key string) string {
-	t.Helper()
-	var id string
-	if err := database.Pool.QueryRow(context.Background(),
-		`select a.id::text from artifacts a where a.issue_key = $1 and `+refs.DecisionsQuerySQL("a"), key).Scan(&id); err != nil {
-		t.Fatalf("read the decisions query of %s: %v", key, err)
-	}
-	return id
-}
-
 // requireQueryVersionFollows fails unless, once the write named what has answered, no mark of the
 // issue key stands, the document artifactID of query holds version want as its newest, and that
 // version's digest is the digest of the query's record at the head, which moved from was.
@@ -68,8 +55,9 @@ func requireQueryVersionFollows(t *testing.T, rig *digestRig, what, key, query, 
 
 // requireUnmarkedWriteWritesNoVersion is the control of a mark: tuple, stated straight into the
 // store with no mark, moves the record of query of the issue key from was, and the document
-// artifactID of that query stays at version standing, whose digest is no longer the record's.
-func requireUnmarkedWriteWritesNoVersion(t *testing.T, rig *digestRig, key, query, artifactID string, standing int, was string, tuple graphstore.Tuple) {
+// artifactID of that query stays at version standing, whose digest is no longer the record's. It
+// answers the moved record.
+func requireUnmarkedWriteWritesNoVersion(t *testing.T, rig *digestRig, key, query, artifactID string, standing int, was string, tuple graphstore.Tuple) docs.QueryRecord {
 	t.Helper()
 	rig.state(t, tuple)
 	moved := rig.record(t, key, query)
@@ -82,15 +70,7 @@ func requireUnmarkedWriteWritesNoVersion(t *testing.T, rig *digestRig, key, quer
 	if digest := versionDigestOf(t, rig.database, artifactID, standing); digest == moved.Digest {
 		t.Errorf("version %d of the %s query of %s answers the moved record's digest %s with no version written", standing, query, key, digest)
 	}
-}
-
-// askValue is a value tuple of attribute on the node of the ask id, as a write straight into the
-// store states one.
-func askValue(id, attribute, value string) graphstore.Tuple {
-	return graphstore.Tuple{
-		FromKind: graphstore.KindAsk, FromID: id, Kind: attribute, ToKind: graphstore.KindValue, ToID: value,
-		At: time.Now().UTC(), Who: digestWriter, SourceEvent: graphstore.NoEvent, Asserted: true,
-	}
+	return moved
 }
 
 // R14 for the asks of a converted issue: the decisions query takes each question by its node, and
@@ -104,9 +84,10 @@ func askValue(id, attribute, value string) graphstore.Tuple {
 // (docs.Ledger.PlanSettle), writes the next version the same way, the control's value with it, and
 // its own control again moves the record and writes no version.
 func TestAQuestionsCreateAndAnswerEachWriteADecisionsQueryVersion(t *testing.T) {
+	t.Parallel()
 	rig := newQueryMarkRig(t)
 	key := rig.issue.Key
-	decisions := decisionsQueryDocument(t, rig.database, key)
+	decisions := queryArtifactOf(t, rig.database, key, graphstore.QueryDecisions)
 	awaitDigestsFilled(t, rig.database, decisions)
 	opened := newestVersionOf(t, rig.database, decisions)
 	before := rig.record(t, key, graphstore.QueryDecisions)
@@ -116,17 +97,12 @@ func TestAQuestionsCreateAndAnswerEachWriteADecisionsQueryVersion(t *testing.T) 
 	if !slices.Contains(walkAddresses(created.Nodes), graphstore.KindAsk+":"+ask) {
 		t.Errorf("the decisions record of %s takes %v, want the ask %s", key, walkAddresses(created.Nodes), ask)
 	}
-	requireUnmarkedWriteWritesNoVersion(t, rig, key, graphstore.QueryDecisions, decisions, opened+1, created.Digest, askValue(ask, "probe", "unmarked"))
-	controlled := rig.record(t, key, graphstore.QueryDecisions)
+	controlled := requireUnmarkedWriteWritesNoVersion(t, rig, key, graphstore.QueryDecisions, decisions, opened+1, created.Digest,
+		nodeValue(graphstore.KindAsk, ask, "probe", "unmarked"))
 
-	answered := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/asks/"+ask+"/answer", map[string]any{
-		"selected": []string{"Yes"}, "expected_edited_at": nil,
-	}, "alice")
-	if answered.Code != http.StatusOK {
-		t.Fatalf("answer the ask %s as alice: status=%d body=%s", ask, answered.Code, answered.Body.String())
-	}
+	answerDecisionBlock(t, rig.handler, ask, "alice", []string{"Yes"}, "", nil)
 	settled := requireQueryVersionFollows(t, rig, "the ask's answer", key, graphstore.QueryDecisions, decisions, opened+2, controlled.Digest)
-	requireUnmarkedWriteWritesNoVersion(t, rig, key, graphstore.QueryDecisions, decisions, opened+2, settled.Digest, askValue(ask, "probe", "unmarked again"))
+	requireUnmarkedWriteWritesNoVersion(t, rig, key, graphstore.QueryDecisions, decisions, opened+2, settled.Digest, nodeValue(graphstore.KindAsk, ask, "probe", "unmarked again"))
 }
 
 // R14 for the state route: a node's state is one of the values a query's record holds, so a person
@@ -136,6 +112,7 @@ func TestAQuestionsCreateAndAnswerEachWriteADecisionsQueryVersion(t *testing.T) 
 // record's, and no mark stands. Its control states a value on the requirement's node with no mark:
 // the record moves, and the spec stays at its version.
 func TestARequirementMovedToOvertakenWritesASpecQueryVersion(t *testing.T) {
+	t.Parallel()
 	rig := newQueryMarkRig(t)
 	key := rig.issue.Key
 	awaitDigestsFilled(t, rig.database, rig.spec.id)
@@ -157,12 +134,13 @@ func TestARequirementMovedToOvertakenWritesASpecQueryVersion(t *testing.T) {
 // digest is the record's, and no mark stands. Its control states a value on the decision's node
 // with no mark: the record moves, and the decisions query stays at its version.
 func TestAKeepWritesADecisionsQueryVersion(t *testing.T) {
+	t.Parallel()
 	rig := newQueryMarkRig(t)
 	key := rig.issue.Key
 	agentUploadAs(t, rig.handler, key, "choices.md", "::::decision{#d1}\nWe ship REST first.\n::::\n", nil)
 	choices := readDecisionDocument(t, rig.database, key, "choices-md")
 	decision := choices.address("d1")
-	decisions := decisionsQueryDocument(t, rig.database, key)
+	decisions := queryArtifactOf(t, rig.database, key, graphstore.QueryDecisions)
 	awaitDigestsFilled(t, rig.database, decisions)
 	standing := newestVersionOf(t, rig.database, decisions)
 	before := rig.record(t, key, graphstore.QueryDecisions)
@@ -171,11 +149,7 @@ func TestAKeepWritesADecisionsQueryVersion(t *testing.T) {
 	}
 	entry := requireEntry(t, readEntries(t, rig.handler, key), "the agent's decision", blockAddress(decision))
 
-	kept := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/artifacts/"+choices.id+"/blocks/d1/keep",
-		map[string]any{"text_sha256": entry.TextSHA256}, "alice")
-	if kept.Code != http.StatusOK {
-		t.Fatalf("keep the decision %s as alice: status=%d body=%s", decision, kept.Code, kept.Body.String())
-	}
+	keepBlock(t, rig.handler, choices.id, "d1", entry.TextSHA256)
 	record := requireQueryVersionFollows(t, rig, "the Keep", key, graphstore.QueryDecisions, decisions, standing+1, before.Digest)
 	requireUnmarkedWriteWritesNoVersion(t, rig, key, graphstore.QueryDecisions, decisions, standing+1, record.Digest, blockValue(decision, "probe", "unmarked"))
 }
@@ -188,14 +162,15 @@ func TestAKeepWritesADecisionsQueryVersion(t *testing.T) {
 // taken at the sequence read before it; a version of the spec written between a second read and
 // a second PATCH refuses that PATCH 409 ISSUE_CHANGED.
 func TestAFencePassesOverADrainsDecisionsQueryVersionAndReadsADocumentVersion(t *testing.T) {
+	t.Parallel()
 	rig := newQueryMarkRig(t)
 	key := rig.issue.Key
 	ask := createIssueAsk(t, rig.handler, key, "Does the fence read the drain's version?")
 	requireNoQueryMark(t, rig.database, "once the ask's create answered", key)
-	decisions := decisionsQueryDocument(t, rig.database, key)
+	decisions := queryArtifactOf(t, rig.database, key, graphstore.QueryDecisions)
 	read := readIssueDetail(t, rig.handler, key).LastSeq
 	standing := newestVersionOf(t, rig.database, decisions)
-	rig.stateDrained(t, key, askValue(ask, "probe", "drained"))
+	rig.stateDrained(t, key, nodeValue(graphstore.KindAsk, ask, "probe", "drained"))
 	if newest := newestVersionOf(t, rig.database, decisions); newest != standing+1 {
 		t.Fatalf("the drain left version %d of the decisions query of %s newest, want %d", newest, key, standing+1)
 	}
@@ -230,15 +205,7 @@ func requireDrainedBy(t *testing.T, rig *digestRig, what, key, artifactID string
 	if number != standing+1 {
 		t.Fatalf("%s left version %d of the query document %s of %s newest, want %d", what, number, artifactID, key, standing+1)
 	}
-	var encoded []byte
-	if err := rig.database.Pool.QueryRow(context.Background(),
-		`select authors from artifact_versions where artifact_id = $1::uuid and number = $2`, artifactID, number).Scan(&encoded); err != nil {
-		t.Fatalf("read the authors of version %d of %s: %v", number, artifactID, err)
-	}
-	var authors []model.Actor
-	if err := json.Unmarshal(encoded, &authors); err != nil {
-		t.Fatalf("decode the authors %s of version %d of %s: %v", encoded, number, artifactID, err)
-	}
+	authors := versionOf(t, rig.database, artifactID, number).Authors
 	if len(authors) != 1 || authors[0].Kind != want.Kind || authors[0].ID != want.ID {
 		t.Errorf("after %s the drained version %d of the query document %s of %s is written by %+v, want %s %s alone", what, number, artifactID, key, authors, want.Kind, want.ID)
 	}
@@ -255,18 +222,16 @@ func requireDrainedBy(t *testing.T, rig *digestRig, what, key, artifactID string
 // decision: each drained version of the decisions query is written by that write's own writer,
 // and its artifact.version names it.
 func TestADrainedVersionNamesTheWriterOfTheWriteThatMarkedIt(t *testing.T) {
+	t.Parallel()
 	rig := newQueryMarkRig(t)
 	key := rig.issue.Key
 	ask := createIssueAsk(t, rig.handler, key, "Which writer does the drain name?")
 	agentUploadAs(t, rig.handler, key, "choices.md", "::::decision{#d1}\nWe name the writer.\n::::\n", nil)
 	choices := readDecisionDocument(t, rig.database, key, "choices-md")
-	decisions := decisionsQueryDocument(t, rig.database, key)
+	decisions := queryArtifactOf(t, rig.database, key, graphstore.QueryDecisions)
 	aliceLast := func(value string) {
 		t.Helper()
-		rig.state(t, graphstore.Tuple{
-			FromKind: graphstore.KindIssue, FromID: key, Kind: "probe", ToKind: graphstore.KindValue, ToID: value,
-			At: time.Now().UTC(), Who: digestWriter, SourceEvent: graphstore.NoEvent, Asserted: true,
-		})
+		rig.state(t, nodeValue(graphstore.KindIssue, key, "probe", value))
 	}
 
 	asker := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
@@ -308,6 +273,7 @@ func TestADrainedVersionNamesTheWriterOfTheWriteThatMarkedIt(t *testing.T) {
 // while alice commits a tuple of her own; once he goes on, the drained version of the spec is
 // written by bob, and its artifact.version names him.
 func TestARoomMarkNamesItsOwnWriterPastATupleCommittedWhileItWaits(t *testing.T) {
+	t.Parallel()
 	rig := newQueryMarkRig(t)
 	key := rig.issue.Key
 	ctx := context.Background()
@@ -336,15 +302,7 @@ func TestARoomMarkNamesItsOwnWriterPastATupleCommittedWhileItWaits(t *testing.T)
 			"summary": "edit",
 		}, "bob")
 	}()
-	waiting := testwait.UntilPolling(t, 20*time.Millisecond, "bob's edit to wait at the head row of "+requirement, func() (string, bool) {
-		var statement string
-		err := rig.database.Pool.QueryRow(ctx, `
-			select query from pg_stat_activity where $1::int = any(pg_blocking_pids(pid))`, holderPID).Scan(&statement)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			t.Fatalf("read the backend the hold blocks: %v", err)
-		}
-		return statement, err == nil
-	})
+	waiting := blockedStatement(t, rig.database, holderPID, "bob's edit to wait at the head row of "+requirement)
 	if !strings.Contains(waiting, "with head_nodes as materialized (") {
 		t.Fatalf("bob's edit waits on the head row at %q, want the head write", waiting)
 	}
@@ -359,10 +317,7 @@ func TestARoomMarkNamesItsOwnWriterPastATupleCommittedWhileItWaits(t *testing.T)
 	if _, err := alice.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
 		t.Fatalf("bound alice's write: %v", err)
 	}
-	if err := graphstore.Write(ctx, alice, nil, []graphstore.Tuple{{
-		FromKind: graphstore.KindIssue, FromID: key, Kind: "probe", ToKind: graphstore.KindValue, ToID: "committed while bob waits",
-		At: time.Now().UTC(), Who: digestWriter, SourceEvent: graphstore.NoEvent, Asserted: true,
-	}}); err != nil {
+	if err := graphstore.Write(ctx, alice, nil, []graphstore.Tuple{nodeValue(graphstore.KindIssue, key, "probe", "committed while bob waits")}); err != nil {
 		t.Fatalf("write alice's tuple while bob's edit waits: %v", err)
 	}
 	if err := alice.Commit(ctx); err != nil {
@@ -371,8 +326,24 @@ func TestARoomMarkNamesItsOwnWriterPastATupleCommittedWhileItWaits(t *testing.T)
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("let bob's edit go on: %v", err)
 	}
-	if response := <-answered; response.Code != http.StatusOK {
+	if response := testwait.Receive(t, "bob's edit of the plan's requirement", answered); response.Code != http.StatusOK {
 		t.Fatalf("bob's edit of the plan's requirement: status=%d body=%s", response.Code, response.Body.String())
 	}
 	requireDrainedBy(t, rig, "bob's reword of the plan's requirement", key, rig.spec.id, standing, model.Actor{Kind: "user", ID: "bob"})
+}
+
+// blockedStatement waits until a backend of the test's database stands blocked by the backend
+// holderPID, the wait named what, and answers the statement it waits at.
+func blockedStatement(t *testing.T, database *store.Store, holderPID int, what string) string {
+	t.Helper()
+	return testwait.UntilPolling(t, 20*time.Millisecond, what, func() (string, bool) {
+		var statement string
+		err := database.Pool.QueryRow(context.Background(), `
+			select query from pg_stat_activity
+			where datname = current_database() and $1::int = any(pg_blocking_pids(pid))`, holderPID).Scan(&statement)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("read the backend the hold blocks: %v", err)
+		}
+		return statement, err == nil
+	})
 }

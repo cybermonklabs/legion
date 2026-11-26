@@ -3,8 +3,7 @@ package api
 // The read-cost corpus's tree issue, as every build of this package's tests shares it: its shape
 // as c-read-cost states it, its document and how a test writes it through the server's own API, the
 // client a reading is read through, and the reads that hold a corpus to its shape before anything
-// is measured. c-read-cost itself is cmd/dispatch's (read_cost_test.go), which keeps a corpus of
-// its own. Here the tree read's statement bound (tree_read_statements_test.go) and the head
+// is measured. Here the tree read's statement bound (tree_read_statements_test.go) and the head
 // projection's reads (head_projection_test.go) seed the tree issue through a server in the test's
 // process, and the tests that build an earlier commit and carry the basebuild tag - the skeleton's
 // bound, c-tree-read-bound (tree_read_skeleton_bound_test.go), and the anchor roll
@@ -206,13 +205,11 @@ func uploadReadCostDocument(t *testing.T, s *readCostServer, issue, name, conten
 // readCostTreeText is the document the tree issue expands: a heading, a spine of bullet lists
 // nesting readCostTreeDepth levels deep, a paragraph, a flat list and a closing paragraph, which
 // fill it out to readCostTreeBlocks blocks. A list item is a block of its own beside its paragraph
-// since R7 gave each list item a node (0ecbefee586 records its offset), so a list of n items is
-// 2n+1 blocks - the list, each item and each item's paragraph - and each level of the spine, a list
-// of one item, is three: the text written before that counted one block an item and read back as
-// 3,991 blocks, not the 2,000 c-read-cost states. The heading, the two paragraphs, the spine and
-// the flat list's own block leave an even count for its items, so the count is exactly
-// readCostTreeBlocks; it is never taken on trust, since both sides read it back before anything is
-// measured.
+// since R7 gave each list item a node, so a list of n items is 2n+1 blocks - the list, each item
+// and each item's paragraph - and each level of the spine, a list of one item, is three. The
+// heading, the two paragraphs, the spine and the flat list's own block leave an even count for its
+// items, so the count is exactly readCostTreeBlocks; it is never taken on trust, since both sides
+// read it back before anything is measured.
 func readCostTreeText() string {
 	var text strings.Builder
 	text.WriteString("# The tree this issue expands\n\n")

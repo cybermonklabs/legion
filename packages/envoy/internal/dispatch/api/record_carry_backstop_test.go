@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -35,8 +36,9 @@ func standQueryMark(t *testing.T, database *store.Store, issueKey string) {
 // requireApprovedAtLatest fails unless GET /api/v1/artifacts/{id} answers artifactID approved at
 // number, its latest version: the read the Legion daemon's design gate makes
 // (Approval.ApprovedLatest).
-func requireApprovedAtLatest(t *testing.T, read approvalRead, artifactID string, number int) {
+func requireApprovedAtLatest(t *testing.T, handler http.Handler, artifactID string, number int) {
 	t.Helper()
+	read := readApproval(t, handler, artifactID)
 	if read.Approval == nil || read.Approval.State != "approved" || read.Approval.Version == nil || *read.Approval.Version != number ||
 		read.Approval.LatestVersion != number {
 		t.Errorf("the approval of %s reads %+v, want approved at version %d, its latest version", artifactID, read.Approval, number)
@@ -66,7 +68,7 @@ func TestTheFillCarriesAVersionWhoseWritePassedOverItsRecord(t *testing.T) {
 		t.Fatalf("the edit of a paragraph wrote version %d of %s, want %d", edited, spec.refKey, approved+1)
 	}
 	requireApprovalCarriedByRecord(t, handler, database, spec.id, approved, edited)
-	requireApprovedAtLatest(t, readApproval(t, handler, spec.id), spec.id, edited)
+	requireApprovedAtLatest(t, handler, spec.id, edited)
 	requireNoQueryMark(t, database, "after the edit's drain", issue.Key)
 }
 
@@ -117,5 +119,5 @@ func TestASettlementsVersionAfterADeferredOneCarriesTheApproval(t *testing.T) {
 		t.Fatalf("the settlement of the browser's paragraph left version %d of %s newest, want %d", settled, spec.refKey, deferred+1)
 	}
 	requireApprovalCarriedByRecord(t, handler, database, spec.id, approved, settled)
-	requireApprovedAtLatest(t, readApproval(t, handler, spec.id), spec.id, settled)
+	requireApprovedAtLatest(t, handler, spec.id, settled)
 }

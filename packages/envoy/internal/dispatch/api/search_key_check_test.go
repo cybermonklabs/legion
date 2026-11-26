@@ -1,6 +1,6 @@
 package api
 
-//ci:builds packages/envoy ./cmd/dispatch convertIssues builds envoy-dispatch, whose convert-issues TestSearchFollowsABlockThatChangesOwner runs as the conversion of this issue's spec R6
+//ci:builds packages/envoy ./cmd/dispatch convertIssues builds envoy-dispatch, whose convert-issues TestSearchFollowsABlockThatChangesOwner runs as the conversion of R6 of the issue-tree spec
 //ci:reads packages/envoy/internal/dispatch/store/migrations/*_issue_tree_*.up.sql searchKeyMigrationSet, which TestSearchFollowsABlockThatChangesOwner reads through pgmigrate.TouchedTables
 
 import (
@@ -86,7 +86,7 @@ var searchKeyEmbeddingKinds = []string{
 	"ask", "ask_part", "comment", "comment_block", "document", "document_block", "issue", "message", "message_block",
 }
 
-// Search follows a block that changes owner (this issue's spec R17). A window's id is
+// Search follows a block that changes owner (R17 of the issue-tree spec). A window's id is
 // `<owner key>#<first block>`, and the owner key of a document's blocks becomes the issue's tree
 // node once the conversion moves them there: the windows are then written under the tree, the old
 // owner's rows stay for one release, which a rollback's search by meaning reads, and this build's
@@ -94,9 +94,9 @@ var searchKeyEmbeddingKinds = []string{
 // lexical search reads node_search, one row per node that holds text, and answers the node that
 // matched, while the artifact_versions_document_search trigger, its function and document_search
 // stay for a process of the release before, which reads that table alone. The conversion carries
-// each moved block's authors to its node in the room (this issue's spec R22): alice's, who wrote
-// the spec's one version before the move. The store census holds each node to her, read off the
-// spec's own record of the block, never off the room's first version of the spec, which the
+// each moved block's authors to its node in the room (R22 of the issue-tree spec): alice's, who
+// wrote the spec's one version before the move. The store census holds each node to her, read off
+// the spec's own record of the block, never off the room's first version of the spec, which the
 // conversion wrote, nor off the node it checks: once the authored_by tuples the conversion
 // carried are taken off, it reads a row no tuple states at each block.
 func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {

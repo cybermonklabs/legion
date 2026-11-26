@@ -69,7 +69,7 @@ func TestADecisionThatSettlesAnAskStandsUnderThatAsk(t *testing.T) {
 	})
 	d1 := blockAddressOf(t, database, key, "d1")
 	requireDecisionUnder(t, handler, database, key, d1, graphstore.KindAsk, first)
-	stored := renderAtVersionStored(t, database, issue.PrimaryArtifactID, number)
+	stored := storedVersionMarkdown(t, database, issue.PrimaryArtifactID, number)
 	if question, words := strings.Index(stored, decisionUnderAskQuestion), strings.Index(stored, decisionUnderAskD1); question < 0 || words < question {
 		t.Errorf("version %d of the spec of %s holds the ask block's question at %d and d1's words at %d, want d1 after the ask block, where the write put it:\n%s",
 			number, key, question, words, stored)

@@ -79,6 +79,17 @@ func (r *moveRig) move(t *testing.T, key, address, parent string, more map[strin
 	return decodeBody[nodeMoved](t, response)
 }
 
+// tradeOffOn is alice's trade-off lens on the block of the spec of the issue key, holding findings,
+// failing unless the lens route creates it; what names it in a failure.
+func (r *moveRig) tradeOffOn(t *testing.T, key, block, what string, findings ...string) lensInvoked {
+	t.Helper()
+	body := map[string]any{"on": "dispatch://" + key + "/spec#b-" + block, "kind": "trade-off"}
+	if len(findings) > 0 {
+		body["findings"] = findings
+	}
+	return decodeBody[lensInvoked](t, created(t, what, dispatchRequest(t, r.handler, http.MethodPost, "/api/v1/issues/"+key+"/lenses", body, "alice")))
+}
+
 // refused sends the move of the node at address of the issue key with body and the If-Match tag
 // (none where tag is ""), as the person login, or the shared agent bearer where login is "", and
 // fails unless it answers status with code and names each of names, stores nothing - the store's
@@ -226,8 +237,7 @@ func TestTheMoveRefusesAParentOutsideItsPlaceAndAnAfterOfNoSiblingOfItsBand(t *t
 	child := createDigestChild(t, rig.handler, rig.database, "MVTREE", "The child", "The child's paragraph.\n", key, false)
 	onR1 := decodeBody[model.Comment](t, created(t, "alice's comment on mr1's text", dispatchRequest(t, rig.handler, http.MethodPost,
 		"/api/v1/issues/"+key+"/comments", map[string]any{"body": "Is a second the bound?", "anchor": map[string]any{"artifact": "spec", "quote": "answers in a second"}}, "alice")))
-	lens := decodeBody[lensInvoked](t, created(t, "a trade-off on mk1", dispatchRequest(t, rig.handler, http.MethodPost,
-		"/api/v1/issues/"+key+"/lenses", map[string]any{"on": "dispatch://" + key + "/spec#b-mk1", "kind": "trade-off"}, "alice")))
+	lens := rig.tradeOffOn(t, key, "mk1", "a trade-off on mk1")
 	lensNode := graphstore.KindLens + "/" + lens.ID
 	onR1Node := graphstore.KindComment + "/" + onR1.ID
 	rig.quiet(t)
@@ -303,20 +313,12 @@ func TestTheMoveKeepsEveryNodeButALensOffADocumentARemovalCouldTake(t *testing.T
 	issue := createDigestIssue(t, rig.handler, rig.database, "MVDOC", "The move's removable documents", moveRemovableSpec, false)
 	key := issue.Key
 	rr9 := readDecisionDocument(t, rig.database, key, "spec").address("rr9")
-	invoke := func(what string, findings ...string) lensInvoked {
-		t.Helper()
-		body := map[string]any{"on": "dispatch://" + key + "/spec#b-rk1", "kind": "trade-off"}
-		if len(findings) > 0 {
-			body["findings"] = findings
-		}
-		return decodeBody[lensInvoked](t, created(t, what, dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues/"+key+"/lenses", body, "alice")))
-	}
 	u := emptyDocument(t, rig.handler, key, "Notes U.md")
 	uNode := graphstore.KindArtifact + "/" + u.RefKey
 	w := uploadDocument(t, rig.handler, "/api/v1/issues/"+key, "Notes W.md", "W holds writing.\n").Artifact
 	wNode := graphstore.KindArtifact + "/" + w.RefKey
-	first := invoke("the first lens, holding a finding", "The first lens finds the disk full.")
-	fourth := invoke("the fourth lens, holding a finding", "The fourth lens finds the store slow.")
+	first := rig.tradeOffOn(t, key, "rk1", "the first lens, holding a finding", "The first lens finds the disk full.")
+	fourth := rig.tradeOffOn(t, key, "rk1", "the fourth lens, holding a finding", "The fourth lens finds the store slow.")
 	if len(first.Findings) != 1 || len(fourth.Findings) != 1 {
 		t.Fatalf("the first and the fourth lens hold %d and %d findings, want one each", len(first.Findings), len(fourth.Findings))
 	}
@@ -343,7 +345,7 @@ func TestTheMoveKeepsEveryNodeButALensOffADocumentARemovalCouldTake(t *testing.T
 	rig.refused(t, "the move of "+rr9+" under L1's finding, two levels under L4", key, rr9, rig.tag(t, rr9), map[string]any{"parent": f1.ID}, "alice",
 		http.StatusConflict, codeParentDocumentRemovable, "rr9", u.RefKey)
 
-	fifth := invoke("the fifth lens")
+	fifth := rig.tradeOffOn(t, key, "rk1", "the fifth lens")
 	l5 := graphstore.KindLens + "/" + fifth.ID
 	rig.move(t, key, rr9, l5, nil)
 	for _, parent := range []string{uNode, l4} {

@@ -42,7 +42,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -526,23 +528,79 @@ func skeletonProse(document string, count int) string {
 	return text.String()
 }
 
-// skeletonInParallel runs job for each index below count, in index order and at most
-// readCostWriters at once - the corpus is about 9,500 comments, which one at a time cost the run
-// many minutes - and fails with the first error a job answered, starting no further job once the
-// group has seen it.
+// skeletonInParallel runs job for each index below count (skeletonJobs) - the corpus is about
+// 9,500 comments, which one at a time cost the run many minutes - and fails with the first error
+// a job answered.
 func skeletonInParallel(t *testing.T, what string, count int, job func(index int) error) {
 	t.Helper()
+	if err := skeletonJobs(count, job); err != nil {
+		t.Fatalf("%s: %v", what, err)
+	}
+}
+
+// skeletonJobs runs job for each index below count, in index order and at most readCostWriters at
+// once, and answers the first error a job answered, starting no further job once one has failed:
+// neither from the loop nor from a Go that waited for the slot the failure freed
+// (TestSkeletonJobsStartNoJobOnceOneFailed).
+func skeletonJobs(count int, job func(index int) error) error {
 	group, failed := errgroup.WithContext(context.Background())
 	group.SetLimit(readCostWriters)
 	for index := range count {
 		if failed.Err() != nil {
 			break
 		}
-		group.Go(func() error { return job(index) })
+		group.Go(func() error {
+			if failed.Err() != nil {
+				return nil
+			}
+			return job(index)
+		})
 	}
-	if err := group.Wait(); err != nil {
-		t.Fatalf("%s: %v", what, err)
-	}
+	return group.Wait()
+}
+
+// TestSkeletonJobsStartNoJobOnceOneFailed holds skeletonJobs to starting no job once a job has
+// failed, the job whose slot the loop already waits for among them. In a synctest bubble the first
+// readCostWriters jobs each hold their slot, so the loop waits in the group's Go for the slot of
+// the next; job 0 then fails, which frees the one slot the loop waits for, and the next job never
+// runs. The other jobs let their slots go only once every goroutine of the bubble is blocked again,
+// after the loop took that slot, so no slot a job that succeeded frees reaches the loop first.
+func TestSkeletonJobsStartNoJobOnceOneFailed(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		failure := errors.New("job 0 fails")
+		fail, release := make(chan struct{}), make(chan struct{})
+		var ran [readCostWriters + 1]atomic.Bool
+		answered := make(chan error, 1)
+		go func() {
+			answered <- skeletonJobs(readCostWriters+1, func(index int) error {
+				ran[index].Store(true)
+				switch {
+				case index == 0:
+					<-fail
+					return failure
+				case index < readCostWriters:
+					<-release
+				}
+				return nil
+			})
+		}()
+		synctest.Wait()
+		close(fail)
+		synctest.Wait()
+		close(release)
+		if err := <-answered; !errors.Is(err, failure) {
+			t.Errorf("skeletonJobs answered %v, want job 0's failure", err)
+		}
+		for index := range readCostWriters {
+			if !ran[index].Load() {
+				t.Errorf("job %d never ran, want every job that took a slot before the failure run", index)
+			}
+		}
+		if ran[readCostWriters].Load() {
+			t.Errorf("job %d ran after job 0 failed, want no job started once one has failed", readCostWriters)
+		}
+	})
 }
 
 // skeletonBaseDecides reports whether the release before, the build of commit, declares the typed

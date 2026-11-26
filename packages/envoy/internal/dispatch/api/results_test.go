@@ -3500,12 +3500,7 @@ func TestResultAgainstACICheckHoldingAResultIsRecorded(t *testing.T) {
 	}
 	writeBrowserDocument(t, handler, documents, verification.Artifact.ID, ciCheckBlock("c1", ciCheckKept)+"\n"+ciCheckBlock("c2", ciCheckKept))
 
-	var liveOpening string
-	for _, line := range strings.Split(documentMarkdown(t, handler, verification.Artifact.ID), "\n") {
-		if strings.HasPrefix(line, ":::check{#c1 ") {
-			liveOpening = line
-		}
-	}
+	liveOpening := lineWith(documentMarkdown(t, handler, verification.Artifact.ID), ":::check{#c1 ")
 	if !strings.Contains(liveOpening, `ci_check="`+ciCheckRun+`"`) {
 		t.Fatalf("the live document opens c1 with %q, want its ci_check %q", liveOpening, ciCheckRun)
 	}

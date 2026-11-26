@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -41,21 +42,11 @@ func newNodeRouteRulesRig(t *testing.T, project string) nodeRouteRulesRig {
 	t.Helper()
 	rig := newMoveRig(t, project)
 	key := createDigestIssue(t, rig.handler, rig.database, project, "The node routes' rules", nodeRouteRulesSpec, false).Key
-	lens := rig.lensOnNk1(t, key, "a trade-off on nk1 holding a finding", "The lens finds the store slow.")
+	lens := rig.tradeOffOn(t, key, "nk1", "a trade-off on nk1 holding a finding", "The lens finds the store slow.")
 	if len(lens.Findings) != 1 {
 		t.Fatalf("the lens on nk1 holds %d findings, want one", len(lens.Findings))
 	}
 	return nodeRouteRulesRig{moveRig: rig, key: key, lens: lens, finding: lens.Findings[0]}
-}
-
-// lensOnNk1 is alice's trade-off lens on nk1 of the issue key, holding findings.
-func (r *moveRig) lensOnNk1(t *testing.T, key, what string, findings ...string) lensInvoked {
-	t.Helper()
-	body := map[string]any{"on": "dispatch://" + key + "/spec#b-nk1", "kind": "trade-off"}
-	if len(findings) > 0 {
-		body["findings"] = findings
-	}
-	return decodeBody[lensInvoked](t, created(t, what, dispatchRequest(t, r.handler, http.MethodPost, "/api/v1/issues/"+key+"/lenses", body, "alice")))
 }
 
 // TestAMoveReadsTheWholeSubtreeWhateverItsKindsSortBy holds the move to R7's rule of a document a
@@ -69,7 +60,7 @@ func TestAMoveReadsTheWholeSubtreeWhateverItsKindsSortBy(t *testing.T) {
 	rig := newMoveRig(t, "MVSORT")
 	key := createDigestIssue(t, rig.handler, rig.database, "MVSORT", "A lens over a paragraph", nodeRouteRulesSpec, false).Key
 	u := emptyDocument(t, rig.handler, key, "Notes U.md")
-	lens := rig.lensOnNk1(t, key, "a trade-off on nk1 holding no finding")
+	lens := rig.tradeOffOn(t, key, "nk1", "a trade-off on nk1 holding no finding")
 	lensNode := graphstore.KindLens + "/" + lens.ID
 	paragraph := blockWithText(t, rig.database, "The paragraph that moves under the lens")
 	rig.quiet(t)
@@ -103,7 +94,7 @@ func TestAMoveUnderAFindingOfItsOwnSubtreeIsACycle(t *testing.T) {
 func TestAMoveUnderAFindingNamesItAsTheReasoningRoutesDo(t *testing.T) {
 	t.Parallel()
 	rig := newNodeRouteRulesRig(t, "MVFIND")
-	second := rig.lensOnNk1(t, rig.key, "a second trade-off on nk1")
+	second := rig.tradeOffOn(t, rig.key, "nk1", "a second trade-off on nk1")
 	secondNode := graphstore.KindLens + "/" + second.ID
 	rig.quiet(t)
 	rig.move(t, rig.key, secondNode, rig.finding.ID, nil)
@@ -118,7 +109,7 @@ func TestAMoveUnderAFindingNamesItAsTheReasoningRoutesDo(t *testing.T) {
 	for _, lens := range decodeBody[nodeLenses](t, response).Lenses {
 		listed = append(listed, lens.Address)
 	}
-	if !strings.Contains(strings.Join(listed, " "), second.Address) {
+	if !slices.Contains(listed, second.Address) {
 		t.Errorf("the lens read of the finding %s lists %v, want %s, which the move put under it", rig.finding.Address, listed, second.Address)
 	}
 }
@@ -135,11 +126,9 @@ func TestAMoveThatKeepsItsParentKeepsTheParentAttribute(t *testing.T) {
 	issue := createDigestIssue(t, rig.handler, rig.database, "MVKEEP", "The parent a move keeps", "The opening paragraph.\n", true)
 	key := issue.Key
 	parent := "dispatch://" + key + "/spec#b-pk1"
-	if written := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
-		"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": ":::criterion{#pk1}\nThe criterion both requirements stand under.\n:::\n\n" +
-			":::requirement{#pr1 parent=\"" + parent + "\"}\nThe first requirement under the criterion.\n:::\n\n" +
-			":::requirement{#pr2 parent=\"" + parent + "\"}\nThe requirement that moves first.\n:::\n"}},
-	}, "alice"); written.Code != http.StatusOK {
+	if written := editDocument(t, rig.handler, issue.PrimaryArtifactID, insertAtEnd(":::criterion{#pk1}\nThe criterion both requirements stand under.\n:::\n\n"+
+		":::requirement{#pr1 parent=\""+parent+"\"}\nThe first requirement under the criterion.\n:::\n\n"+
+		":::requirement{#pr2 parent=\""+parent+"\"}\nThe requirement that moves first.\n:::\n")); written.Code != http.StatusOK {
 		t.Fatalf("alice writes the blocks into the spec of %s: status=%d body=%s", key, written.Code, written.Body.String())
 	}
 	spec := readDecisionDocument(t, rig.database, key, "spec")
@@ -188,9 +177,7 @@ func TestTheMoveChecksItsWriterUnderTheOwnerLocks(t *testing.T) {
 			t.Errorf("the daemon republishes the role holders of %s without the architect: status=%d body=%s", rig.issue, response.Code, response.Body.String())
 		}
 	}
-	response := serveNodeRequest(t, rig.handler, http.MethodPatch, "/api/v1/issues/"+rig.issue+"/nodes/"+url.PathEscape(c1),
-		map[string]any{"parent": r2, "actor": map[string]any{"kind": "session", "id": rig.architect.session}},
-		http.Header{"Authorization": {"Bearer agent-token"}, "If-Match": {tag}})
+	response := patchNodeAs(rig.caller(t, rig.architect), rig.issue, c1, tag, map[string]any{"parent": r2})
 	rig.served.betweenNodeRouteReads = nil
 	if !republished {
 		t.Fatalf("the move of %s never paused for its locks: status=%d body=%s", c1, response.Code, response.Body.String())

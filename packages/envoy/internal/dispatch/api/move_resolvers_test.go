@@ -107,7 +107,7 @@ func closureRefKeys(t *testing.T, handler http.Handler, key string) []string {
 //
 // The issue is born converted, so its spec's blocks are its room's nodes, `<tree ref_key>#<block>`,
 // and each chain to a block ends at the spec's own address of its block: the resolution takes the
-// moves first and then the room (T17 of this branch's plan), so each resolver reaches the room's
+// moves first and then the room (T17 of the issue-tree plan), so each resolver reaches the room's
 // node, and the closure the spec, whose fragment of the room holds it.
 func TestEachResolverFollowsAMove(t *testing.T) {
 	t.Parallel()

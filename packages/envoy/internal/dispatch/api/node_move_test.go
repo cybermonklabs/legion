@@ -330,24 +330,13 @@ func TestThePatchRefusesAParentTheWalkDoesNotReach(t *testing.T) {
 	after := newestQueryVersion(t, database, decisions)
 	previous := before.markdown
 	if after.number > before.number {
-		previous = queryVersionMarkdown(t, database, decisions, after.number-1)
+		previous = storedVersionMarkdown(t, database, decisions, after.number-1)
 	}
 	t.Logf("the decisions query %s stands at version %d after the move, %d before it", decisions, after.number, before.number)
 	if after.markdown != previous {
 		t.Errorf("the version of %s written for the move of %s under %s differs from the version before it from byte %d",
 			decisions, decision, second, renderAtVersionFirstDifference(after.markdown, previous))
 	}
-}
-
-// queryVersionMarkdown is the stored markdown of version number of the document artifactID.
-func queryVersionMarkdown(t *testing.T, database *store.Store, artifactID string, number int) string {
-	t.Helper()
-	var markdown string
-	if err := database.Pool.QueryRow(context.Background(),
-		`select coalesce(markdown, '') from artifact_versions where artifact_id = $1 and number = $2`, artifactID, number).Scan(&markdown); err != nil {
-		t.Fatalf("read version %d of %s: %v", number, artifactID, err)
-	}
-	return markdown
 }
 
 // --- TestAMoveUnderALensOfAParentIssueWaitsForThatIssuesLock ----------------------------------

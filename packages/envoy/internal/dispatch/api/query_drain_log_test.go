@@ -2,16 +2,10 @@ package api
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -34,24 +28,7 @@ func TestADrainRefusedOverAnotherWritesOwedDigestLogsNoError(t *testing.T) {
 	requireNoQueryMark(t, rig.database, "once the issue's create answered", key)
 	standing := newestVersionOf(t, rig.database, rig.spec.id)
 
-	marking, err := rig.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the marking write: %v", err)
-	}
-	defer marking.Rollback(ctx)
-	var marked bool
-	if err := store.RunWrite(ctx, marking, func(b *store.WriteBatch) error {
-		tuples := []graphstore.Tuple{blockValue(rig.block("r1"), "probe", "marked")}
-		graphstore.QueueWrite(b, nil, tuples)
-		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
-		docs.QueueQueryMark(b, key, graphstore.NoEvent, &marked)
-		return nil
-	}); err != nil || !marked {
-		t.Fatalf("write the value on r1 and mark the queries of %s: marked %t, %v", key, marked, err)
-	}
-	if err := marking.Commit(ctx); err != nil {
-		t.Fatalf("commit the marking write: %v", err)
-	}
+	rig.stateMarked(t, key, blockValue(rig.block("r1"), "probe", "marked"))
 
 	holder, err := rig.database.Pool.Begin(ctx)
 	if err != nil {
@@ -67,15 +44,7 @@ func TestADrainRefusedOverAnotherWritesOwedDigestLogsNoError(t *testing.T) {
 	}
 	drained := make(chan []model.Event, 1)
 	go func() { drained <- rig.documents.DrainOwedQueries(ctx, key) }()
-	waiting := testwait.UntilPolling(t, 20*time.Millisecond, "the drain of "+key+" to wait for the room's lock", func() (string, bool) {
-		var statement string
-		err := rig.database.Pool.QueryRow(ctx, `
-			select query from pg_stat_activity where $1::int = any(pg_blocking_pids(pid))`, holderPID).Scan(&statement)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			t.Fatalf("read the backend the hold blocks: %v", err)
-		}
-		return statement, err == nil
-	})
+	waiting := blockedStatement(t, rig.database, holderPID, "the drain of "+key+" to wait for the room's lock")
 	if !strings.Contains(waiting, "pg_advisory_xact_lock") {
 		t.Fatalf("the drain of %s waits at %q, want its lock of the room", key, waiting)
 	}
