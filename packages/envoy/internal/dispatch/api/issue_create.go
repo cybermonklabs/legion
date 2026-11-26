@@ -86,7 +86,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// with the writer too (callerProject), for the project checks, as the PATCH reads it.
 	caller, err := s.requestWriter(r, input.Actor)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	actor := caller.actor
@@ -227,7 +227,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// no new issue and changes no priority, and before the near-copy gate, which writes a
 	// near_copy_checks row at its 409, and before everything else the create writes.
 	if err := refuseP0WithoutScope(caller.credential, priority, nil); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A create names a person or nobody: no assignee key and a JSON null both leave assignee nil,
