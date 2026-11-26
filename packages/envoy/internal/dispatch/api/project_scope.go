@@ -407,7 +407,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 			// private project that the credential does not name gets the same answer, so the
 			// caller cannot tell it from an id nobody holds. The check does not hide which ids
 			// exist, and it does not claim to (the file comment).
-			if belongsTo == "" || !access.CredentialCovers(access.Credential{Listed: []string{covers}}, belongsTo, private) {
+			if belongsTo == "" || !callerCovers(r, covers, belongsTo, private) {
 				s.writeHandlerError(w, outsideProjectScopeError(covers))
 				return
 			}
@@ -417,7 +417,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 					s.writeHandlerError(w, err)
 					return
 				}
-				if checkProject == "" || !access.CredentialCovers(access.Credential{Listed: []string{covers}}, checkProject, checkPrivate) {
+				if checkProject == "" || !callerCovers(r, covers, checkProject, checkPrivate) {
 					s.writeHandlerError(w, outsideProjectScopeError(covers))
 					return
 				}
@@ -442,6 +442,22 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 		// all (scopeNoWrite).
 		return handler
 	}
+}
+
+// callerCovers reports whether the credential of r, which names the one project covers, may write
+// an object of project, whose visibility is private.
+//
+// Every credential but one writes what access.CredentialCovers covers: its own project, and every
+// other project that is not private. A results token is the one that does not (model.Credential.
+// ResultsOnly): the broker mints it for one CI run and holds it to the one project whose results
+// that run writes (ciphertoken shapeOf, the results project scope), so it writes that project
+// alone, whatever a project's visibility is. The results routes' own checks of the run's
+// repository refuse most of the rest, and this is the rule that does not rest on them.
+func callerCovers(r *http.Request, covers, project string, private bool) bool {
+	if credential := resolvedCredential(r.Context()); credential != nil && credential.ResultsOnly {
+		return project == covers
+	}
+	return access.CredentialCovers(access.Credential{Listed: []string{covers}}, project, private)
 }
 
 // outsideProjectScopeError is the refusal of a write whose target resolves to no project or to
