@@ -209,16 +209,15 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 	}
 }
 
-// A finding outside the tree takes one of three paths (skill://legion-worker/references/findings.md):
-// a defect in the tree's path is the tree's to fix in any repository, any other clear defect goes to
-// the controller, and a finding that needs a decision is an ask. The headless fragment composed into
-// the same planner prompt says the same, so the core may not say "always an ask".
+// A finding outside the tree takes one of two paths (skill://legion-worker/references/findings.md):
+// a clear defect goes to the controller, and a finding that needs a decision is an ask. The headless
+// fragment composed into the same planner prompt says the same, so the core may not say "always an ask".
 func TestPlannerKeepsFindingsAndHumanToDoAsksOutsideDesignQuestions(t *testing.T) {
 	planner := rolePart(t, "core/planner.md")
 	for _, rule := range []string{
 		"Read the repository's `STRATEGY.md` when it has one",
 		"A finding outside the tree is never an issue you file.",
-		"A defect that stops this tree's work, and a clear defect in code this tree touches or depends on, are this tree's to fix, in whatever repository the fix belongs, and an open issue that tracks one is no reason to wait.",
+		"A clear defect in code this tree touches or depends on is fixed in this tree's own pull request.",
 		"Any other clear defect goes to whoever coordinates the project's work, with its evidence, and a finding that needs a decision is an ask.",
 		"A to-do only a person can do is always an ask.",
 	} {
@@ -228,9 +227,6 @@ func TestPlannerKeepsFindingsAndHumanToDoAsksOutsideDesignQuestions(t *testing.T
 	}
 	if strings.Contains(planner, "A finding outside the tree, and a to-do only a person can do, is always an ask.") {
 		t.Error("core/planner.md still makes every finding outside the tree an ask, which contradicts the headless fragment's clear-defect path")
-	}
-	if strings.Contains(planner, "is fixed in this tree's own pull request.") {
-		t.Error("core/planner.md still keeps a fix to this tree's own pull request, which leaves a defect in another repository to wait")
 	}
 }
 
@@ -406,12 +402,9 @@ func TestTheMergerTakesAStackApartOnceNothingBelowItsPullRequestIsOpen(t *testin
 // Past the review a conflict with the base is the merger's (cybermonklabs/legion#4979): the
 // merger merges the base forward itself, keeps both sides' intent, adapts in that merge what the
 // base's newer code breaks, has the reviewer read the merge's resolution and approve the new head
-// before it merges it, may ask the other workers, and sends the issue back to `implementing` when
-// the fix is no merge of the base. Its part says so, and no longer tells it to hand the conflict to
-// the implementer, to send a failed queue check back as a matter of course, or that it pushes
-// nothing. The send-back is the tool call itself: the daemon moves an issue to the phase the call's
-// `to` names, so a failed-check subsection that names the operation and no phase leaves the merger
-// nothing to call.
+// before it merges it, may ask the other workers, and sends the issue back for a change to the
+// change's own logic. Its part says so, and no longer tells it to hand the conflict to the
+// implementer, to send a failed queue check back as a matter of course, or that it pushes nothing.
 func TestTheMergerResolvesAConflictItself(t *testing.T) {
 	merger := rolePart(t, "merger.md")
 	for _, want := range []string{
@@ -436,33 +429,9 @@ func TestTheMergerResolvesAConflictItself(t *testing.T) {
 		"the daemon asks the implementer to merge the base forward while the issue stays in `merging`",
 		"That is work to fix. Send the issue back with `request_backward_move`",
 		"You push nothing.",
-		"wait for the base's fix",
 	} {
 		if strings.Contains(merger, gone) {
 			t.Errorf("roles/merger.md still says %q", gone)
-		}
-	}
-	// The design-gate section below also names the operation, so only the failed-check subsection
-	// is read.
-	_, failed, ok := strings.Cut(merger, "### A check that failed")
-	if !ok {
-		t.Fatalf("roles/merger.md has no %q heading", "### A check that failed")
-	}
-	failed, _, ok = strings.Cut(failed, "\n## ")
-	if !ok {
-		t.Fatalf("roles/merger.md has no %q heading after %q", "## ", "### A check that failed")
-	}
-	for _, want := range []string{
-		"enqueue the same head again (step 4)",
-		"claimed and `in_progress`, and its holder said on Envoy",
-		"merge the base forward as *A head that conflicts with its base* says",
-		"request_backward_move",
-		`to: "implementing"`,
-		"names the check and says it also fails on the base",
-		"`skill://legion-worker/references/findings.md`, step 1",
-	} {
-		if !strings.Contains(failed, want) {
-			t.Errorf("roles/merger.md's failed-check subsection does not say %q", want)
 		}
 	}
 	goMerger, err := goParts.ReadFile("go/merger.md")

@@ -1,5 +1,0 @@
-kind: Changed
-body: "Update the planner prompt to ask only between real choices and ask for a person's single act as Done/Can't with no recommendation."
-time: 2026-11-25T20:47:44Z
-custom:
-    Issue: ask-rules

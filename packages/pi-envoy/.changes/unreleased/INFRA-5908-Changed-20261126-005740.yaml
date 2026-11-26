@@ -1,14 +1,5 @@
 kind: Changed
-body: |-
-  `dispatch-first` says an open issue is no reason to wait: fix what stops you, in any repository
-  your credentials reach, and say on the issue what you did. Wait only on a claimed, `in_progress`
-  issue whose holder said on Envoy that it works on it now: tell them what you need by when, and
-  fix it yourself after that time. If your fix touches files of another tree's open pull request,
-  tell its architect in a comment and go on. The `dispatch` skill says to begin no Dispatch
-  comment, ask, reply or message with who you are or which role you hold, since Dispatch shows the
-  sender. The three Dispatch skills stay under their word bound: they drop the sentence on
-  `dispatch login`'s exits and words that another sentence or skill already says, and
-  `dispatch-writing-specs`' "Old specs" rule is now the fourth step of "Each version".
+body: "The Dispatch skills and the AskGate rules ask only between real choices and ask for an act only a person can do as that act; `dispatch-first` says an open issue for a blocker is no reason to wait, and `dispatch` says a session begins no Dispatch message with who it is. The word-count test of the three Dispatch skills is gone."
 time: 2026-11-26T00:57:40Z
 custom:
     Issue: INFRA-5908

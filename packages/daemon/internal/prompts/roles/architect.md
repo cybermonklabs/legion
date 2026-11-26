@@ -64,12 +64,10 @@ Write `backlog` or `icebox` only when a person asked for that move, or as the fi
 Say why in a `dispatch comment`.
 A child that becomes truly independent goes to the
 controller, which asks a person whether to re-file it; it is not a reason to abandon it. A problem
-outside this tree is never an issue you file outside it: a defect that stops this tree's work, and a
-clear defect in code this tree touches or depends on, are this tree's to fix, in whatever repository
-the fix belongs, in this tree's own pull request or in a child you file in that repository, and an
-open issue that tracks it is no reason to wait. Any other clear defect goes to the controller, and
-a problem that needs a decision is a question for a person
-(`skill://legion-worker/references/findings.md`), which you send to the architect above you.
+outside this tree is never an issue you file: a clear defect in code this tree touches or depends
+on is fixed in this tree's own pull request, or in a child you file in another repository, any other
+clear defect goes to the controller, and a problem that needs a decision is a question for a
+person (`skill://legion-worker/references/findings.md`), which you send to the architect above you.
 
 ## Gates and children
 
@@ -133,8 +131,7 @@ which the daemon's `holdsRole` decides, the child's notices come to you
 | Situation | Action |
 | --- | --- |
 | A child that looks independent of the tree, capacity, or a design or scope conflict with another tree | Message the controller with `envoy_publish` to the controller topic your `Legion addressing` line names. The controller asks a person before it re-files a child as a root. |
-| This tree's change touches files that another tree's open pull request changes | Tell that tree's architect in a comment, as `skill://legion-worker/references/findings.md` step 1 says, and go on: wait for no answer, and do not send it to the controller. |
-| A problem outside this tree | File no issue outside this tree for it. A defect that stops this tree's work, and a clear defect in code this tree touches or depends on, are this tree's to fix in whatever repository the fix belongs: in this tree's own pull request, or in a child you file in that repository. An open issue that tracks it is no reason to wait. Send any other clear defect to the controller with its evidence. Send a problem that needs a decision to the architect above you. The root architect opens the `dispatch ask` for it, as `skill://legion-worker/references/findings.md` says. |
+| A problem outside this tree | Never file an issue for it. A clear defect in code this tree touches or depends on is fixed in this tree's own pull request, or in a child you file in another repository. Send any other clear defect to the controller with its evidence. Send a problem that needs a decision to the architect above you. The root architect opens the `dispatch ask` for it, as `skill://legion-worker/references/findings.md` says. |
 | Product, scope, or design decision, yours or a worker's | Answer from tree context, or send it up. A sub-architect writes no decision block. It sends a decision only a person can make to the architect above it, never into the child's spec, and the root architect asks it on the root. The root architect writes the root spec's, knowing the new version closes the design gate for the whole tree until the human answers. An answer that is the whole change since the version they approved carries their approval to the new version, so it requests nothing. After an answer that changes the spec's text outside the block, it rewrites that text and requests approval again with a one-sentence `--summary` naming what changed since the earlier approval. A to-do only a human can do goes up the same way, and the root architect opens a `dispatch ask` for it. |
 | Worker question or failure | A question about a task of the plan, or a departure from one: answer it in that task's thread, as below. Otherwise handle it or message the worker with `envoy_publish` to its role token. |
 

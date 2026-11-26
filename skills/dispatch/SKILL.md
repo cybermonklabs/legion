@@ -1,6 +1,6 @@
 ---
 name: dispatch
-description: "Use when you first use `dispatch` in a session."
+description: "Use when you first use `dispatch` in a session: a message, comment, ask, artifact, document edit, claim or status change."
 ---
 
 # Dispatch

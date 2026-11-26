@@ -40,4 +40,4 @@ EOF
 
 ## Tell the controller about the ask
 
-Once the ask is open, `envoy_publish` its reference `dispatch://<ASK KEY>/ask/<id>` to the controller topic with `expects_reply: false`; the controller files what the answer asks for, and you file nothing.
+The answer reaches only the ask's followers. Once the ask is open, `envoy_publish` `dispatch://<ASK KEY>/ask/<id>` to the controller topic with `expects_reply: false`; the controller files what the answer asks for, and you file nothing. When the listener only kept that publish, do nothing more: the controller's catch-up finds it. An ask on your own issue holds its acceptance. A production check look names the message or the ask in its result and summary.

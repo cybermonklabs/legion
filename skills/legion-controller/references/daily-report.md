@@ -1,6 +1,6 @@
 # Daily report
 
-Read this on your first turn of each UTC day, and to find the report issue.
+Read this on your first turn of each UTC day.
 
 ## Find the report issue
 
@@ -13,7 +13,7 @@ with nobody known, leave out `--assignee`.
 dispatch issue --project <PROJECT> --title 'Legion daily report' --assignee '<email>' --spec-file - <<'EOF'
 ## Summary
 
-Legion's controller posts one message here each day: what Legion finished, what it closed without a change and why, and what is running. Legion's agents also post here the evidence of each clear defect they found outside their own work, which the controller puts on the issue that tracks it, hands to a running tree whose pull request can carry it, or files for Legion. This issue is not work, so it carries no `legion` label and stays in icebox.
+Legion's controller posts one message here each day: what Legion finished, what it closed without a change and why, and what is running. Legion's agents also post here the evidence of each clear defect they found outside their own work. This issue is not work, so it carries no `legion` label and stays in icebox.
 EOF
 legion({ op: "set_status", issue: "<report KEY>", status: "icebox" })
 ```
@@ -21,8 +21,7 @@ legion({ op: "set_status", issue: "<report KEY>", status: "icebox" })
 ## When
 
 After the turn's own work, read the report issue.
-When it reads `Status: done`, set it back to `icebox` with the `set_status` above, and say so in the day's report:
-a closed issue refuses the upload of the consolidation record (`skill://legion-controller/references/consolidation.md`), though comments and messages on it still post.
+When it reads `Status: done`, set it back to `icebox` with the `set_status` above, and say so in the day's report.
 Post when its `Events:` show no `message.created` from today.
 
 ## What

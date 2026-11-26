@@ -65,11 +65,8 @@ Legion's coordinator works only the issues handed to it, which are the ones carr
 label `legion`. That lets Legion share a project with people and other agents. A person sets the
 label from the issue header, or asks Legion's own **controller** agent to set it for them; the
 controller never hands over work on its own. An agent that finds a problem outside its own issue
-files no issue for it outside its tree: a defect that stops its work, or a clear defect in code its
-own tree touches or depends on, is its tree's to fix, in whatever repository the fix belongs, and an
-open issue that tracks it is no reason to wait. Any other clear defect goes to the controller, which
-puts it on the issue that tracks it, hands it to a running tree whose pull request can carry it, or
-files it for Legion, and a problem that needs a decision goes to a person in a Dispatch ask.
+files no issue: a defect with a clear fix in code its own tree touches or depends on is fixed in that tree's
+pull request, any other goes to the controller, and a problem that needs a decision goes to a person in a Dispatch ask.
 
 Each admitted issue gets an **architect**, which owns the issue's tree. It writes the spec, splits
 large work into child issues, and runs each change through the phase workers its plan names, in the
