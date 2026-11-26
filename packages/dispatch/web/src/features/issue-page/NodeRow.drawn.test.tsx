@@ -42,8 +42,8 @@ import {
   KEY,
   shaped,
 } from "./decisions-filter/decisions-fixtures";
+import { FIRST_LINE_LIMIT } from "./first-line";
 import {
-  FIRST_LINE_LIMIT,
   type IssueTreeReads,
   type NodeChip,
   type ParentLine,

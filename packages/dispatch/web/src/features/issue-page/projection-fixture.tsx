@@ -13,8 +13,8 @@ import {
   usePublishReferenceNames,
 } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
+import { chipName } from "./first-line";
 import {
-  chipName,
   chipNaming,
   type IssueTreeReads,
   type NodeChip,

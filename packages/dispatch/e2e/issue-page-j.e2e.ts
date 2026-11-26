@@ -1,8 +1,8 @@
 /** the Spec view reads the server's stored decisions, ties and results */
 import type { Locator } from "@playwright/test";
 
+import { firstLineOf } from "../web/src/features/issue-page/first-line";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
-import { firstLineOf } from "../web/src/features/issue-page/issue-tree";
 import {
   CONTROL_LABELS,
   DECLARED_WORDS,

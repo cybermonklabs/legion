@@ -22,7 +22,7 @@ export interface SentenceRow {
 
 /**
  * Where the page ends a first sentence, as one table: each row one text and the first sentence
- * every reader of `issue-tree.ts`'s `firstSentenceLength` must find in it. A text the rule reads
+ * every reader of `first-line.ts`'s `firstSentenceLength` must find in it. A text the rule reads
  * wrong, or a text that uses an abbreviation the rule does not list, becomes a new row here, not
  * a new rule. Each reader runs every row: the function itself (`firstSentenceOf`, `firstLineOf`)
  * where the row gives its answer, a person's quote, a comment's Contents entry, and the issue's

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { shortForm } from "../refs/routes";
-import { drawnLine, firstLineOf } from "./issue-tree";
+import { drawnLine, firstLineOf } from "./first-line";
 import { oneLineCut, referenceStandIns } from "./one-line";
 
 /** A face that draws every character 7 px wide, so each budget below is a sum a reader can

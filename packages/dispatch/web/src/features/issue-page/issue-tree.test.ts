@@ -32,13 +32,10 @@ import { usePlainHeadline } from "../refs/plain-text";
 import { ReferenceNamesProvider } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
+import { chipName, drawnLine, FIRST_LINE_LIMIT, firstLineOf } from "./first-line";
 import { agentsOnlyItem } from "./issue-address";
 import {
   buildIssueTree,
-  chipName,
-  drawnLine,
-  FIRST_LINE_LIMIT,
-  firstLineOf,
   lineWordsRaw,
   type NodeChip,
   nodeWords,

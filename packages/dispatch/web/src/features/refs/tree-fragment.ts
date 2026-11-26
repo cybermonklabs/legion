@@ -56,14 +56,38 @@ export function wordsOf(node: DisplayTree): string {
   return words;
 }
 
-/** `reading` holding the first of its top-level blocks that holds any words (`wordsOf`) and
- *  nothing else; undefined for a reading none of whose blocks holds a word. The words only choose
- *  the block: what it says is the projection's to read. A node's one line and the name of a
- *  block are read from it (`issue-page/issue-tree.ts`'s `lineReading`, `tree-drafts.ts`'s
- *  `treeContext`). */
+/** The blocks `firstWordedBlock` walks into rather than reads whole. */
+const CONTAINER_BLOCKS = {
+  blockquote: true,
+  bullet_list: true,
+  list_item: true,
+  ordered_list: true,
+};
+
+/**
+ * `reading` holding the first of its blocks that holds any words (`wordsOf`) and nothing else;
+ * undefined for a reading none of whose blocks holds a word. A bulleted or numbered list, a list
+ * item and a block quote are each walked into by this same rule. Later items and paragraphs
+ * drop out, but the containers stay around the block they hold. An ordered list keeps the
+ * number of the retained item by adding its original index to the list's starting number.
+ * The words only choose the block: the projection reads it for a node's line (`lineReading`)
+ * or a chip's name (`chipLineReading`).
+ */
 export function firstWordedBlock(reading: DisplayTree): DisplayTree | undefined {
-  const block = childrenOf(reading)?.find((child) => wordsOf(child).trim() !== "");
-  return block === undefined ? undefined : { ...reading, content: [block] };
+  const children = childrenOf(reading);
+  if (children === undefined) return undefined;
+  const at = children.findIndex((child) => wordsOf(child).trim() !== "");
+  const block = children[at];
+  if (block === undefined) return undefined;
+  const kept = Object.hasOwn(CONTAINER_BLOCKS, block.type)
+    ? (firstWordedBlock(block) ?? block)
+    : block;
+  if (reading.type === "ordered_list" && at > 0) {
+    const attrs = reading.attrs as { readonly order?: unknown } | undefined;
+    const order = typeof attrs?.order === "number" ? attrs.order : 1;
+    return { ...reading, attrs: { ...attrs, order: order + at }, content: [kept] };
+  }
+  return { ...reading, content: [kept] };
 }
 
 /** What a cut of one node left: the node to keep, absent where nothing of it fits, and how many

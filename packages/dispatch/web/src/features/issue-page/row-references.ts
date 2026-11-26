@@ -2,7 +2,7 @@ import { isPartyRoute } from "../refs/party-references";
 import { editedName } from "../refs/post-marks";
 import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "../refs/routes";
 import { readTextReferences, type TextReading } from "../refs/text-references";
-import { chipName } from "./issue-tree";
+import { chipName } from "./first-line";
 import { documentWord } from "./node-row-chip";
 
 /**

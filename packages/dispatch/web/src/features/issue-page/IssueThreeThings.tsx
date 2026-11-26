@@ -10,15 +10,9 @@ import {
   pageStateText,
 } from "../../theme/classes";
 import { wordsOf } from "../refs/tree-fragment";
+import { drawnLine, firstLineOf, firstSentenceLength, LEADING_LABEL } from "./first-line";
 import { presetPath } from "./issue-address";
-import {
-  drawnLine,
-  firstLineOf,
-  firstSentenceLength,
-  isCheck,
-  LEADING_LABEL,
-  type TreeNode,
-} from "./issue-tree";
+import { isCheck, type TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
 import { referenceStandIns } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";

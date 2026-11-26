@@ -22,16 +22,10 @@ import {
 } from "../../theme/classes";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { isContentsEntry } from "./contents-entries";
+import { drawnLine, firstLineOf } from "./first-line";
 import { useFocusedNode } from "./focused-node";
 import { MenuMark } from "./IssuePresets";
-import {
-  drawnLine,
-  firstLineOf,
-  isCheck,
-  isStatement,
-  lineWordsRaw,
-  type TreeNode,
-} from "./issue-tree";
+import { isCheck, isStatement, lineWordsRaw, type TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
 import { oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
