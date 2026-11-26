@@ -60,6 +60,10 @@ export const SUBJECT_TOKEN_TYPE_KUBERNETES =
 /** The `subject_token_type` a machine presents its own Google identity token under. */
 export const SUBJECT_TOKEN_TYPE_GOOGLE = "urn:envoy:params:oauth:token-type:google-identity";
 
+/** The `subject_token_type` a GitHub Actions run presents the OIDC token GitHub minted for it
+ *  under (`oauthwire.SubjectTokenTypeGitHub`), which the broker answers from the workflow's entry. */
+export const SUBJECT_TOKEN_TYPE_GITHUB = "urn:envoy:params:oauth:token-type:github-workflow-run";
+
 /** The `subject_token_type` a person presents their own Google identity token under, which only a
  *  sign-in carries. */
 export const SUBJECT_TOKEN_TYPE_PERSON = "urn:envoy:params:oauth:token-type:person-google-identity";

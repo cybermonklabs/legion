@@ -552,7 +552,7 @@ func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, move
 		if _, err := raw.Put(movedTo, lapsed); err != nil {
 			t.Fatalf("write %s's lapsed entry: %v", movedTo, err)
 		}
-		if !testwait.Holds(5*time.Second, testwait.Poll, func() bool { entry, _ := rig.deps.sessions.Lookup(movedTo); return entry.Title == movedTo }) {
+		if !testwait.Holds(listenerWaitBound(t), testwait.Poll, func() bool { entry, _ := rig.deps.sessions.Lookup(movedTo); return entry.Title == movedTo }) {
 			t.Fatalf("%s's entry never reached this listener's copy", movedTo)
 		}
 		// The send judges the holder it resolves on the record its resolution reads

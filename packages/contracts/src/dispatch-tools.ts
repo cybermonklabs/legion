@@ -1074,19 +1074,39 @@ const projectKeyValidation: NonNullable<DispatchToolSpec["validation"]> = {
  *  such an account, and a refusal here would leave it saved and never synced. */
 const ARCHITECTURE_SOURCE_REPO_PATTERN = /^[A-Za-z0-9_-]+\/(?!\.\.?$)[A-Za-z0-9._-]+$/;
 
-/** A route `dispatch api` reads: the API's root, which lists every route, or a route under it,
+/** A route `dispatch api` sends: the API's root, which lists every route, or a route under it,
  *  with a query or none. */
 const API_ROUTE_PATTERN = /^\/api\/v1(?=[/?]|$)/;
 
+/** The characters a URL parser percent-encodes in a path and no rule above refuses: Bun's `URL`
+ *  writes each as its `%XX`, so a route holding one would be sent as another spelling of it. */
+const API_ROUTE_REWRITTEN = /["<>^`{}]/;
+
+/** The methods `dispatch api` sends in place of its GET: each method of Dispatch's writes. A call
+ *  that names none is a GET, so GET is none of them. */
+export const DISPATCH_API_METHODS = ["POST", "PUT", "PATCH", "DELETE"] as const;
+
+/** A method `dispatch api` sends in place of its GET. */
+export type DispatchApiMethod = (typeof DISPATCH_API_METHODS)[number];
+
 const API_PATH_RULE =
-  "path is a route under /api/v1: it begins /api/v1 and names no scheme or host, every character is printable ASCII other than a space, a backslash and #, and no segment before the query is . or ..";
+  'path is a route under /api/v1: it begins /api/v1 and names no scheme or host, every character is printable ASCII other than a space, a backslash and #, no character before the query is ", <, >, ^, `, { or }, and no segment before the query is . or ..';
+
+const API_BODY_RULE =
+  "body goes only with method: a call that names no method is a GET, which sends no body.";
+
+/** The whole rule of a `dispatch_api` call: its path's, then its body's. */
+const API_CALL_RULE = `${API_PATH_RULE}; ${API_BODY_RULE}`;
 
 /**
- * Why `path` is no route `dispatch api` may read, naming the path, or undefined for one it may.
- * Beginning `/api/v1` keeps the read on the client's own server and under the API. The rest keeps
- * it there once a URL parser has read it: the parser drops a tab or a newline, reads `\` as `/`
- * and resolves a `.` or `..` segment, spelled plainly or percent-encoded (`%2e`), and each of
- * those could move the read outside `/api/v1`.
+ * Why `path` is no route `dispatch api` may send, naming the path, or undefined for one it may.
+ * Beginning `/api/v1` keeps the request on the client's own server and under the API. The rest
+ * keeps it there once a URL parser has read it: the parser drops a tab or a newline, reads `\` as
+ * `/` and resolves a `.` or `..` segment, spelled plainly or percent-encoded (`%2e`), and each of
+ * those could move the request outside `/api/v1`; it also percent-encodes `"`, `<`, `>`, `^`,
+ * `` ` ``, `{` and `}` in a path, so a route holding one is refused rather than sent spelled as
+ * the caller did not write it. The rule leaves the query alone, and the URL parser writes it
+ * (percent-encoding `"`, `'`, `<` and `>`).
  */
 function apiPathProblem(value: unknown): string | undefined {
   const { path } = value as { readonly path?: unknown };
@@ -1099,10 +1119,22 @@ function apiPathProblem(value: unknown): string | undefined {
     return `path ${named} holds a space, a backslash, a # or a character outside printable ASCII: percent-encode it.`;
   }
   const route = path.split("?", 1)[0] ?? "";
+  if (API_ROUTE_REWRITTEN.test(route)) {
+    return `path ${named} holds before its query a character a URL parser rewrites in a path (", <, >, ^, \`, { or }): percent-encode it.`;
+  }
   if (route.split("/").some((segment) => /^(?:\.|%2e){1,2}$/i.test(segment))) {
     return `path ${named} holds a . or .. segment: name the route itself.`;
   }
   return undefined;
+}
+
+/** Why a `dispatch_api` call is none `dispatch api` sends, or undefined for one it sends: its
+ *  path's problem (`apiPathProblem`), else a body with no method. */
+function apiCallProblem(value: unknown): string | undefined {
+  const pathProblem = apiPathProblem(value);
+  if (pathProblem !== undefined) return pathProblem;
+  const { method, body } = value as { readonly method?: unknown; readonly body?: unknown };
+  return body !== undefined && method === undefined ? API_BODY_RULE : undefined;
 }
 
 /** Issue lifecycle statuses the Dispatch server accepts (`model.IssueStatuses`), in lifecycle order. */
@@ -2915,7 +2947,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_whoami",
     example: {},
     description:
-      "Who Dispatch takes this session for: {session, owner, service, project}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee, when the parent is in the issue's own project, and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or, for a broker token naming no person, the fleet its machine belongs to or the Kubernetes account an exchange entry lists, or null. A machine's broker token that names a service may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with; an exchange entry's broker token that names its account writes, recorded under that account. project is the one project key your credential may write, or null when it names none.",
+      "Who Dispatch takes this session for: {session, owner, service, project, project_scope}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee, when the parent is in the issue's own project, and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or the service a broker token naming no person names: a job's identity as its job entry lists it, the Kubernetes account an exchange entry lists, or the fleet of a machine nobody has signed in on; else null. project_scope is a broker token's project scope, and null for every other credential. A job's broker token has the project scope named or public, holds no OAuth scope and writes as its service: a route that needs an OAuth scope refuses it with 403 OAUTH_SCOPE_REQUIRED before Dispatch's project check runs. named may write its one project, and that check judges its write to another project as it judges a person's named token's for the same project: 403 PROJECT_SCOPE until dispatch://INFRA-4799 changes that answer for both. public names no one project, so it may write wherever a token that names no project may. An exchange entry's broker token that names its account has the project scope named and no project, and writes as that account wherever a token that names no project may. A machine's broker token that names a service has the project scope person; it may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with. project is the one project key your credential may write, or null when it names none.",
     arguments: () => ({}),
     strict: true,
   },
@@ -2931,18 +2963,30 @@ export const dispatchToolSpecs = [
     name: "dispatch_api",
     example: { path: "/api/v1/issues/DSP-1/events?limit=200" },
     description:
-      "Read one route of Dispatch's HTTP API that no other command reads, with this session's own credential, and print Dispatch's JSON answer, for jq to read. It sends one GET of path: a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. It only reads: it takes no method and no body, and every write goes through the command named for it (dispatch --help lists them). When Dispatch refuses the read, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint, and exits 1. Under Claude Code, an answer longer than the output limit is written to a file the output names.",
+      "Send one request of a route of Dispatch's HTTP API under /api/v1, with this session's own credential, and print the answer's body: Dispatch's JSON, indented, for jq to read; any other body of a 2xx, such as a file version's bytes or a document version's Markdown, as it came. It sends a GET of path unless method names another: path is a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. With method it sends POST, PUT, PATCH or DELETE instead, and body, when given, as the request's JSON body (Content-Type: application/json), read from a file with --body-file <file> or from stdin with --body-file -; a body goes only with a method. A write that a named dispatch command makes goes through that command (dispatch --help lists them): dispatch api is for a route no command sends. In a session whose AskGate reviews Dispatch writes it sends GET alone, and refuses each method, naming the dispatch command that makes that write, and exits 1. It sends the request once, and once more only after Dispatch answers that the token it presented is not live (Dispatch then authenticated nothing, so nothing ran), with no redirect followed and no Idempotency-Key. On a 2xx answer it exits 0 and prints Dispatch's JSON as above, and any other body unchanged, with nothing added: an answer with Content-Disposition: attachment (a file version, a ?download=true read) is stored content, printed byte for byte whatever its type, JSON included. A 2xx whose body holds a credential the command presented (its token or its request's DPoP proof) is not printed: it exits 1 with CREDENTIAL_ECHOED, naming the status and saying a write may have been made. Any other answer exits 1 with its code: when Dispatch refuses the request, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint; an answer that is neither a 2xx nor Dispatch's JSON, such as a proxy's page, is named by its status. A usage error, such as a path outside /api/v1 or a body with no method, exits 2. Where no host runs the command, as in a GitHub Actions job, it reads Dispatch from the environment alone, and a broker trade names the session of DISPATCH_SESSION_ID, else of AGENT_SECRETS_SESSION. Under Claude Code, a JSON answer longer than the output limit is written to a file the output names; a body printed as it came is written whole.",
     arguments: (z) => ({
       path: z
         .string({ min: 1 })
         .describe(
-          "The route to read, beginning /api/v1, with its query after ?, such as /api/v1/issues/ACME-12/events?limit=200. No scheme or host, and no . or .. segment."
+          'The route, beginning /api/v1, with its query after ?, such as /api/v1/issues/ACME-12/events?limit=200. No scheme or host, no . or .. segment, and no ", <, >, ^, `, { or } before the query: percent-encode them.'
         ),
+      method: z
+        .enum(DISPATCH_API_METHODS)
+        .describe(
+          "The method sent in place of GET: POST, PUT, PATCH or DELETE. Omit it to send a GET."
+        )
+        .optional(),
+      body: z
+        .string()
+        .describe(
+          "The request's JSON body, sent as written with Content-Type: application/json; only with method. Write it to a file and pass it with --body-file, or --body-file - for stdin."
+        )
+        .optional(),
     }),
     validation: {
-      check: (value) => apiPathProblem(value) === undefined,
-      message: API_PATH_RULE,
-      refusal: (value) => apiPathProblem(value) ?? API_PATH_RULE,
+      check: (value) => apiCallProblem(value) === undefined,
+      message: API_CALL_RULE,
+      refusal: (value) => apiCallProblem(value) ?? API_CALL_RULE,
     },
     strict: true,
   },

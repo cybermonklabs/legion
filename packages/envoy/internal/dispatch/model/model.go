@@ -89,8 +89,9 @@ func (a *ActorAct) Holds(scope string) bool {
 }
 
 // Credential is the request's credential as optionalActor resolved it: the scopes it holds, the
-// agent it names, and whether it may only read. A pointer, so Actor stays comparable with ==,
-// which this package's callers and its tests rely on.
+// agent it names, what a broker-issued token's project scope lets it write, and whether it may
+// only read. A pointer, so Actor stays comparable with ==, which this package's callers and its
+// tests rely on.
 type Credential struct {
 	// Scopes are the OAuth scopes the credential holds: ScopePerson, ScopeApprove, or neither.
 	// A named broker token (one the secrets broker scoped to a project) holds ScopeLegionStatus
@@ -103,13 +104,6 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
-	// Projects are the projects the credential may use, sorted. Nothing in this tree sets it, so
-	// it is empty for every credential here: a later slice sets it from a personal token's
-	// agent_tokens.projects and from a broker token's list. Empty is a credential that names none.
-	// What a list decides is access.CredentialCovers': for a full member's credential, and one
-	// that names no person, only which private projects it reaches; for a restricted member's,
-	// every project it reaches.
-	Projects []string
 	// ReadOnly is a credential that may only read. Two credentials set it: a broker-issued token
 	// its verifier decided is read-only (ciphertoken.Caller.ReadOnly), which the secrets broker
 	// minted from a read entry or narrowed to reading because its trade asked for read; and a
@@ -133,15 +127,25 @@ type Credential struct {
 	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
 	// the zero time for a credential that names no cut. Only a read-only credential carries one.
 	Cut time.Time
-	// ProjectScope is a broker-issued token's project scope as the broker answered it, read as
-	// its base word (ciphertoken.Caller.ProjectScope): `named` for a token an operator's entry
-	// mapped, `person` for one acting as its person or for a machine nobody signed in on, `none`
-	// for the read entry's token; a token narrowed to reading carries the word it narrows, with
-	// ReadOnly beside it. It is what tells a token that names a service and no person apart: a
-	// `named` one is an account entry's that names no person, whose writes are recorded under its
-	// account (writeNeedsASignedInPerson), and a `person` one is a machine's that nobody signed in
-	// on, which writes nothing. Empty for every other credential.
+	// ProjectScope is a broker-issued token's `project_scope` as the broker answered it, read as
+	// its base word (ciphertoken.Caller.ProjectScope): `named`, a token an operator's entry
+	// mapped to its one project, or to none for an account entry that names a person and no
+	// project or neither; `person`, a token held to no one project, a person's own or a
+	// machine's nobody signed in on; `none`, the read entry's token's; or `public`, a job's token
+	// that names no one project, which writes wherever a token naming no project may, since no
+	// write check reads its list (Projects) at this release. A token narrowed to reading carries
+	// the word it narrows, with ReadOnly beside it. Empty for every other credential. A
+	// broker-issued token that names a service and no person writes only under `named` or
+	// `public` — a job's two shapes, and under `named` an account entry's naming no person, whose
+	// writes are recorded under its account — and is refused every write under any other
+	// (writeNeedsASignedInPerson).
 	ProjectScope string
+	// Projects is the credential's list, sorted: a broker token's ciphertoken.Caller.Projects, and
+	// nil for every other credential until a later slice sets a personal token's
+	// agent_tokens.projects. Empty is a credential that names none. What a list decides is
+	// access.CredentialCovers': for a full member's credential, and one that names no person, only
+	// which private projects it reaches; for a restricted member's, every project it reaches.
+	Projects []string
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
