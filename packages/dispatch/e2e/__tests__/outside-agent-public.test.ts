@@ -10,6 +10,7 @@
  *  in the same row, not PASS where the stand-in crosses the rule the judgment reads. */
 
 import { describe, expect, test } from "bun:test";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -48,6 +49,12 @@ interface PublicScenario {
   /** The rows the workflow's browser (OUTSIDE_T5_COMMAND) writes, in order, each
    *  `[row, got, verdict]`; with none, OUTSIDE_T5_COMMAND is unset. */
   readonly browserRows?: readonly (readonly [string, string, string])[];
+  /** A directory first on the leg's PATH holding a version manager: a `bun` shim that runs no
+   *  program, as mise's shim runs none under a HOME of its own, and a `mise` whose `which` names
+   *  each stand-in. The leg's children must run the program `mise which` names. */
+  readonly shimFirst?: boolean;
+  /** The leg's PATH holds no `ln`, so it can link none of the programs it found. */
+  readonly withoutLn?: boolean;
 }
 
 /** The stand-in probe: answers each command the public leg runs, from scenario.json beside it. */
@@ -114,11 +121,12 @@ switch (command) {
 }
 `;
 
-/** One run of a copy of the public leg against the stand-ins, as `scenario` says. */
+/** One run of a copy of the public leg against the stand-ins, as `scenario` says; with
+ *  `shimFirst`, `asked` is each name the leg asked the version manager for, one a line. */
 async function publicStandInRun(
   scenario: PublicScenario,
   bound: BoundName = "publicRun"
-): Promise<LegRun> {
+): Promise<LegRun & { readonly asked?: string }> {
   const leg = copyLeg(scratch, publicLeg);
   const legDir = leg.slice(0, leg.lastIndexOf("/"));
   await Bun.write(join(legDir, "outside-agent-probe.ts"), standInProbe);
@@ -176,13 +184,28 @@ exit 0
     join(bin, "t5-browser"),
     `#!/bin/sh\ncat '${rowsFile}' >"$OUTSIDE_T5_TSV"\n`
   );
+  if (scenario.withoutLn === true) rmSync(join(bin, "ln"), { force: true });
+  let path = bin;
+  const asked = join(state, "mise-asked");
+  if (scenario.shimFirst === true) {
+    const shims = scratch("shims");
+    script(
+      join(shims, "bun"),
+      `#!/bin/sh\necho '{"unknown":"the bun shim of the version manager ran, not the program mise names"}'\nexit 1\n`
+    );
+    script(
+      join(shims, "mise"),
+      `#!/bin/sh\nprintf '%s\\n' "$2" >>'${asked}'\n[ "$1" = which ] && [ -x '${bin}/'"$2" ] || exit 1\nprintf '%s\\n' '${bin}/'"$2"\n`
+    );
+    path = `${shims}:${bin}`;
+  }
   const origin = `http://127.0.0.1:${await closedPort()}`;
   const { code, stdout, stderr } = await runBounded({
     argv: ["bash", leg],
     bound,
     cwd: scratch("cwd"),
     env: {
-      PATH: bin,
+      PATH: path,
       HOME: scratch("home"),
       ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
       OUTSIDE_ALLOW_HTTP: "1",
@@ -199,7 +222,9 @@ exit 0
     },
     from: import.meta.url,
   });
-  return { code, stdout, stderr };
+  if (scenario.shimFirst !== true) return { code, stdout, stderr };
+  const file = Bun.file(asked);
+  return { code, stdout, stderr, asked: (await file.exists()) ? await file.text() : "" };
 }
 
 describe.skipIf(skipWithout("bash", "bun"))(
@@ -295,6 +320,46 @@ describe.skipIf(skipWithout("bash", "bun"))(
           verdicts: { "T5-cookie": "FAIL", "T5-passkey": "PASS" },
         });
         expect(rowsOf(run.stdout).get("T5-cookie")?.got).toContain("the cookie still answered");
+      },
+      // The run, a bounded child under the public leg's own bound.
+      rowLimit("publicRun")
+    );
+
+    // The leg links, at its start, the program a version manager names for each tool it drives,
+    // so its children, under a HOME of their own, run that program and never the shim first on
+    // PATH. The shim answers the probe's call with an unknown line, so a child that ran it reads
+    // P3 UNKNOWN naming the shim. The control: the leg asked the version manager for bun, so the
+    // shim and the program it names were both before it.
+    test(
+      "the leg's children run the program a version manager names, never a shim first on PATH",
+      async () => {
+        const run = await publicStandInRun({ trades: [false], shimFirst: true });
+        expect(run.asked?.split("\n"), "the leg never asked the version manager for bun").toContain(
+          "bun"
+        );
+        expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
+          verdicts: { P1: "PASS", P2: "PASS", P3: "PASS" },
+        });
+      },
+      // The run, a bounded child under the public leg's own bound.
+      rowLimit("publicRun")
+    );
+
+    // A program the leg found and could not link leaves its children to whatever PATH holds, so
+    // P1, which every row that starts a child under the leg's PATH follows, reads UNKNOWN naming
+    // the program and the reason.
+    test(
+      "a leg that cannot link a program it found reads P1 UNKNOWN naming it, and the rows after it wait on P1",
+      async () => {
+        const run = await publicStandInRun({ trades: [false], withoutLn: true });
+        const rows = rowsOf(run.stdout);
+        expect({ p1: rows.get("P1"), code: run.code, stdout: run.stdout }).toMatchObject({
+          p1: { verdict: "UNKNOWN" },
+          code: 2,
+        });
+        expect(rows.get("P1")?.got).toContain("bun (");
+        expect(rows.get("P1")?.got).toContain("was not linked into");
+        expect(rows.get("P3")?.got).toContain("P2 did not pass");
       },
       // The run, a bounded child under the public leg's own bound.
       rowLimit("publicRun")
