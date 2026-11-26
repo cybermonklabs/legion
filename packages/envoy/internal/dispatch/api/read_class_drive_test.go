@@ -166,7 +166,13 @@ var readRowDrives = map[string]rowDrive{
 			{"checks.*.compared_with.*.learned_at.at", "the moment the read learned a pull request's head from GitHub, its own clock: the read-only read stores nothing and keeps nothing after its request, so its writer's read asks GitHub again"},
 			{"checks.*.results.*.commit_stands.basis.learned_at.at", "the same moment, on the basis each result stands at"},
 		}},
-	"GET /api/v1/issues/{key}/coverage":      {target: "/api/v1/issues/$issue/coverage", statement: statementOf(`\bt\.type\s*=\s*'requirement'`)},
+	// The coverage read's read of the document each requirement stands in (blockDocuments in
+	// coverage_tuples.go), which it sends only once its walk of the tree found the seed's
+	// requirement and it read what serves it: no other read sends that statement. The serves read
+	// itself is no marker since t16c moved the coverage read onto the store's tuples: it is
+	// tuplesInto's, which the tree read sends too, with the tuple kind bound.
+	"GET /api/v1/issues/{key}/coverage": {target: "/api/v1/issues/$issue/coverage",
+		statement: statementOf(`\bselect\s+d\.node_id,\s*doc\.slug\s+from\s+document_blocks\s+d\s+cross\s+join\s+lateral\b`)},
 	"GET /api/v1/issues/{key}/messages":      {target: "/api/v1/issues/$issue/messages", statement: statementOf(`\bfrom\s+messages\s+where\s+issue_key\s*=\s*\$1\s+and\s+in_reply_to\s+is\s+null\b`)},
 	"GET /api/v1/issues/{key}/messages/{id}": {target: "/api/v1/issues/$issue/messages/$message", statement: statementOf(`\bfrom\s+messages\s+where\s+id\s*=\s*\$1\s+and\s+issue_key\s*=\s*\$2\b`)},
 	"GET /api/v1/issues/{key}/handoffs":      {target: "/api/v1/issues/$issue/handoffs", statement: statementOf(`\bfrom\s+handoffs\s+where\s+issue_key\s*=\s*\$1\s+order\s+by\b`)},
