@@ -1545,8 +1545,10 @@ func parityStored(t *testing.T, database *store.Store) string {
 
 // normalized is a results answer of this stack as JSON, with every member that names this
 // stack's own rows rather than the answer replaced: each result's id by its place in the order
-// the test recorded it, and the artifact ids, the record times and the event sequence numbers
-// cleared. Every other member, the moment each head was learned at among them, is as answered.
+// the test recorded it, wherever the answer names it (a result's own id, and the lists of results a
+// pass stands on, pass_stands.results and each subject's results), and the artifact ids, the
+// record times and the event sequence numbers cleared. Every other member, the moment each head
+// was learned at among them, is as answered.
 func (s *parityStack) normalized(t *testing.T, body string) string {
 	t.Helper()
 	var answer any
@@ -1572,7 +1574,13 @@ func (s *parityStack) normalized(t *testing.T, body string) string {
 				}
 			}
 		case []any:
-			for _, inner := range value {
+			for index, inner := range value {
+				if id, isString := inner.(string); isString {
+					if place := slices.Index(s.ids, id); place >= 0 {
+						value[index] = fmt.Sprintf("result %d", place)
+					}
+					continue
+				}
 				walk(inner)
 			}
 		}

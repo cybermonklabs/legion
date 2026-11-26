@@ -102,6 +102,10 @@ var readRowDrives = map[string]rowDrive{
 		statement: statementOf(`\bfrom\s+components\s+c\s+join\s+architecture_sources\b`)},
 	"GET /api/v1/projects/{key}/plans": {target: "/api/v1/projects/$project/plans",
 		statement: statementOf(`\bfrom\s+issues\s+i\s+left\s+join\s+\(\s*workflow_tuples\b`)},
+	// The project's spec check results at one commit; the seed records none, so both answer an
+	// empty list.
+	"GET /api/v1/projects/{key}/results": {target: "/api/v1/projects/$project/results?commit=1111111111111111111111111111111111111111",
+		statement: statementOf(`\bfrom\s+spec_check_results\s+where\s+project_key\s*=\s*\$1\b`)},
 	"GET /api/v1/settings/project-default-assignees": {target: "/api/v1/settings/project-default-assignees",
 		statement: statementOf(`\bselect\s+key,\s*default_assignee\s+from\s+projects\b`)},
 	"GET /api/v1/settings/new-issue":           {target: "/api/v1/settings/new-issue", fromMemory: "the new-issue settings are the deployment's configuration, held in memory"},
@@ -149,6 +153,7 @@ var readRowDrives = map[string]rowDrive{
 		volatile: []volatileMember{
 			{"checks.*.compared_with.*.learned_at.at", "the moment the read learned a pull request's head from GitHub, its own clock: the read-only read stores nothing and keeps nothing after its request, so its writer's read asks GitHub again"},
 			{"checks.*.results.*.commit_stands.basis.learned_at.at", "the same moment, on the basis each result stands at"},
+			{"checks.*.pass_stands.subjects.*.basis.learned_at.at", "the same moment, on the basis each subject of the check's pass stands on"},
 		}},
 	"GET /api/v1/issues/{key}/coverage":      {target: "/api/v1/issues/$issue/coverage", statement: statementOf(`\bt\.type\s*=\s*'requirement'`)},
 	"GET /api/v1/issues/{key}/messages":      {target: "/api/v1/issues/$issue/messages", statement: statementOf(`\bfrom\s+messages\s+where\s+issue_key\s*=\s*\$1\s+and\s+in_reply_to\s+is\s+null\b`)},
