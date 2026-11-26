@@ -32,7 +32,7 @@ func TestEverySignalOfR11HasOneDefinition(t *testing.T) {
 		{"idle", []string{"log.jsonl"}, "replay", false},
 		{"queue", []string{"queue/<owner>__<repo>.jsonl"}, "merge queue model", false},
 		{"provider", []string{"signals/provider.jsonl"}, "tokens model", false},
-		{"kills", []string{"launcher/log.jsonl", "signals/memory.jsonl"}, "memory model", false},
+		{"kills", []string{"launcher/log.jsonl"}, "memory model", false},
 		{"approvals", []string{"events/<KEY>.jsonl", "settings/events.jsonl", "window.json#defaultAssignee"}, "replay", true},
 	}
 	page, err := os.ReadFile(replayPage)

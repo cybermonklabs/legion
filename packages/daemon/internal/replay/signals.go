@@ -53,7 +53,7 @@ var signalDefinitions = []SignalDefinition{
 	{Name: SignalIdle, At: idleAt, Next: idleNext, Inputs: []string{logFile}, Source: "replay"},
 	{Name: SignalQueue, At: queueAt, Next: queueNext, Inputs: []string{queueDir + "/<owner>__<repo>.jsonl"}, Source: "merge queue model"},
 	{Name: SignalProvider, At: providerAt, Next: providerNext, Inputs: []string{providerFile}, Source: "tokens model"},
-	{Name: SignalKills, At: killsAt, Next: killsNext, Inputs: []string{launcherFile, memoryFile}, Source: "memory model"},
+	{Name: SignalKills, At: killsAt, Next: killsNext, Inputs: []string{launcherFile}, Source: "memory model"},
 	{Name: SignalApprovals, At: approvalsAt, EventOnly: true,
 		Inputs: []string{eventsDir + "/<KEY>.jsonl", settingsFile, windowFile + "#defaultAssignee"}, Source: "replay"},
 }
@@ -272,6 +272,18 @@ func IdleShareOfState(body []byte, at time.Time, after time.Duration) (float64, 
 // removed_from_merge_queue, so a drop and a re-add are two waits, and the removal GitHub records
 // beside a merge ends nothing. It refuses a line ParseQueueLine refuses.
 func queueWaits(queue map[string][]json.RawMessage) ([]signals.Wait, error) {
+	events, err := queueEvents(queue)
+	if err != nil {
+		return nil, err
+	}
+	return signals.WaitsOf(events), nil
+}
+
+// queueEvents is each event the queue files' lines record, as package signals reads it: the files
+// in the order of their names, each file's lines in its order, each event by the repository its url
+// names and its pull request. queueWaits pairs them for the signal, and the merge queue's model
+// pairs each pull request's own (queuePulls). It refuses a line ParseQueueLine refuses.
+func queueEvents(queue map[string][]json.RawMessage) ([]signals.QueueEvent, error) {
 	var events []signals.QueueEvent
 	for _, file := range slices.Sorted(maps.Keys(queue)) {
 		for i, line := range queue[file] {
@@ -283,7 +295,7 @@ func queueWaits(queue map[string][]json.RawMessage) ([]signals.Wait, error) {
 				Enters: event.Event == queueAdded})
 		}
 	}
-	return signals.WaitsOf(events), nil
+	return events, nil
 }
 
 // queueAt is the queue signal at at, in hours: the larger of the median wait of the project's pull

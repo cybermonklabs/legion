@@ -51,7 +51,7 @@ legion replay collect-merges	--branch string	--from string	--github-api string	-
 legion replay collect-queue	--github-api string	--github-rate float64	--github-reserve int	--github-token-env string	--out string	--repo string
 legion replay compare	--from-runs stringArray	--keep-logs bool	--only-rule string	--only-window string	--out string	--parallel int	--pg-dsn string	--rule stringArray	--runs string	--window stringArray
 legion replay forecast	--after string	--before string	--from-runs stringArray	--json bool	--keep-logs bool	--out string	--parallel int	--pg-dsn string	--rule string
-legion replay models	--json bool	--window string
+legion replay models	--against string	--json bool	--kills-from string	--window string
 legion replay neutralize	--deny stringArray	--in string	--map string	--out string	--project string
 legion replay rules	--json bool
 legion replay run	--branch string	--cap int	--keep-db bool	--out string	--pg-dsn string	--rule string	--seed int64	--slowdown float64	--trace-segments bool	--window string

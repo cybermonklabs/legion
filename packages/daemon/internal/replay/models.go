@@ -3,22 +3,22 @@ package replay
 import (
 	"fmt"
 	"io"
-	"maps"
+	"math"
 	"slices"
 	"sort"
 	"time"
-
-	"github.com/sjawhar/legion/daemon/internal/signals"
 )
 
-// The load models of R11 (spec R11, plan t31): a replay keeps each work segment's recorded length,
-// so it cannot show a refusal, a memory kill or a longer merge queue that more work in flight would
-// have caused, and for those three signals a replay under another rule takes the signal from a
-// model fitted on the window's own record, each a function of the work in flight alone (assumption
-// 45). FitLoadModels fits the three on a window's record, with no replay, and tests each by R11's
-// daily test at the recorded work in flight; a model that fails, or that no day tests, gives no
-// limit for its signal. The docs page gives each model's form and parameters (replay.md, "legion
-// replay models").
+// The load models of R11 (spec R11): a replay keeps each work segment's recorded length, so it
+// cannot show a refusal, a memory kill or a longer merge queue that more work in flight would have
+// caused, and for those three signals a replay under another rule takes the signal from a model of
+// the window that keeps what the window records and moves with the work in flight in the replay
+// (assumption 45). FitLoadModels fits the three on a window's record, with no replay, and tests
+// each by R11's daily test at the recorded work in flight; CompareRecords adds R11's test across
+// two records of the rate each model rests on (model_rates.go); and LoadModels.Replay gives each
+// modelled signal at a moment of a replay (model_replay.go). A model gives a limit for its signal
+// only where it passes each of the two tests that runs. No model reads the pods' memory series.
+// The docs page gives each model's form and parameters (replay.md, "legion replay models").
 
 // The names of the three load models of R11.
 const (
@@ -27,12 +27,13 @@ const (
 	ModelQueue  = "queue"
 )
 
-// The verdicts of a load model and of each of its days under R11's daily test. The first two are
-// the words passWord gives.
+// The verdicts of a load model and of each of its days under R11's tests. The first two are the
+// words passWord gives; VerdictNotRun is the test across two records where none was given.
 const (
 	VerdictPasses = "passes"
 	VerdictFails  = "fails"
 	VerdictNoTest = "no test"
+	VerdictNotRun = "not run"
 )
 
 // dailyCountFloor is R11's count of a day's refusals or kills from which its daily test reads the
@@ -42,15 +43,21 @@ const dailyCountFloor = 10
 
 // The forms of the three load models, as the output and the docs page name them.
 const (
-	tokensForm = "tokens a minute = issues in flight × X, X drawn from the record's own uncached input tokens a minute per issue in flight; " +
-		"a minute whose modelled tokens pass the project's own limit in force is a refused minute, which counts the record's own refusals " +
-		"per refused minute (1 where the record holds no refused minute); the provider's refusals are kept as recorded (assumption 46)"
-	memoryForm = "kills over a span = kills per issue-hour in flight × the span's issue-hours in flight, the rate the record's kills over its " +
-		"issue-hours in flight; the pods' memory in a minute = bytes per issue in flight × issues in flight, the ratio of the record's " +
-		"memory to its issues in flight over the minutes it reads"
-	queueForm = "a pull request's wait in the merge queue = issues in flight when it entered × X, X drawn from the record's own waits " +
-		"per issue in flight; a day's modelled median wait is the median of the waits the model gives the pull requests that left the queue " +
-		"that day, each at its recorded work in flight"
+	tokensForm = "a minute's uncached input tokens are the minute's recorded tokens for each issue in flight in the record times the issues in flight " +
+		"in the replay, and a minute with no issue in flight in the record keeps its recorded tokens; a minute whose modelled tokens pass the " +
+		"project's own limit in force is a refused minute, which counts the record's own refusals per refused minute (1 where the record holds " +
+		"no refused minute); the provider's refusals are kept as recorded (assumption 46)"
+	memoryForm = "each recorded kill of the memory guard belongs to the work segment of the issue whose pod it ended, at its offset in that " +
+		"segment, and a replay places it at the same offset of its run of that segment; work that the record never ran takes the day's recorded " +
+		"kills for each hour of an issue in flight, each drawn issue on its own: one kill each time its own issue-hours in flight times the day's " +
+		"rate pass a whole number, so no other issue and no rule's timing moves its kills; a kill that the record cannot place in a segment of its " +
+		"issue is counted apart and kept at its recorded time; no model reads the pods' memory"
+	queueForm = "each repository has its own queue; a pull request that the record removed before it reached the head of its queue keeps its " +
+		"recorded wait; each other pull request leaves in its order of entry, at the record's next exit from the head of its queue after its " +
+		"entry; while the record's queue stood empty, and after the end of the queue's record, the queue serves at the window's own rate of " +
+		"exits from its head for each hour in which it held a pull request; a recorded pull request enters at its recorded offset from the start " +
+		"of the work segment of its issue in which the record shows its entry, and one that the record shows in no such segment is counted apart " +
+		"and enters at its recorded time"
 )
 
 // The reasons of a model that gives no test, of a span it skips and of a day with no test.
@@ -59,66 +66,81 @@ const (
 	reasonNoKillsSpan    = "the window holds no record of the memory guard's kills in its span"
 	reasonNoQueueSpan    = "the window holds no record of the merge queue in its span"
 	reasonNoLimitSpan    = "no limit of the project's own is recorded in the span, which leaves the project's own refusals nothing to test"
-	reasonNoFlight       = "no issue was in flight where the window holds the model's record"
 	reasonNoExitSpan     = "no pull request left the merge queue in the window's record"
 	reasonNoProvider     = "the window holds no record of the provider here, so the model is neither fitted nor tested there (assumption 47)"
 	reasonNoLimit        = "no limit of the project's own is recorded here, so the model is fitted and the project's own refusals have nothing to test (assumption 48)"
 	reasonNoKills        = "the window holds no record of the memory guard's kills here, so the model is neither fitted nor tested there (assumption 47)"
 	reasonNoQueue        = "the window holds no record of the merge queue here, so the model is neither fitted nor tested there (assumption 47)"
 	reasonNoExit         = "no pull request left the merge queue in the day's record"
+	reasonNoModelledExit = "no pull request leaves the merge queue on the day in the model at the recorded work in flight"
 )
 
-// The names of the models' parameters.
+// The names of the models' parameters, and of the rates the test across two records reads.
 const (
 	paramMinutesFitted     = "minutes fitted"
-	paramTokensMean        = "uncached input tokens a minute per issue in flight: mean"
-	paramTokensMedian      = "uncached input tokens a minute per issue in flight: median"
-	paramTokensP90         = "uncached input tokens a minute per issue in flight: 90th percentile"
-	paramTokensP99         = "uncached input tokens a minute per issue in flight: 99th percentile"
+	paramTokensRate        = "uncached input tokens for each minute of an issue in flight"
 	paramRefusedMinutes    = "refused minutes recorded"
 	paramRefusalsPerMinute = "the project's own refusals per refused minute"
 	paramKillsRecorded     = "kills recorded"
+	paramKillsPlaced       = "kills placed in a work segment of their issue"
+	paramKillsApart        = "kills counted apart"
 	paramIssueHours        = "issue-hours in flight"
-	paramKillRate          = "kills per issue-hour in flight"
-	paramMemoryMinutes     = "minutes of the pods' memory fitted"
-	paramBytesPerIssue     = "bytes of the pods' memory per issue in flight"
-	paramWaitsFitted       = "waits fitted"
-	paramWaitMedian        = "wait per issue in flight, in hours: median"
-	paramWaitP90           = "wait per issue in flight, in hours: 90th percentile"
+	paramKillRate          = "kills for each hour of an issue in flight"
+	paramHeadExits         = "exits from the head of the queue"
+	paramEarlyExits        = "pull requests removed before they reached the head"
+	paramBusyHours         = "hours in which the queue held a pull request"
+	paramExitRate          = "exits from the head for each hour in which the queue held a pull request"
+	paramEntriesApart      = "pull requests counted apart"
 )
 
 // LoadModels is the three load models of R11 fitted on one window's record (FitLoadModels): the
-// window's project and span, and each model in the order tokens, memory, queue. `legion replay
-// models --json` prints it, and the limit test reads it.
+// window's project and span, each model in the order tokens, memory, queue, and R11's test across
+// two records where CompareRecords gave it (nil where it did not run). It holds the window's record
+// the models read (fit), which LoadModels.Replay models a replay's signals from and a value read
+// back from JSON lacks. `legion replay models --json` prints it, and the limit test reads it.
 type LoadModels struct {
-	Project string      `json:"project"`
-	From    time.Time   `json:"from"`
-	To      time.Time   `json:"to"`
-	Models  []LoadModel `json:"models"`
+	Project string         `json:"project"`
+	From    time.Time      `json:"from"`
+	To      time.Time      `json:"to"`
+	Models  []LoadModel    `json:"models"`
+	Across  *AcrossRecords `json:"across"`
+
+	fit *modelRecord
 }
 
 // LoadModel is one load model fitted on a window's record: its name, the signal of R11 it gives a
-// replay (provider, kills, queue), its form, whether it is fitted and with which parameters, its
-// verdict under R11's daily test (VerdictPasses, VerdictFails, VerdictNoTest with its reason),
-// whether it gives a limit for its signal (it passes: a model that fails or gives no test gives
-// none), each span of the window's span it skips with the reason, and each day of the span.
+// replay (provider, kills, queue), its form, whether it is fitted and with which parameters; its
+// verdict under R11's daily test (VerdictPasses, VerdictFails, VerdictNoTest with its reason), and,
+// for the models of the kills and of the merge queue, whether it gives the record at the recorded
+// work in flight on each day it tests, as its form does, so that the daily test shows only that
+// it keeps the record; its verdict under R11's test across two records (VerdictNotRun where none
+// was given, VerdictNoTest with its reason); whether it gives a limit for its signal (it passes the
+// daily test and the test across records where that ran); each span of the window's span it skips
+// with the reason; each day of the span; and its signal's rate in each range of issues in flight
+// that the window records (LoadBand).
 type LoadModel struct {
-	Name       string           `json:"name"`
-	Signal     string           `json:"signal"`
-	Form       string           `json:"form"`
-	Fitted     bool             `json:"fitted"`
-	Parameters []ModelParameter `json:"parameters"`
-	Verdict    string           `json:"verdict"`
-	Reason     string           `json:"reason,omitempty"`
-	GivesLimit bool             `json:"givesLimit"`
-	Skipped    []SkippedSpan    `json:"skipped"`
-	Days       []ModelDay       `json:"days"`
+	Name         string           `json:"name"`
+	Signal       string           `json:"signal"`
+	Form         string           `json:"form"`
+	Fitted       bool             `json:"fitted"`
+	Parameters   []ModelParameter `json:"parameters"`
+	Verdict      string           `json:"verdict"`
+	Reason       string           `json:"reason,omitempty"`
+	KeepsRecord  bool             `json:"keepsRecord"`
+	Across       string           `json:"across"`
+	AcrossReason string           `json:"acrossReason,omitempty"`
+	GivesLimit   bool             `json:"givesLimit"`
+	Skipped      []SkippedSpan    `json:"skipped"`
+	Days         []ModelDay       `json:"days"`
+	Load         []LoadBand       `json:"load"`
 }
 
-// ModelParameter is one fitted parameter of a load model, by its name.
+// ModelParameter is one fitted parameter of a load model, by its name, and for the merge queue's
+// model the repository whose queue it is of.
 type ModelParameter struct {
-	Name  string  `json:"name"`
-	Value float64 `json:"value"`
+	Name       string  `json:"name"`
+	Repository string  `json:"repository,omitempty"`
+	Value      float64 `json:"value"`
 }
 
 // SkippedSpan is a span [From, To) of a window's span in which a load model is not fitted, or not
@@ -132,14 +154,15 @@ type SkippedSpan struct {
 // ModelDay is one UTC day of a window's span, clipped to it, under one load model: the day as
 // 2006-01-02 and its span; the issues in flight over it, the scorecard's reading (Scorecard.InFlight
 // over the day); the hours of it in which the test reads the window's record; the recorded and the
-// modelled value R11's daily test compares, none on a day of no test (the tokens model's refusals
-// by the project's own limit, the memory model's kills, the merge queue's median wait in hours);
-// and the day's verdict, with its reason where it gives no test. Beside the test, and testing
-// nothing: the load the model reads, recorded and modelled at the recorded work in flight (the
-// tokens model's uncached input tokens a minute and the memory model's pods' memory in bytes, each a
-// mean over the day's minutes the model reads; none for the merge queue's model and where the
-// record holds no such minute), and the tokens model's refusals by the provider, kept as recorded
-// (assumption 46).
+// modelled value R11's daily test compares at the recorded work in flight, none on a day of no test
+// (the tokens model's refused minutes, the minutes in which the project's own limit refused a
+// request; the kill model's kills; the merge queue's median wait in hours); and the day's verdict,
+// with its reason where it gives no test. Beside the test, and testing nothing: for the tokens
+// model, its uncached input tokens a minute, recorded and modelled, a mean over the day's minutes
+// of the provider's record, the project's own refusals, recorded and modelled, over the minutes
+// the test reads, and the provider's refusals, kept as recorded (assumption 46); for the kill
+// model, the kills the record cannot place in a segment of their issue, and the day's kills for
+// each hour of an issue in flight, which work the record never ran takes.
 type ModelDay struct {
 	Day              string    `json:"day"`
 	From             time.Time `json:"from"`
@@ -152,18 +175,24 @@ type ModelDay struct {
 	Reason           string    `json:"reason,omitempty"`
 	LoadRecorded     *float64  `json:"loadRecorded,omitempty"`
 	LoadModelled     *float64  `json:"loadModelled,omitempty"`
+	RefusalsRecorded *float64  `json:"refusalsRecorded,omitempty"`
+	RefusalsModelled *float64  `json:"refusalsModelled,omitempty"`
 	ProviderRefusals *int64    `json:"providerRefusals,omitempty"`
+	KillsApart       *int      `json:"killsApart,omitempty"`
+	KillRate         *float64  `json:"killRate,omitempty"`
 }
 
-// FitLoadModels fits the three load models of R11 on w's record alone, with no replay, each as a
-// function of the work in flight, the record's issues in flight at each moment as the scorecard
-// counts them (inFlightSteps), and tests each on each day of w's span by R11's daily test. A model
-// is fitted and tested only in the spans where w holds its record (plan Q4, assumption 47): the
-// tokens model in the minutes of the provider's record, its test of the project's own refusals in
-// the minutes where w holds a record of the provider's headroom (a limit of the project's own,
-// assumption 48); the memory model where w holds the record of the memory guard's kills; the merge
-// queue's model where w holds the record of the queue. It refuses a window whose trace does not
-// build, and a line of the kills' or the queue's record their readers refuse.
+// FitLoadModels fits the three load models of R11 on w's record alone, with no replay
+// (newModelRecord), and tests each on each day of w's span by R11's daily test, the models'
+// signals taken at the record's own timeline (LoadModels.RecordTimeline): the record's issues in
+// flight at each moment as the scorecard counts them (inFlightSteps) and each work segment where
+// the record started it. A model is fitted and tested only in the spans where w holds its record
+// (plan Q4, assumption 47): the tokens model in the minutes of the provider's record, its test of
+// the refused minutes in the minutes where w holds a record of the provider's headroom (a limit of
+// the project's own, assumption 48); the kill model where w holds the record of the memory guard's
+// kills; the merge queue's model where w holds the record of the queue. The test across two
+// records does not run here (CompareRecords). It refuses a window whose trace does not build, and a
+// line of the kills' or the queue's record their readers refuse.
 func FitLoadModels(w Window) (LoadModels, error) {
 	t, err := BuildTrace(w)
 	if err != nil {
@@ -173,12 +202,18 @@ func FitLoadModels(w Window) (LoadModels, error) {
 	if err != nil {
 		return LoadModels{}, err
 	}
-	waits, err := queueWaits(w.Queue)
+	events, err := queueEvents(w.Queue)
 	if err != nil {
 		return LoadModels{}, err
 	}
-	f := modelFit{w: w, flight: inFlightSteps(lineTimeline(t, ranksOf(t), t.ruleAt)), days: windowDays(w.From, w.To)}
-	return LoadModels{Project: w.Project, From: w.From, To: w.To, Models: []LoadModel{f.tokens(), f.memory(kills), f.queue(waits)}}, nil
+	r := newModelRecord(w, t, inFlightSteps(lineTimeline(t, ranksOf(t), t.ruleAt)), kills, events)
+	models := LoadModels{Project: w.Project, From: w.From, To: w.To, fit: r}
+	at, err := models.Replay(r.recordTimeline())
+	if err != nil {
+		return LoadModels{}, err
+	}
+	models.Models = []LoadModel{r.tokens(at), r.memory(at), r.queue(at)}
+	return models, nil
 }
 
 // inFlightSteps is how many issues stand in flight from each moment of tl on, as the scorecard
@@ -208,19 +243,27 @@ func inFlightSteps(tl Timeline) stretchCount {
 // hours is the integral of the count c gives over [from, to), in hours: issue-hours for a count of
 // issues; 0 for an empty span.
 func (c stretchCount) hours(from, to time.Time) float64 {
+	total := 0.0
+	c.pieces(from, to, func(from, to time.Time, count int) { total += float64(count) * to.Sub(from).Hours() })
+	return total
+}
+
+// pieces calls each for each part of [from, to) over which c's count stands still, in order, with
+// that count: none for an empty span.
+func (c stretchCount) pieces(from, to time.Time, each func(from, to time.Time, count int)) {
 	if !to.After(from) {
-		return 0
+		return
 	}
 	i := upTo(c.from, from)
-	standing, at, total := 0, from, 0.0
+	standing, at := 0, from
 	if i > 0 {
 		standing = c.counts[i-1]
 	}
 	for ; i < len(c.from) && c.from[i].Before(to); i++ {
-		total += float64(standing) * c.from[i].Sub(at).Hours()
+		each(at, c.from[i], standing)
 		standing, at = c.counts[i], c.from[i]
 	}
-	return total + float64(standing)*to.Sub(at).Hours()
+	each(at, to, standing)
 }
 
 // windowDays is each UTC day of [from, to), clipped to it, in order.
@@ -257,15 +300,20 @@ func spansHours(spans []Span) float64 {
 
 // countWithin is how many of moments, in time order, stand in span.
 func countWithin(moments []time.Time, span Span) int {
+	return len(momentsWithin(moments, span))
+}
+
+// momentsWithin is the moments, in time order, that stand in span.
+func momentsWithin(moments []time.Time, span Span) []time.Time {
 	first := func(at time.Time) int {
 		return sort.Search(len(moments), func(i int) bool { return !moments[i].Before(at) })
 	}
-	return first(span.To) - first(span.From)
+	return moments[first(span.From):first(span.To)]
 }
 
-// countVerdict is R11's daily test of a day's count of refusals or kills: on a day with at least
-// dailyCountFloor recorded, the model within 30% of the record (gapThirty); on each other day, at
-// most dailyCountFloor.
+// countVerdict is R11's daily test of a day's count of refused minutes or kills: on a day with at
+// least dailyCountFloor recorded, the model within 30% of the record (gapThirty); on each other
+// day, at most dailyCountFloor.
 func countVerdict(recorded, modelled float64) string {
 	if recorded >= dailyCountFloor {
 		return passWord(gapThirty.Within(recorded, modelled))
@@ -273,59 +321,52 @@ func countVerdict(recorded, modelled float64) string {
 	return passWord(modelled <= dailyCountFloor+tolerance(dailyCountFloor, modelled))
 }
 
-// modelFit is what each load model is fitted from: the window, its issues in flight
-// (inFlightSteps), and the days of its span.
-type modelFit struct {
-	w      Window
-	flight stretchCount
-	days   []Span
-}
-
 // inFlight is the average count of issues in flight over [from, to), 0 for an empty span.
-func (f modelFit) inFlight(from, to time.Time) float64 {
+func (r *modelRecord) inFlight(from, to time.Time) float64 {
 	if !to.After(from) {
 		return 0
 	}
-	return f.flight.hours(from, to) / to.Sub(from).Hours()
+	return r.flight.hours(from, to) / to.Sub(from).Hours()
 }
 
 // minute is the part of the window's span the minute from start covers.
-func (f modelFit) minute(start time.Time) (time.Time, time.Time) {
-	return maxTime(start, f.w.From), minTime(start.Add(time.Minute), f.w.To)
+func (r *modelRecord) minute(start time.Time) (time.Time, time.Time) {
+	return maxTime(start, r.w.From), minTime(start.Add(time.Minute), r.w.To)
 }
 
 // day is span as a day of a model, with its issues in flight and no verdict yet.
-func (f modelFit) day(span Span) ModelDay {
-	return ModelDay{Day: span.From.UTC().Format(time.DateOnly), From: span.From, To: span.To, InFlight: f.inFlight(span.From, span.To)}
+func (r *modelRecord) day(span Span) ModelDay {
+	return ModelDay{Day: span.From.UTC().Format(time.DateOnly), From: span.From, To: span.To, InFlight: r.inFlight(span.From, span.To)}
 }
 
-// newModel is the model name of signal in form, fitted on nothing yet.
+// newModel is the model name of signal in form, fitted on nothing yet, tested across no records.
 func newModel(name, signal, form string) LoadModel {
-	return LoadModel{Name: name, Signal: signal, Form: form, Parameters: []ModelParameter{}, Skipped: []SkippedSpan{}, Days: []ModelDay{}}
+	return LoadModel{Name: name, Signal: signal, Form: form, Parameters: []ModelParameter{}, Across: VerdictNotRun, Skipped: []SkippedSpan{},
+		Days: []ModelDay{}, Load: []LoadBand{}}
 }
 
 // recordOf is the spans of the window's record of signal inside its span, in order, each part of
 // the span outside them added to m's skipped spans for reason.
-func (f modelFit) recordOf(signal string, m *LoadModel, reason string) []Span {
-	record := clipSpans(f.w.Signals[signal], Span{From: f.w.From, To: f.w.To})
-	at := f.w.From
+func (r *modelRecord) recordOf(signal string, m *LoadModel, reason string) []Span {
+	record := clipSpans(r.w.Signals[signal], Span{From: r.w.From, To: r.w.To})
+	at := r.w.From
 	for _, span := range record {
 		if span.From.After(at) {
 			m.skip(at, span.From, reason)
 		}
 		at = span.To
 	}
-	if f.w.To.After(at) {
-		m.skip(at, f.w.To, reason)
+	if r.w.To.After(at) {
+		m.skip(at, r.w.To, reason)
 	}
 	return record
 }
 
 // unfitted is m not fitted, for reason: it gives no test, and each day gives none, for unrecorded
 // where record holds no part of it and for reason otherwise.
-func (f modelFit) unfitted(m LoadModel, record []Span, reason, unrecorded string) LoadModel {
-	for _, span := range f.days {
-		d := f.day(span)
+func (r *modelRecord) unfitted(m LoadModel, record []Span, reason, unrecorded string) LoadModel {
+	for _, span := range r.days {
+		d := r.day(span)
 		d.Verdict, d.Reason = VerdictNoTest, reason
 		if parts := clipSpans(record, span); len(parts) == 0 {
 			d.Reason = unrecorded
@@ -350,7 +391,7 @@ func (m *LoadModel) skip(from, to time.Time, reason string) {
 
 // judge gives m, fitted, its verdict from its days: it fails where a day fails, gives no test, for
 // untested, where no day is tested, and passes otherwise; it gives a limit for its signal where it
-// passes.
+// passes (settle).
 func (m *LoadModel) judge(untested string) {
 	m.Fitted, m.Verdict = true, VerdictNoTest
 	for _, day := range m.Days {
@@ -364,7 +405,30 @@ func (m *LoadModel) judge(untested string) {
 	if m.Verdict == VerdictNoTest {
 		m.Reason = untested
 	}
-	m.GivesLimit = m.Verdict == VerdictPasses
+	m.settle()
+}
+
+// settle says whether m gives a limit for its signal: where it passes R11's daily test, and the
+// test across two records where that ran.
+func (m *LoadModel) settle() {
+	m.GivesLimit = m.Verdict == VerdictPasses && (m.Across == VerdictNotRun || m.Across == VerdictPasses)
+}
+
+// keepsRecord says whether each day of days that R11's daily test reads gives the record's value,
+// and some day does: the models of the kills and of the merge queue give the record by their form
+// at the recorded work in flight.
+func keepsRecord(days []ModelDay) bool {
+	tested := false
+	for _, d := range days {
+		if d.Verdict == VerdictNoTest {
+			continue
+		}
+		if d.Recorded == nil || d.Modelled == nil || math.Abs(*d.Recorded-*d.Modelled) > tolerance(*d.Recorded, *d.Modelled) {
+			return false
+		}
+		tested = true
+	}
+	return tested
 }
 
 // noTest is d giving no test, for reason.
@@ -377,348 +441,341 @@ func (d *ModelDay) tested(recorded, modelled float64, verdict string) {
 	d.Recorded, d.Modelled, d.Verdict = &recorded, &modelled, verdict
 }
 
-// tokenMinute is one minute of the provider's record as the tokens model reads it: the part of the
-// window's span it covers, its line, the issues in flight over it, and the project's own limit in
-// force in it where the window holds a record of the provider's headroom there.
+// tokenMinute is one minute of the provider's record as the tokens model's test reads it: the part
+// of the window's span it covers, its line, and the project's own limit in force in it where the
+// window holds a record of the provider's headroom there.
 type tokenMinute struct {
 	from, to time.Time
 	line     ProviderMinute
-	inFlight float64
 	limit    int64
 	limited  bool
 }
 
-// tokens is the tokens model fitted on the window's record (tokensForm): each minute of the
-// provider's record gives one draw of the tokens per issue in flight, its uncached input tokens over
-// its issues in flight, a minute with none in flight giving none; a minute the record does not hold
-// is skipped. A day's modelled refusals by the project's own limit are, over its minutes with a
-// record of the headroom (headroomLimit), the share of the draws above the limit over the minute's
-// issues in flight times the record's own refusals per refused minute; its recorded refusals are
-// the record's own of the same minutes. A minute with no limit of the project's own is fitted and
-// tests nothing (the architect's D13).
-func (f modelFit) tokens() LoadModel {
+// tokens is the tokens model on the window's record (tokensForm), its days tested at the record's
+// own timeline (at): a minute the provider's record does not hold is skipped. A day's recorded
+// refused minutes are its minutes, among those with a record of the headroom (headroomLimit), in
+// which the project's own limit refused a request, and its modelled ones those whose modelled
+// tokens pass that limit. A minute with no limit of the project's own is fitted and tests nothing
+// (the architect's D13).
+func (r *modelRecord) tokens(at *ModelledSignals) LoadModel {
 	m := newModel(ModelTokens, SignalProvider, tokensForm)
-	held := make(map[int64]ProviderMinute, len(f.w.Provider))
-	for _, line := range f.w.Provider {
-		held[line.Minute.Unix()] = line
-	}
 	var read []tokenMinute
-	var draws []float64
-	var own, refused int64
-	for start := f.w.From.Truncate(time.Minute); start.Before(f.w.To); start = start.Add(time.Minute) {
-		from, to := f.minute(start)
-		line, ok := held[start.Unix()]
+	for start := r.w.From.Truncate(time.Minute); start.Before(r.w.To); start = start.Add(time.Minute) {
+		from, to := r.minute(start)
+		line, ok := r.minutes[start.Unix()]
 		if !ok {
 			m.skip(from, to, reasonNoProvider)
 			continue
 		}
-		minute := tokenMinute{from: from, to: to, line: line, inFlight: f.inFlight(from, to)}
-		if minute.limit, minute.limited = f.headroomLimit(line); !minute.limited {
+		minute := tokenMinute{from: from, to: to, line: line}
+		if minute.limit, minute.limited = r.headroomLimit(line); !minute.limited {
 			m.skip(from, to, reasonNoLimit)
 		}
 		read = append(read, minute)
-		if minute.inFlight > 0 {
-			draws = append(draws, float64(line.Uncached)/minute.inFlight)
-		}
-		if line.Own > 0 {
-			own, refused = own+line.Own, refused+1
-		}
 	}
 	if len(read) == 0 {
-		return f.unfitted(m, nil, reasonNoProviderSpan, reasonNoProvider)
-	}
-	slices.Sort(draws)
-	mean, perRefused := 0.0, 1.0
-	for _, draw := range draws {
-		mean += draw
-	}
-	if len(draws) > 0 {
-		mean /= float64(len(draws))
-	}
-	if refused > 0 {
-		perRefused = float64(own) / float64(refused)
-	}
-	// above is the share of the draws above threshold.
-	above := func(threshold float64) float64 {
-		return float64(len(draws)-sort.Search(len(draws), func(i int) bool { return draws[i] > threshold })) / float64(len(draws))
+		return r.unfitted(m, nil, reasonNoProviderSpan, reasonNoProvider)
 	}
 	next := 0
-	for _, span := range f.days {
-		d := f.day(span)
+	for _, span := range r.days {
+		d := r.day(span)
 		var minutes int
-		var tokens, modelledTokens, recorded, refusedShare float64
+		var tokens, modelledTokens, ownRecorded, ownModelled, refusedRecorded, refusedModelled float64
 		var providerRefusals int64
 		var limited time.Duration
 		for ; next < len(read) && read[next].from.Before(span.To); next++ {
 			minute := read[next]
+			key := minute.line.Minute.Unix()
+			modelled := at.minutes[key]
 			minutes++
 			tokens += float64(minute.line.Uncached)
-			modelledTokens += mean * minute.inFlight
+			modelledTokens += float64(modelled.Uncached)
 			providerRefusals += minute.line.Provider
 			if !minute.limited {
 				continue
 			}
 			limited += minute.to.Sub(minute.from)
-			recorded += float64(minute.line.Own)
-			if minute.inFlight > 0 && len(draws) > 0 {
-				refusedShare += above(float64(minute.limit) / minute.inFlight)
+			ownRecorded += float64(minute.line.Own)
+			ownModelled += float64(modelled.Own)
+			if minute.line.Own > 0 {
+				refusedRecorded++
+			}
+			if at.refused[key] {
+				refusedModelled++
 			}
 		}
-		switch {
-		case minutes == 0:
+		if minutes == 0 {
 			d.noTest(reasonNoProvider)
-		case len(draws) == 0:
-			d.noTest(reasonNoFlight)
-		default:
-			recordedTokens, modelled := tokens/float64(minutes), modelledTokens/float64(minutes)
-			d.LoadRecorded, d.LoadModelled, d.ProviderRefusals = &recordedTokens, &modelled, &providerRefusals
-			if limited == 0 {
-				d.noTest(reasonNoLimit)
-				break
-			}
+			m.Days = append(m.Days, d)
+			continue
+		}
+		recordedTokens, modelledMean := tokens/float64(minutes), modelledTokens/float64(minutes)
+		d.LoadRecorded, d.LoadModelled, d.ProviderRefusals = &recordedTokens, &modelledMean, &providerRefusals
+		if limited == 0 {
+			d.noTest(reasonNoLimit)
+		} else {
 			d.RecordHours = limited.Hours()
-			modelledRefusals := perRefused * refusedShare
-			d.tested(recorded, modelledRefusals, countVerdict(recorded, modelledRefusals))
+			d.RefusalsRecorded, d.RefusalsModelled = &ownRecorded, &ownModelled
+			d.tested(refusedRecorded, refusedModelled, countVerdict(refusedRecorded, refusedModelled))
 		}
 		m.Days = append(m.Days, d)
 	}
-	if len(draws) == 0 {
-		m.Verdict, m.Reason = VerdictNoTest, reasonNoFlight
-		return m
+	m.Parameters = append(m.Parameters, ModelParameter{Name: paramMinutesFitted, Value: float64(len(read))})
+	if rate := r.tokensRate(); rate.Rate != nil {
+		m.Parameters = append(m.Parameters, ModelParameter{Name: paramTokensRate, Value: *rate.Rate})
 	}
-	m.Parameters = []ModelParameter{
-		{Name: paramMinutesFitted, Value: float64(len(draws))},
-		{Name: paramTokensMean, Value: mean},
-		{Name: paramTokensMedian, Value: sortedMedian(draws)},
-		{Name: paramTokensP90, Value: nearestRank(draws, 0.9)},
-		{Name: paramTokensP99, Value: nearestRank(draws, 0.99)},
-		{Name: paramRefusedMinutes, Value: float64(refused)},
-		{Name: paramRefusalsPerMinute, Value: perRefused},
-	}
+	m.Parameters = append(m.Parameters, ModelParameter{Name: paramRefusedMinutes, Value: float64(r.refusedMinutes)},
+		ModelParameter{Name: paramRefusalsPerMinute, Value: r.rho})
 	m.judge(reasonNoLimitSpan)
+	m.Load = r.tokenBands()
 	return m
 }
 
-// headroomLimit is the project's own limit in force in line's minute where the window holds a
-// record of the provider's headroom there, as providerAt reads it, and whether it does.
-func (f modelFit) headroomLimit(line ProviderMinute) (int64, bool) {
-	limit, ok := line.projectLimit()
-	return limit, ok && f.w.Recorded(SignalProvider, line.Minute)
-}
-
-// memory is the memory model fitted on the window's record where it holds the memory guard's kills
-// (memoryForm): the kills of the launcher's lines over the issue-hours in flight there, and the
-// pods' memory of each minute of the memory's record there over its issues in flight. A day's
-// modelled kills are the rate times its issue-hours in flight in the record, its recorded kills
-// those of the launcher's lines in the same spans.
-func (f modelFit) memory(kills []GuardKill) LoadModel {
+// memory is the kill model on the window's record where it holds the memory guard's kills
+// (memoryForm), its days tested at the record's own timeline (at): a day's recorded kills are the
+// launcher's lines' in the record's spans of it, and its modelled kills the model's in the same
+// spans. Beside them, each day gives the kills the record cannot place in a segment of their issue
+// and its kills for each hour of an issue in flight, which work the record never ran takes.
+func (r *modelRecord) memory(at *ModelledSignals) LoadModel {
 	m := newModel(ModelMemory, SignalKills, memoryForm)
-	record := f.recordOf(SignalKills, &m, reasonNoKills)
+	record := r.recordOf(SignalKills, &m, reasonNoKills)
 	if len(record) == 0 {
-		return f.unfitted(m, record, reasonNoKillsSpan, reasonNoKills)
+		return r.unfitted(m, record, reasonNoKillsSpan, reasonNoKills)
 	}
-	moments := make([]time.Time, 0, len(kills))
-	for _, kill := range kills {
-		moments = append(moments, kill.At)
-	}
-	count, hours := 0, 0.0
+	recorded, apart := r.killMoments()
+	count, apartCount := 0, 0
 	for _, span := range record {
-		count += countWithin(moments, span)
-		hours += f.flight.hours(span.From, span.To)
+		count += countWithin(recorded, span)
+		apartCount += countWithin(apart, span)
 	}
-	if hours == 0 {
-		return f.unfitted(m, record, reasonNoFlight, reasonNoKills)
+	rate := r.killsRate(r.w.From)
+	m.Parameters = append(m.Parameters, ModelParameter{Name: paramKillsRecorded, Value: float64(count)},
+		ModelParameter{Name: paramKillsPlaced, Value: float64(count - apartCount)}, ModelParameter{Name: paramKillsApart, Value: float64(apartCount)},
+		ModelParameter{Name: paramIssueHours, Value: rate.Exposure})
+	if rate.Rate != nil {
+		m.Parameters = append(m.Parameters, ModelParameter{Name: paramKillRate, Value: *rate.Rate})
 	}
-	rate := float64(count) / hours
-	used := make(map[int64]float64)
-	for _, sample := range f.w.Memory {
-		if !sample.Minute.Before(f.w.From) && sample.Minute.Before(f.w.To) && f.w.Recorded(SignalKills, sample.Minute) {
-			used[sample.Minute.Unix()] += float64(sample.Bytes)
-		}
-	}
-	memoryMinutes := slices.Sorted(maps.Keys(used))
-	flights := make([]float64, len(memoryMinutes))
-	var bytes, issues float64
-	for i, minute := range memoryMinutes {
-		flights[i] = f.inFlight(f.minute(time.Unix(minute, 0)))
-		bytes, issues = bytes+used[minute], issues+flights[i]
-	}
-	m.Parameters = []ModelParameter{{Name: paramKillsRecorded, Value: float64(count)}, {Name: paramIssueHours, Value: hours},
-		{Name: paramKillRate, Value: rate}, {Name: paramMemoryMinutes, Value: float64(len(memoryMinutes))}}
-	perIssue, memoryFitted := 0.0, issues > 0
-	if memoryFitted {
-		perIssue = bytes / issues
-		m.Parameters = append(m.Parameters, ModelParameter{Name: paramBytesPerIssue, Value: perIssue})
-	}
-	next := 0
-	for _, span := range f.days {
-		d := f.day(span)
-		parts := clipSpans(record, span)
-		if len(parts) == 0 {
+	for i, span := range r.days {
+		d := r.day(span)
+		day := r.dayRates[i]
+		if len(day.parts) == 0 {
 			d.noTest(reasonNoKills)
-		} else {
-			recorded, inFlight := 0, 0.0
-			for _, part := range parts {
-				recorded += countWithin(moments, part)
-				inFlight += f.flight.hours(part.From, part.To)
-			}
-			d.RecordHours = spansHours(parts)
-			d.tested(float64(recorded), rate*inFlight, countVerdict(float64(recorded), rate*inFlight))
+			m.Days = append(m.Days, d)
+			continue
 		}
-		var minutes int
-		var dayBytes, dayIssues float64
-		for ; next < len(memoryMinutes) && time.Unix(memoryMinutes[next], 0).Before(span.To); next++ {
-			minutes++
-			dayBytes, dayIssues = dayBytes+used[memoryMinutes[next]], dayIssues+flights[next]
+		recordedKills, modelledKills, dayApart := 0, 0, 0
+		for _, part := range day.parts {
+			recordedKills += countWithin(recorded, part)
+			modelledKills += countWithin(at.kills, part)
+			dayApart += countWithin(apart, part)
 		}
-		if memoryFitted && minutes > 0 {
-			recordedBytes, modelledBytes := dayBytes/float64(minutes), perIssue*dayIssues/float64(minutes)
-			d.LoadRecorded, d.LoadModelled = &recordedBytes, &modelledBytes
+		d.RecordHours, d.KillsApart = spansHours(day.parts), &dayApart
+		if dayRate, rated := day.rate(); rated {
+			d.KillRate = &dayRate
 		}
+		d.tested(float64(recordedKills), float64(modelledKills), countVerdict(float64(recordedKills), float64(modelledKills)))
 		m.Days = append(m.Days, d)
 	}
 	m.judge(reasonNoKillsSpan)
+	m.KeepsRecord = keepsRecord(m.Days)
+	m.Load = r.killBands(record)
 	return m
 }
 
-// queueExit is one wait of a pull request that left the merge queue, as the merge queue's model
-// reads it: when it left, its length in hours, and the issues in flight when it entered.
+// queueExit is one wait of a pull request that left the merge queue, as the merge queue's model's
+// test reads it: when it left, and its length in hours.
 type queueExit struct {
-	left            time.Time
-	hours, inFlight float64
+	left  time.Time
+	hours float64
 }
 
-// queue is the merge queue's model fitted on the window's record where it holds the queue's
-// (queueForm): each wait that left the queue in the record gives one draw of the wait per issue in
-// flight, its hours over the issues in flight when it entered, a wait that entered with none in
-// flight giving none. A day's recorded median wait is that of the waits that left the queue in its
-// record, and its modelled median the median, over those waits and every draw, of the wait's issues
-// in flight times the draw.
-func (f modelFit) queue(waits []signals.Wait) LoadModel {
+// queue is the merge queue's model on the window's record where it holds the queue's (queueForm),
+// its days tested at the record's own timeline (at): a day's recorded median wait is that of the
+// waits that left the queue in its record, and its modelled median that of the waits the model
+// gives that leave the queue there.
+func (r *modelRecord) queue(at *ModelledSignals) LoadModel {
 	m := newModel(ModelQueue, SignalQueue, queueForm)
-	record := f.recordOf(SignalQueue, &m, reasonNoQueue)
+	record := r.recordOf(SignalQueue, &m, reasonNoQueue)
 	if len(record) == 0 {
-		return f.unfitted(m, record, reasonNoQueueSpan, reasonNoQueue)
+		return r.unfitted(m, record, reasonNoQueueSpan, reasonNoQueue)
 	}
-	var exits []queueExit
-	var draws []float64
-	for _, wait := range waits {
-		if wait.Left.IsZero() || wait.Left.Before(f.w.From) || !wait.Left.Before(f.w.To) || !f.w.Recorded(SignalQueue, wait.Left) {
-			continue
-		}
-		exit := queueExit{left: wait.Left, hours: wait.Left.Sub(wait.Added).Hours(), inFlight: float64(f.flight.at(wait.Added))}
-		exits = append(exits, exit)
-		if exit.inFlight > 0 {
-			draws = append(draws, exit.hours/exit.inFlight)
-		}
-	}
-	if len(draws) == 0 {
-		reason := reasonNoExitSpan
-		if len(exits) > 0 {
-			reason = reasonNoFlight
-		}
-		return f.unfitted(m, record, reason, reasonNoQueue)
-	}
-	slices.Sort(draws)
-	slices.SortStableFunc(exits, func(a, b queueExit) int { return a.left.Compare(b.left) })
-	m.Parameters = []ModelParameter{{Name: paramWaitsFitted, Value: float64(len(draws))}, {Name: paramWaitMedian, Value: sortedMedian(draws)},
-		{Name: paramWaitP90, Value: nearestRank(draws, 0.9)}}
-	next := 0
-	for _, span := range f.days {
-		d := f.day(span)
-		var recorded, modelled []float64
-		for ; next < len(exits) && exits[next].left.Before(span.To); next++ {
-			recorded = append(recorded, exits[next].hours)
-			for _, draw := range draws {
-				modelled = append(modelled, exits[next].inFlight*draw)
+	var recorded, modelled []queueExit
+	apart := 0
+	for _, q := range r.queues {
+		for _, pull := range q.pulls {
+			if r.testsExit(pull.left) {
+				recorded = append(recorded, queueExit{left: pull.left, hours: pull.left.Sub(pull.added).Hours()})
 			}
+			if !pull.placed {
+				apart++
+			}
+		}
+	}
+	if len(recorded) == 0 {
+		return r.unfitted(m, record, reasonNoExitSpan, reasonNoQueue)
+	}
+	for _, wait := range at.waits {
+		if r.testsExit(wait.Left) {
+			modelled = append(modelled, queueExit{left: wait.Left, hours: wait.Left.Sub(wait.Added).Hours()})
+		}
+	}
+	byLeft := func(a, b queueExit) int { return a.left.Compare(b.left) }
+	slices.SortStableFunc(recorded, byLeft)
+	slices.SortStableFunc(modelled, byLeft)
+	for _, q := range r.queues {
+		m.Parameters = append(m.Parameters, q.parameters()...)
+	}
+	m.Parameters = append(m.Parameters, ModelParameter{Name: paramEntriesApart, Value: float64(apart)})
+	nextRecorded, nextModelled := 0, 0
+	for _, span := range r.days {
+		d := r.day(span)
+		var recordedHours, modelledHours []float64
+		for ; nextRecorded < len(recorded) && recorded[nextRecorded].left.Before(span.To); nextRecorded++ {
+			recordedHours = append(recordedHours, recorded[nextRecorded].hours)
+		}
+		for ; nextModelled < len(modelled) && modelled[nextModelled].left.Before(span.To); nextModelled++ {
+			modelledHours = append(modelledHours, modelled[nextModelled].hours)
 		}
 		parts := clipSpans(record, span)
 		d.RecordHours = spansHours(parts)
+		slices.Sort(recordedHours)
+		slices.Sort(modelledHours)
 		switch {
 		case len(parts) == 0:
 			d.noTest(reasonNoQueue)
-		case len(recorded) == 0:
+		case len(recordedHours) == 0:
 			d.noTest(reasonNoExit)
+		case len(modelledHours) == 0:
+			recordedMedian := sortedMedian(recordedHours)
+			d.Recorded, d.Verdict, d.Reason = &recordedMedian, VerdictFails, reasonNoModelledExit
 		default:
-			slices.Sort(recorded)
-			slices.Sort(modelled)
-			recordedMedian, modelledMedian := sortedMedian(recorded), sortedMedian(modelled)
+			recordedMedian, modelledMedian := sortedMedian(recordedHours), sortedMedian(modelledHours)
 			d.tested(recordedMedian, modelledMedian, passWord(gapThirty.Within(recordedMedian, modelledMedian)))
 		}
 		m.Days = append(m.Days, d)
 	}
 	m.judge(reasonNoExitSpan)
+	m.KeepsRecord = keepsRecord(m.Days)
+	m.Load = r.queueBands(record)
 	return m
 }
 
-// Write prints m as Markdown: what the models read and R11's daily test, then for each model its
-// form, its parameters, its verdict and whether it gives a limit for its signal, each span it skips
-// with the reason, and a table of its days: the issues in flight, the hours of record its test
-// reads, the recorded and the modelled value with the test, and the load beside it.
+// testsExit says whether a wait that ended at left is one the merge queue's daily test reads: one
+// that left in the window's span where its record holds the queue.
+func (r *modelRecord) testsExit(left time.Time) bool {
+	return !left.IsZero() && !left.Before(r.w.From) && left.Before(r.w.To) && r.w.Recorded(SignalQueue, left)
+}
+
+// Write prints m as Markdown: what the models read and R11's tests, then for each model its form,
+// its parameters, its verdicts and whether it gives a limit for its signal, each span it skips with
+// the reason, a table of its days (the issues in flight, the hours of record its test reads, the
+// recorded and the modelled value with the test, and what it gives beside them) and its signal's
+// rate in each range of 20 issues in flight that the window records; and, where it ran, R11's test
+// across two records: each rate on each record, their ratio and the test, and each repository that
+// has no test.
 func (m LoadModels) Write(w io.Writer) error {
 	p := &printer{w: w}
 	p.line("# The load models of %s from %s to %s", m.Project, stamp(m.From), stamp(m.To))
 	p.line("")
-	p.line("Each model is fitted on the window's record alone, with no replay, as a function of the work in flight: the issues in flight at each moment, as the scorecard counts them (`inFlight`).")
-	p.line("R11's daily test: on a day with at least %d refusals or kills recorded, the model gives within %s of the record, and on each other day at most %d; "+
-		"the merge queue's model gives its median wait within %s of the record on each day.", dailyCountFloor, gapThirty, dailyCountFloor, gapThirty)
+	p.line("Each model keeps what the window records and moves with the work in flight of a replay, as its form says, and no model reads the pods' memory series.")
+	p.line("The work in flight is the record's issues in flight at each moment, as the scorecard counts them (`inFlight`).")
+	p.line("R11's daily test, at the recorded work in flight: on a day with at least %d refused minutes or kills recorded, the model gives within %s of the record, and on each other day at most %d; "+
+		"a refused minute is one in which the project's own limit refused a request; the merge queue's model gives its median wait within %s of the record on each day.",
+		dailyCountFloor, gapThirty, dailyCountFloor, gapThirty)
+	if m.Across == nil {
+		p.line("R11's test across two records did not run, so a model that passes the daily test gives its limit on that test alone.")
+	} else {
+		p.line("R11's test across two records compares the rate that each model rests on with the same rate on the record of %s from %s to %s, in the last section.",
+			m.Across.Project, stamp(m.Across.From), stamp(m.Across.To))
+	}
+	p.line("A model gives a limit for its signal only where it passes each test that runs.")
 	p.line("A model is fitted and tested only where the window holds its record (assumption 47), and the spans it skips are named with the reason.")
 	for _, model := range m.Models {
-		p.line("")
-		p.line("## Model `%s`, of the signal `%s`: %s", model.Name, model.Signal, model.Verdict)
-		p.line("")
-		p.line("Form: %s.", model.Form)
-		if len(model.Parameters) > 0 {
-			p.line("")
-			p.line("Parameters:")
-			p.line("")
-			for _, parameter := range model.Parameters {
-				p.line("- %s: %s", parameter.Name, formatNumber(parameter.Value))
-			}
-		}
-		p.line("")
-		switch model.Verdict {
-		case VerdictPasses:
-			p.line("The model passes R11's daily test on each day it is tested, so it gives a limit for the signal `%s`.", model.Signal)
-		case VerdictFails:
-			p.line("The model fails R11's daily test, so it gives no limit for the signal `%s`.", model.Signal)
-		default:
-			p.line("The model gives no test: %s, so it gives no limit for the signal `%s`.", model.Reason, model.Signal)
-		}
-		p.line("")
-		if len(model.Skipped) == 0 {
-			p.line("The model reads its record over the whole span.")
-		} else {
-			p.line("The spans it skips:")
-			p.line("")
-			for _, span := range model.Skipped {
-				p.line("- from %s to %s: %s", stamp(span.From), stamp(span.To), span.Reason)
-			}
-		}
-		p.line("")
-		writeModelDays(p, model)
+		writeModel(p, model)
+	}
+	if m.Across != nil {
+		m.Across.write(p)
 	}
 	return p.err
 }
 
-// gibibyte is the bytes of a GiB, the unit the output gives the pods' memory in.
-const gibibyte = 1 << 30
+// writeModel prints model's section (LoadModels.Write).
+func writeModel(p *printer, model LoadModel) {
+	p.line("")
+	p.line("## Model `%s`, of the signal `%s`: %s", model.Name, model.Signal, model.Verdict)
+	p.line("")
+	p.line("Form: %s.", model.Form)
+	if len(model.Parameters) > 0 {
+		p.line("")
+		p.line("Parameters:")
+		p.line("")
+		for _, parameter := range model.Parameters {
+			if parameter.Repository != "" {
+				p.line("- %s, %s: %s", parameter.Repository, parameter.Name, formatNumber(parameter.Value))
+				continue
+			}
+			p.line("- %s: %s", parameter.Name, formatNumber(parameter.Value))
+		}
+	}
+	p.line("")
+	switch model.Verdict {
+	case VerdictPasses:
+		p.line("The model passes R11's daily test on each day it is tested.")
+	case VerdictFails:
+		p.line("The model fails R11's daily test.")
+	default:
+		p.line("The model gives no daily test: %s.", model.Reason)
+	}
+	if model.Name != ModelTokens && model.Verdict != VerdictNoTest {
+		if model.KeepsRecord {
+			p.line("At the recorded work in flight the model gives the record by its form, so R11's daily test shows only that it keeps the record.")
+		} else {
+			p.line("At the recorded work in flight the model does not give the record on each day it tests, as its form should.")
+		}
+	}
+	switch model.Across {
+	case VerdictNotRun:
+		p.line("R11's test across two records did not run.")
+	case VerdictPasses:
+		p.line("The rate it rests on passes R11's test across two records.")
+	case VerdictFails:
+		p.line("The rate it rests on fails R11's test across two records.")
+	default:
+		p.line("R11's test across two records gives it no test: %s.", model.AcrossReason)
+	}
+	switch {
+	case model.GivesLimit && model.Across == VerdictNotRun:
+		p.line("So it gives a limit for the signal `%s`, on R11's daily test alone.", model.Signal)
+	case model.GivesLimit:
+		p.line("So it gives a limit for the signal `%s`.", model.Signal)
+	default:
+		p.line("So it gives no limit for the signal `%s`.", model.Signal)
+	}
+	p.line("")
+	if len(model.Skipped) == 0 {
+		p.line("The model reads its record over the whole span.")
+	} else {
+		p.line("The spans it skips:")
+		p.line("")
+		for _, span := range model.Skipped {
+			p.line("- from %s to %s: %s", stamp(span.From), stamp(span.To), span.Reason)
+		}
+	}
+	p.line("")
+	writeModelDays(p, model)
+	p.line("")
+	writeLoadBands(p, model)
+}
 
 // writeModelDays prints model's table of days (LoadModels.Write).
 func writeModelDays(p *printer, model LoadModel) {
 	head := map[string]string{
-		ModelTokens: "own refusals: recorded | modelled | test | tokens a minute: recorded | modelled | the provider's refusals, kept as recorded",
-		ModelMemory: "kills: recorded | modelled | test | the pods' memory in GiB: recorded | modelled",
+		ModelTokens: "refused minutes: recorded | modelled | test | own refusals: recorded | modelled | tokens a minute: recorded | modelled | " +
+			"the provider's refusals, kept as recorded",
+		ModelMemory: "kills: recorded | modelled | test | kills apart | the day's kills for each hour of an issue in flight",
 		ModelQueue:  "median wait in hours: recorded | modelled | test",
 	}[model.Name]
-	columns := 6
-	if model.Name != ModelQueue {
-		columns = 8
-	}
-	if model.Name == ModelTokens {
-		columns = 9
-	}
+	columns := map[string]int{ModelTokens: 11, ModelMemory: 8, ModelQueue: 6}[model.Name]
 	p.line("| day | in flight | hours of record tested | %s |", head)
 	rule := "|"
 	for range columns {
@@ -727,29 +784,34 @@ func writeModelDays(p *printer, model LoadModel) {
 	p.line("%s", rule)
 	for _, d := range model.Days {
 		test := d.Verdict
-		if d.Verdict == VerdictNoTest {
-			test = VerdictNoTest + ": " + d.Reason
+		if d.Reason != "" {
+			test += ": " + d.Reason
 		}
 		row := fmt.Sprintf("| %s | %s | %s | %s | %s | %s |", d.Day, formatNumber(d.InFlight), formatNumber(d.RecordHours),
-			optionalNumber(d.Recorded, 1), optionalNumber(d.Modelled, 1), test)
+			optionalNumber(d.Recorded), optionalNumber(d.Modelled), test)
 		switch model.Name {
 		case ModelTokens:
 			refusals := "–"
 			if d.ProviderRefusals != nil {
 				refusals = fmt.Sprint(*d.ProviderRefusals)
 			}
-			row += fmt.Sprintf(" %s | %s | %s |", optionalNumber(d.LoadRecorded, 1), optionalNumber(d.LoadModelled, 1), refusals)
+			row += fmt.Sprintf(" %s | %s | %s | %s | %s |", optionalNumber(d.RefusalsRecorded), optionalNumber(d.RefusalsModelled),
+				optionalNumber(d.LoadRecorded), optionalNumber(d.LoadModelled), refusals)
 		case ModelMemory:
-			row += fmt.Sprintf(" %s | %s |", optionalNumber(d.LoadRecorded, gibibyte), optionalNumber(d.LoadModelled, gibibyte))
+			apart := "–"
+			if d.KillsApart != nil {
+				apart = fmt.Sprint(*d.KillsApart)
+			}
+			row += fmt.Sprintf(" %s | %s |", apart, optionalNumber(d.KillRate))
 		}
 		p.line("%s", row)
 	}
 }
 
-// optionalNumber is value over unit as a report prints it, "–" for none.
-func optionalNumber(value *float64, unit float64) string {
+// optionalNumber is value as a report prints it, "–" for none.
+func optionalNumber(value *float64) string {
 	if value == nil {
 		return "–"
 	}
-	return formatNumber(*value / unit)
+	return formatNumber(*value)
 }

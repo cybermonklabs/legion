@@ -907,50 +907,81 @@ Where the window holds the launcher's lines, `signals` then prints how many of t
 ### `legion replay models`
 
 ```sh
-legion replay models --window windows/acme-2026-10-05
+legion replay models --window windows/acme-2026-10-05 --against windows/acme-2026-10-12
 ```
 
-`models` fits the three load models of R11 on a window's record alone, with no replay and no database, and tests each one by R11's daily test.
+`models` fits the three load models of R11 on a window's record alone, with no replay and no database, and tests each one by R11's daily test and, with `--against`, by R11's test across two records.
 A replay keeps each work segment's recorded length, so it cannot show a refusal, a memory kill or a longer merge queue that more work in flight would have caused.
-So a replay under another rule takes the provider's signal, the kills and the merge queue's wait from these models, each a function of the work in flight alone (assumption 45).
+So a replay under another rule takes the provider's signal, the kills and the merge queue's wait from these models (assumption 45).
+Each model keeps what the window records, and moves with the work in flight of the replay only as its form says.
+No model reads the pods' memory series, `signals/memory.jsonl`.
 The work in flight is the record's issues in flight at each moment, as the scorecard counts them (`inFlight`).
 Each model is fitted and tested only where the window holds its record (assumption 47), and the output names each span that it skips, with the reason.
 
 - **`tokens`**, of the signal `provider`: the project's uncached input tokens a minute.
-  Form: the tokens of a minute are its issues in flight times X, and X is drawn from the record's own tokens a minute per issue in flight, one draw for each minute of the provider's record with work in flight.
-  A minute whose modelled tokens pass the project's own limit in force is a refused minute, and it counts the record's own refusals per refused minute, or 1 where the record holds no refused minute.
-  So a day's modelled refusals by the project's own limit are the sum, over its minutes with that limit, of the share of the draws above the limit over the minute's issues in flight, times that count.
-  The provider's refusals are kept as recorded (assumption 46).
+  Form: a minute's tokens are its recorded tokens for each issue in flight in the record, times the issues in flight in the replay, `tokens(m) = recorded(m) / recordedInFlight(m) × inFlight(m)`, each count of issues the average over the minute.
+  A minute with no issue in flight in the record keeps its recorded tokens.
+  A minute whose modelled tokens pass the project's own limit in force is a refused minute.
+  It counts the record's own refusals per refused minute, or 1 where the record holds no refused minute, rounded so that the first n refused minutes of a replay count n times that number together.
+  So a refusal by the project's own limit comes from the model, and a refusal that the provider gives every project is kept as recorded (assumption 46).
+  A minute where the window holds no record of the headroom keeps its recorded refusals, since the model has no limit to read there.
   The model is fitted on every minute of the provider's record, with a limit or without one.
-  Its test of the project's own refusals reads only the minutes where the window holds a record of the provider's headroom: a limit of the project's own, from its first observation on (assumption 48).
-  A day with no such minute has no test of the project's own refusals, never a pass.
-  Parameters: the minutes fitted; the mean, the median, and the 90th and 99th percentiles of the tokens a minute per issue in flight; the refused minutes recorded; and the refusals per refused minute.
+  Its test reads only the minutes where the window holds a record of the provider's headroom: a limit of the project's own, from its first observation on (assumption 48).
+  A day with no such minute has no test, never a pass.
+  Parameters: the minutes fitted, the uncached input tokens for each minute of an issue in flight, the refused minutes recorded, and the refusals per refused minute.
 
-- **`memory`**, of the signal `kills`: the memory guard's kills and the pods' memory.
-  Form: the kills over a span are the kills per issue-hour in flight times the span's issue-hours in flight, a rate fitted as the record's kills over its issue-hours in flight.
-  The pods' memory in a minute is the bytes per issue in flight times the issues in flight, fitted as the ratio of the record's memory to its issues in flight over the minutes of the memory's record.
+- **`memory`**, of the signal `kills`: the memory guard's kills.
+  Form: each recorded kill belongs to the work segment of the issue whose pod it ended, at its offset in that segment, and a replay places it at the same offset of its run of that segment.
+  A replay that does not run the segment has none of its kills.
+  Work that the record never ran, a drawn scenario's, takes the day's recorded kills for each hour of an issue in flight.
+  Each drawn issue counts on its own: its issue-hours in flight, each times the rate of its day, add up, and the issue has a kill each time its sum passes a whole number.
+  So no other issue and no rule's timing moves the kills of a drawn issue.
+  A kill that the record cannot place in a segment of its issue is counted apart and kept at its recorded time.
   The model is fitted and tested only where the window holds the record of the kills, the launcher's lines, so only where the memory guard ran.
-  R11 tests the kills; the memory is shown beside them and tests nothing.
-  Parameters: the kills recorded, the issue-hours in flight, the kills per issue-hour in flight, the minutes of the pods' memory fitted, and the bytes per issue in flight.
+  Parameters: the kills recorded, those placed in a work segment of their issue and those counted apart, the issue-hours in flight, and the kills for each hour of an issue in flight.
 
 - **`queue`**, of the signal `queue`: the merge queue's wait.
-  Form: a pull request's wait is its issues in flight when it entered the queue times X, and X is drawn from the record's own waits per issue in flight, one draw for each wait that left the queue in the record with work in flight at its start.
-  A day's modelled median wait is the median, over every draw, of the waits that the model gives the pull requests that left the queue that day, each at its recorded work in flight.
+  Form: each repository has its own queue.
+  A pull request that the record removed before it reached the head of its queue keeps its recorded wait: one that left while a pull request that stood in the queue at its entry, having entered at or before it, still stood.
+  Each other pull request leaves in its order of entry, at the record's next exit from the head of its queue after its entry that no pull request before it took.
+  While the record's queue stood empty, and after the end of the queue's record, the queue serves at the window's own rate of exits from its head for each hour in which it held a pull request: a pull request that reaches the head then leaves one interval of that rate later, where that comes before the next recorded exit.
+  Before the end of the queue's record, the rate serves only while the record's queue stood empty, so a pull request that the record shows still in the queue at its end stands there to that end, as recorded.
+  A recorded pull request enters at its recorded offset from the start of the work segment of its issue in which the record shows its entry, the issue that links it in its Dispatch events or whose lines name it.
+  One that the record shows in no such segment is counted apart and enters at its recorded time.
+  A pull request that no recorded exit and no rate serves stands in the queue, and the model counts it.
   A day on which no pull request left the queue has no test.
-  Parameters: the waits fitted, and the median and the 90th percentile of the wait per issue in flight, in hours.
+  Parameters, for each repository: its exits from the head, its pull requests removed before the head, its hours that held a pull request, and its exits from the head for each such hour; and the pull requests counted apart.
 
-R11's daily test: on a day with at least 10 refusals or kills recorded, the model gives within 30% of the record, and on each other day it gives at most 10; the merge queue's model gives its median wait within 30% of the record on each day.
+R11's daily test, at the recorded work in flight: on a day with at least 10 refused minutes or kills recorded, the model gives within 30% of the record, and on each other day it gives at most 10; the merge queue's model gives its median wait within 30% of the record on each day.
+For the tokens it tests the count of refused minutes, the minutes in which the project's own limit refused a request, and the output gives the project's own refusals beside them.
+At the recorded work in flight the models of the kills and of the merge queue give the record by their form, so for them this test shows only that the model keeps the record, and the output says so beside their verdicts.
 A model passes where it passes on each day that it tests, fails where it fails on one, and gives no test where no day tests it.
-A model gives a limit for its signal only where it passes, and the output says so of each model.
 
-`models` prints, for each model, its form, its parameters, its verdict, each span of the window's span that it skips with the reason, and a table of the days.
+R11's test across two records, with `--against`, holds the rate that each model rests on, on `--window`, within 30% of the same rate on `--against`, which is the reference.
+The rates are the tokens for each minute of an issue in flight, the kills for each hour of an issue in flight, counted from `--kills-from` on each record, and, for each repository whose queue has at least 50 exits from its head in each record, those exits for each hour in which the queue held a pull request.
+The kills are counted from 2026-11-18 by default, the day after the first full day of the memory guard in one deployment's record, which keeps that day as it is.
+A repository with fewer exits has no test, and the output names it with its exits on each record.
+A model passes where each rate that it rests on passes, fails where one fails, and gives no test where none is tested.
+
+A model gives a limit for its signal only where it passes the daily test and, with `--against`, the test across two records.
+Without `--against`, the output says that the test across records did not run, and a model gives its limit on the daily test alone.
+
+`models` prints, for each model, its form, its parameters, its verdicts, whether it gives a limit, each span of the window's span that it skips with the reason, a table of the days, and its rates by load.
 A day is a UTC day of the window's span.
-Each row gives the day's issues in flight, the hours of record that its test reads, the recorded and the modelled value with the test, and the load beside it: the tokens a minute and the provider's refusals for `tokens`, and the pods' memory in GiB for `memory`.
+Each row gives the day's issues in flight, the hours of record that its test reads, the recorded and the modelled value with the test, and what the model gives beside it: the project's own refusals, the tokens a minute and the provider's refusals for `tokens`, and the kills counted apart and the day's kills for each hour of an issue in flight for `memory`.
+The rates by load give the signal's rate in each range of 20 issues in flight that the window records, such as `[260, 280)`, with the hours that the window spent in it where it holds the model's record.
+They are the tokens for each minute of an issue in flight, a minute in the range of its average issues in flight; the kills for each hour of an issue in flight; and, for each repository, the exits from the head for each hour in which its queue held a pull request.
+With `--against`, a last section gives each rate on each record, their ratio, the test, and each repository that has no test.
 `--json` prints the same as JSON (`LoadModels` in `internal/replay/models.go`), which the limit test reads.
+
+A replay reads each model's signal through `LoadModels.Replay` (`internal/replay/model_replay.go`), from the replay's own timeline: its issues in flight at each moment, the stretches in flight of each issue whose work the record never ran, its start of each recorded work segment, and each pull request of work that the record never ran entering the queue.
+It gives the provider's headroom and refusals, the kills of the hour before and the queue's wait at a moment, each by the signal's own definition ([The signals](#the-signals)), and `LoadModels.RecordTimeline` gives the record's own timeline, at which the daily test reads the models.
 
 | Flag | What it gives |
 | --- | --- |
 | `--window <dir>` | The window (required). |
+| `--against <dir>` | A second window, for R11's test across two records. |
+| `--kills-from <time>` | The moment, in RFC 3339, from which the test across records counts the kills (`2026-11-18T00:00:00Z` by default). |
 | `--json` | The models as JSON. |
 
 ### `legion replay validate`
@@ -1948,8 +1979,8 @@ The end of a signal's record is such a moment for a signal that binds there.
 It is the moment at which a rule that admits by the signals needs its next admission pass when no event comes first (R11), and each event moves it again.
 
 A replay keeps each work segment's recorded length, so it cannot show the load that more work in flight would cause.
-So a replay under another rule takes the merge queue's wait, the provider's headroom and refusals, and the kills from a model fitted on the window, as functions of the work in flight (assumption 45).
-[`legion replay models`](#legion-replay-models) fits the three models and tests each one by R11's daily test.
+So a replay under another rule takes the merge queue's wait, the provider's headroom and refusals, and the kills from a model of the window that keeps what the window records and moves with the work in flight of the replay (assumption 45).
+[`legion replay models`](#legion-replay-models) fits the three models and tests each one by R11's daily test and by R11's test across two records.
 The idle share and the approvals come from the replay itself.
 The definitions below read the record, and [`legion replay signals`](#legion-replay-signals) prints them.
 
@@ -2009,7 +2040,7 @@ A refusal that the provider gives every project is kept as recorded.
 **Next crossing**: with the kills as they stand at the moment, the moment at which an old kill leaves the hour.
 
 **Inputs**: `launcher/log.jsonl`, the record of the kills.
-`signals/memory.jsonl` serves only the model.
+No model reads `signals/memory.jsonl`, the pods' memory series, which `collect` still writes where it is given one.
 
 **Source**: the memory model fitted on the window.
 
@@ -3554,18 +3585,24 @@ If the redrawn conflicts move the first slots more than the rule does, the repla
 **The reading that would test it.** _The drawn branch beside the main branch._
 Compare the first-slot errors on `main` and `main+conflicts=drawn`, and the spread over the seeds on the drawn branch.
 
-### Assumption 45: The three modelled signals depend on the work in flight alone
+### Assumption 45: Each modelled signal moves with the work in flight only as its model's form says
 
 Doubtful.
-A replay under another rule takes the merge queue's wait, the provider's headroom with the refusals by the project's own limit, and the memory guard's kills from models fitted on the window, each a function of the work in flight alone ([The signals](#the-signals)).
-Load that a rule does not move, such as the size of the work or the hour of the day, moves these signals too, and the models do not read it.
+A replay under another rule takes the merge queue's wait, the provider's headroom with the refusals by the project's own limit, and the memory guard's kills from models of the window ([`legion replay models`](#legion-replay-models)).
+Each model keeps what the window records, and moves with the replay's work in flight only as its form says.
+A minute's tokens are its recorded tokens for each issue in flight, times the replay's issues in flight.
+A kill moves with the work segment of its own issue, and work that the record never ran takes the day's recorded kills for each hour of an issue in flight.
+Each repository's queue is served by the record's own exits from its head, and by its rate of them for each hour in which it held a pull request.
+So a cause that the record holds and the work in flight does not, such as a release, the hour of the day or a queue's checks, stays as recorded, and a cause that more work in flight would bring beyond these forms is not modelled.
+At the recorded work in flight the models of the kills and of the merge queue give the record by their form, so R11's daily test shows only that they keep it, and R11's test across two records tests the rate that each model rests on.
 Under a rule that admits by no signal, the models move nothing.
 
-**Evidence in a recorded window.** _The kills of one window at a full cap._
-Even at a full cap, so at one level of work in flight, one deployment's window had 299, 88, 57 and 110 memory kills on successive days.
+**Evidence in a recorded window.** _The kills of one window at a full cap, and the same rate in a later record._
+Even at a full cap, so at one level of work in flight, one deployment's window had 299, 88, 57 and 110 memory kills on successive days, the first of them the first full day of the memory guard.
+From the next day on, its kills were 0.0144 for each hour of an issue in flight, as in a later record of the same deployment with more work in flight, while one repository's queue grew from 2 to 90 pull requests at about the same work in flight.
 
 **If it is wrong.**
-If a modelled signal moves with more than the work in flight, the replay moves the measures so under a rule that admits by the signals.
+If a modelled signal moves with the work in flight otherwise than its model's form says, the replay moves the measures so under a rule that admits by the signals.
 
 - Issues finished: Unknown.
   A model that reads a signal too high holds back starts that the true signal would let through, and one that reads it too low lets through starts that it would hold back.
@@ -3579,15 +3616,16 @@ If a modelled signal moves with more than the work in flight, the replay moves t
 
 - Slots: Unknown, for the same reason as the issues finished.
 
-**The reading that would test it.** _Each model's daily reading against the record._
-Compare each model's reading of each day with the record of that day at the recorded work in flight, on each window.
-A day whose record a model misses at the same work in flight shows load that the model does not read.
+**The reading that would test it.** _Each model's rate on two records and by load._
+Compare the rate that each model rests on in two records whose work in flight differs, as R11's test across two records does, and read the signal's rate in each range of 20 issues in flight beside the model.
+A rate that moves between the records, or from one range of issues in flight to the next, shows load that the model does not read.
 
 ### Assumption 46: A refusal by the provider, or one the record does not split, is kept as recorded and counted as R11 says
 
 The record splits the refusals of each minute into those of the project's own limit and those of the provider ([Signal `provider`](#signal-provider)).
 A replay under another rule takes the project's own refusals from the tokens model and keeps the provider's as recorded, since the provider gives them to every project.
 A refusal that the record does not split counts as the project's own, and the result says so.
+A minute in which the window holds no record of the project's limit keeps its recorded refusals of both kinds, since the model has no limit to read there.
 
 **Evidence in a recorded window.** _Refusals of both kinds in one minute._
 In one deployment's record of 2026-11-23 from 16:28, the provider refused 70 calls in the first minute while the project's own limit refused none, and in the third minute the project's own limit refused 127 beside the provider's 53.
@@ -3638,7 +3676,7 @@ Check the rule's decisions on a span where that signal is recorded, and compare 
 Doubtful.
 The record observes the project's limit where a refusal's line in the deployment's log names it, the "of its N" of a 429, and where a change of it is recorded, each value with its source.
 Between two observations, the tool takes the earlier one to hold, so a change between them is read late, and the headroom is misread over that stretch: high after a cut, and low after a raise.
-Before the first observation, the headroom has no record, does not bind and is not fitted (assumption 47).
+Before the first observation, the headroom has no record and does not bind (assumption 47), and the tokens model keeps the minute's tokens and tests no refused minute there.
 
 **Evidence in a recorded window.** _Few observations of the limit._
 In one deployment's record of nine days, the limit was observed in 290 of 12,150 minutes, and one recorded change took it away at 2026-11-16T22:07Z.

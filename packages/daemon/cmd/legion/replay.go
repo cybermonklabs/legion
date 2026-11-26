@@ -814,42 +814,76 @@ func printReplaySignal(stdout io.Writer, name, text string, limits []float64, ne
 
 // replayModelsLong is `legion replay models --help`'s description.
 const replayModelsLong = `Fit R11's three load models on a recorded window's record alone, with no replay, and print
-each day's recorded and modelled values with R11's daily test.
+each model's form, parameters, daily test and rates by load.
 
-Each model is a function of the work in flight, the issues in flight at each moment as the
-scorecard counts them (inFlight): tokens, the project's uncached input tokens a minute, from which
-a minute over the project's own limit is a refused minute, the provider's refusals kept as
-recorded; memory, the pods' memory and the memory guard's kills; queue, the merge queue's wait.
-R11's daily test: on a day with at least 10 refusals or kills recorded, the model within 30% of
-the record; on each other day, at most 10; the merge queue's median wait within 30% on each day.
+Each model keeps what the window records and moves with the work in flight of a replay: tokens,
+each minute's recorded uncached input tokens for each issue in flight, times the replay's issues in
+flight, a minute over the project's own limit being a refused minute and the provider's refusals
+kept as recorded; memory, each memory guard kill at its offset in the work segment of its own
+issue, and the day's kills for each hour of an issue in flight for work the record never ran;
+queue, a queue for each repository, served by the record's own exits from its head and by its
+rate of them for each hour in which it held a pull request. No model reads the pods' memory.
+
+R11's daily test, at the recorded work in flight: on a day with at least 10 refused minutes or
+kills recorded, the model within 30% of the record; on each other day, at most 10; the merge
+queue's median wait within 30% on each day. The kill and queue models give the record by their
+form there, and the output says so. Beside each model it prints the signal's rate in each range
+of 20 issues in flight that the window records, with the hours spent in it.
+
+With --against, it fits the models on that record too and runs R11's test across two records:
+each model's rate on --window within 30% of the same rate on --against, the tokens for each minute
+of an issue in flight, the kills for each hour of an issue in flight counted from --kills-from,
+and the exits from the head of each repository's queue for each hour in which it held a pull
+request, for each repository with at least 50 such exits in each record; the output names each
+other repository as untested.
 
 A model is fitted and tested only where the window holds its record, and the output names each
-span it skips and why. A day of the tokens model with no limit of the project's own recorded has
-no test of the project's own refusals, never a pass. A model that fails, or that gives no test,
-gives no limit for its signal. --json prints the same as JSON.`
+span it skips and why. A model gives a limit for its signal only where it passes the daily test
+and, with --against, the test across two records; without --against the output says that the test
+across records did not run. --json prints the same as JSON.`
+
+// killsFromDefault is where R11's test across two records counts the kills from by default:
+// 2026-11-18, the first day after the first full day of the memory guard, which the record keeps
+// as it is (spec R11).
+const killsFromDefault = "2026-11-18T00:00:00Z"
 
 // newReplayModelsCommand is `legion replay models` (replay.FitLoadModels): R11's load models fitted
-// on a recorded window's record with no replay, each day tested by R11's daily test.
+// on a recorded window's record with no replay, each day tested by R11's daily test, and, with
+// --against, R11's test across two records (replay.CompareRecords).
 func newReplayModelsCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "models --window <dir> [--json]",
-		Short: "fit R11's load models on a recorded window's record and print each day's test, with no replay",
+		Use:   "models --window <dir> [--against <dir>] [--kills-from <time>] [--json]",
+		Short: "fit R11's load models on a recorded window's record and print each one's tests and rates by load, with no replay",
 		Long:  replayModelsLong,
 		Args:  noArguments,
 	}
 	flags := cmd.Flags()
 	windowDir := flags.String("window", "", "the directory of the recorded window (required)")
+	againstDir := flags.String("against", "", "the directory of a second recorded window, for R11's test across two records")
+	killsFromText := flags.String("kills-from", killsFromDefault, "the moment, in RFC 3339, from which the test across two records counts the kills")
 	asJSON := flags.Bool("json", false, "print the models as JSON")
 	cmd.RunE = runs(func(context.Context, []string) int {
 		if missing := missingFlag(cmd, "window"); missing != "" {
 			return refuse(cmd, "--%s is required", missing)
 		}
-		window, err := replay.ReadWindow(*windowDir)
+		killsFrom, err := time.Parse(time.RFC3339, *killsFromText)
 		if err != nil {
-			fmt.Fprintf(stderr, "legion replay models: %v\n", err)
-			return 1
+			return refuse(cmd, "--kills-from %q is no RFC 3339 time", *killsFromText)
 		}
-		models, err := replay.FitLoadModels(window)
+		fit := func(dir string) (replay.LoadModels, error) {
+			window, err := replay.ReadWindow(dir)
+			if err != nil {
+				return replay.LoadModels{}, err
+			}
+			return replay.FitLoadModels(window)
+		}
+		models, err := fit(*windowDir)
+		if err == nil && *againstDir != "" {
+			var against replay.LoadModels
+			if against, err = fit(*againstDir); err == nil {
+				models, err = replay.CompareRecords(models, against, killsFrom)
+			}
+		}
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay models: %v\n", err)
 			return 1
