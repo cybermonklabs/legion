@@ -56,9 +56,15 @@ const scratch = temporaryDirectories("unit-repeat");
 
 const tool = fileURLToPath(new URL("../tools/unit-repeat.ts", import.meta.url));
 
-/** The files a copy of the tool needs, by their paths under `e2e`: the tool, its preload, and the
- *  module the tool imports (`signalGroup`). */
-const toolFiles = ["tools/unit-repeat.ts", "tools/unit-repeat-progress.ts", "signal-group.ts"];
+/** The files a copy of the tool needs, by their paths under `e2e`: the tool, its preload, the
+ *  module the tool imports (`signalGroup`), and the worker count the package's `test:harness`
+ *  script reads (`--parallel=$(bun e2e/tools/test-workers.ts)`), which a copy of that script runs. */
+const toolFiles = [
+  "tools/unit-repeat.ts",
+  "tools/unit-repeat-progress.ts",
+  "signal-group.ts",
+  "tools/test-workers.ts",
+];
 
 /** Copies `toolFiles` into the package at `directory`, each to its path under that `e2e`. */
 function copyTool(directory: string): void {

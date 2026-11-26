@@ -14,12 +14,19 @@ const WITHOUT_AWAIT = "You called act(async () => ...) without await";
 const OVERLAPPING = "overlapping act() calls";
 const SUSPENDED = "suspended inside an `act` scope";
 
-/** The `test:web` script's words after its leading `bun`: the preloads and flags of every run. */
+/** The `test:web` script's words after its leading `bun`: the preloads and flags of every run, as
+ *  the shell `bun run` starts it in expands them, so its `--parallel=$(bun …)` is the count that
+ *  command prints rather than the text of the command. */
 function suiteArguments(): string[] {
   const manifest = JSON.parse(readFileSync(join(PACKAGE_DIR, "package.json"), "utf8")) as {
     scripts: { "test:web": string };
   };
-  const [runner, ...args] = manifest.scripts["test:web"].split(" ");
+  const expanded = Bun.spawnSync(
+    ["sh", "-c", `printf '%s\\n' ${manifest.scripts["test:web"]}`],
+    { cwd: PACKAGE_DIR, stderr: "pipe" }
+  );
+  expect(expanded.exitCode, expanded.stderr.toString()).toBe(0);
+  const [runner, ...args] = expanded.stdout.toString().trimEnd().split("\n");
   expect(runner).toBe("bun");
   return args;
 }
