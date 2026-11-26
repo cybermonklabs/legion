@@ -14,7 +14,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
@@ -26,9 +25,9 @@ const citationsJob = "spec-citations"
 // spec-report--<job>--<leg>, a directory that holds the job's report.jsonl.
 const reportPrefix = "spec-report--"
 
-// citationFault is one entry of the --json file: the machine form of the value at the commit of a
-// check's state input Input.Uncited, which is by commit, then by check; its reader files the
-// entries under the commit that citations judged.
+// citationFault is one entry of the --json file, [{"check","rule","detail"}]: a check that CI
+// refuses at the commit, the rule it breaks, and a detail that begins with the rule
+// (specgraph.CitationFault).
 type citationFault struct {
 	Check  string `json:"check"`
 	Rule   string `json:"rule"`
@@ -36,13 +35,15 @@ type citationFault struct {
 }
 
 // runCitations is "spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed
-// <file> | --all-changed) --reports <dir> --needs <file> [--ties <file>...] [--json <file>]
-// [--allow-empty]": it names each program check of the spec files that CI refuses at the commit
-// (specgraph.Citations, R48), and answers 1 when it names one, 0 when none, and 2 for an input it
-// cannot read, a root that is not the top of its git clone (isCloneTop) or arguments it does not
-// take. Each answer 2 but a --json file it cannot write comes before it writes that file, so a spec
-// file that does not parse, an input it cannot read and a --needs that does not name exactly the
-// jobs spec-citations needs write no --json file.
+// <file> | --all-changed) --reports <dir> --needs <file> [--json <file>] [--allow-empty]": it
+// names each program check of the spec files that CI refuses at the commit (specgraph.Citations,
+// R48), and answers 1 when it names one, 0 when none, and 2 for an input it cannot read, a root
+// that is not the top of its git clone (isCloneTop) or arguments it does not take. The tie of a
+// check at the commit is what the repository's own go-test-reads.sh derives (derivedTies), and at
+// the base commit of --changed what the base's own script derives in a checkout of the base
+// (baseCheckout). Each answer 2 but a --json file it cannot write comes before it writes that
+// file, so a spec file that does not parse, an input it cannot read and a --needs that does not
+// name exactly the jobs spec-citations needs write no --json file.
 func runCitations(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("citations", flag.ContinueOnError)
 	dir := flags.String("dir", "", "the directory of spec files")
@@ -52,8 +53,6 @@ func runCitations(args []string, stdout, stderr io.Writer) int {
 	allChanged := flags.Bool("all-changed", false, "the commit has no base commit, so every file counts as changed")
 	reportsDir := flags.String("reports", "", "the directory of the report artifacts of the run")
 	needsFile := flags.String("needs", "", "toJSON(needs) of the spec-citations job")
-	var tiesFiles ids
-	flags.Var(&tiesFiles, "ties", "a file of ties by commit, {\"<commit>\":{\"<check>\":[…]}}; may be given more than once")
 	jsonFile := flags.String("json", "", "the file to write the faults to as JSON")
 	allowEmpty := flags.Bool("allow-empty", false, "read a directory that does not exist or holds no spec file as no check to cite")
 	if code, ok := parse(flags, args, stderr, "dir", "repo", "workflow", "reports", "needs"); !ok {
@@ -66,9 +65,6 @@ func runCitations(args []string, stdout, stderr io.Writer) int {
 		return usageFault(stderr, "citations: give --changed <file> or --all-changed, not both")
 	}
 	paths := []*string{dir, repo, workflow, changedFile, reportsDir, needsFile, jsonFile}
-	for i := range tiesFiles {
-		paths = append(paths, &tiesFiles[i])
-	}
 	for _, path := range paths {
 		if *path == "" {
 			continue
@@ -113,58 +109,39 @@ func runCitations(args []string, stdout, stderr io.Writer) int {
 	}
 	// The tie of a check at the commit, and at the base commit of --changed; Citations asks for each
 	// only for a check whose test did not run.
-	var tie, baseTie func(specgraph.Check) specgraph.Tie
-	if len(tiesFiles) > 0 {
-		files, err := readTiesFiles(tiesFiles)
-		if err != nil {
-			say(stderr, "%s", err)
-			return 2
-		}
-		// The ties at the commit are the files' ties of the commit that the repository is at.
-		head, ok := commitName(*repo, "HEAD")
-		if !ok {
-			say(stderr, "%s: git cannot read its commit HEAD, whose ties --ties gives", *repo)
-			return 2
-		}
-		tie = func(c specgraph.Check) specgraph.Tie { return fileTie(files, head, c.ID) }
-		if *changedFile != "" {
-			baseTie = func(c specgraph.Check) specgraph.Tie { return fileTie(files, baseCommit, c.ID) }
-		}
-	} else {
-		tie = newDerivedTies(*repo, nil).tie
-		if *changedFile != "" {
-			if head, ok := commitName(*repo, "HEAD"); ok && head == baseCommit {
-				// The base is the commit itself, whose tie is the one at the commit (R8: a result counts
-				// at its own commit), so no checkout is made.
-				baseTie = tie
-			} else {
-				base := &baseCheckout{repo: *repo, commit: baseCommit}
-				defer base.close()
-				baseTie = base.tie
-			}
+	tie := newDerivedTies(*repo, nil).tie
+	var baseTie func(specgraph.Check) specgraph.Tie
+	if *changedFile != "" {
+		if head, ok := (specgraph.GitHistory{Dir: *repo}).CommitName("HEAD"); ok && head == baseCommit {
+			// The base is the commit itself, whose tie is the one at the commit (R8: a result counts
+			// at its own commit), so no checkout is made.
+			baseTie = tie
+		} else {
+			base := &baseCheckout{repo: *repo, commit: baseCommit}
+			defer base.close()
+			baseTie = base.tie
 		}
 	}
 
 	j, err := read(stderr, *dir)
+	what, empty := noSpecFile(j, err)
 	switch {
-	case errors.Is(err, notes.ErrNoDirectory) && *allowEmpty:
+	case empty && !*allowEmpty:
+		say(stderr, "%s: %s, and citations reads it as no check to cite only with --allow-empty", *dir, what)
+		return 2
+	case empty:
 		// Git keeps no empty directory, so a repository with no spec file yet has no directory.
+		if !writeFaults(stderr, *jsonFile, nil) {
+			return 2
+		}
+		say(stdout, "%s: %s; no check to cite", *dir, what)
+		return 0
 	case err != nil:
 		return cannotJudge(stderr, *dir, err)
 	case len(j.problems) > 0:
 		// A block that does not parse is missing from the tree, so a check in it would go uncited.
 		j.sayProblems(stderr)
 		return 2
-	case j.files == 0 && !*allowEmpty:
-		say(stderr, "%s: holds no spec file", *dir)
-		return 2
-	}
-	if j.files == 0 {
-		if !writeFaults(stderr, *jsonFile, nil) {
-			return 2
-		}
-		say(stdout, "%s: holds no spec file; no check to cite", *dir)
-		return 0
 	}
 
 	faults := specgraph.Citations(j.tree, specgraph.CitationInput{Code: &specgraph.GoCode{Dir: *repo}, Jobs: jobs, Reports: reports,
@@ -322,9 +299,7 @@ func readChanged(path string) (base string, changed []string, err error) {
 }
 
 // writeFaults writes the faults to path as one line of JSON with printJSON, [] for none, making its
-// directory, and answers whether it could; with no path it writes nothing. It is the value at the
-// commit of the input of the state of each check, Input.Uncited, which is by commit, then by
-// check, so its reader files it under that commit.
+// directory, and answers whether it could; with no path it writes nothing.
 func writeFaults(stderr io.Writer, path string, faults specgraph.CitationFaults) bool {
 	if path == "" {
 		return true

@@ -70,12 +70,15 @@ func ScriptTestReads(repoRoot string, environ []string) TestReads {
 // that the check names"): for runner go and a selector that ParseSelector takes, what `go test`
 // of the selector's package, run in workdir with env, reads by reads, as NewTie takes it. A check
 // whose tie cannot be derived gets Known false and a Why that names the cause: no test part, a
-// runner other than go, a selector ParseSelector refuses, an error of reads, or an answer that
-// NewTie refuses (R18: "A tie that Dispatch cannot derive reads as unknown, not as none"). Checks
-// of one package ask reads once. In production workdir is "." at the repository root, where the
-// root go.work takes the envoy and daemon import paths, and env is empty. A symbolic link in a tie
-// whose target is outside it is the same case as a test that reads a file outside its package: the
-// tie holds what the rows of ci_job_reads.py record, and a row for the target names it.
+// runner other than go, a selector ParseSelector refuses, a selector whose path starts with "-",
+// an error of reads, or an answer that NewTie refuses (R18: "A tie that Dispatch cannot derive
+// reads as unknown, not as none"). reads runs go with the path, so a path that starts with "-"
+// would reach go as a flag, such as -toolexec, which names a program that go runs: GoTies asks
+// reads nothing for it. Checks of one package ask reads once. In production workdir is "." at the
+// repository root, where the root go.work takes the envoy and daemon import paths, and env is
+// empty. A symbolic link in a tie whose target is outside it is the same case as a test that reads
+// a file outside its package: the tie holds what the rows of ci_job_reads.py record, and a row for
+// the target names it.
 func GoTies(checks []Check, workdir string, env []string, reads TestReads) map[string]Tie {
 	type answer struct {
 		tie Tie
@@ -98,6 +101,10 @@ func GoTies(checks []Check, workdir string, env []string, reads TestReads) map[s
 		path, _, err := ParseSelector(c.Test.Selector)
 		if err != nil {
 			ties[c.ID] = Tie{Why: err.Error()}
+			continue
+		}
+		if strings.HasPrefix(path, "-") {
+			ties[c.ID] = Tie{Why: fmt.Sprintf("the selector's path %q starts with \"-\", which go would read as a flag", path)}
 			continue
 		}
 		a, ok := asked[path]

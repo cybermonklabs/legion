@@ -41,16 +41,12 @@ func newGitCase(t *testing.T, reads string) gitCase {
 // script writes the repository's go-test-reads.sh, which answers reads.
 func (g gitCase) script(t *testing.T, reads string) {
 	t.Helper()
-	path := filepath.Join(g.repo, ".github", "scripts", "go-test-reads.sh")
-	writeFile(t, path, stubScript(reads))
-	if err := os.Chmod(path, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeScript(t, filepath.Join(g.repo, ".github", "scripts", "go-test-reads.sh"), stubScript(reads))
 }
 
-// cite runs changed from base to HEAD, then citations over its list with no --ties, as the job runs
-// them, with TMPDIR at g.tmp; it fails the test unless changed exits 0 and the checkout of the base
-// is gone after the run.
+// cite runs changed from base to HEAD, then citations over its list, as the job runs them, with
+// TMPDIR at g.tmp; it fails the test unless changed exits 0 and the checkout of the base is gone
+// after the run.
 func (g gitCase) cite(t *testing.T, binary, workflow, base string) result {
 	t.Helper()
 	list := runBinary(t, binary, "", "changed", "--repo", g.repo, "--base", base)
@@ -67,11 +63,11 @@ func (g gitCase) cite(t *testing.T, binary, workflow, base string) result {
 	return got
 }
 
-// R8: without --ties, citations derives the tie at the base commit from a checkout of that commit
-// with the base's own go-test-reads.sh, so a file that the change deleted counts when the base's
-// tie holds it. The head deletes a/testdata and its script answers a/* alone; at the base the
-// script answers a/* and a/testdata/**. The control is the same change where the base's script
-// answers a/* alone: the deleted file is then no read of the test at either end, and it is cited.
+// R8: citations derives the tie at the base commit from a checkout of that commit with the base's
+// own go-test-reads.sh, so a file that the change deleted counts when the base's tie holds it. The
+// head deletes a/testdata and its script answers a/* alone; at the base the script answers a/* and
+// a/testdata/**. The control is the same change where the base's script answers a/* alone: the
+// deleted file is then no read of the test at either end, and it is cited.
 func TestCitationsReadsTheTieAtTheBaseCommit(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -134,13 +130,13 @@ func TestCitationsFromTheMergeBase(t *testing.T) {
 	expect(t, g.cite(t, binary, workflow, push1), cited(dir))
 }
 
-// Without --ties, citations derives a tie only for a check whose test did not run: a run where
-// each test ran starts no go-test-reads.sh and makes no checkout of the base. The script of the
-// fixture writes a line to a file of the test each time it runs, at the head and at the base. The
-// control is the same run with the test skipped, where only docs/readme.md changed: the tie at the
-// head covers no changed path, so citations asks the script at the head and then at the base. A
-// list from the head itself has the head as its base, whose tie is the one at the head: the script
-// runs once, and no checkout is made.
+// citations derives a tie only for a check whose test did not run: a run where each test ran starts
+// no go-test-reads.sh and makes no checkout of the base. The script of the fixture writes a line to
+// a file of the test each time it runs, at the head and at the base. The control is the same run
+// with the test skipped, where only docs/readme.md changed: the tie at the head covers no changed
+// path, so citations asks the script at the head and then at the base. A list from the head itself
+// has the head as its base, whose tie is the one at the head: the script runs once, and no checkout
+// is made.
 func TestCitationsDerivesATieOnlyForATestThatDidNotRun(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")

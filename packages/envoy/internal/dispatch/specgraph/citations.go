@@ -1,6 +1,7 @@
 package specgraph
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 )
@@ -64,8 +65,10 @@ type CitationInput struct {
 //
 //   - no-test: the check names no runner or no selector, or one with no letter and no digit;
 //   - test-not-in-code, two-tests: in.Code finds no test or more than one for its test part (R6:
-//     "a runner and a selector, which pick one test in the code"); test-lookup-failed: in.Code
-//     cannot search for it, as for a package that go cannot list;
+//     "a runner and a selector, which pick one test in the code"), and a test that only a test
+//     file under a build constraint declares, which go test with no tags does not build, is
+//     test-not-in-code with a detail that names that file (ExcludedTestError);
+//     test-lookup-failed: in.Code cannot search for it, as for a package that go cannot list;
 //   - job-not-in-workflow, job-not-awaited: in.Jobs has no job of its name, or the citations job
 //     does not wait for it and so cannot read its report;
 //   - test-not-run: code that the check runs changed and the job did not run its test (R8: "CI
@@ -116,7 +119,11 @@ func (in CitationInput) cite(c Check) (rule, detail string) {
 		return citeNoTest, "the check names no test"
 	}
 	test := *c.Test
+	var excluded *ExcludedTestError
 	switch n, err := in.Code.Find(test); {
+	case errors.As(err, &excluded):
+		return citeTestNotInCode, fmt.Sprintf("%s is not in the code that go test builds at this commit: a build constraint leaves out %s, which declares it",
+			test.Selector, excluded.File)
 	case err != nil:
 		return citeTestLookupFailed, fmt.Sprintf("%s could not be looked up in the code at this commit (%v)", test.Selector, err)
 	case n == 0:
@@ -233,18 +240,4 @@ func notRunInLeg(test Test, leg JobReport) string {
 		return "its report shows it skipped"
 	}
 	return ""
-}
-
-// Uncited is the rule of each check that f refuses, by check id: the value at one commit of
-// Input.Uncited, which is by commit, then by check, so a caller files it under the commit whose
-// faults f holds (R48: "At that commit, such a check reads unknown, and no earlier result of it
-// counts").
-func (f CitationFaults) Uncited() map[string]string {
-	uncited := make(map[string]string, len(f))
-	for _, fault := range f {
-		if _, seen := uncited[fault.Check]; !seen {
-			uncited[fault.Check] = fault.Rule
-		}
-	}
-	return uncited
 }

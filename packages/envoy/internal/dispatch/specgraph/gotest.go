@@ -43,7 +43,8 @@ const outcomeCached = "cached"
 //     report. A report that ends before it, as a capture cut short, cannot say whether go test
 //     replayed the package from its cache, since the summary line that says so comes just before
 //     that end. go tool test2json, run over a test binary that stops inside a test, writes that end
-//     as an end event of the test it named last, so such a report holds no run of its package.
+//     as an end event of the test it named last, so such a report holds no end of its package, and
+//     each run of it is could_not_run.
 //
 // Every run of a package whose result go test replayed from its test cache is "cached", whatever
 // its end event: such a run is an earlier run's account, and the test did not run at the commit

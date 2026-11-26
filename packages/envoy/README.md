@@ -143,6 +143,10 @@ the repository root show how CI runs each.
 `pmdoc/gen`: they need `bun` and a `bun install` at the repository root. Without `bun` they
 skip, except where `CI` is set, where they fail.
 
+`cmd/spec-check` tests run the repository's `.github/scripts/go-test-reads.sh`, which imports
+PyYAML, so `go test ./cmd/spec-check` needs `python3` with PyYAML (`pip install pyyaml`, or
+the `python3-yaml` package). Without it those tests fail.
+
 ## The edge listener
 
 `ENVOY_EDGE_PROJECTS` makes a listener the edge listener, the one an outside person's agents reach Envoy through.

@@ -460,7 +460,9 @@ class Session:
     def listing(self, run_: Run) -> list:
         """`go list -deps` of the run, with -test for a run that compiles tests (test, vet). Kept
         by the command it runs, so Runs that differ only in a mode that asks the same listing (a
-        test and a vet, a build and a run) share one."""
+        test and a vet, a build and a run) share one. `--` ends go's flags before the packages, so
+        go reads a package that starts with `-` (a spec's selector can name one) as an import path,
+        which it refuses, and never as a flag such as -toolexec, which names a program go runs."""
         args = ["list", "-e", f"-json={FIELDS}", "-deps"]
         if run_.mode in ("test", "vet"):
             args.append("-test")
@@ -468,7 +470,7 @@ class Session:
             args += ["-tags", run_.tags]
         if run_.race:
             args.append("-race")
-        args += self.overlay_args(run_) + list(run_.pkgs)
+        args += self.overlay_args(run_) + ["--", *run_.pkgs]
         key = ("list", run_.workdir, run_.env, tuple(args))
         if key not in self.cache:
             self.cache[key] = decode_stream(self.go(run_, args))
@@ -816,15 +818,20 @@ TIE_WILD = re.compile(r"[*?\\[]")
 
 
 def tie_entry(glob: str) -> str | None:
-    """The narrowest Tie entry that contains every repository path glob can select."""
+    """The narrowest Tie entry that contains every repository path glob can select: the glob
+    itself when it holds no wildcard; the directory before its first wildcard part with `*` when
+    that part is the last one and holds no `**`, which stays inside one directory; and that
+    directory with `**` otherwise, since a later part or a `**` (glob_regex reads it as any run of
+    characters, `/` included, so `a/b**` selects `a/bc/d`) reaches below it. None when the first
+    part holds a wildcard, which leaves no directory before it."""
     parts = glob.split("/")
     wild = next((i for i, part in enumerate(parts) if TIE_WILD.search(part)), None)
     if wild is None:
         return glob
     if wild == 0:
         return None
-    if wild == len(parts) - 1:
-        return "/".join(parts[:wild] + ["*" if parts[wild] != "**" else "**"])
+    if wild == len(parts) - 1 and "**" not in parts[wild]:
+        return "/".join(parts[:wild] + ["*"])
     return "/".join(parts[:wild] + ["**"])
 
 
@@ -3673,7 +3680,8 @@ def compiled_files(session: Session, r: Run, tags: str, dirs: list) -> set:
         args += ["-tags", tags]
     patterns = [f"./{Path(d).relative_to(r.workdir).as_posix()}" if d != r.workdir else "." for d in dirs]
     out = set()
-    for pkg in decode_stream(session.go(r, args + patterns)):
+    # `--` ends go's flags, as listing passes it, so a pattern is never read as a flag.
+    for pkg in decode_stream(session.go(r, args + ["--", *patterns])):
         d = rel(pkg["Dir"]) if pkg.get("Dir") else None
         if d is not None:
             for field in ("GoFiles", "CgoFiles", "TestGoFiles", "XTestGoFiles"):

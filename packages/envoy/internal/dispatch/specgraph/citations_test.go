@@ -2,7 +2,6 @@ package specgraph
 
 import (
 	"errors"
-	"maps"
 	"slices"
 	"testing"
 )
@@ -359,9 +358,9 @@ func TestCitationsAsksForEachTieOnlyWhenItDecides(t *testing.T) {
 	}
 }
 
-// Each faulty check gets one fault, in the order of the tree, and Uncited maps it to its rule, the
-// value at one commit of a check's state input Input.Uncited, which is by commit, then by check.
-func TestCitationFaultsUncited(t *testing.T) {
+// Citations gives one fault for each check that breaks a rule, in the order of the tree, and none
+// for a sound check.
+func TestCitationsGivesOneFaultForEachFaultyCheckInTheOrderOfTheTree(t *testing.T) {
 	t.Parallel()
 	c := newCitationCase(t)
 	renamed, untested, sound := citationCheck, citationCheck, citationCheck
@@ -369,18 +368,11 @@ func TestCitationFaultsUncited(t *testing.T) {
 	untested.ID, untested.Test = "check-c", nil
 	sound.ID = "check-d"
 	c.tree.Checks = []Check{citationCheck, renamed, untested, sound}
-	got := c.citations()
-	if ids := []string{}; len(got) != 2 || got[0].Check != "check-b" || got[1].Check != "check-c" {
-		for _, f := range got {
-			ids = append(ids, f.Check+" "+f.Rule)
-		}
-		t.Fatalf("Citations gave %q; want one fault of check-b and one of check-c", ids)
+	var got []string
+	for _, f := range c.citations() {
+		got = append(got, f.Check+" "+f.Rule)
 	}
-	want := map[string]string{"check-b": "test-not-in-code", "check-c": "no-test"}
-	if uncited := got.Uncited(); !maps.Equal(uncited, want) {
-		t.Errorf("Uncited = %v; want %v", uncited, want)
-	}
-	if uncited := CitationFaults(nil).Uncited(); len(uncited) != 0 {
-		t.Errorf("Uncited of no fault = %v; want an empty map", uncited)
+	if want := []string{"check-b test-not-in-code", "check-c no-test"}; !slices.Equal(got, want) {
+		t.Errorf("Citations gave %q; want %q", got, want)
 	}
 }

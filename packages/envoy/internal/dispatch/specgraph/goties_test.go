@@ -104,6 +104,37 @@ func TestATieThatCannotBeDerivedIsUnknown(t *testing.T) {
 	}
 }
 
+// GoTies hands the path of a check's selector to reads, which runs go with it, so a path that
+// starts with "-" would reach go as a flag, such as -toolexec, which names a program that go runs.
+// ParseSelector takes such a path, since Find runs go list -- <path>, which reads it as no flag.
+// GoTies refuses it as a tie that is not known, with a cause that says so, and asks reads nothing.
+// The stub reads answers a tie for each path, so a path that reached it reads as a known tie. The
+// control is the same check with the path of a package, whose tie is the answer.
+func TestGoTiesHandsReadsNoPathThatStartsWithADash(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		path, why string // why is "" for a known tie
+	}{
+		{path: "-toolexec=/bin/false", why: `the selector's path "-toolexec=/bin/false" starts with "-", which go would read as a flag`},
+		{path: "-exec=/bin/false", why: `the selector's path "-exec=/bin/false" starts with "-", which go would read as a flag`},
+		{path: "example.com/citations/a"},
+	} {
+		t.Run(row.path, func(t *testing.T) {
+			t.Parallel()
+			c := checkStateCheck
+			c.Test = &Test{Runner: "go", Selector: row.path + " TestA", Job: "go-checks"}
+			var calls []readsCall
+			tie := GoTies([]Check{c}, ".", nil, stubReads(&calls, map[string][]string{row.path: {"a/*"}}, nil))[c.ID]
+			switch {
+			case row.why == "" && (!tie.Known || !slices.Equal(tie.Paths, []string{"a/*"}) || len(calls) != 1):
+				t.Errorf("the control: GoTies gave %+v after the reads were asked %+v; want the known tie a/*, asked once", tie, calls)
+			case row.why != "" && (tie.Known || tie.Why != row.why || len(calls) != 0):
+				t.Errorf("GoTies gave %+v after the reads were asked %+v; want an unknown tie whose Why is %q, and no ask", tie, calls, row.why)
+			}
+		})
+	}
+}
+
 // ScriptTestReads runs the repository's go-test-reads.sh and reads its one JSON object. The test
 // writes each script and then runs it, so it runs alone: a fork of a parallel test while a script
 // is open for writing holds the file open in the child, and running the script then fails with

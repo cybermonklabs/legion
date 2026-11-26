@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -101,6 +102,30 @@ func TestGoCodeFindRefusesWhatItCannotLookUp(t *testing.T) {
 	inA := &GoCode{Dir: "testdata/citations/repo/a", Env: []string{"GOWORK=off"}}
 	if got, err := inA.Find(Test{Runner: "go", Selector: "-e TestA", Job: "go-checks"}); err == nil {
 		t.Errorf("Find(%q) = %d, nil; want an error: go read the path as a flag", "-e TestA", got)
+	}
+}
+
+// go list runs with the default build context, so a test file under a build constraint that it
+// does not meet, such as //go:build e2e, is in no package that go test builds with no tags: go
+// list lists it as IgnoredGoFiles. A test that only such a file declares counts 0, and Find names
+// the file in its error, so a refusal names the cause and not a test that is gone. The control is
+// a test that no file declares, in the same package beside the same tagged file: 0 and no error.
+func TestGoCodeFindNamesTheFileThatABuildConstraintLeavesOut(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "repo")
+	if err := os.CopyFS(dir, os.DirFS("testdata/citations/repo")); err != nil {
+		t.Fatal(err)
+	}
+	tagged := filepath.Join(dir, "a", "e2e_test.go")
+	if err := os.WriteFile(tagged, []byte("//go:build e2e\n\npackage a\n\nimport \"testing\"\n\nfunc TestEndToEnd(t *testing.T) {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code := &GoCode{Dir: dir, Env: []string{"GOWORK=off"}}
+	if got, err := code.Find(Test{Runner: "go", Selector: "example.com/citations/a TestEndToEnd", Job: "go-checks"}); got != 0 || err == nil || !strings.Contains(err.Error(), tagged) {
+		t.Errorf("Find of a test that only a file under //go:build e2e declares = %d, %v; want 0 and an error that names %s", got, err, tagged)
+	}
+	if got, err := code.Find(Test{Runner: "go", Selector: "example.com/citations/a TestRenamed", Job: "go-checks"}); got != 0 || err != nil {
+		t.Errorf("the control: Find of a test that no file declares = %d, %v; want 0, nil", got, err)
 	}
 }
 

@@ -25,10 +25,10 @@
 //	  planted_on for a program check of the code; <dir>/ties.json holds each check's tie by commit,
 //	  and a failing example that the test caught, or a run of the test of a program check of
 //	  production or of the graph, counts at another commit only when the check's tie is known at both
-//	  and no path that changed between them is covered by the tie at either; one that the test missed
-//	  never counts at another commit)
+//	  and no path that changed between them reaches the tie at either (a path reaches a tie that
+//	  covers it or holds a path under it); one that the test missed never counts at another commit)
 //	spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed)
-//	    --reports <dir> --needs <file> [--ties <file>...] [--json <file>] [--allow-empty]
+//	    --reports <dir> --needs <file> [--json <file>] [--allow-empty]
 //	spec-check changed --repo <root> --base <commit> [--head <commit>]
 //
 // tree judges one directory. It exits 0 for a valid tree, with the count line "spec-check: <dir>:
@@ -169,10 +169,11 @@
 // the commit that it read, and a failing example at the commit that it counts from, its planted_on
 // for a program check of the code; a failing example that its test caught, or a run of the test of
 // a program check of production or of the graph, counts at another commit only when the check's tie
-// is known at both commits and no path that changed between them is covered by the tie at either
-// commit, and one that its test missed never counts at another commit; the reader refuses a commit
-// of ties.json of no letter and no digit, as it refuses such a commit of a subject, and names the
-// form that ties.json needs when a value in it is of another type, such as ties by check alone.
+// is known at both commits and no path that changed between them reaches the tie at either commit
+// (a path reaches a tie that covers it or holds a path under it), and one that its test missed
+// never counts at another commit; the reader refuses a commit of ties.json of no letter and no
+// digit, as it refuses such a commit of a subject, and names the form that ties.json needs when a
+// value in it is of another type, such as ties by check alone.
 //
 // citations names each program check that CI must refuse at the commit of --repo
 // (specgraph.Citations, R48): its test is not in the code, its selector picks two tests, its job is
@@ -234,10 +235,10 @@ const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <fi
          planted_on for a program check of the code; <dir>/ties.json holds each check's tie by commit,
          and a failing example that the test caught, or a run of the test of a program check of
          production or of the graph, counts at another commit only when the check's tie is known at both
-         and no path that changed between them is covered by the tie at either; one that the test missed
-         never counts at another commit)
+         and no path that changed between them reaches the tie at either (a path reaches a tie that
+         covers it or holds a path under it); one that the test missed never counts at another commit)
        spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed)
-           --reports <dir> --needs <file> [--ties <file>...] [--json <file>] [--allow-empty]
+           --reports <dir> --needs <file> [--json <file>] [--allow-empty]
        spec-check changed --repo <root> --base <commit> [--head <commit>]`
 
 // prefix is the fixed text that starts every line the command prints but the usage, the JSON of
@@ -432,8 +433,8 @@ func cannotJudge(stderr io.Writer, dir string, err error) int {
 
 // noSpecFile reports whether read, which answered j and err, found no spec file in its directory,
 // and the words that name the case: "does not exist" for notes.ErrNoDirectory, and "holds no spec
-// file" for a directory with none. tree and compare refuse such a directory without --allow-empty,
-// and read it as the empty tree with it.
+// file" for a directory with none. tree, compare and citations refuse such a directory without
+// --allow-empty, and read it as the empty tree with it.
 func noSpecFile(j judged, err error) (string, bool) {
 	switch {
 	case errors.Is(err, notes.ErrNoDirectory):

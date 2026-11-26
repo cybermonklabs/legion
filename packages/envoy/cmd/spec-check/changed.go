@@ -39,17 +39,18 @@ func runChanged(args []string, stdout, stderr io.Writer) int {
 	if !ok || !isDirectory(stderr, repo) || !isCloneTop(stderr, repo) {
 		return 2
 	}
-	baseName, ok := commitName(repo, *base)
+	history := specgraph.GitHistory{Dir: repo}
+	baseName, ok := history.CommitName(*base)
 	if !ok {
 		say(stderr, "%s: git cannot read commit %s", repo, *base)
 		return 2
 	}
-	headName, ok := commitName(repo, *head)
+	headName, ok := history.CommitName(*head)
 	if !ok {
 		say(stderr, "%s: git cannot read commit %s", repo, *head)
 		return 2
 	}
-	changed, ok, err := specgraph.GitHistory{Dir: repo}.Changed(baseName, headName)
+	changed, ok, err := history.Changed(baseName, headName)
 	switch {
 	case err != nil:
 		say(stderr, "%s", err)

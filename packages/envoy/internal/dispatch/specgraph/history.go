@@ -293,13 +293,27 @@ func (g GitHistory) holds(ids ...string) (bool, error) {
 	return true, nil
 }
 
-// git runs `git -C <Dir> <args>` with stdin as its input and no variable GIT_* of the environment
-// that it would inherit (exec.Cmd.Environ), and gives its output.
-func (g GitHistory) git(stdin string, args ...string) ([]byte, error) {
+// command is `git -C <Dir> <args>`, with no variable GIT_* of the environment that it would
+// inherit (exec.Cmd.Environ, withoutGitVariables). Each git command of this package runs through
+// it.
+func (g GitHistory) command(args ...string) *exec.Cmd {
 	cmd := exec.Command("git", append([]string{"-C", g.Dir}, args...)...)
-	cmd.Env = slices.DeleteFunc(cmd.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") })
+	cmd.Env = withoutGitVariables(cmd.Environ())
+	return cmd
+}
+
+// git runs command(args) with stdin as its input, and gives its output.
+func (g GitHistory) git(stdin string, args ...string) ([]byte, error) {
+	cmd := g.command(args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	return cmd.Output()
+}
+
+// withoutGitVariables is environ with no variable GIT_*: a variable such as GIT_DIR, GIT_WORK_TREE,
+// GIT_INDEX_FILE or GIT_OBJECT_DIRECTORY would make git read another clone, another tree or
+// another index than the one that its command names, and GIT_CONFIG_* other settings.
+func withoutGitVariables(environ []string) []string {
+	return slices.DeleteFunc(environ, func(kv string) bool { return strings.HasPrefix(kv, "GIT_") })
 }
 
 // gitReason is the reason of err, an error of a run of git: the first line that git wrote on its
