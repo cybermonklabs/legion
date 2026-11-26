@@ -14,6 +14,7 @@ import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../write
 import { carriedBlocks, type FollowedBlocks } from "./block-spans";
 import type { SeededMention } from "./composer-draft";
 import type { ComposerAnchor, ComposerKind, ComposerOwner, ReplyTarget } from "./composer-model";
+import { ADDRESS_WORDS, DELIVERY_COMMANDS, MOVED_SEND_WORDS } from "./composer-words";
 
 /** A send's own copy of the draft, taken when it starts: what the request is built from, and
  *  what a refusal hands back. Who it addresses is in its text, written there as a reference
@@ -143,15 +144,6 @@ export function heldSeeds(request: SentRequest | undefined): readonly SeededMent
   return request?.seeds ?? [];
 }
 
-/** The command, at the start of a body, that sends it in a mode other than the plain one (Send,
- *  unless the session refuses Send: `plainDelivery`). `deliveryPlan` strips it from what goes out,
- *  and the composer names it where it tells the reader how to send in another mode or what a bare
- *  command still needs. */
-export const DELIVERY_COMMANDS = { aside: "/aside", btw: "/btw" } as const satisfies Record<
-  Exclude<DeliveryCapability, "steer">,
-  string
->;
-
 function parseDelivery(body: string): { body: string; delivery: DeliveryCapability } {
   for (const mode of ["btw", "aside"] as const) {
     const command = `${DELIVERY_COMMANDS[mode]} `;
@@ -176,11 +168,6 @@ export function deliveryPlan(
     delivery: inherited === undefined ? undefined : hasCommand ? parsed.delivery : inherited,
   };
 }
-
-/** What a send says once it is past `SEND_DEADLINE_MS`: still the server's, as any late send is,
- *  and still being tried under its key, which Dispatch takes once. */
-export const KEYED_SEND_LATE_TEXT =
-  "Still sending — Dispatch has not confirmed it yet. It keeps trying, and the message is delivered once.";
 
 /** The message a send to a session puts on the wire: its body with any delivery command stripped,
  *  the mode it names or the reply's thread or the session takes, and the reply it answers - or, in
@@ -273,16 +260,6 @@ export function artifactOwnerOf(owner: ComposerOwner): ArtifactOwner {
   }
 }
 
-/** The words `ownerWords` and `addressWords` name where a message goes in: the prepositions an
- *  issue or another document is said with, and the words of a direct message, of another
- *  document and of a reply. */
-export const ADDRESS_WORDS = {
-  direct: "as a direct message",
-  document: "another document",
-  prepositions: ["for", "to"],
-  reply: "as a reply",
-} as const;
-
 /** A preposition of `ADDRESS_WORDS`. */
 type AddressPreposition = (typeof ADDRESS_WORDS.prepositions)[number];
 
@@ -304,14 +281,6 @@ export function addressWords(
 ): string {
   return replyTo === null ? ownerWords(artifactOwnerOf(owner), preposition) : ADDRESS_WORDS.reply;
 }
-
-/** The words of `movedSendNote`: what the stopped write is, before its address; what it may have
- *  done there; and what a send from here does. */
-export const MOVED_SEND_WORDS = {
-  anew: "Sending it from here is a new message, which can be delivered a second time if the first one was.",
-  made: "delivered there",
-  what: "this message, sent ",
-} as const;
 
 /**
  * What a send the reader stopped says once they have moved its draft to another address with the

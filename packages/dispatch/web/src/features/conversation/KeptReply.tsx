@@ -3,34 +3,9 @@ import type { ReactNode } from "react";
 import type { Actor } from "../../api/types";
 import { AgentName } from "../refs/AgentName";
 import type { ReplyTarget } from "./composer-model";
+import { GONE_REPLY_WORDS, KEPT_MESSAGE_WORDS, KEPT_REPLY_WORDS } from "./composer-words";
 import { addressWords } from "./send-request";
 import type { AwayDraft } from "./unsent-drafts";
-
-/** The words of `KeptReply` around the author's name and the control that goes on with the
- *  reply, by the kind of post it answers (a question's thread is named as a comment's). */
-export const KEPT_REPLY_WORDS = {
-  after: " is kept. Press ",
-  before: { comment: "Your reply to the comment by ", message: "Your reply to the message by " },
-  control: { comment: "Reply on that comment", message: "Reply on that message" },
-  end: " to go on with it.",
-} as const;
-
-/** The words of `GoneReply` around the author's name: by the kind of post the reply answered,
- *  what became of that post, and where the reply is kept. */
-export const GONE_REPLY_WORDS = {
-  answered: " that your reply answered ",
-  became: { deleted: "was deleted, so it takes no reply", gone: "is no longer listed" },
-  before: { ask: "The ask by ", comment: "The comment by ", message: "The message by " },
-  end: ":",
-  kept: ". Your reply is kept here",
-  waits: ", to use in this field once it is empty",
-} as const;
-
-/** The words of `keptAwayLine` around where a draft that answers no reply was written for. */
-export const KEPT_MESSAGE_WORDS = {
-  after: " is kept. Press Cancel reply to go on with it.",
-  before: "The message you wrote ",
-} as const;
 
 /** The sentence said of a reply the reader wrote and that is kept out of sight - by a composer of
  *  a draft it keeps for another reply, by the docked composer of a thread reply put away over its

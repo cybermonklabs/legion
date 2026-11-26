@@ -31,6 +31,7 @@ import {
   type ReplyListing,
   type ReplyTarget,
 } from "./composer-model";
+import { WRITTEN_ELSEWHERE_WORDS } from "./composer-words";
 import type { HeldSend, HeldSends } from "./held-sends";
 import {
   type Address,
@@ -117,28 +118,6 @@ export function giveWay(
   unsent.keepAway(composerNameOf(refused.mutationKey), awayDraftOf(refused));
   store.discard(refused.mutationKey);
 }
-
-/** The words of `writtenElsewhere`: of a refused reply whose post the host no longer lists or
- *  lists deleted, by the post's kind and what became of it (`gone`); of one whose post stands
- *  (`reply`); and around where a refused message that answers no reply was written for
- *  (`address`). */
-export const WRITTEN_ELSEWHERE_WORDS = {
-  address: {
-    after: ". Go back to it to send it, or discard it.",
-    before: "This message was written ",
-  },
-  gone: {
-    after: ". Discard it to write here.",
-    became: { deleted: "was deleted, which takes no reply", gone: "is no longer listed" },
-    before: {
-      ask: "This message was written as a reply to a ask that ",
-      comment: "This message was written as a reply to a comment that ",
-      message: "This message was written as a reply to a message that ",
-    },
-  },
-  reply:
-    "This message was written as a reply. Reply to that message again to send it, or discard it.",
-} as const;
 
 /** What Send says while the refusal the composer holds lives at another address than the one it
  *  shows now, since its host moved it (`sameAddress`): where the draft was written for, and the

@@ -1,14 +1,7 @@
 import type { ReactNode } from "react";
 
 import { RefusableButton } from "../../components/RefusableButton";
-
-/** Why Stop trying takes no press once pressed: what a screen reader reads beside it, and its
- *  title where the surface raises tooltips. */
-export const STOPPING_REASON = "The attempt already sent is still out.";
-
-/** The control's words: before the reader stops the write, and once they have. */
-export const STOP_TRYING_LABEL = "Stop trying";
-export const STOPPING_LABEL = "Stopping…";
+import { STOP_TRYING_LABEL, STOPPING_LABEL, STOPPING_REASON } from "./write-words";
 
 /** Stop trying, for a late write - a composer's send, a broadcast, or any other write. Once the
  *  reader has stopped it, and while its last attempt is still out (`stopping`), it reads Stopping…
