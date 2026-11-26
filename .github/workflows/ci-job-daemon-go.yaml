@@ -94,7 +94,7 @@ jobs:
       # One leg's failure leaves the others running, so each reports its own packages.
       fail-fast: false
       matrix:
-        leg: [1, 2]
+        leg: [1, 2, 3]
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the goroutine dump that names it. A step's worst case is therefore its largest
     # measured green duration plus its own -timeout. Over the 158 green daemon-go jobs that
