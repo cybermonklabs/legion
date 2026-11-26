@@ -48,8 +48,10 @@ type SlotsReading struct {
 	// and stand in no row of admission.blocked, a member released for a wait whose wait has ended
 	// among them although its kind stays waiting_on_issue until its promotion.
 	WaitOnlyForSlot StateCount `json:"waitOnlyForSlot"`
-	// StartedWithoutSlot is reading (b): every member of the line's returned part that holds no
-	// slot.
+	// StartedWithoutSlot is reading (b): every started issue before its review that holds no slot,
+	// its waits on other issues included: each member of the line's returned part that holds no
+	// slot, and each started parent that waits in awaiting_children holding none
+	// (cybermonklabs/legion#4592), which stands in no line.
 	StartedWithoutSlot StateCount        `json:"startedWithoutSlot"`
 	BelowFirstWaiting  BelowFirstWaiting `json:"belowFirstWaiting"`
 	// Line is the reading as the one sentence SlotsLine writes, and nothing else writes.
@@ -86,22 +88,26 @@ type SlotHolder struct {
 }
 
 // SlotsReadingOf is the slots reading of a project whose admission cap is cap, whose slot holders
-// are holders and whose waiting line is line, in the line's own order. Every reader of the
-// reading builds it here, the state projection and the admission pass's tick alike, so the text,
-// the JSON and the tick notice give the same numbers.
+// are holders, whose waiting line is line, in the line's own order, and whose started parents that
+// wait in awaiting_children holding no slot are waitingParents. Every reader of the reading builds
+// it here, the state projection and the admission pass's tick alike, so the text, the JSON and the
+// tick notice give the same numbers.
 //
 // Each count's oldest time is the oldest of its members' known times: a holder's is the time it
-// entered its state (SlotHolder.Since), and a member of the line's is the moment its work came
-// back (LineEntry.Since). A member released for a wait whose wait has ended keeps the kind
+// entered its state (SlotHolder.Since), a member of the line's is the moment its work came back
+// (LineEntry.Since), and a waiting parent's is the moment its wait on its children began
+// (ChildrenWait.Since). A member released for a wait whose wait has ended keeps the kind
 // waiting_on_issue until its promotion, so reading (a) reads the part, the slot and
-// admission.blocked and never the kind.
+// admission.blocked and never the kind. A waiting parent is started work without a slot in all
+// (reading (b)) and never one that waits only for a slot (reading (a)): its next start waits on its
+// open children.
 //
 // A holder is counted below the first issue that waits for a slot where it comes after it in the
 // line's own order (rankedIssue.before): first by the band of the priority that places each, the
 // entry's LineEntry.Priority and the holder's SlotHolder.Priority, which are NoPriority on both
 // sides under a rule that does not band the line; then by the Dispatch rank of its tree root and
 // its own.
-func SlotsReadingOf(cap int, holders []SlotHolder, line []SlotsLineMember) SlotsReading {
+func SlotsReadingOf(cap int, holders []SlotHolder, line []SlotsLineMember, waitingParents []Issue) SlotsReading {
 	reading := SlotsReading{InUse: len(holders), Cap: cap}
 	counts := map[HolderState]*StateCount{
 		HolderWorking: &reading.Working, HolderStopped: &reading.Stopped, HolderPerson: &reading.Person,
@@ -127,6 +133,13 @@ func SlotsReadingOf(cap int, holders []SlotHolder, line []SlotsLineMember) Slots
 		if first == nil && !member.HeldBack && !member.Blocked && !member.Held {
 			first = &line[i]
 		}
+	}
+	for _, parent := range waitingParents {
+		var since *time.Time
+		if parent.ChildrenWait != nil {
+			since = KnownTime(parent.ChildrenWait.Since)
+		}
+		reading.StartedWithoutSlot.add(since)
 	}
 	if first != nil {
 		reading.BelowFirstWaiting.First = first.Entry.Issue.Key

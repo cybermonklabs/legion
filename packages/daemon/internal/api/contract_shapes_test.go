@@ -376,19 +376,22 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // The values are written here, and not read from the table: a value the table gains with no body
 // that carries it is then red in that census, and an edit of the table alone cannot carry it
 // here too. Issue i of the body carries value i of each list, and a list shorter than the longest
-// starts again at its first value, so the twelve issues carry every value of every list. Each
+// starts again at its first value, so the thirteen issues carry every value of every list. Each
 // issue's architect carries a failure, a pending cause and a held task, as a worker does. No
 // other body carries them on an architect, so without this body no record describes those keys
 // at their architect paths, and the value comparison reads no value there. Each issue also carries
 // a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
-// merge states, so the twelve issues carry all eight words at both key paths. The project's pause
-// waits on the stop of one claim of each role, so `paused.waitsOn.*.role` carries every role,
-// where populatedState's pause waits on an implementer alone. Its repositories block names five
-// live repositories, both role Apps installed on each, whose caches stand in the five states a
-// cache can be in, so `repositories.live.*.cache.state` carries every word of that field, which
-// arrived with the block at repositoriesLiveContract (answers.go's liveCacheStates). The intake's
-// open give-ups list one record of each reason, so `intakeGiveUps.newest.*.reason` carries every
-// word, where populatedState's three records carry three of the five.
+// merge states, so the thirteen issues carry all eight words at both key paths. A gated step on an
+// ancestor's basis carries the `basis` its status writes it with. Every issue of the line is held,
+// so one more issue carries the one value of an issue's own `phase` above the floor,
+// `awaiting_children`. The project's pause waits on the stop of one claim of each role, so
+// `paused.waitsOn.*.role` carries every role, where populatedState's pause waits on an implementer
+// alone. Its repositories block names five live repositories, both role Apps installed on each,
+// whose caches stand in the five states a cache can be in, so `repositories.live.*.cache.state`
+// carries every word of that field, which arrived with the block at repositoriesLiveContract
+// (answers.go's liveCacheStates). The intake's open give-ups list one record of each reason, so
+// `intakeGiveUps.newest.*.reason` carries every word, where populatedState's three records carry
+// three of the five.
 //
 // Its settings are the maximal kubernetes file with a sandbox block that sets every member but
 // `type` (sandboxSettingsBlock), which neither other body carries: populatedState's settings are
@@ -400,10 +403,11 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	t.Helper()
 	at := time.Date(2026, 9, 22, 9, 30, 0, 0, time.UTC)
 	// The workflow's phases, which `heldFrom` and `pendingTask.phase` take, with `integrating`,
-	// which the plugin's enumeration names and no phase.Phase constant spells.
-	phaseWords := []phase.Phase{phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing,
-		phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging, "integrating", phase.Done,
-		phase.Held}
+	// which the plugin's enumeration names and no phase.Phase constant spells, and
+	// `awaiting_children`, which that enumeration names and the daemon writes in neither field.
+	phaseWords := []phase.Phase{phase.Admitted, phase.AwaitingPerson, phase.AwaitingChildren, phase.Planning,
+		phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging, "integrating",
+		phase.Done, phase.Held}
 	causeWords := []supervise.FailureCause{supervise.CauseLaunchRefused, supervise.CauseDied,
 		supervise.CauseNeverRegistered, supervise.CauseStalePlugin, supervise.CausePromptRetiresExhausted,
 		supervise.CauseProviderError, supervise.CauseCyberPolicy, supervise.CauseUnrecorded}
@@ -412,7 +416,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft,
 		record.MergeStateUnknown}
 	stepWords := []record.DesignStep{record.DesignStepDecisions, record.DesignStepCriteria, record.DesignStepSpec}
-	statusWords := []GatedStepStatus{GatedStepUnregistered, GatedStepWaiting, GatedStepApproved, GatedStepChangesRequested}
+	statusWords := []GatedStepStatus{GatedStepUnregistered, GatedStepWaiting, GatedStepApproved, GatedStepChangesRequested,
+		GatedStepOpenOnBasis, GatedStepPendingOnBasis}
 	partWords := []record.LinePart{record.PartReturned, record.PartStarting}
 	kindWords := []record.LineKind{record.LineReturning, record.LineAnswered, record.LineQueuedRoot,
 		record.LineFirstPhase, record.LineWaitingOnIssue}
@@ -420,9 +425,9 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	groupWords := []string{config.MemoryVariantMemory, config.MemoryVariantNone}
 	modeWords := []config.ExperimentMode{config.ExperimentOff, config.ExperimentOn, config.ExperimentRandom}
 	heldWords := []record.HeldReason{record.HeldTreeClosed, record.HeldTreeParked, record.HeldLabelOff,
-		record.HeldAncestry, record.HeldRootAwaitingPerson, record.HeldDesignGate, record.HeldDispatchBlocker,
-		record.HeldChildrenFirst, record.HeldAcceptedAncestor, record.HeldChildrenBeforeRetro, record.HeldTaskStopped,
-		record.HeldAtWork, record.HeldUnclassified}
+		record.HeldAncestry, record.HeldRootAwaitingPerson, record.HeldAwaitingChildren, record.HeldDesignGate,
+		record.HeldDispatchBlocker, record.HeldChildrenFirst, record.HeldAcceptedAncestor, record.HeldChildrenBeforeRetro,
+		record.HeldTaskStopped, record.HeldAtWork, record.HeldUnclassified}
 	holdWords := []record.HoldReason{record.HoldEscalated, record.HoldTaskStopped, record.HoldForChildren}
 	roleWords := []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 		claim.RoleReviewer, claim.RoleMerger}
@@ -462,9 +467,13 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		key := fmt.Sprintf("VALUES-%d", i+1)
 		keys = append(keys, key)
 		// The architect's task is queued for the phase after the one the issue was held from, and
-		// the worker's for that phase itself, so each view carries every phase over the twelve.
+		// the worker's for that phase itself, so each view carries every phase over the thirteen.
 		// The worker's cause starts three words further along the list than the architect's.
 		architect := claimView("ses_architect_"+key, updateWords[i%len(updateWords)], i, phaseWords[(i+1)%len(phaseWords)])
+		step := GatedStepView{Step: stepWords[i%len(stepWords)], Status: statusWords[i%len(statusWords)]}
+		if step.Status == GatedStepOpenOnBasis || step.Status == GatedStepPendingOnBasis {
+			step.Basis = &GatedStepBasis{Issue: "VALUES-100", ArtifactID: "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58", Version: 2}
+		}
 		issues[key] = Issue{
 			Key:           key,
 			Generation:    1,
@@ -488,7 +497,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 				StateReadAt: &at, HeadUpdatedAt: &at, CheckRuns: 2,
 				ToldHead: "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29", ToldState: string(mergeWords[i%len(mergeWords)]),
 			},
-			GatedSteps: []GatedStepView{{Step: stepWords[i%len(stepWords)], Status: statusWords[i%len(statusWords)]}},
+			GatedSteps: []GatedStepView{step},
 			WaitingLine: &WaitingLineView{
 				Place: i + 1, Length: len(phaseWords),
 				Part: partWords[i%len(partWords)].String(), Kind: kindWords[i%len(kindWords)].String(),
@@ -498,7 +507,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			Why:            &WhyView{State: whyWords[i%len(whyWords)], Reason: "The body carries this state."},
 			MemoryGroup:    groupWords[i%len(groupWords)],
 			MemoryDrawMode: string(modeWords[i%len(modeWords)]),
-			// One arm of the architect-stalled reading on each issue, so the twelve carry all three.
+			// One arm of the architect-stalled reading on each issue, so the thirteen carry all three.
 			ArchitectStalls: []record.ArchitectStallArm{stallWords[i%len(stallWords)]},
 		}
 		if i < len(roleWords) {
@@ -508,7 +517,14 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 				Claim: claim.Token("legion-values-" + key + "-" + string(roleWords[i])), Issue: key, Role: roleWords[i], AskedAt: at})
 		}
 	}
-	// The thirteen held words over the twelve issues, the last word on the first issue again.
+	// A root that holds its next phase start because an open Dispatch child of it stands under it
+	// (gateBasisContract, dispatch://INFRA-3320 R11): its `phase` is the word that contract added, which
+	// a reader below it is served as `admitted` (shaping.go's withoutUnadmittedPhases).
+	issues["VALUES-AWAITING"] = Issue{
+		Key: "VALUES-AWAITING", Generation: 1, Phase: phase.AwaitingChildren, Status: "in_progress",
+		Tree: "VALUES-AWAITING", Repo: "acme/widgets", DefaultBranch: "main", Workers: map[claim.Role]PhaseView{},
+	}
+	// The fourteen held words over the thirteen issues, the last word on the first issue again.
 	held := make([]HeldIssue, 0, len(heldWords))
 	for i, reason := range heldWords {
 		held = append(held, HeldIssue{Issue: keys[i%len(keys)], Reason: reason})
@@ -678,7 +694,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			PhaseNotRestarted: "the workflow refused the restart of implementing on LEGION-208",
 		}}},
 		AnswerCompact: {roots: typesOf(CompactResponse{}), bodies: []any{CompactResponse{
-			Compacted: false, Reason: "Nothing to compact (session too small)",
+			Compacted: false, Reason: "Nothing to hand off (already compacted)",
 		}}},
 		// The turn outcome's golden own value (TestTurnOutcomeResponseGolden): the two keys this
 		// answer always writes, neither of them omitempty, so `failed` is written false.

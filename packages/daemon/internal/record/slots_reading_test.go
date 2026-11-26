@@ -76,7 +76,7 @@ func TestTheHoldersBelowTheFirstWaitingIssueAreCountedByItsBandFirst(t *testing.
 					{Issue: above, RootRank: above.Rank, State: HolderWorking},
 					{Issue: below, RootRank: below.Rank, State: HolderWorking},
 				}
-				reading := SlotsReadingOf(4, holders, members)
+				reading := SlotsReadingOf(4, holders, members, nil)
 				if want := (BelowFirstWaiting{Count: under.want, First: waiter.Key}); reading.BelowFirstWaiting != want {
 					t.Errorf("belowFirstWaiting = %+v, want %+v (the line %v, the holders %s ranked %q and %s ranked %q)",
 						reading.BelowFirstWaiting, want, said(line), above.Key, above.Rank, below.Key, below.Rank)

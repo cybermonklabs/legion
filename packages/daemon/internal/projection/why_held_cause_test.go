@@ -40,6 +40,8 @@ type heldFixture struct {
 // holds the issue, or, for a root whose label is off and for the root of an ancestry hold, an
 // open Dispatch child under it, which the children-first rule holds it for (the ancestry root's
 // gate opened as well, since that rule reads only the children of a root under an open gate).
+// A parent in awaiting_children stands in `admission.blocked` with its open children
+// (blockers.ChildRows), and outside it once its last open child has gone.
 //
 // The walk is read off a projected state, never from the renderer alone, so the row the pass
 // publishes and the sentence it serves are proved of one state. An entry no fixture walks fails
@@ -129,6 +131,24 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 			treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)},
 		gates: map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
 	}
+	// A sub-parent that held a phase start because a child of it is still open, in a running tree
+	// under an open gate. It stands in awaiting_children, so it holds no slot and reads held; its
+	// held-by is its open children, as the started parents' judgement reads them
+	// (record.LineFacts.StartedParentWaits): here LEGION-102, which Dispatch shows open at todo
+	// under it. The state places such a parent in admission.blocked with those children
+	// (blockers.ChildRows), so it is walked under blocked. The unlisted fixture is the same parent
+	// once its last open child has gone, here done, which no row of blocked names: it stands there
+	// until the admission pass takes it back to the start it held, and its held row names nothing.
+	awaitingChildren := projectionStore{
+		issues: []record.Issue{treeRoot("LEGION-100", "todo", phase.Admitted),
+			treeMember("LEGION-101", "LEGION-100", "LEGION-100", "in_progress", phase.AwaitingChildren)},
+		slots:      []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: projectedAt}},
+		lifecycles: []string{"LEGION-100"},
+		gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
+		mirror:     []record.DispatchIssueRow{{Key: "LEGION-102", Project: "LEGION", Status: "todo", Parent: "LEGION-101"}},
+	}
+	childrenFinished := awaitingChildren
+	childrenFinished.mirror = []record.DispatchIssueRow{{Key: "LEGION-102", Project: "LEGION", Status: "done", Parent: "LEGION-101"}}
 	// A root held before its retro for the issue beneath it, a parent whose plan has no acceptance
 	// step (record.HoldForChildren), in a running tree under an open gate, and that child at work
 	// holding the row its phase keeps. The held root keeps no row, since retro keeps none.
@@ -191,6 +211,12 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 		{record.HeldAcceptedAncestor, api.WhyUnlisted}: {acceptedAncestor,
 			api.HeldIssue{Issue: "LEGION-102", Reason: record.HeldAcceptedAncestor, HeldBy: []string{"LEGION-101"}},
 			"The daemon has accepted the head of LEGION-101 that the last step of its task passed, and LEGION-101 stands above it, so nothing of its own work starts while that issue stands in retro or merging."},
+		{record.HeldAwaitingChildren, api.WhyBlocked}: {awaitingChildren,
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAwaitingChildren, HeldBy: []string{"LEGION-102"}},
+			"It waits on its open children: the daemon runs no phase of its own work, and holds the start it had, while a child of it is open."},
+		{record.HeldAwaitingChildren, api.WhyUnlisted}: {childrenFinished,
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAwaitingChildren},
+			"It waits on its open children: the daemon runs no phase of its own work, and holds the start it had, while a child of it is open."},
 		{record.HeldChildrenBeforeRetro, api.WhyUnlisted}: {childrenBeforeRetro,
 			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldChildrenBeforeRetro, HeldBy: []string{"LEGION-101"}},
 			"It passed the last step of its task, which is not the owner's acceptance, so the daemon holds it before its retro while these issues beneath it are still in the workflow: LEGION-101. Its retro does not start while one of them is."},

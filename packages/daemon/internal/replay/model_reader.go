@@ -2,6 +2,7 @@ package replay
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -61,10 +62,14 @@ type ModelReader struct {
 	// minute that ended by now, in order. refused is how many of them the project's own limit
 	// refused; the record's refusals per refused minute are rounded by that count. covered is each
 	// moment, in order, at which the record begins or stops holding the minute before.
-	first    time.Time
-	minutes  []readerMinute
-	made     []signals.Minute
-	refused  int
+	first   time.Time
+	minutes []readerMinute
+	made    []signals.Minute
+	refused int
+	// supplied is, by UTC day, the minutes of the window's span that the model refused against the
+	// caller's token limit, in a minute whose record holds no limit of the project's own: refused
+	// minutes that the record cannot confirm.
+	supplied map[string]int
 	covered  []time.Time
 	headroom map[float64]*minuteThresholds
 	refusing *minuteThresholds
@@ -172,7 +177,7 @@ func (m LoadModels) Reader(from time.Time, sources SetbackSources, tokenLimit in
 	}
 	x := &ModelReader{r: r, now: from, headroom: map[float64]*minuteThresholds{}, starts: map[segmentKey]time.Time{},
 		segmentKills: map[segmentKey][]time.Duration{}, parts: r.ratedParts(), drawn: map[string]*drawnAccrual{},
-		queues: map[string]*queueReader{}, segmentPulls: map[segmentKey][]queuedPull{}, sources: sources}
+		queues: map[string]*queueReader{}, segmentPulls: map[segmentKey][]queuedPull{}, sources: sources, supplied: map[string]int{}}
 	for i, at := range r.flight.from {
 		if !at.Before(from) {
 			break
@@ -471,6 +476,9 @@ func (x *ModelReader) advance(at time.Time) {
 		minute, refuses := x.model(i)
 		if refuses {
 			x.refused++
+			if start := x.minuteStart(i); x.minutes[i].assumed && !start.Before(x.r.w.From) && start.Before(x.r.w.To) {
+				x.supplied[start.UTC().Format(time.DateOnly)]++
+			}
 		}
 		if x.minutes[i].assumed {
 			x.SuppliedMinutes++
@@ -502,6 +510,16 @@ func (x *ModelReader) advance(at time.Time) {
 	}
 	exitsFrom := x.now.Add(-signals.QueueExitSpan)
 	x.waits = slices.DeleteFunc(x.waits, func(w signals.Wait) bool { return !w.Left.IsZero() && !w.Left.After(exitsFrom) })
+}
+
+// SuppliedRefused is, by UTC day, the minutes of the window's span in which the model refused a
+// request against the caller's token limit, in a minute whose record holds no limit of the
+// project's own, for every minute that ended by to: the refused minutes the record cannot confirm
+// (assumption 49). It brings the reader to to first, so a run that has read the signals to the
+// end of the window gives each minute of it.
+func (x *ModelReader) SuppliedRefused(to time.Time) map[string]int {
+	x.advance(to)
+	return maps.Clone(x.supplied)
 }
 
 // model is the minute at index i as the model gives it at the issues in flight as they stand,

@@ -154,6 +154,12 @@ type piece struct {
 	pausedAt  time.Time
 	pausedFor time.Duration
 	pending   []*item
+	// stopped says the pause is the stop of its phase by a move of its issue into
+	// awaiting_children (retireStoppedTask), a wait the record may never have made, rather than a
+	// recorded suspend; returnHeld is each item of an event placed from the issue's start that
+	// fell due while it stood so (holdForReturn), which its resume queues again.
+	stopped    bool
+	returnHeld []*item
 	// turns is each role's turn under way in the piece, which a pause ends and a resume begins
 	// again.
 	turns map[claim.Role]bool

@@ -69,6 +69,11 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A test still closes every client it opens before its server, and registers the close as soon as the connect succeeds, so a setup that fails closes it too: `cmd/listener`'s `setupTestNATS` left ten tests' bus clients dialing for minutes after their tests had ended, and they reached the test servers of other packages' binaries.
   A container start tried again after a taken port refused it builds its container's options anew, a configuration file's reader among them: testcontainers reads a file's reader to its end as it creates the container, before Docker refuses the publish, so a retry handed the first attempt's reader copies an empty file in, and a server started from it enforces none of the users its configuration names.
 
+- A test that needs `packages/envoy`'s notification stream full fills it with `internal/testnats`'s `FillStream`: `internal/bus/bustest`'s `FillStream` outside package bus, which passes it the bus's stream and subjects that stream captures, and `testnats.FillStream` itself in package bus, which cannot import `bustest`.
+  It publishes until the stream's own count, its info's bytes against its byte limit, leaves less room than a one-byte fill message takes, so the stream refuses every message the test then sends whose stored size (subject, headers and payload) is no smaller, every envelope among them. It measures that size from a one-byte message the stream stored alone, by the sequences around it, so another writer into the stream does not skew it.
+  A refusal alone does not show the stream full: a three-copy stream's leader counts the message it last acknowledged as still in flight until it has finished applying it, a moment after the acknowledgement, so the publish that follows can be refused while the stream has room for it (nats-server 2.15.1). A fill that stopped at such a refusal left room for the role forward its test expected refused, and the stream stored the forward (dispatch://INFRA-3904).
+  It does not fill a stream with no byte limit, which fails the test, and a test that reads back what a fill stored keeps a loop of its own, as the single-server `TestAFullStreamRefusesAPublishAndKeepsEveryStoredMessage` does.
+
 - A test that counts the client connections an in-process test NATS server took, open and closed, or reads when each opened and closed, takes `packages/envoy/internal/testnats`'s `Server.Connections`.
   One read of `/connz?state=all` can leave out a connection that has just closed, or list it twice: nats-server takes a closing connection out of its open list in the close, and saves its closed record from a goroutine of its own. `Connections` reads until the listing names each connection the server counted (`total_connections`) once, and `connections_test.go` holds it to that.
   It lists client connections alone, not leaf nodes, routes or gateways; it reads an in-process `*testnats.Server`, not a container; on a server that has dropped closed records past `max_closed_clients` it fails where `testwait.Until` ends, 30 s before the test binary's deadline; and it waits for no connection that has not been made yet, so a test that counts an operation's connections waits for that operation first.
@@ -851,6 +856,14 @@ The daemon's own production clients are named too: `natsauth.Connect` takes the 
 parameter rather than an option, so no call site can leave one empty, and an operator reading
 `/connz` on the Envoy NATS sees which process holds each connection.
 
+A JetStream `no_wait` pull asks the consumer's current pending count; it is not a read of the
+stream's store. nats-server stores a published message and sends its publish acknowledgement before
+its signal goroutine raises the matching consumer's pending count. A test that publishes messages
+and must then pull them makes a waiting pull for its batch and waits with the test's own deadline
+(`testwait.Context(t)`), not a `no_wait` pull or a fixed read timeout: a loaded machine may delay
+the signal after the acknowledgement without losing the stored messages. A test whose claim is the
+`404 No Messages` answer of an empty consumer still uses `no_wait`.
+
 ## A test that deletes a KV watcher's consumer
 
 A KV watcher reads its bucket through an ordered consumer nats.go creates and keeps in memory, and a test that deletes that consumer, to stand for one the server lost, has a state that does not last.
@@ -1001,6 +1014,15 @@ pods, a write blocked for a third of a second completed the moment the page sent
 `TestARepeatedSubReplacesAnotherKind` then waited for a queued frame the writer had already
 written, and failed 8 of 300 runs. Those two helpers are for tests of a slow page itself, such as
 one whose queue overflows.
+
+A test that needs a close or a ping (gorilla/websocket's `WriteControl`) to wait for the
+connection's write lock holds the writer the same way, before the close or the ping comes. gorilla
+holds that lock for each write to the connection, not for a whole message, so a writer that TCP
+backpressure stalls holds it only while the kernel blocks a write: between two fragments of a frame
+it holds none, and a close that comes then takes the free lock and is written at once. The relay
+socket rows of `packages/envoy/cmd/listener` build their rig with `withHeldWrites`
+(`relay_socket_fixture_test.go`), the same gate. Use small TCP buffers and a client that reads
+nothing only to test the slow client itself, not to make `WriteControl` wait for a lock.
 
 ## A fake HTTP server whose client gives up on requests
 

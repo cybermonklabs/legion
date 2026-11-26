@@ -15,8 +15,8 @@
       "from": "2001-03-05T09:00:00Z",
       "to": "2001-03-05T16:00:00Z",
       "release": "fixture",
-      "commit": "0d3786da536722f2eb26a793ab1b9827b6e90f47",
-      "rule": "main"
+      "commit": "bafd3618eb58722419c77f34174c1b77525c891b",
+      "rule": "legion-v22.14.1"
     }
   ],
   "tickInterval": "1h0m0s",

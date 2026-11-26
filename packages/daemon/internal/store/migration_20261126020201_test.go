@@ -18,7 +18,7 @@ const queueEventsVersion = 20261126020201
 const queueEventsRelease = "the release that keeps each merge-queue timeline event of a project's pull requests"
 
 // 20261126020201 adds queue_events, one row per GitHub timeline event of a project's pull
-// requests' merge-queue moves, adds queue_read_error on signal_inputs so a failed boot read marks
+// requests' merge-queue moves, adds read_error on signal_inputs so a failed boot read marks
 // the queue input absent with its reason until a read succeeds, and widens outbox_kind_check with
 // queue_timeline_read. Its way back drops queue_events, deletes queue_timeline_read rows, drops
 // the added column, deletes the queue row of signal_inputs and deletes this version row so a

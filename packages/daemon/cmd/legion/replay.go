@@ -32,7 +32,8 @@ import (
 // the measures of a window's record (scorecard), read R11's signals of a window at a moment
 // (signals), fit R11's load models on a window's record (models), check the replay against the
 // record (validate) and against a recorded change of the rule (forecast), compare the rules on two
-// windows (compare) and name the rules a replay can run (rules). None of them reaches a daemon.
+// windows (compare), plan R11's limit test and name each signal's limit from its runs (limits) and
+// name the rules a replay can run (rules). None of them reaches a daemon.
 func newReplayCommand(stdout, stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{Use: "replay", Short: "replay a recorded window of a daemon's project through the daemon's own admission pass under a named slot rule (a developer's tool)"},
 		newReplayCollectCommand(stdout, stderr),
@@ -47,6 +48,7 @@ func newReplayCommand(stdout, stderr io.Writer) *cobra.Command {
 		newReplayValidateCommand(stdout, stderr),
 		newReplayForecastCommand(stdout, stderr),
 		newReplayCompareCommand(stdout, stderr),
+		newReplayLimitsCommand(stdout, stderr),
 		newReplayRulesCommand(stdout, stderr),
 	)
 }
@@ -1359,6 +1361,119 @@ func newReplayCompareCommand(stdout, stderr io.Writer) *cobra.Command {
 			return 1
 		}
 		fmt.Fprintf(stdout, "legion replay compare: wrote %s and %s from the runs in %s\n", *out, issuesFile, strings.Join(dirs, ", "))
+		return 0
+	})
+	return cmd
+}
+
+// replayLimitsLong is `legion replay limits --help`'s description.
+const replayLimitsLong = `Plan the limit test of R11 and, given the directories of its runs, name each signal's limit and
+print its table. It runs no replay: each entry of the plan is one run of legion replay run, which an
+indexed Job runs one to an index, and the runs are read back from --runs.
+
+The list of limits of each signal is its 50th, 75th, 90th, 95th and 99th percentile over --window-one's
+record, read at each minute where the window records the signal, and off; a percentile outside the
+signal's range (the range legion replay run --limit checks) is left out of the list with the reason, never
+clamped into it. The provider's headroom and its refusals each have a list and a sweep of their own, and
+the table groups them under the provider. A signal that a load model gives (the provider's headroom and
+refusals, the kills, the merge queue's wait) has steps only where its model passed R11's tests, read from
+the two outputs of legion replay models --against --json: --models, window one against the other record,
+and --models-reverse, the other record against window one. The model must fail the daily test on neither
+record, pass it on at least one, and pass the test across the two records in both outputs. Where the window
+records no token limit of the project's own the tokens model has no daily test, and it gives the provider's
+limits only under --token-limit, the project's token limit, which every run of the plan takes (legion replay
+run --token-limit, assumption 49). The idle share and the approvals have no model and always have steps.
+
+Step A runs each signal alone at each limit, and off, on the main branch of both windows. Step B runs, for
+each signal, the limit with the most issues finished that no other measure of the owner's three costs or of
+the wait of urgent work is worse at than under today's rule on step A's branches, and the next tighter limit,
+on every branch of both windows that passes R5, and, where the first is worse on one, the next tighter limit
+again, until one holds or the list ends; the idle share's named limit is also run at d of 10 minutes and of 4
+hours, and printed beside the hour's. Step C runs signals and signals-backoff with every named limit on every
+branch of both windows. Each step runs at the recorded cap and at --ceiling. --baseline names the directories
+of runs of validate and compare that hold both windows' records and their runs of main and of each window's
+own rule on every branch, which say what a limit is worse than and which branches pass R5.
+
+Given --runs, the table gives each limit's measures on window one's main branch, the signal's own reading
+there, the most issues the runs held in flight, the limit named for each signal at each ceiling or that none
+holds, and what the limit rests on: each tested day of the model with its recorded and its modelled value, the
+ratio across the two records, and for the provider the token limit, the span of each window's provider record
+and the refused minutes the model gives under the token limit that the record cannot confirm. The range of work
+in flight that the windows record runs from the lowest day's average of issues in flight in the models' days to
+the larger of the two windows' scorecard maxima; a named limit whose runs hold more issues in flight than that
+is an extrapolation, and the table says so. --plan writes the entries still to run as a JSON list to the file
+named, each with the arguments of legion replay run that make it but for --pg-dsn; plan again once they have
+run, since step B waits for the runs of step A and step C for those of step B. --json prints the whole result
+as JSON.`
+
+// newReplayLimitsCommand is `legion replay limits` (replay.ReadLimitsInput, replay.PlanLimits): the
+// limit test of R11.
+func newReplayLimitsCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "limits --window-one <dir> --window-two <dir> --models <file> --models-reverse <file> --baseline <dir>... --ceiling <n> [--runs <dir>] [--plan <file>] [--token-limit <tokens a minute>] [--json]",
+		Short: "plan R11's limit test, and name each signal's limit from the runs of its steps",
+		Long:  replayLimitsLong,
+		Args:  noArguments,
+	}
+	flags := cmd.Flags()
+	windowOne := flags.String("window-one", "", "the directory of window one, whose record the lists of limits are read from (required)")
+	windowTwo := flags.String("window-two", "", "the directory of window two (required)")
+	models := flags.String("models", "", "legion replay models --against --json of window one against the other record (required)")
+	reverse := flags.String("models-reverse", "", "the same of the other record against window one (required)")
+	baseline := flags.StringArray("baseline", nil, "a directory of runs of validate or compare to judge the limits against; repeat for more (required)")
+	runsDir := flags.String("runs", "", "the directory the sweep's runs are written under; the plan marks each run as run or not by what it holds")
+	plan := flags.String("plan", "", "write the entries still to run, as a JSON list, to this file")
+	tokenLimit := flags.Int64("token-limit", 0, tokenLimitUsage)
+	ceiling := flags.Int("ceiling", 0, "the second ceiling, a cap above zero, beside the recorded cap (required)")
+	asJSON := flags.Bool("json", false, "print the result as JSON")
+	cmd.RunE = runs(func(context.Context, []string) int {
+		if missing := missingFlag(cmd, "window-one", "window-two", "models", "models-reverse", "baseline", "ceiling"); missing != "" {
+			return refuse(cmd, "--%s is required", missing)
+		}
+		if *ceiling <= 0 {
+			return refuse(cmd, "--ceiling %d: the second ceiling is a cap above zero, beside the recorded cap", *ceiling)
+		}
+		if code := refuseTokenLimit(cmd, *tokenLimit); code != 0 {
+			return code
+		}
+		if *plan != "" && *runsDir == "" {
+			return refuse(cmd, "--plan lists the arguments of each run under --runs, so --runs is required with it")
+		}
+		in, err := replay.ReadLimitsInput(replay.LimitsConfig{WindowOne: *windowOne, WindowTwo: *windowTwo, Models: *models, ModelsReverse: *reverse,
+			Baseline: *baseline, Runs: *runsDir, TokenLimit: *tokenLimit, Ceiling: *ceiling})
+		if err != nil {
+			fmt.Fprintf(stderr, "legion replay limits: %v\n", err)
+			return 1
+		}
+		result, err := replay.PlanLimits(in)
+		if err != nil {
+			fmt.Fprintf(stderr, "legion replay limits: %v\n", err)
+			return 1
+		}
+		if *plan != "" {
+			pending := result.Pending()
+			for i := range pending {
+				pending[i].Index = i
+			}
+			data, err := json.MarshalIndent(pending, "", "  ")
+			if err == nil {
+				err = os.WriteFile(*plan, append(data, '\n'), 0o644)
+			}
+			if err != nil {
+				fmt.Fprintf(stderr, "legion replay limits: write the plan: %v\n", err)
+				return 1
+			}
+		}
+		if *asJSON {
+			return printReplayJSON(stdout, result)
+		}
+		if err := result.Write(stdout); err != nil {
+			fmt.Fprintf(stderr, "legion replay limits: %v\n", err)
+			return 1
+		}
+		if *plan != "" {
+			fmt.Fprintf(stdout, "\nlegion replay limits: wrote the %d entries still to run to %s\n", len(result.Pending()), *plan)
+		}
 		return 0
 	})
 	return cmd

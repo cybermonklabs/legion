@@ -568,6 +568,17 @@ type runRead struct {
 	noWorkHours   float64
 	draws         []keyedDraw
 	unkeyedDraws  UnkeyedDraws
+	// limits, cap, tokenLimit and idleAfter are what the run ran with, as its run.json names them;
+	// summaries, readings and supplied are how its limited signals read (SignalSummary,
+	// SignalReading) and the refused minutes by day under its token limit, which the limit test
+	// reads (PlanLimits).
+	limits     map[string]float64
+	cap        int
+	tokenLimit int64
+	idleAfter  time.Duration
+	summaries  map[string]SignalSummary
+	readings   map[string]SignalReading
+	supplied   map[string]int
 }
 
 // ReadRuns reads every window's record and every part, with its runs, that dirs hold. A part found
@@ -700,6 +711,10 @@ func readRun(dir string, keepIssues bool, places map[uint64]stretchDraw) (runRea
 	if err := readJSON(filepath.Join(dir, runFile), &ran); err != nil {
 		return runRead{}, err
 	}
+	if ran.SignalSummaries == nil || ran.SuppliedRefused == nil {
+		return runRead{}, fmt.Errorf("replay: the run in %s was written before its run.json held the summaries of the signals it limited and the refused minutes under the token limit (signalSummaries, suppliedRefused); "+
+			"it must be run again: delete its directory and run its part again", dir)
+	}
 	if err := readJSON(filepath.Join(dir, scorecardFile), &read.snapshot); err != nil {
 		return runRead{}, err
 	}
@@ -730,6 +745,8 @@ func readRun(dir string, keepIssues bool, places map[uint64]stretchDraw) (runRea
 	read.conflicts, read.keptOpenLoops = ran.Conflicts, ran.Divergence.KeptOpenLoops
 	read.noWork, read.noWorkHours, read.draws = ran.Divergence.NoWorkAdmissions, ran.Divergence.NoWorkSlotHours, keyedDraws(ran.Draws, places)
 	read.unkeyedDraws = ran.UnkeyedDraws
+	read.limits, read.cap, read.tokenLimit, read.idleAfter = ran.Limits, ran.Cap, ran.TokenLimit, time.Duration(ran.IdleAfter)
+	read.summaries, read.readings, read.supplied = ran.SignalSummaries, ran.Signals, ran.SuppliedRefused
 	return read, nil
 }
 

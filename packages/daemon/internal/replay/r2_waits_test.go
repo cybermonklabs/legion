@@ -51,16 +51,19 @@ func readCoverState(ctx context.Context, st *store.Store, at time.Time, parent, 
 // A parent past its review whose sign-off the workflow holds behind an issue beneath it waits on
 // that issue under the rule cover (spec v4 R2's first addition; HeldSignOff,
 // record.LineFacts.BeneathWaits), and a started issue it waits on that holds a slot and covers
-// nobody holds the parent's slot for it. The test replays the fixture window every-trigger under
-// cover: ACME-1's architect signs off in accepting while its child ACME-3 works on its own slot,
-// and the workflow holds the sign-off. Some settle must show ACME-1 in accepting holding no slot,
+// nobody holds the parent's slot for it. The test replays the fixture window
+// sign-off-held-by-grandchild under cover: ACME-1's architect signs off in accepting while ACME-3,
+// beneath it as the child of ACME-1's child ACME-2, which a person moved to icebox before ACME-1
+// started, works on its own slot, and the workflow holds the sign-off. ACME-3 is no Dispatch child
+// of ACME-1, so no open child holds ACME-1's next start and no cover forms before the sign-off
+// (record.LineFacts.StartedParentWaits). Some settle must show ACME-1 in accepting holding no slot,
 // covered by ACME-3, which holds one; and once ACME-3 is done the cover is gone and ACME-1 holds its
 // slot again, at the same settle as the cover's end.
 func TestAHeldSignOffIsAWaitACoverHolds(t *testing.T) {
 	t.Parallel()
 	dsn := replayDSN(t)
 	var states []coverState
-	cfg := RunConfig{Window: fixtureWindow(t, "every-trigger"), Rule: replayedRule(t, "cover"), Branch: MainBranch, Seed: 1,
+	cfg := RunConfig{Window: fixtureWindow(t, "sign-off-held-by-grandchild"), Rule: replayedRule(t, "cover"), Branch: MainBranch, Seed: 1,
 		Slowdown: 1, PGDSN: dsn, Out: t.TempDir()}
 	cfg.atSettled = func(ctx context.Context, st *store.Store, at time.Time) error {
 		state, err := readCoverState(ctx, st, at, "ACME-1", "ACME-3")
@@ -68,7 +71,7 @@ func TestAHeldSignOffIsAWaitACoverHolds(t *testing.T) {
 		return err
 	}
 	if _, err := Run(context.Background(), cfg); err != nil {
-		t.Fatalf("replay every-trigger under cover: %v", err)
+		t.Fatalf("replay sign-off-held-by-grandchild under cover: %v", err)
 	}
 	covered := -1
 	for i, state := range states {

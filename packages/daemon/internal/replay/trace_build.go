@@ -697,21 +697,20 @@ const tickDelay = time.Minute
 // slot rule the repository does not keep (record.SlotRuleNamed), whose phases no slot span or
 // worker start could be read by; what it reads and cannot place it names in Trace.Unplaced.
 func BuildTrace(w Window) (Trace, error) {
-	return buildTrace(w, nil)
+	return buildTrace(w)
 }
 
-// buildTrace is BuildTrace of w, its log written from w's start on by a daemon that ran ran: a
-// replay's own log (driver.lineTimeline), whose rule need be no rule the repository keeps, while
-// the lines before the start are its record's. nil reads every line under the rule w's parts name.
-func buildTrace(w Window, ran *record.SlotRule) (Trace, error) {
-	t, _, _, err := readTrace(w, ran)
+// buildTrace is BuildTrace of w, which may be a replay's own log (driver.lineTimeline) from its
+// start on, read under the rule w's parts name, as a record is.
+func buildTrace(w Window) (Trace, error) {
+	t, _, _, err := readTrace(w)
 	return t, err
 }
 
 // readTrace is buildTrace of w with what it read on the way, which a run's script reads again
 // (newWindowInputs): the lines of the kinds the window holds and every Dispatch event, each in
 // the one time order the trace read them in, the events by time and then id.
-func readTrace(w Window, ran *record.SlotRule) (Trace, []LogLine, []readEvent, error) {
+func readTrace(w Window) (Trace, []LogLine, []readEvent, error) {
 	rules := make([]record.SlotRule, len(w.Parts))
 	for i, part := range w.Parts {
 		rule, kept := record.SlotRuleNamed(part.Rule)
@@ -725,7 +724,6 @@ func readTrace(w Window, ran *record.SlotRule) (Trace, []LogLine, []readEvent, e
 		t: &Trace{Project: w.Project, From: w.From, To: w.To, End: w.End(), Start: w.From.Add(-time.Duration(w.Before)), Parts: w.Parts, rules: rules,
 			GateSteps: w.GateSteps, TickInterval: time.Duration(w.TickInterval), Branches: map[string]string{},
 			Issues: map[string]*IssueTrace{}, claimCauses: map[claim.Token][]claimCause{}},
-		ran:         ran,
 		held:        make(map[string]bool, len(w.Lines)),
 		turns:       map[claim.Token]turnAt{},
 		backKind:    map[string]string{},
@@ -802,9 +800,6 @@ type turnAt struct {
 // traceBuilder is BuildTrace's state while it reads a window.
 type traceBuilder struct {
 	t *Trace
-	// ran is the rule a replay's own log was written under from the window's start on, nil for a
-	// record (buildTrace).
-	ran *record.SlotRule
 	// held is the line kinds the window holds; recordLines and heldLines whether they include the
 	// record line of a pass and the hold's line.
 	held                   map[string]bool
@@ -1477,16 +1472,20 @@ func pastImplementing(p phase.Phase) bool {
 	return slices.Index(phase.Order, p) > slices.Index(phase.Order, phase.Implementing)
 }
 
-// moved reads one `workflow: phase changed` line: the move that ends the visit the issue stands in
-// and begins the next one, or, for a move into a phase today's workflow folds into the one it
-// left, a mark inside the visit. Either ends the issue's hold, which no move of the record is made
-// under (holdWentOn).
+// moved reads one `workflow: phase changed` line, or one of the two lines of a parent's wait on
+// its open children (ChildrenWaitMoves): the move that ends the visit the issue stands in and
+// begins the next one, or, for a move into a phase today's workflow folds into the one it left, a
+// mark inside the visit. Either ends the issue's hold, which no move of the record is made under
+// (holdWentOn).
 func (b *traceBuilder) moved(l PhaseChanged) {
 	at := l.Time
 	iss := b.issue(l.Issue)
 	b.holdWentOn(iss, at, "")
 	from, to := foldPhase(l.From), foldPhase(l.To)
 	source, sourced := MoveSources[l.Trigger]
+	if wait, waits := ChildrenWaitMoves[l.Trigger]; waits {
+		source, sourced = wait, true
+	}
 	if !sourced {
 		b.unplaced(UnplacedMove, l.Issue, at, "the move of %s from %s to %s at %s is by %s, which has no source in MoveSources", l.Issue, l.From, l.To, stamp(at), l.Trigger)
 	}
@@ -1550,6 +1549,12 @@ func (b *traceBuilder) moved(l PhaseChanged) {
 	if to != phase.Done {
 		in := move
 		iss.Visits = append(iss.Visits, Visit{Phase: to, Enter: at, In: &in})
+	}
+	if l.Trigger == TriggerChildrenOpen {
+		// The move is the parent's wait on its open children, which lasts while it stands in
+		// awaiting_children with a child open under it (childrenWaitEnds), as the snapshot
+		// timeline reads it (snapshots.openChildren); the daemon writes it no children-first line.
+		iss.Waits = append(iss.Waits, Wait{Kind: WaitChildren, Start: at})
 	}
 }
 
@@ -2166,6 +2171,13 @@ func beforeReview(p phase.Phase) bool {
 	return p == phase.Admitted || p == phase.Planning || p == phase.Implementing || p == phase.Testing || p == phase.Reviewing
 }
 
+// measuredPhase says whether p is a phase in which the measures count an issue's waits on other
+// issues: before its review's end (beforeReview), or awaiting_children, where a started parent
+// waits on its open children under a rule whose wait stops the phase (cybermonklabs/legion#4592).
+func measuredPhase(p phase.Phase) bool {
+	return beforeReview(p) || p == phase.AwaitingChildren
+}
+
 // linkWaits builds iss's waits on its Dispatch blocked_by links: a stretch in which the issue is
 // in flight and a blocker its links name is unfinished (not done, or with no event the window
 // holds), begun while the issue stands before its review, from the moment both hold to the moment
@@ -2252,7 +2264,7 @@ func (b *traceBuilder) linkWaits(iss *IssueTrace) {
 			}
 		}
 		if waiting == nil && flying && len(open) > 0 {
-			if visit := iss.visitAt(at); visit != nil && beforeReview(visit.Phase) {
+			if visit := iss.visitAt(at); visit != nil && measuredPhase(visit.Phase) {
 				waiting = &Wait{Kind: WaitLink, Start: at, On: open}
 			}
 		}
@@ -2381,7 +2393,9 @@ func (b *traceBuilder) childrenWaitEnd(iss *IssueTrace, candidates []string, wai
 			}
 		}
 	}
-	if tree, ok := b.t.Issues[treeOf(iss, wait.Start)]; ok {
+	// A closed gate ends a children-first wait, the hold of a first phase, and leaves the wait of
+	// a parent in awaiting_children standing (record.LineFacts.StartedParentWaits).
+	if tree, ok := b.t.Issues[treeOf(iss, wait.Start)]; ok && !inAwaitingChildren(iss, wait.Start) {
 		for _, gate := range tree.Gates {
 			if gate.Kind == GateClosedFact && gate.At.After(wait.Start) {
 				changes = append(changes, change{at: gate.At, end: WaitGateClosed})
@@ -2416,6 +2430,12 @@ func (b *traceBuilder) childrenWaitEnd(iss *IssueTrace, candidates []string, wai
 	}
 }
 
+// inAwaitingChildren says whether iss stands in awaiting_children at at.
+func inAwaitingChildren(iss *IssueTrace, at time.Time) bool {
+	visit := iss.visitAt(at)
+	return visit != nil && visit.Phase == phase.AwaitingChildren
+}
+
 // childrenWaitAgain is the children wait of iss that begins after ended, a children wait its
 // children or its tree's gate ended, and whether one does: at the first moment after ended's end
 // that an open child stands under the issue again with its tree's gate open, while the issue
@@ -2426,17 +2446,16 @@ func (b *traceBuilder) childrenWaitEnd(iss *IssueTrace, candidates []string, wai
 // phase can start, waits for that child again with no line; read from the line alone, it would
 // stand waiting for a slot alone. The gate stands open where the line began it (since), the daemon
 // judging only an issue of an open gate, and from then as the tree's gate facts leave it, read as
-// gateReader reads them. Under a rule whose children-first holds a started parent in any phase
-// (childrenHoldAnyPhase), the wait begins again anywhere in the issue's run, the visit it waited in
-// or a later one.
+// gateReader reads them. The children-first wait holds a first phase alone under every rule
+// (record.SlotRule.ChildrenFirstCandidates), so the wait begins again only in the visit it waited
+// in: a started parent's wait on its open children is cybermonklabs/legion#4592's move into
+// awaiting_children (record.SlotRule.WaitStopsPhase), which the log gives as the parent's own
+// phase and no children-first line.
 func (b *traceBuilder) childrenWaitAgain(iss *IssueTrace, candidates []string, ended Wait, since time.Time) (Wait, bool) {
 	if ended.EndedBy != WaitChildDone && ended.EndedBy != WaitChildMovedOut && ended.EndedBy != WaitGateClosed {
 		return Wait{}, false
 	}
 	until, _ := iss.visitExitAfter(ended.Start)
-	if b.childrenHoldAnyPhase(ended.End) {
-		until = iss.runExitAfter(ended.Start)
-	}
 	if next := iss.nextWaitStart(&ended); !next.IsZero() && (until.IsZero() || next.Before(until)) {
 		until = next
 	}
@@ -2474,30 +2493,6 @@ func (b *traceBuilder) childrenWaitAgain(iss *IssueTrace, candidates []string, e
 		}
 	}
 	return Wait{}, false
-}
-
-// childrenHoldAnyPhase says whether the children-first rule of the daemon that wrote the log at at
-// holds a started parent in any phase, as a rule whose wait stops the phase under way does
-// (record.SlotRule.ChildrenFirstCandidates): the rule a replay's own log was written under from the
-// window's start on (buildTrace), and otherwise the rule the record's part names (Trace.ruleAt).
-func (b *traceBuilder) childrenHoldAnyPhase(at time.Time) bool {
-	if b.ran != nil && !at.Before(b.t.From) {
-		return b.ran.OrMain().WaitStopsPhase
-	}
-	return b.t.ruleAt(at).OrMain().WaitStopsPhase
-}
-
-// runExitAfter is the end of the run iss stands in at at: the exit of the last of the visits that
-// follow the one standing at at by moves, zero while the run goes on at the window's end.
-func (iss *IssueTrace) runExitAfter(at time.Time) time.Time {
-	i := slices.IndexFunc(iss.Visits, func(visit Visit) bool { return standsAt(visit.Enter, visit.Exit, at) })
-	if i < 0 {
-		return time.Time{}
-	}
-	for i+1 < len(iss.Visits) && iss.Visits[i+1].In != nil && iss.Visits[i+1].Enter.Equal(iss.Visits[i].Exit) {
-		i++
-	}
-	return iss.Visits[i].Exit
 }
 
 // treeOf is the tree iss stood in at at: its latest entry's at or before it, or its own where it had

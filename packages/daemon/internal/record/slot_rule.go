@@ -53,10 +53,20 @@ type SlotRule struct {
 	// the daemon's own and every rule's but wait-grace's and wait-grace-1h's, gives the slot back
 	// at the pass that finds the wait.
 	WaitGrace time.Duration
-	// WaitStopsPhase says whether a wait on another issue stops the phase under way: under a rule
-	// where it does, a started parent waits on its open children in whatever phase it stands
-	// (ChildWaitsOf), and the worker of the phase is stopped for the wait. Under a rule where it
-	// does not, the phase goes on while the issue waits and only its next start waits.
+	// WaitStopsPhase says whether an open Dispatch child of a started parent stops the phase under
+	// way, cybermonklabs/legion#4592's wait (its spec, R9 to R13): under a rule where it
+	// does, a parent whose phases have started and that stands in planning through accepting
+	// (OpenChildHolds), its pull request not merged, moves into awaiting_children, a phase that
+	// keeps no slot, in place of each start an open child holds and in the middle of a phase the
+	// admission pass finds it in; its worker is told the phase ended and its task is retired; and
+	// once no child of it is open the pass returns it to the start it held, or to the first step
+	// after the implementer's for a held test, review or acceptance (ReturnStep). The started
+	// parents are judged apart from the children-first wait of a first phase (StartedParents,
+	// LineFacts.StartedParentWaits), the engine's guard on every phase start reads it
+	// (workflow's childrenHoldingStart), and the admission pass moves and returns the parents
+	// (admit's childrenWaits). A blocked_by link stops no phase under any rule. Under a rule where it
+	// does not, the rules the recorded windows ran before #4592, an open child holds no start of a
+	// started parent, whose phases go on as they did.
 	WaitStopsPhase bool
 	// Order is the order of the waiting line (Waiting), within each priority's band where the rule
 	// bands the line (PriorityFirst).
@@ -183,15 +193,19 @@ const (
 )
 
 // MainRule is the daemon's own rule, the one it is built with: a slot is kept from the start
-// through the review and in held, and none past the review; a link wait and a children wait give
-// the slot back at the pass that finds them, with no grace, and stop nothing; the line stands by
-// priority first (cybermonklabs/legion#5365) and, within one priority, work that came back goes
-// first, oldest first, then the line by rank; a start takes a slot of its own, whatever its
-// priority, since no issue starts outside the cap (P0AboveCap) until R10 reaches the daemon in
+// through the review and in held, and none past the review nor in awaiting_children; a link wait
+// and a children wait give the slot back at the pass that finds them, with no grace; an open
+// Dispatch child of a started parent stops the phase under way and moves the parent into
+// awaiting_children (cybermonklabs/legion#4592); the line stands by priority first
+// (cybermonklabs/legion#5365) and, within one priority, work that came back goes first, oldest
+// first, then the line by rank; a start takes a slot of its own, whatever its priority, since no
+// issue starts outside the cap (P0AboveCap) until R10 reaches the daemon in
 // cybermonklabs/legion#5488; a conflicting head keeps its phase while the base is merged forward,
 // and past the review waits for merging, where the merger merges it (cybermonklabs/legion#4979);
 // and no slot goes back because its holder is idle. Its commit is the commit the rule was first
-// written as a value at.
+// written as a value at; the rule is the daemon's at the tool's commit, which each replay run
+// records, so since cybermonklabs/legion#4592 it moves a started parent with an open child into
+// awaiting_children.
 var MainRule = SlotRule{
 	Name:   "main",
 	Commit: "0d3786da536722f2eb26a793ab1b9827b6e90f47",
@@ -200,7 +214,7 @@ var MainRule = SlotRule{
 	LinkWaitGivesBack:     true,
 	ChildrenWaitGivesBack: true,
 	WaitGrace:             0,
-	WaitStopsPhase:        false,
+	WaitStopsPhase:        true,
 	Order:                 LineReturnedOldestFirst,
 	PriorityFirst:         true,
 	Take:                  TakeOwnSlot,
@@ -225,9 +239,10 @@ func (r SlotRule) OrMain() SlotRule {
 // awaiting_person; the four phases a step's worker runs besides the owner's acceptance —
 // planning, implementing, testing and reviewing; and held, which is reached here only where the
 // record names no earlier phase for the hold (StandsAt). Every other phase holds none: accepting,
-// retro and merging (in the default steps, the phases after the review), and done, which has
-// finished. A step after accepting whose phase keeps a slot waits for one again
-// (workflow.StartOrOwe).
+// retro and merging (in the default steps, the phases after the review); done, which has
+// finished; and awaiting_children, a parent waiting on its open children, which work under slots
+// of their own (dispatch://INFRA-3320 R11). A step after accepting whose phase keeps a slot waits
+// for one again (workflow.StartOrOwe).
 //
 // It is written as one list, in the rule value, so that a later change adds or removes one entry
 // and every reader of the rule moves with it. Two read it, and a phase in one and not the other
@@ -321,12 +336,15 @@ func (r SlotRule) InSlotlessPhase(issue Issue) bool {
 	return slices.Contains(phase.Order, at) && !r.PhaseKeepsSlot(at)
 }
 
-// ChildrenFirstCandidates is every issue of issues whose Dispatch children r's children-first
-// rule can hold it for, by key and sorted: it stands in the workflow, its tree is recorded, not
-// lingering and under an open design gate, and it stands at phase.Admitted, its own first phase
-// still to start. Those are the only issues the children-first rule can hold, so they are the
-// only parents whose Dispatch children are read at all (ChildWaitsOf). The keys come out sorted,
-// so one pass reads the same set in the same order whatever order the records arrived in.
+// ChildrenFirstCandidates is every issue of issues whose own first phase has not started yet and
+// could, by key and sorted: it stands in the workflow, its tree is recorded, not lingering and
+// under an open design gate, and it stands at phase.Admitted, its own first phase still to start.
+// Those are the only issues whose first phase r's children-first rule can hold, so they are the
+// only parents whose Dispatch children this judgement reads (readChildWaits). A parent whose
+// phases started is read by StartedParents, since an open child holds every later phase start of
+// it too under a rule whose wait stops the phase under way (WaitStopsPhase, the spec of #4592,
+// R9). The keys come out sorted, so one pass reads the same set in the same order whatever order
+// the records arrived in.
 //
 // The open gate is what puts the start of the wait where the spec puts it: at the gate's opening,
 // before the architect's design-approved turn releases the wave. Before that opening a root's
@@ -335,15 +353,11 @@ func (r SlotRule) InSlotlessPhase(issue Issue) bool {
 // every released member of its tree are issues whose first phase the line does offer a slot to,
 // and each of them waits for whatever Dispatch still shows hanging under it.
 //
-// Under a rule whose wait stops the phase under way (WaitStopsPhase) the last term goes: a parent
-// the daemon has started waits on its open children in whatever phase it stands, as one whose
-// first phase never started does, and gives its slot back for that wait (blockers.waitsOf), so its
-// children are read wherever it stands. Under a rule whose start may take a cover (TakeCover) the
-// gate's term is that it has opened at some time (TreeGate.EverOpened): a parent's wait on its
-// children stands from the first opening of its design gate, also while a new spec version has
-// closed the gate again, so a cover a child holds for its parent does not end with the version.
+// Under a rule whose start may take a cover (TakeCover) the gate's term is that it has opened at
+// some time (TreeGate.EverOpened): a parent's wait on its children stands from the first opening
+// of its design gate, also while a new spec version has closed the gate again, so a cover a child
+// holds for its parent does not end with the version.
 func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeGate) []string {
-	anyPhase := r.OrMain().WaitStopsPhase
 	everOpened := r.OrMain().Take == TakeCover
 	records := byKey(issues)
 	keys := make([]string, 0, len(issues))
@@ -353,7 +367,7 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 		// todo (Store.LiveIssues) — so an unrecorded root is a tree that has gone, and reading
 		// the zero record's linger would answer false for exactly the case this test is for.
 		root, recorded := records[issue.Tree]
-		if (!anyPhase && issue.Phase != phase.Admitted) || !InWorkflow(issue) || !recorded || root.Lingers() {
+		if issue.Phase != phase.Admitted || !InWorkflow(issue) || !recorded || root.Lingers() {
 			continue
 		}
 		if gate := gates[issue.Tree]; !gate.Open() && !(everOpened && gate.EverOpened()) {
@@ -375,10 +389,11 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 // p0-at-once, idle-return-1h and p0-idle, two answers apart and together, and signals and
 // signals-backoff, which admit below P0 by signals). The daemon's own rule
 // orders the line by priority first since cybermonklabs/legion#5365, which the comparison ran as
-// the candidate priority-first before that change merged; each candidate, built from the daemon's
-// own, keeps that band, and the recorded rules, whose releases came before it, do not. `legion
-// replay rules` prints them. Each answer is built afresh, so a caller that changes a rule it was
-// handed changes no other caller's.
+// the candidate priority-first before that change merged, and stops a started parent's phase for
+// its open children since cybermonklabs/legion#4592 (WaitStopsPhase); each candidate, built from
+// the daemon's own, keeps both, and the recorded rules, whose releases came before them, keep
+// neither. `legion replay rules` prints them. Each answer is built afresh, so a caller that
+// changes a rule it was handed changes no other caller's.
 func SlotRules() []SlotRule {
 	return []SlotRule{mainRuleWith(MainRule.Name, func(*SlotRule) {}), windowOneRule(), windowTwoRule(), windowThreeRule(),
 		keepPastReviewRule(), blockersFirstRule(), returnedByRankRule(), coverRule(),
@@ -422,12 +437,14 @@ func everyWorkflowPhase() []phase.Phase {
 // issue (#3715) — and a head that conflicts with its base moving back to implementing by workflow's
 // TriggerConflict, the rows of that release's transition table the daemon's own table no longer
 // carries (workflow.TableFor), where main keeps the phase and merges the base forward (#4464). Its
-// line stands by no priority (PriorityFirst), as every release before #5365's.
+// line stands by no priority (PriorityFirst), as every release before #5365's, and no open child
+// stops a started parent's phase (WaitStopsPhase), as in every release before #4592's.
 func windowOneRule() SlotRule {
 	return mainRuleWith("legion-v20.42.5", func(rule *SlotRule) {
 		rule.Commit = conflictMovesBackCommit
 		rule.Conflict = ConflictMovesBack
 		rule.PriorityFirst = false
+		rule.WaitStopsPhase = false
 	})
 }
 
@@ -436,7 +453,8 @@ func windowOneRule() SlotRule {
 // merging, which that release's awaiting_merge was and a replay reads as a mark (ReleaseAtReady,
 // LineFacts.Ready); no wait on another issue gives the slot back; red checks, that release's one
 // path of a conflicting head, move the issue back to implementing by workflow's TriggerChecksRed;
-// and the line stands by no priority (PriorityFirst).
+// and the line stands by no priority (PriorityFirst) and no open child stops a started parent's
+// phase (WaitStopsPhase).
 func windowTwoRule() SlotRule {
 	return mainRuleWith("legion-v19.57.3", func(rule *SlotRule) {
 		rule.Commit = awaitingMergeCommit
@@ -445,6 +463,7 @@ func windowTwoRule() SlotRule {
 		rule.Conflict = ConflictChecksRed
 		rule.ReleaseAtReady = true
 		rule.PriorityFirst = false
+		rule.WaitStopsPhase = false
 	})
 }
 
@@ -453,17 +472,21 @@ func windowTwoRule() SlotRule {
 // (ConflictImplementerMergesForward): a conflicting head keeps its phase in every phase, accepting,
 // retro and merging included, and the implementer is asked at once to merge the base forward,
 // where main leaves a conflict in accepting or retro to wait for merging and asks the merger there.
-// Its line stands by no priority (PriorityFirst).
+// Its line stands by no priority (PriorityFirst), and no open child stops a started parent's
+// phase (WaitStopsPhase).
 func windowThreeRule() SlotRule {
 	return mainRuleWith("legion-v22.14.1", func(rule *SlotRule) {
 		rule.Commit = implementerMergesForwardCommit
 		rule.Conflict = ConflictImplementerMergesForward
 		rule.PriorityFirst = false
+		rule.WaitStopsPhase = false
 	})
 }
 
 // keepPastReviewRule is the daemon's own rule with the slot kept in accepting, retro and merging
-// too, so a send-back past the review finds its issue holding its slot.
+// too, so a send-back past the review finds its issue holding its slot. A parent with an open
+// Dispatch child still moves into awaiting_children, from accepting too, and gives its slot back
+// there, as under the daemon's own rule (WaitStopsPhase).
 func keepPastReviewRule() SlotRule {
 	return mainRuleWith("keep-past-review", func(rule *SlotRule) {
 		rule.KeepsSlotIn = everyWorkflowPhase()
@@ -487,16 +510,23 @@ func returnedByRankRule() SlotRule {
 }
 
 // coverRule is the rule of the tool's spec at version 4 and its decisions at version 1: a started
-// issue keeps its slot in every phase until its work is done, and no wait on another issue gives
-// it back; an issue a counted waiter waits on starts at once on that waiter's slot, which it then
-// holds for the waiter, one waiter for each holder, and the waiter is not counted while the cover
-// stands (TakeCover; admit's covers). The line keeps the daemon's own order: the issues that came
-// back oldest first and the rest by the board's rank, with nothing put ahead of the rank. A
-// conflicting head keeps its phase, as on main, which the spec was written against.
+// issue keeps its slot in every phase until its work is done, through every wait on another issue,
+// for its children and for a link alike; an issue a counted waiter waits on starts at once on that
+// waiter's slot, which it then holds for the waiter, one waiter for each holder, and the waiter is
+// not counted while the cover stands (TakeCover; admit's covers). A parent with an open Dispatch
+// child is such a waiter in whatever phase it stands: it is not moved into awaiting_children
+// (WaitStopsPhase off, where every other rule built from the daemon's own moves it since
+// cybermonklabs/legion#4592), it keeps its phase, and its open children are waits a cover reads
+// (StartedParents, blockers.CoverWaits), so a child of it that has not started starts on its slot
+// and holds it for the parent while the cover stands, as an issue it waits on through a blocked_by
+// link does. The line keeps the daemon's own order: the
+// issues that came back oldest first and the rest by the board's rank, with nothing put ahead of
+// the rank. A conflicting head keeps its phase, as on main, which the spec was written against.
 func coverRule() SlotRule {
 	return mainRuleWith("cover", func(rule *SlotRule) {
 		rule.KeepsSlotIn = everyWorkflowPhase()
 		rule.LinkWaitGivesBack, rule.ChildrenWaitGivesBack = false, false
+		rule.WaitStopsPhase = false
 		rule.Take = TakeCover
 	})
 }
@@ -510,7 +540,10 @@ func coverRule() SlotRule {
 // deployment's reported cases: a started issue's blocked_by link set and taken off within a minute
 // took its slot back and placed it last of 79 in the line's returned part, which orders by the
 // moment the work came back, so one minute of a wait put work in progress behind every issue that
-// came back before it.
+// came back before it. The grace is a link wait's and a children wait's of a first phase
+// (LinkWaitGivesBack, ChildrenWaitGivesBack): a started parent with an open Dispatch child moves
+// into awaiting_children at once, as under the daemon's own rule (WaitStopsPhase), whose phase
+// keeps no slot whatever the grace.
 func waitGraceRule(name string, grace time.Duration) SlotRule {
 	return mainRuleWith(name, func(rule *SlotRule) {
 		rule.WaitGrace = grace
@@ -574,7 +607,9 @@ func reworkFirstRule() SlotRule {
 // reworkFirstKeepRule is rework-first with the slot kept in accepting, retro and merging too, as
 // keep-past-review keeps it (LineReworkFirst, everyWorkflowPhase), so work sent back past the review
 // never waits for a slot at all, and the comparison reads the cost of returning work under the
-// owner's order with and without that candidate's slot.
+// owner's order with and without that candidate's slot. A parent with an open Dispatch child still
+// moves into awaiting_children and gives its slot back there, as under the daemon's own rule
+// (WaitStopsPhase).
 func reworkFirstKeepRule() SlotRule {
 	return mainRuleWith("rework-first-keep", func(rule *SlotRule) {
 		rule.Order = LineReworkFirst
@@ -625,7 +660,9 @@ func p0AtOnceRule() SlotRule {
 // their next step with a person while other issues queued, and the cap was made to count the work
 // a project has in hand, a spec in a person's queue among it. This rule judges by no state of
 // the work but by the time since the holder's last turn, and only of a holder that waits on its
-// children or on a person.
+// children or on a person. Under the daemon's own rule a started parent already gives its slot
+// back while it waits for its children, in awaiting_children (WaitStopsPhase), so this rule
+// differs from it only for a holder that waits on a person.
 func idleReturnRule() SlotRule {
 	return mainRuleWith("idle-return-1h", func(rule *SlotRule) {
 		rule.IdleReturn = idleReturn

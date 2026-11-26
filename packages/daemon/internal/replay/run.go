@@ -134,7 +134,7 @@ type windowInputs struct {
 
 // newWindowInputs reads w's inputs (windowInputs).
 func newWindowInputs(w Window) (*windowInputs, error) {
-	trace, lines, events, err := readTrace(w, nil)
+	trace, lines, events, err := readTrace(w)
 	if err != nil {
 		return nil, err
 	}
@@ -239,6 +239,13 @@ type RunResult struct {
 	SlotPasses   []SlotPass
 	Deadlines    []DeadlineEntry
 	SignalValues map[string]map[string]*float64
+	// SignalSummaries is how each signal the run limited read over the window's span, Signals its
+	// limit and the value it read at it, and SuppliedRefused, by UTC day, the minutes the tokens model
+	// refused under the token limit that the record cannot confirm (run.json's fields of the same
+	// names); each is {} where the run has none.
+	SignalSummaries map[string]SignalSummary
+	Signals         map[string]SignalReading
+	SuppliedRefused map[string]int
 
 	// snapshot is the snapshot timeline Scorecard is read from, which a test reads states from.
 	snapshot Timeline
@@ -409,6 +416,12 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	}
 	if err := closeDB(); err != nil {
 		return result, err
+	}
+	result.SignalSummaries = d.sig.summaries()
+	result.Signals = d.sig.readings(result.SignalSummaries)
+	result.SuppliedRefused = map[string]int{}
+	if d.sig.models != nil {
+		result.SuppliedRefused = d.sig.models.SuppliedRefused(w.To)
 	}
 	d.traceAssumptions()
 	// What the replay's own passes judged names two more: 4 where an issue waited on another issue
@@ -601,8 +614,7 @@ func (d *driver) lineTimeline() (Timeline, Trace, error) {
 	for key, iss := range d.shadow.issues {
 		lined.Events[key] = append(lined.Events[key], iss.log[iss.seeded:]...)
 	}
-	rule := d.rule
-	t, err := buildTrace(lined, &rule)
+	t, err := buildTrace(lined)
 	if err != nil {
 		return Timeline{}, Trace{}, fmt.Errorf("replay: read the run's own log and events back as a record: %w", err)
 	}
@@ -623,7 +635,9 @@ func (d *driver) lineTimeline() (Timeline, Trace, error) {
 // where it was given none, as a run.json written before it named one holds), d, each signal whose
 // model gives no limit with the model, the ceiling (driver.ceiling), each slot each pass gave out
 // or took back with the pass's kind, each change of the deadline, and each limited signal's value
-// at each probe; never under the key signals, which a comparison's made-up runs use. It also holds
+// at each probe; how each limited signal read over the window's span (signalSummaries), each with
+// its limit and the value it read at it (signals), and the refused minutes the tokens model gave
+// under the token limit (suppliedRefused). It also holds
 // each draw of a stretch's conflict the run made, its key and its value (Draws), which a comparison
 // reads to show that two rules at one seed draw alike (drawsAgree), and the draws it made that it
 // keys to no stretch (UnkeyedDraws). It holds numbers and names alone, never an assumption's text.
@@ -662,8 +676,18 @@ type runRecord struct {
 	SlotPasses      []SlotPass                     `json:"slotPasses"`
 	Deadlines       []DeadlineEntry                `json:"deadlines"`
 	SignalValues    map[string]map[string]*float64 `json:"signalValues"`
-	Draws           []StretchDraw                  `json:"draws"`
-	UnkeyedDraws    UnkeyedDraws                   `json:"unkeyedDraws"`
+	// SignalSummaries is, for each signal the run limits, how it read over the window's span
+	// [From, To) and how long it held admission (SignalSummary); SuppliedRefused is, by UTC day, the
+	// minutes in which the tokens model gave a refusal by the project's own limit under the token
+	// limit the run was given, in minutes whose record holds no limit of the project's own, which
+	// the record cannot confirm (ModelReader.SuppliedRefused). Both are {} where the run has none.
+	SignalSummaries map[string]SignalSummary `json:"signalSummaries"`
+	SuppliedRefused map[string]int           `json:"suppliedRefused"`
+	// Signals is each signal the run limited, with its limit and the value it read at it (the mean
+	// of its summary), which the comparison's document gives; absent for a run that limited none.
+	Signals      map[string]SignalReading `json:"signals,omitempty"`
+	Draws        []StretchDraw            `json:"draws"`
+	UnkeyedDraws UnkeyedDraws             `json:"unkeyedDraws"`
 }
 
 // UnkeyedDraws is the draws a run made that it keys to no seed, issue and stretch, so that two runs
@@ -704,7 +728,8 @@ func (d *driver) writeOutputs(result RunResult, began time.Time) error {
 		Divergence: result.Divergence, Gaps: result.Gaps, Conflicts: result.Conflicts,
 		GitReads: result.GitReads, GitLoopHours: result.GitLoopHours, GitReadTable: result.GitReadTable,
 		Limits: d.sig.limits, TokenLimit: d.cfg.TokenLimit, IdleAfter: Duration(d.sig.idleAfter), Unlimited: d.sig.unlimited, Ceiling: d.ceiling(), SlotPasses: d.sig.passes,
-		Deadlines: d.sig.deadlines, SignalValues: d.sig.values, Draws: d.drawn, UnkeyedDraws: d.unkeyed}
+		Deadlines: d.sig.deadlines, SignalValues: d.sig.values, SignalSummaries: result.SignalSummaries, Signals: result.Signals,
+		SuppliedRefused: result.SuppliedRefused, Draws: d.drawn, UnkeyedDraws: d.unkeyed}
 	for name, value := range map[string]any{scorecardFile: result.Scorecard, lineScorecardFile: result.LineScorecard, runFile: ran} {
 		data, err := json.MarshalIndent(value, "", "  ")
 		if err != nil {

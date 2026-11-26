@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -87,7 +88,9 @@ type SlotsInputs struct {
 // one holder alike, and is placed against the first issue that waits for a slot in the line's own
 // order by the priority that would place it in the line under the rule of in.Facts
 // (record.PlacingPriority, as Waiting places an entry) and by its tree root's rank, both read off
-// the one record of its tree root: the records' own, else the one Facts.Roots carries.
+// the one record of its tree root: the records' own, else the one Facts.Roots carries. Each record
+// of in.Issues in awaiting_children that holds no slot is a started parent that waits on its open
+// children (cybermonklabs/legion#4592), which the reading counts in reading (b).
 func SlotsReading(in SlotsInputs) (record.SlotsReading, map[string]record.SlotHolder) {
 	byKey := make(map[string]record.Issue, len(in.Issues))
 	for _, issue := range in.Issues {
@@ -139,7 +142,13 @@ func SlotsReading(in SlotsInputs) (record.SlotsReading, map[string]record.SlotHo
 		members[i] = record.SlotsLineMember{Entry: entry, RootRank: rootOf(entry.Issue).Rank,
 			HeldBack: len(LineWaitsOn(in.Rows, entry)) > 0, Blocked: blocked[entry.Issue.Key], Held: held[entry.Issue.Key]}
 	}
-	return record.SlotsReadingOf(in.Cap, holders, members), byHolder
+	var waitingParents []record.Issue
+	for _, issue := range in.Issues {
+		if _, holds := byHolder[issue.Key]; !holds && issue.Phase == phase.AwaitingChildren {
+			waitingParents = append(waitingParents, issue)
+		}
+	}
+	return record.SlotsReadingOf(in.Cap, holders, members, waitingParents), byHolder
 }
 
 // SlotHolderState is the state issue, holding slot, stands in as the slots reading reads a holder,

@@ -210,7 +210,10 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 // waits on a person
 // before its first step stands in awaiting_person over the admitted of a task at no act. That root
 // stands there itself: no hold is from awaiting_person, which the issues table refuses
-// (issues_held_from_check), so a hold that names it is refused here too. It reads
+// (issues_held_from_check), so a hold that names it is refused here too. A parent that waits on its
+// open Dispatch children stands in awaiting_children over the phase of the start it holds
+// (record.ChildrenWait.Start), where its task stands (awaitChildren), as a hold overlays the phase
+// it is from: no hold is from awaiting_children either (issues_children_wait_shape). It reads
 // the walk in the caller's transaction, after any move of the task (moveTask), so a write that
 // names its phase itself is checked against the store and not against the caller's copy: one read
 // of issue_plans for a run with no plan rows, which has only its phase and is not checked, and
@@ -231,11 +234,15 @@ func (e *Engine) WriteIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 func (e *Engine) writeIssueOn(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
 	if w.Stored {
 		at, task := record.StandsAt(issue), issuePhaseOf(w, w.Place, w.State)
+		stands := string(at)
+		switch {
+		case issue.Phase == phase.AwaitingChildren && issue.ChildrenWait != nil:
+			at = issue.ChildrenWait.Start
+			stands = "awaiting_children, holding the start of " + string(at)
+		case at != issue.Phase:
+			stands = "held from " + stands
+		}
 		if at != task && (issue.Phase != phase.AwaitingPerson || task != phase.Admitted) {
-			stands := string(at)
-			if at != issue.Phase {
-				stands = "held from " + stands
-			}
 			return fmt.Errorf("put %s at generation %d: it stands in %s, and its task %s is %s at %+v, which stands in %s",
 				issue.Key, issue.Generation, stands, w.Task, w.State, w.Place, task)
 		}

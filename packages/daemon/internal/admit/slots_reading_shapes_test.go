@@ -14,15 +14,16 @@ import (
 
 // The slots reading (spec R6) names two shapes a deployment reported where they stand, under
 // every rule the repository keeps. A tree root in implementing whose implementer is idle with no
-// pending task, holding its slot for hundreds of hours while its children run, is `idle`: the
-// spec's `issue` is a holder that waits on another issue and keeps its slot under the rule, and no
-// kept rule has a root past admitted wait on its children (record.SlotRule.ChildrenFirstCandidates
-// reads a parent at admitted alone where the rule's wait does not stop the phase, and no kept rule's
-// does), so the root names no wait (blockers.KeptWaits) and none of the first four states holds for
-// it. Its time is the end of its implementer's last turn, the later of that and its slot. And a
-// root in awaiting_person, on an ask or on its design gate, holding its slot while it waits on a
-// person, is `person`, from the moment its wait began. The children run in their implementers'
-// turns, `working`.
+// pending task, holding its slot for hundreds of hours while its children run, is `idle` under a
+// rule whose wait stops no phase and takes no cover (the rules the recorded windows ran): the
+// spec's `issue` is a holder that waits on another issue and keeps its slot under the rule, and
+// such a rule has no root past admitted wait on its children (record.SlotRule.StartedParents names
+// none, and record.SlotRule.ChildrenFirstCandidates reads a parent at admitted alone), so the root
+// names no wait (blockers.KeptWaits) and none of the first four states holds for it. Its time is
+// the end of its implementer's last turn, the later of that and its slot. And a root in
+// awaiting_person, on an ask or on its design gate, holding its slot while it waits on a person, is
+// `person`, from the moment its wait began. The children run in their implementers' turns,
+// `working`.
 //
 // The shapes: ACME-1, a root in implementing, holds its slot since 329 hours before the tick; its
 // implementer's claim is idle with no task, its newest turn lasting seven seconds and ending two
@@ -32,14 +33,26 @@ import (
 // before, and ACME-6, a root in awaiting_person on its design gate's version 1 since two hours
 // before, hold slots and have no claim in a turn.
 //
+// Under a rule whose wait stops the phase under way (record.SlotRule.WaitStopsPhase: the daemon's
+// own since cybermonklabs/legion#4592, and every candidate built from it but cover), ACME-4, open,
+// holds ACME-1's next start, so the tick's pass moves ACME-1 into awaiting_children (admit's
+// childrenWaits) and the release frees its slot, awaiting_children keeping none: 4 of 5 in use,
+// ACME-2 and ACME-3 working and ACME-5 and ACME-6 person. ACME-1 holds no slot and stands in no
+// line, and it is started work without a slot in all (reading (b): a started issue before its
+// review that holds no slot, its wait on its children included) from the tick, the moment it
+// entered the wait (record.ChildrenWait.Since), and no wait only for a slot. Under cover, whose
+// wait stops no phase and whose
+// start may take a cover, ACME-1 keeps its phase and its slot, and ACME-4, an open child of a
+// started parent, is a wait a cover reads (blockers.CoverWaits), one ACME-1 keeps its slot through,
+// so it is `issue` from this pass, the first that finds the wait: 5 of 5 in use. ACME-4 is not
+// released, so no cover forms for it.
+//
 // Under a rule with an idle return (record.SlotRule.IdleReturn, an hour in every kept rule that
-// names one) the three holders that wait on their children or on a person, none of whose roles
-// had a turn for longer than that, give their slots back at the tick's own pass
-// (record.LineFacts.IdleReturns): ACME-1, idle for two hours while its children work, and ACME-5
-// and ACME-6, with no turn since they took their slots. The two children at work hold the only
-// slots in use, and ACME-1 is started work without a slot from the tick on: it stands in the line
-// at the mark of its release, passed over while its children work, so it waits on more than a
-// slot. ACME-5 and ACME-6 stand in no line until a person answers them.
+// names one, both built from the daemon's own) ACME-1 moves into awaiting_children as above, and
+// ACME-5 and ACME-6, waiting on a person with no turn since they took their slots, give their slots
+// back at the tick's own pass (record.LineFacts.IdleReturns). The two children at work hold the
+// only slots in use, ACME-1 is started work without a slot in all as above, and ACME-5 and ACME-6
+// stand in no line until a person answers them.
 func TestTheSlotsReadingNamesAnIdleRootAndARootWaitingOnAPerson(t *testing.T) {
 	lastTurnEnd := fixedNow.Add(-2 * time.Hour)
 	turnStarts := map[string]time.Time{"ACME-2": fixedNow.Add(-40 * time.Minute), "ACME-3": fixedNow.Add(-25 * time.Minute)}
@@ -89,18 +102,22 @@ func TestTheSlotsReadingNamesAnIdleRootAndARootWaitingOnAPerson(t *testing.T) {
 				t.Fatalf("the tick notice carries no slots reading: %s", payload)
 			}
 			oldestTurn := turnStarts["ACME-2"]
-			want := record.SlotsReading{
-				InUse: 5, Cap: 5,
-				Working: record.StateCount{Count: 2, Oldest: &oldestTurn},
-				Person:  record.StateCount{Count: 2, Oldest: &askSince},
-				Idle:    record.StateCount{Count: 1, Oldest: &lastTurnEnd},
+			working, person := record.StateCount{Count: 2, Oldest: &oldestTurn}, record.StateCount{Count: 2, Oldest: &askSince}
+			waitingParent := record.StateCount{Count: 1, Oldest: &fixedNow}
+			var want record.SlotsReading
+			switch {
+			case rule.WaitStopsPhase && rule.IdleReturn > 0:
+				want = record.SlotsReading{InUse: 2, Cap: 5, Working: working, StartedWithoutSlot: waitingParent}
+			case rule.WaitStopsPhase:
+				want = record.SlotsReading{InUse: 4, Cap: 5, Working: working, Person: person, StartedWithoutSlot: waitingParent}
+			case rule.Take == record.TakeCover:
+				want = record.SlotsReading{InUse: 5, Cap: 5, Working: working, Person: person,
+					Issue: record.StateCount{Count: 1, Oldest: &fixedNow}}
+			default:
+				want = record.SlotsReading{InUse: 5, Cap: 5, Working: working, Person: person,
+					Idle: record.StateCount{Count: 1, Oldest: &lastTurnEnd}}
 			}
 			want.Line = record.SlotsLine(want)
-			if rule.IdleReturn > 0 {
-				want = record.SlotsReading{InUse: 2, Cap: 5, Working: record.StateCount{Count: 2, Oldest: &oldestTurn},
-					StartedWithoutSlot: record.StateCount{Count: 1, Oldest: &fixedNow}}
-				want.Line = record.SlotsLine(want)
-			}
 			if got, wanted := slotsReadingSaid(t, *notice.Slots), slotsReadingSaid(t, want); got != wanted {
 				t.Fatalf("the tick notice's slots = %s, want %s", got, wanted)
 			}

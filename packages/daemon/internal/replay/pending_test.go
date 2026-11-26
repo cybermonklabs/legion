@@ -17,14 +17,13 @@ import (
 // (record.SlotRule.P0AboveCap), so their expected values, R10's, are those of each window's run
 // under p0-at-once meanwhile, which passes. That forward merge removes the three names.
 var pendingUntilBuilt = map[string]string{
-	"TestTheDocumentHasEveryRuleWindowBranchAndMeasure": "t35 (signals at limits)",
-	"TestFixtureWindows/p0-at-a-full-cap/main":          d16Main,
-	"TestFixtureWindows/p0-at-its-bound/main":           d16Main,
-	"TestFixtureWindows/urgent-work-waits/main":         d16Main,
-	"TestFixtureWindows/p0-inherited-across-projects":   t39Resolved + "; under p0-at-once ACME-2 and ACME-4 wait at the cap",
-	"TestFixtureWindows/p0-inherited-ancestor-missing":  t39Resolved + "; p0-at-once replays the window rather than refuse it",
-	"TestFixtureWindows/p0-recorded-descendant-update":  t39Resolved + "; under p0-at-once ACME-2 waits at the cap",
-	"TestFixtureWindows/one-free-slot-opposite-order":   t39Resolved + "; under p0-at-once ACME-1 takes the free slot, not ACME-2",
+	"TestFixtureWindows/p0-at-a-full-cap/main":         d16Main,
+	"TestFixtureWindows/p0-at-its-bound/main":          d16Main,
+	"TestFixtureWindows/urgent-work-waits/main":        d16Main,
+	"TestFixtureWindows/p0-inherited-across-projects":  t39Resolved + "; under p0-at-once ACME-2 and ACME-4 wait at the cap",
+	"TestFixtureWindows/p0-inherited-ancestor-missing": t39Resolved + "; p0-at-once replays the window rather than refuse it",
+	"TestFixtureWindows/p0-recorded-descendant-update": t39Resolved + "; under p0-at-once ACME-2 waits at the cap",
+	"TestFixtureWindows/one-free-slot-opposite-order":  t39Resolved + "; under p0-at-once ACME-1 takes the free slot, not ACME-2",
 }
 
 // t39Resolved is the task of the four windows of spec v36's R10 that rest on the priority Dispatch

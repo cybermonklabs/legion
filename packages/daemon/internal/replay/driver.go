@@ -97,7 +97,11 @@ type item struct {
 	// of a recorded Dispatch event the item applies, "" for an item of another kind.
 	piece               *piece
 	eventKey, eventKind string
-	done                bool
+	// startOf is the issue whose start an event no piece places is placed from (anchorStart), ""
+	// for any other item: while that issue's work stands stopped in awaiting_children
+	// (piece.stopped), the item waits for the issue's return (holdForReturn).
+	startOf string
+	done    bool
 	// timer says the item is the daemon's own timer (a signal's deadline, or the next change of a
 	// modelled signal's input), which the daemon keeps in memory: one that falls while the daemon
 	// is down is dropped, never held for its next boot.
@@ -956,6 +960,7 @@ func (d *driver) run() error {
 		it := heap.Pop(&d.queue).(*item)
 		// Every act at or before each probe before this item has run: the probe reads the replay
 		// as they left it.
+		d.sampleSignals(it.at, false)
 		d.readProbes(it.at, false)
 		if !it.at.Before(end) {
 			break
@@ -970,6 +975,9 @@ func (d *driver) run() error {
 			if it.piece.state != piecePaused {
 				it.done = true
 			}
+			continue
+		}
+		if it.startOf != "" && d.holdForReturn(it) {
 			continue
 		}
 		it.done = true
@@ -1016,6 +1024,7 @@ func (d *driver) run() error {
 	for i := range d.script.events {
 		unplaced(d.script.events[i].awaiting)
 	}
+	d.sampleSignals(time.Time{}, true)
 	d.readProbes(time.Time{}, true)
 	return d.settle()
 }
@@ -1244,7 +1253,9 @@ func (d *driver) placeEvent(i int, at time.Time) {
 // already is not queued again, but for a reopen of the daemon's own session that waits for the
 // replay's issue to leave the workflow (defersReopen), which is queued again at that leave
 // (placeReopens), and an event held back for its issue's filing (awaitsFiling), which is queued
-// again once that filing is applied.
+// again once that filing is applied. An event no piece places that is placed from an issue's start
+// (anchorStart) carries that issue (item.startOf), so it waits while the issue's work stands
+// stopped in awaiting_children (holdForReturn).
 func (d *driver) queueEvent(i int, at, rec time.Time, p *piece) {
 	if _, placed := d.placed[i]; placed {
 		return
@@ -1252,7 +1263,12 @@ func (d *driver) queueEvent(i int, at, rec time.Time, p *piece) {
 	d.placed[i] = at
 	event := &d.script.events[i]
 	var applied []byte
+	startOf := ""
+	if p == nil && event.anchor == anchorStart {
+		startOf = event.startOf
+	}
 	d.push(&item{at: at, class: classAct, rec: rec, order: int64(event.order), piece: p, eventKey: event.env.key, eventKind: event.env.kind,
+		startOf: startOf,
 		dispatch: func() error {
 			var deferred bool
 			var err error
@@ -1826,23 +1842,26 @@ func caughtUpKind(kind string) bool {
 	return strings.HasPrefix(kind, "ask.") || strings.HasPrefix(kind, "comment.") || strings.HasPrefix(kind, "artifact.")
 }
 
-// tick is the controller's tick at at: Observed read from the shadow by the keys the daemon's own
-// selection reads (blockers.WaitedOn, blockers.ReadPlan), as the daemon's tick reads Dispatch.
+// tick is the controller's tick at at: Observed read from the shadow by the keys and the parents
+// whose children the daemon's own selection reads (blockers.WaitedOn, blockers.ReadPlan,
+// blockers.Taken), as the daemon's tick reads Dispatch.
 func (d *driver) tick(at time.Time) error {
-	var keys []string
+	var keys, parents []string
 	if err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		keys, err = blockers.WaitedOn(ctx, tx, d.records, d.window.Project, d.window.GateSteps, d.rule, d.now())
+		keys, parents, err = blockers.WaitedOn(ctx, tx, d.records, d.window.Project, d.window.GateSteps, d.rule, d.now())
 		return err
 	}); err != nil {
 		return fmt.Errorf("replay: read what the tick at %s re-reads: %w", stamp(at), err)
 	}
 	var observed []intake.IssueStatus
-	if len(keys) > 0 {
-		listProject, single := blockers.ReadPlan(d.window.Project, keys)
+	if len(keys) > 0 || len(parents) > 0 {
+		listProject, all, single := blockers.ReadPlan(d.window.Project, keys, parents)
 		if listProject {
 			for _, summary := range d.shadow.listing() {
-				observed = append(observed, blockers.Observed(d.window.Project, summary))
+				if all || blockers.Taken(d.window.Project, summary, keys, parents) {
+					observed = append(observed, blockers.Observed(d.window.Project, summary))
+				}
 			}
 		}
 		for _, key := range single {

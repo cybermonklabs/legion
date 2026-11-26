@@ -101,6 +101,12 @@ type IssueState struct {
 	InTurn bool
 	// PastReview says it stands in accepting, retro or merging, or is held from one of them.
 	PastReview bool
+	// AwaitingChildren says it is in flight in awaiting_children: a started parent whose next
+	// start its open children hold, its phase stopped by the admission pass under a rule whose
+	// wait stops the phase (cybermonklabs/legion#4592). It stands in no part of the line, and
+	// while it holds no slot it is started work without a slot in all (`replay.md`, "The
+	// measures", startedWithoutSlot).
+	AwaitingChildren bool
 	// Part is the part of the waiting line it stands in, zero for none; Blocked says
 	// admission.blocked names it; Waiting says it is an issue that waits for a slot: a member of
 	// the line that holds no slot, that no wait holds back, and that neither admission.blocked
@@ -589,9 +595,10 @@ func recordedWaitStarts(t Trace, ranks rankFunc, at time.Time, keys []string) ma
 }
 
 // issueWaits is iss's waits on other issues as the measures count them (`replay.md`, "The
-// measures": a stretch in which an issue in flight, standing before its review, waits on another
-// issue): each stretch of its link and children waits in which it stands in flight (flight) and
-// before its review (measuredStretches), in the order they began, each run of them that overlap
+// measures": a stretch in which an issue in flight, standing before its review or in
+// awaiting_children, waits on another issue): each stretch of its link and children waits in which
+// it stands in flight (flight) and in such a phase (measuredStretches), in the order they began,
+// each run of them that overlap
 // or touch read as one wait, from the first one's start to the last one's end, ended by what ended
 // the last. A wait that begins where another ends is the same stretch of waiting, as the snapshot
 // timeline reads it, whose wait goes on at a settle where something is left to wait on whatever
@@ -643,13 +650,14 @@ type waitStretch struct {
 	cut      WaitEnd
 }
 
-// measuredStretches is each stretch in which iss stands in flight (flight) and in a visit before
-// its review, in order, the visits that follow one another joined: a stretch ends with the issue's
-// move past its review (moved_on), or with its leave or its run's end (left_workflow).
+// measuredStretches is each stretch in which iss stands in flight (flight) and in a visit to a
+// phase whose waits are measured (measuredPhase: before its review, or awaiting_children), in
+// order, the visits that follow one another joined: a stretch ends with the issue's move past its
+// review (moved_on), or with its leave or its run's end (left_workflow).
 func measuredStretches(iss *IssueTrace, flight [][2]time.Time) []waitStretch {
 	var stretches []waitStretch
 	for _, visit := range iss.Visits {
-		if !beforeReview(visit.Phase) {
+		if !measuredPhase(visit.Phase) {
 			continue
 		}
 		for _, run := range flight {
@@ -777,6 +785,7 @@ func (r *lineReader) stateAt(x *issueIndex, at time.Time) IssueState {
 	waiting, held := x.waits.at(at) > 0, x.held.at(at) > 0
 	if visit != nil && (state.InFlight || state.Holds) {
 		state.PastReview = pastReviewPhase(visit.Phase)
+		state.AwaitingChildren = state.InFlight && visit.Phase == phase.AwaitingChildren
 	}
 	if state.Holds {
 		state.Holder = r.holderState(x, at, tree, visit, waiting, held)

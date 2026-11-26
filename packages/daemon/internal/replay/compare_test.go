@@ -1380,8 +1380,9 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 			}
 			return snapshot, line, runRecord{Rule: rule.Name, RuleCommit: rule.Commit, BuildCommit: b.commit, Branch: at.Branch, Seed: seed,
 				Slowdown: at.Slowdown, Scenario: at.Branch.NeverStarted, Assumptions: []int{1, 3, 4},
-				Divergence: Divergence{NoWorkAdmissions: noWork, NoWorkSlotHours: noWorkHours},
-				StartedAt:  b.started.Add(time.Duration(b.runs) * time.Minute), Gaps: Gaps(snapshot, line)}
+				Divergence:      Divergence{NoWorkAdmissions: noWork, NoWorkSlotHours: noWorkHours},
+				SignalSummaries: map[string]SignalSummary{}, SuppliedRefused: map[string]int{},
+				StartedAt: b.started.Add(time.Duration(b.runs) * time.Minute), Gaps: Gaps(snapshot, line)}
 		}, func(directory string, ran runRecord) any {
 			if readings := signalReadings[directory]; readings != nil {
 				return struct {
@@ -1641,7 +1642,8 @@ func madeUpRun(_ windowRecord, _ int, rule record.SlotRule, at BranchAt, seed in
 	card := sampleCard(compareHours)
 	card.Rule, card.Branch, card.Seed, card.Slowdown = rule.Name, at.Branch.Name, seed, at.Slowdown
 	return card, card, runRecord{Rule: rule.Name, RuleCommit: rule.Commit, Branch: at.Branch, Seed: seed, Slowdown: at.Slowdown,
-		Scenario: at.Branch.NeverStarted, Assumptions: []int{1}, StartedAt: compareFrom, Gaps: Gaps(card, card)}
+		Scenario: at.Branch.NeverStarted, Assumptions: []int{1}, StartedAt: compareFrom, Gaps: Gaps(card, card),
+		SignalSummaries: map[string]SignalSummary{}, SuppliedRefused: map[string]int{}}
 }
 
 // madeUpWindows is two windows of compareHours hours from compareFrom for a comparison of made-up

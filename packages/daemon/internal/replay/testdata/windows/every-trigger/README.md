@@ -1,10 +1,13 @@
 # The window `every-trigger`
 
 A recorded window of project ACME, written by hand by the conventions of `../README.md`:
-seven hours, from 2001-03-05T09:00Z to 16:00Z, an admission cap of 2, a root and two children, recorded under the rule `main`.
+seven hours, from 2001-03-05T09:00Z to 16:00Z, an admission cap of 2, a root and two children, recorded under the rule `legion-v22.14.1`.
 It takes a root and two children through every trigger the workflow has: a failed test, a review that asks for changes, an architect's send-back from accepting, a sign-off held behind a child, the merge and the linger's expiry.
-A replay under the recorded rule must give each issue the recorded sequence of (from, to, trigger), which `expect.json` holds under `moves` beside the scorecard, with no move refused.
-`expect.json`'s scorecard is of a replay under `main` on the main branch, worked by hand below; nothing is drawn, so every seed gives it.
+The record is of a daemon before cybermonklabs/legion#4592, so its part names `legion-v22.14.1`, the rule of release 22.14.1, as the rule it was made under: it was written under the `main` of its time, whose slot choices that release keeps.
+Today's `main` moves a started parent with an open Dispatch child into `awaiting_children`: under it ACME-1 waits there for ACME-3, so its sign-off comes after ACME-3's leave and holds at once, and the held sign-off is replayed in the window `sign-off-held-by-grandchild`.
+A replay under the recorded rule must give each issue the recorded sequence of (from, to, trigger), which `expect.json` holds under `moves` beside the scorecards, with no move refused; a replay under today's `main` gives the same sequences, at later times for ACME-1.
+`expect.json`'s scorecards are of replays under `main`, under `legion-v22.14.1` and under `cover`, on the main branch, worked by hand below; nothing is drawn, so every seed gives them.
+The record's own scorecard is the one under `legion-v22.14.1` (`TestScorecardOfTheRecord`).
 
 ## The issues
 
@@ -53,9 +56,9 @@ Every segment is 10 minutes but ACME-1's admitted (09:00 to 09:20) and planning 
 20 minutes each, and its accepting segment, which ends at its architect's turn at 12:30: a held
 sign-off by `../README.md`, whose move comes at 13:20, at ACME-3's leave.
 
-## The replay under `main`
+## The replay under `legion-v22.14.1`
 
-The recorded rule.
+The rule of release 22.14.1, before #4592: no open child stops a started parent's phase.
 Each recorded move enters at the end of its segment (`../README.md`, "Work segments and their replayed length"):
 the handoff moves through `ReplayTransition`, which refuses unless the issue stands where the record says;
 the sign-offs through `intake.SignOff`; the merges through `intake.PullRequestMerged` on the replay's own pull request record;
@@ -86,9 +89,11 @@ So every move falls at its recorded time with no refusal but the sign-off's hold
 The linger's expiry moves no phase: it closes a tree whose three issues are done, and no measure
 reads it.
 
-## The scorecard under `main`, worked by hand
+## The scorecard under `legion-v22.14.1`, worked by hand
 
 The span is 7 hours.
+The record was made under this rule, and `legion-v22.14.1` differs from the `main` of its time in two choices only: the start of a P0 issue and the order of the line.
+The window holds no P0 issue, and no two issues ever wait in the line at once, so neither choice moves anything, and every value below is the record's.
 
 **Slots.**
 ACME-1 09:00 to 09:20 (20 minutes) and 11:30 to 12:20 (50); ACME-2 09:20 to 10:20 (60) and 10:30 to 11:00 (30); ACME-3 11:40 to 12:50 (70).
@@ -129,13 +134,105 @@ One round each.
 
 **Waits on another issue.**
 ACME-1's children wait, 09:20 to 11:30, ended by its last open child's `done`: `child_done`, count 1, 2.1666… hours.
-ACME-3 is filed while ACME-1 stands in planning, where no children wait holds it (`record.SlotRule.ChildrenFirstCandidates` reads an issue at admitted).
+ACME-3 is filed while ACME-1 stands in planning, where no children wait holds it under this rule (`record.SlotRule.ChildrenFirstCandidates` reads an issue at admitted, and the rule's wait stops no phase).
 
 **Assumptions.**
 1; 2; 3 (three loops keep their count and cause);
 4 (ACME-1's children wait); 7 (the gate holds ACME-2's first start from 09:10 to 09:20);
 9; 10 (children); 11 (ACME-1's slot, freed at 09:20, to ACME-2); 13 (the loops move issues back); 17 (both children filed after ACME-1 started).
 `assumptions` is [1, 2, 3, 4, 7, 9, 10, 11, 13, 17]; `scenario` is `none`.
+
+## The replay under `main`
+
+Today's rule, with cybermonklabs/legion#4592's wait.
+To 11:30 it is the record: ACME-1's children wait at admitted, ACME-2's course, and ACME-1's slot and first phase at ACME-2's `done`.
+At 11:40 ACME-3's filing, ACME-1's planner's act 10 minutes into its planning segment, comes at its recorded time; ACME-1, a started parent with an open child, moves into `awaiting_children`, its planner stopped with 10 minutes of its segment left, and its slot goes to ACME-3, whose first phase starts in the same pass and runs its recorded course to its `done` at 13:20.
+At 13:20 no open child is left: ACME-1 comes back to planning, takes a slot, and its planner works the rest of its segment to 13:30.
+Its later segments, 10 minutes each, follow from that start: implementing to 13:40, testing to 13:50, reviewing to 14:00, accepting (its slot back) to its architect's sign-off at 14:10, which holds at once, since nothing beneath it is in the workflow; retro to 14:20 and merging to its `done` at 14:30.
+Each issue's sequence of `workflow: phase changed` moves is the record's (the moves into and out of `awaiting_children` are lines of their own).
+
+## The scorecard under `main`, worked by hand
+
+The span is 7 hours.
+
+**Slots.**
+ACME-1 09:00 to 09:20 (20 minutes), 11:30 to 11:40 (10) and 13:20 to 14:00 (40); ACME-2 09:20 to 10:20 (60) and 10:30 to 11:00 (30); ACME-3 11:40 to 12:50 (70).
+6 slots on 2001-03-05; `firstSlot` ACME-1 09:00, ACME-2 09:20, ACME-3 11:40.
+Each was taken in the pass where its issue began to wait for it, ACME-1's return at 13:20 among them: all 0, median 0.
+
+**Slot-hours.**
+Every slot is held in a turn throughout: 20 + 10 + 40 + 60 + 30 + 70 = 230 minutes, `slotHoursInTurn` 3.8333… hours, `slotHoursNoTurn` 0.
+
+**In flight.**
+ACME-1 09:00 to 14:30 (330 minutes), ACME-2 09:20 to 11:30 (130), ACME-3 11:40 to 13:20 (100): 560 minutes, 9.3333… hours, an average of 1.3333…, at most 2.
+
+**Done and work left.**
+ACME-2 11:30, ACME-3 13:20, ACME-1 14:30 (`done` 3); `workLeft` 0.
+
+**Started work without a slot.**
+ACME-1, given back for its children wait, from 09:20 to 11:30 (130 minutes), and in `awaiting_children` with no slot from 11:40 to 13:20 (100): reading (b) 230 minutes, 3.8333… hours, an average of 0.547619…, at most 1.
+Neither is a wait only for a slot: reading (a) 0.
+
+**Past the review.**
+ACME-2 10:20 to 10:30 (10 minutes) and 11:00 to 11:30 (30), ACME-3 12:50 to 13:20 (30), ACME-1 14:00 to 14:30 (30), none with a slot and never two at once:
+`pastReviewNotHolding` 100 minutes, 1.6666… hours, an average of 0.238095…, at most 1; `pastReviewHolding` 0.
+
+**Priority taken.**
+No issue waits for a slot: 0.
+
+**Loops.**
+As under `legion-v22.14.1`: `test_failed` 10 minutes, `send_back` 30 and `review_changes` 20, one round each.
+
+**Waits on another issue.**
+ACME-1's children wait at admitted, 09:20 to 11:30, and its wait in `awaiting_children`, 11:40 to ACME-3's `done` at 13:20, each ended by its last open child's `done`: `child_done`, count 2, 130 + 100 = 230 minutes, 3.8333… hours.
+
+**Assumptions.**
+As under `legion-v22.14.1`: `assumptions` is [1, 2, 3, 4, 7, 9, 10, 11, 13, 17] (11 is ACME-1's slot, freed at 09:20 and at 11:40, to the child in the same pass); `scenario` is `none`.
+
+## The replay under `cover`
+
+Spec v4's rule: a started issue keeps its slot in every phase, and an issue a counted waiter waits on starts at once on that waiter's slot, which it holds for the waiter while the cover stands (`record.TakeCover`).
+To 11:30 it is the record's course but for the slots past the review: ACME-1's children wait at admitted gives its slot back (its first phase has not started), and ACME-2 keeps its slot through accepting, retro and merging, and through its send-back, to its `done` at 11:30.
+At 11:40 ACME-3's filing comes at its recorded time: ACME-1 is a started parent with an open child, a waiter a cover reads (`record.SlotRule.StartedParents`, `blockers.CoverWaits`), so it keeps its phase, and ACME-3 starts on ACME-1's slot, which it holds for ACME-1 to its `done` at 13:20.
+ACME-1's planner works its segment to 11:50 and moves it to implementing; its implementer's start waits for a slot until the cover ends at 13:20, where ACME-1 takes its slot again.
+Then 10 minutes each: implementing to 13:30, testing to 13:40, reviewing to 13:50, accepting to its sign-off at 14:00, which holds at once, retro to 14:10 and merging to its `done` at 14:20, holding its slot to its leave.
+
+## The scorecard under `cover`, worked by hand
+
+The span is 7 hours.
+
+**Slots.**
+ACME-1 09:00 to 09:20 (20 minutes), 11:30 to 11:40 (10) and 13:20 to 14:20 (60); ACME-2 09:20 to 11:30 (130); ACME-3 11:40 to 13:20 (100).
+5 slots on 2001-03-05: ACME-2 keeps its slot through its send-back; `firstSlot` ACME-1 09:00, ACME-2 09:20, ACME-3 11:40; all taken in the pass that owed them, median 0.
+
+**Slot-hours.**
+Every slot is held in a turn throughout, the architects' turns in accepting and the retro and merge turns among them: 20 + 10 + 60 + 130 + 100 = 320 minutes, `slotHoursInTurn` 5.3333… hours, `slotHoursNoTurn` 0.
+
+**In flight.**
+ACME-1 09:00 to 14:20 (320 minutes), ACME-2 130, ACME-3 100: 550 minutes, 9.1666… hours, an average of 1.309523…, at most 2.
+
+**Done and work left.**
+ACME-2 11:30, ACME-3 13:20, ACME-1 14:20 (`done` 3); `workLeft` 0.
+
+**Started work without a slot.**
+ACME-1 given back for its children wait from 09:20 to 11:30 (130 minutes), and a covered waiter from 11:40 to 13:20 (100): reading (b) 230 minutes, 3.8333… hours, an average of 0.547619…, at most 1; reading (a) 0.
+
+**Past the review.**
+ACME-2 10:20 to 10:30 and 11:00 to 11:30 (40 minutes), ACME-3 12:50 to 13:20 (30), ACME-1 13:50 to 14:20 (30), each holding its slot and never two at once:
+`pastReviewHolding` 100 minutes, 1.6666… hours, an average of 0.238095…, at most 1; `pastReviewNotHolding` 0.
+
+**Priority taken.**
+No issue waits for a slot: 0.
+
+**Loops.**
+As under `legion-v22.14.1`.
+
+**Waits on another issue.**
+ACME-1's children wait at admitted, 09:20 to 11:30: `child_done`, count 1, 2.1666… hours.
+Its wait on ACME-3 from 11:40 stands in planning and implementing, a phase that is neither admitted nor `awaiting_children`, so the measures count no wait of it (`replay.md`, "The measures", `waits`); it is the cover's, which reading (b) counts.
+
+**Assumptions.**
+Those of `legion-v22.14.1`, and 14 (the cover of ACME-3 for ACME-1): `assumptions` is [1, 2, 3, 4, 7, 9, 10, 11, 13, 14, 17]; `scenario` is `none`.
 
 ## The signals, worked by hand
 

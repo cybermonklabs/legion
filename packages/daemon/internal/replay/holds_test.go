@@ -98,6 +98,9 @@ var noRecordedWindowHolds = map[string]string{
 	string(record.HeldTaskStopped): "the hold comes only from the API act stop_task (cybermonklabs/legion#4611, workflow's " +
 		"taskStopped), and every window this tool has recorded was released before that act existed, so no recorded " +
 		"release stops a task",
+	string(record.HeldAwaitingChildren): "the word comes only from a started parent's move into awaiting_children (cybermonklabs/legion#4592, " +
+		"record.SlotRule.WaitStopsPhase), and every window this tool has recorded was released before that move existed, so no " +
+		"recorded release writes it; a replay under main makes the move through its own pass (TestARuleThatStopsThePhaseStopsIt)",
 }
 
 // Every hold that can keep an issue from starting applies in a replay at the times the window

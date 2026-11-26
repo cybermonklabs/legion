@@ -18,6 +18,7 @@ import (
 	"strconv"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -521,12 +522,15 @@ type stateNarrowing struct {
 // own, so one row serves a band, records it and describes it. TestANarrowedBodySaysSo reads the
 // log of the very request it reads the body of.
 //
-// The order is the history of the route and nothing a band depends on. One pair does touch one
-// key: waitingLineContract's band drops the issues' `waitingLine` whole, and
-// whyAndLineFieldsContract's takes the fields the record added from inside that same view. They
-// still do not depend on their order, because a caller below both is served no `waitingLine` at
-// all whichever runs first, and a caller below only the higher one keeps the field with its
-// `place` and its `length`, which is what the lower band's own contract describes.
+// The order is the history of the route and nothing a band depends on. Two pairs do touch one
+// key each. waitingLineContract's band drops the issues' `waitingLine` whole, and
+// whyAndLineFieldsContract's takes the fields the record added from inside that same view; and
+// gatedStepsContract's band drops the issues' `gatedSteps` whole, and gateBasisContract's takes it
+// off the issues a step of which stands on an ancestor's basis. Neither pair depends on its order,
+// because a caller below both rows of a pair is served no such key at all whichever runs first,
+// and a caller below only the higher one keeps what the lower band's own contract describes: the
+// line with its `place` and its `length`, and the gated steps of every issue no step of which
+// carries a basis.
 //
 // A second pair is of the same kind: assignmentsContract's band drops each issue's `assignments`
 // whole, and assignmentPlanContract's takes `plan` from inside each row of that same list. A
@@ -720,18 +724,20 @@ func (s *server) recordShaping(r *http.Request, id AnswerID, at placement, took 
 const followsRestore = "the contract the caller states, else its pod's lowest, which a value follows where a key follows the stated contract, else the pod's highest"
 
 // droppedStrandedState, droppedWaitAnswer, droppedLineKind, droppedCapabilitySource,
-// droppedHoldReason and droppedHeldWord are what the rows of valueStrips name as dropped. They are
-// named rather than written in the rows because the tests that read the daemon's log and the mixed
-// pod's body name a row by them (narrowing_test.go, shaped_answers_test.go). Each names what its
-// row takes by the table's rule rather than by today's value, so the line stays true of a value the
-// table declares later.
+// droppedStepStatus, droppedPhase, droppedHoldReason and droppedHeldWord are
+// what the rows of valueStrips name as dropped. They are named rather than written in the rows
+// because the tests that read the daemon's log and the mixed pod's body name a row by them
+// (narrowing_test.go, shaped_answers_test.go). Each names what its row takes by the table's rule
+// rather than by today's value, so the line stays true of a value the table declares later.
 const (
 	droppedStrandedState    = "the entries of strandedClaims in a state this caller does not admit"
 	droppedWaitAnswer       = "the answeredAt and answeredBy of each wait answered by a value this caller does not admit"
 	droppedLineKind         = "the waiting line's kind of every member of a kind this caller does not admit"
 	droppedCapabilitySource = "the source of every capability row of a source this caller does not admit"
+	droppedStepStatus       = "the gatedSteps of every issue a step of which reads a status this caller does not admit"
+	droppedPhase            = "every phase this caller does not admit: an issue's phase served as admitted, and its heldFrom and its claim views' pendingTask phase left off"
 	droppedHoldReason       = "the holdReason of every issue held for a reason this caller does not admit"
-	droppedHeldWord         = "the word and heldBy of every row of admission.held whose word this caller does not admit, served as unclassified"
+	droppedHeldWord         = "the word of every row of admission.held whose word this caller does not admit, served as the older word that stands in for it with its heldBy, else as unclassified with no heldBy"
 )
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -899,7 +905,9 @@ const phaseEntriesContract = 94
 // own, and the eleven words of its first list arrived with the key at this contract, so the band
 // that takes the key off takes those values off too, with no strip of their own. The two words
 // OwnerPlanContract added arrived after the key and ride a value strip
-// (withoutUnadmittedHeldWords; answers.go's heldReasons). It changed no request a plugin sends.
+// (withoutUnadmittedHeldWords; answers.go's heldReasons), and so does `awaiting_children`, which
+// gateBasisContract added, which that strip serves as `children_first`. It changed no request a
+// plugin sends.
 const heldContract = 98
 
 // processReadContract is the daemon contract at which the two claim recoveries read the claim's
@@ -949,8 +957,8 @@ const shapedAnswersContract = 193
 // served the keys of 256 without this object.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract the key arrived at stays where it is. It moves only with this
-// change's own number, as the last number of answers.go's SupportedContracts does.
+// that constant, and the contract the key arrived at stays where it is. It is LastNumberedContract,
+// the last number of answers.go's frozenContracts (contracts.go), and it never moves.
 const dispatchCredentialContract = 275
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -1179,9 +1187,8 @@ func withoutPriority(issue Issue) (Issue, bool) {
 // 250's keys.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract the keys arrived at stays where it is. It moves only with this
-// change's own number, and it is LastNumberedContract, the last number of answers.go's
-// frozenContracts, which names the constant rather than its number for that reason.
+// that constant, and the contract the keys arrived at stays where it is. It is a number of
+// answers.go's frozenContracts.
 const causeTimesContract = 256
 
 // withoutSlotsReading is state with no `admission.slots`, the one key of the state's own that
@@ -1220,6 +1227,100 @@ func withoutRanksAndSlotStates(issue Issue) (Issue, bool) {
 		moved = true
 	}
 	return issue, moved
+}
+
+// withoutGateBasis is the issue with no `treeRuns`, and with no `gatedSteps` where a step of them
+// carries `basis`: the two keys gateBasisContract added to an issue. `basis` rides only on a step
+// of that contract's two status words, so the gated steps of every other issue are kept whole.
+// `treeRuns` is an `omitempty` pointer, on every root the projection records and on no other
+// issue, and `basis` one too, so the band reports a move only for an issue that carries either.
+// The issue is a value of its own, so the state the source answered is left as it was.
+func withoutGateBasis(issue Issue) (Issue, bool) {
+	onBasis := slices.ContainsFunc(issue.GatedSteps, func(step GatedStepView) bool { return step.Basis != nil })
+	moved := issue.TreeRuns != nil || onBasis
+	issue.TreeRuns = nil
+	if onBasis {
+		issue.GatedSteps = nil
+	}
+	return issue, moved
+}
+
+// withoutUnadmittedStepStatuses is the issue with no `gatedSteps` where a step of them reads a
+// status restore's reader does not admit: one the declared table holds back from restore (the
+// arrivals of `gatedSteps.*.status`, answers.go's gatedStepStatuses with the values entries add
+// to it; fieldArrivals.heldBack says which values and why). Today those are the `open_on_basis`
+// and `pending_on_basis` of gateBasisContract, and tomorrow any word the table gives a later
+// arrival. The list goes whole, as the band of gateBasisContract takes it, so
+// the band and the strip cannot part company over what such a reader is served of an issue; every
+// other issue keeps its gated steps. A caller whose strip is below gateBasisContract has lost such
+// a list with that band already (shapeIssue runs the bands first), so this finds nothing to take
+// there. The list is the issue's own value, so the state the source answered is left as it was.
+// It reports whether it took the list, which is what the log line of this strip is written from
+// (tookOff).
+func withoutUnadmittedStepStatuses(issue Issue, restore int) (Issue, bool) {
+	arrivals := arrivalsAt(issueKeyPath + "gatedSteps.*.status")
+	unadmitted := func(step GatedStepView) bool {
+		return step.Status != "" && arrivals.heldBack(string(step.Status), restore)
+	}
+	if !slices.ContainsFunc(issue.GatedSteps, unadmitted) {
+		return issue, false
+	}
+	issue.GatedSteps = nil
+	return issue, true
+}
+
+// withoutUnadmittedPhases is the issue with every phase word restore's reader does not admit
+// served down: a word the declared table holds back from restore (the arrivals of each field's
+// row, answers.go's phases and workflowPhases with the values entries add to them;
+// fieldArrivals.heldBack says which values and why). The architect's `pendingTask.phase` and each
+// worker's are one list at two rows, to which the same entries add the same values, so the
+// architect's row's arrivals answer for both. Today that is the
+// `awaiting_children` of gateBasisContract, and tomorrow any phase the table gives a later
+// arrival. The issue's own `phase` is a key every reader requires, so it is served as `admitted`,
+// the status that names no worker's phase, which is what dispatch://INFRA-3320 R13 gives a reader
+// that knows no awaiting_children. `heldFrom` and each claim view's `pendingTask.phase` are
+// `omitempty` and optional to every reader that has them, so a held-back word there is left off.
+// The daemon writes the word in neither today, since `heldFrom` is empty in the phase and no task
+// is queued for a phase no role works, and the strip holds them to the table all the same.
+//
+// The issue is a value of its own, and a claim view's task and the worker map are copied before
+// one is written (withEachClaimView), so the state the source answered is left as it was. It
+// reports whether it took a word, which is what the log line of this strip is written from
+// (tookOff).
+func withoutUnadmittedPhases(issue Issue, restore int) (Issue, bool) {
+	issuePhases := arrivalsAt(issueKeyPath + "phase")
+	heldFrom := arrivalsAt(issueKeyPath + "heldFrom")
+	taskPhases := arrivalsAt(issueKeyPath + "architect.pendingTask.phase")
+	moved := false
+	if issue.Phase != "" && issuePhases.heldBack(string(issue.Phase), restore) {
+		issue.Phase, moved = phase.Admitted, true
+	}
+	if issue.HeldFrom != "" && heldFrom.heldBack(issue.HeldFrom, restore) {
+		issue.HeldFrom, moved = "", true
+	}
+	issue, tasks := withEachClaimView(issue, func(view ClaimView) ClaimView {
+		if task := view.PendingTask; task != nil && task.Phase != "" && taskPhases.heldBack(string(task.Phase), restore) {
+			left := *task
+			left.Phase = ""
+			view.PendingTask = &left
+		}
+		return view
+	})
+	return issue, moved || tasks
+}
+
+// heldReasonStandIn is the word a held row of reason is served as to a reader that does not admit
+// reason, and false where no older word stands in for it. `awaiting_children` is served as
+// `children_first`: a started parent waiting on its open children is the wait that word named
+// before gateBasisContract gave it its own (dispatch://INFRA-3320 R13). `children_first` arrived
+// with the field at heldContract, so no reader that knows `admission.held` refuses it
+// (fieldArrivals.heldBack). Every other word the table holds back has no older word of its own
+// and is served as `unclassified` (withoutUnadmittedHeldWords).
+func heldReasonStandIn(reason record.HeldReason) (record.HeldReason, bool) {
+	if reason == record.HeldAwaitingChildren {
+		return record.HeldChildrenFirst, true
+	}
+	return "", false
 }
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
@@ -1729,16 +1830,21 @@ func withoutUnadmittedHoldReason(issue Issue, restore int) (Issue, bool) {
 // withoutUnadmittedHeldWords is state whose `admission.held` names no row by a word restore's
 // reader does not admit. It follows the declared table (answers.go's heldReasons) and takes any
 // word the table holds back from restore (fieldArrivals.heldBack says which words and why): today
-// the `children_before_retro` and `task_stopped` of OwnerPlanContract, and tomorrow any word the
-// table gives a later arrival. A reader from heldContract up to that contract reads `reason` with
-// a `z.enum` of the eleven words before it and refuses the whole body for another.
+// the `children_before_retro` and `task_stopped` of OwnerPlanContract and the
+// `awaiting_children` of gateBasisContract, and tomorrow any word the table gives a later
+// arrival. A reader from heldContract up to such a contract reads `reason` with a `z.enum` of the
+// words before it and refuses the whole body for another.
 //
 // The row is rewritten rather than dropped, which is where this parts company with
-// withoutUnadmittedStrandedStates: an older word does stand for it. Each issue of the two holds
-// read `unclassified`, with no `heldBy`, at every daemon before that contract, and `unclassified`
-// arrived with the field, so every reader that knows the field admits it. So the row is served
-// as that reader read it before: the issue, `unclassified` and no `heldBy`, and every other row
-// as it stands.
+// withoutUnadmittedStrandedStates: an older word does stand for it. A word an older word of the
+// field stands in for is served as that word, with its `heldBy`, which names what that word names
+// (heldReasonStandIn): `awaiting_children` as `children_first`, the wait that word named before
+// gateBasisContract gave it its own. Every other such word is served as `unclassified` with no
+// `heldBy`: each issue of the two holds OwnerPlanContract added read `unclassified` at every
+// daemon before that contract, and a word no row of the table declares is no word any older
+// reader is known to admit. `unclassified` and `children_first` both arrived with the field, so
+// every reader that knows the field admits them. So the row is served as that reader read it
+// before, and every other row as it stands.
 //
 // A state whose rows name no such word is returned as it is, with no copy made. Otherwise the
 // rows are copied before one is written, so the state the source answered is left as it was. It
@@ -1753,7 +1859,11 @@ func withoutUnadmittedHeldWords(state State, restore int) (State, bool) {
 	held := make([]HeldIssue, len(state.Admission.Held))
 	for i, row := range state.Admission.Held {
 		if unadmitted(row) {
-			row = HeldIssue{Issue: row.Issue, Reason: record.HeldUnclassified}
+			if stands, named := heldReasonStandIn(row.Reason); named {
+				row.Reason = stands
+			} else {
+				row = HeldIssue{Issue: row.Issue, Reason: record.HeldUnclassified}
+			}
 		}
 		held[i] = row
 	}

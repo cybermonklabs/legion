@@ -249,14 +249,17 @@ var phaseStatus = map[phase.Phase]string{
 	phase.Admitted: "",
 	// The root keeps the status of the phase it waits in.
 	phase.AwaitingPerson: "",
-	phase.Planning:       "in_progress",
-	phase.Implementing:   "in_progress",
-	phase.Testing:        "testing",
-	phase.Reviewing:      "needs_review",
-	phase.Accepting:      "needs_review",
-	phase.Retro:          "retro",
-	phase.Merging:        "retro",
-	phase.Done:           "done",
+	// A parent waiting on its open children shows in_progress, as a child first shows that Legion
+	// works it: it holds no slot, but its work is under way, not stopped (dispatch://INFRA-3320 R11).
+	phase.AwaitingChildren: "in_progress",
+	phase.Planning:         "in_progress",
+	phase.Implementing:     "in_progress",
+	phase.Testing:          "testing",
+	phase.Reviewing:        "needs_review",
+	phase.Accepting:        "needs_review",
+	phase.Retro:            "retro",
+	phase.Merging:          "retro",
+	phase.Done:             "done",
 	// The issue waits on an unfinished Dispatch issue and runs nothing.
 	phase.Held: "",
 }

@@ -21,9 +21,10 @@ This file gives the conventions every window is written and worked by, once: the
 | `priority-inversion` | a holder ranked below an issue that waits for a slot | `main` |
 | `never-starts` | an issue the record never started, under each scenario | `main` |
 | `forty-two-more-in-flight` | a segment that starts with 42 more issues in flight grows by f | `keep-past-review`, `main` |
-| `every-trigger` | a root and two children through every trigger keep their recorded moves | `main` |
+| `every-trigger` | a root and two children through every trigger keep their recorded moves; under `main` the root waits in `awaiting_children` for its second child | `main`, `legion-v22.14.1`, `cover` |
+| `sign-off-held-by-grandchild` | a root's sign-off held behind a member of its tree that is no Dispatch child of it, which a cover holds under `cover` | `main`, `cover` |
 | `one-minute-wait` | a wait on another issue that lasts one minute gives the slot back, or keeps it for a grace | `main`, `wait-grace` |
-| `root-idle-while-children-run` | a tree root holds its slot with no turn while its children run | `main` |
+| `root-idle-while-children-run` | a tree root holds its slot with no turn while its children run, and under `main` waits for them in `awaiting_children` | `main`, `legion-v22.14.1` |
 | `p0-at-a-full-cap` | a P0 starts at a full regular cap with no P0 bound, but waits under the reference rule | `main`, `p0-at-once`, `before-p0` |
 | `p0-at-its-bound` | the first P0 fills a bound of one, and the pass refuses the second P0 in first place | `main`, `p0-at-once` |
 | `urgent-work-waits` | the first `todo`, a priority raise and the run-out determine the waits of P0 and P1 work | `main`, `p0-at-once` |
@@ -168,11 +169,12 @@ The two may differ by the reconstruction error the tool reports; these windows h
   work came back, oldest first, then the issues whose first phase can start, by their tree root's
   rank and then their own.
 
-- A phase under way goes on while its issue waits on another issue, and its worker's turns with it;
+- A phase under way goes on while its issue waits on a `blocked_by` link, and its worker's turns with it;
   only the next start waits, for the end of the wait and then for a slot.
-  No rule these windows name stops the phase (`record.SlotRule.WaitStopsPhase`).
+  Under `main` and every rule built from it but `cover`, a started parent in `planning` through `accepting` with an open Dispatch child moves into `awaiting_children` (`record.SlotRule.WaitStopsPhase`, cybermonklabs/legion#4592): its phase stops, its worker's segment waits with the rest of its length, it holds no slot, and it comes back once no child of it is open.
+  Under the recorded rules and `cover`, no wait stops the phase.
 
-- Under `cover` (`record.coverRule`, whose choices `legion replay rules` prints, and assumption 14 of `replay.md`), a started issue keeps its slot in every phase through `held`, and no wait gives it back.
+- Under `cover` (`record.coverRule`, whose choices `legion replay rules` prints, and assumption 14 of `replay.md`), a started issue keeps its slot in every phase through `held`, and no wait gives it back, for its children or a link alike.
   The line keeps `main`'s order, `returned_oldest_first`.
   A start takes `cover`: an issue that a slot holder waits on and that has not started starts at once on that holder's slot, one cover for each holder, and the holder is then a covered waiter that holds no slot until the cover ends, when the covered issue's work is done or the waiter no longer waits on it, and it takes its slot back at once.
   A second waiter on an issue already started keeps its own slot, and a waiter's next start waits for its wait to end, slot or not.

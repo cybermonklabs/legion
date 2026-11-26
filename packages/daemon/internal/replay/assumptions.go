@@ -8,8 +8,8 @@ package replay
 // window that would test it, so a reader of a result can weigh what it rests on.
 type Assumption struct {
 	// Number is the assumption's number: 1 to 18 are the list of the tool's spec, in its order,
-	// 19 to 25 were added by its plan, 26 to 37 are the tool's own, and 38 on were added to the
-	// plan (Assumptions).
+	// 19 to 25 were added by its plan, 26 to 37 are the tool's own, 38 on were added to the plan,
+	// and 50 came with the forward merge of cybermonklabs/legion#4592 (Assumptions).
 	Number int `json:"number"`
 	// Text is what the replay assumes.
 	Text string `json:"text"`
@@ -33,8 +33,9 @@ type Assumption struct {
 // noise of a validation's redrawn conflicts); then the four of R11's signals (45 to 48: the
 // models' forms, the refusals the record keeps as recorded, a signal with no record, and the
 // provider's limit between two observations of it, the architect's D13); and the project's token
-// limit a replay takes from its caller where the record holds none (49: RunConfig.TokenLimit). A
-// run names the ones its measures rest on by these numbers.
+// limit a replay takes from its caller where the record holds none (49: RunConfig.TokenLimit); and
+// the design-gate basis of cybermonklabs/legion#4592, which a replay rests no step on (50:
+// OutboxHandling's two basis reads). A run names the ones its measures rest on by these numbers.
 var Assumptions = []Assumption{
 	{Number: 1,
 		Text:      "A work segment takes its recorded time at any start and at any number in flight.",
@@ -185,6 +186,9 @@ var Assumptions = []Assumption{
 	{Number: assumeSuppliedTokenLimit,
 		Text:      "The project's token limit is the one the replay's caller gives (--token-limit) in each minute whose provider record holds no limit of the project's own.",
 		Direction: "Favours a signal rule: the window's work runs under a limit that the record did not have, and the replay keeps each work segment's recorded length, so it shows no slowdown that the refusals would have caused, and a signal rule's measures look better than they would by that slowdown; no record confirms the refused minutes it models there. A limit the record holds stands, and R11's daily test reads only the minutes where the record holds one. Check on a window that records the project's limit throughout."},
+	{Number: assumeNoBasis,
+		Text:      "No root's design-gate step rests on an ancestor's approval: the replay reads no ancestor's open approval request for a pending basis and no re-parented root's new parent for one.",
+		Direction: "Wrong only for a window whose roots registered a step on an ancestor's approval, or that a person made children of a live tree: such a step opens in the record at the ancestor's approval and, in the replay, at the root's own, which can start its tree earlier or later than recorded, in either direction. The tool finishes both reads, the pending-basis seed and the re-parent seed, without acting. Replay a window recorded after cybermonklabs/legion#4592 that holds such a step, and compare its gate's opening with the record's."},
 }
 
 // assumeSlotFromBeforeTheReach is the assumption the trace's own inference rests on, that an issue
@@ -214,3 +218,8 @@ const assumeConflictToMerger = 37
 // the record holding no limit of the project's own there, which a run names where its load models
 // read one such minute (ModelReader.SuppliedMinutes).
 const assumeSuppliedTokenLimit = 49
+
+// assumeNoBasis is the assumption the two reads of cybermonklabs/legion#4592's design-gate basis
+// rest on, which the worker stub finishes without acting (OutboxHandling: the pending-basis seed
+// and the re-parent seed): no root's step rests on an ancestor's approval in a replay.
+const assumeNoBasis = 50

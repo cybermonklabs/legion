@@ -724,8 +724,12 @@ func (s *sweep) apply(key string, old, state IssueState) {
 		}
 	}
 	returned := func(st IssueState) bool { return st.Part == record.PartReturned && !st.Holds }
+	// Reading (b) is every started issue before its review that holds no slot, its waits on other
+	// issues included: a returned member of the line, and a parent in awaiting_children, which
+	// stands in no line and waits on its children, never only for a slot.
+	withoutSlot := func(st IssueState) bool { return returned(st) || st.AwaitingChildren && !st.Holds }
 	count(&s.inFlight, old.InFlight, state.InFlight)
-	count(&s.startedWithoutSlot, returned(old), returned(state))
+	count(&s.startedWithoutSlot, withoutSlot(old), withoutSlot(state))
 	count(&s.waitOnlyForSlot, returned(old) && !old.Blocked, returned(state) && !state.Blocked)
 	count(&s.pastReviewHolding, old.PastReview && old.Holds, state.PastReview && state.Holds)
 	count(&s.pastReviewNotHolding, old.PastReview && !old.Holds, state.PastReview && !state.Holds)

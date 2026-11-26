@@ -83,6 +83,7 @@
       "phase": "admitted",
       "status": "in_progress",
       "tree": "LEGION-208",
+      "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "architect": {
@@ -165,6 +166,7 @@
       "tree": "LEGION-210",
       "rank": "00010",
       "rootRank": "00010",
+      "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "priority": null,
@@ -198,6 +200,7 @@
       "tree": "LEGION-211",
       "rank": "00011",
       "rootRank": "00011",
+      "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "priority": null,

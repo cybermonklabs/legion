@@ -974,8 +974,8 @@ func (r Runs) readComparison() (comparison, error) {
 
 // seedCostsAt is the costs of each of rule's runs on the branch labelled label of window, by its
 // seed; none where the part or the branch holds no run.
-func (c comparison) seedCostsAt(window, rule, label string) SeedCosts {
-	part, ok := c.runs.parts[partKey{window: window, rule: rule}]
+func (r Runs) seedCostsAt(window, rule, label string) SeedCosts {
+	part, ok := r.parts[partKey{window: window, rule: rule}]
 	if !ok {
 		return nil
 	}
@@ -990,25 +990,89 @@ func (c comparison) seedCostsAt(window, rule, label string) SeedCosts {
 	return costs
 }
 
+// seedCostsAt is Runs.seedCostsAt over the comparison's runs.
+func (c comparison) seedCostsAt(window, rule, label string) SeedCosts {
+	return c.runs.seedCostsAt(window, rule, label)
+}
+
 // ownErrors is the replay's own error across the recorded change of the rule on each measure a
 // rule is judged on (costMeasures), by its name, where either window measures one: the forecast's
 // measured error (ForecastCards.ownError), the larger of the two windows' errors, each window's
 // replay under its own rule on the main branch (MainBranchAt), the mean over its seeds read from its
 // line timelines, against its record's scorecard. Each difference between two rules is held to it
-// (spec R7).
-func (c comparison) ownErrors() map[string]float64 {
-	own := func(w windowRecord) []Scorecard {
-		return lineCards(c.runs.parts[partKey{window: w.Name, rule: w.Rule}].runs[MainBranchAt.Label()])
+// (spec R7). before is the window before the change and after the window after it; a window whose
+// runs hold no part under the rule its daemon ran has no such replay, and is refused.
+func (r Runs) ownErrors(before, after windowRecord) (map[string]float64, error) {
+	own := func(w windowRecord) ([]Scorecard, error) {
+		part, ok := r.parts[partKey{window: w.Name, rule: w.Rule}]
+		if !ok {
+			return nil, fmt.Errorf("replay: the runs hold no part of %s under the rule its daemon ran, %q, which the replay's own error is read from", w.Name, w.Rule)
+		}
+		return lineCards(part.runs[MainBranchAt.Label()]), nil
 	}
-	before, after := c.windows[0], c.windows[1]
-	cards := ForecastCards{Before: before.Scorecard, After: after.Scorecard, Own: own(before), AfterOwn: own(after)}
+	owned, err := own(before)
+	if err != nil {
+		return nil, err
+	}
+	afterOwned, err := own(after)
+	if err != nil {
+		return nil, err
+	}
+	cards := ForecastCards{Before: before.Scorecard, After: after.Scorecard, Own: owned, AfterOwn: afterOwned}
 	held := map[string]float64{}
 	for _, m := range costMeasures {
 		if largest, measured := cards.ownError(func(card Scorecard) (float64, bool) { return m.of(costsOf(card)) }); measured {
 			held[m.name] = largest
 		}
 	}
+	return held, nil
+}
+
+// ownErrors is Runs.ownErrors over the comparison's two windows, each of whose parts under its own
+// rule readComparison checked.
+func (c comparison) ownErrors() map[string]float64 {
+	held, _ := c.runs.ownErrors(c.windows[0], c.windows[1])
 	return held
+}
+
+// writeSignalReadings writes, for each run whose run.json gives the signals it limited with the
+// limit of each and the value it read at it (runRecord.Signals, which every run of a signal rule
+// that limits a signal writes), a table of them under the run's window, rule, branch and seed, in
+// the order of the parts' plans. A comparison whose runs limit no signal writes nothing of it.
+func (c comparison) writeSignalReadings(p *printer) {
+	var written bool
+	for _, w := range c.windows {
+		for _, rule := range c.rules {
+			part, ok := c.runs.parts[partKey{window: w.Name, rule: rule}]
+			if !ok {
+				continue
+			}
+			for _, planned := range slices.Concat(part.plan.Branches, part.plan.BreakEven) {
+				for _, run := range part.runs[planned.label()] {
+					if len(run.readings) == 0 {
+						continue
+					}
+					if !written {
+						p.line("## Signal values at their limits")
+						p.line("")
+						p.line("Each run below limited the signals it lists, and read each at the value given: its mean over the minutes where the window records it.")
+						written = true
+					}
+					p.line("")
+					p.line("### %s, `%s`, `%s`, seed %d", w.Name, rule, planned.label(), run.seed)
+					p.line("")
+					p.line("| signal | limit | value |")
+					p.line("| --- | --- | --- |")
+					for _, name := range slices.Sorted(maps.Keys(run.readings)) {
+						p.line("| `%s` | %s | %s |", name, formatNumber(run.readings[name].Limit), formatNumber(run.readings[name].Value))
+					}
+				}
+			}
+		}
+	}
+	if written {
+		p.line("")
+	}
 }
 
 // decision is the comparison's decision over every branch of both windows (Decide), each branch
@@ -1196,6 +1260,7 @@ func (r Runs) Comparison(issuesFile string) (document, issues string, err error)
 	c.writeConflicts(p)
 	c.writeMatrix(p, decision)
 	c.writeNoWork(p)
+	c.writeSignalReadings(p)
 	c.writeDraws(p)
 	p.line("## Each issue's first slot and done under each rule")
 	p.line("")

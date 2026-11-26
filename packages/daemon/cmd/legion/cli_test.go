@@ -75,6 +75,7 @@ var legionCommands = [][]string{
 	{"replay"}, {"replay", "collect"}, {"replay", "collect-git"}, {"replay", "collect-merges"}, {"replay", "collect-queue"}, {"replay", "neutralize"},
 	{"replay", "run"},
 	{"replay", "scorecard"}, {"replay", "signals"}, {"replay", "models"}, {"replay", "validate"}, {"replay", "forecast"}, {"replay", "compare"},
+	{"replay", "limits"},
 	{"replay", "rules"},
 	{"probe-boot"},
 	{"controller"}, {"controller", "start"},
@@ -115,7 +116,7 @@ func TestConformanceCaseIsTheTree(t *testing.T) {
 			walk(child, path)
 		}
 	}
-	walk(newRoot(io.Discard, io.Discard), nil)
+	walk(newRoot(io.Discard, io.Discard, processWorkspace()), nil)
 	for _, list := range []struct {
 		name         string
 		tree, listed [][]string

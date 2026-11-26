@@ -65,6 +65,30 @@ const (
 // allowanceCrossing names the back-off's next rise among a run's crossings (signals.NextRise).
 const allowanceCrossing = "allowance"
 
+// SignalSummary is how one limited signal read over a run's span [From, To), as run.json's
+// signalSummaries gives it: its mean over the minutes the window records it in, each minute read at
+// the minute's start, its 95th percentile by the nearest rank and its largest value there; how many
+// minutes of the span the window records it in (Recorded) of the span's (Minutes); and the share of
+// the span's minutes at which the signal held admission, at or above its limit (HeldShare), the
+// minutes it bound a pass. A signal the window does not record in a minute binds nothing there.
+type SignalSummary struct {
+	Mean      float64 `json:"mean"`
+	P95       float64 `json:"p95"`
+	Max       float64 `json:"max"`
+	Recorded  int     `json:"recorded"`
+	Minutes   int     `json:"minutes"`
+	HeldShare float64 `json:"heldShare"`
+}
+
+// SignalReading is a signal's limit and the value read at it in a run's run.json under the key
+// signals, which every run of a signal rule that limits a signal writes: the value is the signal's
+// mean over the minutes the window records it in, as its summary (SignalSummary) gives. The
+// comparison's document gives each run's readings (Runs.Comparison).
+type SignalReading struct {
+	Limit float64 `json:"limit"`
+	Value float64 `json:"value"`
+}
+
 // signalModels is the load model each modelled signal comes from (spec R11). A model that gives
 // no limit for its signal leaves the signal with no limit in a run, but where givesSuppliedLimit
 // says it limits its signal under the run's token limit.
@@ -115,7 +139,11 @@ type runSignals struct {
 
 	probes []time.Time
 	probed int
-	values map[string]map[string]*float64
+	// sampleAt is the next minute of the window's span the run reads each limited signal at, and
+	// tallies what it has read of each (sampleSignals).
+	sampleAt time.Time
+	tallies  map[string]*signalTally
+	values   map[string]map[string]*float64
 
 	deadline  *standingDeadline
 	input     *item
@@ -188,6 +216,10 @@ func (d *driver) setupSignals() error {
 		if s.models, err = models.Reader(w.From, SetbackSources{Refusals: gives[ModelTokens], Kills: gives[ModelMemory]}, tokenLimit); err != nil {
 			return err
 		}
+	}
+	s.sampleAt, s.tallies = w.From, map[string]*signalTally{}
+	for name := range s.inForce {
+		s.tallies[name] = &signalTally{}
 	}
 	if _, reads := s.limits[SignalApprovals]; reads {
 		d.shadow.readsApprovals = true
@@ -535,4 +567,74 @@ func (d *driver) ceiling() *int {
 		}
 	}
 	return &spans[0].Cap
+}
+
+// signalTally is what a run has read of one limited signal at the start of each minute of its span
+// so far: each value it read where the window records it, how many minutes it read, and in how many
+// the signal held admission, at or above its limit.
+type signalTally struct {
+	values  []float64
+	minutes int
+	held    int
+}
+
+// sampleSignals reads each signal the run limits at the start of each minute of the window's span
+// [From, To) that comes before until, or every minute left where all is set, once every act at or
+// before the minute has run, as the replay stands then, as readProbes reads a probe. A probe before
+// the minute is read first, so that nothing is read out of the order of the clock. The tallies it
+// keeps make run.json's signalSummaries and signals (runSignals.summaries, runSignals.readings).
+func (d *driver) sampleSignals(until time.Time, all bool) {
+	s := d.sig
+	if len(s.tallies) == 0 {
+		return
+	}
+	for ; s.sampleAt.Before(d.window.To) && (all || s.sampleAt.Before(until)); s.sampleAt = s.sampleAt.Add(time.Minute) {
+		d.readProbes(s.sampleAt, false)
+		for _, name := range signals.Names() {
+			tally, limited := s.tallies[name]
+			if !limited {
+				continue
+			}
+			value := d.signalValue(name, s.sampleAt)
+			tally.minutes++
+			if value.Recorded {
+				tally.values = append(tally.values, value.Value)
+			}
+			if value.Binds(s.inForce[name]) {
+				tally.held++
+			}
+		}
+	}
+}
+
+// summaries is how each signal the run limits read over the window's span (SignalSummary), from the
+// tallies sampleSignals kept: {} for a run that limits none.
+func (s *runSignals) summaries() map[string]SignalSummary {
+	out := map[string]SignalSummary{}
+	for name, tally := range s.tallies {
+		sum := SignalSummary{Recorded: len(tally.values), Minutes: tally.minutes}
+		if len(tally.values) > 0 {
+			total := 0.0
+			for _, v := range tally.values {
+				total += v
+			}
+			sum.Mean, sum.P95, sum.Max = total/float64(len(tally.values)), percentile(tally.values, 0.95), slices.Max(tally.values)
+		}
+		if tally.minutes > 0 {
+			sum.HeldShare = float64(tally.held) / float64(tally.minutes)
+		}
+		out[name] = sum
+	}
+	return out
+}
+
+// readings is each signal the run limits with its limit and the value it read at it: its mean over
+// the minutes the window records it in (SignalReading), which `compare` gives beside the limit. It
+// is {} for a run that limits no signal.
+func (s *runSignals) readings(summaries map[string]SignalSummary) map[string]SignalReading {
+	out := map[string]SignalReading{}
+	for name, sum := range summaries {
+		out[name] = SignalReading{Limit: s.inForce[name], Value: sum.Mean}
+	}
+	return out
 }

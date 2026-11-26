@@ -69,8 +69,9 @@ func deployment(t *testing.T, lines string) config.Config {
 }
 
 // quietRootRecord is the record of a root of a tree this daemon runs, standing in standing. A
-// held root carries the phase it was held from, and a root waiting on a person the ask it waits
-// on, because the stored shape check requires each of them.
+// held root carries the phase it was held from, a root waiting on a person the ask it waits on,
+// and a root waiting on its children the start it held, because the stored shape check requires
+// each of them.
 func quietRootRecord(key, rank string, standing phase.Phase) record.Issue {
 	issue := record.Issue{Key: key, Tree: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: testProject, Title: key, Phase: standing, Generation: 1, Status: "in_progress",
@@ -80,6 +81,11 @@ func quietRootRecord(key, rank string, standing phase.Phase) record.Issue {
 		issue.Hold = &record.Hold{From: phase.Implementing, Reason: record.HoldEscalated}
 	case phase.AwaitingPerson:
 		issue.Awaiting = &record.Awaiting{Ask: "ask-" + key, Since: record.EventMark{Seq: 9}}
+	case phase.AwaitingChildren:
+		waited := fixedNow.Add(-time.Hour)
+		issue.ChildrenWait = &record.ChildrenWait{Start: phase.Implementing, Task: "Continue " + key + ". Issue: " + key + ". Phase: implementing.",
+			Reason: "a review asked for changes, while a Dispatch child of " + key + " was open", Since: waited}
+		issue.ChildrenWaitedAt = &waited
 	}
 	return issue
 }
@@ -455,10 +461,12 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 	}
 }
 
-// Four waits the daemon makes on purpose are never a stall, and seven trees that look like
-// them are. A tree every quiet issue of which is held by one of the four is working as
-// designed: something the daemon itself knows about will move it, and telling the controller
-// it has stopped would send a person to read a tree that is exactly where the rules put it.
+// Five waits the daemon makes on purpose are never a stall, and six trees that look like them
+// are. A tree every quiet issue of which is held by one of the five is working as designed:
+// something the daemon itself knows about will move it, and telling the controller it has
+// stopped would send a person to read a tree that is exactly where the rules put it. The fifth
+// is a parent waiting in awaiting_children on its open children (dispatch://INFRA-3320 R13),
+// which the measure reads as it reads a first phase that waits on its children.
 //
 // The fourth wait, the cap's own hold, stands here in both its shapes, because they are held
 // by different rows: the issue whose start is written and marked for a slot the slots table
@@ -479,25 +487,24 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 // from the line alone, both trees were told as stopped although the daemon was holding their
 // members itself.
 //
-// The seven told beside them are the shapes a careless rule would silence with the four: an
-// issue with an open child of its own that is no children-first wait, because that rule holds
-// an issue whose first phase has not started and nothing else; a held issue and an issue
-// awaiting its merge, neither of which the daemon holds for anybody; a tree with a notice
-// queued to a suspended role, which is a delivery waiting for a role nothing brings back; and
+// The six told beside them are the shapes a careless rule would silence with the five: a plain
+// stopped tree; a held issue and an issue awaiting its merge, neither of which the daemon holds
+// for anybody; a tree with a notice queued to a suspended role, which is a delivery waiting for
+// a role nothing brings back; and
 // two mixed trees, each with one issue in a wait of the daemon's and one that has simply
 // stopped. The mixed two are what holds the rule to every quiet issue rather than any
 // (dispatch://INFRA-2560, R5): a rule answered on one member would silence a tree whose other
 // member nothing is going to move. They are the control for the waits as well: the pass that
 // leaves the waiting trees alone is a pass that still names every tree that has stopped.
 //
-// The four waits silence a tree only while the project's line can still move, save a wait on
+// The five waits silence a tree only while the project's line can still move, save a wait on
 // work outside the tree, which silences it whatever the line does
 // (lineHolds.waitsOnWorkOutsideItsTree, TestATreeThatWaitsOnABlockedByLinkIsNeverToldAsStopped),
 // and the last two cases are that clause in both directions. The trees above are a project
 // whose line moves: the ones that have stopped hold slots of their own and no wait silences
 // them, so a worker of one of them can finish and give its slot back. The deadlocked project
 // below holds nothing but trees that wait by design — every slot of it held by an issue one of
-// the four silences, every claim of it idle — and no work of it can start again by itself,
+// the five silences, every claim of it idle — and no work of it can start again by itself,
 // because a slot is freed by a phase or by a status change and both need a worker that needs a
 // slot. None of its members waits on work outside its tree, so every tree of it is named. The
 // control after it is that same project with one agent at work, which is a line that can still
@@ -517,15 +524,16 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 	// clause unread and reported under the waits' name. The test's own name is unchanged, since
 	// the issue's verification check runs it by that name.
 
-	// The waits themselves, and the seven trees a careless rule would silence with them: the
+	// The waits themselves, and the six trees a careless rule would silence with them: the
 	// scenario this test is named for, read from one project whose line can still move.
 	t.Run("waits", func(t *testing.T) {
 		pool := migratedPool(t)
 		// The cap is exactly the slots the fixture holds, so the two issues below that hold none —
 		// the one owing its worker a start and the one waiting for its first phase — wait behind a
 		// full cap, which is the fourth wait in each of its shapes. The two trees the daemon holds
-		// itself, below, each add a slotted root and no slot of their own members.
-		admission := quiet(t, 12)
+		// itself, below, each add a slotted root and no slot of their own members. The parent
+		// waiting on its children and the mixed tree's root in its retro hold none.
+		admission := quiet(t, 10)
 		admission.UseStalledTreeNotice(bound)
 		registerController(t, pool)
 		records := claimStore(t, pool)
@@ -543,7 +551,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		// it every pass until the issue it waits on is done. Its root waits for that child under
 		// the children-first rule — a blocker holds a child alone (blockers.Holdable), so a tree
 		// silent by this wait is one whose root waits too — and the child's own blocker is what
-		// carries it: take the blocked-by rule out of the four and this tree is told, because
+		// carries it: take the blocked-by rule out of the five and this tree is told, because
 		// nothing would then stand between the child and a stall.
 		const blockedRoot, blockedChild, blocker = "LEGION-510", "LEGION-511", "LEGION-519"
 		seedQuietRoot(t, pool, blockedRoot, "B", phase.Admitted)
@@ -603,11 +611,13 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		seedQuietRoot(t, pool, stopped, "E", phase.Implementing)
 		idle(stopped, stopped)
 
-		// 7. An issue in implementing with an open Dispatch child of its own. The children-first
-		// rule holds an issue whose own first phase has not started, and this one is past that, so
-		// the open child is no wait of the daemon's: its tree has stopped.
+		// 7. An issue whose phases have started, waiting in awaiting_children on an open Dispatch
+		// child of its own that nobody has released (dispatch://INFRA-3320 R9). The measure reads
+		// that phase as it reads a first phase that waits on its children (R13): a wait on a child
+		// nobody released is a wait by design while the project's line can move, which this
+		// project's can, so its tree is not told.
 		const working, workingChild = "LEGION-550", "LEGION-551"
-		seedQuietRoot(t, pool, working, "F", phase.Implementing)
+		seedQuietRoot(t, pool, working, "F", phase.AwaitingChildren)
 		seedMirror(t, pool, working, "in_progress")
 		seedMirrorChild(t, pool, workingChild, "backlog", working)
 		idle(working, working)
@@ -649,11 +659,13 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		idle(mixedAwaiting, mixedAwaiting)
 
 		// 12. A tree whose child a Dispatch blocked-by link holds where it stands while its root
-		// has stopped in implementing. The second wait is the child's, and the root is told with
+		// has stopped in its retro. The second wait is the child's, and the root is told with
 		// it: the same mixture as the tree above, read from the other side of the tree and through
-		// another of the four.
+		// another of the five. The root stands past the phases whose starts an open child holds:
+		// in implementing it would wait on this child in awaiting_children (dispatch://INFRA-3320
+		// R9), a wait by design on a child the daemon has released.
 		const mixedBlocked, mixedBlockedChild, mixedBlocker = "LEGION-600", "LEGION-601", "LEGION-609"
-		seedQuietRoot(t, pool, mixedBlocked, "K", phase.Implementing)
+		seedQuietRoot(t, pool, mixedBlocked, "K", phase.Retro)
 		seedQuietChild(t, pool, mixedBlocked, mixedBlockedChild, "K1", phase.Admitted, "todo")
 		seedMirror(t, pool, mixedBlocked, "in_progress")
 		seedMirrorChild(t, pool, mixedBlockedChild, "todo", mixedBlocked, mixedBlocker)
@@ -689,7 +701,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		seedMirrorChild(t, pool, gatedChild, "todo", gatedRoot)
 		idle(gatedRoot, gatedRoot)
 
-		// The fixture's own premise: each of the four is the wait it says it is, read from the
+		// The fixture's own premise: each of the five is the wait it says it is, read from the
 		// facts the pass itself judges from. Without this, a tree left out for some other reason —
 		// a tree the daemon does not run, one that is not quiet — would read here as a wait
 		// honoured and prove nothing.
@@ -703,6 +715,9 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		}
 		if _, waits := facts.ChildWaits[childrenFirst]; !waits {
 			t.Fatalf("%s waits for no child of its own: the pass's own facts hold %v", childrenFirst, facts.ChildWaits)
+		}
+		if _, waits := facts.StartedParentWaits[working]; !waits {
+			t.Fatalf("%s in awaiting_children waits for no child of its own: the pass's own facts hold %v", working, facts.StartedParentWaits)
 		}
 		if _, owes := facts.Owed[owedStart]; !owes {
 			t.Fatalf("%s owes its worker no start marked for a slot: the pass's own facts hold %v", owedStart, facts.Owed)
@@ -780,10 +795,10 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 
 		tick(t, pool, admission, "waits")
 
-		want := []string{stopped, working, held, awaitingMerge, suspended, mixedAwaiting, mixedBlocked}
+		want := []string{stopped, held, awaitingMerge, suspended, mixedAwaiting, mixedBlocked}
 		if got := stalledRoots(t, pool); !reflect.DeepEqual(got, want) {
-			t.Fatalf("the controller was told of %v, want %v: a tree is silent only where every quiet issue of it waits by design, the two mixed trees are told, and %s waits for its children while %s waits in the line for its first slot, which is the cap's own hold",
-				got, want, firstSlotRoot, firstSlot)
+			t.Fatalf("the controller was told of %v, want %v: a tree is silent only where every quiet issue of it waits by design, the two mixed trees are told, %s waits for its children while %s waits in the line for its first slot, which is the cap's own hold, and %s waits in awaiting_children on a child nobody released",
+				got, want, firstSlotRoot, firstSlot, working)
 		}
 	})
 
@@ -831,7 +846,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		seedClaim(t, deadRecords, deadParent, deadParent, claim.RoleArchitect, architect)
 
 		// The project's own premise, read from the facts its pass judges from before any pass
-		// runs: both slots of the project are held, each by a root one of the four waits
+		// runs: both slots of the project are held, each by a root one of the five waits
 		// silences. Without this, a project named for some other reason would read here as a
 		// deadlock and prove nothing.
 		deadFacts, deadSlots := passFacts(t, deadPool)
@@ -840,7 +855,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		}
 		for _, slot := range deadSlots {
 			if slot.Issue != deadAwaiting && slot.Issue != deadParent {
-				t.Fatalf("%s holds admission slot %d: the premise is that every slot of this project is held by an issue one of the four waits silences",
+				t.Fatalf("%s holds admission slot %d: the premise is that every slot of this project is held by an issue one of the five waits silences",
 					slot.Issue, slot.Index)
 			}
 		}
@@ -868,7 +883,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		return deadPool, deadAdmission
 	}
 
-	// 15. The deadlocked project. Every slot holder of it is silenced by one of the four waits
+	// 15. The deadlocked project. Every slot holder of it is silenced by one of the five waits
 	// and every claim of it is idle, so nothing of it can start again by itself, and every tree
 	// of it is named with its quiet hours whatever its members wait for.
 	t.Run("deadlocked", func(t *testing.T) {
@@ -896,7 +911,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 
 	// 16. The control, which must stay silent: the same project with the parent's architect at
 	// work. That agent will give its slot back when it is done, so the project's line can still
-	// move and the four waits silence what they are there to silence — neither the tree waiting
+	// move and the five waits silence what they are there to silence — neither the tree waiting
 	// on a person nor the tree whose architect is working is told.
 	t.Run("line-moving", func(t *testing.T) {
 		livePool, liveAdmission := deadlockedProject(t, supervise.StateWorking, false)

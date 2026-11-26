@@ -21,7 +21,11 @@
 --     reason rather than as an empty queue.
 --   - outbox_kind_check widens to include queue_timeline_read, the outbox row that reads a pull
 --     request's timeline from GitHub outside the fact lock after an enqueued, dequeued or merged
---     notification and applies intake.QueueTimeline.
+--     notification and applies intake.QueueTimeline. The check is one list, so this file names
+--     every kind: the list of 20261122154643, pending_basis_seed and reparent_seed among them,
+--     with queue_timeline_read added. Its version stands above 20261122154643, so this list is the
+--     last word on a fresh database and on one that branch migrated, and a list that left out
+--     either seed would refuse every pending-basis and re-parent read.
 --
 -- Every time is written from GitHub's timeline or the daemon's clock, never by a column default.
 --
@@ -67,4 +71,5 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'conflict_confirm', 'merge_forward', 'design_changes', 'queue_timeline_read'));
+  'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
+  'queue_timeline_read'));
