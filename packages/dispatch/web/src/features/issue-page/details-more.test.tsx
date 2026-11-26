@@ -12,6 +12,7 @@ import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ApiError, api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
 import {
+  issueAskThreadsQuery,
   issueCoverageQuery,
   issueResultsQuery,
   issueStepsQuery,
@@ -61,7 +62,6 @@ import { PAGE_SIZE, SHOW_MORE, showMoreName } from "./show-more-fixture";
 import { renderAtBrowserEntry } from "./slots/stage-fixtures";
 import { commentNode as commentTreeNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import { issueTreeQuery, outlineQuery, type TreeAnswer } from "./tree-read/tree-read";
-import { issueAskThreadsQuery } from "./useIssueTree";
 
 const KEY = "CORE-1";
 
