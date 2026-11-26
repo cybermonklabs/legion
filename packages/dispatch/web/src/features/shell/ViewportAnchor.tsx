@@ -892,7 +892,10 @@ export class ViewportAnchor extends Component<
    *  held off, the window is put back first: Firefox holds the view against the going of the rows
    *  a press took away while a dialog's scroll lock is on (`useDialog`), `overflow-anchor: none`
    *  on the root and the body notwithstanding, and moved the window 730 px up at 390 px when the
-   *  Inbox's Decline dialog went with its row. */
+   *  Inbox's Decline dialog went with its row. Once those rows have gone, a place kept for the
+   *  hand's row (`held`) that is another row than the one put back - the pointer resting on a row
+   *  while the focus stands in another - is let go, as a press in the control row lets it go
+   *  (`keepPressedRow`). */
   private keepPlace(snapshot: Snapshot | PressedRow | null): void {
     const root = this.root;
     if (snapshot === null || root === null) return;
@@ -916,6 +919,13 @@ export class ViewportAnchor extends Component<
     if (delta === 0 && freed === 0) return;
     if (delta !== 0) this.scrollBy(delta);
     this.restampHeld(place.id, place.top, top);
+    // The rows the press took away moved every row after them up, as the press asked, and a place
+    // kept for another row is the place it had before they went: the resize this commit makes of
+    // the list would put that row back there (`contentResized`), and scroll the whole list back by
+    // their height. In the Inbox at 1440x900, with the pointer resting on a row below the rows the
+    // bar's Snooze took and the focus on the mark the bar's hand-off parked it on, that moved the
+    // row the hand-off had just landed on by 134 px (builds Job `infra-3135-i-h5-g6tnd`).
+    if (freed > 0 && this.held?.id !== place.id) this.held = null;
     // The rows a press of the reader's took away moved this row up, and a focus in it must end
     // in the reader's sight.
     if (freed > 0 && snapshot.via === "focus") this.showFocused(element);

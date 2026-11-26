@@ -120,7 +120,7 @@ import { expectOpenOn } from "./menus";
 import { sql } from "./psql";
 import { hasReadingPane } from "./reading-pane";
 import { sessionIds } from "./session-ids";
-import { expandedState, settledState } from "./settled";
+import { expandedState, settledState, settledValue } from "./settled";
 import {
   closeControlPanel,
   drawnControlNames,
@@ -6230,8 +6230,8 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
    *  with no band in it. Below the reading column's width a row's Snooze is picked in the reading
    *  view, which stands in the list's place and keeps the list mounted and hidden until the
    *  reader goes back to it: while the view shows, the band is read in that hidden list, the
-   *  count the reader finds there on going back. The list was drawn before the view opened from
-   *  it, and a Snooze's pick is read by a poll, so one read of it is the answer. */
+   *  count the reader finds there on going back, until two reads a poll apart agree
+   *  (`settledValue`). */
   const later = async () => {
     const band = page.getByRole("button", { name: /^Later \(\d+\)/ });
     const shown = await settledState("the Inbox's Later band", [
@@ -6240,14 +6240,17 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       ["reading view", readingView(page)],
     ]);
     if (shown === "no band") return "Later (0)";
-    const read =
-      shown === "band"
-        ? band
-        : inboxList(page).getByRole("button", { includeHidden: true, name: /^Later \(\d+\)/ });
-    // The list was drawn before the view opened from it, and a Snooze's pick polls `later`, so
-    // one read of the hidden band is safe here.
-    if ((await read.count()) === 0) return "Later (0)";
-    return /Later \(\d+\)/.exec((await read.innerText()).replace(/\s+/g, " "))?.[0] ?? "";
+    if (shown === "band") {
+      return /Later \(\d+\)/.exec((await band.innerText()).replace(/\s+/g, " "))?.[0] ?? "";
+    }
+    // In the reading view the band is in the hidden list, which `settledState` reads as not shown,
+    // so its words are read until two reads a poll apart agree; no band there is `Later (0)`.
+    return settledValue("the Inbox's Later band in the hidden list", async () => {
+      const words = await inboxList(page)
+        .getByRole("button", { includeHidden: true, name: /^Later \(\d+\)/ })
+        .allTextContents();
+      return /Later \(\d+\)/.exec(words.join(" ").replace(/\s+/g, " "))?.[0] ?? "Later (0)";
+    });
   };
   // Each Snooze pick defers one more question, two at each width, so Later counts one more.
   const laterAfter = (picks: number) => new RegExp(`^Later \\(${2 * step + picks}\\)$`);

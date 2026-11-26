@@ -45,7 +45,7 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 
   - `components/Pager.tsx`: a table's pager.
 
-  - `components/Chip.tsx`: the one interactive chip: a toggle, a removable value, or the control row's `+N more`, which opens a panel.
+  - `components/Chip.tsx`: the interactive chip the controls draw: a toggle, a removable value, or the control row's `+N more`, which opens a panel.
 
 - `lib/page-address.ts`: the module that reads and writes a page's narrowing in the address, for the seven features in `ADDRESS_FEATURES`; `features/architecture/` still reads the router itself.
 

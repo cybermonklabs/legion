@@ -115,7 +115,8 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
  * of them. A control can go while its write is out: the reading column's head goes when the
  * reader moves the selection. So the row stays in the band the reader saw it in until its write
  * lands (`out`), and moves into `Later` (or back out) then - save under the Blocked on you
- * narrowing, which lists no snoozed ask and keeps the row only while the reader's hand is on it.
+ * narrowing, which lists no snoozed ask: there the row leaves at the pick, since a row a press
+ * names as leaving is never kept for the reader's hand in it (`Inbox.tsx`'s `leavingNow`).
  * A refusal stays with the ask until its next press, and every control drawn for the ask shows
  * it, with its Retry. A refused or stopped write holds no row: the rollback has put the row's
  * moment back, and the next read of the Inbox places it.
@@ -255,8 +256,9 @@ export interface AskSnoozeManyWrite {
  * The bulk form of a row's snooze (`useAskSnoozeWrites`), over the same route once per ask: the
  * marked rows take the moment on the pick through the same optimistic write on every inbox
  * cache, and the list refetches once the whole set has settled. Outside the Blocked on you
- * narrowing, which lists no snoozed ask and keeps a row only while the reader's hand is on it,
- * the Inbox keeps the rows where the reader saw them until `submit`'s promise settles
+ * narrowing, which lists no snoozed ask - where each row leaves at the pick, since a row a press
+ * names as leaving is never kept for the reader's hand in it (`Inbox.tsx`'s `leavingNow`) - the
+ * Inbox keeps the rows where the reader saw them until `submit`'s promise settles
  * (`useInboxSelection`'s `snoozing`), so they move into `Later` once the whole set has landed.
  * Each ask is a write of its own, under a key of its own and tried until Dispatch decides it, so
  * a transport failure is tried again rather than counted a refusal, and each settles on its own:

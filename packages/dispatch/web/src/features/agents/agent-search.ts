@@ -8,6 +8,7 @@ import {
   fieldsAddress,
   useAddressFields,
 } from "../../lib/page-address";
+import { AGENTS_ROLE_PARAM } from "../refs/routes";
 import { AGENT_GROUPS, type AgentGroup } from "./agent-groups";
 
 /**
@@ -24,18 +25,18 @@ export interface AgentFilters {
 
 /** The page's whole narrowing as the address spells it: the free-text query (`?q=`), and the
  *  groups, machines and roles each as one comma-separated parameter (`?group=`, `?machine=`,
- *  `?role=`). These names are the page's own, and a link from another page reaches them
- *  through `agentsAddress`, below; the one other speller is the page a `dispatch://role/<token>`
- *  reference opens, whose `?role=` is `AGENTS_ROLE_PARAM` (`features/refs/routes.ts`,
- *  `buildReferencePath`), the name the `role` field here reads. Every one of them is absent while
- *  nothing is picked, so a plain `/agents` is the page as it opens and unticking the last value
- *  does not bring the filter back on reload. A module-level constant, since its identity is what
- *  `useAddressFields` memoizes on. */
+ *  `?role=`). A link from another page reaches them through `agentsAddress`, below, with one
+ *  exception: a `dispatch://role/<token>` reference opens the page with its `?role=` built in
+ *  `features/refs/routes.ts` (`buildReferencePath`). Both sides spell that parameter from
+ *  `AGENTS_ROLE_PARAM`, the key of the role field here, so they cannot drift apart. Every one of
+ *  them is absent while nothing is picked, so a plain `/agents` is the page as it opens and
+ *  unticking the last value does not bring the filter back on reload. A module-level constant,
+ *  since its identity is what `useAddressFields` memoizes on. */
 const AGENT_FILTER_SPEC = {
   group: commaListParam(),
   machine: commaListParam(),
   q: cappedTextParam(),
-  role: commaListParam(),
+  [AGENTS_ROLE_PARAM]: commaListParam(),
 } satisfies AddressSpec;
 
 /** The parameters a change of the narrowing writes, each under its name in `AGENT_FILTER_SPEC`.
