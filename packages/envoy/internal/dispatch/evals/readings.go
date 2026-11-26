@@ -75,18 +75,22 @@ type Written struct {
 // eval's day rows of every day the batch touches are kept in the same transaction (writeDays):
 // appended to where the batch replaces no reading of their day, and folded again from the
 // readings that stand where it does, so the write reads no stored reading but the readings it
-// replaces and the standing readings of the days it corrects. A batch that would leave a day row
-// holding a value past what a float holds is refused (CodeReadingDayOverflow), and so is one that
-// would leave a day row holding more than MaxDaySamples values (CodeReadingDaySamplesLimit), or a
-// logged eval holding more than MaxEvalSeries series (CodeSeriesLimit, registerMissing), or
-// register a version past MaxVersionBytes (CodeVersionTooLarge, registerMissing), or a reading
-// too large for any statement within statementBytes (CodeReadingTooLarge). Every list the
-// write sends that grows with its batch goes in statements of at most statementBytes, all in its
-// transaction: its readings (insertReadings), the ids it corrects (lockReplaced, the supersede,
-// foldedReadings), and the day rows and standing readings writeDays writes and reads. A refusal
-// names at most MaxRefusedRows row errors and counts the rest (rowsRefusal), so its answer is
-// bounded whatever the body. The same transaction folds again the stored figures of the days whose
-// rows it moved, where BuiltBy writes them (figures.go), under the eval's lock it holds.
+// replaces and the standing readings of the days it corrects; and the zero row of every day those
+// rows leave owed, up to each series' next row or through today, is written beside them
+// (writeLoggedZeros), so the write's one change of the eval's day rows holds every row it owes. A
+// batch that would leave a day row holding a value past what a float holds is refused
+// (CodeReadingDayOverflow), and so is one that would leave a day row holding more than
+// MaxDaySamples values (CodeReadingDaySamplesLimit), or a logged eval holding more than
+// MaxEvalSeries series (CodeSeriesLimit, registerMissing), or register a version past
+// MaxVersionBytes (CodeVersionTooLarge, registerMissing), or a reading too large for any statement
+// within statementBytes (CodeReadingTooLarge). Every list the write sends that grows with its batch
+// goes in statements of at most statementBytes, all in its transaction: its readings
+// (insertReadings), the ids it corrects (lockReplaced, the supersede, foldedReadings), and the day
+// rows, standing readings and series writeDays writes and reads. A refusal names at most
+// MaxRefusedRows row errors and counts the rest (rowsRefusal), so its answer is bounded whatever
+// the body. The same transaction folds again the stored figures of the days whose rows it moved,
+// its zero rows' among them, where BuiltBy writes them (figures.go), under the eval's lock it
+// holds.
 func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error) {
 	if !slugPattern.MatchString(batch.Slug) {
 		return Written{}, refusal(CodeSlugInvalid, "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", batch.Slug)
@@ -146,10 +150,13 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 			if err != nil {
 				return err
 			}
-			if err := writeDays(ctx, w, definition, byName, readings, folded, batch.BuiltBy); err != nil {
+			// spans is the days whose figures the write may have moved: those of the zero rows its day
+			// rows leave owed, which writeDays writes, and the days of its readings and of those they
+			// replace.
+			spans := map[string]daySpan{}
+			if err := writeDays(ctx, w, definition, byName, readings, folded, batch.BuiltBy, spans); err != nil {
 				return err
 			}
-			spans := map[string]daySpan{}
 			for _, reading := range slices.Concat(readings, folded) {
 				if reading.Value != nil {
 					day := measures.Midnight(reading.MeasuredAt)

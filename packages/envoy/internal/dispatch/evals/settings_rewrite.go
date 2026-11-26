@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"reflect"
 	"runtime"
@@ -325,9 +326,14 @@ func recordRule(ctx context.Context, q pgx.Tx, rule delivery.DeliverySettings) e
 //     builds every day under them in the open.
 //
 // A move of a source alone moves no repository's rule, so it writes no row of a repository kept
-// before and after it: the page records the new selection with its cursors, in the commit that
-// says the rows stand at the settings (markSettingsApplied), from which on a read chooses its rows
-// (DeployReposIn).
+// before and after it: the page records the new selection with its cursors, from which on a read
+// chooses its rows (DeployReposIn). The commit that records the rules says that the rows stand at
+// them (markSettingsApplied), which recomputes every evals view, where the page read a change of
+// the settings and the record adds or drops a repository, which moves the repositories a read of
+// the evals takes (DeployReposIn), or where none was recorded, and says nothing otherwise: a
+// rewrite's eval_days changes, one of each eval whose rows it moved, recompute the evals views of
+// their projects, as the eval_days changes of the days syncKept builds do, and a difference that
+// moves no row and no repository moves nothing an evals view reads.
 func (r *refresh) syncSettings(ctx context.Context, w *pageWork) error {
 	if !r.builtRead {
 		built, err := r.store.readBuiltUnder(ctx)
@@ -353,18 +359,21 @@ func (r *refresh) syncSettings(ctx context.Context, w *pageWork) error {
 		for key, rule := range r.rules {
 			r.builtUnder[key] = builtRule{rule: rule}
 		}
-		w.record = true
+		w.record, w.settingsApplied = true, w.settings
 		return nil
 	}
 	kept, err := r.keptRepos(ctx)
 	if err != nil {
 		return err
 	}
+	// moved is whether the record adds or drops a repository, which moves the repositories a read
+	// of the evals takes (DeployReposIn).
+	moved := false
 	for _, key := range slices.Sorted(maps.Keys(r.rules)) {
 		next := r.rules[key]
 		recorded, held := r.builtUnder[key]
 		if !held {
-			r.builtUnder[key], w.record = builtRule{rule: next}, true
+			r.builtUnder[key], w.record, moved = builtRule{rule: next}, true, true
 			continue
 		}
 		next.DeployRepo = recorded.rule.DeployRepo
@@ -385,9 +394,10 @@ func (r *refresh) syncSettings(ctx context.Context, w *pageWork) error {
 	for key := range r.builtUnder {
 		if _, current := r.rules[key]; !current {
 			delete(r.builtUnder, key)
-			w.record = true
+			w.record, moved = true, true
 		}
 	}
+	w.settingsApplied = w.settings && moved
 	return nil
 }
 
@@ -564,20 +574,26 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     the days written (foldFiguresInTx, whose quantiles read each rank across the days' sorted
 //     samples, measures.SortedSamples); and the rule recorded as the one the repository's rows stand
 //     built under, the repositories they stand built for left as they are (syncKept's). Its eval_days
-//     changes are one per eval, as every transaction's are (migration 20261117100014), so an evals
-//     view hears of the whole change once, and each carries the rewrite's mark
-//     (MarkSettingsRewrite), so the view is recomputed for them at once. With no day to build it
-//     writes no row, member or figure: its word that the rows stand at the settings
-//     (markSettingsApplied), the rule recorded and a building rebuild begun again
-//     (replaceRebuild) alone.
+//     changes are one per eval, as every transaction's are (migration 20261117100014), each under
+//     the project that reads the eval (an owner key's under each project that reads the key), so
+//     the evals views of each project whose rows moved hear of the whole change once, and each
+//     carries the rewrite's mark (MarkSettingsRewrite), so the view is recomputed for them at
+//     once. It records one repository's rule and adds or drops no repository a read of the evals
+//     takes (DeployReposIn), so it says nothing of the rows standing at the settings
+//     (markSettingsApplied), and no view of a project whose rows did not move hears of it. With no
+//     day to build it writes no row, member or figure: the rule recorded and a building rebuild
+//     begun again (replaceRebuild) alone.
 //
 // A day it does not build holds the rows it would build: its inputs, its rows' first days and the
 // settings its rows read are what they were built from. It leaves eval_days_owed as it is: it
 // writes the moved evals of a day alone, and a day owed is owed the rewrite of every eval of its
 // families (writeOwed). It records each day it wrote in the pass's report, as the walk does, and
 // the first days it moved (noteBuilt), but no day as done (refresh.done): a change of the same
-// page that names a day writes that day whole after it.
+// page that names a day writes that day whole after it. Once it has committed it logs what each of
+// its parts took and what it wrote (rewriteTimes).
 func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySettings, repo keptRepo, slugs, families []string) error {
+	var times rewriteTimes
+	times.start()
 	next := repo.rule
 	pool := r.store.database.Pool
 	end := r.today.AddDate(0, 0, 1)
@@ -664,6 +680,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	); err != nil {
 		return fmt.Errorf("read the delivery history for a settings change: %w", err)
 	}
+	times.history = times.lap()
 	earliest := map[evalKey]time.Time{}
 	for _, first := range firsts {
 		// An eval id names its project, so no two projects' entries share a key.
@@ -766,6 +783,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	); err != nil {
 		return err
 	}
+	times.attribution = times.lap()
 	for _, owner := range historyOwners(histories, prs, attribute) {
 		if slices.Contains(owners, owner) {
 			continue
@@ -816,6 +834,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	if movedOnly {
 		days = r.lostFirstDays(days, owners, firsts, ids, names, dayOf)
 	}
+	times.days = times.lap()
 
 	var rows []DayRow
 	var pairProjects []string
@@ -906,6 +925,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 			return key.family == KindCI && !pushes[key.rowKey]
 		})
 	}
+	times.members = times.lap()
 
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -920,25 +940,30 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	if err := MarkSettingsRewrite(ctx, tx); err != nil {
 		return err
 	}
-	if err := markSettingsApplied(ctx, tx); err != nil {
+	before, err := readRewriteCounts(ctx, tx)
+	if err != nil {
 		return err
 	}
+	times.bookkeeping = times.lap()
 	if err := upsertDays(ctx, tx, rows, r.build); err != nil {
 		return err
 	}
 	if err := deleteStaleSettingsDays(ctx, tx, pairProjects, pairDays, slugs, names, rows); err != nil {
 		return err
 	}
+	times.dayRows = times.lap()
 	if err := writeMovedMembers(ctx, tx, stored, members, written); err != nil {
 		return err
 	}
+	times.memberWrites = times.lap()
 	moved := make(map[string]map[string]daySpan, len(spans))
 	for project, span := range spans {
 		moved[project] = slugSpans(project, slugs, span)
 	}
-	if err := foldFiguresInTx(ctx, tx, r.build, moved); err != nil {
+	if err := foldFiguresInTx(withFigureTimes(ctx, &times.figures), tx, r.build, moved); err != nil {
 		return err
 	}
+	times.figureScope = times.lap() - times.figures.moved - times.figures.plan - times.figures.fold
 	if err := recordRule(ctx, tx, next); err != nil {
 		return err
 	}
@@ -947,24 +972,34 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	if err := replaceRebuild(ctx, tx, "", "", nil); err != nil {
 		return err
 	}
+	after, err := readRewriteCounts(ctx, tx)
+	if err != nil {
+		return err
+	}
+	times.bookkeeping += times.lap()
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the rewrite of a settings change: %w", err)
 	}
-	r.settingsApplied = true
+	times.commit = times.lap()
 	r.store.drainChanges(ctx)
+	times.drain = times.lap()
+	times.log(after.minus(before), len(days), repo.name)
 	return nil
 }
 
 // markSettingsApplied logs, in tx, that the day rows stand at the delivery settings once tx
 // commits: one eval_days change of no eval (delivery.SettingsApplied), carrying the settings
 // rewrite's mark, recorded in the change log's outbox as every eval change is
-// (delivery_change_log_pending, migration 20261117100001). The refresher logs it in the
-// transaction that brings the rows to the settings a change of the settings row named, the
-// rewrite's, or, where the change moved no row (a move of the deploy repository, whose rows a read
-// chooses), the page's commit (commitPage). The Delivery page's live hub recomputes every evals
-// view for it, at once: an evals view reads the settings and the rows together, so it is
-// recomputed when both stand, and not at the change of the settings row, whose recompute would
-// answer the new settings over rows the old ones built.
+// (delivery_change_log_pending, migration 20261117100001). The refresher logs it in the page's
+// commit (commitPage) that records rules adding or dropping a repository, which moves the
+// repositories a read of any project's evals takes (DeployReposIn), or the first record of the
+// rules, where the page read a change of the settings (syncSettings). The Delivery page's live hub
+// recomputes every evals view for it, at once: a read of any project's evals takes the
+// repositories recorded with the rows, so a view is recomputed when the record and the rows both
+// stand, and not at the change of the settings, whose recompute would answer the new settings over
+// rows the old ones built. A change that moves rows and no repository a read takes logs none: its
+// rewrite's eval_days changes, or those of the days its page builds, wake the views of the
+// projects whose rows moved, and no other view's answer moves.
 func markSettingsApplied(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `select delivery_change_log_pending($1, $2, null, null, null, null)`,
 		delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenBySettingsRewrite); err != nil {
@@ -972,6 +1007,96 @@ func markSettingsApplied(ctx context.Context, tx pgx.Tx) error {
 	}
 	return nil
 }
+
+// rewriteTimes is how long each part of one rewrite of a delivery settings change took
+// (rewriteSettings), read off a stopwatch it starts as it begins, so every moment of the rewrite
+// falls in exactly one part, in the order it runs them:
+//
+//   - history, the read of the history and the repositories rewritten, the walk's first input
+//     day, each project's first days and the walks' records side by side, the wall time of the
+//     slowest of those reads;
+//   - attribution, the serving record's read and the read of the pull requests' attribution
+//     beside each repository's containment under each rule, the wall time of the slower;
+//   - days, the days to build (movedDeliveryDays, lostFirstDays);
+//   - members, the read of the stored members beside the build of those days, the wall time of
+//     the slower;
+//   - bookkeeping, the transaction begun and marked, the rule recorded, a building rebuild begun
+//     again and the two reads of what the transaction wrote (rewriteCountsStatement);
+//   - dayRows, the day rows upserted and the stale ones deleted; memberWrites, the members
+//     written;
+//   - the figures' refold (foldFiguresInTx): figureScope, its reads of the projects that read
+//     the owner keys written, of each project's figure scope and of its evals, and whatever it
+//     does between its timed parts, and figures, its reads of the moved days, of the rows it folds
+//     and its fold and write (figureTimes);
+//   - commit, and drain, the change log's outbox moved into the log once it has committed.
+type rewriteTimes struct {
+	stopwatch
+	history, attribution, days, members time.Duration
+	bookkeeping, dayRows, memberWrites  time.Duration
+	figureScope                         time.Duration
+	figures                             figureTimes
+	commit, drain                       time.Duration
+}
+
+// log logs the rewrite's parts in the order it ran them, then what it wrote, how many days it
+// built and the repository whose rows it rewrote: the line a measurement of a settings write's way
+// to the open pages reads.
+func (t *rewriteTimes) log(wrote rewriteCounts, days int, repo string) {
+	slog.Info("dispatch: the eval day-row refresher rewrote what a delivery settings change moved",
+		"history_ms", t.history.Milliseconds(), "attribution_ms", t.attribution.Milliseconds(), "days_ms", t.days.Milliseconds(),
+		"members_and_build_ms", t.members.Milliseconds(), "day_rows_ms", t.dayRows.Milliseconds(),
+		"member_writes_ms", t.memberWrites.Milliseconds(), "figure_scope_ms", t.figureScope.Milliseconds(),
+		"moved_figure_days_ms", t.figures.moved.Milliseconds(), "figure_plan_ms", t.figures.plan.Milliseconds(),
+		"figure_plan_reads", t.figures.reads, "figure_plan_rows", t.figures.rows, "fold_and_write_ms", t.figures.fold.Milliseconds(),
+		"bookkeeping_ms", t.bookkeeping.Milliseconds(), "commit_ms", t.commit.Milliseconds(), "drain_ms", t.drain.Milliseconds(),
+		"total_ms", t.total().Milliseconds(), "days_built", days, "day_rows_written", wrote.dayRows,
+		"day_rows_deleted", wrote.dayRowsGone, "members_written", wrote.members, "evals_moved", wrote.evals,
+		"figures_written", wrote.figures, "repo", repo)
+}
+
+// rewriteCounts is what a rewrite's transaction has written so far (rewriteCountsStatement): the
+// day rows it inserted or updated and those it deleted, the members and the stored figures it
+// wrote or deleted, and the evals its eval_days changes name.
+type rewriteCounts struct {
+	dayRows, dayRowsGone, members, figures, evals int64
+}
+
+// minus is what c holds beyond before.
+func (c rewriteCounts) minus(before rewriteCounts) rewriteCounts {
+	return rewriteCounts{
+		dayRows: c.dayRows - before.dayRows, dayRowsGone: c.dayRowsGone - before.dayRowsGone, members: c.members - before.members,
+		figures: c.figures - before.figures, evals: c.evals - before.evals,
+	}
+}
+
+// readRewriteCounts reads, in tx, what tx has written so far (rewriteCountsStatement).
+func readRewriteCounts(ctx context.Context, tx pgx.Tx) (rewriteCounts, error) {
+	var c rewriteCounts
+	if err := tx.QueryRow(ctx, rewriteCountsStatement).Scan(&c.dayRows, &c.dayRowsGone, &c.members, &c.figures, &c.evals); err != nil {
+		return rewriteCounts{}, fmt.Errorf("read what the rewrite of a settings change wrote: %w", err)
+	}
+	return c, nil
+}
+
+// rewriteCountsStatement reads what the transaction it runs in has written so far: the day rows it
+// inserted or updated and those it deleted, the members and the stored figures it inserted,
+// updated or deleted, from the transaction's own statistics (pg_stat_get_xact_tuples_inserted,
+// _updated and _deleted, which count each row a statement wrote, and no row an upsert's `where`
+// left as it stood), and how many evals its eval_days changes name (dispatch.eval_days_pending,
+// migration 20261117100014). The statistics also hold what earlier transactions of the connection
+// wrote that its backend has not reported yet, which it does between transactions, so the rewrite
+// reads them at its transaction's start and at its end and logs the difference.
+const rewriteCountsStatement = `
+	select pg_stat_get_xact_tuples_inserted('eval_days'::regclass) + pg_stat_get_xact_tuples_updated('eval_days'::regclass),
+		pg_stat_get_xact_tuples_deleted('eval_days'::regclass),
+		pg_stat_get_xact_tuples_inserted('eval_day_members'::regclass) + pg_stat_get_xact_tuples_updated('eval_day_members'::regclass)
+			+ pg_stat_get_xact_tuples_deleted('eval_day_members'::regclass),
+		pg_stat_get_xact_tuples_inserted('eval_range_figures'::regclass) + pg_stat_get_xact_tuples_updated('eval_range_figures'::regclass)
+			+ pg_stat_get_xact_tuples_deleted('eval_range_figures'::regclass)
+			+ pg_stat_get_xact_tuples_inserted('eval_day_figures'::regclass) + pg_stat_get_xact_tuples_updated('eval_day_figures'::regclass)
+			+ pg_stat_get_xact_tuples_deleted('eval_day_figures'::regclass),
+		(select count(*) from jsonb_object_keys(coalesce(nullif(current_setting('dispatch.eval_days_pending', true), ''), '{}')::jsonb))
+`
 
 // MarkSettingsRewrite marks tx as the refresher's rewrite of a delivery settings change, before its
 // first write of a day row: it sets the transaction-local setting dispatch.eval_days_cause to

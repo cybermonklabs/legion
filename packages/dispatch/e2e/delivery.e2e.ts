@@ -1,4 +1,5 @@
-import { createProject, listProjectEvals, mintAgentToken, registerEval } from "./api";
+import type { DeliveryMeasuresResponse } from "../web/src/api/types";
+import { createProject, mintAgentToken, registerEval } from "./api";
 import {
   FIXTURE_WINDOW as MEASURES_WINDOW,
   seedDeliveryFixture,
@@ -639,6 +640,15 @@ test("the measures API gives an agent the numbers the panel shows", async ({ bro
   await context.close();
 });
 
+/** The target the measures answer for the fixture window judges deploys a day by, null where it
+ *  is off: the target the panel's "Deploys a day" card states. */
+async function deploysTarget(page: Page): Promise<number | null> {
+  const response = await page.request.get(`/api/v1/delivery/measures?${MEASURES_QUERY}`);
+  expect(response.status()).toBe(200);
+  const body = (await response.json()) as DeliveryMeasuresResponse;
+  return body.targets.deploys_per_day?.value ?? null;
+}
+
 // dispatch://INFRA-2916's R5: the measures panel judges a KPI by the target a person sets on the
 // eval of the deploy repository's project, the one whose deploy source reads it, and states that
 // target, not a constant of the code (dispatch://INFRA-978, D9). A target written on
@@ -646,31 +656,35 @@ test("the measures API gives an agent the numbers the panel shows", async ({ bro
 test("the measures panel judges deploys a day by the target a person set on the eval", async ({
   browser,
 }) => {
-  // Made through the API, so its evals are seeded, before the fixture's settings name it: its
-  // source reads acme/widgets, the repository every deploy of the fixture runs in.
+  // Made through the API, whose create seeds its evals in its own transaction, so ACME holds them
+  // once it has answered, before the fixture's settings name it: its source reads acme/widgets, the
+  // repository every deploy of the fixture runs in.
   await createProject({ key: "ACME", name: "Acme" });
   await seedMeasuresFixture();
-  await expect
-    .poll(async () => ((await listProjectEvals("ACME"))?.items ?? []).map((item) => item.id), {
-      timeout: 60_000,
-    })
-    .toContain("ACME/deploy-frequency");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const card = page.getByLabel("KPI targets").locator('[data-kpi="Deploys a day"]');
 
-  // 5 deploys over the window: under the catalogue's 20 a day.
+  // 5 deploys over the window: under the catalogue's 20 a day, which is also the target ACME's
+  // seed wrote.
   await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
   await expect(card).toContainText("5 deploys");
   await expect(card).toContainText("target \u2265 20/day");
   await expect(card).toContainText("\u2717 missed");
 
+  // A target written on ACME reaches the measures answer only once the eval refresher has
+  // published acme/widgets as ACME's default repository, which ACME's source, naming none, reads: a
+  // page of the refresher's does so after the fixture's write; until then the answer judges by the
+  // catalogue's entry (evals.Store.DeployRepoEvals). So each write is awaited at the answer before
+  // the page loads again.
   await registerEval("ACME", { slug: "deploy-frequency", target: 0.1, target_inclusive: true });
+  await expect.poll(() => deploysTarget(page)).toBe(0.1);
   await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
   await expect(card).toContainText("target \u2265 0.1/day");
   await expect(card).toContainText("\u2713 met");
 
   await registerEval("ACME", { slug: "deploy-frequency", target: null });
+  await expect.poll(() => deploysTarget(page)).toBeNull();
   await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
   await expect(card).toContainText("target off");
   await expect(card).not.toContainText("\u2713 met");

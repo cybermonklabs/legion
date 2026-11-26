@@ -357,8 +357,10 @@ func (r *refresherRig) changesHead(t *testing.T) delivery.ChangeCursor {
 }
 
 // evalDayChanges is every eval_days change of an eval logged after seq, as `<eval id> <first
-// day>..<last day>`, in seq order. The eval_days change of no eval, the refresher's word that the
-// day rows stand at the delivery settings (delivery.SettingsApplied), names no day and is left out.
+// day>..<last day>`, in seq order. An eval_days change that names no day is left out: the
+// refresher's word that the day rows stand at the delivery settings (delivery.SettingsApplied),
+// that it recorded the settings they stand built under (recordBuiltUnder), or that the project
+// judging the delivery views moved (delivery.JudgingMoved).
 func (r *refresherRig) evalDayChanges(t *testing.T, after int64) []string {
 	t.Helper()
 	changes, err := delivery.ChangesSince(t.Context(), r.database.Pool, after, 100000)
@@ -367,7 +369,7 @@ func (r *refresherRig) evalDayChanges(t *testing.T, after int64) []string {
 	}
 	var lines []string
 	for _, change := range changes {
-		if change.Kind == "eval_days" && !delivery.SettingsApplied(change) {
+		if change.Kind == "eval_days" && change.TOld != nil && change.TNew != nil {
 			lines = append(lines, fmt.Sprintf("%s %s..%s", change.Ref, change.TOld.UTC().Format(time.DateOnly), change.TNew.UTC().Format(time.DateOnly)))
 		}
 	}
@@ -538,8 +540,10 @@ func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing
 		}
 		t.Logf("%s: rows from %s to %s, %d days, n of today %d", name, days[0].Format(time.DateOnly), days[len(days)-1].Format(time.DateOnly), len(days), n[refresherToday])
 	}
-	if got := r.count(t, `select count(*) from eval_days where eval_id = $1 and day > $2 and n = 0 and repo = ''`, EvalID("EVAL", "build-minutes"), readingDay); got != 3 {
-		t.Errorf("the logged eval holds %d zero rows after its reading's day, want the 3 days through today", got)
+	// The write filled the zero rows through the database's today, past the rig's (writeLoggedZeros).
+	if got := r.count(t, `select count(*) from eval_days where eval_id = $1 and day > $2 and day <= $3 and n = 0 and repo = ''`,
+		EvalID("EVAL", "build-minutes"), readingDay, refresherToday); got != 3 {
+		t.Errorf("the logged eval holds %d zero rows after its reading's day through today, want the 3 days", got)
 	}
 	if got := r.count(t, `select count(*) from eval_days where eval_id = $1 and day = $2 and repo = ''`, EvalID(deliveries.Project, SlugUnownedP0), refresherToday); got != 1 {
 		t.Errorf("%s holds %d unowned-p0 rows of today, want 1", deliveries.Project, got)

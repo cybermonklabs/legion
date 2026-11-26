@@ -23,9 +23,12 @@
 //     measured_at more than a day past its clock or before the floor (R18), and Load refuses a
 //     Now that would make it refuse one.
 //
-// Base writes only the tables the base head 02a7b3c6 has, for k8's and k13's negative controls:
-// the same issues, events, observations and delivery history and the same smaller projects, and no
-// reading (evalfixture.BaseLacks names what the base lacks).
+// Base writes, into a database the base's envoy-dispatch migrated (main at the commit this head
+// merges), the history main's Delivery page reads, for k8's and k13's negative controls: the same
+// issues, events, observations and delivery history, INFRA's project with its default repository,
+// and the same smaller projects, and no reading. What the base lacks of this head's tables it
+// reads from the base database's catalog (checkSchema, resetConsumers), never from a list fixed
+// here.
 //
 // AddFailureDay writes, into a database Load filled, a failure day on top of its history: the
 // worst day of deploy failures INFRA's own history has had, 36 failed deploy runs with 45 failed
@@ -105,7 +108,8 @@ type Spec struct {
 	// TenTimes writes ten times the stated run rate: 200 deploy runs and 600 pull-request runs a
 	// day, the rate R13's 660 ms for the run-jobs read was measured at.
 	TenTimes bool
-	// Base writes only the base head's tables, for k8's and k13's negative controls: no reading.
+	// Base writes into the base's schema, main's at the commit this head merges, for k8's and
+	// k13's negative controls: no reading.
 	Base bool
 	// BuiltBy is the build the readings write records on the logged evals' day rows
 	// (eval_days.built_by): the server's stamped commit, so every family's rows carry the running
@@ -121,8 +125,8 @@ func (s Spec) scaled(count float64, floor int) int {
 // Counts is what one load wrote, by table, read back from the database once it is done.
 type Counts map[string]int64
 
-// countedTables are the tables Counts reads, in the order it prints them; the base head lacks the
-// last five.
+// countedTables are the tables Counts reads, in the order it prints them; it reads those the
+// database holds, so a load of the base counts none of the registry's.
 var countedTables = []string{
 	"projects", "issues", "events", "handoffs", "legion_observations", "legion_settings",
 	"delivery_pull_requests", "delivery_runs", "delivery_run_jobs",
@@ -133,12 +137,12 @@ var countedTables = []string{
 // nothing else written, and answers the counts it then holds. logf reports each step as it ends.
 //
 // The server's consumers that read the feeds this load writes (the Legion facts consumer and the
-// eval day-row refresher) committed their cursors over the empty store when the server that
-// migrated it booted; Load deletes those rows last, so the next server to boot starts each
-// consumer at the heads of the feeds and reads every project whole, as on a store a seeder wrote
-// before any pass ran, rather than paging through the history as a stream of new changes. At this
-// head resetConsumers then writes the keyword fill's cursor as caught up with the loaded log
-// (keywordFillCaughtUpQuery).
+// eval day-row refresher, those of them the base runs at the base) committed their cursors over
+// the empty store when the server that migrated it booted; Load deletes those rows last, so the
+// next server to boot starts each consumer at the heads of the feeds and reads every project
+// whole, as on a store a seeder wrote before any pass ran, rather than paging through the history
+// as a stream of new changes. resetConsumers then writes the keyword fill's cursor as caught up
+// with the loaded log (keywordFillCaughtUpQuery), at the base too, which runs the same fill.
 func Load(ctx context.Context, database *store.Store, spec Spec, logf func(format string, args ...any)) (Counts, error) {
 	switch {
 	case spec.Scale <= 0 || spec.Scale > 1:
@@ -155,8 +159,12 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 			return nil, err
 		}
 	}
-	if err := checkSchema(ctx, pool, spec.Base); err != nil {
+	lacks, err := checkSchema(ctx, pool, spec.Base)
+	if err != nil {
 		return nil, err
+	}
+	if spec.Base {
+		logf("the base lacks %d of this head's %d derived tables, by its catalog: %s", len(lacks), len(evalfixture.DerivedTables), strings.Join(lacks, ", "))
 	}
 	if err := checkEmpty(ctx, pool); err != nil {
 		return nil, err
@@ -205,26 +213,30 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 	return count(ctx, pool)
 }
 
-// checkSchema refuses a database of the wrong head: this head's mode needs the tables the base
-// lacks, and the base mode refuses a database that holds them.
-func checkSchema(ctx context.Context, pool *store.Pool, base bool) error {
-	held, err := evalfixture.ExistingTables(ctx, pool, evalfixture.BaseLacks)
+// checkSchema refuses a database of the wrong head and answers which of this head's derived
+// tables (evalfixture.DerivedTables) its catalog does not hold. This head's mode needs every one
+// of them. The base mode refuses a database that holds this head's day rows
+// (evalfixture.HeadTable) and takes whatever else the base's catalog holds: the base is main at
+// the commit this head merges, and a merge of main can bring some of this head's tables, so what
+// the base lacks is read from the database, never fixed here.
+func checkSchema(ctx context.Context, pool *store.Pool, base bool) ([]string, error) {
+	held, err := evalfixture.ExistingTables(ctx, pool, evalfixture.DerivedTables)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if base && len(held) > 0 {
-		return fmt.Errorf("-base writes into the base head's schema, and this database holds %s, which are this head's", strings.Join(held, ", "))
-	}
-	if !base && len(held) < len(evalfixture.BaseLacks) {
-		var missing []string
-		for _, table := range evalfixture.BaseLacks {
-			if !slices.Contains(held, table) {
-				missing = append(missing, table)
-			}
+	var lacks []string
+	for _, table := range evalfixture.DerivedTables {
+		if !slices.Contains(held, table) {
+			lacks = append(lacks, table)
 		}
-		return fmt.Errorf("this head's mode writes into this head's schema, and the database lacks %s (a database of the base head takes -base)", strings.Join(missing, ", "))
 	}
-	return nil
+	switch {
+	case base && slices.Contains(held, evalfixture.HeadTable):
+		return nil, fmt.Errorf("-base writes into the base's schema, main's at the commit this head merges, and this database holds %s, which is this head's", evalfixture.HeadTable)
+	case !base && len(lacks) > 0:
+		return nil, fmt.Errorf("this head's mode writes into this head's schema, and the database lacks %s (a database of the base takes -base)", strings.Join(lacks, ", "))
+	}
+	return lacks, nil
 }
 
 // checkEmpty refuses a database that holds a project, an issue or a delivery row: the load's
@@ -245,29 +257,44 @@ func checkEmpty(ctx context.Context, pool *store.Pool) error {
 }
 
 // resetConsumers deletes what the consumers of the loaded feeds committed over the empty store
-// (Load): the Legion facts consumer's cursors and project marks, and this head's day-row
-// refresher's cursors, walks, serving records, rebuilds with their staging, and record of the
-// rules its rows stand built under (eval_days_rules), and the stored figures it folded, with the
-// marks of their stale cuts, whose mark of a project's built figures would otherwise survive its
-// walks. Each statement names its table, so the item-row census (api's
-// TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus) reads it as a write of no item row. At this
-// head it then writes the keyword fill's cursor as caught up with the loaded log
-// (keywordFillCaughtUpQuery).
+// (Load): the Legion facts consumer's cursors and project marks, and the day-row refresher's
+// cursors, walks, serving records, rebuilds with their staging, and record of the rules its rows
+// stand built under (eval_days_rules), and the stored figures it folded, with the marks of their
+// stale cuts, whose mark of a project's built figures would otherwise survive its walks. It then
+// writes the keyword fill's cursor as caught up with the loaded log (keywordFillCaughtUpQuery).
+// Each statement names its table, so the item-row census (api's
+// TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus) reads it as a write of no item row. This head
+// runs every one of these consumers. The base, main at the commit this head merges, runs those
+// whose tables its catalog holds, so at the base the reset deletes from the tables of these the
+// catalog holds and writes the fill's cursor where it holds the fill's table; a list of what main
+// runs would go stale at the next merge of main.
 func resetConsumers(ctx context.Context, pool *store.Pool, base bool) error {
-	statements := []string{`delete from issue_facts_cursor`, `delete from issue_facts_computed`}
-	if !base {
-		statements = append(statements, `delete from eval_days_cursor`, `delete from eval_days_walks`, `delete from eval_days_serving`,
-			`delete from eval_days_rules`, `delete from eval_rebuilds`, `delete from eval_rebuild_walks`, `delete from eval_rebuild_firsts`,
-			`delete from eval_rebuild_days`, `delete from eval_rebuild_members`, `delete from eval_rebuild_range_figures`,
-			`delete from eval_rebuild_day_figures`, `delete from eval_rebuild_reverify`,
-			`delete from eval_figures_built`, `delete from eval_range_figures`, `delete from eval_day_figures`, `delete from eval_figure_cuts_stale`)
+	statements := []string{`delete from issue_facts_cursor`, `delete from issue_facts_computed`,
+		`delete from eval_days_cursor`, `delete from eval_days_walks`, `delete from eval_days_serving`,
+		`delete from eval_days_rules`, `delete from eval_rebuilds`, `delete from eval_rebuild_walks`, `delete from eval_rebuild_firsts`,
+		`delete from eval_rebuild_days`, `delete from eval_rebuild_members`, `delete from eval_rebuild_range_figures`,
+		`delete from eval_rebuild_day_figures`, `delete from eval_rebuild_reverify`,
+		`delete from eval_figures_built`, `delete from eval_range_figures`, `delete from eval_day_figures`, `delete from eval_figure_cuts_stale`}
+	tableOf := func(statement string) string { return strings.TrimPrefix(statement, "delete from ") }
+	fill := true
+	if base {
+		tables := []string{keywordFillTable}
+		for _, statement := range statements {
+			tables = append(tables, tableOf(statement))
+		}
+		held, err := evalfixture.ExistingTables(ctx, pool, tables)
+		if err != nil {
+			return err
+		}
+		statements = slices.DeleteFunc(statements, func(statement string) bool { return !slices.Contains(held, tableOf(statement)) })
+		fill = slices.Contains(held, keywordFillTable)
 	}
 	for _, statement := range statements {
 		if _, err := pool.Exec(ctx, statement); err != nil {
 			return fmt.Errorf("reset consumers (%s): %w", statement, err)
 		}
 	}
-	if base {
+	if !fill {
 		return nil
 	}
 	if _, err := pool.Exec(ctx, keywordFillCaughtUpQuery, textversions.RulesVersion); err != nil {
@@ -276,12 +303,16 @@ func resetConsumers(ctx context.Context, pool *store.Pool, base bool) error {
 	return nil
 }
 
+// keywordFillTable is the keyword fill's cursor table, which keywordFillCaughtUpQuery writes.
+const keywordFillTable = "search_text_versions_fill"
+
 // keywordFillCaughtUpQuery writes the keyword fill's one cursor row as production's stands once
 // its one backfill, at the deploy, is done: at the newest event of the loaded log, with that
 // event's created_at, which the fill checks the log against (events.EventLogWasReset), and no
 // reach, which the fill computes on its next read. The row names no holder, as a fill with no hold
 // writes it (textversions' holderArg), so the first batch of a serving fill takes it over
-// (holdCheckQuery); the rules version is $1 (textversions.RulesVersion), the running build's. It
+// (holdCheckQuery); the rules version is $1 (textversions.RulesVersion), the running build's,
+// which at the base is the same, since this head changes no rule of the fill main runs. It
 // overwrites the row the migrating server's fill wrote at no event, or writes one where it wrote
 // none. The keyword rows themselves are not written, since no read the bench measures reads them.
 // A backfill of the loaded log by the server would take hours at the stated rate, which is

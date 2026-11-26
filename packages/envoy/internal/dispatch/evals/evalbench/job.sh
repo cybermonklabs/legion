@@ -5,11 +5,15 @@
 # fixture loaded, and run.sh's measurement. job.yaml runs it on the build farm; it runs the same in
 # a pod at a small EVALBENCH_SCALE.
 #
-#   job.sh head    this head's first paint, k2, k13 and k16; then, with a failure day added to the
-#                  history, the Delivery timeline's first paint again (run.sh's failure-day)
-#   job.sh base    the base head's first paint (k8's and k13's negative controls): envoy-dispatch
-#                  built at EVALBENCH_BASE, its database migrated by it, and the generator's -base
-#                  history, written by this head's generator
+#   job.sh head    this head's first paint, EVALBENCH_PAINT_RUNS times (8), each after a fresh
+#                  start of the server, with the median and the maximum of the runs, and k2, k13
+#                  and k16 once (run.sh's header says which run each belongs to); then, with a
+#                  failure day added to the history, the Delivery timeline's first paint once more
+#                  (run.sh's failure-day)
+#   job.sh base    the base's first paint (k8's and k13's negative controls), the base being main at
+#                  the commit this head merges: envoy-dispatch built at EVALBENCH_BASE, its
+#                  database migrated by it, and the generator's -base history, written by this
+#                  head's generator
 #
 # The failure day is INFRA's worst day of deploy failures (evalbench/failureday.go says where it
 # was read): 36 failed deploy runs on main with 45 failed jobs across them, on the UTC day
@@ -21,8 +25,9 @@
 #   EVALBENCH_WORK         scratch for everything the run writes (required)
 #   EVALBENCH_SOURCE       the checkout (the repository this script is in)
 #   EVALBENCH_COMMIT       the commit the head server is stamped with (the checkout's HEAD)
-#   EVALBENCH_BASE         the base head (02a7b3c67eefaa5c3e7d724c794423cc6b89da64)
-#   EVALBENCH_BASE_SOURCE  a tree of the base head; by default a worktree of the checkout at
+#   EVALBENCH_BASE         the base: main at the commit this head merges, `git merge-base <head>
+#                          origin/main`; required by base mode
+#   EVALBENCH_BASE_SOURCE  a tree of the base; by default a worktree of the checkout at
 #                          EVALBENCH_BASE, made under EVALBENCH_WORK
 #   EVALBENCH_SCALE (1), EVALBENCH_SEED (2916), EVALBENCH_TEN_TIMES (0), EVALBENCH_NOW (the current
 #                          UTC midnight): the generator's -scale, -seed, -ten-times and -now
@@ -31,7 +36,8 @@
 #                          -failure-day-jobs, at head
 #   EVALBENCH_PGPORT (55432), EVALBENCH_SHARED_BUFFERS (1GB), PGBIN (the newest
 #                          /usr/lib/postgresql/*/bin)
-#   run.sh's EVALBENCH_PORT, EVALBENCH_CATCHUP, EVALBENCH_QUIET and EVALBENCH_CATALOG pass through.
+#   run.sh's EVALBENCH_PORT, EVALBENCH_CATCHUP, EVALBENCH_QUIET, EVALBENCH_CATALOG and
+#   EVALBENCH_PAINT_RUNS pass through.
 set -euo pipefail
 
 mode=${1:-}
@@ -41,10 +47,14 @@ case "$mode" in head | base) ;; *)
   ;;
 esac
 : "${EVALBENCH_WORK:?EVALBENCH_WORK must name a scratch directory for the run}"
+if [ "$mode" = base ] && [ -z "${EVALBENCH_BASE:-}" ]; then
+  echo "job.sh: base mode needs EVALBENCH_BASE, the base: main at the commit this head merges (git merge-base <head> origin/main)" >&2
+  exit 2
+fi
 here=$(cd "$(dirname "$0")" && pwd)
 source_dir=${EVALBENCH_SOURCE:-$(cd "$here/../../../../../.." && pwd)}
 work=$EVALBENCH_WORK
-base=${EVALBENCH_BASE:-02a7b3c67eefaa5c3e7d724c794423cc6b89da64}
+base=${EVALBENCH_BASE:-}
 commit=${EVALBENCH_COMMIT:-$(git -C "$source_dir" rev-parse HEAD)}
 port=${EVALBENCH_PGPORT:-55432}
 now=${EVALBENCH_NOW:-$(date -u +%Y-%m-%dT00:00:00Z)}

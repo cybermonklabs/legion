@@ -642,15 +642,20 @@ func TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach(t *testing.T) {
 	settings.StagingE2EJobName = new("no-such-job")
 	r.putSettings(t, settings, model.Actor{Kind: "system", ID: "figures-test"})
 	r.settle(t)
-	state = r.expectRewrites(t, "a settings change", state, true, nil)
+	state = r.expectFoldedInTx(t, "a settings change", state, r.expectRewrites(t, "a settings change", state, true, nil))
 
 	// The daily tick: a pass of the next UTC day writes its rows, and the ranges of the end day it
-	// adds, two days after the new today, of every eval.
+	// adds, two days after the new today, of every eval. The day it brings before the figures' last
+	// end day already holds a row of review-latency: its readings write filled its zero rows through
+	// the database's today (writeLoggedZeros), which is past the rig's, so the tick moves no row of
+	// that day and folds its day figures once the day is in scope.
 	added := refresherToday.AddDate(0, 0, 1+FigureLead).Format(time.DateOnly)
+	opened := refresherToday.AddDate(0, 0, FigureLead).Format(time.DateOnly)
 	r.now = r.now.Add(24 * time.Hour)
 	r.settle(t)
 	state = r.expectRewrites(t, "the daily tick", state, true, func(line string) bool {
-		return strings.HasPrefix(line, "range ") && strings.Contains(line, " "+added+" ")
+		return strings.HasPrefix(line, "range ") && strings.Contains(line, " "+added+" ") ||
+			strings.HasPrefix(line, "day ") && strings.Contains(line, " "+opened+" ")
 	})
 	r.expectBuilt(t, "after the daily tick", refresherToday.AddDate(0, 0, 1))
 

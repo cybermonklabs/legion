@@ -9,10 +9,10 @@ import (
 )
 
 // rules.go is the reading of each finished issue's values: its work time, its hours on each bar of
-// phase time with their segments, its idle hours by role, its slot wait, its rework and, for a
-// root, its children. The words each rule is read from are quoted above it: R6 and D3 of
-// dispatch://INFRA-2916 for idle time and slot wait, and dispatch://INFRA-1077's "The four Legion
-// metrics" and "Rule details" for the other four, which keep that change's rules.
+// phase time with their segments, its rework and, for a root, its children; its idle hours by role
+// and its slot wait are observed.go's. The words each rule is read from are quoted above it:
+// dispatch://INFRA-1077's "The four Legion metrics" and "Rule details", whose rules the four
+// measures besides idle time and slot wait keep, and R6 of dispatch://INFRA-2916 for the bars.
 
 // The phases the daemon reports, written out here rather than taken from another package, so
 // this reading stands on the words and not on another reader's constants.
@@ -66,19 +66,18 @@ var parkedStatuses = []string{"backlog", "icebox"}
 // noRole is the seventh bar of phase time, the one no role works.
 const noRole = "no_role"
 
-// bars are phase time's seven bars, each with the phases it holds: "architect (design and
-// accepting), planner (planning), implementer (implementing), tester (testing), reviewer
-// (reviewing) and merger (retro, merging and awaiting merge). A seventh bar, 'no role', holds the
-// phases no role works: `awaiting_person` and `held`." D3 gives idle time by role the same bars
-// for the six roles.
+// bars are phase time's seven bars, each with the phases it holds: "The bars are: architect,
+// `design` and `accepting`; planner, `planning`; implementer, `implementing` and `retro`; tester,
+// `testing`; reviewer, `reviewing`; merger, `merging` and `awaiting_merge`. Retro is on the
+// implementer's bar because the daemon gives retro to the implementer" (R6), and the seventh, "no
+// role: `awaiting_person` and `held`" (legion-phase-time.md). Idle time by role reads the same bars
+// for the six roles (idleByRole).
 var bars = []struct {
 	role   string
 	phases []string
 }{
 	{"architect", []string{phaseDesign, phaseAccepting}},
 	{"planner", []string{phasePlanning}},
-	// "implementer (implementing and retro, because the daemon gives retro to the implementer)"
-	// and "merger (merging and awaiting merge)": the base's bars since 8beac41a07.
 	{"implementer", []string{phaseImplementing, phaseRetro}},
 	{"tester", []string{phaseTesting}},
 	{"reviewer", []string{phaseReviewing}},
@@ -108,7 +107,8 @@ var childWorkingPhases = []string{
 }
 
 // sentBackFrom is where a move to implementing is a send-back: "a move from `testing`,
-// `reviewing`, `accepting` or the merger's phase to `implementing`". sentBackStatuses is the same
+// `reviewing`, `accepting` or the merger's phase to `implementing`", words that held `retro` among
+// the merger's phases, which R6 puts on the implementer's bar (bars). sentBackStatuses is the same
 // before observations, where the statuses say it: "moves from `testing`, `needs_review` or `retro`
 // to `in_progress`", which is also when an `in_progress` marks implementing.
 var (
@@ -415,38 +415,6 @@ func (r *reading) childrenStretches(key string) []span {
 	return normalize(stretches)
 }
 
-// idleByRole is D3's idle time by role: "for role R, the hours of the issue's worked spans (life −
-// parked − queued) in which the issue holds its own slot, its observed phase is in R's bar ..., and
-// R's newest observed claim state is not `working` (no claim counts as not working)". The worked
-// spans leave out the hours out of the workflow before the close as well, as the work time does
-// since dispatch://INFRA-1077's 9f994275a7 (workedOf). The phase is the observed one alone, the
-// sampler's own marks, and the slot is the issue's own.
-func (r *reading) idleByRole(key string, worked []span) map[string]float64 {
-	end := r.population.end(key)
-	holding := intersect(worked, r.slotStretches(key))
-	sampled := r.sampledOf(key)
-	idle := make(map[string]float64, len(bars)-1)
-	for _, one := range bars {
-		if one.role == noRole {
-			continue
-		}
-		inBar := intersect(holding, phaseStretches(sampled, one.phases...))
-		working := markStretches(r.population.issues[key].observed[fieldClaimPrefix+one.role], end, claimWorking)
-		idle[one.role] = rounded(hoursOf(subtract(inBar, working)))
-	}
-	return idle
-}
-
-// slotWait is D3's slot wait: "the hours of the issue's observed life in which its phase is
-// `admitted` and it holds no slot, over the whole life, with parked hours left out". The life is
-// the issue's, from its creation to its end; the phase is the one the sampler recorded.
-func (r *reading) slotWait(key string) float64 {
-	held := r.population.issues[key]
-	life := []span{{from: held.created, to: r.population.end(key)}}
-	waited := intersect(phaseStretches(r.sampledOf(key), phaseQueued), life)
-	return hoursOf(subtract(waited, r.parked(key)))
-}
-
 // rework is the issue's review rounds, whether it was sent back, and its hours of implementing and
 // testing after its first review.
 //
@@ -628,7 +596,9 @@ func phaseMarks(marks []mark) []mark {
 // read names one (dispatch://INFRA-1077's e2a409a4f5, "an issue the daemon drops keeps the slot it
 // held").
 //
-// It is measured once per issue and kept, as sampledOf keeps its timeline: three rules read it.
+// It is measured once per issue and kept, as sampledOf keeps its timeline: two rules read it, the
+// timeline's split of `admitted` (sampledOf) and the design phase's start before observations
+// (logMarks).
 func (r *reading) slotStretches(key string) []span {
 	if kept, measured := r.slots[key]; measured {
 		return kept
@@ -837,10 +807,10 @@ func phaseSteps(marks []logMark) []logMark {
 }
 
 // statusPhase is the phase a status write marks for an issue the sampler never saw: "`testing` is
-// testing, `needs_review` is reviewing until that round's `review` handoff and then accepting,
-// `retro` is the merger's phase ... and an `in_progress` after `testing`, `needs_review` or `retro`
-// (a send-back) is implementing. Every other `in_progress`, such as admission's, and every `todo`
-// mark no phase." A park is no phase either: the work time leaves it out.
+// testing, `needs_review` is reviewing until that round's `review` handoff and then accepting, ...
+// and an `in_progress` after `testing`, `needs_review` or `retro` (a send-back) is implementing.
+// Every other `in_progress`, such as admission's, and every `todo` mark no phase." `retro` marks
+// retro, on the implementer's bar (bars). A park is no phase either: the work time leaves it out.
 func statusPhase(previous, status string) (string, bool) {
 	switch status {
 	case "testing":

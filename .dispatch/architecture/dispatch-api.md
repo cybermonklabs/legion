@@ -1,7 +1,7 @@
 ---
 title: Dispatch API handlers
 parent: dispatch-server
-depends_on: [contracts, envoy-listener, dispatch-architecture, dispatch-auth, dispatch-delivery, dispatch-docs, dispatch-duty, dispatch-embedqueue, dispatch-events, dispatch-legion, dispatch-model, dispatch-pmdoc, dispatch-refs, dispatch-store, dispatch-text]
+depends_on: [contracts, envoy-listener, dispatch-architecture, dispatch-auth, dispatch-delivery, dispatch-docs, dispatch-duty, dispatch-embedqueue, dispatch-evals, dispatch-events, dispatch-legion, dispatch-model, dispatch-pmdoc, dispatch-refs, dispatch-store, dispatch-text]
 paths: [packages/envoy/internal/dispatch/api, packages/envoy/internal/dispatch/sessionanswers]
 ---
 Every HTTP route body: issues, artifacts, asks, comments, messages, projects, search, and the assignee, rank, label and component-attachment writes, and the per-session list of what people wrote to an agent (`GET /api/v1/agents/{session_id}/answers`, `session_answers.go`), which every agent host reads on each model request. Search reads each ask hit's answer state from its row, and a resolved ask's last answer from its `ask.answered` events, before it answers. The per-session list's read model is the small package `sessionanswers` (`List`), which travels with its one route: a person's events whose `published_destinations` hold the session's own topic (`contracts.AgentSubject`), its sent message and comment deliveries, each item at its current words as a `model.SessionAnswer` with its relation to the session and its `dispatch://` and deep-link place; the outbox's tests read back through it, so the route reads what the publisher records.

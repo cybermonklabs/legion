@@ -202,19 +202,21 @@ const deliveryHubFeedBuffer = 1024
 // pglisten.Listener), of a read of a Legion daemon and of a write of a run on the same connection
 // (legion.StateChannel, workflowstore.RunsChannel), and of a committed event from the event stream
 // relay's feed, the live paths' one reader of the event log; marks dirty only the views the change
-// can touch; recomputes each dirty view once per burst, one recompute at a time, as the GET
-// routes' population read and pure compute; re-runs the compute alone, reading nothing, when
-// something leaves a preset window; and sends each subscriber only the keys whose revision
-// differs from what it holds.
+// can touch; recomputes each dirty view once per burst, as the GET routes' population read and
+// pure compute, one at a time but for the evals views, up to evalsRecomputes of which run at once
+// beside it; re-runs the compute alone, reading nothing, when something leaves a preset window;
+// and sends each subscriber only the keys whose revision differs from what it holds.
 //
 // Each run of the hub is a generation (hubGeneration): the first Subscribe of a hub with no sub
 // starts one, and the drop of its last sub stops it, at once, with no grace period, so a process
 // with no open page holds no connection for the hub and reads neither log for it. A generation
 // runs three goroutines on a context of its own: the listener; the intake, which alone moves the
 // change log's cursor, applies the relay's events and marks views dirty; and the worker, which
-// alone recomputes, so one recompute runs at a time. Its relay subscription, which waits for a
-// safe horizon, is taken on a fourth that ends once it has (seedEvents), at the start and after
-// a feed closes. A generation owns its views and conns, and
+// alone starts a recompute: it runs each recompute of a delivery view, a Legion view or an expiry
+// itself, one at a time, and each of an evals view on a goroutine of its own, up to
+// evalsRecomputes at once (recomputeAside). Its relay subscription, which waits for a safe
+// horizon, is taken on another goroutine that ends once it has (seedEvents), at the start and
+// after a feed closes. A generation owns its views and conns, and
 // the drop of its last conn is what stops it, so a goroutine of a stopped generation reaches only
 // its own empty maps, never the next generation's, and returns once its context ends.
 type deliveryHub struct {
@@ -230,8 +232,10 @@ type deliveryHub struct {
 	// observe, when set, is told of each recompute, connection and event; tests set it.
 	observe func(deliveryHubNote)
 
-	// running counts every generation's goroutines. Add runs under mu and only while closed is
-	// false, so no Add can follow the Wait in wait.
+	// running counts every generation's goroutines. A generation's own are added under mu and only
+	// while closed is false, so no such Add can follow the Wait in wait; an evals view's recompute
+	// is added by the worker (recomputeAside), a goroutine running already counts, so its Add
+	// starts while the count is above zero, which sync.WaitGroup allows at any moment.
 	running sync.WaitGroup
 
 	mu sync.Mutex
@@ -240,6 +244,17 @@ type deliveryHub struct {
 	// generation is the running generation, nil while no conn holds a sub.
 	generation *hubGeneration
 }
+
+// evalsRecomputes is the most recomputes of evals views a generation runs at once
+// (recomputeAside). One rewrite of a delivery settings change marks every evals view of each
+// project whose rows it moves, and each recompute is one snapshot read of the shared pool: on the
+// build farm, 168 evals views marked at once were answered one after another for 1.0-1.6 s, 6-10
+// ms each, which with the rewrite's own commit passed the 2 s R14 gives a settings write. Four at
+// once bring a project's 52 open views to 13 rounds, about 0.13-0.2 s, and hold at most four of
+// the shared pool's 64 connections (store's sharedPoolSize), as a broadcast's delivery does for
+// the same reason (broadcastDeliveryWorkers). Evals views alone run aside: they judge no
+// freshness, where the delivery views' reads set the one verdict in the order they run.
+const evalsRecomputes = 4
 
 // hubGeneration is one run of the hub. ctx, stop and the channels are set once at its start; the
 // rest is guarded by the hub's mu. views and conns are emptied by the drops that stop it, and no
@@ -259,6 +274,9 @@ type hubGeneration struct {
 	// could hold one the intake never took past g's end, which neither would cancel, and the relay
 	// would keep its generation, its LISTEN connection and its reads of the event log for it.
 	feeds chan hubEventFeed
+	// evalsSlots holds one token for each recompute of an evals view under way, at most
+	// evalsRecomputes (recomputeAside).
+	evalsSlots chan struct{}
 
 	views map[string]*deliveryView // by canonical view key
 	conns map[deliveryLiveConn]map[string]*deliverySub
@@ -496,11 +514,12 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 		ctx: ctx, stop: stop,
 		ready:    make(chan struct{}),
 		wakeWork: make(chan struct{}, 1), wakeChanges: make(chan struct{}, 1), connected: make(chan struct{}, 1),
-		barrier: make(chan chan struct{}),
-		feeds:   make(chan hubEventFeed),
-		views:   map[string]*deliveryView{},
-		conns:   map[deliveryLiveConn]map[string]*deliverySub{},
-		p0:      map[string]struct{}{},
+		barrier:    make(chan chan struct{}),
+		feeds:      make(chan hubEventFeed),
+		evalsSlots: make(chan struct{}, evalsRecomputes),
+		views:      map[string]*deliveryView{},
+		conns:      map[deliveryLiveConn]map[string]*deliverySub{},
+		p0:         map[string]struct{}{},
 	}
 	listener := &pglisten.Listener{
 		Owner:       "dispatch",

@@ -5,8 +5,9 @@
 //	go run ./internal/dispatch/evals/evalbench/cmd -database <url> \
 //	  -built-by "$COMMIT" -seed 2916 -now 2026-11-13T00:00:00Z
 //
-// -base writes the base head's tables alone (no reading) into a database the base head
-// 02a7b3c6 migrated, for k8's and k13's negative controls; -scale multiplies every count (0.02
+// -base writes the same history with no eval reading into a database the base's
+// envoy-dispatch migrated, the base being main at the commit this head merges (git merge-base
+// <head> origin/main), for k8's and k13's negative controls; -scale multiplies every count (0.02
 // loads in a pod in a few minutes); -ten-times writes ten times the stated run rate. Every time is
 // relative to -now, the current UTC midnight by default, so a load of the base and one of this
 // head with one -now and one -seed hold the same history at the same times.
@@ -39,7 +40,7 @@ func main() {
 	flag.Uint64Var(&spec.Seed, "seed", 2916, "the seed of every random draw")
 	flag.Float64Var(&spec.Scale, "scale", 1, "the share of INFRA's stated rate to write, above 0 and at most 1")
 	flag.BoolVar(&spec.TenTimes, "ten-times", false, "write ten times the stated run rate")
-	flag.BoolVar(&spec.Base, "base", false, "write only the tables of the base head 02a7b3c6, and no reading")
+	flag.BoolVar(&spec.Base, "base", false, "write into a database of the base, main at the commit this head merges (git merge-base <head> origin/main), with no eval reading")
 	flag.StringVar(&spec.BuiltBy, "built-by", "", "the build the logged evals' day rows record: the server's stamped commit")
 	flag.StringVar(&now, "now", "", "the moment every history ends at, RFC 3339; the current UTC midnight by default")
 	flag.IntVar(&day.DaysAgo, "failure-day", 0, "write only a failure day into the loaded database, on the UTC day this many days before -now's, 1 to 84; 0 loads the fixture")

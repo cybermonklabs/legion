@@ -59,8 +59,9 @@ const shellHandlers: RequestHandler[] = [
   // shown, or in the compact navigation drawer while it is open - with no `enabled` guard
   // (`Sidebar`'s `projectsQuery` read in `features/sidebar/Sidebar.tsx`, drawn by
   // `NavigationContents` in `app.tsx`). The issue header reads the same `projectsQuery` key for
-  // every root issue, to learn which design steps are gated (`IssueHeader`'s read in
-  // `features/issue/IssueHeader.tsx`, `enabled: issue.parent === null`), and that is the reader
+  // every issue that is a root of its project, to learn which design steps are gated
+  // (`IssueHeader`'s read in `features/issue/IssueHeader.tsx`, `enabled: isProjectRoot(issue)`:
+  // no parent, or a parent of another project), and that is the reader
   // this answer exists for: without it, 36 rows of pages carrying the header fail on an unanswered
   // read, none of them about projects. `CreateIssueDialog`, `ProjectPage`, the palette's project
   // mode and three settings sections (`ArchitectureSourcesSection`, `ProjectsSection` and
