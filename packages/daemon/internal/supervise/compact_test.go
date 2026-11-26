@@ -675,6 +675,39 @@ func TestACompactionTheStoreWouldNotTakeSaysNothingWasAsked(t *testing.T) {
 	h.wantPrompts(ladderSends)
 }
 
+// A compaction the store would not take puts back the end it dated as well as the state: its take
+// closes a turn the claim's times still show open (compactStart), and a write that fails leaves
+// the claim exactly as it found it, in memory and in the store. A claim left with the end dated
+// and no compaction running would read as in no turn, and the controller keeper would never end
+// the turn that is still open (dispatch://INFRA-2045 R2).
+func TestACompactionTheStoreWouldNotTakeLeavesTheCutOffTurnOpen(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(StreamTurnStart{Claim: h.token})
+	// A displacement cuts the turn off without dating its end, and the relaunched agent stands
+	// ready with that turn still open.
+	h.observeDisplaced(runtime.Gone)
+	h.relaunched()
+	before := h.claim()
+	if !before.LastTurnStart.After(before.LastTurnEnd) {
+		t.Fatalf("the relaunched claim's turn started %s and the last ended %s, want the cut-off turn still open", before.LastTurnStart, before.LastTurnEnd)
+	}
+	h.advance(time.Minute)
+	h.store.fail("PutClaim", errors.New("the store is down"))
+
+	if err := h.m.Compact(h.ctx, testCompactInstructions); !errors.Is(err, ErrCompactNotTaken) {
+		t.Fatalf("a compaction the store would not take answered %v, want ErrCompactNotTaken", err)
+	}
+
+	h.store.fail("PutClaim", nil)
+	for where, got := range map[string]Claim{"the machine": h.claim(), "the store": h.store.load(h.token)} {
+		if got.State != before.State || !got.LastTurnEnd.Equal(before.LastTurnEnd) {
+			t.Errorf("%s reads the claim %s with its last turn ended %s, want %s and %s as the compaction found them",
+				where, got.State, got.LastTurnEnd, before.State, before.LastTurnEnd)
+		}
+	}
+}
+
 // A compaction of a claim whose shim is not connected asks nothing and takes nothing: the daemon
 // has no connection to ask through, which is no refusal of the claim's state — the state takes a
 // compaction — so it answers the take that did not happen, and its caller reports the one
@@ -1267,9 +1300,16 @@ func TestARestartWhileASessionIsBeingCompactedSendsNothingWhileItsAgentIsInATurn
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
 
 	h.wantState(StateIdle)
+	wantOwedSentNext(t, h, owed)
+}
+
+// wantOwedSentNext is the check that the next take after the restart's ladder carries owed, the
+// task the restored claim owes.
+func wantOwedSentNext(t *testing.T, h *harness, owed string) {
+	t.Helper()
 	prompts := h.wantPrompts(ladderSends + 1)
 	if prompts[ladderSends].DeliveryID != owed {
-		t.Fatalf("the take after that turn carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
+		t.Fatalf("the take after the restart carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
 	}
 }
 
@@ -1292,11 +1332,57 @@ func TestARestartWhileASessionIsBeingCompactedSendsTheOwedTaskWhenItsAgentSaysNo
 	h.connect()
 
 	h.wantState(StateIdle)
-	prompts := h.wantPrompts(ladderSends + 1)
-	if prompts[ladderSends].DeliveryID != owed {
-		t.Fatalf("the take after the restart's question carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
-	}
+	wantOwedSentNext(t, h, owed)
 	if got := h.pending(); got.ID != owed || !got.awaitsStart() {
 		t.Fatalf("the claim holds %+v, want the task %s taken and its turn still to come", got, owed)
 	}
+}
+
+// The same restart, and the agent does not answer the question: its get_state fails, so the
+// restored claim stays working with the question armed. Then a turn starts — an Envoy follow-up —
+// and ends. The turn is no task's: no take of the owed task was accepted, so its start gives it
+// nothing (startOfTurn). The task stays pending and untaken through the turn, and the turn's end
+// offers it, and the worker takes it.
+func TestARestartWhileASessionIsBeingCompactedKeepsTheOwedTaskThroughATurnThatRanNoTake(t *testing.T) {
+	h := restartedMidCompaction(t)
+	owed := h.pending().ID
+	h.conn.FailGetState(errors.New("the shim did not answer get_state in time"))
+
+	h.connect()
+	h.wantState(StateWorking)
+	h.wantPrompts(ladderSends)
+
+	h.must(StreamTurnStart{Claim: h.token})
+	if got := h.claim().Pending; got == nil || got.ID != owed || got.taken() {
+		t.Fatalf("after a start of no take the claim holds %+v, want the task %s still owed and untaken", got, owed)
+	}
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+
+	if got := h.claim().Pending; got == nil || got.ID != owed {
+		t.Fatalf("after that turn's end the claim holds %+v, want the task %s still owed", got, owed)
+	}
+	wantOwedSentNext(t, h, owed)
+}
+
+// The same restart with the question unanswered, and the worker takes the owed task: its take is
+// its word that its host is idle, so the turn the store recorded is over, and the take is
+// accepted as a ready claim's is (takeInTurn). The next turn's start is that take's turn, as the
+// first start after an accepted take is in a ready claim (turnStarted, startTakesTurn).
+func TestARestartWhileASessionIsBeingCompactedGivesTheOwedTaskTheTurnAfterItsTake(t *testing.T) {
+	h := restartedMidCompaction(t)
+	owed := h.pending().ID
+	h.conn.FailGetState(errors.New("the shim did not answer get_state in time"))
+
+	h.connect()
+	h.wantState(StateWorking)
+
+	h.mustTake()
+	if got := h.claim().Pending; got == nil || got.ID != owed || !got.awaitsStart() {
+		t.Fatalf("after the worker's take the claim holds %+v, want the task %s taken and its turn still to come", got, owed)
+	}
+	h.must(StreamTurnStart{Claim: h.token})
+	if got := h.claim().Pending; got == nil || got.ID != owed || !got.startRecorded() {
+		t.Fatalf("after the start the claim holds %+v, want the task %s in its take's turn", got, owed)
+	}
+	wantOwedSentNext(t, h, owed)
 }

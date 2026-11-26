@@ -309,7 +309,11 @@ func (m *Machine) compactionLostProcess() {
 // that the compaction is over (takeInTurn). A stop before Oh My Pi answers the handoff leaves
 // that record as it is (Machine.Compact): the next start reads it, over a take accepted whose
 // turn has not started, as the handoff the take may still be parked behind, and protects it
-// (NewMachine, handoffGuard).
+// (NewMachine, handoffGuard). The write closes the turn the claim's times show open (below), so
+// that next start also reads a claim stored working with no turn open as working for a
+// compaction it forgot, whose next start frame is a turn's first, dated and written
+// (Machine.restoredHandoff, turnStartedWhileBusy), and the controller keeper ends that turn past
+// its bound (dispatch://INFRA-2045 R2).
 //
 // A take accepted whose turn has not started is kept as it is: its number, its text, the
 // handshake's confirmation of its entry and what it told stay, and nothing offers the task again
@@ -400,14 +404,23 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 			return err
 		}
 	}
-	was := m.claim.State
+	was, ended := m.claim.State, m.claim.LastTurnEnd
 	m.compacting = &compacting{conn: conn, generation: m.claim.Generation, back: was}
 	m.claim.State = StateWorking
+	// A ready or idle claim runs no turn, but its times can still show one open: every path that
+	// ends a turn without dating its end leaves them that way (Claim.LastTurnEnd's doc says which
+	// date it). The compaction closes that turn in its own write, so a daemon restarted during the
+	// compaction, which knows nothing of it, reads the claim stored working as in no turn rather
+	// than in the turn that was cut off, and ends nothing for it (the controller keeper's
+	// TurnPastBound, dispatch://INFRA-2045 R2).
+	if _, open := m.claim.OpenTurn(); open {
+		m.claim.LastTurnEnd = m.deps.Clock.Now()
+	}
 	m.log.Info("supervise: the claim's session is being compacted; it is busy until the compaction ends",
 		"generation", m.claim.Generation, "session", m.claim.Session)
 	if err := m.persist(ctx); err != nil {
 		m.compacting = nil
-		m.claim.State = was
+		m.claim.State, m.claim.LastTurnEnd = was, ended
 		return err
 	}
 	if p := m.claim.Pending; p != nil && m.takeAwaitsTurn() {

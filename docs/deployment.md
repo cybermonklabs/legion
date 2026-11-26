@@ -1179,6 +1179,25 @@ provider_keys:
   an empty `LEGION_SLACK_CHANNELS`, and supervises it like a root architect. It needs
   `dispatch_url`. A project with no GitHub owner to mint for runs it with gh acting as nobody, its
   gh directory empty.
+- **The daemon replaces its own controller's session** under `controller: daemon`, under either
+  runtime. After two launches of one session in a row end before the session finishes a turn — a
+  death the daemon charges, before or after ready, or a turn the daemon ended — the next launch
+  starts a fresh session. A turn of a task the session took is finished by the turn's report that
+  finishes the task, and a turn that ran no task by its end. `controller_turn_bound_minutes` (90 by
+  default, `0` off) is how long a controller turn may stay open, steps or none, before the daemon
+  ends that launch and counts the end. `controller_session_max_age_hours` (72 by default, `0` off)
+  is how old the session, read from its id, may grow before a launch the daemon makes of it starts
+  a fresh session instead of resuming it: every launch of the controller that no operator's request
+  raised, a death's, a launch failure's, a pod update's or displacement's, a stale-plugin refresh's,
+  a turn ended past its bound, the keeper's retry or resume, and the boot relaunch of an unfinished
+  launch among them. The daemon stops no live controller for its age, and an operator's own resume,
+  or a task an operator delivers to a suspended controller, keeps the session. Each replacement
+  writes one Warn line naming the claim, the old session and the reason, and the fresh session's
+  ready one line naming both sessions; the first task the fresh session takes names the old session
+  and the reason and says that messages sent to the old session may be lost. The old session's
+  transcript stays in the session store. A session that never finished a turn, the controller's
+  first or a fresh one, is not replaced: the keeper retries it with its waits, and one Error line
+  says so and names, as `oldSession`, the session a fresh one replaced.
 
 ## How workspaces are provisioned on the host
 

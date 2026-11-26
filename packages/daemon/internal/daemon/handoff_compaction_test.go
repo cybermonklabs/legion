@@ -134,7 +134,7 @@ func (p *ompPeer) serve(w *bucketWorker, sh *shim) {
 				continue
 			}
 			p.mu.Unlock()
-			reply(stateAnswer(head.ID, w.streaming()))
+			reply(getStateResponse(head.ID, w.streaming()))
 		case handoffType, compactType:
 			p.mu.Lock()
 			p.shortens = append(p.shortens, strings.TrimSpace(string(line)))
@@ -153,8 +153,8 @@ func (p *ompPeer) serve(w *bucketWorker, sh *shim) {
 	}
 }
 
-// stateAnswer is the agent's answer to the state probe id: streaming or not.
-func stateAnswer(id string, streaming bool) shimwire.Response {
+// getStateResponse is the agent's answer to the state probe id: streaming or not.
+func getStateResponse(id string, streaming bool) shimwire.Response {
 	data, _ := json.Marshal(shimwire.StateData{IsStreaming: &streaming})
 	return shimwire.Response{ID: id, Command: shimwire.TypeGetState, Success: true, Data: data}
 }
@@ -185,7 +185,7 @@ func (p *ompPeer) endHandoff(answer func(id string) shimwire.Response, streaming
 		_ = handoff.sh.writer.WriteFrame(answer(handoff.id))
 	}
 	for _, state := range states {
-		_ = state.sh.writer.WriteFrame(stateAnswer(state.id, streaming))
+		_ = state.sh.writer.WriteFrame(getStateResponse(state.id, streaming))
 	}
 }
 

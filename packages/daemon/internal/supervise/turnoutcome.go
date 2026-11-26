@@ -724,12 +724,12 @@ func (m *Machine) newestTurnOutcome(o TurnOutcome) bool {
 // controller's choice (dispatch://INFRA-956's Design), and for every retry of a claim held for
 // OpenAI's cyber-policy refusal (Claim.HeldForCyberPolicy), whoever makes it. Every other retry —
 // its architect's retry_or_escalate, the next start of its role, an operator's retry that asks for
-// nothing — resumes the recorded session with fresh budgets, whatever the claim's run of refused
-// turns (dispatch://INFRA-4508's R5). That run is no sign that the session is bad: a refusal that
-// cannot clear fails the claim on the turn it ends, and holds the issue, so a run is mostly
-// refusals that can clear or carry no status, such as a team limit's 429, which refuses every
-// session of the team alike. A claim failed on a refusal that cannot clear resumes too; if its
-// session is refused again, it fails again at once.
+// nothing — resumes the recorded session with fresh budgets, but for the two cases at the end,
+// whatever the claim's run of refused turns (dispatch://INFRA-4508's R5). That run is no sign that
+// the session is bad: a refusal that cannot clear fails the claim on the turn it ends, and holds
+// the issue, so a run is mostly refusals that can clear or carry no status, such as a team limit's
+// 429, which refuses every session of the team alike. A claim failed on a refusal that cannot clear
+// resumes too; if its session is refused again, it fails again at once.
 //
 // A cyber-policy refusal is the one failure that a resume would repeat by itself: the retry's
 // first task is input from outside the session, which ends Oh My Pi's hold, so the session's
@@ -739,6 +739,12 @@ func (m *Machine) newestTurnOutcome(o TurnOutcome) bool {
 // leaves the session behind: the claim's failure sentence is the reason the abandoned session is
 // recorded under (retry), and the run of provider-error turns starts over with it
 // (Machine.forgetSession).
+//
+// The two cases at the end are the project controller's, and each is decided in the launch, not
+// here: whatever this answers, the launch after the session's second end in a row since a
+// finished turn forgets the session and spawns a fresh agent (launchNow's replaceEndedSession,
+// dispatch://INFRA-2045 R1), and so does a launch no operator's request raised — the keeper's
+// retry among them — of a session older than its age (replaceAgedSession, R3).
 func freshSession(c Claim, ev Event) (bool, string) {
 	asked := false
 	switch ev := ev.(type) {

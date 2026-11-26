@@ -226,6 +226,13 @@ type Claim struct {
 	// before this one is gone whatever happens next. A claim that has abandoned none records a
 	// session of "".
 	Abandoned AbandonedSession
+	// SessionRun is what the record says of the recorded session since it last finished a turn:
+	// how many of its launches ended in one of the three ways counted (SessionRun's doc), how the
+	// last of them ended, and whether the session has finished a turn at all (dispatch://INFRA-2045
+	// R1).
+	// It is persisted, so a daemon restart reads the count the daemon before it kept, and it goes
+	// with the session it is of (forgetSession).
+	SessionRun SessionRun
 	// EndedWork is what the last let-go of the claim's process ended of the work its agent had
 	// running, for the next process to be told (EndedWork, recordEnd). It is persisted, since the
 	// take that tells it can be a relaunch, a wake and a daemon restart away, and a newer let-go
@@ -390,10 +397,26 @@ type Claim struct {
 	PendingCause FailureCause
 	Pending      *Delivery
 	// LastTurnStart and LastTurnEnd are when the agent last began a turn and when it last ended
-	// one, each zero until that event happens. A turn's start is when the daemon first learned of
-	// it: its agent_start (turnStarted). They are persisted, so a restart keeps them: they are
-	// what a reader has to tell a worker still making progress from one wedged in a turn or idle
-	// since yesterday, and a claim rebuilt without them would look as if it had never worked.
+	// one, each zero until that event happens. This is the one list of who dates a turn's start
+	// and end, which the other places point to. A turn's start is when the daemon first learned
+	// of it: its agent_start, or the agent's answer that it is streaming over a claim in no turn
+	// (answerView), each dated where the start is decided (startOfTurn), in a ready or idle claim
+	// (turnStarted) and in one working for no turn: a compaction, this daemon's own or one a
+	// restart forgot, or a handoff a restart restored over a take (turnStartedWhileBusy,
+	// workingForNoTurn). So no path that starts a turn leaves it timed from the turn before, and
+	// each writes the claim with its date. A turn's end is dated where the agent ends it
+	// (turnEnded), and where the daemon ends it: a charged death (chargeDeath), the controller
+	// keeper's end of a turn past its bound (endTurnPastBound), and a compaction's start, which
+	// closes a turn whose end was never dated (compactStart). The end is written with the claim at
+	// each, except the end of a turn that ran under a compaction: that is written with the
+	// compaction's end (compactEnded), or with the death's own write where the process was lost
+	// under the compaction and no compaction end runs (compactionLostProcess). Every other path
+	// that ends a turn — a suspension that stops a process mid-turn, a displacement, a stale
+	// address, the stale-plugin relaunch, the stall backstop, a death charged nothing — dates no
+	// end, and leaves the times showing the turn open until a compaction or the next turn moves
+	// them. They are persisted, so a restart keeps what was written: they are what a reader has to
+	// tell a worker still making progress from one wedged in a turn or idle since yesterday, and a
+	// claim rebuilt without them would look as if it had never worked.
 	LastTurnStart time.Time
 	LastTurnEnd   time.Time
 	// TurnOutcomes are the newest turns the claim's agent ended that its backend's producer
@@ -880,6 +903,14 @@ func (c Claim) LeftPodRound(round string) bool {
 // agent whose session id holds a NUL is the claim's own agent before a restart and after one.
 func (c Claim) HoldsSession(session string) bool { return c.Session == storetext.Text(session) }
 
+// OpenTurn is the start of the turn the claim's times show open, and whether they show one: its
+// last turn began after its last turn ended (Claim.LastTurnStart, Claim.LastTurnEnd). A start and
+// an end at the same moment read as closed. This is the one reading of the two times; the
+// machine's own turnOpen adds the working state to it.
+func (c Claim) OpenTurn() (start time.Time, open bool) {
+	return c.LastTurnStart, c.LastTurnStart.After(c.LastTurnEnd)
+}
+
 // MessageMarked is whether the claim's message mark stands (Claim.MessageMarkAt): a wake for a
 // waiting Envoy message marked it, and the role has started no turn since, which would have read
 // that message. It is the one statement of when a mark stands; the queue a paced wake waits in
@@ -1196,6 +1227,11 @@ type Deps struct {
 	Log      *slog.Logger
 	Limits   Limits
 	Timeouts Timeouts
+	// ControllerSessionMaxAge is `controller_session_max_age_hours`: the age, read from its id (a
+	// UUIDv7), past which the project controller's recorded session is forgotten by a relaunch the
+	// daemon makes, so that relaunch spawns a fresh agent (replaceAgedSession,
+	// dispatch://INFRA-2045 R3). 0 is the rule off, which is also every harness's value.
+	ControllerSessionMaxAge time.Duration
 	// WakePace is how fast the daemon lets this machine's launches out (reserveWake); its zero
 	// value is the pacing off.
 	WakePace WakePace
@@ -2074,10 +2110,11 @@ type Machine struct {
 	// stored working (NewMachine). It is memory only, as compacting is; a let-go drops it.
 	handoff *handoffGuard
 	// restoredHandoff is a claim a daemon start restored working over a take accepted and not
-	// started, which a compaction's start writes, and a put-back behind a foreign turn too
-	// (NewMachine): its working is read as the handoff's until a turn starts or ends, so the next
-	// start frame is a turn's first and is given the take (workingForNoTurn,
-	// turnStartedWhileBusy). It is memory only.
+	// started, which a compaction's start writes, and a put-back behind a foreign turn too, or
+	// restored working with its times showing no turn open, which only a compaction's start
+	// writes (NewMachine): its working is read as the handoff's until a turn starts or ends, so
+	// the next start frame is a turn's first, dated and given the take if one awaits its turn
+	// (workingForNoTurn, turnStartedWhileBusy). It is memory only.
 	restoredHandoff bool
 	// admittedByAnswer is a turn an agent's answer that it is in a turn admitted over a claim
 	// working for no turn (answerView): the start frame of that turn, replayed behind the
@@ -2258,6 +2295,9 @@ type Machine struct {
 	// written once rather than every probe interval; a hold admitted clears it (warnRefusal).
 	// Memory only.
 	refusalLogged string
+	// unagedSession is the last session whose id the controller's age rule could read no age off,
+	// so its line is written once for that session (replaceAgedSession). Memory only.
+	unagedSession string
 	// admitted is the session and file the store last admitted for this claim, which holdRecorded
 	// and HoldsItsSession write, and HoldsItsSession and Admits (the daemon's step record) read
 	// without the lock; forgetSession clears it with heldNames. Memory only.
@@ -2452,6 +2492,16 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 				m.armAt(TimerRegistration, due, "")
 			}
 		}
+	}
+	// A claim stored working whose times show no turn open (Claim.OpenTurn) is the record a
+	// compaction's start writes too, whatever its take: that start closes any turn the times
+	// showed open (compactStart), and every start of a turn dates it after the end before it
+	// (startOfTurn). Machine.compacting is memory only, so the claim's working is read as that
+	// compaction's, which this start forgot: the next start frame is a turn's first, dated and
+	// written as every start is, so the controller keeper ends that turn past its bound rather
+	// than read the claim as in no turn (dispatch://INFRA-2045 R2).
+	if _, open := c.OpenTurn(); c.State == StateWorking && !open {
+		m.restoredHandoff = true
 	}
 	// The take the store holds accepted is anchored where the store shows the daemon before this
 	// one handled no turn start after the one it gave it, for the producer's word that its text
@@ -3376,10 +3426,11 @@ func (m *Machine) logTurn(line string, task uint64) {
 
 // startTurn records what this turn is the turn of and writes its start line, which is how the
 // turn's end comes to name what its start named (Machine.turnsTask, endTurn). Both paths that
-// record a turn starting go through here — turnStarted, and a turn Oh My Pi starts under a
-// compaction (turnStartedWhileBusy) — the one that names no task included, so a turn that is no
-// task's overwrites the identity of the turn before it rather than leaving it standing for its
-// end to read.
+// record a turn starting go through here, by startOfTurn, which dates the turn
+// (Claim.LastTurnStart, whose doc names every path that starts one) — turnStarted, and a turn
+// starting in a claim working for no turn (turnStartedWhileBusy) — the one that names no task
+// included, so a turn that is no task's overwrites the identity of the turn before it rather than
+// leaving it standing for its end to read.
 //
 // The identity is carried from the start because no reading of the claim can answer it at the
 // end: a pending task whose turn started is the running turn's in one case and a finished turn's
@@ -3631,10 +3682,12 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 
 // launchAfter is launch, whose first try waits the backoff when charged: the launch follows a
 // launch failure charged just before it (relaunchAfterFailure). exempt is whether the request
-// that raised it is one the wake pacing never makes wait (exemptWake); every other path into a
-// launch is paced, and the gate sits here, between the lifecycle check and letGo, because a
-// launch the tree lifecycle refuses charges no budget and so takes no token either, while a
-// launch that waits its turn keeps the process it still runs until that turn comes.
+// that raised it is one the wake pacing never makes wait (exemptWake), and so also whether the
+// launch keeps the project controller's session older than its age (replaceAgedSession,
+// dispatch://INFRA-2045 R3); every other path into a launch is paced, and the gate sits here,
+// between the lifecycle check and letGo, because a launch the tree lifecycle refuses charges no
+// budget and so takes no token either, while a launch that waits its turn keeps the process it
+// still runs until that turn comes.
 //
 // Which lane the wake it reserves waits under is no part of what this path says: it is every
 // launch's, raised by a death, a resume, a retry, a repoint or the stale-plugin lane alike, so
@@ -3773,16 +3826,24 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt, requested bool
 	// The roll edge's mark names the process an earlier release started, which this launch has
 	// let go; the process the launch starts is this release's own (refusedEarlierRelease).
 	m.refusedEarlierRelease = 0
+	// The launch that follows the controller session's second end in a row starts a fresh
+	// session, and so does a daemon-driven relaunch of a session older than its age, once the
+	// process it replaces is let go and what that process ended recorded (replaceEndedSession,
+	// replaceAgedSession, dispatch://INFRA-2045 R1 and R3). R3 is not asked where R1 applied,
+	// forgotten or refused, so one launch asks mayForget once: a refused R1 resumes the session.
+	if !m.replaceEndedSession(ctx) {
+		m.replaceAgedSession(ctx, exempt)
+	}
 	return m.launchTries(ctx, launchTry{intent: intent, charged: charged, exempt: exempt, requested: requested, waiting: waiting}, nil)
 }
 
 // launchTry is what every try of one launch reads, and what a try parked at its issue pod's gate
 // carries to its grant (askPod): the intent of the stale-plugin relaunch the launch is, for the
 // retries it may arm (relaunchAtProbe); whether its next try waits the backoff (charged); whether
-// the request that raised it is one the wake pacing lets through (exempt); whether a request
-// raised it at all, which the pod's gate reads (requested); and whether the launch retries a wait
-// for its pod's update round that is logged already, which a charged failure ends
-// (startWaitsForPodRound, waiting).
+// the request that raised it is one the wake pacing lets through, which also keeps the controller's
+// aged session (exempt, replaceAgedSession); whether a request raised it at all, which the pod's
+// gate reads (requested); and whether the launch retries a wait for its pod's update round that is
+// logged already, which a charged failure ends (startWaitsForPodRound, waiting).
 type launchTry struct {
 	intent                              *pluginIntent
 	charged, exempt, requested, waiting bool
@@ -4645,6 +4706,12 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 		return m.relaunchDeath(ctx, ended, uncharged, nil)
 	}
 	m.claim.DeathCharged = true
+	// The death the machine charges is an end of the session's launch (SessionRun), counted in
+	// the decision that charges it, once for the one process; an end charged nothing — the roll
+	// edge's, a resume by Oh My Pi's own lookup that never registered — is not.
+	if !uncharged {
+		m.sessionEnded(diedEnding(slices.Contains(unready, m.claim.State), m.claim.LastDeathCause))
+	}
 	if m.chargeDeath() {
 		return m.fail(ctx, CauseDied, "deaths with work outstanding ran out")
 	}
@@ -4804,6 +4871,10 @@ type AbandonedSession struct {
 	// zero while the table holds them: the boot holds no name of a released session again (store's
 	// recordedNames), and the record of where the session went stays.
 	Released time.Time `json:"released,omitzero"`
+	// ReadyNamed is whether the line that names the project controller's fresh session beside
+	// this one has been written, at that session's first ready (the table's ready,
+	// dispatch://INFRA-2045 R4), so the line is written once for each replacement.
+	ReadyNamed bool `json:"readyNamed,omitempty"`
 }
 
 // Tells is whether the next accepted take of this claim's agent must still name the session the
@@ -4885,15 +4956,19 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // It is the one place a claim leaves its session behind, so every start, retry or resume of a
 // claim relaunches the session the claim records — by its file, or by its id where it records no
 // file (start) — unless that launch forgets the session here, and a claim starts in a new session
-// only after this ran. It has three callers: the launch's startFresh, for a session no store holds
+// only after this ran. It has five callers: the launch's startFresh, for a session no store holds
 // any more, one the pod's launcher could not look up and Oh My Pi did not resume by its id, and
-// one a Claude Code claim records with no transcript file; retry, when freshSession says the retry
-// needs a new session; and the operator's forget-session (forgetSession, the table's), which
-// `legion claims retry --fresh-session` and the controller's fresh_session run (api's
-// freshSession). It clears the claim's mark of a start by Oh My Pi's own lookup with the session
-// (Claim.AgentResumeGeneration), and, where it drops a session, the cause of an earlier forget
-// the machine keeps for the fresh agent's launches; Machine.lostCause says why one that drops
-// nothing keeps it. startFresh sets the cause of its own forget after this call.
+// one a Claude Code claim records with no transcript file; the launch's replaceEndedSession, for
+// the project controller's session whose launches keep ending before it finishes a turn
+// (SessionRun); the launch's replaceAgedSession, for the project controller's session older than
+// its age at a daemon-driven relaunch; retry, when freshSession says the retry needs a new session;
+// and the forget of a recorded session (forgetSession, the table's): the operator's
+// forget-session, which `legion claims retry --fresh-session` runs too, and the controller's own
+// forget, which its fresh_session sends (api's forgetRecordedSession; RequestForgetSession.By names
+// which, forgottenBy). It clears the claim's mark of a start by Oh My Pi's own lookup with the
+// session (Claim.AgentResumeGeneration), and, where it drops a session, the cause of an earlier
+// forget the machine keeps for the fresh agent's launches; Machine.lostCause says why one that
+// drops nothing keeps it. startFresh sets the cause of its own forget after this call.
 //
 // A fresh session is not told the old session's record of what the last let-go of its process
 // ended (EndedWork), and this is the one place that rule is written. When it records the
@@ -4909,19 +4984,20 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // the claim still holds has nothing left to say, and its next take or offer drops it (takeable).
 //
 // Every caller runs it after the old process's record is written, so no let-go writes a record of
-// that process later: the launch's startFresh runs after the launch let the old process go
-// (launchNow, letGo), and retry's fresh session and the operator's forget-session reach only a
-// claim that runs nothing — queued, suspended, failed or retired — whose process the suspension,
-// the failure or the retirement already let go (suspended, fail, retire), or that never had one. A
-// let-go records nothing for a claim that records no process (recordEnd), so the next record
-// written is of the fresh session's own process.
+// that process later: the launch's startFresh, replaceEndedSession and replaceAgedSession run after
+// the launch let the old process go (launchNow, letGo), and retry's fresh session and the table's
+// forget-session reach only a claim that runs nothing — queued, suspended, failed or retired —
+// whose process the suspension, the failure or the retirement already let go (suspended, fail,
+// retire), or that never had one. A let-go records nothing for a claim that records no process
+// (recordEnd), so the next record written is of the fresh session's own process.
 //
 // It puts the claim's run of provider-error turns back to zero as well (Claim.ProviderErrorRun).
 // The run counts the turns one session had refused in a row, and the new session has had none,
 // so the project's controller can be told again if the new one goes the same way — which is what
 // makes a fresh session a recovery the controller can repeat (api's freshSession). Without it a
 // claim that was told once would never be told again until a turn of it ended with no error at
-// all.
+// all. The session's run of ended launches goes with it too (SessionRun): the new session has
+// ended no launch and finished no turn.
 //
 // why is the sentence the abandoned session is recorded under, which can carry a runtime's or a
 // provider's text, so it is kept as a far side's error text is (storetext.FarSideError).
@@ -4950,6 +5026,7 @@ func (m *Machine) forgetSession(why string) {
 	m.admitted.Store(nil)
 	m.freshRun()
 	m.claim.ProviderErrorRun = 0
+	m.claim.SessionRun = SessionRun{}
 }
 
 // fail puts the claim where nothing relaunches it: its timers stop, its locator goes, and the
@@ -5809,6 +5886,8 @@ func claimOf(ev Event) claim.Token {
 		return ev.Claim
 	case StallBackstop:
 		return ev.Claim
+	case TurnPastBound:
+		return ev.Claim
 	case PodUpdateOpen:
 		return ev.Claim
 	case PodUpdateEnded:
@@ -5881,6 +5960,7 @@ func copyClaim(c Claim) Claim {
 	c.CapabilityHash = bytes.Clone(c.CapabilityHash)
 	c.TurnOutcomes = slices.Clone(c.TurnOutcomes)
 	c.EndedWork.Kinds = slices.Clone(c.EndedWork.Kinds)
+	c.SessionRun.Endings = slices.Clone(c.SessionRun.Endings)
 	return c
 }
 

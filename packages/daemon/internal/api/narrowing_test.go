@@ -345,20 +345,28 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// told what it lost: a caller one contract below the highest row, which states that contract
 	// in its header as every plugin from shapedAnswersContract on does, is served at the recorded
 	// contract at or below it (recordedContractAtOrBelow), so it stands below that row alone and
-	// the log holds that row's line and nothing else. It reads carriedState, so the highest row
-	// finds its keys whether it is a frozen row or an entry's band, and it holds no entry to be
-	// the newest (R4 of dispatch://INFRA-1569). This subtest does not catch a strip applied beside
-	// the loop, because it reads both its expectation and its answer from stateNarrowings; the
-	// subtests below, which name their lines as literals, are what catch that.
+	// the log holds the lines of the rows at that contract and nothing else: one row's, or each of
+	// an entry's bands where the entry registers more than one (the P0 start's registers two). It
+	// reads carriedState, so the highest row finds its keys whether it is a frozen row or an
+	// entry's band, and it holds no entry to be the newest (R4 of dispatch://INFRA-1569). This
+	// subtest does not catch a strip applied beside the loop, because it reads both its
+	// expectation and its answer from stateNarrowings; the subtests below, which name their lines
+	// as literals, are what catch that.
 	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
 		state := carriedState(t)
 		bands := stateNarrowings()
 		highest := bands[len(bands)-1].contract
+		var atHighest []string
+		for _, band := range bands {
+			if band.contract == highest {
+				atHighest = append(atHighest, band.dropped)
+			}
+		}
 		_, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), highest-1)
 
 		want := narrowingsExpected(state, highest-1)
-		if len(want) != 1 {
-			t.Fatalf("a caller at %d expects the lines %v, want the highest row's alone", highest-1, want)
+		if !slices.Equal(want, atHighest) {
+			t.Fatalf("a caller at %d expects the lines %v, want the highest rows' alone, %v", highest-1, want, atHighest)
 		}
 		wantNarrowings(t, narrowings, highest-1, want)
 	})

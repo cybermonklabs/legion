@@ -335,6 +335,75 @@ func TestPodDriftAnswersTheScriptAndReplacePodEndsIt(t *testing.T) {
 	}
 }
 
+// A round's own replacement takes the pod, not the claim or issue it was made through: every claim
+// recorded in that pod reads drifted from nothing from then on, as the Sandbox runtime reads the
+// drift of every claim of a pod off its one Sandbox, which the round's replacement suspended under
+// its own mark. That holds for a ReplacePod that replaced the pod, for one whose suspension landed
+// before its error, for a ReplaceIssuePod, and for a launch whose RoundPodEnds answered yes. A claim
+// in another pod still reads its script.
+// Before this, a claim the call did not name kept reading the replaced pod's drift, and a sweep
+// after the round's end opened the round again over the pod its replacement took
+// (TestARoundWhoseNoticeTheStoreRefusedIsToldWhatItsReplacementFound, in internal/daemon).
+func TestARoundsReplacementLeavesEveryClaimOfThePodDriftedFromNothing(t *testing.T) {
+	inPod := func(token claim.Token, pod string) runtime.Locator {
+		return runtime.Locator{
+			Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(pod, 1),
+			Sandbox: &runtime.SandboxLocator{
+				Namespace: "legion", Name: "legion-omp-legion-208", PodUID: pod, Container: "roles", Generation: 1,
+			},
+		}
+	}
+	landed := errors.New("the pod outlived the replacement's wait")
+	for _, tc := range []struct {
+		name    string
+		replace func(*Runtime, runtime.Locator) error
+		want    error
+	}{
+		{"a_ReplacePod_that_replaced_it", func(fake *Runtime, l runtime.Locator) error {
+			return fake.ReplacePod(context.Background(), runtime.Known{Claim: l.Claim, Locator: &l}, stillDue)
+		}, nil},
+		{"a_ReplacePod_whose_suspension_landed", func(fake *Runtime, l runtime.Locator) error {
+			fake.FailReplacePodAfterItsSuspension(landed)
+			return fake.ReplacePod(context.Background(), runtime.Known{Claim: l.Claim, Locator: &l}, stillDue)
+		}, landed},
+		{"a_ReplaceIssuePod", func(fake *Runtime, l runtime.Locator) error {
+			return fake.ReplaceIssuePod(context.Background(), "LEGION-208", l.Sandbox.PodUID, stillDue)
+		}, nil},
+		{"a_launch_whose_round_is_over", func(fake *Runtime, l runtime.Locator) error {
+			fake.RoundPodEnds = func(context.Context, claim.Token, string) (bool, error) { return true, nil }
+			fake.ScriptSpawn(SpawnResult{Locator: l})
+			moved, err := fake.Spawn(context.Background(), spec(l.Claim))
+			if err == nil && moved.Sandbox.PodUID == l.Sandbox.PodUID {
+				return fmt.Errorf("the launch came up in %s, the pod its round replaced", moved.Sandbox.PodUID)
+			}
+			return err
+		}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			fake := NewRuntime()
+			through := inPod("legion-omp-LEGION-208-implementer", "pod-uid")
+			beside := inPod("legion-omp-LEGION-208-tester", "pod-uid")
+			elsewhere := inPod("legion-omp-LEGION-209-tester", "other-pod-uid")
+			reasons := []string{"[breaks the pod] image legion-worker:v1, now legion-worker:v2"}
+			for _, l := range []runtime.Locator{through, beside, elsewhere} {
+				fake.ScriptPodDrift(l.Claim, reasons...)
+			}
+			if err := tc.replace(fake, through); !errors.Is(err, tc.want) {
+				t.Fatalf("replace the pod: %v, want %v", err, tc.want)
+			}
+			for _, l := range []runtime.Locator{through, beside} {
+				if got, err := fake.PodDrift(ctx, runtime.Known{Claim: l.Claim, Locator: &l}); err != nil || len(got) > 0 {
+					t.Fatalf("%s, a claim of the pod the round's replacement took, still reads %q, %v; want drifted from nothing", l.Claim, got, err)
+				}
+			}
+			if got, err := fake.PodDrift(ctx, runtime.Known{Claim: elsewhere.Claim, Locator: &elsewhere}); err != nil || !slices.Equal(got, reasons) {
+				t.Fatalf("%s, a claim of another pod, reads %q, %v; want its script %q", elsewhere.Claim, got, err, reasons)
+			}
+		})
+	}
+}
+
 // A ReplacePod over a pod the runtime finds no longer there answers nil as the Sandbox runtime
 // does, without asking due: the last word is asked only of a pod there is to replace. It records
 // a ReplacePodNoPod call and no ReplacePod one, and leaves the claim's drift as it was. Cleared,

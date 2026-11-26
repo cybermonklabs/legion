@@ -158,3 +158,96 @@ func TestFailureCauseStripServesEachWordByItsOwnContract(t *testing.T) {
 		t.Fatalf("the state carried cyber_policy=%v and never_reconnected=%v, want both", sawCyber, sawNever)
 	}
 }
+
+// The task-take entry's rules stand beside the P0 start's (dispatch://INFRA-5636), whose two
+// bands take keys and move no value of an enumerated field. A caller stating a contract between
+// the two entries, the P0 start's less one, is served what the task-take entry added — its
+// `unseenTaskValues`, and `never_reconnected` as it stands in `failure.cause` and `pendingCause` —
+// and none of the four keys the P0 start's bands take, `admission.p0Holders`,
+// `admission.p0Bound` and each issue's `resolvedPriority` and `priorityFrom`. The lines it is
+// written are the bands above it (narrowingsExpected): the P0 start's two among them, and no row
+// of the task-take entry's. The controls: a caller at the P0 start's contract is served all four
+// keys, and one stating the task-take entry's contract less one is served neither the take's key
+// nor its word.
+func TestACallerBetweenTheTaskTakeAndTheP0StartIsServedTheTakeAndNoP0Key(t *testing.T) {
+	state := narrowingState(t)
+	takeAt, p0At := TaskTakeContract(), entryNumber(p0BoundContract)
+	if !(takeAt < p0At) {
+		t.Fatalf("task-take (%d) must sit below the P0 start (%d) for this test to prove the step between them", takeAt, p0At)
+	}
+	between := p0At - 1
+	const p0Holders, p0Bound = "admission.p0Holders and admission.p0Bound", "the issues' resolvedPriority and priorityFrom"
+
+	body, narrowings := stateNarrowedStating(t, state, "192.0.2.1:41000", nil, between)
+	if failure, pending := neverReconnectedCauses(t, body); failure != string(supervise.CauseNeverReconnected) ||
+		pending != string(supervise.CauseNeverReconnected) {
+		t.Errorf("a caller at %d is served failure.cause %q and pendingCause %q, want %q in both", between, failure, pending,
+			supervise.CauseNeverReconnected)
+	}
+	if keys := p0KeysServed(t, body); len(keys) != 0 {
+		t.Errorf("a caller at %d is served %v, want none of the P0 start's keys", between, keys)
+	}
+	if !servesTopKey(t, body, "unseenTaskValues") {
+		t.Errorf("a caller at %d is served no unseenTaskValues, want the task-take entry's key", between)
+	}
+	want := narrowingsExpected(state, between)
+	if !slices.Contains(want, p0Holders) || !slices.Contains(want, p0Bound) {
+		t.Fatalf("a caller at %d expects the lines %v, want the P0 start's two bands among them", between, want)
+	}
+	if slices.Contains(want, "unseenTaskValues") || slices.Contains(want, droppedFailureCause) {
+		t.Fatalf("a caller at %d expects the lines %v, want no row of the task-take entry's", between, want)
+	}
+	wantNarrowings(t, narrowings, between, want)
+
+	at, _ := stateNarrowedStating(t, state, "192.0.2.1:41000", nil, p0At)
+	if keys := p0KeysServed(t, at); len(keys) != 4 {
+		t.Errorf("a caller at %d is served %v of the P0 start's keys, want all four", p0At, keys)
+	}
+	below, _ := stateNarrowedStating(t, state, "192.0.2.1:41000", nil, takeAt-1)
+	if failure, _ := neverReconnectedCauses(t, below); failure != string(supervise.CauseNeverRegistered) {
+		t.Errorf("a caller at %d is served failure.cause %q, want %q", takeAt-1, failure, supervise.CauseNeverRegistered)
+	}
+	if servesTopKey(t, below, "unseenTaskValues") {
+		t.Errorf("a caller at %d is served unseenTaskValues, want the task-take entry's band to take it", takeAt-1)
+	}
+}
+
+// p0KeysServed is which of the P0 start's four keys a state body carries anywhere it is served:
+// `admission.p0Holders`, `admission.p0Bound`, and an issue's `resolvedPriority` or
+// `priorityFrom`, each named once however many issues carry it.
+func p0KeysServed(t *testing.T, body []byte) []string {
+	t.Helper()
+	var served struct {
+		Admission map[string]json.RawMessage            `json:"admission"`
+		Issues    map[string]map[string]json.RawMessage `json:"issues"`
+	}
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	var keys []string
+	for _, key := range []string{"p0Holders", "p0Bound"} {
+		if _, carried := served.Admission[key]; carried {
+			keys = append(keys, "admission."+key)
+		}
+	}
+	for _, key := range []string{"resolvedPriority", "priorityFrom"} {
+		for _, issue := range served.Issues {
+			if _, carried := issue[key]; carried {
+				keys = append(keys, "issues.*."+key)
+				break
+			}
+		}
+	}
+	return keys
+}
+
+// servesTopKey is whether a state body carries key at its top level.
+func servesTopKey(t *testing.T, body []byte, key string) bool {
+	t.Helper()
+	var served map[string]json.RawMessage
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	_, carried := served[key]
+	return carried
+}

@@ -178,6 +178,13 @@ func endStalled(bound time.Duration, inTurn bool) string {
 	return fmt.Sprintf("its claim showed no progress for %s", bound)
 }
 
+// endedPastBound is the cause of the controller keeper's end of a controller turn open longer
+// than its bound (Machine.endTurnPastBound, dispatch://INFRA-2045 R2), with that bound, as
+// endStalled is the stall backstop's.
+func endedPastBound(bound time.Duration) string {
+	return fmt.Sprintf("its turn stayed open longer than %s, so the daemon ended it", bound)
+}
+
 // endSuspended is a suspension's cause, naming who suspended the claim.
 func endSuspended(by SuspendSource) string { return fmt.Sprintf("it was suspended (%s)", by) }
 
@@ -284,9 +291,9 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	}
 	// A report read before the claim's last turn began has said nothing about that turn
 	// (claim.ReadSessionWork), so it is no report of it, though the background work it saw is
-	// kept above. LastTurnStart is the daemon's first word of the turn: its agent_start as read
-	// (turnStarted). A daemon restarted under a working claim reads the one the daemon before it
-	// stored.
+	// kept above. LastTurnStart is the daemon's first word of the turn (Claim.LastTurnStart's doc
+	// lists who dates it). A daemon restarted under a working claim reads the one the daemon before
+	// it stored.
 	ended.Reported = reported && !(ranTurn && report.At.Before(m.claim.LastTurnStart))
 	if !ended.ranWork() && (ended.Reported || !ranTurn) {
 		return

@@ -47,11 +47,17 @@ func (m *Machine) startTakesTurn(ctx context.Context) error {
 // finish that failed, owed and made again as a refused retirement is; the mark stands in memory,
 // so the delivery is unsaved and the next write of it folds the copy then, and the finish made
 // again writes no second mark. A task that carries no copy writes nothing more than it did.
+//
+// A finish is also the end of a turn the session finished (SessionRun, dispatch://INFRA-2045 R1):
+// the take's turn ran with no provider error, so the session's run of ended launches starts again
+// in the retirement's own write, and the session is one that has finished a turn. A take's turn
+// end finishes no turn of the session by itself (turnEnded): its report says whether it ran clean.
 func (m *Machine) finishTask(ctx context.Context, by string) error {
 	p := m.claim.Pending
 	if p == nil {
 		return nil
 	}
+	m.claim.SessionRun = SessionRun{TurnFinished: true}
 	number, id := p.Number, p.ID
 	err := m.creditRan(ctx)
 	if err == nil {

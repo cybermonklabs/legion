@@ -555,7 +555,9 @@ func takeInTurn(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: a take reached a claim a restart restored working; the worker's take says its host is idle, so the turn the store recorded is over",
 		"task", request.Number)
 	m.claim.State = StateIdle
-	m.askFirst = false
+	// The claim's working is over, so the forgotten compaction it was read as is too
+	// (Machine.restoredHandoff): the next start is a ready claim's.
+	m.askFirst, m.restoredHandoff = false, false
 	err := m.persist(ctx)
 	if err == nil {
 		err = m.takePending(ctx, request)

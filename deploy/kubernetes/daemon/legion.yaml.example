@@ -36,6 +36,18 @@ pod_update_rounds_per_minute: 1        # pod-update rounds one sweep of the daem
 controller: operator                   # who runs the controller: operator (legion controller start,
                                        # the default) or daemon (a pod this daemon launches and keeps;
                                        # under runtime: tmux, a pane in a window of its own)
+# controller_turn_bound_minutes: 90    # under controller: daemon, how long a controller turn may stay
+#                                      # open, steps or none, before the daemon ends that launch and
+#                                      # counts the end against the session; once the session has
+#                                      # finished a turn, two such ends, or deaths, in a row with no
+#                                      # finished turn between start a fresh session.
+#                                      # 90 by default, decimals allowed, 0 the rule off
+# controller_session_max_age_hours: 72 # under controller: daemon, how old the controller's session,
+#                                      # read from its id, may grow before a relaunch the daemon
+#                                      # makes of it starts a fresh session instead of resuming it;
+#                                      # no live controller is stopped for it, and an operator's own
+#                                      # resume keeps the session. 72 by default, decimals allowed,
+#                                      # 0 the rule off
 worker_wakes_per_minute: 8             # how many wakes a minute the daemon lets out: the role processes it
                                        # starts, and the tasks and notices it queues to wake a session that is
                                        # already running. Each wake has its session read its whole context
@@ -477,6 +489,13 @@ runtime:
     #   retain_hours: 168              # the last live record that names its repository; and its one container's reservation,
     #   resources: { cpu: 1, memory: 4Gi, ephemeral_storage: 2Gi, ephemeral_storage_request: 1Gi }   # as a pod's.
     #                                  # These are the defaults. Issue pods reach the cache pods on port 8418.
+    #   bucket: example-legion-packs   # Off unless both are set: the Cloud Storage bucket each cache keeps
+    #   service_account: legion-repository-cache   # its packs in, and the ServiceAccount the cache pods alone run as,
+    #                                  # never pod.service_account. Issue pods download the packs through
+    #                                  # addresses their cache signs, falling back to /tar, and hold no grant.
+    #                                  # Create the bucket and the account before setting them; remove both
+    #                                  # before rolling back to a daemon that does not know them.
+    #                                  # docs/kubernetes.md, The repository cache, "The bucket".
     # memory_guard:                    # the memory guard in each issue pod's launcher: when the pod's anonymous
     #   issue_pods:                    # memory reaches act_percent (50 to 90) of the container's memory limit and
     #     enabled: true                # the processes it may end hold at least floor_percent (1 to 50) of it, it

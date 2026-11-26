@@ -156,6 +156,8 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		}},
 		TurnOutcomeMark: supervise.TurnOutcomeKey{Generation: 3, Sequence: 1},
 		Abandoned:       supervise.AbandonedSession{Session: "ses_implementer_499", Why: "the provider refused every turn of it", At: at.Add(-time.Hour)},
+		SessionRun: supervise.SessionRun{Ends: 1, Endings: []string{"its process died after the controller was ready: gone: OOMKilled"},
+			TurnFinished: true},
 		EndedWork: supervise.EndedWork{At: at.Add(-40 * time.Minute), Cause: "the process died: gone: OOMKilled",
 			Generation: 2, Turn: true, TaskTurn: true, Background: true, Kinds: []string{"subagent"}, Reported: true},
 		SessionLost: supervise.SessionLossGone,
