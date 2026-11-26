@@ -86,16 +86,16 @@ type StoredFigures struct {
 // union cut no build that folds it has folded through the ranges (the database of the release
 // before this one, which folds none and marks the figures built all the same, until this release's
 // rebuild flips or its figures walk folds them, and the end days a process of that release folded
-// or deleted the union rows of since), and those whose rows in the cut a stale mark names (a move
-// of a default repository or a source change, a readings write past the days and series it folds
-// itself, inlineFoldDaySeries, and a register write that moves an eval's fold key, each mark
-// written in that write's own transaction), until the refresher or the boot has folded again the
-// stored rows this read reads of them: a first paint's from its first-paint batch on, and those of
-// an older window and compare range once the refold, newest end day first, has come down past
-// them. A refresher pass rewrites the stored rows and the marks in one transaction, so in one
-// answer's snapshot (BeginSnapshot), as the eval list reads them, an eval's window figures are the
-// fold of the days read beside them, and an eval read as served is one no mark names since the
-// figures it reads were folded; on the pool each statement reads the rows that stand when it runs.
+// or deleted the union rows of since), and those whose rows in the cut a stale mark names (one
+// mark of the cut, its union's fold among its deploy repositories), until the refresher or the
+// boot has folded again the stored rows this read reads of them: a first paint's from its
+// first-paint batch on, and those of an older window and compare range once the refold, newest
+// end day first, has come down past them. A move of a default repository or a deploy source, a
+// rule's rewrite, a readings write past the days and series it folds itself
+// (inlineFoldDaySeries) and a register write that moves an eval's fold key each mark cuts in its
+// own transaction. A read in one snapshot (BeginSnapshot), as the eval list reads, sees the day
+// rows, marks and figures from the same state. On the pool each statement reads the rows that
+// stand when it runs.
 func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepos *DeployRepos, repos []string, window Range, compare *Range) (StoredFigures, error) {
 	repo := ""
 	if len(repos) == 1 {

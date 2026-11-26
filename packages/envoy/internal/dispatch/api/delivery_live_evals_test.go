@@ -975,7 +975,7 @@ func TestAnEvalsViewsSnapshotIsTheListRead(t *testing.T) {
 
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("new", evalsLiveView("NEWP", DeliveryLiveWindow{Preset: new(7)}, "")))
-	conn.refusal(t, "new", errProjectNotFound.code)
+	conn.refusal(t, "new", errProjectNotFound().code)
 	rig.requireNothingSent(t, conn, "the refusal of a project no row holds")
 	createTestProject(t, rig.handler, "NEWP")
 	snapshot := conn.snapshot(t, "new")
@@ -1079,8 +1079,8 @@ func TestAnEvalsViewOfNoProjectKeyIsRefusedAsTheRouteRefusesIt(t *testing.T) {
 	const notAKey = "not-a-key"
 	routed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/"+notAKey+"/evals", nil, "alice")
 	var answer evalRefusal
-	if routed.Code != http.StatusNotFound || json.Unmarshal(routed.Body.Bytes(), &answer) != nil || answer.Code != errProjectNotFound.code {
-		t.Fatalf("GET the evals of %q: status=%d body=%s, want 404 %s", notAKey, routed.Code, routed.Body.String(), errProjectNotFound.code)
+	if routed.Code != http.StatusNotFound || json.Unmarshal(routed.Body.Bytes(), &answer) != nil || answer.Code != errProjectNotFound().code {
+		t.Fatalf("GET the evals of %q: status=%d body=%s, want 404 %s", notAKey, routed.Code, routed.Body.String(), errProjectNotFound().code)
 	}
 	if _, refusal := parseDeliveryLiveView(evalsLiveView(notAKey, DeliveryLiveWindow{Preset: new(28)}, "")); refusal == nil || refusal.Code != answer.Code {
 		t.Errorf("an evals view of %q: refusal = %+v, want the route's %s", notAKey, refusal, answer.Code)

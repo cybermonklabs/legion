@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -46,7 +47,7 @@ import (
 // the rule's names but its verdict on no run and no card's part, so the rewrite reads the history
 // and, once the delivery walk has written today, builds no day: it builds only the days whose rows
 // the change can move (movedDeliveryDays). Until then it builds every day (rewriteSettings says
-// why). Each of its writes sends a row, a member or a figure only where its value moved.
+// why). It stages only the rows and members that moved, and marks only the cuts those rows reach.
 
 // settingsMoves is the delivery and CI evals (by slug) whose day rows of one repository a change of
 // its rule from prev to next can move, and the families of eval_day_members it can move, read from
@@ -711,14 +712,19 @@ func keepPushRuns(stored map[memberKey]memberAt, deploys map[string]delivery.Run
 //   - then one transaction publishes them: it flips the staging, records the rule as the one
 //     the repository's rows stand built under (recordRule), the repositories they stand built for
 //     left as they are (syncKept's), writes the staged rows and members, set-based over the
-//     staging (stagedRowWrites, stagedMemberWrites), folds again the stored figures of every day
-//     whose rows moved, over each eval's runs of the days whose rows moved or went and no day
-//     between two runs (foldFiguresInTx, whose quantiles read each rank across the days' sorted
-//     samples, measures.SortedSamples), and begins a building rebuild again (replaceRebuild).
-//     Where the rule moves the repository's source to another project, which moves the reader of
-//     its source key, the same transaction marks the cuts that move moves rows into or out of and
-//     folds their first paints (publishDefaults, read before the rule is recorded and after the
-//     figures are folded), as a page's commit does for a move of the source alone.
+//     staging (stagedRowWrites, stagedMemberWrites), marks stale each cut the changed and deleted
+//     rows reach, naming the evals those rows moved (markMovedCuts: one mark of a cut stands for
+//     every deploy repository of it, the project's union cut, `deploy_repo` `*`, among them),
+//     folds the first paints of the marked cuts whose marks name only computed evals
+//     (foldMarkedFirstPaints, paintReached), and begins a building rebuild again
+//     (replaceRebuild). Where the rule moves the repository's source to another project, which
+//     moves the reader of its source key, the same transaction marks with them the cuts that move
+//     moves rows into or out of and folds their first paints alike (selectionMoves, read before
+//     the rule is recorded), as a page's commit does for a move of the source alone
+//     (publishDefaults). The same pass refolds the rest of every marked cut after the commit,
+//     beginning with any first paint still owed (refoldStaleCuts); until then a read folds a
+//     marked eval's day rows wherever the stored figures it reads are not folded again
+//     (builtCut.serves). The refold writes no day row and logs no change.
 //     Its eval_days changes are one per eval, as every transaction's are (migration
 //     20261117100014), each under the project that reads the eval (an owner key's under each
 //     project that reads the key), so the evals views of each project whose rows moved hear of the
@@ -1084,12 +1090,14 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	// zeros is each project's zero rows of a day of no input under the new settings
 	// (ZeroDeliveryDay), of today: a day's are the same rows on that day (zeroRowsOn).
 	zeros := map[string][]DayRow{}
-	// moved is, by project and eval, the days whose rows moved or went, each run of them apart:
-	// what the stored figures are folded again over.
-	moved := writtenSpans{}
+	// moved is the eval and repository of each day row the rewrite changed or deleted, by the
+	// project or owner key that held it. All deploy repositories of a cut share one stale mark.
+	moved := map[string]map[evalRepo]bool{}
 	note := func(row *DayRow) {
-		day := measures.Midnight(row.Day)
-		moved.add(row.ProjectKey, row.EvalID, day, day)
+		if moved[row.ProjectKey] == nil {
+			moved[row.ProjectKey] = map[evalRepo]bool{}
+		}
+		moved[row.ProjectKey][evalRepo{eval: row.EvalID, repo: row.Repo}] = true
 	}
 
 	// Each chunk of days is built, compared with the stored rows of its days (diffDay) and handed to
@@ -1241,8 +1249,9 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	times.stagedMembers = times.lap()
 
 	// The publication: one transaction that flips the staging, records the new rule beside
-	// the rows it built, writes them and the members, set-based over the staging, and folds the
-	// stored figures of the runs of days whose rows moved.
+	// the rows it built, writes them and the members, set-based over the staging, marks stale the
+	// cuts whose rows moved and folds the first paints of those whose marks name only computed
+	// evals.
 	began := time.Now()
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -1266,7 +1275,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	}
 	// A rewrite that also moves the repository's source to another project moves the reader of its
 	// source key, read before the rule is recorded, and its commit marks the cuts that moves
-	// (publishDefaults), as a page's commit marks those of a move of the sources alone.
+	// (selectionMoves), as a page's commit marks those of a move of the sources alone.
 	var owned *selectionRead
 	if prev.Project != next.Project {
 		read, err := readSelection(ctx, tx)
@@ -1276,8 +1285,8 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		owned = &read
 	}
 	// The rule is recorded before any row is written: the project it names reads the repository's
-	// source key (eval_project_owners), so the change trigger logs the rows' changes, and the fold
-	// below folds them, for the project the new rule names. It is the rules' place in the eval
+	// source key (eval_project_owners), so the change trigger logs the rows' changes, and the marks
+	// below mark their cuts, for the project the new rule names. It is the rules' place in the eval
 	// tables' lock order too (defaults.go), before eval_days, where the boot's rename pass locks them
 	// (store's repoRenameLines), so the two wait for each other in turn.
 	if err := recordRule(ctx, tx, next); err != nil {
@@ -1291,19 +1300,34 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		return err
 	}
 	times.published = times.lap()
-	// The rewrite folds on as many goroutines as it builds days on: the views that wait for its
-	// commit wait for its fold, and no view reads beside it what the fold takes CPUs from.
-	if err := foldFiguresInTx(withFoldWorkers(withFigureTimes(ctx, &times.figures), rewriteWorkers), tx, r.build, moved.sets()...); err != nil {
-		return err
-	}
-	times.figureScope = times.lap() - times.figures.moved - times.figures.plan - times.figures.fold
+	// The marks of the source's move, where the rule moves it, are written with the rewrite's own in
+	// one batch of the marks in their key order (markMovedCuts), and their first paints folded in one
+	// fold, under the selection that stands once the rule is recorded.
 	var published *movePublished
+	var sourced map[staleCut][]string
 	if owned != nil {
-		move, err := publishDefaults(ctx, tx, r.build, r.projects, nil, *owned, nil)
+		move, marks, err := selectionMoves(ctx, tx, r.projects, nil, *owned, nil)
 		if err != nil {
 			return err
 		}
-		published = &move
+		published, sourced = &move, marks
+	}
+	scopeOf := figureScopeReader(ctx, tx, r.build)
+	marks, err := markMovedCuts(ctx, tx, scopeOf, moved, sourced)
+	if err != nil {
+		return err
+	}
+	times.cutsMarked, times.markCuts = len(marks), times.lap()
+	// The rewrite folds its first paints on as many goroutines as it builds days on: the views that
+	// wait for its commit wait for its fold, and no view reads beside it what the fold takes CPUs
+	// from.
+	paintCtx := withFoldWorkers(withFigureTimes(ctx, &times.figures), rewriteWorkers)
+	if times.paints, err = foldMarkedFirstPaints(paintCtx, tx, scopeOf, marks, paintReached); err != nil {
+		return err
+	}
+	times.paints.took = times.lap()
+	if published != nil {
+		published.paints = times.paints
 	}
 	// A rebuild that is building may have staged rows the new settings move: it begins again,
 	// under them (rebuild.go).
@@ -1327,6 +1351,82 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	times.drain = times.lap()
 	times.log(after.minus(before), builtDays, builtRows, sent)
 	return nil
+}
+
+// evalRepo is a written row's eval and repository, without its deploy repository.
+type evalRepo struct {
+	eval, repo string
+}
+
+// markMovedCuts marks stale the cuts that fold the rows a settings rewrite changed or deleted,
+// where those projects' figures are folded (scopeOf). An owner key has no figures of its own:
+// its rows reach each project that reads the key under the selection that stands once the rule is
+// recorded (readersOf: the published defaults' readers of a plain or listed key, and the project
+// whose source reads a repository of its source key, sourceKey), under that project's eval id
+// (asReader). Resolve repositories to cuts once per project (cutsOfRepos): one mark of a cut stands
+// for every deploy repository of it, so a row of a repository among the project's deploy
+// repositories marks the project's union cut of it (`deploy_repo` `*`, unionDeployRepo) with its
+// own. The marks of also, a move of the repository's source to another project that the same
+// transaction publishes (selectionMoves), join them, and all are written together in the eval
+// tables' lock order (markStaleCuts).
+func markMovedCuts(ctx context.Context, tx pgx.Tx, scopeOf func(string) (*figureScope, error), moved map[string]map[evalRepo]bool, also map[staleCut][]string) (map[staleCut]cutMark, error) {
+	var owners []string
+	for key := range moved {
+		if isOwner(key) {
+			owners = append(owners, key)
+		}
+	}
+	slices.Sort(owners)
+	readers, err := readersOf(ctx, tx, owners)
+	if err != nil {
+		return nil, err
+	}
+	for _, owner := range owners {
+		for _, project := range readers[owner] {
+			if moved[project] == nil {
+				moved[project] = map[evalRepo]bool{}
+			}
+			for row := range moved[owner] {
+				// Only the project's own rows under this repository fold into its default's cut.
+				if row.repo != legionfacts.DefaultRepo {
+					moved[project][evalRepo{eval: asReader(owner, project, row.eval), repo: row.repo}] = true
+				}
+			}
+		}
+		delete(moved, owner)
+	}
+	marks := map[staleCut][]string{}
+	for _, project := range slices.Sorted(maps.Keys(moved)) {
+		scope, err := scopeOf(project)
+		if err != nil {
+			return nil, err
+		}
+		if scope == nil {
+			continue
+		}
+		repos := map[string]bool{}
+		for row := range moved[project] {
+			repos[row.repo] = true
+		}
+		cuts, err := cutsOfRepos(ctx, tx, project, slices.Sorted(maps.Keys(repos)))
+		if err != nil {
+			return nil, err
+		}
+		for row := range moved[project] {
+			if repo, held := cuts[row.repo]; held {
+				cut := staleCut{project: project, repo: repo}
+				marks[cut] = append(marks[cut], row.eval)
+			}
+		}
+	}
+	for cut, ids := range also {
+		marks[cut] = append(marks[cut], ids...)
+	}
+	for cut, ids := range marks {
+		slices.Sort(ids)
+		marks[cut] = slices.Compact(ids)
+	}
+	return markStaleCuts(ctx, tx, marks)
 }
 
 // markSettingsApplied logs, in tx, that the day rows stand at the delivery settings once tx
@@ -1391,10 +1491,10 @@ func markFailureFirstDayMoved(ctx context.Context, tx pgx.Tx, project string) er
 //     rebuild begun again and the two reads of what the transaction wrote
 //     (rewriteCountsStatement);
 //   - published, the staged rows and members written in it (stagedRowWrites, stagedMemberWrites);
-//   - the figures' refold in it (foldFiguresInTx): figureScope, its reads of the projects that
-//     read the owner keys written, of each project's figure scope and of its evals, and whatever
-//     it does between its timed parts, and figures, its reads of the moved days, of the rows it
-//     folds and its fold and write, and of that the statements' own time (figureTimes);
+//   - markCuts, the cuts the moved rows reach found, with those a move of the source moves where
+//     the rule moves it (selectionMoves), and marked stale (markMovedCuts);
+//   - paints, the marked cuts' first paints folded, with the reads of the day rows they folded
+//     (figures);
 //   - commit, and drain, the change log's outbox moved into the log once it has committed;
 //
 // and publication, how long the publication's transaction was open, from its begin to its commit.
@@ -1406,7 +1506,9 @@ type rewriteTimes struct {
 	firstDaysRead, rowsRead, lost, pushMembers time.Duration
 	membersRead, buildDays, diff, stagedRows   time.Duration
 	stagedMembers, bookkeeping, published      time.Duration
-	figureScope                                time.Duration
+	markCuts                                   time.Duration
+	cutsMarked                                 int
+	paints                                     markedPaints
 	figures                                    figureTimes
 	commit, drain, publication                 time.Duration
 }
@@ -1425,10 +1527,10 @@ func (t *rewriteTimes) log(wrote rewriteCounts, days, built, sent int) {
 		"members_read_ms", t.membersRead.Milliseconds(),
 		"build_ms", t.build.Milliseconds(), "build_days_ms", t.buildDays.Milliseconds(), "diff_ms", t.diff.Milliseconds(),
 		"staged_rows_ms", t.stagedRows.Milliseconds(), "staged_members_ms", t.stagedMembers.Milliseconds(),
-		"published_ms", t.published.Milliseconds(), "figure_scope_ms", t.figureScope.Milliseconds(),
-		"moved_figure_days_ms", t.figures.moved.Milliseconds(), "figure_plan_ms", t.figures.plan.Milliseconds(),
-		"figure_plan_reads", t.figures.reads, "figure_plan_rows", t.figures.rows, "fold_and_write_ms", t.figures.fold.Milliseconds(),
-		"figure_writes_ms", t.figures.writes.Milliseconds(), "figure_ranges_sent", t.figures.rangesSent, "figure_days_sent", t.figures.daysSent,
+		"published_ms", t.published.Milliseconds(),
+		"mark_cuts_ms", t.markCuts.Milliseconds(), "cuts_marked", t.cutsMarked,
+		"first_paint_ms", t.paints.took.Milliseconds(), "first_paints", t.paints.folded,
+		"first_paint_reads", t.figures.reads, "first_paint_rows", t.figures.rows,
 		"bookkeeping_ms", t.bookkeeping.Milliseconds(),
 		"commit_ms", t.commit.Milliseconds(), "drain_ms", t.drain.Milliseconds(), "total_ms", t.total().Milliseconds(),
 		"publication_ms", t.publication.Milliseconds(),

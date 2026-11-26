@@ -63,8 +63,8 @@ import (
 // window's, and a page held open keeps its compare range while its window rolls on.
 //
 // Every write keeps one rule: a stored figure is a fold of day rows, so it moves only with them.
-// Each write of day rows folds again, in its own transaction, the figures of every day whose rows
-// it moved in each cut they reach (refoldFigures): a row of a repository the cut of that
+// A write that folds its moved days inline folds them in each cut they reach (refoldFigures):
+// a row of a repository reaches the cut of that
 // repository of every project that reads its key, a row stored under legionfacts.DefaultRepo the
 // cut of its project's published default, and a row of repo '' the project's own; in each, the
 // day's own row and every range whose span holds the day (D < E <= D+n), up to the last end day
@@ -75,6 +75,9 @@ import (
 // two short index ranges and writes nothing. A readings write whose days and series pass the most
 // one transaction folds (inlineFoldDaySeries) folds of them the first paint of each cut its rows
 // reach and marks those cuts stale, naming its eval, for the refold below (foldWrittenPaints).
+// A settings rewrite marks the cuts its changed and deleted rows reach for the same refold
+// (markMovedCuts), naming the evals that moved, and folds the first paints of the cuts whose
+// marks name only computed evals in its commit (foldMarkedFirstPaints, paintReached).
 //
 // A move of a project's default repository moves no day row, and moves what some of its cuts
 // fold: the old and the new default's (the rows stored under legionfacts.DefaultRepo), and, of
@@ -86,15 +89,15 @@ import (
 // the move's own commit (publishDefaults) marks each cut it moves stale (eval_figure_cuts_stale,
 // with a generation each mark moves), the own cut among them, naming the evals whose rows it moved
 // there, read from the stored rows (staleMarksOf): at INFRA, 6 of its 40 evals hold rows under
-// legionfacts.DefaultRepo. The same commit folds those evals of each cut it marks over the ranges
-// and days a first paint of the cut reads (firstPaintOf, foldMarkedFirstPaints), so a first paint
-// reads the stored figures from the commit on. The refresher's pass folds the rest of them again,
+// legionfacts.DefaultRepo. Where a mark names only computed evals, the same commit folds their
+// first paint (firstPaintOf, foldMarkedFirstPaints), so that paint reads the stored figures from
+// the commit on. The refresher's pass folds the rest of them again,
 // every range and day, newest end day first, batch after batch, each batch a short transaction
 // (refoldCut, one function a transaction calls), and clears its mark in the transaction that
 // reaches the cut's first end day unless a later move marked it again (refoldStaleCuts); a mark
 // that owes a first paint, a new UTC day's, a rename's (store.markRenamedCuts), or one whose
 // commit folded none, is folded first in a batch of its own. The pass that publishes the move
-// begins the refold, a pass stops it between two batches only for an owed wake, whose pass goes
+// or commits the settings rewrite begins the refold. A pass stops it for an owed wake, whose pass goes
 // on with it, and a boot folds the first paint of every mark that owes one before it serves
 // (FoldFirstPaintsAtBoot). Until a mark's first paint is folded, a read of the stale cut folds the
 // day rows of the evals its mark names, which answer the same bytes; from then on it reads their
@@ -1018,14 +1021,9 @@ func movedSpans(moved map[figureGroupKey]map[time.Time]bool) map[string]daySpan 
 	return spans
 }
 
-// figureFoldWorkers is the most goroutines one write of stored figures folds its ranges and days
-// on at once (figurePlan.foldAndWrite, and buildFigureEnds of each cut it reads), 4, and never
-// more than the CPUs the process may use. The fold runs inside the server that answers the page
-// reads, in the transaction that writes what it folds, so it takes a few of the server's CPUs and
-// leaves the rest to those reads: it was 0.69 s of the 2.03 s of CPU a production rule's rewrite
-// took at ten times INFRA's size (k8's breakdown at c6c68919), one range after another. The
-// settings rewrite folds on more (withFoldWorkers): on the farm at ten times INFRA's size its 26,000
-// figures folded on 4 took 380 ms, of which its statements took 250 ms (dispatch://INFRA-2916).
+// figureFoldWorkers is the usual limit on goroutines folding ranges and days in one transaction.
+// The settings rewrite folds its first paints on more (withFoldWorkers), since its views wait for
+// its commit. Neither limit exceeds the CPUs the process may use.
 const figureFoldWorkers = 4
 
 // figurePlan is what one write of a project's stored figures folds of the days it moved, every row
@@ -1193,23 +1191,36 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 	return groups, nil
 }
 
-// add adds to p the stored row of each of days, days of group's rows of key, and of each range of
-// those rows whose span holds one of days and that ends by through, or its deletion where group is
-// nil (the eval holds no row the read spans).
+// add adds to p the stored row of each of days, days of group's rows of key in day order, and of
+// each range of those rows whose span holds one of days and that ends by through, each once, or
+// its deletion where group is nil (the eval holds no row the read spans). The ranges of length n
+// whose span holds a day end on each day from the day after it through n days after it, and add
+// adds, for each length, the union of those runs of end days: it walks the days in order and adds
+// each day's run from where the run of the day before stopped, where that is later than the run's
+// first day. Every end day before it is one an earlier day's run added, since that run began no
+// later, so each end day is added once and no set of the keys is kept. A map of every day's every
+// (length, end day) pair took a write for each: 1.9 million writes for the 64,640 ranges of a
+// settings rewrite's 200 days of 40 groups, whose plan, its sort included, took 350-365 ms on the
+// farm where this takes 86-92 ms, the two timed in turn in one process
+// (BenchmarkTheFigurePlanOfASettingsRewrite).
 func (p *figurePlan) add(group *figureGroup, key figureGroupKey, days []time.Time, through time.Time) {
-	ranges := map[rangeFigureKey]bool{}
-	for _, day := range days {
-		for _, n := range FigureLengths {
-			for end := day.AddDate(0, 0, 1); !end.After(day.AddDate(0, 0, n)) && !end.After(through); end = end.AddDate(0, 0, 1) {
-				ranges[rangeFigureKey{repo: key.repo, days: n, end: end, eval: key.eval, deployRepo: key.deployRepo}] = true
+	for _, n := range FigureLengths {
+		// next is where the run of the day before stopped: no end day before it is left to add.
+		var next time.Time
+		for _, day := range days {
+			end, last := day.AddDate(0, 0, 1), day.AddDate(0, 0, n)
+			if end.Before(next) {
+				end = next
 			}
-		}
-	}
-	for target := range ranges {
-		if group == nil {
-			p.goneRanges = append(p.goneRanges, target)
-		} else {
-			p.ranges = append(p.ranges, rangeTarget{rangeFigureRow: rangeFigureRow{rangeFigureKey: target, key: group.key}, group: group})
+			for ; !end.After(last) && !end.After(through); end = end.AddDate(0, 0, 1) {
+				target := rangeFigureKey{repo: key.repo, days: n, end: end, eval: key.eval, deployRepo: key.deployRepo}
+				if group == nil {
+					p.goneRanges = append(p.goneRanges, target)
+				} else {
+					p.ranges = append(p.ranges, rangeTarget{rangeFigureRow: rangeFigureRow{rangeFigureKey: target, key: group.key}, group: group})
+				}
+			}
+			next = end
 		}
 	}
 	for _, day := range days {
@@ -1262,9 +1273,7 @@ func (p *figurePlan) fold(index int) {
 // chunk, and statementBytes still cuts the statements its upsert sends (rangeUpserts). A write of
 // a few ranges, a reading's or the refresher's day, so folds them in one chunk and upserts them in
 // one statement, rather than in a statement a prefix of a few rows each, each its own round trip in
-// the write's transaction with no fold of a later chunk to overlap. A production rule's rewrite,
-// about 1,200-1,700 ranges a prefix, still closes one chunk a prefix, so its upserts overlap its
-// folds as phase I measures them (dispatch://INFRA-2916).
+// the write's transaction with no fold of a later chunk to overlap.
 const rangeChunkLeast = 1024
 
 // rangeChunks is where each chunk of ranges, in the byte order of their keys, ends that a write
@@ -1289,18 +1298,12 @@ func rangeChunks(ranges []rangeTarget, least, limit int) []int {
 // workers fold the chunks after it and then the days (foldInChunks), and once every range is
 // upserted the gone ranges, the days and the gone days follow (writeAfterRanges). So the range
 // upserts take the rows writeFigures would take, in its order, cut at other boundaries. The first
-// error of a statement ends the folds, and is answered. It adds the time its statements took to
-// the figureTimes ctx carries, where it carries one (writes), and the ranges and days it sent to be
-// upserted (rangesSent, daysSent).
+// error of a statement ends the folds, and is returned.
 func (p *figurePlan) foldAndWrite(ctx context.Context, tx pgx.Tx, scope figureScope, workers int) error {
 	ends := rangeChunks(p.ranges, rangeChunkLeast, statementRows)
 	writes := figureWrites{goneRanges: p.goneRanges, goneDays: p.goneDays}
 	held := make([]rangeFigureRow, 0, min(len(p.ranges), statementRows))
 	from := 0
-	times := figureTimesIn(ctx)
-	if times == nil {
-		times = &figureTimes{}
-	}
 	if err := foldInChunks(len(p.ranges)+len(p.days), workers, p.fold, ends, func(chunk int) error {
 		held = held[:0]
 		for index := from; index < ends[chunk]; index++ {
@@ -1311,11 +1314,7 @@ func (p *figurePlan) foldAndWrite(ctx context.Context, tx pgx.Tx, scope figureSc
 			}
 		}
 		from = ends[chunk]
-		times.rangesSent += len(held)
-		began := time.Now()
-		err := upsertRangeFigures(ctx, tx, scope, held)
-		times.writes += time.Since(began)
-		return err
+		return upsertRangeFigures(ctx, tx, scope, held)
 	}); err != nil {
 		return err
 	}
@@ -1326,12 +1325,8 @@ func (p *figurePlan) foldAndWrite(ctx context.Context, tx pgx.Tx, scope figureSc
 			writes.goneDays = append(writes.goneDays, target.dayFigureKey)
 		}
 	}
-	times.daysSent += len(writes.days)
 	writes.sortByKey()
-	began := time.Now()
-	err := writeAfterRanges(ctx, tx, scope, writes)
-	times.writes += time.Since(began)
-	return err
+	return writeAfterRanges(ctx, tx, scope, writes)
 }
 
 // foldInChunks runs fold of each index below n on up to workers goroutines at once, each taking the
@@ -1440,29 +1435,17 @@ func refoldFigures(ctx context.Context, tx pgx.Tx, scope figureScope, entries ma
 }
 
 // refoldMoved is refoldFigures, and answers, by eval, the span of the days whose figures it folded
-// again, none where no day's rows had moved. It adds how long each of its three parts took to the
-// figureTimes ctx carries, where it carries one.
+// again, none where no day's rows had moved.
 func refoldMoved(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[string]Entry, spans ...map[string]daySpan) (map[string]daySpan, error) {
-	times := figureTimesIn(ctx)
-	if times == nil {
-		times = &figureTimes{}
-	}
-	began := time.Now()
 	moved, err := movedFigureDays(ctx, tx, scope, entries, spans...)
-	times.moved += time.Since(began)
 	if err != nil || len(moved) == 0 {
 		return nil, err
 	}
-	began = time.Now()
 	plan, err := readFigurePlan(ctx, tx, scope, entries, moved)
-	times.plan += time.Since(began)
 	if err != nil {
 		return nil, err
 	}
-	began = time.Now()
-	err = plan.foldAndWrite(ctx, tx, scope, min(runtime.GOMAXPROCS(0), foldWorkersIn(ctx)))
-	times.fold += time.Since(began)
-	if err != nil {
+	if err := plan.foldAndWrite(ctx, tx, scope, min(runtime.GOMAXPROCS(0), figureFoldWorkers)); err != nil {
 		return nil, err
 	}
 	folded := map[string]daySpan{}
@@ -1474,19 +1457,10 @@ func refoldMoved(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[
 	return folded, nil
 }
 
-// figureTimes is what the folds of stored figures one transaction makes (foldFiguresInTx) spent
-// in the parts of each project's fold (refoldMoved), summed over the projects it folds: the reads
-// of the moved days (movedFigureDays), the reads of the rows the folds fold (readFigurePlan), with
-// how many statements those sent (readFoldGroups, one for each chunk of the moved evals)
-// and how many rows they answered, and the folds and their writes (figurePlan.foldAndWrite), with
-// the time its statements took of it (writes) and how many ranges and days they sent to be
-// upserted, each written only where it moved (upsertRangeFigures, writeAfterRanges). A writer
-// that logs them carries one on the context it folds under (withFigureTimes), and a fold on a
-// context that carries none times nothing.
+// figureTimes counts the statements that read day rows for a fold of stored figures and the
+// rows those reads return (readFoldGroups, readFigureGroups), when the context carries a count.
 type figureTimes struct {
-	moved, plan, fold, writes time.Duration
-	reads, rows               int
-	rangesSent, daysSent      int
+	reads, rows int
 }
 
 type figureTimesKey struct{}
@@ -1511,18 +1485,18 @@ func withFoldWorkers(ctx context.Context, workers int) context.Context {
 	return context.WithValue(ctx, foldWorkersKey{}, workers)
 }
 
-// foldWorkersIn is the most goroutines a fold under ctx folds on: the number ctx carries
-// (withFoldWorkers), figureFoldWorkers where it carries none, and never more than the CPUs the
-// process may use (refoldMoved).
+// foldWorkersIn is the worker limit for a fold of end days (buildFigureEnds), no larger than
+// the CPUs the process may use.
 func foldWorkersIn(ctx context.Context) int {
-	if workers, ok := ctx.Value(foldWorkersKey{}).(int); ok {
-		return workers
+	workers, ok := ctx.Value(foldWorkersKey{}).(int)
+	if !ok {
+		workers = figureFoldWorkers
 	}
-	return figureFoldWorkers
+	return min(runtime.GOMAXPROCS(0), workers)
 }
 
-// foldFiguresInTx is the stored figures' part of a write of day rows by build, in tx, the write's
-// own transaction, made after its rows: each of written is, by the key whose rows the write wrote
+// foldFiguresInTx folds the moved figures of a day-row write that folds its moved days inline,
+// after its day rows, in the write's own transaction. Each of written is, by the key it wrote
 // (a project, or an owner key), the spans of the days it wrote, by that key's eval ids, one span
 // each, so a write of days that do not touch passes a set for each run of them (writtenSpans.sets).
 // An owner key's rows (owners.go) have no figures of their own: they are folded into the figures of
@@ -1954,7 +1928,7 @@ func compareDayFigureKeys(a, b dayFigureKey) int {
 // where it picks them, those it picks alone (a first paint's 24 of the 173 from its first to its
 // last, firstPaintOf), and passes over those of an end day it does not fold.
 //
-// Each cut's ranges and days are folded once its rows are read, on up to figureFoldWorkers
+// Each cut's ranges and days are folded once its rows are read, on up to foldWorkersIn(ctx)
 // goroutines at once (foldInChunks of figurePlan.fold, whose folds of one group share it as a
 // write's do), each into a target of its own, and gathered on the calling goroutine, which sends
 // every statement of tx, one at a time: so the rows it upserts and deletes, and the order each
@@ -1975,7 +1949,7 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 		return err
 	}
 	evalIDs := slices.Sorted(maps.Keys(entries))
-	workers := min(runtime.GOMAXPROCS(0), figureFoldWorkers)
+	workers := foldWorkersIn(ctx)
 	var writes figureWrites
 	var plan figurePlan
 	built := map[rangeFigureKey]bool{}

@@ -3,9 +3,10 @@
 -- The stored figures of the eval list (dispatch://INFRA-2916, k8; evals/figures.go): the folds of
 -- the ranges the Evals tab offers, kept ahead of the read, so a paint of an offered range reads
 -- its figures by key where it would read and fold every day row of its range (eval_days, migration
--- 20261117100006). A stored figure is a fold of day rows, and moves only with them: every write of
--- day rows rewrites, in its own transaction, the figures of the days whose rows it moved, in each
--- cut they reach. Each is kept for every cut a read folds: the project's own rows (eval_days.repo
+-- 20261117100006). A stored figure folds day rows. A write that folds its moved days inline
+-- does so in each cut they reach. A settings rewrite or a readings write past its inline limit
+-- instead marks the cuts it reaches and folds the first paints it can in its own transaction.
+-- Each figure is kept for every cut a read folds: the project's own rows (eval_days.repo
 -- '', its own and those of the owner keys it reads under the published defaults), which a read
 -- that names no repository folds, and each repository's, which a read that names that one
 -- repository folds (evals.cutOf): the rows of that repository the project reads, and, of the
@@ -60,8 +61,8 @@
 --               via_repository. A day whose rows no longer match it has moved, and its figures and
 --               every range that holds it are folded again.
 -- eval_day_figures_eval_day, (project_key, eval_id, day), is the stored figures' read of an eval's
--- stored day rows of every cut over a span of days: the moved-day test every write of day rows
--- makes (evals.movedFigureDays) and the figures walk's read of the day rows it deletes
+-- stored day rows of every cut over a span of days: the moved-day test (evals.movedFigureDays)
+-- and the figures walk's read of the day rows it deletes
 -- (evals.buildFigureEnds), one range of it for each eval, where the primary key, whose column
 -- after the project is the cut, bounds only the project.
 --
@@ -74,14 +75,14 @@
 --   updated_at  when through last moved.
 --
 -- eval_figure_cuts_stale holds one row per cut ('' for the project's own rows, or a repository's
--- name; every deploy repository of it) whose figures a move of its project's default repository
--- moved, from the commit that publishes the move (evals.publishDefaults) until the refresher has
--- folded again every range and day of the evals it names (evals.refoldStaleCuts). The move's
--- commit folds the ranges and days a first paint of the cut reads (evals.firstPaintOf) of those
--- evals; the refresher's passes then fold every end day of the cut, newest first, batch after
--- batch, each a short transaction, and fold a first paint the mark still owes (a new UTC day's,
--- or a rename's) first, in a batch of its own, which the boot folds too before it serves
--- (evals.FoldFirstPaintsAtBoot). A read of the cut folds those evals' day rows until the stored
+-- name; every deploy repository of it) whose figures need refolding. A move of a default
+-- repository, a settings rewrite, a large readings write, a change of a fold key or a rename
+-- can mark a cut. The mark stands until the refresher has folded every range and day of the
+-- evals it names (evals.refoldStaleCuts). A default move or settings rewrite folds the first
+-- paint in its commit where the mark names only computed evals. A first paint still owed is
+-- folded before the rest of the cut; the boot folds owed first paints before it serves
+-- (evals.FoldFirstPaintsAtBoot). The refold folds the rest newest end day first, in batches.
+-- A read of the cut folds those evals' day rows until the stored
 -- rows it reads of them are folded again: a first paint's from its first-paint fold on, an older
 -- window's once the refold has come down past it (evals.figuresThrough). It reads every other
 -- eval's stored figures throughout, and every other cut stays served.
@@ -100,12 +101,10 @@
 --   next_day    the newest end day the refold of this generation has not folded, null while it is
 --               to begin at the last end day the project's figures are folded through; every end
 --               day after it stands folded again from the rows the move left.
---   evals       the ids of the project's evals (as the project reads them, `<project>/<slug>`) whose
---               rows the moves that marked the cut moved into or out of it, each move's computed
---               from the rows stored at its commit; a move that marks the cut again adds its own
---               to them. Null names every eval of the cut, and stays null whatever a later move
---               adds. Every other eval's stored figures of the cut fold rows no move moved, and
---               stand.
+--   evals       the ids of the project's evals (as the project reads them, `<project>/<slug>`)
+--               to refold in this cut. Marking the cut again adds the new ids and restarts its
+--               refold. Null names every eval of the cut and stays null when marked again.
+--               The stored figures of other evals of the cut stay served.
 --
 -- Six statement-level triggers, three on each figures table, record the end days a statement wrote
 -- or deleted figures of (a range's end day, the day after a day's) for the figures walk of the

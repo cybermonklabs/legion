@@ -46,7 +46,7 @@ func seedClosingHistory(t *testing.T) closingHistory {
 	database := storetest.Open(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{
-		Project: "LEGION", Trees: 6, Now: now, Queued: true, Parked: true, Merged: true,
+		Project: "LEGION", Trees: 6, Now: now, Queued: true, InBacklogOrIcebox: true, Merged: true,
 	})
 	seeded := closingHistory{database: database, fixture: fixture, now: now, cases: map[string]string{}}
 	exec := func(what, statement string, args ...any) {

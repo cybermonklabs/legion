@@ -2964,18 +2964,19 @@ func TestOneRecomputeAtATime(t *testing.T) {
 	}
 }
 
-// TestTheHubRecomputesUpToFourEvalsViewsAtOnce: five evals views of one project, a timeline and a
-// measures view are open, and a day row of the project marks the five evals views at one moment.
-// The reads of the first evalsRecomputes evals views to take their position are held there: four
-// begin and are held at once, and the fifth, which the worker has picked, waits for a slot and
-// begins no recompute while they hold every slot. Three of the four are let go and finish while
-// the first is still held; the fifth then takes a slot and finishes beside it; and a merge made
-// while the first is held marks the timeline and the measures view, which the worker recomputes
-// itself, one at a time, while the first is still held. No view is computed twice at once, each
-// evals view is recomputed once, and every view is sent its one delta. A hub that recomputes one
-// view at a time begins no second evals view while the first is held, so the wait for the four
-// has a bound of its own rather than the test binary's deadline.
-func TestTheHubRecomputesUpToFourEvalsViewsAtOnce(t *testing.T) {
+// TestTheHubRecomputesUpToEvalsRecomputesEvalsViewsAtOnce: evalsRecomputes+1 evals views of one
+// project, a timeline and a measures view are open, and a day row of the project marks every evals
+// view at one moment. The reads of the first evalsRecomputes evals views to take their position are
+// held there: evalsRecomputes begin and are held at once, and the one that waits, which the worker
+// has picked, begins no recompute while they hold every slot. All but the first of those held are
+// let go and finish while the first is still held; the one that waited then takes a slot and
+// finishes beside it; and a merge made while the first is held marks the timeline and the
+// measures view, which the worker recomputes itself, one at a time, while the first is still held.
+// No view is computed twice at once, each evals view is recomputed once, and every view is sent its
+// one delta. A hub that recomputes one view at a time begins no second evals view while the first
+// is held, so the wait for the held reads has a bound of its own rather than the test binary's
+// deadline.
+func TestTheHubRecomputesUpToEvalsRecomputesEvalsViewsAtOnce(t *testing.T) {
 	t.Parallel()
 	var (
 		mu        sync.Mutex
@@ -3061,10 +3062,15 @@ func TestTheHubRecomputesUpToFourEvalsViewsAtOnce(t *testing.T) {
 	rig.hub.Subscribe(delivered, subscribeFrame("t", timeline))
 	rig.hub.Subscribe(delivered, subscribeFrame("m", measures))
 	delivered.firstSnapshots(t, "t", "m")
-	frames := []DeliveryLiveView{
-		evalsLiveView("ACME", DeliveryLiveWindow{Preset: new(7)}, ""), evalsLiveView("ACME", DeliveryLiveWindow{Preset: new(14)}, ""),
-		evalsLiveView("ACME", DeliveryLiveWindow{Preset: new(28)}, ""), evalsLiveView("ACME", DeliveryLiveWindow{Preset: new(84)}, ""),
-		evalsLiveView("ACME", evalsDays(today.AddDate(0, 0, -27), today.AddDate(0, 0, 1)), ""),
+	// evalsRecomputes+1 evals views of ACME: one of each preset, then windows of the days to
+	// tomorrow, a day longer each, for the rest.
+	frames := make([]DeliveryLiveView, evalsRecomputes+1)
+	for i := range frames {
+		window := evalsDays(today.AddDate(0, 0, -27-i), today.AddDate(0, 0, 1))
+		if i < len(deliveryLivePresets) {
+			window = DeliveryLiveWindow{Preset: new(deliveryLivePresets[i])}
+		}
+		frames[i] = evalsLiveView("ACME", window, "")
 	}
 	conns, keys := make([]*fakeLiveConn, len(frames)), make([]string, len(frames))
 	for i, frame := range frames {
@@ -3092,7 +3098,7 @@ func TestTheHubRecomputesUpToFourEvalsViewsAtOnce(t *testing.T) {
 		case key := <-held:
 			reading = append(reading, key)
 		case <-time.After(bound):
-			t.Fatalf("%d evals views' reads were held %s after the day row marked five, want %d at once (evalsRecomputes)", len(reading), bound, evalsRecomputes)
+			t.Fatalf("%d evals views' reads were held %s after the day row marked %d, want %d at once (evalsRecomputes)", len(reading), bound, len(frames), evalsRecomputes)
 		}
 	}
 	first, waiting := reading[0], ""
@@ -3109,7 +3115,7 @@ func TestTheHubRecomputesUpToFourEvalsViewsAtOnce(t *testing.T) {
 	}
 	rig.waitNoRecompute(t, 2*viewQuiet)
 	if n := begins(waiting); n != 0 {
-		t.Fatalf("the fifth evals view began %d recomputes while four held every slot, want none", n)
+		t.Fatalf("the evals view that waited began %d recomputes while %d held every slot, want none", n, evalsRecomputes)
 	}
 
 	upsertPR(t, rig.database, hubPR(1, rig.clock.Now().Add(-time.Hour)))
@@ -3118,7 +3124,7 @@ func TestTheHubRecomputesUpToFourEvalsViewsAtOnce(t *testing.T) {
 		release(key)
 	}
 	finished := append(slices.Clone(reading[1:]), waiting, keyOf(timeline), keyOf(measures))
-	testwait.Until(t, "the three evals views let go, the fifth and both delivery views to finish while the first is held (those left)", func() ([]string, bool) {
+	testwait.Until(t, "the evals views let go, the one that waited and both delivery views to finish while the first is held (those left)", func() ([]string, bool) {
 		var left []string
 		for _, key := range finished {
 			if ends(key) == 0 {
@@ -3154,7 +3160,7 @@ func TestTheHubRecomputesUpToFourEvalsViewsAtOnce(t *testing.T) {
 	if mostEvals != evalsRecomputes || mostDelivery != 1 {
 		t.Errorf("at most %d evals views and %d delivery views were computed at once, want %d and 1", mostEvals, mostDelivery, evalsRecomputes)
 	}
-	t.Logf("%d evals views computed at once, the fifth waiting; the delivery views one at a time, while the first evals view was held", mostEvals)
+	t.Logf("%d evals views computed at once, one waiting; the delivery views one at a time, while the first evals view was held", mostEvals)
 }
 
 func TestAChangeOutsideAWindowRecomputesNothing(t *testing.T) {

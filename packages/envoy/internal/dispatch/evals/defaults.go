@@ -47,8 +47,8 @@ import (
 //
 //  1. The eval locks (lockEvals), one for each key in the order of the keys, before any row lock:
 //     the readings and register writes, the seed, the zero fill, and each fold of a logged eval's
-//     stored figures in a transaction of its own (lockLogged). The commit of a refresher's page
-//     takes none (foldMarkedFirstPaints).
+//     stored figures in a transaction of its own (lockLogged). The commit of a refresher's page and
+//     the publication of a settings rewrite take none (foldMarkedFirstPaints).
 //  2. eval_days_rules and then eval_days. A transaction that writes both writes its rule rows first:
 //     a refresher page's commit (commitPage, recordRules) and a settings rewrite's publication
 //     (rewriteSettings, recordRule) record their rules before their first day row. eval_days: its
@@ -66,12 +66,13 @@ import (
 //     rename pass's markRenamedCuts those of the old name.
 //  7. eval_figure_cuts_stale, in the byte order of its keys (markStaleCuts, markRenamedCuts).
 //
-// The commit of a move folds the first paints it folds (5) after the marks it writes (7), where a
-// batch of a stale cut's refold folds (5) before it records with its mark where it stands (7):
-// every writer of both is the refresher, whose lease runs one pass at a time, or a write that marks
-// its own eval's cuts in its transaction, before it folds a first paint (a readings write past
-// inlineFoldDaySeries, foldWrittenPaints) or with no fold (a register write that moves the eval's
-// fold key), and the rename pass marks and no stored figure.
+// The commit of a move and the transaction of a settings rewrite fold the first paints they fold
+// (5) after the marks they write (7), where a batch of a stale cut's refold folds (5) before it
+// records with its mark where it stands (7): every writer of both is the refresher, whose lease
+// runs one pass at a time (a rewrite runs in the pass's page, as the commit of a move does), or a
+// write that marks its own eval's cuts in its transaction, before it folds a first paint (a
+// readings write past inlineFoldDaySeries, foldWrittenPaints) or with no fold (a register write
+// that moves the eval's fold key), and the rename pass marks and no stored figure.
 
 // defaultsMove is what a page publishes of the projects' default repositories (syncDefaults):
 // every project's default repository as it stands (live, by project), the projects whose published
@@ -198,19 +199,20 @@ func readSelection(ctx context.Context, q delivery.Querier) (selectionRead, erro
 // which tx read before its first write (readSelection): a refresher page's commit (commitPage),
 // which records the deploy sources' rules (recordRules: the deploy repositories a read selects, and
 // the reader of each repository's source key) and publishes the default repositories move holds
-// where move is not nil; or the rewrite of one repository's rule that also moves its source to
-// another project (rewriteSettings), with move nil. projects is every project's key. Where move is
-// not nil, every project's published default is replaced by the one it stands at, every published
-// row locked first in the byte order of its key (readPublishedDefaults); each project the commit
-// moves gets one eval_days change of no eval (delivery.EvalDaysWrittenByDefaults), which marks its
-// evals views; and each deploy repository whose judging project moved one more
+// where move is not nil. The rewrite of one repository's rule that also moves its source to another
+// project (rewriteSettings) publishes its move with move nil through selectionMoves, whose marks it
+// writes and folds with those of its own rows (markMovedCuts). projects is every project's key.
+// Where move is not nil, every project's published default is replaced by the one it stands at,
+// every published row locked first in the byte order of its key (readPublishedDefaults); each
+// project the commit moves gets one eval_days change of no eval (delivery.EvalDaysWrittenByDefaults),
+// which marks its evals views; and each deploy repository whose judging project moved one more
 // (delivery.JudgingMoved), which marks the delivery views those evals judge. A commit of the sources
 // alone logs neither: its record of the rules says the rows stand at the settings
 // (markSettingsApplied), which recomputes every evals view. Either way it marks stale each cut the
-// commit moves rows into or out of, naming the evals whose rows it moved there (staleMarksOf,
-// sourceMarksOf, markStaleCuts), and folds the first paint of each cut it marks whose mark names no
-// logged eval under what the reads select now (foldMarkedFirstPaints). It takes the defaults'
-// locks and then the marks', and no eval lock, in the eval tables' lock order.
+// commit moves rows into or out of, naming the evals whose rows it moved there (selectionMoves:
+// staleMarksOf, sourceMarksOf; markStaleCuts), and folds the first paint of each cut it marks whose
+// mark names no logged eval under what the reads select now (foldMarkedFirstPaints). It takes the
+// defaults' locks and then the marks', and no eval lock, in the eval tables' lock order.
 //
 // The projects it moves are those whose own default it moves, and every project whose owner keys
 // (eval_project_owners, with whether it reads each through the repository) the commit moves, read
@@ -248,18 +250,50 @@ func readSelection(ctx context.Context, q delivery.Querier) (selectionRead, erro
 // a short transaction of its own (refoldStaleCuts). It answers what the commit moved, marked and
 // folded, which the page logs once it commits (movePublished.log).
 func publishDefaults(ctx context.Context, tx pgx.Tx, build string, projects []string, move *defaultsMove, before selectionRead, fresh map[string]bool) (movePublished, error) {
+	published, marks, err := selectionMoves(ctx, tx, projects, move, before, fresh)
+	if err != nil {
+		return movePublished{}, err
+	}
+	written, err := markStaleCuts(ctx, tx, marks)
+	if err != nil {
+		return movePublished{}, err
+	}
+	if published.paints, err = foldMarkedFirstPaints(ctx, tx, figureScopeReader(ctx, tx, build), written, firstPaintOf); err != nil {
+		return movePublished{}, err
+	}
+	if move != nil {
+		for _, repo := range move.judging {
+			if _, err := tx.Exec(ctx, `select delivery_change_log_pending($1, $2, $3, $4, null, null)`,
+				delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenByDefaults, repo, delivery.DefaultsJudgingRef); err != nil {
+				return movePublished{}, fmt.Errorf("log the project judging the delivery views of %s: %w", repo, err)
+			}
+		}
+	}
+	return published, nil
+}
+
+// selectionMoves is what publishDefaults publishes and finds before it writes a mark: in tx, the
+// default repositories move holds published where move is not nil (publishDefaultRows), with one
+// eval_days change of no eval for each project the commit moves, and the projects the commit moves
+// from before, with the marks of the cuts it moves rows into or out of (noteMovedCuts,
+// staleMarksOf, sourceMarksOf), each cut's eval ids in byte order, not yet written. It answers
+// what the commit moved and marks, how many cuts and evals among them, and the marks, which
+// publishDefaults writes and folds the first paints of, and which a rewrite of one repository's
+// rule that moves its source to another project (rewriteSettings, move nil) writes in one batch
+// with the marks of the rows it rewrote (markMovedCuts).
+func selectionMoves(ctx context.Context, tx pgx.Tx, projects []string, move *defaultsMove, before selectionRead, fresh map[string]bool) (movePublished, map[staleCut][]string, error) {
 	published := movePublished{defaults: move != nil}
 	var was map[string]string
 	if move != nil {
 		var err error
 		if was, err = publishDefaultRows(ctx, tx, move); err != nil {
-			return movePublished{}, err
+			return movePublished{}, nil, err
 		}
 		published.moved = slices.Clone(move.moved)
 	}
 	after, err := readSelection(ctx, tx)
 	if err != nil {
-		return movePublished{}, err
+		return movePublished{}, nil, err
 	}
 	freshKeys := map[string]bool{}
 	for repo := range fresh {
@@ -281,7 +315,7 @@ func publishDefaults(ctx context.Context, tx pgx.Tx, build string, projects []st
 		if move != nil {
 			if _, err := tx.Exec(ctx, `select delivery_change_log_pending($1, $2, $3, null, null, null)`,
 				delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenByDefaults, project); err != nil {
-				return movePublished{}, fmt.Errorf("log the default repository %s publishes: %w", project, err)
+				return movePublished{}, nil, fmt.Errorf("log the default repository %s publishes: %w", project, err)
 			}
 			from, to = was[project], move.live[project]
 		}
@@ -289,35 +323,20 @@ func publishDefaults(ctx context.Context, tx pgx.Tx, build string, projects []st
 	}
 	marks, err := staleMarksOf(ctx, tx, cuts)
 	if err != nil {
-		return movePublished{}, err
+		return movePublished{}, nil, err
 	}
 	sourced, err := sourceMarksOf(ctx, tx, projects, published.moved, before, after, fresh)
 	if err != nil {
-		return movePublished{}, err
+		return movePublished{}, nil, err
 	}
 	for cut, evals := range sourced {
 		marks[cut] = slices.Compact(slices.Sorted(slices.Values(slices.Concat(marks[cut], evals))))
-	}
-	written, err := markStaleCuts(ctx, tx, marks)
-	if err != nil {
-		return movePublished{}, err
 	}
 	published.cuts = len(marks)
 	for _, evals := range marks {
 		published.evals += len(evals)
 	}
-	if published.paints, err = foldMarkedFirstPaints(ctx, tx, build, slices.SortedFunc(maps.Keys(marks), compareStaleCuts), written); err != nil {
-		return movePublished{}, err
-	}
-	if move != nil {
-		for _, repo := range move.judging {
-			if _, err := tx.Exec(ctx, `select delivery_change_log_pending($1, $2, $3, $4, null, null)`,
-				delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenByDefaults, repo, delivery.DefaultsJudgingRef); err != nil {
-				return movePublished{}, fmt.Errorf("log the project judging the delivery views of %s: %w", repo, err)
-			}
-		}
-	}
-	return published, nil
+	return published, marks, nil
 }
 
 // publishDefaultRows publishes, in tx, the default repositories move holds: every project's
@@ -393,44 +412,37 @@ func (p movePublished) log(began, committed time.Time) {
 		"transaction_ms", committed.Sub(began).Milliseconds())
 }
 
-// markedPaints is what a fold of the first paints of the cuts a move marked did
-// (foldMarkedFirstPaints): how many it folded and how long it took.
+// markedPaints is how many first paints foldMarkedFirstPaints folded and how long it took.
 type markedPaints struct {
 	folded int
 	took   time.Duration
 }
 
-// foldMarkedFirstPaints folds, in tx, as build, the first paint of each of cuts, in their order, the
-// cuts a commit that moves what the evals' reads select marked stale in tx (publishDefaults), whose
-// marks are marks, those markStaleCuts wrote (a cut it left has none): each whose mark owes one, of
-// a project whose figures are folded (readFigureScope), and whose evals the mark names are all
-// computed, is folded under the new selection and recorded with its mark (foldFirstPaintOf), so a
-// first paint of it reads the stored figures from the move's commit on. It reads each project's
-// evals once, those the marks of all its owed cuts name (owedEvals), of which each cut takes those
-// its mark names (entriesNamed). It takes no eval lock: the commit has locked rows by then, and the
-// eval tables' lock order puts the eval locks before every row lock, while a computed eval's rows
-// are the refresher's alone, whose lease runs one pass at a time. So a cut whose mark names a
-// logged eval, whose rows its readings writes and its zero fill write too, is left with its first
-// paint owed, and the commit never waits for such a writer while it holds the rows it wrote: the
-// pass's refold folds that first paint before any other batch, in a transaction of its own that
-// takes the logged evals' locks before any row lock (refoldStaleCuts, FoldFirstPaint), and a read
-// of the cut folds the day rows of the evals its mark names until then. A mark names a logged eval
-// where it names every eval, such as a rename's (store.markRenamedCuts) that the move marks again,
-// or where the eval's readings name legionfacts.DefaultRepo as their repository, a row staleMarksOf
-// reads. Beside the stored figures of the days the page's spans wrote (writeSpans), it is the one
-// fold of stored figures in the commit.
-func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, build string, cuts []staleCut, marks map[staleCut]cutMark) (markedPaints, error) {
+// foldMarkedFirstPaints folds, in tx, the first paints of the cuts markStaleCuts marked, in key
+// order (publishDefaults, rewriteSettings). It folds each cut that owes its first paint under
+// scopeOf and whose mark names only computed evals, and records the paint with the mark
+// (foldPaintOf). paintOf selects the end days and day rows to fold: the settings rewrite also
+// folds the day rows back to the paint's reach (paintReached). It reads each project's evals
+// once, those the marks of all its owed cuts name (owedEvals), of which each cut takes those its
+// mark names (entriesNamed).
+//
+// It takes no eval lock: the transaction has locked rows by then, and the eval tables' lock
+// order puts eval locks first. Computed evals need no eval lock under the refresher's lease.
+// Where a standing mark also names a logged eval, explicitly or by naming every eval, the
+// transaction leaves that cut's paint owed. The pass's refold folds it under the logged evals'
+// locks before any other batch; a read folds the marked evals' day rows until then.
+func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, scopeOf func(string) (*figureScope, error), marks map[staleCut]cutMark, paintOf func(time.Time) figureEnds) (markedPaints, error) {
 	began := time.Now()
 	var paints markedPaints
-	scopeOf := figureScopeReader(ctx, tx, build)
+	cuts := slices.SortedFunc(maps.Keys(marks), compareStaleCuts)
 	read := map[string][]Entry{}
 	for _, cut := range cuts {
-		mark, held := marks[cut]
+		mark := marks[cut]
 		scope, err := scopeOf(cut.project)
 		if err != nil {
 			return markedPaints{}, err
 		}
-		if !held || scope == nil || !mark.owesFirstPaint(*scope) {
+		if scope == nil || !mark.owesFirstPaint(*scope) {
 			continue
 		}
 		entries, done := read[cut.project]
@@ -444,7 +456,7 @@ func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, build string, cuts []
 		if slices.ContainsFunc(entries, func(entry Entry) bool { return !entry.Definition.Computed() }) {
 			continue
 		}
-		if _, err := foldFirstPaintOf(ctx, tx, *scope, cut, mark, entries); err != nil {
+		if _, err := foldPaintOf(ctx, tx, *scope, cut, mark, entries, paintOf(scope.through)); err != nil {
 			return markedPaints{}, err
 		}
 		paints.folded++

@@ -111,9 +111,9 @@ const HeadTable = "eval_days"
 // LegionSpec is the Legion history of project the Legion mode writes: enough trees for at least
 // issues finished issues, ending at now, with the older half of the trees unobserved and every
 // observed root waiting for its slot (legiontest.Spec's Unobserved and Queued), finished issues
-// that sat parked in `icebox` and in `backlog`, a merged pull request for each issue the merger
-// closes and filings of all four classes (Parked, Merged and Filings, what k6 reads), numbered
-// after the offset issue numbers the project has already.
+// that waited in `icebox` and in `backlog`, a merged pull request for each issue the merger
+// closes and filings of all four classes (InBacklogOrIcebox, Merged and Filings, what k6 reads),
+// numbered after the offset issue numbers the project has already.
 func LegionSpec(project string, issues int, now time.Time, offset int) legiontest.Spec {
 	if issues <= 0 {
 		issues = DefaultIssues
@@ -122,7 +122,7 @@ func LegionSpec(project string, issues int, now time.Time, offset int) legiontes
 	return legiontest.Spec{
 		Project: project, Trees: trees, Now: now.UTC(),
 		Spacing: treeSpacing, Unobserved: trees / 2, Queued: true, IssueOffset: offset,
-		Parked: true, Merged: true, Filings: true,
+		InBacklogOrIcebox: true, Merged: true, Filings: true,
 	}
 }
 

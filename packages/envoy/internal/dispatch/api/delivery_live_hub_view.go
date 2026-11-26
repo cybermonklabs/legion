@@ -138,7 +138,7 @@ func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErr
 // held with it would read and fail every deliveryLiveRetry for as long as it stood, its
 // subscribers told nothing.
 func parseEvalsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
-	project, refusal := readLiveProject(view, "an evals view", errProjectNotFound.code)
+	project, refusal := readLiveProject(view, "an evals view", errProjectNotFound().code)
 	if refusal != nil {
 		return refusal
 	}

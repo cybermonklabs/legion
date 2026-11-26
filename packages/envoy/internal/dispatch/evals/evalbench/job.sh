@@ -263,7 +263,7 @@ sizes() {
     select 'RESULT size when=$1 database=' || pg_size_pretty(pg_database_size(current_database()));
     select 'RESULT size when=$1 ' || case relkind when 'i' then 'index' else 'table' end || '=' || relname || ' rows_estimate=' || reltuples::bigint || ' total=' || pg_size_pretty(pg_total_relation_size(oid))
     from pg_class where (relkind = 'r' and relname in ('events', 'issues', 'delivery_run_jobs', 'eval_readings', 'eval_days', 'issue_facts', 'session_titles'))
-      or (relkind = 'i' and relname = 'delivery_run_jobs_failed')
+      or (relkind = 'i' and relname in ('delivery_run_jobs_failed', 'delivery_run_jobs_named'))
     order by relname"
 }
 sizes loaded

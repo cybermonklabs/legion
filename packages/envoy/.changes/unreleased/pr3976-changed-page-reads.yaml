@@ -1,10 +1,13 @@
 kind: Changed
 body: |-
   The Delivery timeline reads each deploy run's production jobs by name and its failed jobs
-  through the new partial index `delivery_run_jobs_failed`, rather than every job of every run. The
-  lease pool holds three more connections, one for the per-issue Legion facts, one for the day-row
-  refresher, whose first pass in a process also seeds every project's evals, and one for the
-  production signals' loop
+  through the new partial index `delivery_run_jobs_failed`, rather than every job of every run.
+  Every read of the deploy runs' jobs by name, the timeline's and a delivery settings change's
+  rewrite among them, is an index-only read of the new index `delivery_run_jobs_named` (migration
+  `20261117100023`), which keeps a repository's jobs of one name together, rather than a read of a
+  heap page for each run through the primary key. The lease pool holds three more connections,
+  one for the per-issue Legion facts, one for the day-row refresher, whose first pass in a process
+  also seeds every project's evals, and one for the production signals' loop
   (`store.LeasePoolSize` 30, with the keyword fill's two, the CI verify loop's one, the boot's
   parent status fix's one and the reference forms drain's one), so a process opens 121
   connections at most, and `infra/gcp`'s `dispatchConnectionsPerPod` is 121.

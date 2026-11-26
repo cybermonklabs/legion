@@ -274,12 +274,13 @@ func ReadPullRequestsMergedBefore(ctx context.Context, pool *store.Pool, to time
 // those runs read by their ids (ListRunJobsForRuns), runsPerRead runs a statement, by readers
 // readers side by side, each taking the next runsPerRead runs as the lists read them, so the jobs
 // of a list's first runs are read while it reads on. A read of the jobs of every deploy run on main
-// by a subselect (what ReadHistoryRows does) descends delivery_run_jobs' primary key (repo, run_id,
-// name) over every run of the repository, PR-checks runs among them, whose 24,000 jobs a day at ten
-// times the stated run rate it passes over for the few it keeps: 190 to 500 ms of the 2.2 s of a
-// settings rewrite there (dispatch://INFRA-2916); by the ids it descends once for each run and
-// name. It answers too how long the lists of the runs took, the jobs of their last runs being read
-// after them.
+// by a subselect (what ReadHistoryRows does) passed, through delivery_run_jobs' primary key (repo,
+// run_id, name), over every run of the repository, PR-checks runs among them, whose 24,000 jobs a
+// day at ten times the stated run rate it read for the few it kept: 190 to 500 ms of the 2.2 s of
+// a settings rewrite there (dispatch://INFRA-2916). Read by the ids, the jobs are an index-only
+// scan of delivery_run_jobs_named (runJobsNamedForRunsQuery), a few leaf pages for each name. It
+// answers too how long the lists of the runs took, the jobs of their last runs being read after
+// them.
 func ReadDeployHistory(ctx context.Context, pool *store.Pool, deployRepos, names []string, readers, runsPerRead int) (map[string]RunsWithJobs, time.Duration, error) {
 	began := time.Now()
 	type read struct {

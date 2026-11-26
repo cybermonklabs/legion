@@ -110,7 +110,7 @@ func TestAPublishWithAnEndedContextSendsNothing(t *testing.T) {
 			if err := client.PublishWithin(live, envelope); err != nil {
 				t.Fatalf("publish under a live context: %v", err)
 			}
-			if _, err := received.NextMsg(5 * time.Second); err != nil {
+			if _, err := received.NextMsgWithContext(live); err != nil {
 				t.Fatalf("the subscriber received nothing from the live publish: %v", err)
 			}
 			if !tc.core {
@@ -172,6 +172,8 @@ func TestAPublishConfirmedWithASpentDeadlinePublishesNothing(t *testing.T) {
 	// span), so the publish happens and the flush that follows finds the window spent. The error is
 	// the spent window's, and not ErrWindowEndedBeforePublish, which would tell the listener the
 	// forward never left this process.
+	// A window, not a wait: the window must end while the publish is being made, and 100 ms is how
+	// long it lasts.
 	short, cancelShort := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancelShort()
 	late := 0

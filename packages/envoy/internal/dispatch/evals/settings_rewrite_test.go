@@ -541,6 +541,53 @@ func TestASettingsChangeRewritesInOnePassWhatAWholeWalkWrites(t *testing.T) {
 	}
 }
 
+// TestASettingsRewriteFoldsTheFirstPaintOnlyIfAllMarkedEvalsAreComputed covers two cuts with
+// refolds still owed. The rewrite folds the standing computed eval as well as the staging gate
+// it moves, but defers the paint of the cut whose standing mark names a logged eval.
+func TestASettingsRewriteFoldsTheFirstPaintOnlyIfAllMarkedEvalsAreComputed(t *testing.T) {
+	t.Parallel()
+	r, deliveries := newSettingsHistory(t, walkBatch)
+	project, repo := deliveries.Project, deliveries.DeployRepo
+	r.logReviews(t, project, refresherToday.AddDate(0, 0, -1), repo)
+	r.settle(t)
+
+	own, named := staleCut{project: project}, staleCut{project: project, repo: repo}
+	gate, other := EvalID(project, SlugStagingE2E), EvalID(project, SlugDeployFrequency)
+	logged := EvalID(project, "review-latency")
+	// Both cuts already owe a paint, just as after a mark that has not been refolded yet.
+	r.exec(t, "leave first paints owed for a computed eval and a logged eval", `
+		insert into eval_figure_cuts_stale (project_key, repo, generation, evals)
+		values ($1, '', 1, array[$2::text]), ($1, $3, 1, array[$4::text])`, project, other, repo, logged)
+	r.exec(t, "leave the computed eval's range figures older than its rows", `
+		update eval_range_figures set oldest_updated_at = oldest_updated_at - interval '1 day'
+		where project_key = $1 and repo = '' and eval_id = $2`, project, other)
+
+	settings := deliveries.Settings
+	settings.StagingE2EJobName = new("no-such-job")
+	r.putSettings(t, settings, alice)
+	r.pageAlone(t)
+
+	marks := r.staleMarks(t)
+	through := refresherToday.AddDate(0, 0, FigureLead)
+	computed := []string{other, gate}
+	mixed := []string{logged, gate}
+	if mark := marks[own]; mark.generation != 2 || mark.ready == nil || !mark.ready.Equal(through) || mark.next != nil || !slices.Equal(mark.evals, computed) {
+		t.Errorf("the rewrite's own cut has %s, want generation 2 with %v and its first paint folded", mark, computed)
+	}
+	if mark := marks[named]; mark.generation != 2 || mark.ready != nil || mark.next != nil || !slices.Equal(mark.evals, mixed) {
+		t.Errorf("the rewrite's repository cut has %s, want generation 2 with %v and its first paint owed", mark, mixed)
+	}
+	expectPaintTruth(t, "the settings rewrite's computed first paint", through, map[staleCut][]string{own: computed}, r.storedFigures(t), r.truthFigures(t))
+	want := map[staleCut][]string{own: computed, named: mixed}
+	r.expectReads(t, "after the settings rewrite", want, readsOf(moveShapes()), func(cut staleCut) bool { return cut == own })
+	r.wokenPass(t)
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Errorf("the refold left stale cuts %v, want none", marks)
+	}
+	expectTruth(t, "after the settings refold", r.storedFigures(t), r.truthFigures(t))
+	r.expectReads(t, "after the settings refold", want, readsOf(moveShapes()), func(staleCut) bool { return true })
+}
+
 // dayRowXmins and memberXmins read the transaction that last wrote each day row and each member,
 // by its key (xmins).
 const (
@@ -1865,15 +1912,51 @@ const storedSettingsPrint = `select (` + storedPrint + `) || ' ' || ` + rulesPri
 // beside the rules they stand built under, of one snapshot.
 const storedRowsSettingsPrint = `select (` + storedRowsPrint + `) || ' ' || ` + rulesPrint
 
-// commitPrints is a tracer (storetest.TracedStore) that reads query (storedPrint where it is
-// empty), on the rig's own pool, after each transaction the traced pool commits: every state of
-// what the query reads that a reader can see between two commits of a pass.
+// readSettingsSnapshot fingerprints, in one snapshot, the day rows, members and the rules they stand
+// built under (storedRowsSettingsPrint) beside what a first paint and an older window of the
+// project's own cut and of repo's answer, not the raw figures of marked evals.
+func readSettingsSnapshot(t *testing.T, registry *Store, project, repo string) string {
+	t.Helper()
+	ctx := t.Context()
+	tx, err := registry.BeginSnapshot(ctx)
+	if err != nil {
+		t.Errorf("begin the settings snapshot: %v", err)
+		return ""
+	}
+	defer tx.Rollback(ctx)
+	var print string
+	if err := tx.QueryRow(ctx, storedRowsSettingsPrint).Scan(&print); err != nil {
+		t.Errorf("read the day rows, members and settings: %v", err)
+		return ""
+	}
+	page, err := CurrentIn(ctx, tx, []string{project}, "", 200, 0)
+	if err != nil {
+		t.Errorf("read %s's evals in the settings snapshot: %v", project, err)
+		return ""
+	}
+	first, past := moveShapes()[0], pastShapes()[0]
+	var out strings.Builder
+	out.WriteString(print)
+	for _, repos := range [][]string{nil, {repo}} {
+		state := readListStateIn(t, tx, project, repos, page.Items, first.window, first.compare, past.window, past.compare)
+		for _, shape := range []readShape{first, past} {
+			stated, _, _ := state.values(t, shape.window, &shape.compare)
+			fmt.Fprint(&out, " ", stated)
+		}
+	}
+	return out.String()
+}
+
+// commitPrints is a tracer (storetest.TracedStore) that records, on the rig's own pool, after each
+// transaction the traced pool commits, what snapshot reads, or else query (storedPrint where it is
+// empty): every state of what it reads that a reader can see between two commits of a pass.
 type commitPrints struct {
-	t     *testing.T
-	rig   rig
-	query string
-	mu    sync.Mutex
-	seen  []string
+	t        *testing.T
+	rig      rig
+	query    string
+	snapshot func() string
+	mu       sync.Mutex
+	seen     []string
 }
 
 type commitPrintAt struct{}
@@ -1895,8 +1978,12 @@ func (c *commitPrints) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.
 	c.seen = append(c.seen, print)
 }
 
-// read is the query (storedPrint where it is empty) as it stands now.
+// read records the state the test's snapshot reads as it stands now, or else its query
+// (storedPrint where it is empty).
 func (c *commitPrints) read() string {
+	if c.snapshot != nil {
+		return c.snapshot()
+	}
 	var print string
 	if err := c.rig.database.Pool.QueryRow(context.Background(), cmp.Or(c.query, storedPrint)).Scan(&print); err != nil {
 		c.t.Errorf("read the fingerprint of the stored rows: %v", err)
@@ -2737,15 +2824,16 @@ func TestAPullRequestLeavingTheDaysBeforeItsRepositorysHistoryRewritesTheDeployT
 // BuiltSettingsIn's every field eval_days_rules records of it) at the old settings until the
 // refresher's pass commits, and at the new ones once it has: the record moves in the commit that
 // brings the rows to the settings, not at the save. And no reader sees the one move without the
-// other: the fingerprint of the rows, the members and the recorded rules, read in one snapshot
-// after each commit of the pass (commitPrints of storedRowsSettingsPrint), is the one before the
-// pass or the one after it. A move of the source is a selection:
+// other: at each commit of the pass, the rows, the members and the recorded rules, and the answers
+// of a first paint and of an older window of the project's own cut and of its repository's, read
+// in one snapshot (commitPrints of readSettingsSnapshot), all agree with the state before the
+// pass or the state after it. A move of the source is a selection:
 // the repository it left keeps its rows and its rule, recorded with no project, and the one it
 // reads now holds no run, so it moves no row or member. The production rule is then the rule of
 // that repository alone, which holds no deploy run, so its change records the rule
 // and moves no row (syncSettings); and the move back finds the old repository's rows built under
-// the rule they stand recorded with, so it moves no row either. The stored figures are no part of
-// either fingerprint: the commit of a move of what a read selects marks the cuts it moves stale
+// the rule they stand recorded with, so it moves no row either. The raw stored figures are no part
+// of either fingerprint: the commit of a move of what a read selects marks the cuts it moves stale
 // and folds their first paints, and the pass's refold folds the rest of them again, a batch a
 // commit (plan T19 path 3, publishDefaults, refoldStaleCuts), while a read of an eval a mark names
 // folds the day rows (builtCut.serves, which the path-3 tests hold); once the pass has ended, the
@@ -2773,7 +2861,11 @@ func TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem(t *testing.T) 
 		want.Project = deliveries.Project
 		return sameBuiltRule(built, want)
 	}
-	prints, rows := &commitPrints{t: t, rig: r.rig, query: storedRowsSettingsPrint}, &commitPrints{t: t, rig: r.rig, query: storedRowsPrint}
+	plain := r.registry
+	prints := &commitPrints{t: t, rig: r.rig, snapshot: func() string {
+		return readSettingsSnapshot(t, plain, deliveries.Project, deliveries.DeployRepo)
+	}}
+	rows := &commitPrints{t: t, rig: r.rig, query: storedRowsPrint}
 	r.registry = r.tracedStore(t, prints)
 	settings := deliveries.Settings
 	for _, change := range []struct {

@@ -32,7 +32,7 @@ func TestTheLegionDayRowsOfTheStoredRowsAreTheComputationsOnBothSidesOfAMidnight
 	ctx, pool := t.Context(), r.database.Pool
 	now := time.Date(2026, 11, 11, 21, 0, 0, 0, time.UTC)
 	fixture := legiontest.Seed(t, pool, legiontest.Spec{
-		Project: "LEGION", Trees: 6, Now: now, Queued: true, Parked: true, Merged: true, Filings: true,
+		Project: "LEGION", Trees: 6, Now: now, Queued: true, InBacklogOrIcebox: true, Merged: true, Filings: true,
 	})
 	project := fixture.Project
 	rows, filings, err := legionfacts.ComputeProject(ctx, pool, project, now)

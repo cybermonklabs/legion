@@ -10,11 +10,9 @@ body: |-
   project publishes as its default, its Legion rows of issues that name no repository
   (`:default`). Any other length, two or more repositories, an eval whose stored figures were
   folded under another definition, and a project whose figures are not built yet fold the day
-  rows. Every write of day rows folds again, in its own transaction, the figures of the days it
-  moved, in each repository's figures its rows reach, but for a readings write of more days and
-  series than about 250 ms of folding (5,000 day-and-series pairs, such as a first reading of 234
-  series a year back): that write folds each cut's first paint, marks the cuts stale for its eval,
-  and leaves the rest to the refresher's refold below. The day-row refresher's pass builds each
+  rows. Most writes of day rows fold the figures of the days they moved in their own transaction.
+  A readings write above 5,000 day-and-series pairs marks the cuts it reaches stale, folds the
+  first paints it can, and leaves the rest to the refresher's refold. The day-row refresher's pass builds each
   build's whole set of figures once, and then each new day's ranges, and marks a project built
   once the first whole walk of its figures is done (`eval_figures_built`). A move of a project's
   default repository marks stale, in the commit that publishes it, the figures of each cut it
@@ -44,9 +42,12 @@ body: |-
   floats answers the same bits whatever order the rows come back in. The bench waits for every
   project's figures to be built before it measures a first paint.
   A change of the delivery settings reaches an open evals page in one pass of the refresher, as
-  one delta: the pass rewrites, in one transaction, every day of the delivery and CI evals the
-  change moves (their day rows, the rows' stored figures and the members that moved). It compares
-  the settings with those the rows stand built under (`eval_days_settings`), so a change no day row
+  one delta. In one transaction, the pass rewrites the day rows and members the change moves,
+  marks the affected cuts for those evals, and folds their first paints where the marks name
+  only computed evals. Until an older range is refolded, a read of a marked eval folds its day
+  rows and answers the same values. The pass refolds the rest in batches after the commit
+  without sending another delta. It compares the settings with those the rows stand built
+  under (`eval_days_settings`), so a change no day row
   reads (a workflow path, the population rule, the roll-up job) rewrites nothing; and the same
   settings saved again by another person log no change at all (migration
   `20261120111107_delivery_settings_bookkeeping`). Settings that move no day row are recorded with
