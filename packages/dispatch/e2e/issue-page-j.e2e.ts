@@ -119,6 +119,7 @@ import {
   specRuns,
   statementBlock,
   threeThings,
+  wheelPastTop,
   wordAtCaret,
 } from "./issue-page-j";
 import { withIssuePage } from "./issue-page-option";
@@ -2216,23 +2217,7 @@ test("a press on a Spec statement's words puts the caret at the press and keeps 
     ).toHaveCount(seeded.requirements.length + 1);
     // A turn of the wheel, the reader's own act, stands the long statement's top 200 px above the
     // screen, with the rest of its 600 words on screen under the column heads.
-    const heads = body.locator("[data-spec-head]");
-    const headsBottom = await heads.evaluate((head) => head.getBoundingClientRect().bottom);
-    const top = await long.evaluate((row) => row.getBoundingClientRect().top);
-    const wheelAt = await settledScrollTop(page);
-    await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
-    await page.mouse.wheel(0, top + 200);
-    await expect
-      .poll(() => settledScrollTop(page), { message: "the wheel does not scroll the page" })
-      .not.toBe(wheelAt);
-    const box = await long.evaluate((row) => {
-      const { bottom, left, top: rowTop, width } = row.getBoundingClientRect();
-      return { bottom, left, top: rowTop, width };
-    });
-    expect(
-      box.top,
-      "after the wheel the long statement's top is not above the screen"
-    ).toBeLessThan(0);
+    const { box, headsBottom } = await wheelPastTop(page, long);
     expect(
       box.bottom - headsBottom,
       "after the wheel the long statement shows under 100 px of its words below the column heads"
@@ -2287,26 +2272,9 @@ test("a drag over a Spec statement's words keeps the selection on screen and the
   const seed = seedStatement(() => statementBlock(LONG_BLOCK_ID, longWords("long", 600)));
   await phase(browser, seed, async (page, seeded) => {
     const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
-    const body = issuePage(page).locator("[data-spec-body]");
-    const heads = body.locator("[data-spec-head]");
-    const headsBottom = await heads.evaluate((head) => head.getBoundingClientRect().bottom);
     // A turn of the wheel, the reader's own act, stands the long statement's top 200 px above the
     // screen, with the rest of its 600 words on screen under the column heads.
-    const top = await long.evaluate((row) => row.getBoundingClientRect().top);
-    const wheelAt = await settledScrollTop(page);
-    await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
-    await page.mouse.wheel(0, top + 200);
-    await expect
-      .poll(() => settledScrollTop(page), { message: "the wheel does not scroll the page" })
-      .not.toBe(wheelAt);
-    const box = await long.evaluate((row) => {
-      const { left, top: rowTop, width } = row.getBoundingClientRect();
-      return { left, top: rowTop, width };
-    });
-    expect(
-      box.top,
-      "after the wheel the long statement's top is not above the screen"
-    ).toBeLessThan(0);
+    const { box, headsBottom } = await wheelPastTop(page, long);
     expect(
       await long.evaluate((row) => row.contains(document.activeElement)),
       "the long statement holds the focus before the drag"

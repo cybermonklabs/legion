@@ -457,6 +457,41 @@ export async function openSpecStatement(
   );
 }
 
+/** A turn of the wheel by `deltaY` px with the mouse at the screen's middle, which returns once
+ *  the page has moved and stopped moving. */
+async function turnWheel(page: Page, deltaY: number): Promise<void> {
+  const wheelAt = await settledScrollTop(page);
+  await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
+  await page.mouse.wheel(0, deltaY);
+  await expect
+    .poll(() => settledScrollTop(page), { message: "the wheel does not scroll the page" })
+    .not.toBe(wheelAt);
+}
+
+/**
+ * A turn of the wheel, the reader's own act, by `statement`'s top and 200 px more, which stands
+ * that top 200 px above the screen; its failure calls `statement` the long statement, which is
+ * the one a row seeds for this. Returns the bottom of the Spec view's column heads, read before
+ * the wheel, and the statement's box, read once the page has stopped moving.
+ */
+export async function wheelPastTop(
+  page: Page,
+  statement: Locator
+): Promise<{ box: Omit<SpecBox, "right">; headsBottom: number }> {
+  const heads = issuePage(page).locator("[data-spec-body]").locator("[data-spec-head]");
+  const headsBottom = await heads.evaluate((head) => head.getBoundingClientRect().bottom);
+  const top = await statement.evaluate((row) => row.getBoundingClientRect().top);
+  await turnWheel(page, top + 200);
+  const box = await statement.evaluate((row) => {
+    const { bottom, left, top: rowTop, width } = row.getBoundingClientRect();
+    return { bottom, left, top: rowTop, width };
+  });
+  expect(box.top, "after the wheel the long statement's top is not above the screen").toBeLessThan(
+    0
+  );
+  return { box, headsBottom };
+}
+
 /**
  * A turn of the wheel, the reader's own act, brings the word `pressed` of `statement`'s words to
  * the screen's middle; once the page has stopped moving, a press on that word puts the caret of
@@ -473,14 +508,9 @@ export async function pressWordAfterWheel(
 ): Promise<void> {
   const far = await drawnWordPoint(statement, pressed);
   expect(far, `the statement draws no word "${pressed}"`).not.toBeNull();
-  const wheelAt = await settledScrollTop(page);
-  await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
-  await page.mouse.wheel(0, (far?.y ?? 0) - DESKTOP.height / 2);
-  await expect
-    .poll(() => settledScrollTop(page), { message: "the wheel does not scroll the page" })
-    .not.toBe(wheelAt);
-  // The poll above waited until the page stopped moving after the wheel, so one read of the
-  // word's box is where it stands when it is pressed.
+  await turnWheel(page, (far?.y ?? 0) - DESKTOP.height / 2);
+  // `turnWheel` waited until the page stopped moving after the wheel, so one read of the word's
+  // box is where it stands when it is pressed.
   const at = await drawnWordPoint(statement, pressed);
   expect(at, `the word "${pressed}" is not on the page after the wheel`).not.toBeNull();
   const point = at ?? { x: 0, y: 0 };
