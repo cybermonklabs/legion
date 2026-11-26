@@ -129,7 +129,17 @@ def legs_held(text):
     return "held"
 
 
-questions = {"derived": derived, "listed": listed, "refused": refused, "legs_held": legs_held}
+def envoy_legs_held(text):
+    import yaml
+    try:
+        reads.hold_envoy_legs(yaml.safe_load(text))
+    except ValueError as refusal:
+        return f"RAISED: {refusal}"
+    return "held"
+
+
+questions = {"derived": derived, "listed": listed, "refused": refused, "legs_held": legs_held,
+             "envoy_legs_held": envoy_legs_held}
 
 
 def field():
@@ -5954,6 +5964,41 @@ out=$(legs_held "$norace")
 check "is refused" "$(contains "$out" '^RAISED: ')"
 check "names the missing key and the race set it lost" \
   "$(contains "$out" "its keys are daemon-go, elsewhere, .*a package under a missing key runs in no job, so file it under one of those; its daemon-go-race legs run \[\]")"
+
+# The same hold on the entry for packages/envoy, which also holds the race legs to the race lane's
+# envoy-go-race packages, `twice` to the race packages whose skips the unit legs count, and
+# `elsewhere` to the packages other jobs' steps are built to run.
+envoy_legs_held() { ask envoy_legs_held "$1"; }
+real_envoy=$(cd "$script_dir/../.." && python3 -c 'import json, yaml; print(json.dumps(yaml.safe_load(open(".github/go-legs.yaml"))["packages/envoy"]))')
+echo "case: the repository's go-legs.yaml entry for envoy is held"
+check "passes" "$(is "$(envoy_legs_held "$real_envoy")" held)"
+
+echo "case: an envoy go-legs.yaml job key no matrix job runs"
+typo=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["envoy-go-typo"] = {"1": [e["envoy-go"]["5"].pop()]}; print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$typo")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the key and the jobs whose legs run" \
+  "$(contains "$out" "its keys are elsewhere, envoy-go, envoy-go-race, envoy-go-typo, twice, and the jobs whose legs run are envoy-go")"
+
+echo "case: a race lane package moved into a plain leg"
+moved=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); next(v for v in e["envoy-go-race"].values() if "natscred" in v).remove("natscred"); e["envoy-go"]["5"].append("natscred"); print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$moved")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the lane package no race leg runs" "$(contains "$out" "ENVOY_RACE_LANE's envoy-go-race names natscred, which no envoy-go-race leg runs")"
+check "and the plain leg that runs it without the detector" "$(contains "$out" "its envoy-go legs run natscred, which the race lane runs under the detector")"
+
+echo "case: twice no longer names the NATS auth service"
+untwice=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["twice"] = {}; print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$untwice")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the counted race package twice must name" \
+  "$(contains "$out" "its twice names nothing, and the race legs' packages whose skips the unit legs count (packages/envoy/scripts/database-skips.sh's table) are internal/cipher/natscallout")"
+
+echo "case: a package other jobs run dropped from elsewhere"
+dropped=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["elsewhere"]["internal/dispatch/api"]; print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$dropped")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the packages other jobs' steps are built to run" "$(contains "$out" "and the packages other jobs' steps are built here to run are .*'internal/dispatch/api': 'envoy-go-race-api'")"
 
 # The header's run recipe, run as the header writes it, from a fixture's root and over a module
 # cache that holds no toolchain, with GOPROXY=off so that go can fetch none. Where the go PATH

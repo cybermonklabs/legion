@@ -18,10 +18,13 @@ The rules the legs and the groups keep, and what is refused as an error and what
 warning, are in .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs and
 #why-internaldaemons-tests-run-in-three-legs. In short: every package of the module in exactly one
 place of the file, every top-level test of a split package in exactly one group, and a leg that
-runs a group runs that package alone. A problem that would run a test twice, or nothing at all,
-is an error and the leg prints nothing; a list that has merely gone stale against the source — a
-test no group names, a group name the package no longer declares — is a warning, and the leg
-places that test itself, by the same rule in every leg.
+runs a group runs that package alone. A module's `twice` names, each with why, the packages two
+jobs each run once in a mode of its own, a plain leg and a race leg: such a package is in the legs
+of exactly two jobs, once in each (in one leg, or split by groups across legs of that job), and is
+refused anywhere else (.github/ci-notes/ci.md#why-envoys-go-tests-run-in-legs). A problem that
+would run a test twice, or nothing at all, is an error and the leg prints nothing; a list that has
+merely gone stale against the source — a test no group names, a group name the package no longer
+declares — is a warning, and the leg places that test itself, by the same rule in every leg.
 
 `go list ./...` decides what a package is, as it decides what `go test ./...` would run: a
 directory whose every .go file a build constraint excludes is none, and one with only _test.go
@@ -50,6 +53,9 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 LEGS = ".github/go-legs.yaml"
 ELSEWHERE = "elsewhere"
+TWICE = "twice"
+# The module keys that are no job: each other key of a module's entry is a job whose legs it lists.
+NOT_JOBS = (ELSEWHERE, TWICE)
 # Where a split package's groups are: GROUPS/<module>/<package>.yaml.
 GROUPS = ".github/go-legs"
 # A name `go test -run` matches at the top level: what `go test -list .` prints for each test,
@@ -82,8 +88,8 @@ class Place:
 
 def module_entry(module: str, path: Path) -> dict:
     """The file's entry for `module`: each job to its legs ({leg number: [entry, ...]}, an entry
-    being a package or a `{package: group}` mapping), and `elsewhere` to {package: the job that
-    runs it}."""
+    being a package or a `{package: group}` mapping), `elsewhere` to {package: the job that runs
+    it}, and `twice` to {package: why two jobs each run it}."""
     document = yaml.safe_load(path.read_text()) or {}
     entry = document.get(module)
     if not isinstance(entry, dict):
@@ -141,6 +147,8 @@ def places(entry: dict) -> tuple:
     (job, leg, the entry as written)."""
     named, malformed = [], []
     for job, legs in entry.items():
+        if job == TWICE:
+            continue
         if job == ELSEWHERE:
             named += [Place(package, ELSEWHERE, runner=runner) for package, runner in (legs or {}).items()]
             continue
@@ -178,7 +186,7 @@ def split_problems(module: str, package: str, held: list, legs_path: str) -> lis
     if any(place.group is None for place in held) or len({place.job for place in held}) > 1:
         return [f"{module}/{package} is in {len(held)} places of {legs_path} ({shown}), so it would run in each: "
                 f"keep it in one, or split its tests into groups, each place `- {package}: <group>` in a leg of "
-                f"one job"]
+                f"one job, or, where two jobs must each run it in a mode of its own, name it under {TWICE} with why"]
     by_group = {}
     for place in held:
         by_group.setdefault(place.group, []).append(place)
@@ -187,11 +195,29 @@ def split_problems(module: str, package: str, held: list, legs_path: str) -> lis
             f"({shown}), so it would run in each: keep it in one" for group in twice]
 
 
+def twice_problems(module: str, package: str, held: list, legs_path: str) -> list:
+    """What keeps a package `twice` names from running once in the legs of each of two jobs: in
+    one leg of each, or in one and split by groups across legs of the other (split_problems)."""
+    by_job = {}
+    for place in held:
+        by_job.setdefault(place.job, []).append(place)
+    if ELSEWHERE in by_job or len(by_job) != 2:
+        shown = ", ".join(place.shown() for place in held)
+        return [f"{legs_path}'s {TWICE} names {module}/{package}, which is in {len(held)} place(s) "
+                f"({shown or 'none'}): a package {TWICE} names runs in the legs of exactly two jobs, once in each, "
+                f"so put it in a leg of each, or take it out of {TWICE} and keep it in one place"]
+    found = []
+    for job_held in by_job.values():
+        if len(job_held) > 1 or job_held[0].group is not None:
+            found += split_problems(module, package, job_held, legs_path)
+    return found
+
+
 def problems(module: str, entry: dict, packages: list, legs_path: str = LEGS) -> list:
     """What keeps the entry from running each of `packages` (directories under the module) in
     exactly one place: a package in no place, a package in two (unless the two are groups of its
-    tests, split_problems), a place that names no package, and an entry of no shape this script
-    reads."""
+    tests, split_problems, or legs of two jobs `twice` names it for, twice_problems), a place, or a
+    `twice` entry, that names no package, and an entry of no shape this script reads."""
     named, malformed = places(entry)
     found = [f"{legs_path} gives job {job} leg {leg} the entry {written!r}, which is neither "
              f"`- <package>` nor `- <package>: <group>`: write it as one of the two"
@@ -199,17 +225,24 @@ def problems(module: str, entry: dict, packages: list, legs_path: str = LEGS) ->
     where = {}
     for place in named:
         where.setdefault(place.package, []).append(place)
+    twice = entry.get(TWICE) or {}
     missing, _, unknown = once(packages, where)
     found += [f"{module}/{package} is a package `go list ./...` prints, and no leg of {legs_path} "
               f"runs it: add it to the leg of the job that should run it, or to {ELSEWHERE} with the "
-              f"job that runs it" for package in missing]
+              f"job that runs it" for package in missing if package not in twice]
     for package in packages:
         held = where.get(package, [])
-        if len(held) > 1 or (held and held[0].group is not None):
+        if package in twice:
+            found += twice_problems(module, package, held, legs_path)
+        elif len(held) > 1 or (held and held[0].group is not None):
             found += split_problems(module, package, held, legs_path)
     found += [f"{legs_path} names {module}/{package} ({', '.join(place.shown() for place in where[package])}), "
               f"which `go list ./...` does not print as a package: take it out, or follow the package where it "
               f"went" for package in unknown]
+    listed = set(packages)
+    found += [f"{legs_path}'s {TWICE} names {module}/{package}, which `go list ./...` does not print as a package: "
+              f"take it out, or follow the package where it went" for package in twice
+              if package not in listed and package not in where]
     return found
 
 
@@ -378,7 +411,7 @@ def main(argv: list) -> int:
     except LookupError as missing:
         print(f"go_legs.py: {missing}", file=sys.stderr)
         return 2
-    legs = entry.get(job) if job != ELSEWHERE else None
+    legs = entry.get(job) if job not in NOT_JOBS else None
     mine = next((listed for number, listed in (legs or {}).items() if str(number) == leg), None)
     if mine is None:
         print(f"go_legs.py: {LEGS} has no leg {leg} of job {job} under {module}", file=sys.stderr)
