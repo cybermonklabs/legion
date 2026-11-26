@@ -130,7 +130,7 @@ func InWorkflow(issue Issue) bool {
 // its pod. The production check's readers (workflow's check.go, the outbox's checkLookHolds) and
 // a claim's failure (workflow's claimFailed) read it.
 func RunsAgain(issue Issue) bool {
-	return InWorkflow(issue) && issue.Phase != phase.Verifying
+	return InWorkflow(issue)
 }
 
 // Stopped is whether the issue's own record says its work has stopped: it is out of the
