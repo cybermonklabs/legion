@@ -32,6 +32,9 @@ import (
 //     answer downloads, an answer a proxy forwards.
 //   - Holds answers a test of the bytes as they came, for a caller that decides on what the
 //     answer says - a phrase of its wording (ContainsFold), a type it names - and keeps nothing.
+//   - Unmarshal fills a value from the bytes by encoding/json, for a destination Decode refuses
+//     because it takes the answer's text as it came (a json.RawMessage handed on, a map of them a
+//     proxy forwards): nothing it fills holds the request's record, so nothing it fills may print.
 //
 // The answer census (cmd/redact-gate) fails on any read of a response's Body outside this
 // package but ReadAnswer's, so no client reads an answer's bytes any other way.
