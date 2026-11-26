@@ -179,9 +179,12 @@ func TestGitHubReaderRefusesAReserveWaitPastItsLongestWait(t *testing.T) {
 }
 
 // Every copy of a reader keeps one pace, from any goroutine: two goroutines reading four pages each
-// through one reader at 20 requests a second, on the real clock, send their eight requests at
-// least about 50 ms apart, not each at its own pace. It fails where the copies keep paces of their
-// own, or race on the one.
+// through one reader at 20 requests a second take eight places 50 ms apart in its one schedule. The
+// reader's clock stands still and its wait records the wait it is asked for and returns at once, so
+// the schedule is read from the pacer itself and not from when the requests reached the server,
+// which the machine's load moves: the first request goes at once and the seven others wait 50, 100,
+// ... 350 ms. It fails where the copies keep paces of their own (two requests at one place), or
+// race on the one.
 func TestGitHubReaderKeepsOnePaceAcrossGoroutines(t *testing.T) {
 	t.Parallel()
 	server, arrived := shareStub(t, 4, func(int) map[string]string { return nil }, time.Now)
@@ -189,8 +192,17 @@ func TestGitHubReaderKeepsOnePaceAcrossGoroutines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reader := newGitHubReader(api, stubGitHubToken, nil, 0, 20)
+	var mu sync.Mutex
+	var waits []time.Duration
+	reader := newGitHubReader(api, stubGitHubToken, func(_ context.Context, d time.Duration) error {
+		mu.Lock()
+		defer mu.Unlock()
+		waits = append(waits, d)
+		return nil
+	}, 0, 20)
 	reader.client = server.Client()
+	still := time.Date(2001, 3, 5, 9, 0, 0, 0, time.UTC)
+	reader.now = func() time.Time { return still }
 	var group sync.WaitGroup
 	errs := make([]error, 2)
 	for i := range errs {
@@ -206,14 +218,15 @@ func TestGitHubReaderKeepsOnePaceAcrossGoroutines(t *testing.T) {
 			t.Fatalf("a read refused with %v", err)
 		}
 	}
-	times := slices.Clone(*arrived)
-	slices.SortFunc(times, time.Time.Compare)
-	if len(times) != 8 {
-		t.Fatalf("GitHub was asked %d times, want 8", len(times))
+	if len(*arrived) != 8 {
+		t.Fatalf("GitHub was asked %d times, want 8", len(*arrived))
 	}
-	for i := 1; i < len(times); i++ {
-		if gap := times[i].Sub(times[i-1]); gap < 35*time.Millisecond {
-			t.Errorf("requests %d and %d came %s apart, want about 50ms at 20 a second: %v", i, i+1, gap, times)
-		}
+	slices.Sort(waits)
+	want := make([]time.Duration, 0, 7)
+	for n := 1; n <= 7; n++ {
+		want = append(want, time.Duration(n)*50*time.Millisecond)
+	}
+	if !slices.Equal(waits, want) {
+		t.Errorf("the pace made the eight requests wait %v, want the first at once and the others %v", waits, want)
 	}
 }

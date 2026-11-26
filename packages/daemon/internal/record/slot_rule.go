@@ -243,7 +243,7 @@ func (r SlotRule) OrMain() SlotRule {
 // record names no earlier phase for the hold (StandsAt). Every other phase holds none: accepting,
 // retro and merging (in the default steps, the phases after the review); done, which has
 // finished; and awaiting_children, a parent waiting on its open children, which work under slots
-// of their own (dispatch://INFRA-3320 R11). A step after accepting whose phase keeps a slot waits
+// of their own (the spec of #4592, R11). A step after accepting whose phase keeps a slot waits
 // for one again (workflow.StartOrOwe).
 //
 // It is written as one list, in the rule value, so that a later change adds or removes one entry
