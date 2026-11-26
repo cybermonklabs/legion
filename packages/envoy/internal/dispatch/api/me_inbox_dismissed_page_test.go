@@ -170,7 +170,9 @@ func seedDismissedPagePile(t *testing.T, pile int) *dismissedScaleShape {
 // dismissedPagePlan is one statement's analysed generic plan on one pile: the plan and its text, the
 // rows its scan nodes read, those nodes each with its rows (scans) and the rows the nodes of each
 // name read together (byNode), and the Reply and Agent rows the handler answers the same request
-// with.
+// with. A bitmap heap scan stands for the bitmap index scans under it, as walkScaleScan has it: the
+// rows those index scans find are the rows the heap scan reads, so they are counted once, and a
+// planner that reads the same rows through a bitmap rather than one index scan reads no more.
 type dismissedPagePlan struct {
 	pile            string
 	plan            json.RawMessage
@@ -223,7 +225,7 @@ func explainDismissedPage(t *testing.T, shape *dismissedScaleShape, name string,
 	}
 	var read []scanned
 	for _, node := range explaintest.Nodes(t, explained.plan) {
-		if strings.HasSuffix(node.Type, " Scan") {
+		if strings.HasSuffix(node.Type, " Scan") && node.Type != "Bitmap Index Scan" {
 			explained.rows += node.Rows * node.Loops
 			if node.Rows*node.Loops > 0 {
 				described := node.String()
