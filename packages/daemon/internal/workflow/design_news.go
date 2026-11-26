@@ -333,7 +333,7 @@ func acceptingAnswer(subject string, back []phase.Phase) string {
 	for i, p := range back {
 		named[i] = string(p)
 	}
-	return fmt.Sprintf("sign %s off with `sign_off`, or call `request_backward_move` to move it back to %s", subject, joinWords(named, "or"))
+	return fmt.Sprintf("sign %s off with `sign_off`, or call `request_backward_move` to move it back to %s", subject, listed(named, "or"))
 }
 
 // MoveBackTargets is the phases a move back of an issue standing in accepting reaches, on line,
@@ -350,16 +350,6 @@ func MoveBackTargets(line []phase.Phase) ([]phase.Phase, error) {
 		return nil, fmt.Errorf("the line %v holds no step before an acceptance", line)
 	}
 	return slices.Clone(line[:at]), nil
-}
-
-// joinWords joins words as a sentence lists them, with conjunction before the last: "a", "a or
-// b", "a, b and c".
-func joinWords(words []string, conjunction string) string {
-	if len(words) < 2 {
-		return strings.Join(words, "")
-	}
-	last := len(words) - 1
-	return strings.Join(words[:last], ", ") + " " + conjunction + " " + words[last]
 }
 
 // architectNews is the root architect's summary after its gate sentence: each pair of versions
