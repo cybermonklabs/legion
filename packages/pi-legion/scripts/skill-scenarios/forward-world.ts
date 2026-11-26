@@ -76,12 +76,15 @@ export function readForwardWorld(dir: string): ForwardWorld {
   return { ...read("world.json", ForwardWorldFile), anchors: read("anchors.json", ForwardAnchors) };
 }
 
-/** The check blocks of a Verification document: each `:::check{#<id> … when="<when>"}`. */
+/** The check blocks of a Verification document: each `:::check{#<id> … when="<when>"}`. A block
+ * that names no `when`, or an empty one, is a before_merge check, as Dispatch serves it
+ * (packages/envoy/internal/dispatch/docs/ci_check.go, CheckBlockOf). */
 export function checkBlocks(markdown: string): { id: string; when: string }[] {
   return [...markdown.matchAll(/^:::check\{([^}]*)\}/gm)].flatMap((hit) => {
     const attributes = hit[1] ?? "";
     const id = /#([\w-]+)/.exec(attributes)?.[1];
-    return id === undefined ? [] : [{ id, when: /\bwhen="([^"]*)"/.exec(attributes)?.[1] ?? "" }];
+    const when = /\bwhen="([^"]*)"/.exec(attributes)?.[1] || "before_merge";
+    return id === undefined ? [] : [{ id, when }];
   });
 }
 
