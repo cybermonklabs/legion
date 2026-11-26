@@ -2206,14 +2206,7 @@ func (r *outbox) ciNews(ctx context.Context, row record.OutboxRow, payload recor
 	attributes := []any{"row", row.ID, "issue", row.Issue, "purpose", payload.Purpose, "role", payload.Role, "task", payload.Task,
 		"generation", payload.Generation, "head", payload.Head, "readerPhase", payload.Reader.Phase, "readerFix", payload.Reader.Fix,
 		"readerEntry", payload.Reader.Entry}
-	stale, err := r.ciNewsStale(ctx, row.Issue, role, payload)
-	if err != nil {
-		return err
-	}
-	if stale != "" {
-		r.log.Info("outbox CI news finished undelivered: the work it is for is no longer current", append(attributes, "why", stale)...)
-		return nil
-	}
+	// Control: the row is delivered whatever its work is now (no ciNewsStale).
 	if r.supervisor != nil {
 		if held := r.supervisedClaim(token); held.State == supervise.StateFailed || held.State == supervise.StateRetired {
 			r.log.Info("outbox CI news finished undelivered: its reader's claim has failed or retired", append(attributes, "state", held.State)...)
