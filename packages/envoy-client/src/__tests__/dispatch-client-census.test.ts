@@ -7,6 +7,7 @@ import { DISPATCH_WRITE_RETRY, DispatchClient } from "../dispatch-http";
 // makes goes through its one request function. This drives every method of the class through a
 // recording fetch, so a method added later that reaches Dispatch any other way - its own fetch, the
 // global one, a write without the key - fails here, as does a method the table below leaves out.
+// `UNKEYED` names the one write sent with no key, and why.
 
 /** The names of DispatchClient's methods: every function member but the injected fetch. */
 type ClientMethod = Exclude<
@@ -21,6 +22,12 @@ type ClientMethod = Exclude<
 const actor = { kind: "session" as const, id: "session-1" };
 const file = { name: "notes.md", file: new Blob(["# Notes"], { type: "text/markdown" }), actor };
 const inline = { name: "notes.md", content: "# Notes", actor };
+
+/** The write methods whose POST or PATCH carries no `Idempotency-Key`, each with why. */
+const UNKEYED: Readonly<Partial<Record<ClientMethod, string>>> = {
+  sendRoute:
+    "dispatch api's write of the route its caller names, sent through one #send as written, so the caller decides whether to send it again",
+};
 
 /** One call of each method, with arguments of the shapes it takes; what it answers is not read. */
 const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> = {
@@ -54,11 +61,15 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listAgents: (client) => client.listAgents(),
   whoami: (client) => client.whoami(),
   limits: (client) => client.limits(),
+  readRoute: (client) => client.readRoute("/api/v1/issues/DSP-1/events?limit=200"),
+  sendRoute: (client) => client.sendRoute("POST", "/api/v1/issues/DSP-1/comments", "{}"),
   inbox: (client) => client.inbox("me"),
   myReplies: (client) => client.myReplies(),
   credentialPending: (client) => client.credentialPending(),
   createProject: (client) => client.createProject({ key: "DSP", name: "Dispatch" } as never),
   listProjects: (client) => client.listProjects(),
+  turnOnProvenSessions: (client) => client.turnOnProvenSessions("DSP", { actor }),
+  turnOffProvenSessions: (client) => client.turnOffProvenSessions("DSP"),
   listArchitectureSources: (client) => client.listArchitectureSources("DSP"),
   syncArchitectureSources: (client) => client.syncArchitectureSources("DSP"),
   syncArchitectureSource: (client) => client.syncArchitectureSource("DSP", "acme/infra"),
@@ -178,7 +189,10 @@ test("every DispatchClient method reaches Dispatch through its one request funct
 
       expect({ name, requested: requests.length > 0 }).toEqual({ name, requested: true });
       for (const { method, key } of requests) {
-        if (method === "POST" || method === "PATCH") {
+        if (
+          (method === "POST" || method === "PATCH") &&
+          UNKEYED[name as ClientMethod] === undefined
+        ) {
           expect({ name, method, key }).toEqual({
             name,
             method,

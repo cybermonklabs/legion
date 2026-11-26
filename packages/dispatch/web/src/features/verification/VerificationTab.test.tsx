@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -11,7 +11,14 @@ import type {
   CheckResult,
   ResultCommitStands,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { VerificationTab } from "./VerificationTab";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const commit = "0123456789abcdef0123456789abcdef01234567";
 const otherCommit = "89abcdef0123456789abcdef0123456789abcdef";

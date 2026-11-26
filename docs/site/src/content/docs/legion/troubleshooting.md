@@ -191,6 +191,17 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
   - `Succeeded without checking the capability list (its legion CLI predates the check)`: the image's
     `legion` is older than this daemon's capability check. Build the image from this daemon's
     commit.
+  - `… does not take --session-id (omp-session-id=absent …)`, `… could not read whether its Oh My
+    Pi … takes --session-id …` or `… its legion CLI predates the omp-session-id mark …`:
+    `runtime.kubernetes.agent_secrets.exchange_audience` is set, so the daemon starts each new Oh My
+    Pi role with `--session-id <id>`, and the image's Oh My Pi does not take that flag, or nothing
+    shows that it does. The third message comes from an image whose `legion` speaks this daemon's
+    contract but prints no `omp-session-id` mark. An image whose `legion` is older than this release
+    is refused for its daemon contract instead (the first cause above). Use a worker image with an
+    Oh My Pi from the cybermonklabs/oh-my-pi release `v18.18.6-sami.20261117-074351` or a later
+    one, and a `legion` from this daemon's release or a later one, or unset `exchange_audience`.
+    The Oh My Pi that this release's `.omp-pin` names is that release or a later one, so an image
+    built on that pin passes.
   - `… refused role <role>'s Oh My Pi overlays: <file> cannot be read: …` (or `Oh My Pi refuses
     <file>: error: …`, quoting Oh My Pi's own error): a file `role_config_files` names for that
     role is not in the mount you gave it, or Oh My Pi cannot parse it. Add the key to the ConfigMap
@@ -893,16 +904,20 @@ waiting its turn. One wake has its session read its whole context again, which t
 as uncached input — a mean of 576,083 tokens, a median of 493,636 and a ninetieth percentile of
 1,327,888 — and the pacing is what spreads that over the minutes after a restart. A wave sustains
 about two thirds of the rate, about 5 a minute at the default, so a hundred claims take about
-twenty minutes. A restart forgets each waiting wake's moment. The launches it finds unfinished, a
+twenty minutes. A wake for a role that has an Envoy message waiting, and the relaunch of a role
+whose own process died, wait in a first queue that the pacing lets out ahead of the rest, which
+keep one turn in four ([legion.yaml](/legion/legion/running-legion/#legionyaml)). A restart
+forgets each waiting wake's place. The launches it finds unfinished, a
 claim launching with no process, and the relaunches of processes the previous daemon found dead go
-back into the pacing in one order, the order their tasks were queued, the oldest first, so among
-those a claim that waited before the restart goes ahead of work owed after it; the stale-plugin
-pass takes its turns as it reaches the gate, and while the project is paused the unfinished
-launches wait for the resume instead. A relaunch that reaches its gate an interval or more after
-the turn the boot gave it — its admission waits behind every other launch's — is reserved a turn
-afresh, at the back of the queue unless the pacing has drained, and the daemon logs `supervise:
-this launch reached the wake gate an interval or more after the turn its caller reserved` with the
-moment it is now `due`. Read what the pacing still holds before you act on anything below:
+back into the pacing's two queues, each queue in one order, the order their tasks were queued, the
+oldest first, so among those a claim that waited before the restart goes ahead of work owed after
+it; the stale-plugin pass takes its places as it reaches the gate, and while the project is paused
+the unfinished launches wait for the resume instead. A relaunch that reaches its gate an interval
+or more after the pacing let out the place the boot took for it — its admission waits behind every
+other launch's — joins its queue afresh, at the back unless the pacing has drained, and the daemon
+logs `supervise: this launch reached the wake gate an interval or more after the pacing let out the
+place its caller took` with the moment it is now `due`. Read what the pacing still holds before you
+act on anything below:
 
 ```sh
 legion state --config legion.yaml --json | jq '.wakesWaiting'
@@ -914,28 +929,35 @@ Each entry names the `claim`, its `issue` and `role`, the `kind` of wake (`launc
 process about to start; `plugin-refresh`, the relaunch of a session whose plugin speaks an
 earlier daemon contract, which the daemon replaces at that one wake and asks nothing of first;
 `catch-up`, the notice a start writes to an architect that is already running)
-and `dueAt`, the moment the pacing gave it, which is when it runs.
+and `dueAt`, the pacing's estimate, at the read, of the moment it lets that wake out, as the
+queues stand. A change to the queues or to the pace can move that moment earlier or later, so two
+reads can name two moments: for example, a wake ahead of it in its own queue that leaves moves it
+earlier, and a wake that joins and is let out ahead of it moves it later. The jitter alone, a
+random part of up to one interval for each turn, can make a wake with n wakes ahead of it run up
+to n intervals after its `dueAt`.
 An empty array says the wave has
-gone out; the last `dueAt` in it says when the last of the wave goes.
+gone out; the latest `dueAt` in it is the pacing's estimate of when the last of the wave goes.
 A claim on that list needs
-nothing from you: its wake is reserved and it runs at the moment named.
+nothing from you: its wake holds a place and it runs when the pacing lets that place out.
 To run one now: `legion claims retry --claim <token>` runs the launch of a claim that runs no
 process, `legion claims resume` that of a suspended one, and a task you send runs the launch over
-a process the claim still records. Each takes the reserved wake back, and the wakes behind it keep
-their turns.
+a process the claim still records. Each takes the waiting wake out of its queue, and the wakes
+behind it move up.
 
 A claim whose process the daemon found dead before the restart is on that list as well.
 Its record says the death was charged, and the boot raises the relaunch that death raised again, in
-the restart's own wave and in one order with the launches the previous daemon did not finish,
-without waiting for the runtime to report the death a second time.
+the restart's own wave and in the pacing's first queue, ahead of the launches the previous daemon
+did not finish, without waiting for the runtime to report the death a second time.
 Until its turn, such a claim reads the state it was in when its process died, most often `working`
 or `shim_connected`, with `lastDeathCause` naming the death (after an issue pod's `roles` container
 was killed for memory and restarted, `launcher reports no child; container roles restarted`), and
 its `wake` (the claim's entry under `.issues` of the same `legion state --json` body) names the
 launch it waits for.
 The controller's `fresh_session` refuses such a claim with `CLAIM_UNSETTLED` while it reads
-`working`, `launching` or `shim_connected`: its launch is already in flight, and runs at the
-`dueAt` the list names.
+`working`, `launching` or `shim_connected`: its launch is already in flight, and runs when the
+pacing lets it out.
+The `dueAt` the list names is the pacing's estimate of that moment at the read, and it can move:
+a later read can name an earlier or a later one.
 A claim that reads `registered`, `ready` or `idle` it suspends and starts again in a fresh session
 at once.
 A project pause's stop of such a claim records the relaunch as owed for the pause's end, even when
@@ -1179,19 +1201,34 @@ Nothing adds the two lines to these commits:
 - A `git commit` when the git whose version `legion git` reads is older than 2.32, the first git with `git commit --trailer`: the real git in a pod, and under tmux the first git on `PATH` after `bin/` that is a compiled program.
   A host's git wrapper script that runs another git older than 2.32 makes the commit fail on the two `--trailer` options instead (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
 
+- A `git commit` whose caller asks git for an isolated configuration, as hermetic tests do: `GIT_CONFIG_NOSYSTEM` set to a value git reads as true, such as `1`, or `GIT_CONFIG_GLOBAL=/dev/null`.
+  `legion git` then hands the commit to git as written, so its message and commit id are what git alone makes.
+
 - Under Claude Code, a jj commit from a subagent's shell that lacks the session's environment file (Claude Code issue 46696).
   That subagent's `git commit` still gets the `Legion-Role` line.
 
-**The git author and committer name no role.**
+**Inside the shared working copy, the git author and committer can name another role.**
 jj sets a commit's git author and committer by its own rules in the shared workspace.
 They depend on which role's jj command made or last rewrote the shared working-copy commit `@`, and not on which role committed.
-So a commit can show the GitHub App of another role as its author, and its trailers still name the role that made it.
+So inside the shared working copy, a commit can still show the GitHub App of another role as its author, and its trailers still name the role that made it.
+
+**Each push sets the author from the `Legion-Role` trailer.**
+Before each `jj git push`, the push step of `legion jj` gives each commit that the push sends the author of the role that its first `Legion-Role` trailer names, with the exceptions below.
+It takes that role's identity from `LEGION_ROLE_IDENTITIES`, which the daemon writes into every workflow role's process.
+It prints one line for each commit it rewrote: `legion jj: <role>: <old commit id> -> <new commit id>`.
+A commit with no `Legion-Role` trailer keeps the author that jj gave it.
+So do a commit whose role has no identity in the table, a commit that a remote bookmark holds, and an immutable commit.
+So does a commit that only a git tag or another ref of git's other than `HEAD` and a local branch names, and every commit of a push where the step prints that it could not read what the push sends or could not set the author, but one with an empty author that the step filled first (`docs/deployment.md`).
+A role process with no table runs no step, such as a pane of a release without daemon API contract entry `20261125161436`.
+In a pod the image's jj wrapper hands each push to the step.
+Under tmux the `jj` in the state directory's `bin/` does, or the image's wrapper where that is the first jj on the daemon's `PATH` (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
 
 **The adoption sets the author of `@`.**
 Before the daemon sends a role a phase task, it asks that role's shim to adopt the working copy under the role's App identity.
 The shim runs `jj log` on `@`, which snapshots the working copy.
 Then it runs `jj metaedit --update-author` on an `@` that has no description, or `jj new` on an `@` that has one.
-The metaedit fills an author that is empty: an `@` that jj makes with no identity has an empty author, and `jj git push` refuses such a commit.
+The metaedit fills an author that is empty: an `@` that jj makes with no identity has an empty author.
+`jj git push` refuses such a commit, unless the push step first gives it the author of the role that its `Legion-Role` trailer names.
 An adoption can also make one role the author of edits that another role left in `@`.
 
 **Which tasks adopt the working copy.**
@@ -1292,7 +1329,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
 
 ## A pod does not come up
 
-- **`Pending`.** Usually scheduling: a pod reserves its roles' cpu and memory (3 CPU and 19 GiB for
+- **`Pending`.** Usually scheduling: a pod reserves its roles' cpu and memory (2 CPU and 8 GiB for
   an issue pod at the defaults) and lands wherever the pool has room, so a pool at its limits leaves
   the next pod unscheduled until the daemon reads it dead past `worker_boot_timeout_seconds` and,
   once its launch failures run out, fails the claim. `kubectl -n legion describe pod <pod>` names the
@@ -2289,12 +2326,14 @@ notice comes once per handoff commit, from whichever read finds it first.
   reads `"state": "failed"` until a login succeeds. Nothing needs restarting, and no person is ever
   asked. The line names the class the failure was sorted into (`class`), the retry schedule that
   class takes (`schedule`), the wait before the next login (`retry_in`) and the cause (`error`).
-  When a login got no HTTP answer, or a 5xx answer from the broker or its front door (the
-  broker is down, out of reach, or cannot reach its database), the daemon retries 2 s later,
-  doubling to at most 10 s, so it logs in within about 10 s of the broker serving again. After
-  any other failure it retries 30 s later, doubling to at most 5 minutes: a refusal the broker
-  decided, a token file it could not read, and a fault on the daemon's own side — a TLS
-  handshake that failed, or a host name that does not resolve — which no wait of seconds fixes.
+  When a login got no HTTP answer, or a 408, a 429 or a 5xx answer from the broker or its front
+  door (the broker is down, out of reach, cannot reach its database, or will not take a login
+  yet), the daemon retries 2 s later, doubling to at most 10 s, so it logs in within about 10 s of
+  the broker serving again. After a 429 it waits at least as long as the answer's `Retry-After`
+  asks, at most 5 minutes. After any other failure it retries 30 s later, doubling to at most 5
+  minutes: a refusal the broker decided (any other 4xx), a token file it could not read, and a
+  fault on the daemon's own side — a TLS handshake that failed, or a host name that does not
+  resolve — which no wait of seconds fixes.
 
   ```sh
   legion state --config legion.yaml --json | jq .agentSecretsLogin

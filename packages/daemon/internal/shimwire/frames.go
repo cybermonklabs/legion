@@ -656,6 +656,14 @@ type LauncherStart struct {
 // it writes them.
 func GenerationDir(generation uint64) string { return "g" + strconv.FormatUint(generation, 10) }
 
+// DispatchTokenBrokerVariable is the daemon's word, in a role's environment (LauncherStart's Env),
+// that its Dispatch credential is a token its Dispatch client trades its pod's exchange identity
+// for at the secrets broker, and nothing else: under it the client reads no bearer from any source
+// (packages/envoy-client's dispatch-config.ts, brokerRouteForced), and the role's worker shim
+// refuses a providers-Secret key that would hand it the shared one (shim.ReadProviderEnv). The
+// Sandbox runtime tells it, as 1, under dispatch_token_broker alone.
+const DispatchTokenBrokerVariable = "DISPATCH_TOKEN_BROKER"
+
 // SessionRefusal is why a launcher refused a start over the session it was asked to resume. It is
 // one kind with two values rather than a flag for each, because a start meets at most one of them:
 // SessionGone is the session table answering that it holds no such session, a session that is
@@ -804,9 +812,9 @@ type PromptResult struct {
 }
 
 // PromptError is how a prompt's work failed, as the pinned Oh My Pi declares it: `{message,
-// provider?, model?, httpStatus?, retryable, code?}`, the "failure detail of a `prompt_result`
-// with `status: \"error\"`" (`RpcPromptError` in packages/coding-agent/src/modes/rpc/rpc-types.ts,
-// and docs/rpc.md, of cybermonklabs/oh-my-pi at the pinned tag). Oh My Pi writes it for a prompt
+// provider?, model?, httpStatus?, retryable, code?}`, the "Failure detail for a `prompt_result`
+// with `status: \"error\"`" (`RpcPromptError` in packages/coding-agent/src/modes/rpc/rpc-types.ts
+// of cybermonklabs/oh-my-pi at the pinned tag). Oh My Pi writes it for a prompt
 // whose last assistant message ended with stopReason "error" — a provider request its own retries
 // could not get through, where Retryable says it may still succeed later — and for one it failed
 // outright before any turn.

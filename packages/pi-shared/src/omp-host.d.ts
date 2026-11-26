@@ -218,7 +218,7 @@ declare module "@oh-my-pi/pi-ai" {
     readonly stopReason: string;
     readonly errorMessage?: string;
     /** The HTTP status of the provider request an `error` stop failed on, where the provider gave
-     * one (`packages/ai/src/types.ts:1517-1518` at the pinned tag). */
+     * one (`packages/ai/src/types.ts:1524-1525` at the pinned tag). */
     readonly errorStatus?: number;
   }
   export function completeSimple<TApi extends Api>(
@@ -251,13 +251,27 @@ declare module "@oh-my-pi/pi-ai" {
 }
 
 declare module "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader" {
-  /** The module path of every extension loaded for `cwd`: the explicit paths, then the
-   * discovered ones, less the disabled. */
+  /** Where discovery found an extension: a project's own, the user's, an explicit or configured
+   * path, or a host's inline factory. Oh My Pi declares it in `extensibility/extensions/types.ts`
+   * (`ExtensionScope`, line 2687 at v18.18.6-sami.20261125-164517); it is a type alone, so
+   * declaring it here beside its one reader changes nothing at run time. */
+  export type ExtensionScope = "project" | "user" | "explicit" | "inline";
+  /** One extension discovery found: its module path and the scope it was found at
+   * (`ExtensionPathEntry`, `extensibility/extensions/types.ts:2690-2693` at
+   * v18.18.6-sami.20261125-164517). */
+  export interface ExtensionPathEntry {
+    readonly path: string;
+    readonly scope: ExtensionScope;
+  }
+  /** Every extension loaded for `cwd`, each found once: the native modules, the hooks and the
+   * installed plugins' modules, then the explicit paths, less the disabled
+   * (`extensibility/extensions/loader.ts:804-883` at v18.18.6-sami.20261125-164517). Each is an
+   * entry; v18.18.6-sami.20261123-024918 returned the bare paths. */
   export function discoverExtensionPaths(
     explicit: readonly string[],
     cwd: string,
     disabled: readonly string[]
-  ): Promise<string[]>;
+  ): Promise<ExtensionPathEntry[]>;
 }
 
 declare module "@oh-my-pi/pi-coding-agent/mcp/config" {

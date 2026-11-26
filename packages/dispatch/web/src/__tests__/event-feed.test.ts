@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, type QueryKey } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
@@ -34,6 +34,7 @@ import type { Ask, AskRead, DispatchEvent, EventType, InboxRow } from "../api/ty
 import { hasPendingAskThreadInvalidation } from "../features/inbox/ask-thread-freshness";
 import { issueAsk } from "../features/inbox/inbox-fixture";
 import { useAskAnswerForm } from "../features/inbox/useAskAnswerForm";
+import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
 import {
   askQuery,
   blockQuery,
@@ -43,12 +44,17 @@ import {
   messageQuery,
 } from "../features/refs/reference-target";
 
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
 // The page every rule is read against: one read of each family a Dispatch tab holds, under the
 // key its own reader builds, for issue CORE-1 (child of CORE-0, grandchild of CORE-00) and for
 // what sits beside it. A rule is what an event marks stale here, through the real scheduler.
 const READS = {
-  // The work under one priority, as a scoped issues table reads it: the Priorities page's open
-  // row and the priority's own page.
+  // The work under one priority, as a scoped issues table reads it: the priority's own page.
   advancesWork: { key: advancesIssuesQuery({ advances: "linkage-closure" }, true).queryKey },
   // A fault list of the Priorities page: the work under any priority standing in backlog or
   // icebox, with its move there, as that page's Issues table reads it.
@@ -181,7 +187,6 @@ const READS = {
   projectInbox: { key: ["inbox", "CORE"] },
   projectList: { key: projectIssuesQuery("CORE", []).queryKey },
   projects: { key: projectsQuery().queryKey },
-  referencePicker: { key: ["issues", "CORE"] },
   // The names `referenceTargetsQuery` keeps under the set of references it was asked for.
   referenceTargets: {
     key: ["reference-targets", ["dispatch://CORE-1/comment/comment-1", "dispatch://CORE-1/spec"]],
@@ -440,7 +445,6 @@ const rules: Record<string, Rule> = {
         "projectList",
         "labelledProjectList",
         "summary",
-        "referencePicker",
         "agentsPicker",
         "pinned",
         "inbox",
@@ -495,7 +499,6 @@ const rules: Record<string, Rule> = {
         "pinned",
         "components",
         "architecture",
-        "referencePicker",
         "agentsPicker",
         "priorities",
         "prioritySummary",
@@ -539,7 +542,6 @@ const rules: Record<string, Rule> = {
       "projects",
       "components",
       "architecture",
-      "referencePicker",
       "agentsPicker",
     ],
     spares: ["unrelatedDetail", "replies", "parentPanel", "referencesTab", "parentSummary"],
@@ -607,7 +609,6 @@ const rules: Record<string, Rule> = {
       "detail",
       "unrelatedDetail",
       "summary",
-      "referencePicker",
       "agentsPicker",
       "pinned",
       "inbox",
@@ -631,7 +632,6 @@ const rules: Record<string, Rule> = {
         "projects",
         "grandparent",
         "unrelatedDetail",
-        "referencePicker",
         "agentsPicker",
         "components",
         "steps",
@@ -711,7 +711,7 @@ const rules: Record<string, Rule> = {
     refreshes: ["detail"],
     spares: ["advancesWork", "parkedWork", "priorities", "prioritySummary"],
   },
-  "a new issue refreshes its ancestors' rollups and the pickers, not every detail or the project counts":
+  "a new issue refreshes its ancestors' rollups and the Agents page's issue picker, not every detail or the project counts":
     {
       event: event(
         "issue.created",
@@ -724,7 +724,6 @@ const rules: Record<string, Rule> = {
         "detail",
         "parent",
         "summary",
-        "referencePicker",
         "agentsPicker",
         "components",
         "architecture",
@@ -765,7 +764,7 @@ const rules: Record<string, Rule> = {
       status: "in_progress",
     }),
     refreshes: ["collaborators", "detail", "log", "projectList", "steps"],
-    spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
+    spares: ["summary", "pinned", "inbox", "projects", "replies", "userState"],
   },
   "a release refreshes the issue's steps, since a role's run ended": {
     event: event("issue.released", { claim: null, key: "CORE-1" }),
@@ -785,7 +784,7 @@ const rules: Record<string, Rule> = {
         to_version: 7,
       }),
       refreshes: ["detail", "log", "projectList"],
-      spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
+      spares: ["summary", "pinned", "inbox", "projects", "replies", "userState"],
     },
   "a recorded handoff refreshes the issue's handoff list, its steps and its log, and no rollup": {
     event: event("handoff.recorded", { handoff_id: "handoff-1", phase: "implement", version: 2 }),
@@ -1854,10 +1853,10 @@ function priorityWrite(change: "created" | "updated" | "deleted"): DispatchEvent
   );
 }
 
-/** A page whose reads of CORE-1 - its issue read, a project's list, the pinned list, both pickers,
- *  the parked fault list and the work under linkage-closure - hold it advancing linkage-closure,
- *  beside an issue read, a project's list and the work under oss-verify that advance oss-verify
- *  alone. */
+/** A page whose reads of CORE-1 - its issue read, a project's list, the pinned list, the Agents
+ *  page's issue picker, the parked fault list and the work under linkage-closure - hold it
+ *  advancing linkage-closure, beside an issue read, a project's list and the work under
+ *  oss-verify that advance oss-verify alone. */
 const HOLDS_LINKAGE: NonNullable<PageOptions["advances"]> = {
   advancesWork: ["linkage-closure"],
   agentsPicker: ["linkage-closure"],
@@ -1867,7 +1866,6 @@ const HOLDS_LINKAGE: NonNullable<PageOptions["advances"]> = {
   parkedWork: ["linkage-closure"],
   pinned: ["linkage-closure"],
   projectList: ["linkage-closure"],
-  referencePicker: ["linkage-closure"],
   unrelatedDetail: ["oss-verify"],
 };
 
@@ -1914,7 +1912,6 @@ test("a priority.updated of a deleted priority refreshes its work, the work unde
     "priorityHistory",
     "prioritySummary",
     "projectList",
-    "referencePicker",
   ]);
 });
 
@@ -1927,7 +1924,6 @@ test("a priority.updated of a deleted priority refetches no issue read that does
     parkedWork: ["oss-verify"],
     pinned: ["oss-verify"],
     projectList: ["oss-verify"],
-    referencePicker: ["oss-verify"],
   };
   expect(refreshedReads(priorityWrite("deleted"), { advances: otherOnly }).sort()).toEqual([
     "advancesWork",

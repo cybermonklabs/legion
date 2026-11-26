@@ -181,7 +181,7 @@ func newOlderLauncherRig(t *testing.T, failures int) *olderLauncherRig {
 		Generation: 1, Status: "in_progress", HandedOver: true, Rank: "U",
 	}, supervise.Claim{
 		Token: token, Project: olderLauncherProject, Tree: olderLauncherIssue, Issue: olderLauncherIssue, Role: claim.RoleImplementer,
-		Generation: 1, State: supervise.StateQueued, PluginContract: api.DaemonAPIVersion, Session: olderLauncherSession,
+		Generation: 1, State: supervise.StateQueued, PluginContract: api.DaemonAPIVersion(), Session: olderLauncherSession,
 		Budgets:          supervise.Budgets{LaunchFailures: failures},
 		TurnOutcomes:     []supervise.TurnOutcome{{Generation: 1, Sequence: 1, Refused: true, Message: "overloaded"}},
 		ProviderErrorRun: 2,
@@ -217,7 +217,7 @@ func newOlderLauncherRig(t *testing.T, failures int) *olderLauncherRig {
 		ClaimActivity:      st.ClaimActivity,
 		Limits:             supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:           supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract:     api.DaemonAPIVersion,
+		PluginContract:     api.DaemonAPIVersion(),
 		PluginRelaunchable: true,
 		RefreshGate:        supervise.NewRefreshGate(0),
 		Worker:             store.ForConcurrentWorker,
@@ -570,7 +570,7 @@ func (r *olderLauncherRig) wantForgotAtTheNextTry(from, failures int) {
 	r.awaitForgetTold()
 	r.wantToldOnce()
 
-	if err := r.registerAs(olderLauncherFresh, olderLauncherFreshFile, api.DaemonAPIVersion); err != nil {
+	if err := r.registerAs(olderLauncherFresh, olderLauncherFreshFile, api.DaemonAPIVersion()); err != nil {
 		r.t.Fatalf("the fresh agent's registration as %s = %v; want it accepted", olderLauncherFresh, err)
 	}
 	if c := r.claim(); c.Session != olderLauncherFresh || c.SessionFile != olderLauncherFreshFile {
@@ -629,7 +629,7 @@ func TestAnOlderLauncherResumesTheSessionByItsIDWithTheRecreatedSentence(t *test
 		t.Errorf("the prompt of the Resume with ResumeByAgent addresses the agent %q; want it to name %s and say the workspace %s",
 			addressing, olderLauncherSession, recreatedWords)
 	}
-	if err := r.registerAs(olderLauncherSession, olderLauncherSessionFile, api.DaemonAPIVersion); err != nil {
+	if err := r.registerAs(olderLauncherSession, olderLauncherSessionFile, api.DaemonAPIVersion()); err != nil {
 		t.Fatalf("the registration as %s on %s = %v; want it accepted", olderLauncherSession, olderLauncherSessionFile, err)
 	}
 	if stored := r.stored(); stored.Session != olderLauncherSession || stored.SessionFile != olderLauncherSessionFile || stored.AgentResumeGeneration != 0 {
@@ -682,7 +682,7 @@ func TestAnOlderLauncherStartThatDoesNotRegisterForgetsTheSessionAtTheNextTry(t 
 			// The older launcher's pod carries the earlier release's plugin, so the registration
 			// speaks an older contract: the mark names this generation, which is what keeps the
 			// roll edge's rule from it.
-			if err := r.registerAs(olderLauncherOther, olderLauncherOtherFile, api.DaemonAPIVersion-1); !errors.Is(err, claim.SameAgentRefusal) {
+			if err := r.registerAs(olderLauncherOther, olderLauncherOtherFile, api.DaemonAPIVersion()-1); !errors.Is(err, claim.SameAgentRefusal) {
 				r.t.Fatalf("the registration as %s = %v; want the same-agent refusal, 409", olderLauncherOther, err)
 			}
 			r.gone()

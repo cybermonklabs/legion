@@ -101,6 +101,10 @@ type State struct {
 	// (runtime.kubernetes.agent_secrets), absent when the deployment configures
 	// no broker.
 	AgentSecretsLogin *AgentSecretsLoginView `json:"agentSecretsLogin,omitempty"`
+	// DispatchCredential is the daemon's own Dispatch credential under dispatch_token_broker and
+	// the two counts a deployment reads before it removes dispatch_token_transition_file
+	// (DispatchCredentialView), absent when the setting is off (contract 275).
+	DispatchCredential *DispatchCredentialView `json:"dispatchCredential,omitempty"`
 	// Capabilities is the deployment's capability report (capabilities.Deployment.Report), one row
 	// per capability in the table's order: what the worker image was probed for, what the live
 	// sessions' reports prove (present), fail (open) or have not reported yet (unchecked), what a
@@ -528,6 +532,22 @@ func ControllerLocatorOf(runtimeName string, record controller.Record) *Controll
 // why a login failed — those live only in the daemon's process memory and its log.
 type AgentSecretsLoginView struct {
 	State string `json:"state"`
+}
+
+// DispatchCredentialView is the daemon's Dispatch credential under dispatch_token_broker, as the
+// state shows it: Session, the session its own Dispatch calls run under (`legion-daemon:<project>`,
+// dispatch.DaemonSession), which the secrets broker grants a token of; TransitionLaunches, the
+// launches since the daemon's boot that carried the transition token of
+// dispatch_token_transition_file, and LastTransitionLaunchAt, when the latest of them was sent,
+// null before the first; and LiveLaunchesWithDispatchToken, the live launches whose start carried a
+// Dispatch token, whichever daemon started them (sandbox.Runtime.DispatchTokens). A deployment
+// removes dispatch_token_transition_file once the last is zero: a pod started before the setting
+// holds the shared token while a generation started with it runs. Never a token.
+type DispatchCredentialView struct {
+	Session                       string     `json:"session"`
+	TransitionLaunches            int        `json:"transitionLaunches"`
+	LastTransitionLaunchAt        *time.Time `json:"lastTransitionLaunchAt"`
+	LiveLaunchesWithDispatchToken int        `json:"liveLaunchesWithDispatchToken"`
 }
 
 // MarshalJSON keeps `issues` an object and `pendingStatusWrites`, `heldOutboxRows`,
@@ -1941,9 +1961,13 @@ func StrandedByMove(stranded []StrandedClaim, suspended Suspenders) map[Stranded
 
 // WakeWaiting is one wake the daemon's pacing holds until its turn, as the state names it
 // (State.WakesWaiting): the claim it will wake, that claim's issue and role, what kind of wake it
-// is, and the moment the pacing gave it, which is when it runs. The kinds are the three lanes the
-// daemon paces, declared once where the machines reserve them (supervise.WakeKind) and each named
-// on the wire as the line that wake writes names it (supervise's wakeRan, the outbox's):
+// is, and the pacing's estimate, at the read, of the moment it lets the wake out, as its queues
+// stand. A waiting wake holds a place in a queue and no moment of its own. A change to the queues
+// or to the pace can move that moment earlier or later, so two reads can name two moments: for
+// example, a wake ahead of it in its own queue that leaves moves it earlier, and a wake that joins
+// and is let out ahead of it moves it later. The kinds are the three lanes the daemon paces,
+// declared once where the machines take their places (supervise.WakeKind) and each named on the
+// wire as the line that wake writes names it (supervise's wakeRan, the outbox's):
 //
 //   - `launch`, a role process the daemon is about to start, held by the claim's machine;
 //   - `plugin-refresh`, the relaunch of a process whose plugin speaks an earlier contract than
@@ -1989,11 +2013,12 @@ func WakesWaitingOf(held []supervise.WaitingWake, queued []WakeWaiting) []WakeWa
 }
 
 // WakeView is the wake the pacing holds for one claim, as that claim's view names it
-// (ClaimView.Wake): what kind of wake it is and the moment the pacing gave it, which is when it
-// runs. The claim, its issue and its role are the view's own, so the entry here is the rest of
-// the state's own `wakesWaiting` row (WakeWaiting) and reports the same wake. A claim view that
-// carries this and whose state is `queued` or `suspended` is a process the daemon has still to
-// start, which is the reading a reader of `updateState` alone cannot reach.
+// (ClaimView.Wake): what kind of wake it is and the pacing's estimate, at the read, of the moment
+// it lets the wake out (WakeWaiting says how that moment moves). The claim, its issue and its role
+// are the view's own, so the entry here is the rest of the state's own `wakesWaiting` row
+// (WakeWaiting) and reports the same wake. A claim view that carries this and whose state is
+// `queued` or `suspended` is a process the daemon has still to start, which is the reading a
+// reader of `updateState` alone cannot reach.
 type WakeView struct {
 	Kind  supervise.WakeKind `json:"kind"`
 	DueAt time.Time          `json:"dueAt"`

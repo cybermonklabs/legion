@@ -125,7 +125,7 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 				// ping unanswered (bus/connect.go), and then reconnects, which a frozen server
 				// never completes.
 				lost := func() bool { lostAtDrain, _ := mainConnection(listener.Output.String()); return lostAtDrain }
-				if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond, lost) {
+				if !testwait.Holds(listenerWaitBound(t), 100*time.Millisecond, lost) {
 					t.Fatalf("the listener's connection never read as lost under a frozen server:\n%s", listener.Output.String())
 				}
 			}
@@ -366,7 +366,7 @@ func awaitReplacedConsumer(t *testing.T, js jetstream.JetStream, stream string) 
 		}
 		return false
 	}
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond, replaced) {
+	if !testwait.Holds(listenerWaitBound(t), 100*time.Millisecond, replaced) {
 		t.Fatalf("nats.go did not replace the watcher consumer deleted from %s", stream)
 	}
 }

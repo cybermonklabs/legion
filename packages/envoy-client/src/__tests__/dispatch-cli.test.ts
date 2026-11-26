@@ -1735,6 +1735,117 @@ describe("the dispatch CLI", () => {
   });
 });
 
+// `dispatch api`: one request of a route under /api/v1 (a GET here; its writes, its answers and
+// the rest of its refusals are in dispatch-api.test.ts), with the session's own credential,
+// Dispatch's JSON answer printed as `jq` reads it. Its own Dispatch records the Authorization each
+// request carried, which the server above does not, and a broker of its own answers a pod's trade.
+describe("dispatch api", () => {
+  interface Asked {
+    readonly method: string;
+    readonly path: string;
+    readonly authorization: string;
+  }
+  const asked: Asked[] = [];
+  const dispatch = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch(request) {
+      const { pathname, search } = new URL(request.url);
+      asked.push({
+        method: request.method,
+        path: `${pathname}${search}`,
+        authorization: request.headers.get("Authorization") ?? "",
+      });
+      if (pathname === "/api/v1/issues/DSP-1") {
+        return Response.json({
+          key: "DSP-1",
+          claim: { actor: { kind: "session", id: "ses-architect" }, at: "2026-11-18T05:00:00Z" },
+        });
+      }
+      return Response.json(
+        { code: "NOT_FOUND", error: `issue ${pathname.split("/")[4]} not found` },
+        { status: 404 }
+      );
+    },
+  });
+  /** The session each trade asked the broker to write under, as its `session` form field. */
+  const trades: string[] = [];
+  /** The access token the broker answered each trade with, in the order of `trades`. */
+  const accessTokens: string[] = [];
+  const broker = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    async fetch(request) {
+      trades.push(new URLSearchParams(await request.text()).get("session") ?? "no session");
+      const accessToken = fixtureSecret("access");
+      accessTokens.push(accessToken);
+      return Response.json({
+        access_token: accessToken,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 600,
+        credential_id: "cred-1",
+      });
+    },
+  });
+  afterAll(() => {
+    dispatch.stop(true);
+    broker.stop(true);
+  });
+  beforeEach(() => {
+    asked.length = 0;
+    trades.length = 0;
+    accessTokens.length = 0;
+    forgetBrokerClients();
+  });
+  const session = { ...omp, DISPATCH_URL: `http://127.0.0.1:${dispatch.port}` };
+
+  test("reads a route with the session's bearer and prints Dispatch's JSON", async () => {
+    const { code, stdout } = await run(["api", "--path", "/api/v1/issues/DSP-1?events=0"], session);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout).claim.actor.id).toBe("ses-architect");
+    expect(asked).toEqual([
+      { method: "GET", path: "/api/v1/issues/DSP-1?events=0", authorization: `Bearer ${TOKEN}` },
+    ]);
+  });
+
+  test("under DISPATCH_TOKEN_BROKER=1, reads a route with a broker token traded for this session", async () => {
+    const projected = join(stateDir, "projected-token");
+    writeFileSync(projected, "projected.service.account.token\n");
+    // A pod launched under the setting: the bearer the environment still holds is never read.
+    const { code, stdout } = await run(["api", "--path", "/api/v1/issues/DSP-1"], {
+      ...session,
+      DISPATCH_TOKEN_BROKER: "1",
+      AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: projected,
+    });
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout).key).toBe("DSP-1");
+    expect(trades).toEqual(["ses-1"]);
+    expect(asked).toEqual([
+      {
+        method: "GET",
+        path: "/api/v1/issues/DSP-1",
+        authorization: `DPoP ${accessTokens[0]}`,
+      },
+    ]);
+  });
+
+  // Two paths dispatch-api.test.ts's refusals hold no row of: an encoded dot segment in mixed
+  // case, and a backslash after /api/v1.
+  test("refuses a path outside /api/v1, naming it, exit 2, and sends nothing", async () => {
+    const outside = ["/api/v1/%2E%2e/healthz", "/api/v1/issues\\..\\..\\healthz"];
+    for (const path of outside) {
+      const { code, stdout } = await run(["api", "--path", path], session);
+      expect(code, path).toBe(2);
+      expect(stdout, path).toStartWith("dispatch api was not called: 1 problem\n");
+      expect(stdout, path).toContain(`path ${JSON.stringify(path)} `);
+    }
+    expect(asked).toEqual([]);
+  });
+});
+
 // Two refusals an agent meets as the exit status of a command and the words on its own stdout,
 // which a call inside this process cannot make: the command is its own process in production,
 // and `packages/dispatch/e2e/dispatch-cli.ts:6-8` spawns this same entry for that reason. The
