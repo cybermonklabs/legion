@@ -119,7 +119,7 @@ type PlanVersion struct {
 	GivenAt       time.Time
 	EarlierGivers []claim.Token
 	Added         []string
-	ownerGivers  []claim.Token
+	ownerGivers   []claim.Token
 }
 
 // Givers is every owner that gave v, the giver the store added last (GivenBy) first, and none for a
