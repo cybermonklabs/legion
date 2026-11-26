@@ -143,7 +143,8 @@ export const KIND_WORDS = {
 } as const;
 
 /** The words a row and an opened record draw in `[data-thread-gone]` for a record on a node that
- *  was deleted in Graph (R7, R8). Owed until dispatch://INFRA-1253's node anchor is on the base. */
+ *  was deleted in Graph (R7, R8). Owed until dispatch://INFRA-1253's change adds these words to
+ *  `page-words-threads.ts` with the component that draws them. */
 export const GONE_NODE = "On text deleted in Graph";
 
 /** From 1024 px up, with no record and no New thread open, the main column's one line (R2): a
@@ -210,8 +211,9 @@ export const SELECTORS = {
    *  an agent by its role (`agentRoleWord` of its session's title), the Legion daemon by
    *  `daemonName`. */
   person: "[data-thread-person]",
-  /** The row's last activity: a `time` whose `datetime` is the record's last activity. */
-  activity: "time[data-thread-activity]",
+  /** The row's last activity: the `time` inside `[data-thread-activity]` whose `datetime` is
+   *  the record's last activity (`Timestamp`). */
+  activity: "[data-thread-activity] time[datetime]",
   /** The row's count of new writes (R7): its text is the number, or the number and `+`, such as
    *  `3+`. A row with no counted write draws no such element. */
   mark: "[data-thread-mark]",
@@ -1408,7 +1410,7 @@ export function markOf(
     (low, event) => Math.min(low, event.seq),
     Number.POSITIVE_INFINITY
   );
-  const plus = reads.events.length === 200 && oldest > reads.lastReadSeq;
+  const plus = reads.events.length === 200 && oldest > reads.lastReadSeq && oldest > 1;
   return count === 0 ? null : `${count}${plus ? "+" : ""}`;
 }
 

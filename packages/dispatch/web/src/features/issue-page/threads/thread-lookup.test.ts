@@ -234,6 +234,59 @@ test("a comment reply with a quote is read once more by its reply_to, whose thre
   expect(reads.asked.comment).toEqual([QUOTE_REPLY_ID, REPLY_TO_ID]);
 });
 
+test("a quoting reply on an ask is read once more by its ask_id, whose thread gives its record", async () => {
+  // No captured fixture holds a quoting reply on an ask, so this case builds one from
+  // `fixtures/ask.json` and `fixtures/comment-quote-reply.json`.
+  const askQuoteId = "a5c00000-0000-4000-8000-000000000001";
+  const followUpId = "a5c00000-0000-4000-8000-000000000002";
+  const quotedOnAsk = {
+    ...QUOTE_REPLY.comment,
+    answers: null,
+    ask_id: ASK_ID,
+    created_at: "2026-11-26T11:38:07.000000Z",
+    id: askQuoteId,
+    reply_to: null,
+  };
+  const followUp = {
+    ...(ASK.replies?.[0] ?? QUOTE_REPLY.comment),
+    answers: askQuoteId,
+    ask_id: ASK_ID,
+    created_at: "2026-11-26T11:38:08.000000Z",
+    id: followUpId,
+    reply_to: null,
+  };
+  const askWithQuote: AskRead = {
+    ...ASK,
+    replies: [...(ASK.replies ?? []), quotedOnAsk, followUp],
+  };
+  const commentRead: CommentRead = { comment: quotedOnAsk, replies: [] };
+
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, askQuoteId);
+  await jump(0);
+  await reads.answer("ask", { error: ASK_404() });
+  reads.again("ask");
+  await reads.answer("message", { error: MESSAGE_404() });
+  await reads.answer("comment", { body: commentRead });
+  await jump(0);
+  expect(view.result.current.kind).toBe("reading");
+  expect(reads.asked.ask).toEqual([askQuoteId, ASK_ID]);
+  await reads.answer("ask", { body: askWithQuote });
+  const lookup = view.result.current;
+  expect(recordOf(lookup)).toBe(askQuoteId);
+  expect(lookup.kind === "found" ? lookup.record.thread : undefined).toBe(ASK_ID);
+  expect(lookup.kind === "found" ? lookup.record.replies.map((reply) => reply.id) : []).toEqual([
+    followUpId,
+  ]);
+  await tick(5_000);
+  expect(reads.asked).toEqual({
+    ask: [askQuoteId, ASK_ID],
+    comment: [askQuoteId],
+    message: [askQuoteId],
+  });
+});
+
 test("a record whose issue_key is another issue's is no record of this page", async () => {
   jest.useFakeTimers();
   reads = routes();

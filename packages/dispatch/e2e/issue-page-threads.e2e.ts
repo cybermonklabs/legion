@@ -1628,12 +1628,18 @@ test("/threads, /threads/<id> and the address of a message only Threads draws op
     }
 
     // The same records by their rows' links.
+    let opened = 0;
     for (const address of addresses.slice(0, 6)) {
       await loadThreads(page, key);
       await pickChoice(page, address.under);
       if (!heldRows[address.under === "agents" ? "agents" : "all"].has(address.record)) continue;
       await openRow(page, key, address.record);
+      opened += 1;
     }
+    expect(
+      opened,
+      `row 10 opened ${opened} held records by their rows' links, expected at least 1`
+    ).toBeGreaterThan(0);
 
     // `/messages/<id>` of a thread the outline draws opens there, as `main` opens it, and so does
     // a message of the thread the Legion daemon began.
@@ -1899,20 +1905,25 @@ test("a write that lands while Threads is open is drawn with no reload, and the 
     // The rows of the second page drawn before the write, which the list draws at every moment
     // from the write until the row moves (R14), and not only where it comes to rest.
     const secondPageDrawn = paged.slice(expected[0]?.rows.length ?? 0);
+    let replyId = "";
+    let seen: string[][] = [];
     await watchListRows(page);
-
-    // Another's write: an agent's reply, through the API.
-    const reply = await createComment(
-      key,
-      { body: "A reply while the list is open.", reply_to: target.id },
-      { actor: REVIEWER, as: "agent" }
-    );
-    await expect
-      .poll(async () => (await drawnRows(page))[0]?.id, {
-        message: "the record of an agent's new reply does not move to the list's top",
-      })
-      .toBe(target.id);
-    const seen = await seenListRows(page);
+    try {
+      // Another's write: an agent's reply, through the API.
+      const reply = await createComment(
+        key,
+        { body: "A reply while the list is open.", reply_to: target.id },
+        { actor: REVIEWER, as: "agent" }
+      );
+      replyId = reply.id;
+      await expect
+        .poll(async () => (await drawnRows(page))[0]?.id, {
+          message: "the record of an agent's new reply does not move to the list's top",
+        })
+        .toBe(target.id);
+    } finally {
+      seen = await seenListRows(page);
+    }
     expect(seen.length, "the list drew nothing as the agent's reply landed").toBeGreaterThan(0);
     for (const drawn of seen) {
       expect(
@@ -1935,7 +1946,7 @@ test("a write that lands while Threads is open is drawn with no reload, and the 
       paged.filter((id) => !after.includes(id)),
       "the rows of the second page are gone after the write"
     ).toEqual([]);
-    await expect(recordEntry(page, reply.id), "the open record draws no new reply").toBeVisible();
+    await expect(recordEntry(page, replyId), "the open record draws no new reply").toBeVisible();
 
     // The reader's own write, from the open record: its row stays first with no mark.
     const own = await sendFromBox(

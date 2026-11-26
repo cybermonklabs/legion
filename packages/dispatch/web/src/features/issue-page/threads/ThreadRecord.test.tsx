@@ -3,7 +3,7 @@ import type { CommentThreadPage, MessageThreadPage } from "@legion/contracts";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { BODY, REFUSAL } from "../../../__tests__/draft-matrix-fixture";
+import { BODY, newQueryClient, REFUSAL } from "../../../__tests__/draft-matrix-fixture";
 import { jump, realClock } from "../../../__tests__/fake-clock";
 import {
   dwellOn,
@@ -267,6 +267,35 @@ describe("table A: the read mark (R9)", () => {
       window.restore();
     }
   });
+
+  test("opening a record for a non-human principal sends no unread-threads read", async () => {
+    const window = stubWindow(1440);
+    const control = installIntersectionObserver();
+    const mark = answerThreadReads().mockResolvedValue(undefined);
+    const sent = answerThreads();
+    const client = newQueryClient();
+    client.setQueryData(["whoami"], {
+      event_head: "0",
+      kind: "session",
+      login: "threads-planner",
+    });
+    const drawn = drawThreads(threadsAt(REMARK.comment.id), { client });
+    try {
+      await waitFor(() =>
+        expect(opened()).toHaveAttribute("data-thread-record", REMARK.comment.id)
+      );
+      await waitFor(() => expect(drawn.client.isFetching()).toBe(0));
+      expect(
+        sent.limited,
+        "opening a record for a non-human principal read /me/replies?limit=200"
+      ).toBe(0);
+    } finally {
+      drawn.done();
+      mark.mockRestore();
+      control.restore();
+      window.restore();
+    }
+  });
 });
 
 /** The issue the remark is on, which its comment pages are keyed by. */
@@ -408,6 +437,108 @@ describe("table C: the boxes and the send (R9, R11)", () => {
       expect(replyField("foot").value).toBe("@plan");
       expect(replyField("foot")).not.toHaveAttribute("aria-expanded");
     } finally {
+      drawn.done();
+      window.restore();
+    }
+  });
+
+  test("a comment whose author login differs from the viewer's only in case carries Edit", async () => {
+    const window = stubWindow(1440);
+    answerThreads({
+      comments: () => ({
+        ...commentsInBody,
+        threads: COMMENTS.map((row) =>
+          row.comment.id === REMARK.comment.id
+            ? {
+                ...row,
+                comment: {
+                  ...row.comment,
+                  author: { ...row.comment.author, id: row.comment.author.id.toUpperCase() },
+                },
+              }
+            : row
+        ),
+      }),
+    });
+    const drawn = drawThreads(threadsAt(REMARK.comment.id));
+    try {
+      await waitFor(() => expect(entry(REMARK.comment.id)).toBeDefined());
+      expect(
+        within(entry(REMARK.comment.id) as HTMLElement).getByRole("button", {
+          name: CONTROL_LABELS.edit,
+        }),
+        "a comment whose author differs only in case omitted Edit"
+      ).toBeTruthy();
+    } finally {
+      drawn.done();
+      window.restore();
+    }
+  });
+
+  test("a reply under an ask's reply and an edit of an ask's reply both refresh the ask pages", async () => {
+    const window = stubWindow(1440);
+    const sent = answerThreads();
+    const user = userEvent.setup();
+    const plannerReply = SETTLED?.thread.replies[0];
+    const readerReply = SETTLED?.thread.replies[1];
+    const create = spyOn(api, "createComment").mockResolvedValue({
+      ...(readerReply ?? {}),
+      body: "Under the ask's reply.",
+      id: "ask-sub-reply",
+    } as never);
+    const edit = spyOn(api, "editComment").mockResolvedValue({
+      ...(readerReply ?? {}),
+      body: "Thank you very much.",
+    } as never);
+    const drawn = drawThreads(threadsAt(SETTLED?.id));
+    try {
+      await waitFor(() => expect(entry(plannerReply?.id ?? "")).toBeDefined());
+      await waitFor(() => expect(drawn.client.isFetching()).toBe(0));
+      const asksBeforeReply = sent.asks;
+      await user.click(
+        within(entry(plannerReply?.id ?? "") as HTMLElement).getByRole("button", {
+          name: CONTROL_LABELS.reply,
+        })
+      );
+      await user.click(replyField(plannerReply?.id ?? ""));
+      await user.paste("Under the ask's reply.");
+      await user.click(
+        within(box(plannerReply?.id ?? "") as HTMLElement).getByRole("button", {
+          name: CONTROL_LABELS.send,
+        })
+      );
+      await waitFor(() =>
+        expect(
+          sent.asks,
+          "replying under an ask's reply did not read the ask pages again"
+        ).toBeGreaterThan(asksBeforeReply)
+      );
+      await waitFor(() => expect(drawn.client.isFetching()).toBe(0));
+      const asksBeforeEdit = sent.asks;
+      await user.click(
+        within(entry(readerReply?.id ?? "") as HTMLElement).getByRole("button", {
+          name: CONTROL_LABELS.edit,
+        })
+      );
+      const field = within(
+        entry(readerReply?.id ?? "") as HTMLElement
+      ).getByRole<HTMLTextAreaElement>("textbox", { name: "Edit comment" });
+      await user.click(field);
+      await user.paste(" Very much.");
+      await user.click(
+        within(entry(readerReply?.id ?? "") as HTMLElement).getByRole("button", {
+          name: "Save",
+        })
+      );
+      await waitFor(() =>
+        expect(
+          sent.asks,
+          "editing a comment inside an ask thread did not read the ask pages again"
+        ).toBeGreaterThan(asksBeforeEdit)
+      );
+    } finally {
+      create.mockRestore();
+      edit.mockRestore();
       drawn.done();
       window.restore();
     }

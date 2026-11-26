@@ -8,6 +8,7 @@ import { pageInkText, pageQuietText } from "../../../theme/classes";
 import { newestAttempt } from "../../agents/exchange-delivery";
 import { deliveryMode } from "../../conversation/delivery";
 import { DashboardAskBody } from "../../dashboard/DashboardAskBody";
+import { isViewer } from "../../refs/actor";
 import { postDeletion } from "../../refs/post-marks";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { useMarkThreadRead } from "../../threads/useMarkThreadRead";
@@ -207,8 +208,7 @@ export function OpenedRecord({
       record.kind !== "message" &&
       !closed &&
       postDeletion(post) === null &&
-      post.author.kind === "user" &&
-      post.author.id === viewer;
+      isViewer(post.author, viewer);
     const editing = open?.kind === "edit" && open.id === post.id;
     const drawn = (
       <RecordEntry
@@ -221,6 +221,7 @@ export function OpenedRecord({
                   <CommentEditBox
                     body={post.body}
                     id={post.id}
+                    inAsk={record.kind === "ask" || ("ask_id" in post && post.ask_id !== null)}
                     issueKey={issue.key}
                     onLeave={leave}
                   />

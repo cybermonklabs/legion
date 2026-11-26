@@ -24,8 +24,8 @@ function useReachedAgents(): { agents: typeof EMPTY_AGENTS; reach: () => void } 
 export interface AnsweredPost extends ReplyParent {
   readonly id: string;
   readonly author: Actor;
+  readonly ask_id?: string | null;
 }
-
 /**
  * A box of Threads that writes a comment (dispatch://INFRA-5704/spec#b-r-mentions, R9, R11): the
  * box at the foot of a comment thread or of a settled ask, and the box a reply control opens under
@@ -85,7 +85,7 @@ export function CommentBox({
           // Threads' pages stand under these prefixes (plan choice 3), so the record draws the
           // reply where it was sent; the reader's own write moves their unread threads too.
           void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
-          if (parentKind === "ask")
+          if (parentKind === "ask" || (parent.ask_id ?? null) !== null)
             void queryClient.invalidateQueries({ queryKey: ["asks", issueKey] });
           void queryClient.invalidateQueries({ queryKey: myRepliesKey });
           onLeave?.();
@@ -103,17 +103,21 @@ export function CommentBox({
  * The reader's own comment opened to edit (R9): a `MentionComposer` over its words, which saves
  * them with `PATCH /api/v1/comments/{id}` (`saveCommentEdit`), as part L's edit line does
  * (`IssueComposer.tsx`'s `EditLine`), under this part's own box id (`threads-comment-edit` in
- * `DISPATCH_WRITING_BOXES`). Once the save lands, the issue's comment reads are read again, which
- * Threads' comment pages stand under, and the box goes.
+ * `DISPATCH_WRITING_BOXES`). Once the save lands, the issue's comment reads (and, for a comment
+ * inside an ask thread, its ask reads) are read again, which Threads' pages stand under, and the
+ * box goes.
  */
 export function CommentEditBox({
   body,
   id,
+  inAsk = false,
   issueKey,
   onLeave,
 }: {
   readonly body: string;
   readonly id: string;
+  /** Whether the comment stands inside an ask thread, whose pages are under `["asks", issueKey]`. */
+  readonly inAsk?: boolean;
   readonly issueKey: string;
   /** The box goes: the save landed, or the reader closed it. */
   readonly onLeave: () => void;
@@ -134,6 +138,7 @@ export function CommentEditBox({
       saveEdit={async (comment, words, carried, bounds) => {
         const saved = await saveCommentEdit(comment, words, carried, bounds);
         await queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
+        if (inAsk) await queryClient.invalidateQueries({ queryKey: ["asks", issueKey] });
         return saved;
       }}
     />

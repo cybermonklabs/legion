@@ -76,8 +76,8 @@ const messageThreadQuery = (key: string, id: string | undefined) =>
  * still out, waits for that page, so a record the first pages hold is never looked up (R15). An
  * id that is no uuid is refused before any read, whatever the pages hold. Where the comment
  * route answers a reply with a quote, which may begin a record (R8) and whose read holds only the
- * comments whose `reply_to` names it, its thread is read once more by that `reply_to`, whose
- * records give the reply's.
+ * comments whose `reply_to` names it, its thread is read once more by its `reply_to` (for a
+ * comment thread) or its `ask_id` (for an ask thread), whose records give the reply's.
  */
 export function useThreadLookup(
   issueKey: string,
@@ -95,17 +95,21 @@ export function useThreadLookup(
   const comment = useQuery({ ...commentQuery(named), ...lookup });
   const message = useQuery({ ...messageThreadQuery(issueKey, named), ...lookup });
   const reply = comment.data?.comment;
+  const quotedReply =
+    reply !== undefined && reply.issue_key === issueKey && (reply.reply_block?.quote ?? "") !== "";
   const head =
-    reply !== undefined &&
-    reply.issue_key === issueKey &&
-    reply.reply_to !== null &&
-    (reply.reply_block?.quote ?? "") !== ""
-      ? reply.reply_to
-      : undefined;
+    quotedReply && reply.reply_to !== null && reply.ask_id === null ? reply.reply_to : undefined;
+  const replyAsk =
+    quotedReply && reply.ask_id !== null && reply.reply_to === null ? reply.ask_id : undefined;
   const thread = useQuery({
     ...commentQuery(head),
     ...lookup,
     enabled: (query: LookupQuery) => asked && head !== undefined && !refusedRead(query),
+  });
+  const askThread = useQuery({
+    ...askQuery(replyAsk),
+    ...lookup,
+    enabled: (query: LookupQuery) => asked && replyAsk !== undefined && !refusedRead(query),
   });
   if (named === undefined) return { kind: "missing" };
   if (held === true) return { kind: "held" };
@@ -116,6 +120,7 @@ export function useThreadLookup(
     answerOf(comment, reply?.reply_to === null && reply.ask_id === null ? reply.issue_key : null),
     answerOf(message, message.data?.message.issue_key),
     ...(head === undefined ? [] : [answerOf(thread, thread.data?.comment.issue_key)]),
+    ...(replyAsk === undefined ? [] : [answerOf(askThread, askThread.data?.ask.issue_key)]),
   ];
   // A record found stays found while a page that may hold it is out again, from the answers the
   // client keeps.

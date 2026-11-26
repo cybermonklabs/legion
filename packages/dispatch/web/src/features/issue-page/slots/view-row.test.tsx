@@ -101,7 +101,7 @@ function answerReads() {
 
 /** The view row of the fixtures' issue at `path`, its own address unless given, under the page's
  *  providers, with the Threads control given `threadsCount`. Each case draws it at 1440 px
- *  (`DESKTOP_WIDTH`), from 1280 px up, where the row is the row of five. */
+ *  (`DESKTOP_WIDTH`), from 1280 px up, where the row draws the controls as toggles. */
 function renderViewRow(
   client: QueryClient,
   path = presetPath(KEY, "conversation"),

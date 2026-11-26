@@ -359,9 +359,15 @@ async function pressRow(user: UserEvent, id: string): Promise<Element | null> {
   return record();
 }
 
+/** The recording `watchRows` keeps until `stop` disconnects its observer. */
+interface RowWatch {
+  readonly seen: string[][];
+  readonly stop: () => void;
+}
+
 /** Each list of rows the list draws from now on, read at each change of the page, so a case
  *  reads what the reader saw at every moment and not only where the page came to rest. */
-function watchRows() {
+function watchRows(): RowWatch {
   const seen: string[][] = [];
   const observer = new MutationObserver(() => seen.push(rowIds()));
   observer.observe(document.body, { characterData: true, childList: true, subtree: true });
@@ -402,12 +408,13 @@ describe("table D: live (R14)", () => {
       };
       return own as never;
     });
+    let watch: RowWatch | undefined;
     try {
       const paged = await pageAll(user);
       expect(paged.indexOf(TEXT.comment.id), "the record is no row of All's second page").toBe(25);
       expect(markOf(TEXT.comment.id), "the record's row draws no mark before the write").toBe("2");
       const opened = await pressRow(user, TEXT.comment.id);
-      const watch = watchRows();
+      watch = watchRows();
       await user.click(within(foot()).getByRole("textbox"));
       await user.paste("My own reply.");
       await user.click(within(foot()).getByRole("button", { name: CONTROL_LABELS.send }));
@@ -418,7 +425,6 @@ describe("table D: live (R14)", () => {
       await waitFor(() =>
         expect(markOf(TEXT.comment.id), "the reader's own write is counted").toBeUndefined()
       );
-      watch.stop();
       expect(create).toHaveBeenCalledTimes(1);
       expect(record(), "the record was drawn anew").toBe(opened);
       expect(drawn.address()).toBe(threadsAt(TEXT.comment.id));
@@ -427,6 +433,7 @@ describe("table D: live (R14)", () => {
       );
       expectEachStayed(watch.seen, paged);
     } finally {
+      watch?.stop();
       create.mockRestore();
       drawn.done();
     }
@@ -437,13 +444,14 @@ describe("table D: live (R14)", () => {
     const user = userEvent.setup();
     const reply = commentReply(QUIET, PLANNER, AGENT_REPLY, "A reply while the list is open.");
     const event = commentEvent(reply, []);
+    let watch: RowWatch | undefined;
     try {
       const paged = await pageAll(user);
       expect(paged.indexOf(QUIET.comment.id), "the thread is no row of All's second page").toBe(28);
       expect(markOf(QUIET.comment.id), "the thread's row draws a mark before the write").toBe(
         undefined
       );
-      const watch = watchRows();
+      watch = watchRows();
       drawn.server.comments = commentsWith(QUIET, reply);
       drawn.server.events = [event, ...EVENTS];
       deliver(drawn.client, event);
@@ -453,12 +461,12 @@ describe("table D: live (R14)", () => {
       await waitFor(() =>
         expect(markOf(QUIET.comment.id), "the moved row draws no mark of its new write").toBe("1")
       );
-      watch.stop();
       expect(new Set(rowIds()), "the list draws other rows than it was paged to").toEqual(
         new Set(paged)
       );
       expectEachStayed(watch.seen, paged);
     } finally {
+      watch?.stop();
       drawn.done();
     }
   });
@@ -568,13 +576,14 @@ describe("table D: live (R14)", () => {
     const user = userEvent.setup();
     const reply = commentReply(FILLER, PLANNER, AGENT_REPLY, "A reply in the open record.");
     const event = commentEvent(reply, [READER]);
+    let watch: RowWatch | undefined;
     try {
       const paged = await pageAll(user);
       expect(paged.indexOf(FILLER.comment.id), "the record is no row of All's second page").toBe(
         20
       );
       const opened = await pressRow(user, FILLER.comment.id);
-      const watch = watchRows();
+      watch = watchRows();
       drawn.server.comments = commentsWith(FILLER, reply);
       drawn.server.events = [event, ...EVENTS];
       deliver(drawn.client, event);
@@ -582,11 +591,11 @@ describe("table D: live (R14)", () => {
       await waitFor(() =>
         expect(rowIds()[0], "the record's row did not move first").toBe(FILLER.comment.id)
       );
-      watch.stop();
       expect(record(), "the record was drawn anew").toBe(opened);
       expect(drawn.address()).toBe(threadsAt(FILLER.comment.id));
       expectEachStayed(watch.seen, paged);
     } finally {
+      watch?.stop();
       drawn.done();
     }
   });
@@ -603,6 +612,7 @@ describe("table D: live (R14)", () => {
     };
     const threadRead = Promise.withResolvers<void>();
     const commentsRead = Promise.withResolvers<void>();
+    let watch: RowWatch | undefined;
     try {
       await waitFor(() => expect(rows().length, "All drew no row").toBe(20));
       await user.click(choice(THREADS_WORDS.choices.waiting));
@@ -615,7 +625,7 @@ describe("table D: live (R14)", () => {
       expect(before, "Waiting on me draws the thread before its write").not.toContain(
         OLDEST.comment.id
       );
-      const watch = watchRows();
+      watch = watchRows();
       // The server stores the reply: the thread is the newest of the reader's unread threads and
       // of All's first comment page. That page's answer and the thread's own read are held, so
       // no page holds the thread while its read is out.
@@ -651,7 +661,6 @@ describe("table D: live (R14)", () => {
         OLDEST.comment.id,
         ...before,
       ]);
-      watch.stop();
       expectEachStayed(watch.seen, before);
       await act(async () => commentsRead.resolve());
       await waitFor(() => expect(drawn.client.isFetching(), "a read is still out").toBe(0));
@@ -660,6 +669,7 @@ describe("table D: live (R14)", () => {
         ...before,
       ]);
     } finally {
+      watch?.stop();
       threadRead.resolve();
       commentsRead.resolve();
       drawn.done();
@@ -679,15 +689,15 @@ describe("table D: live (R14)", () => {
     const user = userEvent.setup();
     const reply = commentReply(QUIET, PLANNER, AGENT_REPLY, "A reply while the list is open.");
     const event = commentEvent(reply, []);
+    let watch: RowWatch | undefined;
     try {
       const paged = await pageAll(user);
-      const watch = watchRows();
+      watch = watchRows();
       drawn.server.comments = commentsWith(QUIET, reply);
       drawn.server.commentsNext = null;
       drawn.server.events = [event, ...EVENTS];
       deliver(drawn.client, event);
       await screen.findByText(ANSWER_LINES.threads_unreadable);
-      watch.stop();
       expect(rowIds(), "the rows drawn moved with the pages' read failed").toEqual(paged);
       expectEachStayed(watch.seen, paged);
       drawn.server.commentsNext = COMMENTS_NEXT;
@@ -698,6 +708,7 @@ describe("table D: live (R14)", () => {
       expect(screen.queryByText(ANSWER_LINES.threads_unreadable)).toBeNull();
       expect(new Set(rowIds())).toEqual(new Set(paged));
     } finally {
+      watch?.stop();
       drawn.done();
     }
   });

@@ -5,6 +5,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { primarySpec } from "../../../api/issue-cache";
 import { myRepliesOwnerQuery } from "../../../api/queries";
 import type { Message } from "../../../api/types";
+import { useIsHuman } from "../../../hooks/useIsHuman";
 import { focusVisibleRing, pageLineBorder, pageMutedText } from "../../../theme/classes";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { buildIssuePath } from "../../refs/routes";
@@ -126,9 +127,14 @@ export function ThreadsView({ issue, route }: SlotProps): ReactNode {
   // itself, as long as Threads stays open, so each mark that lands, and each event that moves
   // it, reads it again at once, while a record is open or not, and the next record opened
   // finds it fresh and sends no read of its own.
+  const human = useIsHuman(EVENT_FRESH);
   const [marking, setMarking] = useState(false);
   if (opened !== undefined && !marking) setMarking(true);
-  useQuery({ ...myRepliesOwnerQuery({ issue: issue.key }), ...EVENT_FRESH, enabled: marking });
+  useQuery({
+    ...myRepliesOwnerQuery({ issue: issue.key }),
+    ...EVENT_FRESH,
+    enabled: marking && human,
+  });
   useKeymap("issue", [
     {
       // R12: Escape with no caret in a box closes the record and returns to the list. With the

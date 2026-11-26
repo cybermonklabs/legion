@@ -54,10 +54,6 @@ export const THREADS_WORDS = freeze({
     message_to: "Message to",
     text: "Comment on text",
   },
-  /** On a row and on an opened record whose comment thread is on text that was deleted in Graph
-   *  (R7, R8). They say "text", since the page's rule refuses the model's word "node"
-   *  (`page-words.test.ts`, "no word the page declares is the model's word for a node"). */
-  gone_node: "On text deleted in Graph",
   /** The Legion daemon's name, which the page draws for its session `legion-daemon:<PROJECT>`,
    *  with the project's key after it (R7). */
   daemon: "Legion daemon",

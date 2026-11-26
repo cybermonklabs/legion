@@ -103,12 +103,12 @@ export function ThreadRow({
             <span className={`font-medium ${pageMutedText}`} data-thread-kind="" {...pageChrome}>
               <KindWords text={text} />
             </span>
-            {/* The row's contract names the `time` that carries its last activity, and the page's
-                `Timestamp` draws that time's words and keeps them current, so it stands inside
-                the row's own `time`. */}
-            <time className={pageQuietText} data-thread-activity="" dateTime={text.activity}>
+            {/* The row's contract names the `time` inside `[data-thread-activity]`, which
+                `Timestamp` draws itself with `datetime` set to the record's last activity, so
+                the outer wrapper is a `span` and never nests one `time` inside another. */}
+            <span className={pageQuietText} data-thread-activity="">
               <Timestamp at={text.activity} />
-            </time>
+            </span>
             {mark === undefined ? null : (
               <span
                 className={`rounded-full border px-1.5 font-semibold tabular-nums ${pageWaitingChip}`}

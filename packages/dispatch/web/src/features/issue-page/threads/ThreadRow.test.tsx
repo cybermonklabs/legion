@@ -39,10 +39,10 @@ function record(prefix: string): ThreadRecord {
   return found;
 }
 
-/** The first line the row of `shown` draws, once the projection has answered. */
-async function firstLineOf(shown: ThreadRecord, published?: PublishedReferences): Promise<string> {
+/** Renders one row of `shown` under the page's providers. */
+function drawRow(shown: ThreadRecord, published?: PublishedReferences) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
+  return render(
     <MemoryRouter>
       <AppProviders client={client}>
         {published === undefined ? null : <Publisher published={published} />}
@@ -61,6 +61,11 @@ async function firstLineOf(shown: ThreadRecord, published?: PublishedReferences)
       </AppProviders>
     </MemoryRouter>
   );
+}
+
+/** The first line the row of `shown` draws, once the projection has answered. */
+async function firstLineOf(shown: ThreadRecord, published?: PublishedReferences): Promise<string> {
+  const view = drawRow(shown, published);
   try {
     const line = () => view.container.querySelector("[data-thread-first-line]")?.textContent ?? "";
     await waitFor(() => expect(line()).not.toBe(""));
@@ -113,5 +118,19 @@ test("a row's first line reads a reference in its root's words as its target's n
     );
   } finally {
     references.mockRestore();
+  }
+});
+
+test("a row draws its last activity in one time element with no nested time", () => {
+  const shown = record("18ddeb81");
+  const view = drawRow(shown);
+  try {
+    const times = view.container.querySelectorAll("time");
+    expect(times.length, "the row drew more or fewer than one time element").toBe(1);
+    const activityTime = view.container.querySelector("[data-thread-activity] time[datetime]");
+    expect(activityTime?.getAttribute("datetime")).toBe(shown.lastActivity);
+    expect(view.container.querySelector("time time")).toBeNull();
+  } finally {
+    view.unmount();
   }
 });
