@@ -45,11 +45,16 @@ everything the broker depends on, and its generated configuration reference list
 with its default.
 
 `envoy-broker` with no argument serves.
-It takes three subcommands in place of serving; the third, `envoy-broker versions`, is in the
+It takes four subcommands in place of serving; one of them, `envoy-broker versions`, is in the
 operate page's "A migration recorded under another file".
 `envoy-broker end-sessions <login>` ends every browser session that login holds on the approval
 page and prints how many it ended;
 it reads the same configuration, binds no listener and applies no migration.
+`envoy-broker revoke-dispatch-signins` has the broker revoke every launcher credential whose
+`dispatch_scopes` is not null itself, under its own actor, which ends the tokens each Dispatch
+sign-in issued, and prints how many it revoked: step 3 of rolling `BROKER_DISPATCH_SIGNIN` back, in
+the operate page's "What to run". It reads no broker setting but `BROKER_DATABASE_URL`, signs in
+to the database as the broker does, binds no listener and applies no migration.
 `envoy-broker profiles check <file> [--against <old file>] [--secrets-json <file>] [--private-upstream '<host>=<url> ...' [--cluster-ranges <CIDR prefixes>]]`
 reads a profiles file with the broker's own code and exits 1, naming the kind or the profile and
 the field, or the parse position, when the broker would not serve that file: its parser holds the

@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The Dispatch skill's setup line sends a person to `dispatch login --help` to sign a session in,
+  and keeps the personal token beside it: **Settings → Agent tokens**, as `DISPATCH_TOKEN` or
+  `dispatch.token` in the session's `envoy.json`, which `dispatch-config.ts` reads.
+time: 2026-11-26T08:54:56Z
+custom:
+  Issue: INFRA-5943

@@ -15,12 +15,14 @@ const alicePodService = "person-alice";
 const alicePod: FakeLauncherCredential = {
   approved_by: "",
   credential_id: "cred-alice-pod",
+  dispatch_scopes: null,
   expired: false,
   expires_at: "2026-11-18T13:00:00Z",
   host: "people/alice",
   issued_at: "2026-11-18T12:00:00Z",
   listedFor: "alice",
   person: "alice",
+  reason: "",
   service: alicePodService,
   subject: "system:serviceaccount:people:alice",
 };
@@ -30,12 +32,14 @@ const alicePod: FakeLauncherCredential = {
 const daemon: FakeLauncherCredential = {
   approved_by: "",
   credential_id: "cred-daemon",
+  dispatch_scopes: null,
   expired: false,
   expires_at: "2026-11-18T13:00:00Z",
   host: "legion-system/legion-daemon",
   issued_at: "2026-11-18T12:00:00Z",
   listedFor: "alice",
   person: null,
+  reason: "",
   service: "legion-daemon",
   subject: "system:serviceaccount:legion-system:legion-daemon",
 };

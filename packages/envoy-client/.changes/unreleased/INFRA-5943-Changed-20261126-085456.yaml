@@ -1,0 +1,48 @@
+kind: Changed
+body: |-
+  `dispatch login --device --scope <list>` now creates a Dispatch sign-in for the scopes listed
+  (`person` and `p0`, as in `--scope person,p0`), or for no scope with `--scope none`; without
+  `--scope` it makes a machine login as before. A scope no sign-in may ask for, and a `--reason`
+  over 400 characters, exit 2 before any request. The command names the login as "this Dispatch
+  sign-in" and the session or tool its `--reason` names, and its help says that, whatever its
+  person ticks, the session writes in Dispatch and works on Envoy as its own session within its
+  person's projects, that `person` adds acting as the person, and that `p0`, which the page shows
+  unticked until the person ticks it, adds making an issue's own priority 0. A broker whose
+  `BROKER_DISPATCH_SIGNIN` is off refuses the sign-in's request in its own words,
+  "DISPATCH_SIGNIN_OFF: this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off";
+  a broker that predates sign-ins refuses it in words this client does not know, and the command
+  prints "this broker serves no Dispatch sign-in: it predates them, or BROKER_DISPATCH_SIGNIN is
+  off" in their place. It keeps the scopes the person
+  approved, some or all of those asked, and keeps no login whose answer lacks the scope `dispatch`
+  or names a scope it did not ask
+  for, saying where to revoke the sign-in; each refresh must answer the same scopes, or it is
+  refused and the file kept. A login file that names no approved scopes, which an earlier
+  release's refresh of the same file left, keeps the scopes its refresh answers under the scope
+  `dispatch`, so it reads as the Dispatch sign-in it is. A Dispatch sign-in that is denied,
+  revoked or ran out names the
+  command that makes the same sign-in again, `dispatch login --device --scope <its scopes, or
+  none>`. The broker's refusals of a sign-in (its read trade, a broker whose sign-ins are off, a
+  scope it does not take, a device scope it does not know, actions on a machine login, a restricted
+  member's sign-in) print in its own words. `dispatch whoami` names the scope or scopes the
+  credential holds, or says it holds no scope, and carries them as `scopes` in its details.
+  `dispatch inbox` prints a pending Dispatch sign-in as `Dispatch sign-in`, with the scopes it asks
+  for (`no scope` for none) and, in place of a session, the reason its request gave, marked as the
+  requester's own words and unchecked, since anybody who reaches the broker's device route writes
+  one, or `gives no reason`; a machine login's and a secret request's lines are as before. A
+  session still running when `dispatch login --device` keeps another login refuses to trade it,
+  as before, and now says to start a new session in every case, a scope change included, since
+  the broker keeps a session's name for the identity that wrote under it, and the login file does
+  not say whose the new login is, so the same session started again may be refused. A session
+  whose machine login another machine login replaced is told so too, where it was told to start
+  the same session again: the login file names no person, so the client cannot tell a machine
+  login of the same person, which the same session started again would trade, from one of another
+  person, which it would not; `dispatch login --help` says the same. Such a session now stops
+  trading at once and answers each call with that refusal and its cure, where it used to retry the
+  trade in the background forever, though no retry could cure it. On Envoy, a session whose device
+  login the broker ended, or another login replaced, now prints that cure where it printed
+  "(message withheld)", and the keeper of its NATS connection no longer says a token will come
+  after such a refusal, or any other no trade cures: it says no renewal cures it, and that once the
+  token in hand lapses the server refuses each redial while the refusal lasts.
+time: 2026-11-26T08:54:56Z
+custom:
+  Issue: INFRA-5943

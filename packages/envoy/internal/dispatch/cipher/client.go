@@ -5,8 +5,9 @@
 // decides it; it relays a machine login's decision with the code the person typed; it relays a
 // person's dismissal of an expired request; it relays a person's revoke of a grant, a machine
 // login or one of their own sign-ins; and it reads the broker's public RFC 8414 metadata, so a
-// page can know which grants this broker serves. Reads and the machine-login lookup carry and
-// return json.RawMessage, so a broker read-shape change never requires a Dispatch code change.
+// page can know which grants this broker serves and whether it serves a Dispatch sign-in. Reads
+// and the machine-login lookup carry and return json.RawMessage, so a broker read-shape change
+// never requires a Dispatch code change.
 // Every decision (a machine login's approve or deny, a dismissal, a revoke) instead carries a
 // body Dispatch builds itself: the person it names is the login Dispatch's own session resolved,
 // so nothing the browser sends can name who decided.
@@ -36,6 +37,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
@@ -55,10 +57,10 @@ type Client struct {
 	// Dispatch cannot read are one reading rather than two.
 	Account *ciphertoken.AccountToken
 	HTTP    *http.Client
-	// deviceGrant is the last read of the broker's RFC 8414 metadata, which ServesDeviceGrant
-	// answers from. A Client is built once per process and shared, never copied, which is what
-	// lets it hold a mutex.
-	deviceGrant deviceGrant
+	// metadata is the last read of the broker's RFC 8414 metadata, which Capabilities answers
+	// from. A Client is built once per process and shared, never copied, which is what lets it
+	// hold a mutex.
+	metadata brokerMetadata
 }
 
 // Option configures a Client.
@@ -169,9 +171,11 @@ func (c *Client) Pending(ctx context.Context, approver string) (json.RawMessage,
 // Decision is every approve, deny, dismiss and revoke body Dispatch sends: Approver is the
 // deciding human's canonical login as Dispatch's session resolved it, and Code, for a machine
 // login, is the typed confirmation code the human entered.
+// Scopes is the approval set for a Dispatch sign-in.
 type Decision struct {
-	Approver string  `json:"approver"`
-	Code     *string `json:"code,omitempty"`
+	Approver string    `json:"approver"`
+	Code     *string   `json:"code,omitempty"`
+	Scopes   *[]string `json:"scopes,omitempty"`
 }
 
 func (d Decision) body() (json.RawMessage, error) {
@@ -301,26 +305,44 @@ const metadataPath = "/.well-known/oauth-authorization-server"
 // it only while it serves the device grant, which is only while BROKER_MACHINE_LOGIN_URL is set.
 const deviceCodeGrant = "urn:ietf:params:oauth:grant-type:device_code"
 
-// deviceGrantTTL is how long one read of that document answers for every later ask of it. The
-// fact it carries changes only when the broker is deployed again, so a long window would cost
+// metadataTTL is how long one read of that document answers for every later ask of it. The
+// facts it carries change only when the broker is deployed again, so a long window would cost
 // nothing in correctness; it is seconds all the same, for the two reasons the token check's own
 // window is (ciphertoken.AffirmativeCacheTTL, the same five seconds against the same broker): it
 // collapses the burst of asks a wave of page loads makes into one read, and it leaves an
 // operator who has just redeployed the broker watching Dispatch follow rather than wondering how
 // long it will take.
-const deviceGrantTTL = 5 * time.Second
+const metadataTTL = 5 * time.Second
 
-// deviceGrant remembers the last answer read out of the broker's metadata. Only a read that
+// Capabilities is what the broker's RFC 8414 metadata says it serves of what Dispatch's pages
+// offer: DeviceGrant, whether it serves RFC 8628's device grant, so whether any machine prints a
+// code for a person to type (grant_types_supported names the device code); and DispatchSignIn,
+// whether it serves a Dispatch sign-in (scopes_supported names oauthwire.ScopeDispatch, which a
+// broker names only with BROKER_DISPATCH_SIGNIN=on, and a broker from before sign-ins never).
+type Capabilities struct {
+	DeviceGrant    bool
+	DispatchSignIn bool
+}
+
+// unreadCapabilities is what Capabilities answers for a broker it could not read and has never
+// read. Of the two ways to be wrong about the device grant, hiding a page that works costs a
+// person their machine login while showing one that does not costs them a clear refusal from the
+// broker when they use it, so it is served. A Dispatch sign-in is not: a broker that serves one
+// is a deployment's choice, off by default, and guidance toward one the broker refuses sends
+// people and agents into that refusal.
+var unreadCapabilities = Capabilities{DeviceGrant: true}
+
+// brokerMetadata remembers the last answer read out of the broker's metadata. Only a read that
 // succeeded is remembered, and it is remembered with no expiry of its own beyond `until`: a read
 // that fails falls back to it however old it is, since a page that vanishes because one read
 // timed out is worse than one that lingers past a change.
-type deviceGrant struct {
+type brokerMetadata struct {
 	// mu guards the remembered answer and nothing else. It is never held across the read: a
 	// lock held there would queue the Nth caller of a hung broker behind N of the call's own
 	// five seconds, and this is read on every load of the credentials page.
 	mu     sync.Mutex
 	read   bool
-	served bool
+	served Capabilities
 	until  time.Time
 	// flight is the one metadata read in progress, which every caller that finds nothing fresh
 	// enough joins rather than opening a second one, as ciphertoken.GoogleAccount's own reader
@@ -328,81 +350,82 @@ type deviceGrant struct {
 	flight singleflight.Group
 }
 
-// ServesDeviceGrant answers whether this broker still serves RFC 8628's device grant — whether,
-// that is, there is any machine code for a person to type — from a cached read of its RFC 8414
-// metadata (deviceGrantTTL).
+// Capabilities answers what this broker serves of what Dispatch's pages offer — its device grant
+// and its Dispatch sign-in — from a cached read of its RFC 8414 metadata (metadataTTL).
 //
-// It answers true for a broker it could not read and has never read: the fact is unknown, and of
-// the two ways to be wrong, hiding a page that works costs a person their machine login while
-// showing one that does not costs them a clear refusal from the broker when they use it. A
-// broker read before is answered with what it said then.
+// It answers unreadCapabilities for a broker it could not read and has never read. A broker read
+// before is answered with what it said then.
 //
 // The read runs on ctx with its cancellation dropped, bounded by the call's own window
 // (defaultTimeout): the answer is every caller's, so one browser going away must not cancel the
 // read the others are waiting on and leave them each to start another.
-func (c *Client) ServesDeviceGrant(ctx context.Context) bool {
-	if served, fresh := c.deviceGrant.fresh(); fresh {
+func (c *Client) Capabilities(ctx context.Context) Capabilities {
+	if served, fresh := c.metadata.fresh(); fresh {
 		return served
 	}
-	answer, err, _ := c.deviceGrant.flight.Do(metadataPath, func() (any, error) {
+	answer, err, _ := c.metadata.flight.Do(metadataPath, func() (any, error) {
 		// The flight's own look at what is remembered: a caller that waited out this flight's
 		// predecessor would otherwise read the broker again for an answer just read.
-		if served, fresh := c.deviceGrant.fresh(); fresh {
+		if served, fresh := c.metadata.fresh(); fresh {
 			return served, nil
 		}
-		served, err := c.readDeviceGrant(context.WithoutCancel(ctx))
+		served, err := c.readMetadata(context.WithoutCancel(ctx))
 		if err != nil {
-			return false, err
+			return Capabilities{}, err
 		}
-		c.deviceGrant.keep(served)
+		c.metadata.keep(served)
 		return served, nil
 	})
 	if err != nil {
-		if served, read := c.deviceGrant.last(); read {
+		if served, read := c.metadata.last(); read {
 			return served
 		}
 		slog.Warn("dispatch: the secrets broker's authorization server metadata could not be read", "error", err)
-		return true
+		return unreadCapabilities
 	}
-	return answer.(bool)
+	return answer.(Capabilities)
 }
 
-// fresh is the remembered answer while it is younger than deviceGrantTTL, and false once it is
+// fresh is the remembered answer while it is younger than metadataTTL, and false once it is
 // not or where there is none.
-func (d *deviceGrant) fresh() (served, fresh bool) {
+func (d *brokerMetadata) fresh() (served Capabilities, fresh bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.served, d.read && time.Now().Before(d.until)
 }
 
 // last is the remembered answer however old it is, and read reports whether there is one.
-func (d *deviceGrant) last() (served, read bool) {
+func (d *brokerMetadata) last() (served Capabilities, read bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.served, d.read
 }
 
-// keep remembers what a read that succeeded said, for deviceGrantTTL.
-func (d *deviceGrant) keep(served bool) {
+// keep remembers what a read that succeeded said, for metadataTTL.
+func (d *brokerMetadata) keep(served Capabilities) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.read, d.served, d.until = true, served, time.Now().Add(deviceGrantTTL)
+	d.read, d.served, d.until = true, served, time.Now().Add(metadataTTL)
 }
 
-// readDeviceGrant reads the broker's metadata and answers whether grant_types_supported names the
-// device code. A document the broker answered but this cannot read is an error like any other, so
-// the caller falls back the same way for a broker that is unreachable and for one that is not the
-// broker.
-func (c *Client) readDeviceGrant(ctx context.Context) (bool, error) {
+// readMetadata reads the broker's metadata and answers whether grant_types_supported names the
+// device code and whether scopes_supported names the scope dispatch. A document the broker
+// answered but this cannot read is an error like any other, so the caller falls back the same way
+// for a broker that is unreachable and for one that is not the broker.
+func (c *Client) readMetadata(ctx context.Context) (Capabilities, error) {
 	body, err := c.do(ctx, http.MethodGet, metadataPath, nil)
 	if err != nil {
-		return false, err
+		return Capabilities{}, err
 	}
 	var document struct {
 		GrantTypesSupported []string `json:"grant_types_supported"`
+		ScopesSupported     []string `json:"scopes_supported"`
 	}
 	if err := json.Unmarshal(body, &document); err != nil {
-		return false, fmt.Errorf("agent-secrets: read %s: %w", metadataPath, err)
+		return Capabilities{}, fmt.Errorf("agent-secrets: read %s: %w", metadataPath, err)
 	}
-	return slices.Contains(document.GrantTypesSupported, deviceCodeGrant), nil
+	return Capabilities{
+		DeviceGrant:    slices.Contains(document.GrantTypesSupported, deviceCodeGrant),
+		DispatchSignIn: slices.Contains(document.ScopesSupported, oauthwire.ScopeDispatch),
+	}, nil
 }

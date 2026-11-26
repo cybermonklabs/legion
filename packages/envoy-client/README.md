@@ -1150,9 +1150,11 @@ its run (`DISPATCH_RESULTS_TOKEN`, [`docs/ci-results.md`](docs/ci-results.md)).
 the login's P-256 key as base64 PKCS#8 DER, its launcher credential's `credential_id` and
 `expires_at`, its `refresh_token`, the `broker` it was made at, and the last `access_token` with
 its `access_expires_at` and `access_life_seconds`, the life in whole seconds that token had when it
-landed. The file is refused when its group or anyone else may read it, when its directory lets
-them write to it, or when another user owns either. A trade presents that access token as the
-subject, under RFC 8693's own `urn:ietf:params:oauth:token-type:access_token`, with no actor, and
+landed, and for a Dispatch sign-in its `dispatch_scopes` (absent for a machine login, so a file an
+earlier build wrote reads as one). The file is refused when its group or anyone else may read it,
+when its directory lets them write to it, or when another user owns either. A trade presents that
+access token as the subject, under RFC 8693's own `urn:ietf:params:oauth:token-type:access_token`,
+with no actor, and
 every trade's DPoP proof is signed with the login's key; a read trade adds a holder proof (below).
 A login made at another broker than `AGENT_SECRETS_URL` names is refused, and so is a broker on
 `http` off this machine's loopback: the login's tokens cross that connection. It names the projects
@@ -1254,12 +1256,13 @@ person, as the Go client does:
 Dispatch gives the token that names a person the `person` scope, so the session writes as that
 person. Dispatch gives `approve` to one broker-issued token only: the approve-only token that the
 secrets broker spends through Cipher's proxy and never releases to the box, which this client
-sends only a review with (`dispatch review`, below). Dispatch gives `p0` to no broker-issued
-token. So an answer to an approval request, a machine login's decision and a personal token's
-mint need the person's browser, or a personal token (`DISPATCH_TOKEN`) the person gave `approve`,
-and a write that makes an issue's own priority `0` (P0) needs the person's browser, or a personal
-token the person gave `p0`. A read trade's token (`DISPATCH_TOKEN_BROKER_READ`, below) holds
-`person` too, and writes nothing.
+sends only a review with (`dispatch review`, below). Dispatch gives `p0` to one broker-issued
+token only: a Dispatch sign-in's whose person ticked `p0` (`dispatch login --device --scope`,
+below), never this trade's. So an answer to an approval request, a machine login's decision and a
+personal token's mint need the person's browser, or a personal token (`DISPATCH_TOKEN`) the person
+gave `approve`, and a write that makes an issue's own priority `0` (P0) needs the person's
+browser, a personal token the person gave `p0`, or a Dispatch sign-in the person ticked `p0` for.
+A read trade's token (`DISPATCH_TOKEN_BROKER_READ`, below) holds `person` too, and writes nothing.
 
 The client reads the sign-ins as the Go client reads them (`signins.ts`). The directory is
 `AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`, else
@@ -1582,11 +1585,11 @@ socket that the proxy would use, and starts nothing. Every other dry run reads n
 runs with Dispatch off too. A call that a dry
 run passed can still stop on what Dispatch answers or on this session's state.
 
-`dispatch login --device [--person <address>]` logs the machine in at the secrets broker
-(`dispatch-commands/login.ts`; its help is `src/dispatch-login-command.ts`'s). It is no Dispatch
-call, and takes no `--dry-run`. A person runs it once per machine, in a terminal of their own: it
-waits for the approval until the code lapses, which a command timeout of an agent's shell can cut
-short. The command is each plugin's
+`dispatch login --device [--person <address>] [--scope <list>] [--reason <text>]` logs the machine
+in at the secrets broker (`dispatch-commands/login.ts`; its help is
+`src/dispatch-login-command.ts`'s). It is no Dispatch call, and takes no `--dry-run`. A person runs
+it once per machine, in a terminal of their own: it waits for the approval until the code lapses,
+which a command timeout of an agent's shell can cut short. The command is each plugin's
 `bin/dispatch`, under the directory the host installed the plugin in (claude-envoy's or
 pi-envoy's), or `bun packages/envoy-client/bin/dispatch.ts` from a checkout of this repository.
 It reads no host, no session and no envoy.json. It reads `AGENT_SECRETS_URL`, and the person who
@@ -1656,6 +1659,28 @@ the command names that credential and says to revoke it in Machine logins on the
 typed into. The earlier login is the one the file holds just before the save, read under the lock
 the save holds, so of two logins made at once the one kept second names the other. On a machine
 whose `AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set that variable.
+
+With `--scope`, a comma-separated list of the scopes a Dispatch sign-in may hold (contracts'
+`DISPATCH_SIGN_IN_SCOPES`: `person` and `p0`) or `none`, the login is a Dispatch sign-in: the
+device request asks for the scope `dispatch` and names those scopes, sorted and distinct, as the
+actions of its `launcher_credential` detail, beside `--reason` as the request's reason. A scope no
+sign-in may ask for, or a reason over `BROKER_REQUEST_REASON_MAX` (400) characters, is a usage
+error before any request (`startDeviceLogin`'s `RangeError`). The person ticks some or all of the
+scopes on Dispatch's machine-login page, which starts `person` ticked and `p0` unticked; whatever
+is ticked, the session writes in Dispatch and works on Envoy as its own session within its
+person's projects, `person` adds acting as the person, and `p0` adds making an issue's own
+priority 0. A broker whose `BROKER_DISPATCH_SIGNIN` is off answers the request
+`400 invalid_scope` in its own words, which the command prints as it got them:
+"DISPATCH_SIGNIN_OFF: this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off". A
+broker that predates sign-ins answers `400 invalid_scope` in its OAuth library's words, which
+this client does not know, and the command prints its own sentence in their place: "this broker
+serves no Dispatch sign-in: it predates them, or BROKER_DISPATCH_SIGNIN is off". The
+command prints the scopes the broker answered, and keeps no login whose answer lacks scope
+`dispatch`, or whose `dispatch_scopes` names a scope it did not ask for, saying where to revoke
+the sign-in; each refresh must answer the same scopes, or the refresh is refused, naming where to
+revoke it, and the file kept. Its tokens hold those scopes alone, never `approve`, and its
+credential enrolls no session and reads no secret. A new login replaces the one the file held, so
+a machine that keeps a machine login and a Dispatch sign-in names another file for one of them.
 
 `dispatch api --path <route> [--method POST|PUT|PATCH|DELETE] [--body-file <file>|-]` sends one
 request of a route under `/api/v1` that no other command sends (`apiCommand`,
