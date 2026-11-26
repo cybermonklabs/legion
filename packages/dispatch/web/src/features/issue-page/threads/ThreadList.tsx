@@ -5,7 +5,15 @@ import {
   useQueries,
   useQuery,
 } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { userStateQuery, whoAmIQuery } from "../../../api/queries";
 import type { IssueDetails, MyRepliesResponse, MyReplyRow } from "../../../api/types";
@@ -129,6 +137,9 @@ interface RouteRead {
   readonly hasNext: boolean;
   /** Whether the read of the next page failed. */
   readonly nextFailed: boolean;
+  /** Whether a read of the pages again failed, a refresh's after a write (R14): the pages it
+   *  would have replaced stay drawn. */
+  readonly refetchFailed: boolean;
   /** Reads the next page, or joins the read of it that is out. */
   readonly next: () => void;
   /** Reads the route again from its first page. */
@@ -150,14 +161,16 @@ function routeRead<P extends ThreadPage>(
     nextFailed: query.isFetchNextPageError,
     pages: query.data?.pages,
     refetch: () => void query.refetch(),
+    refetchFailed: query.isRefetchError,
   };
 }
 
-/** The line a route's failure draws: a failed first page asks the route again from its start,
- *  a failed next page asks that page again, and an older build's answer draws no such line. */
+/** The line a route's failure draws: a failed first page, or a failed read of the pages again
+ *  after a write (R14), asks the route again from its start, a failed next page asks that page
+ *  again, and an older build's answer draws no such line. */
 function failedRoute(route: RouteRead): FailedRead[] {
   if (route.error === null || isOlderBuild(route.error)) return [];
-  if (route.pages === undefined) {
+  if (route.pages === undefined || route.refetchFailed) {
     return [
       { failure: route.failure, id: route.id, retry: route.refetch, retrying: route.fetching },
     ];
@@ -220,6 +233,13 @@ function heldThreads(routes: readonly RouteRead[]): ReadonlyMap<string, readonly
   return held;
 }
 
+/** The pages Waiting on me draws: its records, and the number the control under them says is
+ *  left. */
+interface DrawnPages {
+  readonly rows: readonly ThreadRecord[];
+  readonly left: number;
+}
+
 /**
  * Waiting on me (R6): `rows`, 20 of them a page, each drawn from its thread, with the records of
  * one thread together at its row's place (plan choice 5). A row whose thread a page of All or
@@ -227,6 +247,11 @@ function heldThreads(routes: readonly RouteRead[]): ReadonlyMap<string, readonly
  * thread's own route, as Dashboard's thread item reads it (`threadQuery`): at most 20 such reads
  * for each page, none for a row not drawn, and none before All's first pages have settled, which
  * may hold it. A page waiting on such a read draws none of its rows, so each page is drawn whole.
+ *
+ * Once the pages were drawn whole, a row that waits on its thread's read keeps them as they were
+ * drawn (R14): a refresh after a write can put a thread no page holds among the rows, and until
+ * that thread's read answers the choice draws the rows it drew, then the new pages whole, so no
+ * row drawn goes while a later read answers.
  */
 function useWaitingChoice({
   held,
@@ -274,15 +299,26 @@ function useWaitingChoice({
     ready += page.length;
   }
   const drawn = on && rows !== undefined && (asked.length === 0 || ready > 0);
+  const now: DrawnPages | undefined = drawn
+    ? {
+        left: (rows?.length ?? 0) - ready,
+        rows: asked.slice(0, ready).flatMap((row) => recordsOf.get(row.thread_id) ?? []),
+      }
+    : undefined;
+  // The pages as the choice drew them last with every row it asked for read.
+  const lastWhole = useRef<DrawnPages | undefined>(undefined);
+  const whole = on && rows !== undefined && ready === asked.length;
+  useLayoutEffect(() => {
+    if (whole) lastWhole.current = now;
+  });
+  const pages = whole || !on ? now : (lastWhole.current ?? now);
   return {
     busy: ready < asked.length,
     failed: on ? failed : [],
-    left: drawn ? (rows?.length ?? 0) - ready : 0,
+    left: pages?.left ?? 0,
     olderBuild: false,
     read: unheld.flatMap((row) => recordsOf.get(row.thread_id) ?? []),
-    rows: drawn
-      ? asked.slice(0, ready).flatMap((row) => recordsOf.get(row.thread_id) ?? [])
-      : undefined,
+    rows: pages?.rows,
   };
 }
 
@@ -312,6 +348,12 @@ export interface ThreadLists {
    *  one R12's lookups read (R15). All's pages are read whatever choice is on, and none of them
    *  is ever out again with no answer. */
   readonly settled: boolean;
+  /** Whether a read of a route's pages is out: a first page, a next page, or the pages read
+   *  again after a write (R14). A write can move a thread from one route to another, as a
+   *  person's reply takes a thread between agents out of Agents and into All, and the route it
+   *  leaves can answer before the one it joins: until that read answers, no page holds the
+   *  thread's records, and none of them is gone. */
+  readonly reading: boolean;
 }
 
 /**
@@ -443,6 +485,7 @@ export function useThreadLists(issue: IssueDetails): ThreadLists {
     choose,
     marks,
     records,
+    reading: [...all, ...mine, ...agents].some((route) => route.fetching),
     settled,
     showNext,
     view: {

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
@@ -20,10 +20,16 @@ import { ThreadList, useThreadLists } from "./ThreadList";
 import { OpenedRecord } from "./ThreadRecord";
 import { focusedEntry, recordChoice } from "./thread-address";
 import { useThreadLookup } from "./thread-lookup";
-import { threadRecords } from "./thread-records";
+import { type ThreadRecord, threadRecords } from "./thread-records";
 
 /** From this width up the list and the main column stand side by side (R2): 1024 px. */
 export const SIDE_BY_SIDE_QUERY = "(min-width: 64rem)";
+
+/** A record the main column draws, with every record the view holds of its thread. */
+interface DrawnRecord {
+  readonly record: ThreadRecord;
+  readonly thread: readonly ThreadRecord[];
+}
 
 /**
  * The Threads view (dispatch://INFRA-5704/spec#b-r-view), which the stage draws in the outline's
@@ -46,6 +52,10 @@ export const SIDE_BY_SIDE_QUERY = "(min-width: 64rem)";
  * the issue draws the page's line for an address it cannot find. A record the address opens, and
  * no row of the choice that is on draws, opens under its own choice (`recordChoice`): Agents for a
  * thread between agents, All otherwise.
+ *
+ * A write that lands while a record is open is drawn in it with no reload, from the pages read
+ * again (R14). A record whose write moves it out of its choice stays open, and its row is drawn
+ * where its choice now holds it.
  *
  * It draws no outline, no children's section, none of the issue's three sentences and no version
  * control (R1): only the two columns, in the outline's measure.
@@ -75,12 +85,34 @@ export function ThreadsView({ issue, route }: SlotProps): ReactNode {
       ? undefined
       : (lists.records.get(record) ??
         (sent?.id === record ? threadRecords({ message: sent, replies: null })[0] : undefined));
+  // While a route's pages are out, one of them may hold the record, so the lookups wait for it:
+  // a write that moves the thread to another route leaves it on no page the view holds until
+  // that route's read answers (R14).
   const lookup = useThreadLookup(
     issue.key,
     record,
-    held !== undefined ? true : lists.settled ? false : undefined
+    held !== undefined ? true : lists.settled && !lists.reading ? false : undefined
   );
-  const opened = held ?? (lookup.kind === "found" ? lookup.record : undefined);
+  const found = held ?? (lookup.kind === "found" ? lookup.record : undefined);
+  // The record as the main column drew it last. Through the moment such a move leaves it on no
+  // page, the open record stays drawn as it was, with its boxes and the reader's caret, rather
+  // than going and mounting anew once the route it joins answers.
+  const lastDrawn = useRef<DrawnRecord | undefined>(undefined);
+  const kept =
+    found === undefined && lookup.kind === "reading" && lastDrawn.current?.record.id === record
+      ? lastDrawn.current
+      : undefined;
+  const opened = found ?? kept?.record;
+  const thread: readonly ThreadRecord[] =
+    kept?.thread ??
+    (opened === undefined
+      ? []
+      : held === undefined && lookup.kind === "found"
+        ? lookup.thread
+        : [...lists.records.values()].filter((one) => one.thread === opened.thread));
+  useLayoutEffect(() => {
+    lastDrawn.current = opened === undefined ? undefined : { record: opened, thread };
+  });
   if (placing !== undefined && opened !== undefined) {
     setPlacing(undefined);
     // A row the reader pressed opens its record under the choice that drew it.
@@ -134,11 +166,7 @@ export function ThreadsView({ issue, route }: SlotProps): ReactNode {
             issue={issue}
             key={opened.id}
             record={opened}
-            thread={
-              held === undefined && lookup.kind === "found"
-                ? lookup.thread
-                : [...lists.records.values()].filter((one) => one.thread === opened.thread)
-            }
+            thread={thread}
           />
         ) : lookup.kind === "missing" ? (
           <p className={`text-sm ${pageMutedText}`} {...pageChrome}>

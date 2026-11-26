@@ -1830,6 +1830,45 @@ test.skip("an agent's note and a thread between agents are drawn in Threads and 
 // Row 12
 // =============================================================================================
 
+/** Where the page keeps what `watchListRows` records, until `seenListRows` reads it. */
+const ROWS_SEEN = "threadsRowsSeen";
+
+/** What the page keeps under `ROWS_SEEN`: the observer, and the list's row ids at each change. */
+interface RowsSeen {
+  readonly observer: MutationObserver;
+  readonly seen: string[][];
+}
+
+/** Starts recording the ids of the rows the list draws at every change of the page, so a row
+ *  that goes and is drawn again between two of a row's readings is still seen gone (R14). */
+async function watchListRows(page: Page): Promise<void> {
+  await page.evaluate(
+    ({ key, list, row }) => {
+      const seen: string[][] = [];
+      const read = () =>
+        [...document.querySelectorAll(`${list} ${row}`)].map(
+          (element) => element.getAttribute("data-thread-row") ?? ""
+        );
+      const observer = new MutationObserver(() => seen.push(read()));
+      observer.observe(document.body, { characterData: true, childList: true, subtree: true });
+      // The window holds the recording under a name of the row's own, which no type declares.
+      const held = window as unknown as Record<string, RowsSeen>;
+      held[key] = { observer, seen };
+    },
+    { key: ROWS_SEEN, list: SELECTORS.list, row: SELECTORS.row }
+  );
+}
+
+/** Stops the recording `watchListRows` started, and answers each list of row ids it recorded. */
+async function seenListRows(page: Page): Promise<string[][]> {
+  return page.evaluate((key) => {
+    // The same name `watchListRows` wrote the recording under.
+    const held = window as unknown as Record<string, RowsSeen | undefined>;
+    held[key]?.observer.disconnect();
+    return held[key]?.seen ?? [];
+  }, ROWS_SEEN);
+}
+
 // SLOW(>=2s): the whole seed, then All's second page drawn, a record of it opened, an agent's
 // reply written through the API and the reader's own reply sent, each waited on in the list.
 test("a write that lands while Threads is open is drawn with no reload, and the rows paged to stay", async ({
@@ -1857,6 +1896,10 @@ test("a write that lands while Threads is open is drawn with no reload, and the 
       pageIds(expected.slice(0, 2)).flat()
     );
     await openRow(page, key, target.id);
+    // The rows of the second page drawn before the write, which the list draws at every moment
+    // from the write until the row moves (R14), and not only where it comes to rest.
+    const secondPageDrawn = paged.slice(expected[0]?.rows.length ?? 0);
+    await watchListRows(page);
 
     // Another's write: an agent's reply, through the API.
     const reply = await createComment(
@@ -1869,6 +1912,14 @@ test("a write that lands while Threads is open is drawn with no reload, and the 
         message: "the record of an agent's new reply does not move to the list's top",
       })
       .toBe(target.id);
+    const seen = await seenListRows(page);
+    expect(seen.length, "the list drew nothing as the agent's reply landed").toBeGreaterThan(0);
+    for (const drawn of seen) {
+      expect(
+        secondPageDrawn.filter((id) => !drawn.includes(id)),
+        "a row of the second page left the list while the agent's reply landed"
+      ).toEqual([]);
+    }
     const known = (await recordsById(key)).get(target.id);
     const mark =
       known === undefined
