@@ -402,7 +402,7 @@ function mustDraw(seeded: MarginSeed, view: View): ReadonlySet<string> {
     decisions: [seeded.decisionComment],
     graph: [...both, seeded.checkComment, seeded.planTaskComment, ...change, ...nodes],
     plan: [seeded.planTaskComment],
-    spec: top,
+    spec: [...top, ...(GATES.PART_J ? change : [])],
     verification: [...seeded.threadsS1, seeded.checkComment],
   };
   return new Set(ids[view]);
@@ -734,6 +734,9 @@ interface RowOneGates {
   readonly change: boolean;
   readonly nodes: boolean;
   readonly quoted: boolean;
+  /** Whether the Spec view's column of decisions stands under this part's base (part J, G6),
+   *  where the Change's thread stands beside the agent decision's cell. */
+  readonly specChange: boolean;
   readonly stacking: boolean;
 }
 
@@ -973,7 +976,8 @@ async function readEveryView(
   for (const view of VIEWS) {
     await openView(page, traffic, seeded.key, view);
     const must = mustDraw(seeded, view);
-    const read = change === undefined || view === "spec" ? spots : [...spots, change];
+    const read =
+      change === undefined || (view === "spec" && !gates.specChange) ? spots : [...spots, change];
     for (const spot of read) {
       if (!must.has(spot.id)) continue;
       await expect(
@@ -1011,11 +1015,12 @@ async function readFocusedStack(
         "the threads stand at their words, or under the thread above, before the focus moves",
     })
     .toEqual([]);
-  // The poll above waited until the column placed every thread, so one reading is S1's last. The
-  // focus scrolls the page to S2's row, so a top is read in the page's own coordinates: the
+  // The focus scrolls the page to S2's row, so a top is read in the page's own coordinates: the
   // box's top and the scroll that holds it.
   const scrolled = () => page.evaluate(() => window.scrollY);
+  // The poll above waited until the column placed every thread, so one reading is S1's last.
   const [before] = (await readSpots(page, [last])).spots;
+  // The page scrolls nothing while no focus moves, so one reading of its scroll holds as well.
   const top = before?.box == null ? undefined : before.box.top + (await scrolled());
   if (top === undefined) throw new Error("S1's last thread is not drawn before the focus moves");
   await focusRow(page, first.node);
@@ -1211,6 +1216,41 @@ function planChart(page: Page): Promise<{
   });
 }
 
+/** The two forms of the Spec view: its column of decisions above its statements, one column, and
+ *  beside them. */
+type SpecForm = "above" | "beside";
+
+/** The Spec view as the page lays it out two frames after the last resize: its form, read from
+ *  the grid of a run of statements and the decision that shaped them (`[data-spec-run]`), two
+ *  columns where the decision stands beside its statements, and its body's width, which it steps
+ *  by while the column of comments on text is drawn (`SpecFilterBody.tsx`'s `SPEC_IN_COLUMN`). */
+function specForm(page: Page): Promise<{
+  readonly column: number;
+  readonly form: string;
+} | null> {
+  return page.evaluate(async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    await promise;
+    const body = document.querySelector("[data-spec-body]");
+    const run = body?.querySelector("[data-spec-run]") ?? null;
+    if (body === null || run === null) return null;
+    const style = getComputedStyle(run);
+    const columns = style.gridTemplateColumns.split(" ").filter((track) => track !== "").length;
+    let form = `a ${style.display} of ${columns} columns`;
+    if (style.display === "grid" && columns === 1) form = "above";
+    if (style.display === "grid" && columns === 2) form = "beside";
+    const box = getComputedStyle(body);
+    const inset = ["borderLeftWidth", "borderRightWidth", "paddingLeft", "paddingRight"] as const;
+    return {
+      column:
+        body.getBoundingClientRect().width -
+        inset.reduce((sum, side) => sum + (Number.parseFloat(box[side]) || 0), 0),
+      form,
+    };
+  });
+}
+
 /** The two forms of the Verification view: the phone step's cards and the table. */
 type VerificationForm = "cards" | "table";
 
@@ -1254,7 +1294,7 @@ function verificationForm(page: Page): Promise<{
 async function narrowestColumn(
   page: Page,
   read: (page: Page) => Promise<{ readonly column: number; readonly form: string } | null>,
-  form: PlanForm | VerificationForm,
+  form: PlanForm | SpecForm | VerificationForm,
   from: number,
   to: number
 ): Promise<{ readonly column: number; readonly width: number }> {
@@ -1332,6 +1372,41 @@ async function readPlanSteps(page: Page, traffic: ApiRequests, seeded: MarginSee
     Math.round(narrow.column),
     "Plan's narrow grid holds down to a column of about 482 px"
   ).toBe(482);
+}
+
+/** (8) with the threads drawn, from part J (G6): the Spec view's decisions above its statements at
+ *  1280 px (a 588 px column), beside them at 1440 px (748 px) and at 1920 px, and the narrowest
+ *  column at which it draws them beside, which the row records (R2). */
+async function readSpecSteps(page: Page, traffic: ApiRequests, seeded: MarginSeed): Promise<void> {
+  await page.setViewportSize(DESKTOP);
+  await loadView(page, traffic, seeded.key, "spec");
+  await expect(
+    threadBox(page, seeded.statementComment),
+    "the Spec view draws the thread on the statement in the region"
+  ).toBeVisible();
+  const steps: readonly (readonly [number, SpecForm])[] = [
+    [1280, "above"],
+    [1440, "beside"],
+    [1920, "beside"],
+  ];
+  for (const [width, form] of steps) {
+    await page.setViewportSize(viewportAt(width));
+    await expect
+      .poll(async () => (await specForm(page))?.form ?? null, {
+        message: `with a thread on a statement, at ${width} px the Spec view draws its decisions ${form} the statements`,
+      })
+      .toBe(form);
+    await assertPageFits(page);
+  }
+  const beside = await narrowestColumn(page, specForm, "beside", 1280, 1440);
+  test.info().annotations.push({
+    description: `The Spec view draws its decisions beside the statements from a column of ${beside.column} px (a window of ${beside.width} px)`,
+    type: "measured",
+  });
+  expect(
+    Math.round(beside.column),
+    "the Spec view draws its decisions beside the statements from a column of 672 px"
+  ).toBe(672);
 }
 
 /** (8) with the threads drawn: the Verification view's cards at 1024 and 1100 px, each word inside
@@ -1557,6 +1632,27 @@ async function readNoThreads(page: Page, seeded: NoThreadsSeed): Promise<void> {
       .toEqual({ form, width });
     await assertPageFits(page);
   }
+  if (!GATES.PART_J) return;
+  await loadView(page, traffic, seeded.key, "spec");
+  // At this part's base the Spec view steps by the window alone: below 902 px its decisions above
+  // its statements (`SpecFilterBody.tsx`'s `max-[901px]:`).
+  const spec: readonly (readonly [number, SpecForm])[] = [
+    [760, "above"],
+    [761, "above"],
+    [1024, "beside"],
+    [1240, "beside"],
+    [1241, "beside"],
+    [1440, "beside"],
+  ];
+  for (const [width, form] of spec) {
+    await page.setViewportSize(viewportAt(width));
+    await expect
+      .poll(async () => ({ form: (await specForm(page))?.form ?? null, width }), {
+        message: `the Spec view draws its decisions ${form} the statements as at the base`,
+      })
+      .toEqual({ form, width });
+    await assertPageFits(page);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1604,7 +1700,7 @@ test("a comment on text stands beside its node in every view @phone", async ({ b
     "(1) and (2) the Change's thread beside the agent decision in Conversation, Graph and Decisions, and the Change as no row",
     "COMPOSER"
   );
-  onBase(
+  const specChange = onBase(
     "(1) the Change's thread beside the agent decision's cell in the Spec view's column of decisions",
     "COMPOSER",
     "PART_J"
@@ -1621,7 +1717,7 @@ test("a comment on text stands beside its node in every view @phone", async ({ b
     "(3) the orphaned thread stands at its node's first line and draws ThreadCard's notice on an orphaned anchor",
     "INFRA-1253's `anchor.container_node_id` is on the base, which no line of the gate table holds yet: at this base the server hangs an orphaned document anchor under the issue and no read maps its paragraph to `r-orphan`, so the comment stays a row (dispatch://INFRA-5706/comment/27810bd6-9b41-40cc-9f9f-a93bd87506de, dispatch://INFRA-5706/comment/b02e28b0-c3ba-4af6-91ac-b9a6196fbb18)"
   );
-  onBase(
+  const specSteps = onBase(
     "(8) the Spec view: its decisions above the statements at 1280 px, beside them at 1440 px, its wide form at 1920 px, its form at the base on seedNoThreads, and the narrowest column of its two columns, 672 px",
     "PART_J"
   );
@@ -1640,12 +1736,14 @@ test("a comment on text stands beside its node in every view @phone", async ({ b
       change: changeThread,
       nodes,
       quoted,
+      specChange,
       stacking,
     });
     if (stacking) await readFocusedStack(page, traffic, seeded, spots);
     await readDetails(page, traffic, seeded, spots);
     await readPlanSteps(page, traffic, seeded);
     await readVerificationSteps(page, traffic, seeded);
+    if (specSteps) await readSpecSteps(page, traffic, seeded);
     await readWidths(page, traffic, seeded, spots);
     if (deleted) {
       const reply = seeded.postQuotedReply;
@@ -2311,10 +2409,14 @@ test("a person comments on selected text of each kind of node @phone", async ({ 
     "PART_J",
     "PART_Y"
   );
+  // Each refused selection is read beside one that takes the control, which below 1024 px stands
+  // only where the row draws a sheet for its composer (R5, D3), so on `iphone` it waits for Graph's
+  // sheet too.
   const refused = onBase(
     "(4) no control on a selection across two rows (and `$mod+Alt+m` writes nothing), on a risk's early warning line, on the author-only node and on the child issue's row",
     "COMPOSER",
-    "NODE_ANCHOR"
+    "NODE_ANCHOR",
+    ...sheet("graph")
   );
   onBase(
     "(4) no control on a selection across two blocks of one post (until then no selection in a post takes the control, so none stands to refuse it)",
@@ -3145,20 +3247,16 @@ test("a card that takes the focus in the column stands in the window", async ({ 
   });
 });
 
-// c-margin (1), R2: a thread stands beside its own node. The Spec view cuts a statement that has
-// no focus at six lines (`CutWords`). On the running build of 3a39e128e8cb a thread on words past
-// that cut stood at the top of its hidden words, beside the statement after it, and its quoted
-// words were hidden.
-test("a thread on words the Spec view's cut hides stands beside its own statement", async ({
+// c-margin (1), R2: a thread stands beside its own node. The Verification view cuts a statement
+// at six lines (`CutWords`). On the running build of 3a39e128e8cb a thread on words past that cut
+// stood at the top of its hidden words in the Spec view, which cut a statement with no focus then,
+// beside the statement after it, and its quoted words were hidden; part J's Spec view, under this
+// part's base since, draws every statement whole, and the Verification view still cuts.
+test("a thread on words a view's cut hides stands beside its own statement", async ({
   browser,
 }) => {
   test.setTimeout(300_000);
-  if (
-    !onBase(
-      "a thread on words the Spec view's cut hides stands beside its own statement",
-      "COMPOSER"
-    )
-  ) {
+  if (!onBase("a thread on words a view's cut hides stands beside its own statement", "COMPOSER")) {
     return;
   }
   await phase(browser, seedMarginIssue, async (page, seeded) => {
@@ -3182,10 +3280,10 @@ test("a thread on words the Spec view's cut hides stands beside its own statemen
       body: "A comment on the closing words of the long statement.",
     });
     const traffic = watchApiRequests(page);
-    await openView(page, traffic, seeded.key, "spec");
+    await openView(page, traffic, seeded.key, "verification");
     const node = blockNode(seeded.specSlug, "r-long");
     const row = page.getByTestId("issue-column").locator(`[data-node-row][data-node-id="${node}"]`);
-    await expect(row, "the Spec view draws the long statement as one row").toHaveCount(1);
+    await expect(row, "the Verification view draws the long statement as one row").toHaveCount(1);
     // The view measures a row's cut while the row stands within one screen of the window but
     // wholly outside it (`useClamp`), so the window comes down to it as a reader's scroll does:
     // first to one screen above it, then to it.
@@ -3200,7 +3298,7 @@ test("a thread on words the Spec view's cut hides stands beside its own statemen
     await framesPass(page);
     await expect(
       row.locator("[data-node-more]"),
-      "the Spec view cuts the long statement, with its control that says how many words are left"
+      "the Verification view cuts the long statement, with its control that says how many words are left"
     ).toBeVisible();
     const box = threadBox(page, comment.id);
     await expect(
@@ -3242,6 +3340,7 @@ test("below 1024 px a Comment that stands opens a composer", async ({ browser })
     await selectWords(page, node, "beside the words", 0);
     await framesPass(page);
     const control = commentControl(page);
+    // The frames above are those the control reads a selection in, so one reading says it stands.
     if (await control.isVisible()) {
       await control.click();
       await expect(
@@ -3284,6 +3383,7 @@ test("a press on a control of a thread the stack pushed down acts", async ({ bro
     );
     await framesPass(page);
     const words = await wordsAt(page, node, "first", 0);
+    // The frames above let the column place the thread after the scroll, so one reading is its box.
     const box = await threadBox(page, id).boundingBox();
     if (box === null) throw new Error("the thread on S2's first words has no box");
     expect(
