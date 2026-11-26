@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+    A pause's reason is quoted wherever the `legion` command prints it: `legion state`'s `paused:` and
+    `last pause:` lines and the output of `legion project pause` and `legion project resume` now
+    read `… by the operator: "<reason>"`, escaped as Go's `%q` escapes it, so a newline in the
+    reason cannot pose as a line of its own. The boot line `legion daemon started` now names
+    `admissionCap` as the cap in force, beside the new `admissionStart`, `admissionCeiling` and,
+    where a cap set while the daemon runs stands, `admissionCapSet`, `admissionCapSetBy`,
+    `admissionCapSetBySession`, `admissionCapSetAt` and `admissionCapReason`. The log line
+    `admission: slot released` no longer carries `cap`; `admission: slot taken` still does.
+time: 2026-11-25T09:39:09.104934281Z
+custom:
+    Issue: pr5384

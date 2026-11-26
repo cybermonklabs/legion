@@ -188,7 +188,7 @@ func TestPauseCommands(t *testing.T) {
 		if open.By.Kind != store.PauseByOperator || open.By.Session != "" || open.Reason != reason {
 			t.Fatalf("the pause is %+v, want the operator's for %q", open, reason)
 		}
-		pauseLine := "pause " + strconv.FormatInt(open.ID, 10) + " since 2026-11-16T09:00:00Z by the operator: " + reason
+		pauseLine := "pause " + strconv.FormatInt(open.ID, 10) + " since 2026-11-16T09:00:00Z by the operator: " + strconv.Quote(reason)
 		if paused != "project paused: "+pauseLine+"\n" {
 			t.Fatalf("legion project pause printed %q, want %q", paused, "project paused: "+pauseLine+"\n")
 		}

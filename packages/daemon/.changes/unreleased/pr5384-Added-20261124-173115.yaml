@@ -1,0 +1,25 @@
+kind: Added
+body: |-
+    The daemon API contract entry admission-cap (20261125170933): the project's admission cap moves while the daemon runs, with no pull
+    request and no restart, from 1 up to `admission_ceiling` in `legion.yaml` (else
+    `LEGION_ADMISSION_CEILING`, else `admission_cap`). `admission_cap` (else `LEGION_ADMISSION_CAP`)
+    stays the cap the daemon starts under, and a clear returns to it. The controller sets the cap
+    with `POST /legion/v1/project/admission-cap` and clears it with `.../clear`; the operator does
+    the same with `legion project set-admission-cap --cap <n> --reason <text>` and
+    `legion project clear-admission-cap --reason <text>`. A change is in force at its own admission
+    pass, holds across a restart, and a lower cap stops nothing that runs. A cap below 1
+    (`INVALID_ADMISSION_CAP`), a cap above the ceiling (`ADMISSION_CAP_ABOVE_CEILING`, naming the
+    ceiling), a change with no reason (`ADMISSION_CAP_REASON_REQUIRED`) and a reason longer than
+    2,048 characters (`ADMISSION_CAP_REASON_TOO_LONG`) are each refused, and change nothing. Each
+    change appends one row to `project_admission_cap_changes` (migration `20261124040825`) and one
+    Info line to the log; a change that changes nothing appends no row. `GET /legion/v1/state` and
+    `legion state` name the
+    cap in force, `admission.ceiling`, the cap that stands (`admission.override`) and the newest 50
+    changes (`admission.capChanges`, `[]` before the first). A caller below that entry is served
+    the state without the three new keys. To raise the ceiling, edit `admission_ceiling` and restart
+    the daemon; a cap set while the daemon runs keeps holding across the restart until a clear. To
+    roll back below this release, take `admission_ceiling` out of `legion.yaml` first: an earlier
+    release refuses the key. `LEGION_ADMISSION_CEILING` and the new table need no step.
+time: 2026-11-24T17:31:15.772772283Z
+custom:
+    Issue: pr5384

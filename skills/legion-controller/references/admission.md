@@ -61,3 +61,15 @@ Name them in the day's report and take nothing for them.
 ## Trees waiting on a root claim
 
 A root architect whose claim on its root was refused waits, and nothing tells it when the holder lets go. `dispatch read` each root in `admission.trees` still at `phase: admitted`. When `Claimed by:` is `nobody` or ends `· not running`, `envoy_publish` `<KEY>: the claim is free; claim it again.` to `notifications.role.<issues.<KEY>.architect.locator.claim>`.
+
+## The admission cap
+
+`admission.cap` is the cap in force: the smaller of `admission.override.cap`, the cap set while the daemon runs that stands, with who set it, when and why, and `admission.ceiling` (legion.yaml's `admission_ceiling`); or legion.yaml's `admission_cap` where nothing stands.
+
+Change it only where a person's words ask for the change, and cite those words in `reason`: `set_admission_cap` (`cap`, `reason`) or `clear_admission_cap` (`reason`).
+
+The change is in force from the change's own admission pass on, with no restart, and a lower cap stops nothing that runs.
+
+A cap above `admission.ceiling` is refused: ask the operator to raise `admission_ceiling` in legion.yaml.
+
+`admission.capChanges` lists the newest changes, each with the cap before and after it.

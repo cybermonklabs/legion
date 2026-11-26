@@ -290,12 +290,17 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
-	// A caller below causeTimesContract is below dispatchCredentialContract too, the one row above
-	// it, so it is told of both rows, in the table's order.
-	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
+	// A caller below causeTimesContract is below the rows above it too, dispatchCredentialContract's
+	// and each entry's band, so it is told of the cause times' row first and of those rows after it,
+	// in the table's order. wantNarrowings holds the daemon's lines to the table's: a strip applied
+	// beside the table writes no line while the table still names it, and fails there. The literal
+	// guards the other case: the row taken out of the table and its keys stripped beside it, when
+	// the table's expectation no longer names the line at all.
+	_, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
-	if len(narrowings) != 2 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != "dispatchCredential" {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want one that dropped %q and one that dropped %q",
-			narrowings, causeTimesContract-1, dropped, "dispatchCredential")
+	want := narrowingsExpected(state, causeTimesContract-1)
+	if len(want) == 0 || want[0] != dropped {
+		t.Fatalf("a caller stating %d expects the lines %v, want the cause times' row's, %q, first", causeTimesContract-1, want, dropped)
 	}
+	wantNarrowings(t, narrowings, causeTimesContract-1, want)
 }

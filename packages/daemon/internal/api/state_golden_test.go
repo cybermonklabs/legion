@@ -320,7 +320,19 @@ func populatedState(t *testing.T) State {
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
 		Admission: Admission{
-			Cap:    5,
+			// The cap in force is the one the controller set below the deployment's ceiling of 8
+			// (the contract entry admission-cap), and the list of changes carries both shapes of a
+			// change, the set and an earlier clear by the operator, which names no cap.
+			Cap:     5,
+			Ceiling: 8,
+			Override: &AdmissionCapOverride{Cap: 5, SetBy: PauseActorView{Kind: "controller", Session: "ses_controller"},
+				SetAt: time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC), Reason: "the merge queue waits 52 minutes, above its limit of 45"},
+			CapChanges: []AdmissionCapChangeView{
+				{ID: 2, Cap: 5, CapBefore: 8, CapAfter: 5, Ceiling: 8, SetBy: PauseActorView{Kind: "controller", Session: "ses_controller"},
+					SetAt: time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC), Reason: "the merge queue waits 52 minutes, above its limit of 45"},
+				{ID: 1, CapBefore: 3, CapAfter: 8, Ceiling: 8, SetBy: PauseActorView{Kind: "operator"},
+					SetAt: time.Date(2026, 9, 21, 18, 0, 0, 0, time.UTC), Reason: "the provider outage is over"},
+			},
 			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219"},
 			// The line is two long and carries one member of each of its two parts, in the order
 			// the line publishes them: LEGION-212, the root a person answered, stands at 1 in the

@@ -16,6 +16,7 @@ import {
   LEGION_PHASES,
   LEGION_WORKFLOW_PHASES,
   LegionActivityRequest,
+  LegionAdmissionCapResponse,
   LegionCapabilityReport,
   LegionChildRequest,
   LegionClaimRequest,
@@ -216,6 +217,11 @@ const schemas: Record<string, z.ZodType> = {
   // a replay with one record of each outcome and one left, and the ids a discard closed.
   "intake-replay.json": LegionIntakeReplayResponse,
   "intake-discard.json": LegionIntakeDiscardResponse,
+  // The admission cap set while the daemon runs (the entry admission-cap, 20261125170933), each
+  // written from what the route itself answers (internal/api's TestAdmissionCapRouteGoldens): a
+  // set on a person's word, and the clear after it.
+  "admission-cap.json": LegionAdmissionCapResponse,
+  "admission-cap-clear.json": LegionAdmissionCapResponse,
   // Nor this one: the numbers of the numbered entries of `internal/api/version.go`, from the
   // serving floor to L, its greatest, ascending. No later change adds to it: a contract change is
   // an entry with one fixture under `contracts/`, so the number a build speaks is L plus its count
@@ -488,6 +494,7 @@ const RECORD_SCHEMAS: Record<string, readonly z.ZodType[]> = {
   "project-resume": [LegionProjectResumeResponse],
   "plan-register": [LegionPlanRegisterResponse],
   "intake-discard": [LegionIntakeDiscardResponse],
+  "admission-cap": [LegionAdmissionCapResponse],
 };
 
 /** The reason the refusal's `reasons` is named by no schema of this module. */
@@ -3039,7 +3046,15 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     const { source: _source, ...kept } = row;
     return kept;
   });
-  expect(narrowedRest).toEqual({ ...rest, issues, capabilities: withoutCachesSource });
+  // A caller below the entry admission-cap is served the admission without the three keys it added
+  // (the daemon's `withoutAdmissionCap`), and a caller below 202 is below every entry.
+  const {
+    ceiling: _ceiling,
+    override: _override,
+    capChanges: _capChanges,
+    ...admission
+  } = z.record(z.string(), z.unknown()).parse(rest.admission);
+  expect(narrowedRest).toEqual({ ...rest, issues, capabilities: withoutCachesSource, admission });
 
   // What serving the current block would do: the reader of 152 refuses it for the three keys it
   // requires beside the `withoutWebhookApp` and `caches` the block keeps, so a caller from 152 to

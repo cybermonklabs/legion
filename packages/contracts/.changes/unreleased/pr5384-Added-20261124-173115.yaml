@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+    The daemon API contract entry admission-cap (20261125170933): `LegionStateResponse`'s `admission` gains `ceiling`, `override` (the
+    admission cap set while the daemon runs: `cap`, `setBy`, `setAt`, `reason`) and `capChanges`
+    (the newest 50 changes of the cap: `id`, `cap`, `capBefore`, `capAfter`, `ceiling`, `setBy`,
+    `setAt`, `reason`), and `admission.cap` is the cap in force.
+    New schemas: `LegionProjectAdmissionCapRequest`, `LegionProjectAdmissionCapClearRequest`,
+    `LegionOperatorProjectAdmissionCapRequest`, `LegionOperatorProjectAdmissionCapClearRequest` and
+    `LegionAdmissionCapResponse`, with the daemon's golden fixtures `admission-cap.json` and
+    `admission-cap-clear.json`.
+time: 2026-11-24T17:31:15.772772283Z
+custom:
+    Issue: pr5384

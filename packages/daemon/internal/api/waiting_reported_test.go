@@ -252,8 +252,10 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	if err := json.Unmarshal(body, &served); err != nil {
 		t.Fatalf("decode the state %s: %v", body, err)
 	}
-	if got, want := slices.Sorted(maps.Keys(served.Admission)), []string{"active", "blocked", "cap", "held", "trees", "waiting"}; !slices.Equal(got, want) {
-		t.Fatalf("the admission object carries %v, want %v: a reader of the state reads the object it read before the change", got, want)
+	// `capChanges` is on every admission at admissionCapContract, `[]` before the first change of
+	// the cap (dispatch://INFRA-5616/spec#b-r7-tick-log); no other key arrived beside it.
+	if got, want := slices.Sorted(maps.Keys(served.Admission)), []string{"active", "blocked", "cap", "capChanges", "held", "trees", "waiting"}; !slices.Equal(got, want) {
+		t.Fatalf("the admission object carries %v, want %v: a reader of the state reads the object it read before the change, and the cap's changes", got, want)
 	}
 
 	var state api.State

@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    `oneLineJson`, which quotes a person's words as one line of JSON with U+0085, U+2028 and
+    U+2029 escaped too, moves from the `dispatch` command's plan ratings into `excerpt`, which
+    exports it, so the Legion tool's `read_state` summary quotes a reason with the same function.
+    What either prints is unchanged.
+time: 2026-11-25T20:27:01.573684130Z
+custom:
+    Issue: pr5384

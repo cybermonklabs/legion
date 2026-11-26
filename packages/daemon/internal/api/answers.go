@@ -157,6 +157,7 @@ var frozenTypedSettings = []TypedSetting{
 // (frozenAnswers) and then each entry's, in number order, with the routes an entry adds to an
 // older answer and the state's row typing typedSettings (contracts.go). The operator's claim
 // answers, the operator's pause and resume answers (`legion project pause|resume`), the
+// operator's answers of the cap (`legion project set-admission-cap|clear-admission-cap`), the
 // operator's replay and discard of the intake's give-ups (`legion intake replay|discard`) and the
 // controller's secret and credential answers are no rows: no plugin parses them.
 func Answers() []Answer { return registry().answers }

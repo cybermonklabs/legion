@@ -254,6 +254,22 @@ in the daemon's configuration, four by default; an issue that finds no free slot
 a labelled `todo` root takes its place in that line by its Dispatch priority and then in the
 project board's order.
 
+The cap the daemon admits under can move while it runs.
+The project's controller sets it with its `legion` tool's `set_admission_cap`
+and clears it with `clear_admission_cap`,
+and the operator with `legion project set-admission-cap` and `clear-admission-cap`.
+A cap is a whole number from 1 to `admission_ceiling`, which is the ceiling:
+a cap above it is refused, so raising the ceiling is a change of `legion.yaml` and a restart.
+A clear returns the daemon to `admission_cap`, the cap it starts under.
+A set or a clear is in force from its own admission pass on, with no restart,
+and the daemon keeps it in its store, so it holds across one.
+So a change of `admission_cap` moves nothing while a cap set stands:
+clear it with `legion project clear-admission-cap` to return to the new number.
+A lower cap stops nothing that runs:
+it starts no new issue until fewer issues hold a slot than it allows.
+Each change records who made it, when, why and the cap before and after it;
+`legion state --json` lists the newest 50 under `admission.capChanges`.
+
 An issue takes a slot when the daemon starts it — a root at its admission, which starts its
 architect, a child at the start of its first phase. An issue holds one of the cap's slots while it
 stands in a phase that keeps one, from the moment the daemon starts it until it is done or Dispatch

@@ -1,0 +1,13 @@
+{
+  "cap": 2,
+  "ceiling": 3,
+  "override": {
+    "cap": 2,
+    "setBy": {
+      "kind": "controller",
+      "session": "ses_controller"
+    },
+    "setAt": "2026-11-24T06:00:00Z",
+    "reason": "the merge queue waits 52 minutes"
+  }
+}

@@ -1436,6 +1436,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   ```text
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
   admission: 3 issues hold a slot, cap 4, 2 waiting; 2 live trees; 9 issues
+  admission cap: 4 in force, ceiling 4; no cap set while the daemon runs
   waiting line: 2
     WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It waits at P1, its own priority. It is 1st of 1 issue at P1 whose work came back, and it takes the free slots before the issues at P1 that have not started.
     WIDGETS-15 2 of 2, starting: It has not started. It waits at P1, its own priority. It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank, and 1 issue at P1 whose work came back stands ahead of all of them.
@@ -1464,6 +1465,11 @@ Closing the terminal leaves the project without one, and the daemon logs
   ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)),
   so a tree of four issues holding a slot holds four of them, and the `live trees` count is the
   trees that run whether or not any issue of theirs holds one.
+  The `admission cap` line names the cap the daemon admits under now and its ceiling,
+  `admission_ceiling`;
+  where the controller or the operator set a cap while the daemon runs,
+  the line names that cap, who set it, when and why
+  (`admission cap: 2 in force, ceiling 4; set to 2 by the controller (session ses_…) at …: "<reason>"`).
 
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the
   daemon promotes them: by Dispatch priority first, P0, P1, P2 and P3 and then the issues with no

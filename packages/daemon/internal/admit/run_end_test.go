@@ -472,6 +472,9 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.ListenerWake{}, intake.PodBackstopDue{}, intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},
 		intake.ControllerTick{}, intake.ChildAdoption{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{},
 		intake.Handover{}, intake.CloseRoot{}, intake.ControllerMemoryGuardKill{},
+		// A clear of the admission cap where none stands, which records nothing and makes the pass
+		// every fact that is not a Dispatch issue makes.
+		intake.AdmissionCapSet{},
 	} {
 		if name := factName(fact); name == kind {
 			return fact

@@ -410,6 +410,23 @@ func withoutPausedKey(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutAdmissionCapKeys is a state body whose admission block carries none of the entry's keys
+// (admissionCapKeys), which is what a caller below the entry admission-cap is served of a state
+// (api's withoutAdmissionCap). It serves the table below as withoutPausedKey does.
+func withoutAdmissionCapKeys(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	stripAdmissionCapKeys(served["admission"].(map[string]any))
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its cap keys: %v", body, err)
+	}
+	return encoded
+}
+
 // withoutHeldKey is a state body whose admission block carries no `held`, which is what a caller
 // below heldContract is served of a state (api's withoutHeld). It serves the table below as
 // withoutQuietKeys does: a row's baseline is the full state with exactly the keys that row's own
@@ -946,6 +963,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				if tc.contract < podHoldContract {
 					want = withoutPodHoldKey(t, want)
 				}
+				if tc.contract < entryNumber(admissionCapContract) {
+					want = withoutAdmissionCapKeys(t, want)
+				}
 				want = servedAt(t, want, tc.contract)
 				if withoutLowestContract(t, body) != withoutLowestContract(t, want) {
 					t.Fatalf("state = %s, want the state as this row's contract is served it, %s", body, want)
@@ -1018,6 +1038,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			delete(want, "contract")
 			delete(want, "paused")
 			delete(want, "dispatchCredential")
+			// Every row that reaches here is below the entry admission-cap too.
+			stripAdmissionCapKeys(want["admission"].(map[string]any))
 			if !tc.rounds {
 				delete(want["admission"].(map[string]any), "trees")
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])

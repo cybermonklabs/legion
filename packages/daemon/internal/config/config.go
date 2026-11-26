@@ -87,6 +87,11 @@ type Config struct {
 	StateDir      string
 	Runtime       Runtime
 	AdmissionCap  int
+	// AdmissionCeiling is the most a cap set while the daemon runs may name (`admission_ceiling`,
+	// else LEGION_ADMISSION_CEILING, else AdmissionCap): at least 1 and at least AdmissionCap.
+	// AdmissionCap is the cap the daemon admits under where no such cap stands, and what a clear
+	// returns to (dispatch://INFRA-5616).
+	AdmissionCeiling int
 
 	// DaemonURL is the API address every pane is told (`LEGION_DAEMON_URL`), with no trailing
 	// slash; the loopback address on Port unless the file names another.
@@ -431,6 +436,7 @@ type fileConfig struct {
 	PostgresDSN      *string
 	StateDir         *string
 	AdmissionCap     *int
+	AdmissionCeiling *int
 	Kubernetes       *Kubernetes
 	Tmux             *Tmux
 	DaemonURL        *string
@@ -1076,6 +1082,28 @@ func underConfig(path, configDir string) string {
 	return filepath.Join(configDir, path)
 }
 
+// positiveCount is a count the file sets as key and the daemon's environment as variable: the
+// file's value where it sets one, else the variable's, else fallback. It refuses a variable that is
+// no whole number of at least 1 by the variable's name, and a count below 1 from the file or the
+// fallback by the key's.
+func positiveCount(fromFile *int, key, variable string, env func(string) string, fallback int) (int, error) {
+	count := fallback
+	switch {
+	case fromFile != nil:
+		count = *fromFile
+	case env(variable) != "":
+		parsed, err := strconv.Atoi(env(variable))
+		if err != nil || parsed < 1 {
+			return 0, errors.New(variable + " must be a positive integer")
+		}
+		count = parsed
+	}
+	if count < 1 {
+		return 0, errors.New(key + " must be a positive integer")
+	}
+	return count, nil
+}
+
 // resolve applies the environment and the defaults, and validates what the daemon cannot start
 // without. Where a key has both a file and an environment source, the file wins, as it does in
 // the shipped loader. configDir is the directory of the file the keys came from: a relative
@@ -1166,18 +1194,16 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, err
 	}
 
-	switch {
-	case file.AdmissionCap != nil:
-		cfg.AdmissionCap = *file.AdmissionCap
-	case env("LEGION_ADMISSION_CAP") != "":
-		parsed, err := strconv.Atoi(env("LEGION_ADMISSION_CAP"))
-		if err != nil || parsed < 1 {
-			return Config{}, errors.New("LEGION_ADMISSION_CAP must be a positive integer")
-		}
-		cfg.AdmissionCap = parsed
+	var err error
+	if cfg.AdmissionCap, err = positiveCount(file.AdmissionCap, "admission_cap", "LEGION_ADMISSION_CAP", env, cfg.AdmissionCap); err != nil {
+		return Config{}, err
 	}
-	if cfg.AdmissionCap < 1 {
-		return Config{}, errors.New("admission_cap must be a positive integer")
+	if cfg.AdmissionCeiling, err = positiveCount(file.AdmissionCeiling, "admission_ceiling", "LEGION_ADMISSION_CEILING", env, cfg.AdmissionCap); err != nil {
+		return Config{}, err
+	}
+	if cfg.AdmissionCeiling < cfg.AdmissionCap {
+		return Config{}, fmt.Errorf("admission_ceiling is %d, below admission_cap's %d: the ceiling is the most a cap set while the daemon runs may name, so it is at least the cap the daemon starts under",
+			cfg.AdmissionCeiling, cfg.AdmissionCap)
 	}
 
 	if file.WorkerWakesPerMinute != nil {

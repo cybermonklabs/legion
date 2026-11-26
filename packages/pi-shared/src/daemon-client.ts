@@ -1,5 +1,6 @@
 import {
   type LegionActivityRequest,
+  LegionAdmissionCapResponse,
   LegionChildRequest,
   LegionClaimRequest,
   LegionCompactResponse,
@@ -27,6 +28,8 @@ import {
   LegionPhaseRetryRequest,
   LegionPlanRegisterRequest,
   LegionPlanRegisterResponse,
+  LegionProjectAdmissionCapClearRequest,
+  LegionProjectAdmissionCapRequest,
   LegionProjectPauseRequest,
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
@@ -212,6 +215,19 @@ export interface LegionDaemonClient {
   readonly intakeDiscard: (
     input: z.input<typeof LegionIntakeDiscardRequest>
   ) => Promise<z.output<typeof LegionIntakeDiscardResponse>>;
+  /** The controller's `set_admission_cap`: the daemon admits under `cap`, up to its deployment's
+   * ceiling, from the change's own admission pass on, and records who set it, when and why; the
+   * effect `legion project set-admission-cap` runs for an operator. The answer
+   * is the cap in force, the ceiling and the cap that stands. */
+  readonly admissionCap: (
+    input: z.input<typeof LegionProjectAdmissionCapRequest>
+  ) => Promise<z.output<typeof LegionAdmissionCapResponse>>;
+  /** The controller's `clear_admission_cap`: the cap in force returns to the deployment's
+   * starting cap, `admission_cap`, and the daemon records who cleared the cap, when and why. The
+   * answer is the cap in force and the ceiling. */
+  readonly admissionCapClear: (
+    input: z.input<typeof LegionProjectAdmissionCapClearRequest>
+  ) => Promise<z.output<typeof LegionAdmissionCapResponse>>;
   readonly waveRelease: (
     input: z.input<typeof LegionWaveReleaseRequest>
   ) => Promise<z.output<typeof LegionWaveReleaseResponse>>;
@@ -745,6 +761,20 @@ export function createLegionDaemonClient(
         "/legion/v1/intake/discard",
         LegionIntakeDiscardRequest,
         LegionIntakeDiscardResponse,
+        input
+      ),
+    admissionCap: (input) =>
+      post(
+        "/legion/v1/project/admission-cap",
+        LegionProjectAdmissionCapRequest,
+        LegionAdmissionCapResponse,
+        input
+      ),
+    admissionCapClear: (input) =>
+      post(
+        "/legion/v1/project/admission-cap/clear",
+        LegionProjectAdmissionCapClearRequest,
+        LegionAdmissionCapResponse,
         input
       ),
     gateRegister: (input) =>

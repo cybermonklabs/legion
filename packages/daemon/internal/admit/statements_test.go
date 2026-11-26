@@ -164,8 +164,8 @@ func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 		}
 	}
 	wantReleased := []string{
-		fmt.Sprintf("issue=%s slots=%d cap=%d", slottedKey(7), slotsHeld, 2*slotsHeld+2),
-		fmt.Sprintf("issue=LEGION-100 slots=%d cap=%d", slotsHeld-1, 2*slotsHeld+2),
+		fmt.Sprintf("issue=%s slots=%d", slottedKey(7), slotsHeld),
+		fmt.Sprintf("issue=LEGION-100 slots=%d", slotsHeld-1),
 	}
 	if !slices.Equal(released, wantReleased) {
 		t.Fatalf("released %q, want %q: slot order, counting this project's slots alone", released, wantReleased)

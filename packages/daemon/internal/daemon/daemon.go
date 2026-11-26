@@ -779,16 +779,18 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			err = nil
 			listener.Close()
 		case err == nil:
-			log.Info("legion daemon started",
+			words := []any{
 				"project", cfg.Project,
 				"address", listener.Addr().String(),
 				"workerStream", s.stream.Addr(),
 				"runtime", cfg.Runtime.Name,
-				"admissionCap", cfg.AdmissionCap,
-				"migrationsApplied", applied,
-				"claims", s.supervisor.count(),
-				"boot", bootID,
-			)
+			}
+			// The cap's read runs on run's own ctx under a bound of its own (bootAdmissionCap):
+			// the replay above, on start's goroutine, can use up the budget starting carries, and
+			// ctx, like starting, ends on the stop signal.
+			words = append(words, bootAdmissionCap(ctx, st, cfg, bootTimeout)...)
+			words = append(words, "migrationsApplied", applied, "claims", s.supervisor.count(), "boot", bootID)
+			log.Info("legion daemon started", words...)
 			if workflow != nil {
 				log.Info("legion workflow boot stage", "stage", "api")
 			}
@@ -2957,6 +2959,40 @@ func (l *servingLatch) reach() { l.served.Store(true) }
 // on whatever goroutine a probe's request runs on.
 func (l *servingLatch) serving() bool { return l.served.Load() }
 
+// bootAdmissionCap is the boot line's words for the admission cap (dispatch://INFRA-5616): the
+// deployment's starting cap and ceiling, the cap in force, and the cap that stands, with who set
+// it, when and why. A change of admission_cap leaves a standing cap in force, and this line shows
+// why. It reads read-only through api.AdmissionCapStateTx, the reading every pass makes, on ctx
+// under bound, which the boot hands it as run's own context and bootTimeout. ctx ends on the
+// stop signal, as every step after the boot record does, so a stop never waits on this read;
+// bound is the read's own, since the boot's starting context, which the replay of terminal
+// claims runs before this line on (supervision.start), may have no time left, and a read under
+// it would write a read error for a cap that reads fine. A failed read logs its error and never
+// stops the boot.
+func bootAdmissionCap(ctx context.Context, st *store.Store, cfg config.Config, bound time.Duration) []any {
+	read, cancelRead := context.WithTimeout(store.WithTransactionTracking(ctx), bound)
+	defer cancelRead()
+	words := []any{"admissionStart", cfg.AdmissionCap, "admissionCeiling", cfg.AdmissionCeiling}
+	var inForce int
+	var standing *api.AdmissionCapOverride
+	if err := store.TransactWith(read, st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		inForce, standing, err = api.AdmissionCapStateTx(ctx, tx, cfg.Project, cfg.AdmissionCap, cfg.AdmissionCeiling)
+		return err
+	}); err != nil {
+		return append(words, "admissionCapReadError", err.Error())
+	}
+	words = append(words, "admissionCap", inForce)
+	if standing == nil {
+		return words
+	}
+	words = append(words, "admissionCapSet", standing.Cap, "admissionCapSetBy", standing.SetBy.Kind)
+	if standing.SetBy.Session != "" {
+		words = append(words, "admissionCapSetBySession", standing.SetBy.Session)
+	}
+	return append(words, "admissionCapSetAt", standing.SetAt.Format(time.RFC3339), "admissionCapReason", standing.Reason)
+}
+
 // serve runs the API on the listener the daemon already took until ctx is done or the server
 // fails, and returns once it is closed: one goroutine serves, the other shuts down, and the
 // shutdown runs on a context of its own so a cancelled ctx still drains the connections it has.
@@ -3018,23 +3054,24 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	ready := &servingLatch{}
 	server := api.NewServer(cfg.Bind, cfg.Port, api.Options{
 		State: &source{
-			store:        st,
-			records:      records,
-			project:      cfg.Project,
-			projectToken: p.project,
-			runtime:      cfg.Runtime.Name,
-			admissionCap: cfg.AdmissionCap,
-			startedAt:    startedAt,
-			now:          p.clock.Now,
-			secretsLogin: p.secretsLogin,
-			deployment:   s.deploymentWith,
-			reports:      s.capabilityReports,
-			wakes:        s.waitingWakes,
-			repositories: p.repositories,
-			caches:       s.cacheStatuses,
-			gatedSteps:   cfg.Gates.Steps(),
-			experiments:  cfg.ExperimentsDeclared(),
-			settings:     api.SettingsOf(cfg),
+			store:            st,
+			records:          records,
+			project:          cfg.Project,
+			projectToken:     p.project,
+			runtime:          cfg.Runtime.Name,
+			admissionCap:     cfg.AdmissionCap,
+			admissionCeiling: cfg.AdmissionCeiling,
+			startedAt:        startedAt,
+			now:              p.clock.Now,
+			secretsLogin:     p.secretsLogin,
+			deployment:       s.deploymentWith,
+			reports:          s.capabilityReports,
+			wakes:            s.waitingWakes,
+			repositories:     p.repositories,
+			caches:           s.cacheStatuses,
+			gatedSteps:       cfg.Gates.Steps(),
+			experiments:      cfg.ExperimentsDeclared(),
+			settings:         api.SettingsOf(cfg),
 			// The same rule the lane itself reads, over the same configuration, so the count
 			// the state serves and the claims the pass posts are one set (refreshStalePlugins,
 			// and the NoPluginInstall option three lines below).
@@ -3092,6 +3129,8 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
 		Pause:              pauses,
+		AdmissionCap:       cfg.AdmissionCap,
+		AdmissionCeiling:   cfg.AdmissionCeiling,
 	})
 
 	group, serving := errgroup.WithContext(ctx)
@@ -3182,7 +3221,8 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 }
 
 // source answers the state route out of one repeatable-read snapshot: the daemon itself, the cap
-// it admits under, every stored claim filed under the issue it is on, and the project's controller.
+// it admits under with its ceiling and the changes made to it while it runs, every stored claim
+// filed under the issue it is on, and the project's controller.
 // A machine persists its claim before it publishes it to supervision, so the durable snapshot
 // prevents a claim view and strandedClaims from describing different instants.
 type source struct {
@@ -3191,8 +3231,12 @@ type source struct {
 	project      string
 	projectToken string
 	runtime      string
-	admissionCap int
-	startedAt    time.Time
+	// admissionCap is the deployment's starting admission cap (config.Config.AdmissionCap), and
+	// admissionCeiling its admission_ceiling (config.Config.AdmissionCeiling), the most a cap the
+	// controller or the operator sets while the daemon runs may name.
+	admissionCap     int
+	admissionCeiling int
+	startedAt        time.Time
 	// now is the daemon's one clock (overrides.clock, the wall clock in production), the moment
 	// the state is read at; nil, in a source a test builds by hand, is the wall clock.
 	now func() time.Time
@@ -3717,7 +3761,11 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		StartedAt:     s.startedAt,
 	}
 	state.Settings = s.settings
-	state.Admission.Cap = s.admissionCap
+	// The cap the passes admit under, the ceiling, the cap set while the daemon runs and the
+	// newest changes of it, read through tx as the passes read the cap (api.FillAdmissionCapTx).
+	if err := api.FillAdmissionCapTx(ctx, tx, s.project, s.admissionCap, s.admissionCeiling, &state.Admission); err != nil {
+		return api.State{}, nil, err
+	}
 	controller, _, err := s.store.ControllerTx(ctx, tx, s.projectToken)
 	if err != nil {
 		return api.State{}, nil, err

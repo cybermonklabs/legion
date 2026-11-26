@@ -140,14 +140,14 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 //     first of them refuses. wakeController still decides: it asks the registration and the
 //     pending notice again, and the mark is written only for a row that went into the outbox.
 //
-// The liveness clause reads the slots this pass already holds, what the caller handed over and
-// the trees R6 counts at work (lineCanMove). Those trees are the set step 2 built where step 2
-// needed it, and are built here otherwise, so the pass builds the set at most once and makes
-// its one read at most once, and the clause is answered only once a root has come through the
-// bound, the measure and the registration above.
+// The liveness clause reads the slots this pass already holds, what the caller handed over, the
+// cap the pass admits under and the trees R6 counts at work (lineCanMove). Those trees are the set
+// step 2 built where step 2 needed it, and are built here otherwise, so the pass builds the set at
+// most once and makes its one read at most once, and the clause is answered only once a root has
+// come through the bound, the measure and the registration above.
 func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue,
 	facts record.LineFacts, slots []record.Slot, line []record.LineEntry, dropped []record.HeldIssue,
-	rows map[string]blockers.Row, floor stallFloor,
+	rows map[string]blockers.Row, floor stallFloor, cap int,
 ) error {
 	if a.stalledTreeNotice <= 0 {
 		return nil
@@ -267,7 +267,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 			return err
 		}
 	}
-	canMove := a.lineCanMove(issues, holds, working, rows)
+	canMove := a.lineCanMove(issues, holds, working, rows, cap)
 	var stopped []record.Issue
 	named := 0
 	for _, root := range stalled {
@@ -748,7 +748,7 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 // It is answered once per pass, by the caller, and never per tree: the question is the
 // project's and its answer is the same for every tree of the pass.
 func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working map[string]struct{},
-	rows map[string]blockers.Row,
+	rows map[string]blockers.Row, cap int,
 ) bool {
 	if len(working) > 0 {
 		return true
@@ -767,7 +767,7 @@ func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working 
 		return true
 	}
 	for _, entry := range holds.line {
-		if len(blockers.LineWaitsOn(rows, entry)) == 0 && capLets(entry, held, a.cap) {
+		if len(blockers.LineWaitsOn(rows, entry)) == 0 && capLets(entry, held, cap) {
 			// An entry the promotion of this very pass starts: the line moves.
 			return true
 		}

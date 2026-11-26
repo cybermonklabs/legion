@@ -787,10 +787,12 @@ func TestRunServesTheSocketItIsHandedAndLogsItsAddress(t *testing.T) {
 }
 
 // The API the daemon serves answers from the store it just migrated: this is the whole of
-// `legion state` and of the plugin's read.
+// `legion state` and of the plugin's read. The starting cap and the ceiling are two numbers, so a
+// boot that handed the state source one for the other shows here.
 func TestRunServesTheStateOfItsOwnBoot(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)
+	cfg.AdmissionCap, cfg.AdmissionCeiling = 2, 5
 	d := startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
 
 	state := d.state()
@@ -806,8 +808,9 @@ func TestRunServesTheStateOfItsOwnBoot(t *testing.T) {
 	if state.Daemon.StartedAt.IsZero() {
 		t.Error("the running daemon reports no start time")
 	}
-	if state.Admission.Cap != cfg.AdmissionCap {
-		t.Errorf("admission cap = %d, want the configured %d", state.Admission.Cap, cfg.AdmissionCap)
+	if state.Admission.Cap != 2 || state.Admission.Ceiling != 5 {
+		t.Errorf("admission cap = %d under a ceiling of %d, want the configured starting cap 2 under the ceiling 5",
+			state.Admission.Cap, state.Admission.Ceiling)
 	}
 	if len(state.Issues) != 0 {
 		t.Errorf("issues = %v, want none before a claim is spawned", state.Issues)

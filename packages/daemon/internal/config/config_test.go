@@ -207,6 +207,7 @@ func defaultsFor(port int) Config {
 		StateDir:                                "/var/lib/legion",
 		Runtime:                                 Runtime{Name: "tmux"},
 		AdmissionCap:                            4,
+		AdmissionCeiling:                        4,
 		DaemonURL:                               fmt.Sprintf("http://127.0.0.1:%d", port),
 		OmpInvocation:                           "",
 		WorkerStreamPort:                        port + 1,
@@ -1137,6 +1138,33 @@ func TestLoadRefuses(t *testing.T) {
 			want: "admission_cap must be a positive integer",
 		},
 		{
+			name: "admission_ceiling zero",
+			body: minimalFile + "admission_ceiling: 0\n",
+			want: "admission_ceiling must be a positive integer",
+		},
+		{
+			name: "admission_ceiling negative",
+			body: minimalFile + "admission_ceiling: -1\n",
+			want: "admission_ceiling must be a positive integer",
+		},
+		{
+			name: "admission_ceiling below admission_cap",
+			body: minimalFile + "admission_cap: 5\nadmission_ceiling: 4\n",
+			want: "admission_ceiling is 4, below admission_cap's 5: the ceiling is the most a cap set while the daemon runs may name, so it is at least the cap the daemon starts under",
+		},
+		{
+			name: "LEGION_ADMISSION_CEILING below admission_cap",
+			body: minimalFile + "admission_cap: 5\n",
+			env:  envMap(map[string]string{"LEGION_ADMISSION_CEILING": "3"}),
+			want: "admission_ceiling is 3, below admission_cap's 5: the ceiling is the most a cap set while the daemon runs may name, so it is at least the cap the daemon starts under",
+		},
+		{
+			name: "LEGION_ADMISSION_CEILING not a positive integer",
+			body: minimalFile,
+			env:  envMap(map[string]string{"LEGION_ADMISSION_CEILING": "0"}),
+			want: "LEGION_ADMISSION_CEILING must be a positive integer",
+		},
+		{
 			name: "omp_invocation not a string",
 			body: minimalFile + "omp_invocation: [mise]\n",
 			want: "omp_invocation must be a string",
@@ -1719,6 +1747,37 @@ func TestLoadReadsAdmissionCapFromTheEnvironment(t *testing.T) {
 	}
 }
 
+// admission_ceiling is read from the file, else LEGION_ADMISSION_CEILING, else admission_cap
+// (dispatch://INFRA-5616/spec#b-r2-ceiling): a file with neither takes admission_cap, from the
+// file or from LEGION_ADMISSION_CAP; the environment gives it where the file names none; and the
+// file wins where both name one. Each case names a number the other sources do not give, so a
+// loader that read the wrong source, or defaulted to the default cap of 4 rather than to
+// admission_cap, fails it.
+func TestLoadReadsAdmissionCeilingFromTheFileElseTheEnvironmentElseTheCap(t *testing.T) {
+	for _, tc := range []struct {
+		name, body   string
+		env          map[string]string
+		cap, ceiling int
+	}{
+		{name: "neither set: the file's admission_cap", body: minimalFile + "admission_cap: 3\n", cap: 3, ceiling: 3},
+		{name: "neither set: LEGION_ADMISSION_CAP", body: minimalFile, env: map[string]string{"LEGION_ADMISSION_CAP": "6"}, cap: 6, ceiling: 6},
+		{name: "the environment alone", body: minimalFile + "admission_cap: 3\n", env: map[string]string{"LEGION_ADMISSION_CEILING": "9"}, cap: 3, ceiling: 9},
+		{name: "the file over the environment", body: minimalFile + "admission_cap: 3\nadmission_ceiling: 7\n",
+			env: map[string]string{"LEGION_ADMISSION_CEILING": "9"}, cap: 3, ceiling: 7},
+		{name: "a ceiling equal to the cap", body: minimalFile + "admission_cap: 5\nadmission_ceiling: 5\n", cap: 5, ceiling: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(writeConfigFile(t, tc.body), envMap(tc.env))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.AdmissionCap != tc.cap || cfg.AdmissionCeiling != tc.ceiling {
+				t.Errorf("AdmissionCap = %d, AdmissionCeiling = %d; want %d and %d", cfg.AdmissionCap, cfg.AdmissionCeiling, tc.cap, tc.ceiling)
+			}
+		})
+	}
+}
+
 // A rate of 0 turns the pacing off, so it is the one wake pacing value the loader takes at zero:
 // the burst is how many wakes may leave at once, and a burst of none would release nothing.
 func TestLoadAcceptsAWakeRateOfZero(t *testing.T) {
@@ -1807,6 +1866,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "advertise_host", line: "advertise_host: legion-daemon.legion.svc", class: kubernetesOnly, want: "advertise_host is not used when runtime is tmux: every pane dials the daemon's own unix socket; remove advertise_host"},
 		{key: "runtime", line: "runtime: tmux", class: modelled},
 		{key: "admission_cap", line: "admission_cap: 4", class: modelled},
+		{key: "admission_ceiling", line: "admission_ceiling: 6", class: modelled},
 
 		{key: "daemon_url", line: "daemon_url: http://127.0.0.1:13370", class: modelled},
 		{key: "instructions", line: "instructions: /etc/legion/instructions.md", class: modelled},

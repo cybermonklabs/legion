@@ -3696,6 +3696,7 @@ The migrations recorded above this one are these.
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
 20261123224717_members_owed, of dispatch://INFRA-5471, adds `issues.members_owed`, true on the roots whose re-admission has still to bring their members back, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every fact after the drop.
+20261124040825_admission_cap, of dispatch://INFRA-5616, adds the table `project_admission_cap_changes`, empty, and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release never reads, so it admits under its configured cap; it carries no way back, and a rollback to a release before it takes the step of its own section first, `admission_ceiling` out of `legion.yaml` ([Moving the admission cap](#moving-the-admission-cap)).
 20261124060500_issue_priority adds `issues.priority`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since an earlier release reads none of it, a row that release updates keeps the priority it held, and only a row it inserts gets null.
 20261124073512_claim_cause_times adds `claims.last_death_at`, `claims.last_start_failure_at`, `claims.last_death_digest` and `claims.last_start_failure_digest`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; it carries no way back.
 20261124130001_pull_request_reviews_requested, of dispatch://INFRA-4192, adds five columns of `pull_requests`: `reviews_requested`, how many review requests GitHub holds open on the pull request, null on every row it finds; `head_checks`, whether a check of the head was running when the merge state was read, at its default `''`; `null_mergeable_reads` and `null_mergeable_since`, how many reads in a row answered `mergeable` null and when the first was, at 0 and the zero instant; and `evidence_read_at`, the read time of the read that wrote them, at the zero instant.
@@ -7053,8 +7054,9 @@ Measured on INFRA's pool on 2026-11-05, a pod's own processes on that platform r
 Concurrently running issue pods are bounded by what the pool's `limits.cpu` and `limits.memory` leave for pods of the per-pod sum of requests:
 at the defaults, two pods fit a floor node and `limits.cpu: 256` places about 80 three-CPU pods (less what the nodes' daemonsets hold), and `limits.memory` divided by 19 GiB bounds them too when that is the smaller (a `Burstable` issue pod's lower request places more)
 — where the tree-volume layout ran one tree per node, each pinned to a node of its own.
-`admission_cap` counts the issues the daemon has started, not the pods: an issue holds no admission slot in `accepting`, `retro` or `merging`, and, save three roots that keep theirs, none while it waits on another issue in a phase that keeps one (`docs/site/src/content/docs/legion/concepts.md`, "Admission and the `legion` label"), and its pod can stand where it holds no slot — through its acceptance, its retro and its merge; while it waits on another issue, from the release of its slot for that wait until it takes a slot again; while it owes its worker a start and waits in the line for a slot, as after a merge sends it back to work; and, past the close, during each look of its production check.
-So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues standing in `accepting`, `retro` or `merging`, plus the issues that released their slot to wait on another issue, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
+The admission cap counts the issues the daemon has started, not the pods: an issue holds no admission slot in `accepting`, `retro` or `merging`, and, save three roots that keep theirs, none while it waits on another issue in a phase that keeps one (`docs/site/src/content/docs/legion/concepts.md`, "Admission and the `legion` label"), and its pod can stand where it holds no slot — through its acceptance, its retro and its merge; while it waits on another issue, from the release of its slot for that wait until it takes a slot again; while it owes its worker a start and waits in the line for a slot, as after a merge sends it back to work; and, past the close, during each look of its production check.
+The cap the daemon starts under is `admission_cap`, and a cap set while it runs ([Moving the admission cap](#moving-the-admission-cap)) may name up to `admission_ceiling`, so `admission_ceiling` is the bound on the slotted issues that run at once, and the key the operator raises to raise that bound.
+So the issue pods a deployment runs at once are at most `admission_ceiling`, plus the issues standing in `accepting`, `retro` or `merging`, plus the issues that released their slot to wait on another issue, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
 Fewer run than that bound, for two reasons.
 Under the default idle release a pod with no turn in progress and no turn due for ten minutes is released with its disk (a [kept volume](#a-kept-volume-on-a-microvm-pod) stays) while its slot stands, and the daemon makes the pod again at that issue's next turn; `idle_minutes: 0` turns the release off, and a pod then stands from its issue's first role start to its close, and again for each look of a production check after it.
 And an open issue of a live tree is not a running pod by itself: a child the daemon has not started yet has no slot and no pod, and neither has any issue of a tree whose root still waits in the line.
@@ -7064,7 +7066,7 @@ once it has been for longer than `worker_boot_timeout_seconds` the boot watchdog
 Two pods beside the issue pods count against the same limits:
 the image probe pod, its own 500m / 1Gi, present at every boot and daemon restart for as long as the probe runs;
 and, under `controller: daemon`, the controller's pod, 1 CPU / 4Gi at the default, for as long as the daemon runs.
-Size the pool's limits for that bound, per-pod sum, plus those two, since `admission_cap` counts the issues the daemon has started rather than the pods kept by an issue in `accepting`, `retro` or `merging`, by an issue that released its slot to wait on another issue and by a production check.
+Size the pool's limits for that bound, per-pod sum, plus those two, since `admission_ceiling` bounds the issues the daemon has started rather than the pods kept by an issue in `accepting`, `retro` or `merging`, by an issue that released its slot to wait on another issue and by a production check.
 
 A pool with no room for the probe pod itself does not refuse the boot.
 The probe pod stays `Pending` with `PodScheduled=False Unschedulable`;
@@ -8779,7 +8781,8 @@ Where its issue's pod was released before the wake, that report still ends the r
 **What the state and the log show.**
 While the project is paused, `GET /legion/v1/state` carries `paused`: the pause's `id`, `since`, `by` and `reason`, then `waitsOn`, each claim whose stop the pause still waits on, and `held`, each row that the pause holds, with its kind, its issue, its claim where the row names one, and the seconds it has waited.
 While the project runs after a pause has ended, the state carries `lastPause` instead, the last pause with its `endedAt` and `endedBy`.
-`legion state` prints one line for each: `paused: pause <id> since <time> by <who>: <reason>; waits on <n> roles — <ISSUE> <role>, …`, which ends `waits on no role` where the pause waits on none, and `last pause: pause <id> since <time> by <who>: <reason>; ended <time> by <who>`.
+`legion state` prints one line for each: `paused: pause <id> since <time> by <who>: "<reason>"; waits on <n> roles — <ISSUE> <role>, …`, which ends `waits on no role` where the pause waits on none, and `last pause: pause <id> since <time> by <who>: "<reason>"; ended <time> by <who>`.
+The reason is quoted, so a newline in a person's words cannot pose as a line of its own.
 `<who>` is `the controller (session <id>)` or `the operator`.
 The summary of the controller's `read_state` prints each line in the same words, and adds how many rows the pause holds.
 Its times are the daemon's own strings, where `legion state` prints each time at whole seconds.
@@ -8887,6 +8890,59 @@ The start keeps its role, its generation and its task, and the earlier release r
 Each statement acts on the rows of every project of a shared database ([Daemon-launched controller](#daemon-launched-controller), step 3).
 Where one project's daemon goes back alone, add `and split_part(issue, '-', 1) = '<KEY>'` to each statement, which is how the outbox reads a row's project (`outboxPauseFree`, `internal/record/store.go`).
 A project that stays on this release needs its own rows as they are.
+
+### Moving the admission cap
+
+`admission_cap` in `legion.yaml` (else `LEGION_ADMISSION_CAP`) is the cap a daemon starts under, and what a clear returns it to (dispatch://INFRA-5616).
+`admission_ceiling` (else `LEGION_ADMISSION_CEILING`, else `admission_cap`) is the most a cap set while the daemon runs may name; the loader refuses a ceiling below 1 or below `admission_cap`.
+The cap moves anywhere from 1 to the ceiling with no pull request and no restart.
+Raising the ceiling stays the operator's change: edit `admission_ceiling` and restart the daemon.
+A cap set while an earlier boot ran keeps holding, under the ceiling of each boot, so a change of `admission_cap` moves nothing while a cap stands: `legion project clear-admission-cap` returns the daemon to it;
+the boot line `legion daemon started` names `admissionStart`, `admissionCeiling`, the cap in force (`admissionCap`), and any cap that stands with who set it, when and why.
+
+Two callers move the cap, and neither names a project, because each acts on the project of the daemon it calls:
+
+- the project's controller, with the `set_admission_cap` operation of its `legion` tool, which takes a `cap` and a `reason`, and `clear_admission_cap`, which takes a `reason`.
+  They post `POST /legion/v1/project/admission-cap` and `POST /legion/v1/project/admission-cap/clear` with a controller grant, and any other grant is refused 403 `CONTROLLER_REQUIRED`.
+  The controller changes the cap only where a person's words, cited in `reason`, ask for it;
+
+- the operator, with `legion project set-admission-cap --cap <n> --reason <text> --operator-token-file <file>` and `legion project clear-admission-cap --reason <text> --operator-token-file <file>`.
+  They post `POST /legion/v1/operator/project/admission-cap` and `POST /legion/v1/operator/project/admission-cap/clear` with the operator's bearer.
+  Each also takes `--config` and `--port`, and `--json`, which prints the daemon's answer as it served it.
+
+A set names a whole number from 1 to the ceiling.
+The daemon refuses a cap below 1 (`INVALID_ADMISSION_CAP`), a cap above the ceiling (`ADMISSION_CAP_ABOVE_CEILING`, whose sentence names the ceiling), a change with no reason (`ADMISSION_CAP_REASON_REQUIRED`), a reason longer than 2,048 characters (`ADMISSION_CAP_REASON_TOO_LONG`) and, on a daemon with no workflow, every change (`ADMISSION_CAP_UNAVAILABLE`).
+A grant that is not a controller's is refused 403 `CONTROLLER_REQUIRED`, whose sentence says the change requires a controller grant.
+A refusal changes nothing.
+
+A set or a clear is one fact, and its admission pass runs in the fact's own transaction, so the cap is in force from that pass on.
+Every pass reads the cap again, and admits under the smaller of the cap set and `admission_ceiling`, or under `admission_cap` after a clear or where no cap was ever set.
+A raise starts the issues that wait for the slots it adds.
+A lower cap stops nothing that runs: it starts no new issue until fewer issues hold a slot than it allows.
+
+The daemon's store keeps one row for each change (`project_admission_cap_changes`): the cap set, or none for a clear, the caps the daemon admitted under before and after it, the ceiling then, who made it, why, and when, from the wall clock as the change applies, so the changes are stamped in the order they apply.
+Who is the controller, with the session it acted from, or the operator.
+The record is in the store, so the cap holds across a restart; a restart under a lower `admission_ceiling` admits under that ceiling, and the cap set comes back when the ceiling is raised again.
+A set of the cap that stands, and a clear where none stands, change nothing: the daemon writes no row and logs one Debug line.
+Every other change is one Info line of the daemon's log, `admission: the cap changed`, with the same fields.
+
+`GET /legion/v1/state` answers the cap under `admission`:
+`cap`, the cap in force;
+`ceiling`, `admission_ceiling`;
+`override`, the cap set that stands, `{cap, setBy, setAt, reason}`;
+and `capChanges`, the newest 50 changes, newest first.
+Each change is `{id, cap?, capBefore, capAfter, ceiling, setBy, setAt, reason}`, with `cap` absent for a clear.
+`capChanges` is `[]` before the first change, and a caller below the contract that added it is served none.
+Those names are the record the project's Evals tab reads (dispatch://INFRA-5616/spec#b-r7-tick-log, dispatch://INFRA-979/spec#b-r39), so they stay as they are.
+`legion state` prints the cap on its `admission cap` line.
+
+A rollback below this release has one step of its own.
+**`admission_ceiling` must come out of `legion.yaml` first.**
+An earlier loader knows no such key and refuses the file by name (`unknown key admission_ceiling`), so its daemon does not start while the key stands.
+Take the key out before the earlier image is pinned, and `legion config check` on the earlier image reads the file clean.
+A file that never set the key needs nothing, and `LEGION_ADMISSION_CEILING` needs no step, since an earlier release reads no such variable.
+The database needs no statement: an earlier release reads no row of `project_admission_cap_changes` and admits under its configured `admission_cap`.
+A roll forward reads the table again, so a cap set before the rollback is in force again from the roll forward's first pass.
 
 ### Liveness rules
 

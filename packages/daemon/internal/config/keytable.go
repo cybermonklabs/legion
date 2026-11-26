@@ -168,8 +168,13 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "admission_cap", Default: "`4`, or `LEGION_ADMISSION_CAP` in the daemon's environment", RequiredBy: "no",
-			Description: "How many issues, roots and children alike, hold a slot at once; an issue takes a slot when the daemon starts it and holds it while it stands in a phase that keeps one (accepting, retro and merging keep none), and the rest wait in line.",
+			Description: "How many issues, roots and children alike, hold a slot at once while no cap set while the daemon runs stands; an issue takes a slot when the daemon starts it and holds it while it stands in a phase that keeps one (accepting, retro and merging keep none), and the rest wait in line. It is the cap the daemon starts under and what a clear returns to. The controller (`set_admission_cap`, on a person's cited words) or the operator (`legion project set-admission-cap`) sets another cap while the daemon runs, from 1 to `admission_ceiling`, in force at the change's own admission pass with no restart. A cap set so keeps holding across restarts, under the ceiling of each boot, so a change of this key moves nothing while one stands: `legion project clear-admission-cap` returns the daemon to it.",
 			Read:        reads(readInt, func(f *fileConfig, v *int) { f.AdmissionCap = v }),
+		},
+		{
+			Name: "admission_ceiling", Default: "`admission_cap`, or `LEGION_ADMISSION_CEILING` in the daemon's environment", RequiredBy: "no",
+			Description: "The most a cap set while the daemon runs may name (`set_admission_cap`, `legion project set-admission-cap`), at least 1 and at least `admission_cap`; a set above it is refused `ADMISSION_CAP_ABOVE_CEILING`, so raising it is a change of this file and a restart. A cap that stands above a ceiling a later boot lowered admits at that ceiling.",
+			Read:        reads(readInt, func(f *fileConfig, v *int) { f.AdmissionCeiling = v }),
 		},
 		{
 			Name: "controller", Default: "`operator`", RequiredBy: "no",

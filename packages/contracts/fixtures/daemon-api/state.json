@@ -8,6 +8,42 @@
   },
   "admission": {
     "cap": 5,
+    "ceiling": 8,
+    "override": {
+      "cap": 5,
+      "setBy": {
+        "kind": "controller",
+        "session": "ses_controller"
+      },
+      "setAt": "2026-09-22T09:00:00Z",
+      "reason": "the merge queue waits 52 minutes, above its limit of 45"
+    },
+    "capChanges": [
+      {
+        "id": 2,
+        "cap": 5,
+        "capBefore": 8,
+        "capAfter": 5,
+        "ceiling": 8,
+        "setBy": {
+          "kind": "controller",
+          "session": "ses_controller"
+        },
+        "setAt": "2026-09-22T09:00:00Z",
+        "reason": "the merge queue waits 52 minutes, above its limit of 45"
+      },
+      {
+        "id": 1,
+        "capBefore": 3,
+        "capAfter": 8,
+        "ceiling": 8,
+        "setBy": {
+          "kind": "operator"
+        },
+        "setAt": "2026-09-21T18:00:00Z",
+        "reason": "the provider outage is over"
+      }
+    ],
     "active": [
       "LEGION-208",
       "LEGION-210",

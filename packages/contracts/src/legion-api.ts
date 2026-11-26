@@ -1051,6 +1051,56 @@ const legionHeldIssue = z.object({
   heldBy: z.array(issueKey).optional(),
 });
 
+/** `api.PauseActorView` — who paused the project or ended its pause (contract 178), and who changed
+ * the admission cap (the contract entry admission-cap): the controller, with the session it acted
+ * from, or the operator, who acts from none. The daemon's store holds these two shapes and no other
+ * (`project_pauses_by_session` and `project_pauses_ended_by_session` in its migration
+ * `20261115194357_project_pause`, `project_admission_cap_changes_by_session` in
+ * `20261124040825_admission_cap`), so a controller's entry always names its session, and the
+ * reader requires it: the controller's `read_state` summary names the session of each controller
+ * it prints (LEGION_ANSWER_READS). */
+const legionPauseActor = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("controller"), session: nonEmptyString }),
+  z.object({ kind: z.literal("operator") }),
+]);
+
+/** `api.AdmissionCapOverride` — the admission cap the controller or the operator set while the
+ * daemon runs and that stands (the entry admission-cap, dispatch://INFRA-5616): `cap`, the cap set,
+ * which may stand above `ceiling` where a later configuration lowered the ceiling; `setBy`, who set it;
+ * `setAt`, when; and `reason`, why. The controller's `read_state` summary prints every field
+ * (LEGION_ANSWER_READS), so each is required. */
+const legionAdmissionCapOverride = z.object({
+  cap: z.number().int().positive(),
+  setBy: legionPauseActor,
+  setAt: timestamp,
+  reason: nonEmptyString,
+});
+
+/** `api.AdmissionCapChangeView` — one change of the admission cap as the state's
+ * `admission.capChanges` lists it, newest first, the newest 50 (the entry admission-cap), `[]`
+ * before the first change. These names are the record the project's Evals tab reads
+ * (dispatch://INFRA-979/spec#b-r39), and the daemon holds them as they stand: `id`, the change's
+ * own, rising; `cap`, the cap it set, absent for a clear, which returns the project to the
+ * deployment's starting cap (`admission_cap`); `capBefore` and `capAfter`, the caps the daemon
+ * admitted under before the change and from it on; `ceiling`, the deployment's `admission_ceiling`
+ * then; `setBy`, who made it; `setAt`,
+ * when; and `reason`, why. A set of
+ * the cap that stands and a clear where none stands change nothing and are no entry. No plugin code
+ * reads a change, so every field is optional (LEGION_ANSWER_READS); `setBy` is the actor view, whose
+ * discriminator is required as every union's is, and whose `kind` and controller's `session` the
+ * read set names here as at the override, since the census matches a read by the field's name under
+ * its parent. */
+const legionAdmissionCapChange = z.object({
+  id: z.number().int().positive().optional(),
+  cap: z.number().int().positive().optional(),
+  capBefore: z.number().int().nonnegative().optional(),
+  capAfter: z.number().int().nonnegative().optional(),
+  ceiling: z.number().int().positive().optional(),
+  setBy: legionPauseActor.optional(),
+  setAt: timestamp.optional(),
+  reason: nonEmptyString.optional(),
+});
+
 /** `api.Admission` — the issue cap and the issues under it, in Dispatch rank order. Concurrency
  * is capped on issues, never on workers: there is no worker queue on this wire. Since contract 51
  * the cap counts the issues the daemon has started rather than the trees (dispatch://INFRA-980):
@@ -1094,7 +1144,16 @@ const legionHeldIssue = z.object({
  * null, and it is optional here for the one reason `trees` is and no other: a reader before the
  * contract that added it refuses the key outright, so the route strips it for a caller in a pod
  * whose claims record a contract below that one (`api.stateFor`, `withoutHeld`). A reader that
- * finds it absent has been served that stripped body and learns nothing about what is held. */
+ * finds it absent has been served that stripped body and learns nothing about what is held.
+ * `cap` is the cap the admission passes admit under: since the entry admission-cap the smaller of
+ * the cap the controller or the operator set while the daemon runs and `ceiling`, the deployment's
+ * `admission_ceiling`, or legion.yaml's `admission_cap` (else `LEGION_ADMISSION_CAP`) where none
+ * is set.
+ * `override` is that cap with who set it, when and why, absent where none stands,
+ * and `capChanges` the newest changes of it (`legionAdmissionCapChange`). A daemon at that entry
+ * writes `ceiling` and `capChanges` on every state, the list empty rather than null, and the three
+ * keys are optional here for the one reason `trees` is: the route strips them for a caller below
+ * the entry's number (`api.stateFor`, `withoutAdmissionCap`). */
 const legionAdmission = z.object({
   cap: z.number().int().nonnegative().optional(),
   active: z.array(nonEmptyString).optional(),
@@ -1103,6 +1162,9 @@ const legionAdmission = z.object({
   blocked: z.array(legionBlockedIssue).optional(),
   held: z.array(legionHeldIssue).optional(),
   free: z.number().int().nonnegative().optional(),
+  ceiling: z.number().int().positive().optional(),
+  override: legionAdmissionCapOverride.optional(),
+  capChanges: z.array(legionAdmissionCapChange).optional(),
 });
 
 /** `api.ControllerLocator` — the record of the session registered as the project's controller: the
@@ -1328,18 +1390,6 @@ const legionIntakeGiveUps = z.object({
   consumers: z.array(legionIntakeGiveUpCount),
   newest: z.array(legionIntakeGiveUp).optional(),
 });
-
-/** `api.PauseActorView` — who paused the project or ended its pause (contract 178): the
- * controller, with the session it acted from, or the operator, who acts from none. The daemon's
- * store holds these two shapes and no other (`project_pauses_by_session` and
- * `project_pauses_ended_by_session` in its migration `20261115194357_project_pause`), so a
- * controller's entry always names its session, and the reader requires it: the controller's
- * `read_state` summary names the session of each controller it prints (LEGION_ANSWER_READS). */
-const legionPauseActor = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("controller"), session: nonEmptyString }),
-  z.object({ kind: z.literal("operator") }),
-]);
-
 /** What every view of a pause carries: its id, when it began, who paused, and why. Each is
  * required: the controller's `read_state` summary names all four of the state's pauses
  * (LEGION_ANSWER_READS), and a refusal that names a pause is a body no plugin code parses, which
@@ -2068,6 +2118,30 @@ export const LegionProjectResumeResponse = z.object({
   released: z.number().int().nonnegative().optional(),
 });
 
+/** `api.AdmissionCapResponse`, the answer to the controller's set or clear of the admission cap
+ * (the entry admission-cap), `POST /legion/v1/project/admission-cap` and its `/clear`, and to the
+ * operator's two routes alike: `cap`, the cap the daemon admits under from the change's own pass
+ * on; `ceiling`, the deployment's `admission_ceiling`, the most a set may name; and `override`, the
+ * cap that stands,
+ * absent after a clear. A change that changes nothing (a set of the cap that stands, a clear where
+ * none stands) is answered the same and records no change. The controller's `set_admission_cap`
+ * and `clear_admission_cap` hand the answer to the agent whole (`pi-legion/src/tools.ts`), so no
+ * plugin code reads it and every field is optional; the read set names the override's fields all
+ * the same, since the census takes the summary's reads of the state's override for reads of this
+ * one's (LEGION_ANSWER_READS). */
+export const LegionAdmissionCapResponse = z.object({
+  cap: z.number().int().nonnegative().optional(),
+  ceiling: z.number().int().positive().optional(),
+  override: z
+    .object({
+      cap: z.number().int().positive().optional(),
+      setBy: legionPauseActor.optional(),
+      setAt: timestamp.optional(),
+      reason: nonEmptyString.optional(),
+    })
+    .optional(),
+});
+
 /** `api.PauseFailure`, the refusal of a pause, of a resume, and of a request that would start a
  * turn while the project is paused: the code and the sentence every workflow refusal carries,
  * and what this one names beside them. `PAUSE_UNAVAILABLE` names the `setting` that turns the
@@ -2319,10 +2393,45 @@ export const LegionIntakeDiscardRequest = z.union([
 
 export type LegionIntakeDiscardRequestBody = z.output<typeof LegionIntakeDiscardRequest>;
 
+/** `api.ProjectAdmissionCapRequest`, the controller's set of the admission cap (the entry
+ * admission-cap): its grant, `cap`, a whole number from 1 to the deployment's ceiling, and
+ * `reason`, why: the person's
+ * words that ask for the change. It names no project: the daemon changes its own. The daemon
+ * refuses a grant that is not a controller's (`CONTROLLER_REQUIRED`), a cap below 1
+ * (`INVALID_ADMISSION_CAP`), a cap above the ceiling, naming the ceiling and `admission_ceiling`
+ * (`ADMISSION_CAP_ABOVE_CEILING`), a blank reason (`ADMISSION_CAP_REASON_REQUIRED`), a reason
+ * longer than 2,048 characters (`ADMISSION_CAP_REASON_TOO_LONG`), and a daemon with no workflow
+ * (`ADMISSION_CAP_UNAVAILABLE`). */
+export const LegionProjectAdmissionCapRequest = z.strictObject({
+  grantId: nonEmptyString,
+  cap: z.number().int().positive(),
+  reason: nonEmptyString,
+});
+
+/** `api.ProjectAdmissionCapClearRequest`, the controller's clear of the admission cap (the entry
+ * admission-cap), which returns the daemon to the deployment's starting cap: its grant and why. The
+ * daemon refuses it as it refuses a set, but for the cap's own two codes. */
+export const LegionProjectAdmissionCapClearRequest = z.strictObject({
+  grantId: nonEmptyString,
+  reason: nonEmptyString,
+});
+
 /** `api.OperatorPauseRequest`, the operator's pause of the project (`legion project pause`, under
  * the operator's bearer): why the project is paused. The operator's resume sends no body, so it
  * has no schema here. The CLI sends both; the plugin never does. */
 export const LegionOperatorProjectPauseRequest = z.strictObject({
+  reason: nonEmptyString,
+});
+
+/** `api.OperatorAdmissionCapRequest` and `api.OperatorAdmissionCapClearRequest`, the operator's set
+ * and clear of the admission cap (`legion project set-admission-cap` and `clear-admission-cap`,
+ * under the operator's bearer): the cap and why, and why alone. The CLI sends both; the plugin
+ * never does. */
+export const LegionOperatorProjectAdmissionCapRequest = z.strictObject({
+  cap: z.number().int().positive(),
+  reason: nonEmptyString,
+});
+export const LegionOperatorProjectAdmissionCapClearRequest = z.strictObject({
   reason: nonEmptyString,
 });
 
@@ -2546,6 +2655,23 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "admission.held[].issue",
     "admission.held[].reason",
     "admission.held[].heldBy",
+    // The summary's `admission cap` line names the cap that stands, who set it, when and why
+    // (the entry admission-cap). The summary reads `admission.ceiling` and `admission.override`
+    // through the `admission` it destructures, which the census cannot follow, as it cannot the
+    // block's older fields, so neither is named; the override's own fields are, read through the
+    // `override` the summary binds. Each change of `capChanges` is no read, but its actor's `kind`
+    // and a controller's `session` are named, since the census reads the summary's `setBy.kind`
+    // and `setBy.session` of the override as reads of every `setBy`.
+    "admission.override.cap",
+    "admission.override.setBy",
+    "admission.override.setBy|0.kind",
+    "admission.override.setBy|1.kind",
+    "admission.override.setBy|0.session",
+    "admission.override.setAt",
+    "admission.override.reason",
+    "admission.capChanges[].setBy|0.kind",
+    "admission.capChanges[].setBy|1.kind",
+    "admission.capChanges[].setBy|0.session",
     "capabilities",
     "capabilities[].name",
     "capabilities[].status",
@@ -2663,6 +2789,19 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "pause.endedBy|0.kind",
     "pause.endedBy|1.kind",
     "pause.endedBy|0.session",
+  ],
+  // No plugin code reads the cap's answer: the controller hands it to its agent whole. Its
+  // override's fields are named all the same, because the census matches a read by the field's
+  // name under its parent, and reads the summary's `override.cap`, `override.setBy.kind` and the
+  // rest of the state's override as reads of this answer's override too.
+  LegionAdmissionCapResponse: [
+    "override.cap",
+    "override.setBy",
+    "override.setBy|0.kind",
+    "override.setBy|1.kind",
+    "override.setBy|0.session",
+    "override.setAt",
+    "override.reason",
   ],
   // `pi-legion/src/turn-outcome.ts` logs the run of refused turns and whether this report
   // failed the claim on every turn it reports.

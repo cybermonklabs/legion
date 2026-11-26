@@ -657,7 +657,30 @@ type ContractView struct {
 // Admission is the issue cap and the issues under it, in Dispatch rank order. Concurrency is
 // capped on issues, never on workers, so there is no worker queue here.
 type Admission struct {
+	// Cap is the cap the admission passes admit under: the smaller of Override's cap and Ceiling
+	// where a cap was set while the daemon runs, else the deployment's starting cap (legion.yaml's
+	// admission_cap, else LEGION_ADMISSION_CAP) (AdmissionCapStateTx, the reading every pass
+	// makes).
 	Cap int `json:"cap"`
+	// Ceiling is the deployment's ceiling (legion.yaml's admission_ceiling, else
+	// LEGION_ADMISSION_CEILING, else admission_cap): the most a set of the cap may name
+	// (dispatch://INFRA-5616). Every body at admissionCapContract carries it, at least 1; a body
+	// served a caller below that contract leaves it out (shaping.go's withoutAdmissionCap, which
+	// zeroes it, and `omitzero` writes no key for the zero).
+	Ceiling int `json:"ceiling,omitzero"`
+	// Override is the cap the controller or the operator set while the daemon runs and that stands,
+	// who set it, when and why, absent where none stands and from a body
+	// served a caller below admissionCapContract.
+	Override *AdmissionCapOverride `json:"override,omitempty"`
+	// CapChanges is the project's newest changes of the cap, newest first, at most
+	// store.AdmissionCapChangesShown of them (admissionCapChangesTx): each with the cap it set or
+	// none for a clear, the caps before and after it, the ceiling then, who, when and why. The
+	// daemon's log names every change, and its store keeps every
+	// one. Every body at admissionCapContract carries the list, `[]` before the first change and
+	// never left out (dispatch://INFRA-5616/spec#b-r7-tick-log): MarshalJSON fills a nil list,
+	// and only an admission whose cap keys a band hid (capChangesHidden, withoutAdmissionCap)
+	// writes no key, as `trees` and `held` are written.
+	CapChanges []AdmissionCapChangeView `json:"capChanges,omitzero"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
 	// issue holds one of the cap's slots while it stands in a phase that keeps one, from the moment
@@ -717,6 +740,10 @@ type Admission struct {
 	// heldContract), whose reader refuses `held` emptied as surely as filled, so MarshalJSON
 	// leaves that key off too.
 	heldHidden bool
+	// capChangesHidden is the same for CapChanges: it is set on the copy served a caller below
+	// admissionCapContract (api's withoutAdmissionCap), whose reader knows no `capChanges`, so
+	// MarshalJSON leaves that key off, where every body at that contract carries it, `[]` at least.
+	capChangesHidden bool
 }
 
 // BlockedIssue is one issue of Blocked and the issues it waits on that are not done. It is
@@ -730,9 +757,10 @@ type BlockedIssue = record.BlockedIssue
 // same list read two ways, and the row is declared once, under both.
 type HeldIssue = record.HeldIssue
 
-// MarshalJSON keeps `active`, `waiting`, `trees`, `blocked` and `held` arrays on the wire, empty
-// rather than `null` — except on an admission whose trees are hidden, which carries no `trees`
-// key at all, and one whose held list is hidden, which carries no `held`. Those two keys are
+// MarshalJSON keeps `active`, `waiting`, `trees`, `blocked`, `held` and `capChanges` arrays on
+// the wire, empty rather than `null` — except on an admission whose trees are hidden, which
+// carries no `trees` key at all, one whose held list is hidden, which carries no `held`, and one
+// whose cap keys are hidden, which carries no `capChanges`. Those keys are
 // tagged `omitzero`, so a nil slice writes no key and an empty one writes `[]`: a hidden list
 // is left nil here and every other list is filled, which is the whole of the rule. The keys
 // keep their place in the object, because they are written from the fields they are declared
@@ -763,6 +791,11 @@ func (a Admission) MarshalJSON() ([]byte, error) {
 		out.Held = nil
 	} else if out.Held == nil {
 		out.Held = []HeldIssue{}
+	}
+	if a.capChangesHidden {
+		out.CapChanges = nil
+	} else if out.CapChanges == nil {
+		out.CapChanges = []AdmissionCapChangeView{}
 	}
 	return json.Marshal(out)
 }

@@ -33,7 +33,7 @@ func TestAClosedRootFreesItsSlotForTheNextWaitingRoot(t *testing.T) {
 		}
 	}
 	want := []string{
-		`msg="admission: slot released" issue=LEGION-ACTIVE slots=0 cap=1`,
+		`msg="admission: slot released" issue=LEGION-ACTIVE slots=0`,
 		`msg="admission: slot taken" issue=LEGION-NEXT slots=1 cap=1`,
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {

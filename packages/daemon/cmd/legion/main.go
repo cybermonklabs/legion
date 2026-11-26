@@ -640,6 +640,12 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	fmt.Fprintf(stdout, "admission: %d issues hold a slot, cap %d, %d waiting; %d live trees; %d issues\n",
 		len(state.Admission.Active), state.Admission.Cap, len(state.Admission.Waiting),
 		len(state.Admission.Trees), len(state.Issues))
+	// The cap in force, the ceiling and the cap set while the daemon runs (the contract entry
+	// admission-cap); a state that names no ceiling is one served below that entry, which says
+	// nothing of either.
+	if state.Admission.Ceiling != 0 {
+		fmt.Fprintln(stdout, "admission cap: "+admissionCapWords(state.Admission.Cap, state.Admission.Ceiling, state.Admission.Override))
+	}
 	// The project's pause: a paused line while it stands, a last-pause line while the project runs
 	// after one has ended, and neither before any pause, as the state carries one key at most.
 	for _, line := range []string{pausedSummary(state.Paused), lastPauseSummary(state.LastPause)} {

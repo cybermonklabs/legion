@@ -14,14 +14,19 @@ import (
 )
 
 // newProjectCommand is the operator's hand on the daemon's project as a whole, one command per
-// operator project route (internal/api/pause.go). pause stops every role of the project but the
-// controller and holds every launch, task and admission until resume lets the held work out
-// through the wake pacing (dispatch://INFRA-3759); the daemon acts on its own project, so neither
-// names one.
+// operator project route (internal/api/pause.go and internal/api/admission_cap.go). pause stops
+// every role of the project but the controller and holds every launch, task and admission until
+// resume lets the held work out through the wake pacing (dispatch://INFRA-3759); set-admission-cap
+// and clear-admission-cap change the cap the daemon admits under while it runs, up to legion.yaml's
+// admission_ceiling, and back to its admission_cap (dispatch://INFRA-5616). The daemon acts on its
+// own project, so none names one.
 func newProjectCommand(stdout, stderr io.Writer) *cobra.Command {
-	return group(&cobra.Command{Use: "project", Short: "pause the daemon's project, holding every role's work but the controller's, or resume it"},
+	return group(&cobra.Command{Use: "project", Short: "pause or resume the daemon's project, or change the cap it admits under"},
 		projectCommand("pause", "pause the project: stop every role but the controller and hold their work", projectPause, stdout, stderr),
 		projectCommand("resume", "end the project's pause and let the held work out through the wake pacing", projectResume, stdout, stderr),
+		projectCommand("set-admission-cap", "set the cap the daemon admits under, up to legion.yaml's admission_ceiling, with no restart",
+			projectSetAdmissionCap, stdout, stderr),
+		projectCommand("clear-admission-cap", "return the daemon to legion.yaml's admission_cap, the cap it starts under", projectClearAdmissionCap, stdout, stderr),
 	)
 }
 
@@ -110,6 +115,60 @@ func printResumeAnswer(w io.Writer, answer []byte) error {
 	return err
 }
 
+// projectSetAdmissionCap is `legion project set-admission-cap --cap <n> --reason <text>`: the
+// daemon records the operator's cap and why, and admits under it from that request's own pass on,
+// with no restart. A lower cap stops nothing that runs. The daemon refuses a cap below 1, and one
+// above legion.yaml's admission_ceiling, naming the ceiling: raising the ceiling is a change of
+// legion.yaml and a restart.
+func projectSetAdmissionCap(c *projectCall) action {
+	capValue := c.flags.Int("cap", 0, "how many issues the daemon may have started at once, from 1 to legion.yaml's admission_ceiling (required)")
+	reason := c.flags.String("reason", "", "why the cap changes: the daemon records it with the change and logs it (required)")
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check("operator-token-file", "reason"); !ok {
+			return code
+		}
+		if !c.flags.Changed("cap") {
+			return refuse(c.cmd, "--cap is required")
+		}
+		return c.send(ctx, "/admission-cap", api.OperatorAdmissionCapRequest{Cap: *capValue, Reason: *reason}, printAdmissionCapAnswer)
+	}
+}
+
+// projectClearAdmissionCap is `legion project clear-admission-cap --reason <text>`: the daemon
+// records the clear and why, and admits under legion.yaml's admission_cap again from that request's
+// own pass on.
+func projectClearAdmissionCap(c *projectCall) action {
+	reason := c.flags.String("reason", "", "why the cap returns to legion.yaml's admission_cap: the daemon records it with the change and logs it (required)")
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check("operator-token-file", "reason"); !ok {
+			return code
+		}
+		return c.send(ctx, "/admission-cap/clear", api.OperatorAdmissionCapClearRequest{Reason: *reason}, printAdmissionCapAnswer)
+	}
+}
+
+// printAdmissionCapAnswer is the cap the daemon admits under after a change, as one line.
+func printAdmissionCapAnswer(w io.Writer, answer []byte) error {
+	var changed api.AdmissionCapResponse
+	if err := decodeAnswer(answer, &changed); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(w, "admission cap: "+admissionCapWords(changed.Cap, changed.Ceiling, changed.Override))
+	return err
+}
+
+// admissionCapWords is the cap the daemon admits under as `legion state` and a change's answer name
+// it: the cap, the ceiling, and the cap set while the daemon runs where one stands, with who set it,
+// when and why. The reason is a person's words, quoted, so a newline in it cannot pose as a line of
+// its own.
+func admissionCapWords(capValue, ceiling int, override *api.AdmissionCapOverride) string {
+	words := fmt.Sprintf("%d in force, ceiling %d", capValue, ceiling)
+	if override == nil {
+		return words + "; no cap set while the daemon runs"
+	}
+	return words + fmt.Sprintf("; set to %d by %s at %s: %q", override.Cap, pauseActorWords(override.SetBy), override.SetAt.Format(time.RFC3339), override.Reason)
+}
+
 // pausedSummary is `legion state`'s line for the project's open pause (api.State.Paused): the
 // pause, who paused, since when and why, and the roles whose stop it still waits on, each by
 // issue and role. It is empty while the project runs, and the caller then prints nothing.
@@ -117,7 +176,7 @@ func pausedSummary(paused *api.PausedView) string {
 	if paused == nil {
 		return ""
 	}
-	line := fmt.Sprintf("paused: pause %d since %s by %s: %s", paused.ID, paused.Since.Format(time.RFC3339),
+	line := fmt.Sprintf("paused: pause %d since %s by %s: %q", paused.ID, paused.Since.Format(time.RFC3339),
 		pauseActorWords(paused.By), paused.Reason)
 	if len(paused.WaitsOn) == 0 {
 		return line + "; waits on no role"
@@ -144,9 +203,10 @@ func lastPauseSummary(last *api.PauseView) string {
 	return "last pause: " + endedPauseWords(*last)
 }
 
-// pauseWords is a pause as these lines name it: its id, since when, who paused and why.
+// pauseWords is a pause as these lines name it: its id, since when, who paused and why. The reason
+// is a person's words, quoted, so a newline in it cannot pose as a line of its own.
 func pauseWords(p api.PauseView) string {
-	return fmt.Sprintf("pause %d since %s by %s: %s", p.ID, p.Since.Format(time.RFC3339), pauseActorWords(p.By), p.Reason)
+	return fmt.Sprintf("pause %d since %s by %s: %q", p.ID, p.Since.Format(time.RFC3339), pauseActorWords(p.By), p.Reason)
 }
 
 // endedPauseWords is an ended pause as these lines name it: the pause, then when and by whom it

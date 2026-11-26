@@ -1,0 +1,75 @@
+{
+  "answers": [
+    {
+      "answer": "admission-cap",
+      "change": "add",
+      "noBody": false,
+      "addKeyPaths": [
+        "cap",
+        "ceiling",
+        "override",
+        "override.cap",
+        "override.reason",
+        "override.setAt",
+        "override.setBy",
+        "override.setBy.kind",
+        "override.setBy.session"
+      ]
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "admission.capChanges",
+        "admission.capChanges.*",
+        "admission.capChanges.*.cap",
+        "admission.capChanges.*.capAfter",
+        "admission.capChanges.*.capBefore",
+        "admission.capChanges.*.ceiling",
+        "admission.capChanges.*.id",
+        "admission.capChanges.*.reason",
+        "admission.capChanges.*.setAt",
+        "admission.capChanges.*.setBy",
+        "admission.capChanges.*.setBy.kind",
+        "admission.capChanges.*.setBy.session",
+        "admission.ceiling",
+        "admission.override",
+        "admission.override.cap",
+        "admission.override.reason",
+        "admission.override.setAt",
+        "admission.override.setBy",
+        "admission.override.setBy.kind",
+        "admission.override.setBy.session"
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "route": "POST /legion/v1/project/admission-cap",
+      "change": "add",
+      "addFieldPaths": [
+        "cap",
+        "grantId",
+        "reason"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/project/admission-cap/clear",
+      "change": "add",
+      "addFieldPaths": [
+        "grantId",
+        "reason"
+      ]
+    }
+  ],
+  "answerRows": [
+    {
+      "id": "admission-cap",
+      "routes": [
+        "POST /legion/v1/project/admission-cap",
+        "POST /legion/v1/project/admission-cap/clear"
+      ],
+      "noBody": false
+    }
+  ],
+  "enumeratedRows": []
+}
