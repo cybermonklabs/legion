@@ -318,10 +318,16 @@ def problems(module: str, entry: dict, packages: list, legs_path: str = LEGS) ->
 
 
 def go_packages(module: str) -> list:
-    """The packages `go list ./...` prints in the module, as directories under it."""
+    """The packages `go list ./...` prints in the module, as directories under it. It lists them as
+    `go list -e -find -f {{.Dir}} ./...` with GOPROXY=off and GOFLAGS empty, as
+    go_build_tags.compiled does: `-find` names each package without loading what it imports, so no
+    module is resolved or downloaded, no go.work.sum is written, and a cold machine, the changes
+    job's, lists the module in a second with no network; -e keeps a package whose import is not in
+    the cache, which plain `go list ./...` would fail on. The directories are the same: a directory
+    whose every file a constraint excludes is no package either way."""
     directory = ROOT / module
-    listing = subprocess.run(["go", "list", "-f", "{{.Dir}}", "./..."], cwd=directory, capture_output=True,
-                             text=True)
+    listing = subprocess.run(["go", "list", "-e", "-find", "-f", "{{.Dir}}", "./..."], cwd=directory,
+                             capture_output=True, text=True, env={**os.environ, "GOPROXY": "off", "GOFLAGS": ""})
     if listing.returncode != 0:
         sys.stderr.write(listing.stderr)
         raise RuntimeError(f"`go list ./...` in {module} failed (its errors are above), so which packages the "

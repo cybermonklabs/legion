@@ -463,13 +463,16 @@
 # file when this check was written.
 #
 # Two kinds of go command run under this machine's own module cache instead. One is `go env
-# GOROOT`, which resolves the toolchain (below) and writes nothing. The other is
-# .github/scripts/go_build_tags.py's: ci_job_reads.py runs its tag_sets as it is imported, to give
-# each darwin vet step one Run per tag set, and rule 20 runs its platforms. Its `go list -find`
-# still resolves every import, so under the machine's GOPROXY it fetched every module a cold
-# runner's cache lacks, about half of the changes job's generation, and in a workspace wrote into
-# go.work.sum the checksum of each go.mod the committed files lacked (packages/envoy/infra/
-# go.work.sum lacked two). It runs with GOPROXY=off, so it fetches nothing. A run of any mode that
+# GOROOT`, which resolves the toolchain (below) and writes nothing. The other is a `go list -find`
+# that two scripts run, .github/scripts/go_build_tags.py and .github/scripts/go_legs.py:
+# ci_job_reads.py runs go_build_tags' tag_sets and compiled as it is imported, to give each
+# darwin vet step one Run per tag set and to read which test files a runner compiles, and
+# go_legs' go_packages, to hold the legs and name a package no legs line names in the plain gates'
+# Runs; rule 20 runs go_build_tags' platforms. A `go list -find` still resolves every import, so under the machine's GOPROXY it
+# fetched every module a cold runner's cache lacks, about half of the changes job's generation,
+# and in a workspace wrote into go.work.sum the checksum of each go.mod the committed files lacked
+# (packages/envoy/infra/go.work.sum lacked two). Each runs with GOPROXY=off (go_legs' with GOFLAGS
+# empty too), so it fetches nothing. A run of any mode that
 # changes a file of the tree, but those its mode writes (the PUSH_WORKFLOWS workflows, and
 # generate's output and the .inputs file beside it, below), still fails naming each: for a
 # go.work.sum, commit what the run wrote. The tree is read before the first go

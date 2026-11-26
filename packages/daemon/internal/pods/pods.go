@@ -14,12 +14,12 @@ import (
 
 // Wake kinds, the vocabulary of a recorded resume's kind: the six ways a released pod comes
 // back. WakeDelivery is a delivery the daemon already had for a role of the
-// pod — a phase start, a task, a backward move, a notice, a merge forward's message, a production
-// check's look, a slot resume; WakeChecks is a CI settlement on the head of the issue's pull
-// request; WakeRoleMessage and WakeAgentMessage are what only the Envoy listener sees, a message
-// published to a role topic of the pod and one sent to the agent subject of a released session;
-// WakeBackstop is the stored backstop a release armed; WakePause is the launch a project's pause
-// owed a role it stopped, held until the resume (store's PodRecords.TakePodWake).
+// pod — a phase start, a task, a backward move, a notice, a phase-ended message, a merge forward's
+// message, a production check's look, a slot resume; WakeChecks is a CI settlement on the head of
+// the issue's pull request; WakeRoleMessage and WakeAgentMessage are what only the Envoy listener
+// sees, a message published to a role topic of the pod and one sent to the agent subject of a
+// released session; WakeBackstop is the stored backstop a release armed; WakePause is the launch
+// a project's pause owed a role it stopped, held until the resume (store's PodRecords.TakePodWake).
 //
 // They are records rather than the rule's own, because the rule that names a wake (workflow) and
 // the store that files it under this word are different packages, and one vocabulary is what
@@ -154,9 +154,10 @@ type IdleView struct {
 	Root        IdleRoot
 	Claims      []IdleClaim
 	// Waiting is whether a task, notice, message or start of the issue waits for delivery to a
-	// role of its pod. A start queued for news of the approved design alone is not counted: it
-	// wakes the claim a release suspends (store's idleWaitingRow). The rule reads only whether
-	// there is one, so the store reads only that.
+	// role of its pod. A start queued for news of the approved design alone is not counted, and
+	// neither is a worker start that waits for an admission slot its issue does not hold: each
+	// wakes the claim a release suspends when it runs (store's idleWaitingRow). The rule reads
+	// only whether there is one, so the store reads only that.
 	Waiting bool
 	// RoleStopQueued is whether a supervise row that stops a role of the issue still waits in
 	// the outbox: a close's suspend, issue_close or tree_close, or an idle release's role stop.

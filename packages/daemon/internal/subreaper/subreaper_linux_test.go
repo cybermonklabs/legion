@@ -40,17 +40,28 @@ func runHelper(helper string) int {
 	var err error
 	switch helper {
 	case "orphan":
-		err = h.orphan(true)
+		err = h.orphan(true, nil)
+	case "orphan-delayed-record":
+		err = h.orphan(true, newRecordDelay())
 	case "orphan-no-subreaper":
-		err = h.orphan(false)
+		err = h.orphan(false, nil)
 	case "together":
-		err = h.together()
+		err = h.together(nil, false)
+	case "together-delayed-record":
+		err = h.together(newRecordDelay(), false)
+	case "together-delayed-error":
+		err = h.together(newRecordDelay(), true)
 	case "no-spin":
 		err = h.noSpin()
 	case "retry":
 		err = h.retry()
 	default:
 		err = fmt.Errorf("no helper case %q", helper)
+	}
+	if h.delay != nil {
+		// Release the reaper before it is stopped: on an error path together and orphan return
+		// without releasing it, and a reaper parked in record on the delay would make h.stop hang.
+		h.delay.done()
 	}
 	if h.stop != nil {
 		h.stop()
@@ -61,10 +72,40 @@ func runHelper(helper string) int {
 	return 0
 }
 
+// recordDelay stops the reaper between its Wait4, which makes an orphan absent from /proc, and
+// helperRun.record, which records the pid the pass reaped. It makes the order in the flaky
+// together and orphan cases certain: an orphan can be gone before the test has seen the callback's
+// record. done is idempotent (sync.Once), and runHelper calls it before it stops the reaper, so a
+// helper that returns an error while the reaper is parked in record never leaves it stuck.
+type recordDelay struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newRecordDelay() *recordDelay {
+	return &recordDelay{entered: make(chan struct{}, 1), release: make(chan struct{})}
+}
+
+func (d *recordDelay) wait() bool {
+	select {
+	case <-d.entered:
+		return true
+	case <-time.After(helperBound):
+		return false
+	}
+}
+
+func (d *recordDelay) done() {
+	d.once.Do(func() { close(d.release) })
+}
+
 // helperRun is one helper's guard and every pass its reaper made.
 type helperRun struct {
 	guard *Guard
 	stop  func()
+
+	delay *recordDelay
 
 	mu     sync.Mutex
 	passes int
@@ -72,6 +113,10 @@ type helperRun struct {
 }
 
 func (h *helperRun) record(reaped []int) {
+	if h.delay != nil && len(reaped) != 0 {
+		h.delay.entered <- struct{}{}
+		<-h.delay.release
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.passes++
@@ -115,7 +160,12 @@ func (h *helperRun) guarded(script string) (first string, pid int, waited error)
 // orphan starts, through the guard, a shell that starts a sleep in the background and exits, so
 // the sleep is orphaned while it still runs, and reports whose child the sleep became and, once it
 // ends, whether it was reaped (gone from /proc) and by how many of the reaper's passes.
-func (h *helperRun) orphan(subreaper bool) error {
+//
+// delayed, the forced control, holds the reaper after Wait4 made the orphan absent from /proc and
+// before record runs, so a count read right after awaitGone would read 0: the same callback order
+// that made the together case flake. awaitReaps below waits for the record instead.
+func (h *helperRun) orphan(subreaper bool, delay *recordDelay) error {
+	h.delay = delay
 	if subreaper {
 		if err := h.serve(); err != nil {
 			return err
@@ -138,7 +188,13 @@ func (h *helperRun) orphan(subreaper bool) error {
 		return nil
 	}
 	fmt.Printf("orphan=%s\n", awaitGone(orphan))
-	_, reaps := h.counts(orphan)
+	if delay != nil {
+		if !delay.wait() {
+			return fmt.Errorf("the reaper made the orphan gone but did not enter its record in %s", helperBound)
+		}
+		delay.done()
+	}
+	reaps := h.awaitReaps(orphan, 1)
 	fmt.Printf("orphan-reaps=%d\n", reaps)
 	return nil
 }
@@ -148,7 +204,12 @@ func (h *helperRun) orphan(subreaper bool) error {
 // reaper's passes reaped the orphan, and whether any reaped the guarded child. The orphan is
 // started by a subshell that exits at once, so it comes to this process long before it ends and is
 // never the guarded shell's child when it ends, which the shell's own waits would otherwise reap.
-func (h *helperRun) together() error {
+//
+// delayed, the forced control, holds the reaper after Wait4 reaped the orphan and before record
+// runs. The test releases that callback, then waits for its record: the callback's order after
+// Wait4 is an implementation detail of Serve, not the test's result.
+func (h *helperRun) together(delay *recordDelay, injectError bool) error {
+	h.delay = delay
 	if err := h.serve(); err != nil {
 		return err
 	}
@@ -168,7 +229,20 @@ func (h *helperRun) together() error {
 			return fmt.Errorf("round %d: the shell printed %q, not the sleep's pid", round, first)
 		}
 		gone := awaitGone(orphan)
-		_, orphanReaps := h.counts(orphan)
+		if delay != nil {
+			if !delay.wait() {
+				return fmt.Errorf("round %d: the reaper made the orphan gone but did not enter its record in %s", round, helperBound)
+			}
+			if injectError {
+				// The reaper is parked in record on the delay's release. This returns the error
+				// path's own way (without delay.done()), so the control proves runHelper releases
+				// the delay before it stops the reaper; otherwise stop would hang and this error
+				// line would never be printed.
+				return fmt.Errorf("round %d: a forced helper error while the reaper is parked in its record", round)
+			}
+			delay.done()
+		}
+		orphanReaps := h.awaitReaps(orphan, 1)
 		_, childReaps := h.counts(pid)
 		if status != "5" || gone != "reaped" || orphanReaps != 1 || childReaps != 0 {
 			failures++
@@ -266,6 +340,20 @@ func (h *helperRun) awaitPasses(n int) bool {
 	}
 }
 
+// awaitReaps waits, bounded, for h.record to name pid at least n times. Wait4 makes pid absent
+// from /proc before Serve calls that callback, so awaitGone is not the condition that proves the
+// pass's report is ready.
+func (h *helperRun) awaitReaps(pid, n int) int {
+	deadline := time.Now().Add(helperBound)
+	for {
+		_, reaps := h.counts(pid)
+		if reaps >= n || time.Now().After(deadline) {
+			return reaps
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // statOf reads pid's parent, process group and state from /proc.
 func statOf(pid int) (parent, group int, state string, err error) {
 	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
@@ -351,15 +439,20 @@ func runCase(t *testing.T, name string) (map[string]string, string) {
 }
 
 // A process that serves its guard takes in the orphan a child of its own leaves, and reaps it once
-// it ends, once. The control runs the same child without Serve: the orphan then goes to another
-// process, which is what makes the first case's answer the subreaper's doing.
+// it ends, once. The delayed-record control stops the reaper after Wait4 made the orphan absent
+// from /proc and before the callback records it, so the count read right after awaitGone would
+// read 0: orphan reads it through awaitReaps instead. The no-subreaper control runs the same child
+// without Serve: the orphan then goes to another process, which is what makes the first answer the
+// subreaper's doing.
 func TestAnOrphanComesToTheGuardsProcessAndIsReapedThere(t *testing.T) {
-	report, out := runCase(t, "orphan")
-	if report["orphan-parent-is-self"] != "true" {
-		t.Errorf("the orphan's parent is not the process that serves the guard\n%s", out)
-	}
-	if report["orphan"] != "reaped" || report["orphan-reaps"] != "1" {
-		t.Errorf("the orphan is %q and was reaped by %q passes, want reaped by one\n%s", report["orphan"], report["orphan-reaps"], out)
+	for _, helper := range []string{"orphan", "orphan-delayed-record"} {
+		report, out := runCase(t, helper)
+		if report["orphan-parent-is-self"] != "true" {
+			t.Errorf("%s: the orphan's parent is not the process that serves the guard\n%s", helper, out)
+		}
+		if report["orphan"] != "reaped" || report["orphan-reaps"] != "1" {
+			t.Errorf("%s: the orphan is %q and was reaped by %q passes, want reaped by one\n%s", helper, report["orphan"], report["orphan-reaps"], out)
+		}
 	}
 	control, out := runCase(t, "orphan-no-subreaper")
 	if control["orphan-parent-is-self"] != "false" {
@@ -369,11 +462,47 @@ func TestAnOrphanComesToTheGuardsProcessAndIsReapedThere(t *testing.T) {
 
 // A guarded child and the orphan it leaves behind end at the same moment, twenty times over: each
 // time the guarded child's own wait reads its exit 5, the reaper never reaps the guarded child, and
-// it reaps the orphan exactly once.
+// it reaps the orphan exactly once. The delayed record control stops the reaper after Wait4 made
+// the orphan absent from /proc and before the callback records it, which forces the order that
+// flaked in CI. The test must wait for that record, rather than treating disappearance from /proc
+// as proof that it has happened.
 func TestAGuardedChildAndAnOrphanEndingTogetherAreEachReapedOnce(t *testing.T) {
-	report, out := runCase(t, "together")
-	if report["together-rounds"] != "20" || report["together-failures"] != "0" {
-		t.Errorf("rounds %q, failures %q, want 20 rounds and none failed\n%s", report["together-rounds"], report["together-failures"], out)
+	for _, helper := range []string{"together", "together-delayed-record"} {
+		report, out := runCase(t, helper)
+		if report["together-rounds"] != "20" || report["together-failures"] != "0" {
+			t.Errorf("%s: rounds %q, failures %q, want 20 rounds and none failed\n%s", helper, report["together-rounds"], report["together-failures"], out)
+		}
+	}
+}
+
+// A helper that returns an error while the reaper is parked in its record (the delayed round of
+// the together case, forced by together-delayed-error) reaches the test with its error line, and
+// within a short bound: runHelper releases the delay before it stops the reaper, so h.stop does not
+// hang on the parked reaper. A runHelper that stopped the reaper without releasing it would hang
+// until runCase's own context killed the helper, and the error line would be lost.
+func TestAHelperErrorWithTheReaperParkedReachesTheTest(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), helperBound)
+	defer cancel()
+	helper := exec.CommandContext(ctx, self, "-test.run=^$")
+	helper.Env = append(os.Environ(), helperEnv+"=together-delayed-error")
+	started := time.Now()
+	out, err := helper.CombinedOutput()
+	elapsed := time.Since(started)
+	if ctx.Err() != nil {
+		t.Fatalf("the helper did not exit on its own in %s, so h.stop hung on the parked reaper: %v\n%s", helperBound, err, out)
+	}
+	if err != nil {
+		t.Fatalf("the helper: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "helper-error=") {
+		t.Fatalf("the helper printed no helper-error line, so its forced error never reached the test\n%s", out)
+	}
+	if elapsed > helperBound/2 {
+		t.Errorf("the helper took %s to report its error, want well under %s: the reaper's release is not prompt\n%s", elapsed, helperBound, out)
 	}
 }
 

@@ -74,7 +74,7 @@ from typing import NamedTuple
 from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, repo_files, run
 from ci_filter_coverage import at as at_in, gate as gate_in
 from ci_filter_sources import excluded, load_directives, load_gate_files
-from go_build_tags import go_skips_dir, platforms, tag_sets
+from go_build_tags import compiled, go_skips_dir, tag_sets
 import go_legs
 
 ENVOY = "packages/envoy"
@@ -927,9 +927,10 @@ def two_builds_go_reads():
 # build: the holds of PLUGIN_PACK_TESTS, SUPERVISE_TABLE_TESTS, WEB_FIXTURE_TESTS and
 # UNIT_ALONE_TESTS read the tests a package declares (declared_tests), and the envoy lane finds the
 # tests only a plain run covers (race_impossible_tests_of). Each looks for an identifier the
-# compiler reads, so each blanks what it does not read first, and the four holds read a file as
-# compiled or not by one rule (runner_builds), whose platform names alone come from `go tool dist
-# list`.
+# compiler reads, so each blanks what it does not read first. Which files the four holds read is
+# no reading of theirs: `go list -find` says which test files a runner's build compiles
+# (declared_tests, through go_build_tags.compiled), so Go's own constraint grammar, `// +build`
+# lines, file-name suffixes and cgo decide it.
 def go_code_only(text: str) -> str:
     """`text` with every comment, string and rune literal blanked out and its newlines kept, so a
     name found in what is left is an identifier the compiler reads, at its own offset."""
@@ -964,72 +965,44 @@ def go_code_only(text: str) -> str:
 # another function are not. Both lanes below read this one pattern, so a shape one of them learns
 # the other has too.
 GO_TEST_FUNC = re.compile(r"^func ((?:Test|Fuzz|Example)(?:[^\Wa-z]\w*)?)\(", re.M)
-# A file's build constraint line, which runner_builds() evaluates.
+# A file's `//go:build` line, read as text: the envoy lane's derivation of what only a plain run
+# covers (race_impossible_tests_of) reads whether it names race, and refuses a form it does not
+# read. It is no answer to which files a build compiles - declared_tests asks go list that - so it
+# reads neither `// +build` lines nor the file's name, and would read such a line inside a raw
+# string too.
 GO_BUILD_LINE = re.compile(r"^//go:build +(.+?) *$", re.M)
 # The build a CI runner's go test compiles with no -tags and no -race: GOOS linux, cgo on (a native
-# build on a GitHub runner, which has a C compiler), the gc toolchain, and the runner's GOARCH,
-# which a caller names (ubuntu-24.04 is amd64, ubuntu-24.04-arm arm64). A //go:build name is true
-# under it when it is one of these, its GOARCH, or a release (go1.N), and false otherwise: a tag no
-# step passes, race, another platform.
-RUNNER_BUILD = frozenset({"linux", "unix", "gc", "cgo"})
+# build on a GitHub runner, which has a C compiler) and the runner's GOARCH, which a caller names.
 RUNNER_GOOS = "linux"
 AMD64 = "amd64"  # ubuntu-24.04's GOARCH
 ARM64 = "arm64"  # ubuntu-24.04-arm's GOARCH
 
 
-@functools.lru_cache(maxsize=None)
-def go_platforms() -> tuple:
-    """(every GOOS, every GOARCH) go/build knows, which a file name's `_<goos>` and `_<goarch>`
-    suffixes are read against (go_build_tags.platforms)."""
-    return platforms(Path(ENVOY))
-
-
-def runner_builds(path: Path, text: str, arches) -> bool:
-    """Whether the runner's build (RUNNER_BUILD, GOOS linux) compiles the Go file at `path`, of
-    this text, on every GOARCH of `arches`, as go/build decides it: its name's `_<goos>`,
-    `_<goarch>` or `_<goos>_<goarch>` suffix (the `_test` before `.go` aside) names linux and that
-    GOARCH or nothing, and it carries no //go:build line (GO_BUILD_LINE), or its expression holds
-    there. A `//go:build linux` file and an `x_linux_test.go` are compiled; a `//go:build natslive`
-    file and an `x_darwin_test.go` are not. The expression is go/build's syntax - names, `!`, `&&`,
-    `||` and parentheses - read name by name; anything else in it is refused rather than guessed
-    at. Every reader of a test's declaration here reads it through this one rule, so a step that
-    passes no -tags is read as compiling what go test compiles on its runner."""
-    oses, known_arches = go_platforms()
-    parts = path.name.removesuffix(".go").removesuffix("_test").split("_")
-    named_os = parts[-2] if len(parts) > 2 and parts[-1] in known_arches and parts[-2] in oses else (
-        parts[-1] if len(parts) > 1 and parts[-1] in oses else None)
-    named_arch = parts[-1] if len(parts) > 1 and parts[-1] in known_arches else None
-    line = GO_BUILD_LINE.search(text)
-    expression = line.group(1) if line else ""
-    if expression and not re.fullmatch(r"[\w.!&|() ]+", expression):
-        raise ValueError(f"{path}'s build constraint `//go:build {expression}` holds a character go/build's syntax "
-                         f"has not")
+def declared_tests(module, directories, names, arches, always=()) -> dict:
+    """The tests each _test.go file of `directories` (each a package directory of `module`)
+    declares that a runner of each GOARCH of `arches` compiles: per file, as a posix path, the
+    GO_TEST_FUNC names of its code (go_code_only), TestMain apart. Which files a runner compiles is
+    `go list -e -find` under GOOS linux, that GOARCH, CGO_ENABLED=1, no -tags and GOPROXY=off
+    (go_build_tags.compiled), one listing per GOARCH over every directory, so a `//go:build linux`
+    file and an `x_linux_test.go` count, and a `//go:build natslive` file, a `// +build darwin`
+    file and an `x_darwin_test.go` do not; a file compiled on one GOARCH of `arches` and not on
+    another is read as compiled on none. A file is read only when its text writes one of `names`,
+    or `always` names it, since go_code_only walks a file character by character; a file the
+    runners do not compile is read as declaring none. The one reader the holds below use."""
+    directories = [Path(directory) for directory in directories]
+    built = None
     for arch in arches:
-        if named_os not in (None, RUNNER_GOOS) or named_arch not in (None, arch):
-            return False
-        if expression:
-            truth = RUNNER_BUILD | {arch}
-            python = re.sub(r"[\w.]+", lambda m: str(m.group(0) in truth or bool(re.fullmatch(r"go1\.\d+", m.group(0)))),
-                            expression).replace("&&", " and ").replace("||", " or ").replace("!", " not ")
-            if not eval(python, {"__builtins__": {}}):
-                return False
-    return True
-
-
-def declared_tests(directory, names, arches, always=()) -> dict:
-    """The tests each _test.go file of `directory` declares that a runner of each GOARCH of
-    `arches` compiles (runner_builds): per file, as a posix path, the GO_TEST_FUNC names of its code
-    (go_code_only), TestMain apart. A file is read only when its text writes one of `names`, or
-    `always` names it, since go_code_only walks a file character by character; a file the runners
-    do not compile is read as declaring none. The one reader the holds below use."""
+        files = compiled(Path(module), RUNNER_GOOS, arch, [], directories, CGO_ENABLED="1", GOFLAGS="")
+        built = files if built is None else built & files
     found = {}
-    for path in sorted(Path(directory).glob("*_test.go")):
-        here = path.as_posix()
-        text = path.read_text(errors="replace")
-        if here not in always and not any(name in text for name in names):
-            continue
-        found[here] = [] if not runner_builds(path, text, arches) else [
-            m.group(1) for m in GO_TEST_FUNC.finditer(go_code_only(text)) if m.group(1) != "TestMain"]
+    for directory in directories:
+        for path in sorted(directory.glob("*_test.go")):
+            here = path.as_posix()
+            text = path.read_text(errors="replace")
+            if here not in always and not any(name in text for name in names):
+                continue
+            found[here] = [] if str(path.resolve()) not in built else [
+                m.group(1) for m in GO_TEST_FUNC.finditer(go_code_only(text)) if m.group(1) != "TestMain"]
     return found
 
 
@@ -1323,7 +1296,7 @@ def hold_plugin_pack_tests():
     Fuzz is one of them because a plain run runs its seed corpus, and every Example is counted,
     since a plain run checks one that has an output comment and counting the rest only refuses
     on the safe side. A declaration counts only where the plugin-pack job's runner
-    (ubuntu-24.04, amd64) compiles its file with no -tags (runner_builds): neither step passes
+    (ubuntu-24.04, amd64) compiles its file with no -tags (declared_tests): neither step passes
     -tags, so a name behind a tag is one the -run cannot reach and the -skip need not skip, and a
     listed name left only in such a file is refused by the first rule below. A `//go:build linux`
     file, which an older reading of this rule took for a tagged one, is compiled and counts.
@@ -1339,7 +1312,7 @@ def hold_plugin_pack_tests():
     # A file neither step compiles declares no name either step can use, so it is read as
     # declaring none - the whole-file one included, whose listed tests the first rule then
     # reports as gone.
-    files = declared_tests(PLUGIN_PACK_SOURCE, PLUGIN_PACK_TESTS, (AMD64,), always=(PLUGIN_PACK_WHOLE_FILE,))
+    files = declared_tests(DAEMON, [PLUGIN_PACK_SOURCE], PLUGIN_PACK_TESTS, (AMD64,), always=(PLUGIN_PACK_WHOLE_FILE,))
     declared = {name for names in files.values() for name in names}
     whole_file = files.get(PLUGIN_PACK_WHOLE_FILE)
     gone = ", ".join(name for name in sorted(PLUGIN_PACK_TESTS) if name not in declared)
@@ -1423,7 +1396,7 @@ def hold_supervise_table_tests():
     about a name neither step could reach. A test is what hold_plugin_pack_tests() reads one as:
     every top-level Test, Fuzz or Example of GO_TEST_FUNC, TestMain apart (declared_tests), and
     only in a file the -run step's runner (text-checks, ubuntu-24.04-arm, arm64) compiles with no
-    -tags (runner_builds), since neither step passes -tags and a name behind a tag is one the -run
+    -tags (declared_tests), since neither step passes -tags and a name behind a tag is one the -run
     cannot reach and the -skip need not skip.
     hold_plugin_pack_tests()'s second rule - that its list name every test of the one file that job
     took whole - is not ported here, because this list is part of a file's tests rather than all of
@@ -1445,7 +1418,7 @@ def hold_supervise_table_tests():
     leaves. The package's own files are what is scanned, and of those only the ones that write one of
     these names, because the module's test files are 14 MB and go_code_only walks a file character by
     character."""
-    files = declared_tests(SUPERVISE_TABLE_SOURCE, SUPERVISE_TABLE_TESTS, (ARM64,))
+    files = declared_tests(DAEMON, [SUPERVISE_TABLE_SOURCE], SUPERVISE_TABLE_TESTS, (ARM64,))
     declared = {name for names in files.values() for name in names}
     gone = ", ".join(name for name in sorted(SUPERVISE_TABLE_TESTS) if name not in declared)
     if gone:
@@ -1940,7 +1913,7 @@ def hold_unit_alone_tests(alone=None, packages=None, module=ENVOY):
     file of another package of the unit legs declares too (the legs' -skip, read in every package
     a leg runs, would leave that test out there, where no alone step runs it). A test is what
     hold_plugin_pack_tests() reads one as (declared_tests), in a file the alone step's runner
-    (ubuntu-24.04-arm, arm64) compiles with no -tags (runner_builds): a `//go:build linux` file
+    (ubuntu-24.04-arm, arm64) compiles with no -tags (declared_tests): a `//go:build linux` file
     and an `x_linux_test.go` do, and a `//go:build natslive` file and an `x_darwin_test.go` do
     not. check-ci-filters.test.sh holds the refusals on a fixture module."""
     alone = UNIT_ALONE_TESTS if alone is None else alone
@@ -1948,10 +1921,11 @@ def hold_unit_alone_tests(alone=None, packages=None, module=ENVOY):
     wanted = {name for names in alone.values() for name in names}
     problems = []
     declared = {}
-    for package in packages:
-        for names in declared_tests(Path(module) / package, wanted, (ARM64,)).values():
-            for name in set(names) & wanted:
-                declared.setdefault(name, set()).add(package)
+    for path, names in declared_tests(module, [Path(module) / package for package in packages], wanted,
+                                      (ARM64,)).items():
+        package = Path(path).parent.relative_to(Path(module)).as_posix()
+        for name in set(names) & wanted:
+            declared.setdefault(name, set()).add(package)
     for package, names in alone.items():
         if package not in packages:
             problems.append(f"{package}, which no {ENVOY_PLAIN_JOB} leg of {GO_LEGS} runs")
@@ -1996,7 +1970,7 @@ def hold_web_fixture_tests():
     reading and a stale fixture the web app's view tests draw would be gone with every step
     green. A test is what hold_plugin_pack_tests() reads one as: every top-level Test, Fuzz or
     Example of GO_TEST_FUNC, TestMain apart (declared_tests), and only in a file the -run step's
-    runner (envoy-go-build, ubuntu-24.04, amd64) compiles with no -tags (runner_builds), since
+    runner (envoy-go-build, ubuntu-24.04, amd64) compiles with no -tags (declared_tests), since
     neither step passes -tags and a name behind a tag is one the -run cannot reach and the -skip
     need not skip.
     Of that precedent's two rules this ports the first and not the second - that its list name
@@ -2020,7 +1994,7 @@ def hold_web_fixture_tests():
     are what is scanned, and of those only the ones that write one of these names, because this
     package's tests are 1 MB over 79 files and go_code_only walks a file character by
     character."""
-    files = declared_tests(WEB_FIXTURE_SOURCE, WEB_FIXTURE_TESTS, (AMD64,))
+    files = declared_tests(ENVOY, [WEB_FIXTURE_SOURCE], WEB_FIXTURE_TESTS, (AMD64,))
     declared = {name for names in files.values() for name in names}
     gone = ", ".join(name for name in sorted(WEB_FIXTURE_TESTS) if name not in declared)
     if gone:
@@ -2448,6 +2422,9 @@ STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"
+# The step of envoy-go-checks that runs the scan tests of approve-check's session, which spawn
+# scripts/approve/scan.ts.
+SCAN_TESTS_STEP = "Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)"
 # The step that waits for the script harnesses a job queued through .github/scripts/harness-pool.sh
 # and is the verdict on them; envoy-go-checks and the test job each end with one.
 HARNESS_POOL_WAIT_STEP = "Wait for the script harnesses and judge them"
