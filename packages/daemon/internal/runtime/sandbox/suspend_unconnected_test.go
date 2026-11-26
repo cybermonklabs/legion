@@ -96,7 +96,7 @@ func TestSuspendOfAConnectedLauncherStillWaitsForTheStop(t *testing.T) {
 			held := make(chan struct{})
 			release := sync.OnceFunc(func() { close(held) })
 			t.Cleanup(release)
-			g := newRig(t, nil, withHeldStops(held), withWaitsToTheDeadline())
+			g := newRig(t, nil, withHeldStops(held))
 			loc := g.spawn(workerSpec(t))
 			if edit != nil {
 				g.editPod(loc.Sandbox.Name, "the pod store to see the pod back in workspace-init", edit)
