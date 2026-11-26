@@ -12,6 +12,7 @@
       "**",
       "!!packages/contracts/fixtures/classification",
       "!!packages/contracts/fixtures/daemon-api",
+      "!!packages/contracts/fixtures/dispatch-results",
       "!!packages/contracts/fixtures/live",
       "!!packages/dispatch/e2e/__recordings__",
       "!!packages/daemon/internal/runtime/sandbox/testdata/golden",
