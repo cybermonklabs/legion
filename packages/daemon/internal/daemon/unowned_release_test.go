@@ -620,7 +620,7 @@ func TestAnUnownedReleaseLeavesAKeptSuspendedSandboxAlone(t *testing.T) {
 // issueSandboxSecrets are the Secrets an issue's Sandbox owns where the deployment defines no role
 // and the issue's plan names no agent beside its roles, as here, named as the sandbox runtime names
 // them: the provisioning Secret `<sandbox>-boot` (secretName) and the Secret `<sandbox>-<slot>-boot`
-// of each slot of its pod (roleSecretName over podSlots), here one for each of Legion's six roles,
+// of each slot of its pod (roleSecretName), here one for each of Legion's six roles,
 // each the slot of the agent named for that role.
 func issueSandboxSecrets(sandbox string) []string {
 	secrets := []string{sandbox + "-boot"}

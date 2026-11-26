@@ -986,7 +986,7 @@ func podContainer(role claim.Role) string {
 }
 
 // launcherOf is the role of the pod's launcher that serves slot, the slot a claim's process runs in
-// (claim.Token.Slot): a pod runs one launcher of each of its slots (podSlots), which are the roles
+// (claim.Token.Slot): a pod runs one launcher of each of its slots, which are the roles
 // of its kind (podKind.roles) and, for an issue pod, each agent name of its plan that no role has,
 // such as `implementer-2` (issueSlots), and the launcher of a slot serves the slot of that name,
 // with that slot's Secret, volumes and address record. A slot the pod has no launcher of is one the
