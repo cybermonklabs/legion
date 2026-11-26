@@ -17,9 +17,11 @@
 #     signs: REST, GraphQL and git's smart HTTP. It records the credential of every call by kind and
 #     by the first 16 hex digits of its SHA-256, never by value.
 #   - One broker of this check's own on the stack's database, authority and session, as
-#     airlock-check.sh's k7 starts one: a profiles file holding PROXY_ROLE_APP, a github-app secret
-#     owned by the stack's service, agent tier, on both accounts, behind the proxy on GitHub's three
-#     hosts, and PROXY_ROLE_PLAIN, the same App with no proxy block, released as its tokens.
+#     airlock-check.sh's k7 starts one: a profiles file that declares the kind rolegithub (GitHub's
+#     three hosts, by the way mint) beside the stack's kinds, and holds PROXY_ROLE_APP, a github-app
+#     secret owned by the stack's service, agent tier, on both accounts, whose proxy tag names that
+#     kind, so it is behind the proxy; and PROXY_ROLE_PLAIN, the same App from a source with no
+#     proxy tag, released as its tokens.
 #   - `legion forwarder --role implementer`, asking that broker with the session's key for
 #     PROXY_ROLE_APP and writing the role's gh bundle.
 #
@@ -266,27 +268,35 @@ python3 "$SCRIPT_DIR/proxy-role/github_standin.py" --address "$STANDIN_ADDRESS:4
 PIDS+=($!)
 await "the answering stand-in" 30 "$WORK_DIR/standin.log" 'github-standin listening' "${PIDS[-1]}"
 
-# --- This check's broker: the stack's own, with PROXY_ROLE_APP and PROXY_ROLE_PLAIN added. ---
+# --- This check's broker: the stack's own, with the rolegithub kind, PROXY_ROLE_APP and
+# PROXY_ROLE_PLAIN added. A profile is behind the proxy when its source's proxy tag names a kind,
+# so the App is stored twice: proxy-role-app tagged with rolegithub, and proxy-role-plain-app with
+# no proxy tag, the source of PROXY_ROLE_PLAIN. ---
 STACK_APP="$(jq -c '[.secrets[] | select(.name | endswith("airlock-github-app"))][0]' "$AIRLOCK_FAKE_SECRETS_FILE")"
 SECRET_PREFIX="$(jq -r '.name | sub("airlock-github-app$"; "")' <<<"$STACK_APP")"
-jq --arg name "${SECRET_PREFIX}proxy-role-app" --argjson stack "$STACK_APP" --rawfile key "$APP_KEY_FILE" \
+ROLE_KIND=rolegithub
+jq --arg prefix "$SECRET_PREFIX" --arg kind "$ROLE_KIND" --argjson stack "$STACK_APP" --rawfile key "$APP_KEY_FILE" \
 	--arg owners "$ACCOUNT_A $ACCOUNT_B" --arg appid "$(jq -r .github_app_id "$WORK_DIR/stands.json")" \
-	'.secrets += [{name: $name, kms_key_id: $stack.kms_key_id,
-	   tags: {owner: $stack.tags.owner, tier: "agent", type: "github-app", "github-owners": $owners},
-	   value: ({app_id: $appid, private_key: $key} | tojson)}]' "$AIRLOCK_FAKE_SECRETS_FILE" >"$WORK_DIR/fake-secrets.json"
+	'({owner: $stack.tags.owner, tier: "agent", type: "github-app", "github-owners": $owners}) as $tags
+	 | ({app_id: $appid, private_key: $key} | tojson) as $value
+	 | .secrets += [
+	   {name: ($prefix + "proxy-role-app"), kms_key_id: $stack.kms_key_id, tags: ($tags + {proxy: $kind}), value: $value},
+	   {name: ($prefix + "proxy-role-plain-app"), kms_key_id: $stack.kms_key_id, tags: $tags, value: $value}]' \
+	"$AIRLOCK_FAKE_SECRETS_FILE" >"$WORK_DIR/fake-secrets.json"
 chmod 600 "$WORK_DIR/fake-secrets.json"
 PERMISSIONS='{"contents": "read", "metadata": "read"}'
-# The GitHub kind's hosts, as the profiles bind them and each forwarder is told them
-# (--github-host, the role's runtime.kubernetes.agent_secrets.github_hosts in a pod).
+# The GitHub kind's hosts, as the profiles file's rolegithub kind binds them and each forwarder is
+# told them (--github-host, the role's runtime.kubernetes.agent_secrets.github_hosts in a pod).
 GITHUB_HOSTS=(api.github.com github.com uploads.github.com)
 GITHUB_HOST_FLAGS=()
 for host in "${GITHUB_HOSTS[@]}"; do GITHUB_HOST_FLAGS+=(--github-host "$host"); done
-jq --arg a "$ACCOUNT_A" --arg b "$ACCOUNT_B" --argjson permissions "$PERMISSIONS" \
+jq --arg a "$ACCOUNT_A" --arg b "$ACCOUNT_B" --argjson permissions "$PERMISSIONS" --arg kind "$ROLE_KIND" \
 	--argjson hosts "$(printf '%s\n' "${GITHUB_HOSTS[@]}" | jq -R . | jq -sc .)" \
-	'.profiles += [
-	   {name: "PROXY_ROLE_APP", github: {accounts: [$a, $b], permissions: $permissions}, proxy: {hosts: $hosts}},
-	   {name: "PROXY_ROLE_PLAIN", source: "PROXY_ROLE_APP", github: {accounts: [$a, $b], permissions: $permissions}},
-	   {name: "PROXY_ROLE_RENEW", source: "PROXY_ROLE_APP", github: {accounts: [$a, $b], permissions: $permissions}, proxy: {hosts: $hosts}}]' \
+	'.kinds += [{name: $kind, hosts: $hosts, ways: ["mint"]}]
+	 | .profiles += [
+	   {name: "PROXY_ROLE_APP", github: {accounts: [$a, $b], permissions: $permissions}},
+	   {name: "PROXY_ROLE_PLAIN", source: "PROXY_ROLE_PLAIN_APP", github: {accounts: [$a, $b], permissions: $permissions}},
+	   {name: "PROXY_ROLE_RENEW", source: "PROXY_ROLE_APP", github: {accounts: [$a, $b], permissions: $permissions}}]' \
 	"$AIRLOCK_PROFILES_FILE" >"$WORK_DIR/profiles.json"
 API_PORT="$(free_port)"
 PROXY_PORT="$(free_port)"
