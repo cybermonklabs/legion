@@ -83,7 +83,7 @@ func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
 // connection that stayed open answers again.
 func TestAFrozenProxyKeepsTheConnectionAndMovesNothingUntilRestored(t *testing.T) {
 	// Not parallel: a tight wall-clock bound: the publish the freeze held must reach the subscriber
-	// within 2 s of the restore.
+	// within 2 s of the flush after the restore.
 	uri := URL(t)
 	proxy := StartProxy(t, uri)
 	conn, disconnected, _ := proxiedClient(t, proxy)
@@ -129,12 +129,18 @@ func TestAFrozenProxyKeepsTheConnectionAndMovesNothingUntilRestored(t *testing.T
 	}
 }
 
-// ProxyLatency adds its round trip to every round trip through the proxy.
+// ProxyLatency adds its round trip to every round trip through the proxy. The client's connect
+// waits to the test's deadline (requestWait), not proxiedClient's dialTimeout: its handshake
+// crosses the proxy three times, 300 ms of the second before any load.
 func TestAProxyWithLatencyAddsItsRoundTrip(t *testing.T) {
 	t.Parallel()
 	const rtt = 200 * time.Millisecond
 	proxy := StartProxy(t, URL(t), ProxyLatency(rtt))
-	conn, _, _ := proxiedClient(t, proxy)
+	conn, err := natsgo.Connect(proxy.URL(), natsgo.Timeout(requestWait(t)), natsgo.NoReconnect())
+	if err != nil {
+		t.Fatalf("connect through the proxy: %v", err)
+	}
+	t.Cleanup(conn.Close)
 	started := time.Now()
 	if err := conn.FlushTimeout(requestWait(t)); err != nil {
 		t.Fatalf("flush through the proxy: %v", err)

@@ -36,15 +36,18 @@ import (
 // run at once when the command line names no -parallel. A plain run of the package alone on 4
 // CPUs used 3.6 s of them over its 148 s (build-cluster Job legion-ci-testnatspar-lllr2,
 // 2026-11-25): its tests wait on servers and clusters of their own, on child test binaries and on
-// the waits they test, not on a core, so go test's default of GOMAXPROCS (4 on CI's runner) would
-// leave them waiting four at a time. Every test calls t.Parallel except those that change
-// something every other test of the process reads (dialNATS, the shared server and startShared)
-// or that hold a wall-clock bound close to what they wait for, which stay serial and run before
-// the rest. A test that needs a server has an account of its own on the shared one (URL) or a
-// server of its own; a run takes about 20 accounts, under the firstAccounts the server starts with.
+// the waits they test, not on a core. At -parallel 4, go test's default on CI's 4-CPU runner, the
+// package took 42-49 s; at 8, 29-32 s; at 12, 28-29 s; at 16, 26 s (Job legion-ci-testnatspar-q8jxh,
+// two runs each, main 140-154 s), which is the floor: the serial tests take about 7 s and the
+// longest parallel one, a child binary's bucket create, 18 s. Every test calls t.Parallel except
+// those that change something every other test of the process reads (dialNATS, the shared server
+// and startShared) or that hold a wall-clock bound close to what they wait for, which stay serial
+// and run before the rest. A test that needs a server has an account of its own on the shared one
+// (URL) or a server of its own; a run takes about 20 accounts, under the firstAccounts the server
+// starts with.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
-const testnatsTestParallelism = 8
+const testnatsTestParallelism = 16
 
 // TestMain sets the package's default -parallel and removes the NATS server the package's tests
 // share (Main).

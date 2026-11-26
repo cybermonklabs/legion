@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -316,6 +317,13 @@ const (
 	// 18.27 to 18.42 s of the 32.
 	unansweredBucketDeadline = 32 * time.Second
 	accountInfoDelay         = 8 * time.Second
+
+	// unansweredCreateReached is the line the child logs once the create of the bucket's stream
+	// has reached the stand-in. The stand-in answers the account information 8 s into the
+	// request's 10 s (createSendWait); a child whose answer came past that would fail on the
+	// account information alone, naming its sends as well, without the two-request send the row is
+	// about, so the row asks for this line too.
+	unansweredCreateReached = "the create of the bucket's stream reached the stand-in"
 )
 
 // A bucket create that nothing answers fails the test naming its sends before the test binary's
@@ -331,9 +339,10 @@ func TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline(t *test
 	child.Env = append(os.Environ(), unansweredBucketChildEnv+"=1")
 	output, _ := child.CombinedOutput() // the child fails by design: its create draws no answer
 	if strings.Contains(string(output), "panic: test timed out") ||
+		!strings.Contains(string(output), unansweredCreateReached) ||
 		!strings.Contains(string(output), "create KV bucket UNANSWERED: ") ||
 		!strings.Contains(string(output), " drew no answer within ") {
-		t.Fatalf("the child's create of a bucket nothing answers did not fail naming its sends before its %s deadline:\n%s", unansweredBucketDeadline, output)
+		t.Fatalf("the child's create of a bucket nothing answers did not reach the create of the bucket's stream and fail naming its sends before its %s deadline:\n%s", unansweredBucketDeadline, output)
 	}
 }
 
@@ -355,7 +364,13 @@ func createUnansweredBucket(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("answer account information reads: %v", err)
 	}
-	if _, err := standIn.Subscribe("$JS.API.STREAM.CREATE.KV_UNANSWERED", func(*natsgo.Msg) {}); err != nil {
+	var reached atomic.Bool
+	t.Cleanup(func() {
+		if reached.Load() {
+			t.Log(unansweredCreateReached)
+		}
+	})
+	if _, err := standIn.Subscribe("$JS.API.STREAM.CREATE.KV_UNANSWERED", func(*natsgo.Msg) { reached.Store(true) }); err != nil {
 		t.Fatalf("take the bucket's create: %v", err)
 	}
 	if err := standIn.Flush(); err != nil {
