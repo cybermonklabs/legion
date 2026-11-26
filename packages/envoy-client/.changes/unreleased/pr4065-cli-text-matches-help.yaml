@@ -1,0 +1,5 @@
+kind: Fixed
+body: '`dispatch open-asks --project <KEY>` says in its header that it lists the open asks on the project''s issues and documents, whoever authored them, as its help says, and no longer says "you authored"; without a project it keeps its words. `dispatch steps` prints `-` for a task or a role that is empty, as its help says of every field with no value.'
+time: 2026-11-20T13:53:32.000000000Z
+custom:
+    Issue: pr4065

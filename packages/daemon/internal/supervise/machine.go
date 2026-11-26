@@ -87,10 +87,11 @@ func States() []ClaimState {
 
 // SuspendSource is who suspended a claim. The daemon resumes a suspended claim by rule on the
 // triggers main had — its phase's start, a workflow delivery, the controller keeper
-// (RequestRuleResume) — unless an operator suspended it: that suspension holds until the operator
-// resumes the claim. The boot's resume by rule, which main did not have, acts only on a source
-// ByRule names, so it never overrides a drain recorded before the source existed, and it leaves a
-// released claim to the wake that brings its pod back.
+// (RequestRuleResume) — unless an operator or the project's controller suspended its agent: that
+// suspension holds until a resume lifts it (SuspendSource.Holds).
+// The boot's resume by rule, which main did not have, acts only on a source ByRule names, so it
+// never overrides a drain recorded before the source existed, and it leaves a released claim to
+// the wake that brings its pod back.
 type SuspendSource string
 
 const (
@@ -100,6 +101,11 @@ const (
 	SuspendedByUnknown SuspendSource = "unknown"
 	// SuspendedByOperator: the operator's suspend route.
 	SuspendedByOperator SuspendSource = "operator"
+	// SuspendedByController: the project's controller's suspend, through its `legion` tool (api's
+	// suspendAgent). It holds as the operator's does, and its resume lifts it as the operator's
+	// does; it ranks below the operator's, so the controller can neither take over nor lift a
+	// suspension the operator holds (suspensionRank, ErrOperatorHolds).
+	SuspendedByController SuspendSource = "controller"
 	// SuspendedByDaemon: the workflow's own suspend — the issue left the workflow, or its tree
 	// lingers.
 	SuspendedByDaemon SuspendSource = "daemon"
@@ -125,14 +131,15 @@ const (
 // TestSuspendSourcesIsEveryDeclaredSourceOnce holds it to the constants the compiler sees in this
 // package, so a source added above and left out here fails that test.
 var allSuspendSources = []SuspendSource{
-	SuspendedByUnknown, SuspendedByOperator, SuspendedByDaemon, SuspendedByExit, SuspendedByReleased,
+	SuspendedByUnknown, SuspendedByOperator, SuspendedByController,
+	SuspendedByDaemon, SuspendedByExit, SuspendedByReleased,
 }
 
 // SuspendSources is every source a suspended claim can record, in the order they are declared:
 // the one list a test outside this package walks to cover each source. They are the values the
 // store's check constraint allows beside the empty source of a claim that is not suspended
-// (internal/store/migrations/20261101201850_claim_suspended_by_released.up.sql). It is a copy, so
-// no caller changes the package's own list.
+// (internal/store/migrations/20261115060739_claim_suspended_by_controller.up.sql). It is a copy,
+// so no caller changes the package's own list.
 func SuspendSources() []SuspendSource {
 	return slices.Clone(allSuspendSources)
 }
@@ -147,13 +154,24 @@ func (s SuspendSource) ByRule() bool {
 	return s == SuspendedByDaemon || s == SuspendedByExit
 }
 
+// Holds is whether a suspension by this source holds against the daemon's rules: an operator's or
+// the project's controller's, each a decision a person or another agent made about the suspended
+// agent, which no start, delivery or resume the daemon queues gets past (Claim.RuleHolds,
+// Claim.RuleMayResume). Only a resume lifts it: the operator's lifts both, and the controller's
+// its own (Claim.HeldAgainst).
+func (s SuspendSource) Holds() bool {
+	return s == SuspendedByOperator || s == SuspendedByController
+}
+
 // RetiresPhaseTask is whether a suspension by this source ends the claim's phase, so a task queued
-// for that phase goes with it (settle). Every source does but two: an operator's, and a release.
-// Each of those resumes this same claim in the same phase — the operator's by hand, a released
-// claim's at its role's next wake — so the pending task waits through the suspension and is sent
-// on that resume.
+// for that phase goes with it (settle): a suspension of the daemon's own does — the workflow's (a
+// park, a linger, a close), a root's exit, and one recorded before sources existed (unknown, or
+// none). Every other source does not — the two that hold (Holds), an operator's and the
+// controller's, and a release. Each of those has this same agent resumed in the same phase — the
+// first two by their holder's resume, a released agent at its role's next wake — so the pending
+// task waits through the suspension and is sent on that resume.
 func (s SuspendSource) RetiresPhaseTask() bool {
-	return s != SuspendedByOperator && s != SuspendedByReleased
+	return !s.Holds() && s != SuspendedByReleased
 }
 
 // SessionLoss is why a launch forgot the session its claim recorded and started a fresh agent
@@ -195,6 +213,13 @@ type Claim struct {
 	// before this one is gone whatever happens next. A claim that has abandoned none records a
 	// session of "".
 	Abandoned AbandonedSession
+	// SessionRun is what the record says of the recorded session since it last finished a turn:
+	// how many of its launches ended in one of the three ways counted (SessionRun's doc), how the
+	// last of them ended, and whether the session has finished a turn at all (dispatch://INFRA-2045
+	// R1).
+	// It is persisted, so a daemon restart reads the count the daemon before it kept, and it goes
+	// with the session it is of (forgetSession).
+	SessionRun SessionRun
 	// EndedWork is what the last let-go of the claim's process ended of the work its agent had
 	// running, for the next process to be told (EndedWork, recordEnd). It is persisted, since the
 	// prompt that tells it can be a relaunch, a wake and a daemon restart away, and a newer
@@ -339,14 +364,29 @@ type Claim struct {
 	PendingCause FailureCause
 	Pending      *Delivery
 	// LastTurnStart and LastTurnEnd are when the agent last began a turn and when it last ended
-	// one, each zero until that event happens. A turn's start is when the daemon first learned of
-	// it: its agent_start (beginTurn); the busy answer that said the agent is in a turn whose
-	// start the daemon never read (recordBusyTurn), which that turn's own agent_start, read later,
-	// moves to its own moment; or the agent's answer that it is streaming, which puts a ready or
-	// idle claim a restart restored in working (sendPending's askFirst branch,
-	// answerAskFirstAfterDrop). They are persisted, so a restart keeps them: they are what a reader
-	// has to tell a worker still making progress from one wedged in a turn or idle since
-	// yesterday, and a claim rebuilt without them would look as if it had never worked.
+	// one, each zero until that event happens. This is the one list of who dates a turn's start,
+	// which the other places point to. A turn's start is when the daemon first learned of it: its
+	// agent_start (beginTurn); the busy answer that said the agent is in a turn whose start the
+	// daemon never read (recordBusyTurn), which that turn's own agent_start, read later, moves to
+	// its own moment (busyTurnBegun); the agent's answer that it is streaming, which puts a ready
+	// or idle claim a restart restored in working (sendPending's askFirst branch,
+	// answerAskFirstAfterDrop); or an agent_start in a claim already working, which is a turn Oh
+	// My Pi began under a compaction, or one it began under a compaction a restart forgot
+	// (turnStartedWhileBusy). Each is dated where its start line is written (startTurn,
+	// busyTurnBegun), so no path that starts a turn leaves it timed from the turn before, and
+	// each writes the claim with its date. A turn's end is dated where the agent ends it
+	// (turnEnded), and where the daemon ends it: a charged death (chargeDeath), the controller
+	// keeper's end of a turn past its bound (endTurnPastBound), and a compaction's start, which
+	// closes a turn whose end was never dated (compactStart). The end is written with the claim at
+	// each, except the end of a turn that ran under a compaction: that is written with the
+	// compaction's end (compactEnded), or with the death's own write where the process was lost
+	// under the compaction and no compaction end runs (compactionLostProcess). Every other path
+	// that ends a turn — a suspension that stops a process mid-turn, a displacement, a stale
+	// address, the stale-plugin relaunch, the stall backstop, a death charged nothing — dates no
+	// end, and leaves the times showing the turn open until a compaction or the next turn moves
+	// them. They are persisted, so a restart keeps what was written: they are what a reader has to
+	// tell a worker still making progress from one wedged in a turn or idle since yesterday, and a
+	// claim rebuilt without them would look as if it had never worked.
 	LastTurnStart time.Time
 	LastTurnEnd   time.Time
 	// TurnOutcomes are the newest turns the claim's agent ended that its backend's producer
@@ -544,7 +584,7 @@ type Claim struct {
 	// round ends when the process it waits for is replaced. The daemon asks each role of the
 	// round and replaces the pod once every asked role has answered, no turn runs and no claim's
 	// activity report holds it (internal/daemon's roundEnd.holding), or at the round's bound
-	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
+	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, a holding
 	// suspension excepted. Work that a role did not push goes with the disk the replacement
 	// deletes.
 	UpdateRound string
@@ -563,8 +603,8 @@ type Claim struct {
 	// branch at origin, and "" when it reported none (a planner step that runs before the branch's
 	// first push). It is the worker's word, which nothing verifies.
 	UpdateHead string
-	// UpdateToldAt is when this round was last reported to the operator's side, so one round is
-	// not reported again at every sweep that finds it open.
+	// UpdateToldAt is when this round was last told to the controller, so one round is not told
+	// again at every sweep that finds it open.
 	UpdateToldAt *time.Time
 	// UpdateLeftRound is the pod round this claim left, and "" when it has left none: the daemon
 	// started the claim's process again in another pod than the one that round was opened over
@@ -584,10 +624,12 @@ type Claim struct {
 	// for a claim whose last turn ended with none. A refused turn a prompt ran is counted from that
 	// prompt's result (promptResulted), and a refused turn that ran no prompt of the daemon's from
 	// its report (unpromptedTurnEnded), in the one run; a clean prompt result and a clean report,
-	// prompted or not, each end it (turnOutcome). At providerErrorRunTold the project's controller
-	// is told once, and not again until a turn with no error puts it back to zero. It bounds
-	// nothing: R2 of dispatch://INFRA-956 forbids an attempt limit here, since a limit would fail
-	// every claim of a project at once in a provider outage.
+	// prompted or not, each end it (turnOutcome). At providerErrorRunTold the run is handed once
+	// to Deps.ProviderErrorRunReached, and not again until the run is back at zero: a turn with no
+	// error, a compaction that compacted the session (compactEnded) or a forgotten session
+	// (forgetSession) puts it there. It bounds nothing: R2 of dispatch://INFRA-956 forbids an
+	// attempt limit here, since a limit would fail every claim of a project at once in a provider
+	// outage.
 	ProviderErrorRun int
 	// Step is what the daemon last saw this claim's agent do, as the tool frames of its stream
 	// report it. It is written by the store's PutClaimStep alone and read back with the claim;
@@ -802,6 +844,14 @@ func (c Claim) LeftPodRound(round string) bool {
 // agent whose session id holds a NUL is the claim's own agent before a restart and after one.
 func (c Claim) HoldsSession(session string) bool { return c.Session == storetext.Text(session) }
 
+// OpenTurn is the start of the turn the claim's times show open, and whether they show one: its
+// last turn began after its last turn ended (Claim.LastTurnStart, Claim.LastTurnEnd). A start and
+// an end at the same moment read as closed. This is the one reading of the two times; the
+// machine's own turnOpen adds the working state to it.
+func (c Claim) OpenTurn() (start time.Time, open bool) {
+	return c.LastTurnStart, c.LastTurnStart.After(c.LastTurnEnd)
+}
+
 // MessageMarked is whether the claim's message mark stands (Claim.MessageMarkAt): a wake for a
 // waiting Envoy message marked it, and the role has started no turn since, which would have read
 // that message. It is the one statement of when a mark stands; the queue a paced wake waits in
@@ -810,10 +860,11 @@ func (c Claim) MessageMarked() bool {
 	return !c.MessageMarkAt.IsZero() && c.MessageMarkAt.After(c.LastTurnStart)
 }
 
-// RuleMayResume says whether the rule may resume this suspended claim: every suspension but the
-// operator's, which holds until an operator resumes the claim.
+// RuleMayResume says whether the rule may resume this suspended claim: every suspension but one
+// that holds (SuspendSource.Holds), which holds until a resume lifts it — the operator's, or for
+// the controller's suspension the controller's (HeldAgainst).
 func (c Claim) RuleMayResume() bool {
-	return c.State == StateSuspended && c.SuspendedBy != SuspendedByOperator
+	return c.State == StateSuspended && !c.SuspendedBy.Holds()
 }
 
 // PassedOverByRound is whether a pod update round passes over this claim by R1's rule, read of
@@ -833,11 +884,14 @@ func (c Claim) RuleMayResume() bool {
 // role wake, and the sweep asks a claim only once its agent is ready, when the claim is no longer
 // suspended.
 //
-// An operator's suspension is not passed over. A person's suspend route, the boot's
-// session-conflict suspension and fresh_session record it, and it holds the round until the
-// operator acts (dispatch://INFRA-2981 R5, RuleHolds). internal/daemon's roundAsks (through
-// roundClock.passesOver) and PublishUpdateAsk both read this method, so the ask, the wait and the
-// publish state R1's rule once.
+// A suspension that holds (SuspendSource.Holds: the operator's or the controller's) is not passed
+// over. A person's suspend route and the boot's session-conflict suspension record the operator's.
+// A fresh session records its caller's: the operator's for the operator's `legion claims retry
+// --fresh-session` (api's retryClaim), and the controller's for the fresh_session of its `legion`
+// tool (api's claimFreshSession). The controller's suspend through that tool records its own.
+// Each holds the round until a resume lifts it (dispatch://INFRA-2981 R5, RuleHolds).
+// internal/daemon's roundAsks (through roundClock.passesOver) and PublishUpdateAsk both read this
+// method, so the ask, the wait and the publish state R1's rule once.
 func (c Claim) PassedOverByRound() bool {
 	return c.RuleMayResume()
 }
@@ -852,19 +906,54 @@ func (c Claim) Released() bool {
 	return c.State == StateSuspended && c.SuspendedBy == SuspendedByReleased
 }
 
-// RuleHolds is whether an operator's suspension blocks a daemon rule: the claim is suspended by the
-// operator, or the operator's suspension is held for its agent's turn.
+// RuleHolds is whether a suspension that holds blocks a daemon rule: the claim is suspended by the
+// operator or the controller, or such a suspension is held for its agent's turn. Holder says which
+// of the two.
 func (c Claim) RuleHolds() bool {
-	if c.SuspensionHeld {
-		return c.SuspensionHeldBy == SuspendedByOperator
-	}
-	return c.State == StateSuspended && c.SuspendedBy == SuspendedByOperator
+	return c.Holder().Holds()
 }
 
-// RuleHoldError says why a start or outbox delivery waits: the operator's suspension, which only
-// the operator's resume ends.
+// HeldAgainst is the refusal of a request the project's controller asks (by) that the operator's
+// own suspension stands over, held for the agent's turn or landed: ErrOperatorHolds, since only
+// the operator lifts that suspension. Such a request would lift the hold (a resume), take it over
+// or change nothing (a suspend), or end or restart the agent under it (a stop, a retry, a fresh
+// session), so it is refused with nothing of the claim changed. It is nil for every other asker:
+// the operator, whom nothing outranks, and the daemon and a release, whose request suspendRequest
+// hands a held suspension's own source.
+func (c Claim) HeldAgainst(by SuspendSource) error {
+	if by == SuspendedByController && c.Holder() == SuspendedByOperator {
+		return ErrOperatorHolds
+	}
+	return nil
+}
+
+// Holder is who the suspension over this claim's agent is for: the held one's asker while one is
+// held, the recorded source while the claim is suspended, and "" otherwise. It is exported for the readers
+// that name a hold to whoever must lift it (the daemon's pod-update notice, a production check's
+// look), so each names the holder this machine decides by.
+func (c Claim) Holder() SuspendSource {
+	if c.SuspensionHeld {
+		return c.SuspensionHeldBy
+	}
+	if c.State == StateSuspended {
+		return c.SuspendedBy
+	}
+	return ""
+}
+
+// RuleHoldError says why a start or outbox delivery waits: the suspension that holds, which only
+// a resume ends — the operator's for the operator's suspension, and the controller's or the
+// operator's for the controller's. A holder neither of those two is no wait this names: the error
+// names that holder rather than the resume of some other one.
 func (c Claim) RuleHoldError() error {
-	return fmt.Errorf("the claim is suspended by %s; it waits for the operator's resume: %w", SuspendedByOperator, ErrHeldByOperator)
+	switch holder := c.Holder(); holder {
+	case SuspendedByController:
+		return fmt.Errorf("the claim is suspended by %s; its agent waits for the controller's or the operator's resume: %w", SuspendedByController, ErrHeldByController)
+	case SuspendedByOperator:
+		return fmt.Errorf("the claim is suspended by %s; its agent waits for the operator's resume: %w", SuspendedByOperator, ErrHeldByOperator)
+	default:
+		return fmt.Errorf("the claim is held by %q, which is no source whose suspension holds, so no resume its agent waits for can be named", holder)
+	}
 }
 
 // ClaimView is a claim as its machine last published it (Machine.View), with what only the decision
@@ -1033,6 +1122,11 @@ type Deps struct {
 	Log      *slog.Logger
 	Limits   Limits
 	Timeouts Timeouts
+	// ControllerSessionMaxAge is `controller_session_max_age_hours`: the age, read from its id (a
+	// UUIDv7), past which the project controller's recorded session is forgotten by a relaunch the
+	// daemon makes, so that relaunch spawns a fresh agent (replaceAgedSession,
+	// dispatch://INFRA-2045 R3). 0 is the rule off, which is also every harness's value.
+	ControllerSessionMaxAge time.Duration
 	// WakePace is how fast the daemon lets this machine's launches out (reserveWake); its zero
 	// value is the pacing off.
 	WakePace WakePace
@@ -1194,8 +1288,8 @@ type Deps struct {
 	TaskConfirmed func(c Claim)
 	// SessionLost is told of each claim whose recorded session the launch forgot, once, at the
 	// forget and before the fresh agent that replaces it is spawned (startFresh), so a spawn that
-	// fails leaves the issue, its architect and the controller told all the same: each has to know
-	// that a worker is continuing work it cannot read, and nothing else would say so. c is the
+	// fails leaves the issue and its architect told all the same: each has to know that a worker
+	// is continuing work it cannot read, and nothing else would say so. c is the
 	// claim at the forget's launch, whose generation names it. cause is why the session was
 	// forgotten, and detail is why in words the cause chooses: the runtime's own account of the
 	// resume for a session no store holds, and none of it for the other two. Nil tells no one.
@@ -1238,8 +1332,8 @@ type Deps struct {
 	// machine's decision, so it returns at once and writes its row elsewhere.
 	StallBackstopped func(c Claim, stop StallBackstopStop)
 	// ProviderErrorRunReached is told of a claim whose turns have ended in a provider error
-	// providerErrorRunTold times in a row, once per run, with the reason the project's controller
-	// is given: the model, and the HTTP status the provider answered where it answered one, in
+	// providerErrorRunTold times in a row, once per run, with the reason whoever it tells is
+	// given: the model, and the HTTP status the provider answered where it answered one, in
 	// words built from structured fields alone. The claim carries the issue and the role. nil
 	// tells nobody, as it does for TaskConfirmed above. It is called inside the machine's
 	// decision, so it returns at once.
@@ -1447,8 +1541,8 @@ var ErrForeignUpdateRound = errors.New("the answer names an update round this cl
 // adds the round the claim left and what the worker does next.
 var ErrLeftPodRound = errors.New("the answer comes from a process in another pod than the update round's own")
 
-// ErrRetryNotTheController is the operator's retry of the daemon's own controller claim, which the
-// controller keeper retries instead (operatorRetry). The refusal adds who retries the claim.
+// ErrRetryNotTheController is the operator's retry of the daemon's own controller, which the
+// controller keeper retries instead (askedRetry). The refusal adds who retries that agent.
 var ErrRetryNotTheController = errors.New("the operator's retry does not relaunch the daemon's controller")
 
 // ErrHeldForCyberPolicy is a retry the daemon makes by itself (RequestRetry with no decision behind
@@ -1463,7 +1557,20 @@ var ErrHeldForCyberPolicy = errors.New("the claim failed on OpenAI's cyber_polic
 // ErrHeldByOperator is the daemon's start or task meeting an operator's suspension, which no rule
 // overrides (Claim.RuleHolds): a wait, ended only by the operator's resume. RuleHoldError wraps it
 // for the outbox log.
-var ErrHeldByOperator = wait.New("the suspension holds until the operator resumes the claim")
+var ErrHeldByOperator = wait.New("the suspension holds until the operator resumes the agent")
+
+// ErrHeldByController is ErrHeldByOperator for the project's controller's suspension, which holds
+// as the operator's does (SuspendSource.Holds): a wait, ended by the controller's resume or the
+// operator's. RuleHoldError wraps it for the outbox log.
+var ErrHeldByController = wait.New("the suspension holds until the controller or the operator resumes the agent")
+
+// ErrOperatorHolds is a request of the project's controller's refused because the operator's own
+// suspension is over the agent (Claim.HeldAgainst): the resume would lift it, the suspension would
+// take it over, and the stop would end the agent under it, which a retry then relaunches. Each
+// overrides a decision the operator made and only the operator undoes, so each is refused, and
+// nothing of the claim changes. The refusal is no wait: nothing the daemon does ends it, and the
+// controller asks the operator instead.
+var ErrOperatorHolds = errors.New("the operator's suspension holds the agent, and only the operator's resume lifts it")
 
 // ErrNoSuchDelivery is the store's refusal of a retirement of a delivery the claim's row no
 // longer holds. It is named here, rather than matched as a string where the refusal is read,
@@ -1925,6 +2032,9 @@ type Machine struct {
 	// again at every sweep (sendPending, for a claim that does not hold its session) is written
 	// once rather than every probe interval; a hold admitted clears it (warnRefusal). Memory only.
 	refusalLogged string
+	// unagedSession is the last session whose id the controller's age rule could read no age off,
+	// so its line is written once for that session (replaceAgedSession). Memory only.
+	unagedSession string
 	// admitted is the session and file the store last admitted for this claim, which holdRecorded
 	// and HoldsItsSession write, and HoldsItsSession and Admits (the daemon's step record) read
 	// without the lock; forgetSession clears it with heldNames. Memory only.
@@ -2118,6 +2228,14 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // nothing, since it stops nothing (pauseStopEnded, ErrPauseEnded): the start it would cut short
 // may be the very launch the resume let out.
 //
+// The controller's suspension that its row refuses — the operator's suspension holds the agent
+// (suspendRequest, Claim.HeldAgainst) — cancels nothing, and a refusal changes nothing of the
+// claim, the start in flight included. The hold is read off the published view (View), since the
+// lock is the very thing a start in flight holds. A view a decision then moves past is harmless
+// either way: a resume published after it leaves an agent this suspension is held over until it
+// is ready, rather than one whose start it cut short, and a suspension published after it stops
+// that start itself, at its own arrival.
+//
 // No decision waits for another role's session load in the claim's issue pod: a launch the pod's
 // start gate cannot grant at once parks on the machine as a wake that carries its podHold and its
 // decision ends (askPod, wake.park), so a suspension, a retirement and every read of the claim
@@ -2166,7 +2284,7 @@ func (m *Machine) handle(ctx context.Context, ev Event, read func()) error {
 	// rule once, here, before anything reads it, as intake.ApplyFact gives every fact. Strings
 	// returns ev itself when nothing in it changes, and leaves its bytes as they are.
 	ev = storetext.Strings(ev)
-	if request, suspending := ev.(RequestSuspend); suspending && !m.pauseStopEnded(request) {
+	if request, suspending := ev.(RequestSuspend); suspending && !m.pauseStopEnded(request) && m.View().HeldAgainst(request.By) == nil {
 		m.stopStart("a suspension of the claim is waiting for its start")
 	}
 	m.mu.Lock()
@@ -2275,10 +2393,10 @@ func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// PodUpdateTold marks this claim's open update round as reported to the operator's side, so the
-// daemon's sweep (internal/daemon's reconcilePodUpdates) tells one round once however many ticks
-// find it still open. It is no event: the sweep is what decides a round is stalled, and the mark
-// is bookkeeping of that decision, as StartedBy is of the row running against the claim.
+// PodUpdateTold marks this claim's open update round as told to the controller, so the daemon's
+// sweep (internal/daemon's reconcilePodUpdates) tells one round once however many ticks find it
+// still open. It is no event: the sweep is what decides a round is stalled, and the mark is
+// bookkeeping of that decision, as StartedBy is of the row running against the claim.
 //
 // It stamps nothing and reports false when the claim is no longer in round — the round ended, or
 // another opened — or when this round was already told: both are decisions already taken, not
@@ -2443,11 +2561,11 @@ func (c Claim) ReleasedLaunch() bool {
 // StartedBy records the outbox row of the start being run against this claim, so a stop written
 // before it can be told apart from one written after. A stop is retried until the runtime takes
 // it, and a retry that lands after this start would suspend the run this start began. That
-// includes a held suspension (holdSuspension), which the start drops — unless it is the operator's:
-// a claim an operator's suspension holds records no start and answers ErrHeldByOperator, so the
-// start waits for the operator to resume the claim. A project pause's hold whose pause is the
-// open pause (Deps.Paused) is kept too, and the start is recorded beside it (decision 5 of
-// dispatch://INFRA-3759's plan): a start leased before the pause began must not let the role it
+// includes a held suspension (holdSuspension), which the start drops — unless it is one that
+// holds: the claim of an agent the operator's or the controller's suspension holds records no
+// start and answers that holder's wait (RuleHoldError), so the start waits for a resume to lift
+// it. A project pause's hold whose pause is the open pause (Deps.Paused) is kept too, and the
+// start is recorded beside it: a start leased before the pause began must not let the role it
 // starts run past the pause's stop, which the outbox's pause rule would otherwise have held back
 // (record's outboxPauseFree). Its task waits as every task does while the project is paused
 // (sendPending). A pause's hold whose pause has ended is gone before the start reads the hold, as
@@ -2938,15 +3056,13 @@ func (m *Machine) logTurn(line, delivery string) {
 }
 
 // startTurn records what this turn is the turn of and writes its start line, which is how the
-// turn's end comes to name what its start named (Machine.turnsDelivery, endTurn). Every path
-// that puts a claim in working goes through here — turnStarted, sendPending's askFirst branch,
-// answerAskFirstAfterDrop and recordBusyTurn — the three that name no delivery included, so a
-// turn that is no task's overwrites the identity of the turn before it rather than leaving it
-// standing for its end to read. So does the one path that records a turn in a claim already
-// working, a turn Oh My Pi starts under a compaction (turnStartedWhileBusy), whose end writes its
-// end line. The agent_start of a turn a busy answer recorded writes none: recordBusyTurn already
-// wrote that turn's start line, and the start names the task it confirms in a line of its own
-// (busyTurnBegun), so one start line and one end line still bracket the turn.
+// turn's end comes to name what its start named (Machine.turnsDelivery, endTurn), and dates the
+// turn (Claim.LastTurnStart, whose doc names every path that starts one). Each of those paths
+// goes through here, the three that name no delivery included, so a turn that is no task's
+// overwrites the identity of the turn before it rather than leaving it standing for its end to
+// read. The agent_start of a turn a busy answer recorded goes through busyTurnBegun instead:
+// recordBusyTurn already wrote that turn's start line, and the start names the task it confirms
+// in a line of its own, so one start line and one end line still bracket the turn.
 //
 // The identity is carried from the start because no reading of the claim can answer it at the
 // end: a pending delivery that is confirmed is the running turn's in one case and a finished
@@ -2955,7 +3071,10 @@ func (m *Machine) logTurn(line, delivery string) {
 // retires nothing and the task stays confirmed in the worker's hands — and a turn of the agent's
 // own starting in that window is no task's, so its start line names no delivery while a claim
 // read at its end would name that task and a reader would count the task's turn twice.
+//
+// A turn under a compaction writes its end line at its end (turnEnded).
 func (m *Machine) startTurn(delivery string) {
+	m.claim.LastTurnStart = m.deps.Clock.Now()
 	m.turnsDelivery = delivery
 	m.logTurn(turnStartedLine, delivery)
 }
@@ -3251,10 +3370,12 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 
 // launchAfter is launch, whose first try waits the backoff when charged: the launch follows a
 // launch failure charged just before it (relaunchAfterFailure). exempt is whether the request
-// that raised it is one the wake pacing never makes wait (exemptWake); every other path into a
-// launch is paced, and the gate sits here, between the lifecycle check and letGo, because a
-// launch the tree lifecycle refuses charges no budget and so takes no token either, while a
-// launch that waits its turn keeps the process it still runs until that turn comes.
+// that raised it is one the wake pacing never makes wait (exemptWake), and so also whether the
+// launch keeps the project controller's session older than its age (replaceAgedSession,
+// dispatch://INFRA-2045 R3); every other path into a launch is paced, and the gate sits here,
+// between the lifecycle check and letGo, because a launch the tree lifecycle refuses charges no
+// budget and so takes no token either, while a launch that waits its turn keeps the process it
+// still runs until that turn comes.
 //
 // Which lane the wake it reserves waits under is no part of what this path says: it is every
 // launch's, raised by a death, a resume, a retry, a repoint or the stale-plugin lane alike, so
@@ -3358,16 +3479,24 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt, requested bool
 	// The roll edge's mark names the process an earlier release started, which this launch has
 	// let go; the process the launch starts is this release's own (refusedEarlierRelease).
 	m.refusedEarlierRelease = 0
+	// The launch that follows the controller session's second end in a row starts a fresh
+	// session, and so does a daemon-driven relaunch of a session older than its age, once the
+	// process it replaces is let go and what that process ended recorded (replaceEndedSession,
+	// replaceAgedSession, dispatch://INFRA-2045 R1 and R3). R3 is not asked where R1 applied,
+	// forgotten or refused, so one launch asks mayForget once: a refused R1 resumes the session.
+	if !m.replaceEndedSession(ctx) {
+		m.replaceAgedSession(ctx, exempt)
+	}
 	return m.launchTries(ctx, launchTry{intent: intent, charged: charged, exempt: exempt, requested: requested, waiting: waiting}, nil)
 }
 
 // launchTry is what every try of one launch reads, and what a try parked at its issue pod's gate
 // carries to its grant (askPod): the intent of the stale-plugin relaunch the launch is, for the
 // retries it may arm (relaunchAtProbe); whether its next try waits the backoff (charged); whether
-// the request that raised it is one the wake pacing lets through (exempt); whether a request
-// raised it at all, which the pod's gate reads (requested); and whether the launch retries a wait
-// for its pod's update round that is logged already, which a charged failure ends
-// (startWaitsForPodRound, waiting).
+// the request that raised it is one the wake pacing lets through, which also keeps the controller's
+// aged session (exempt, replaceAgedSession); whether a request raised it at all, which the pod's
+// gate reads (requested); and whether the launch retries a wait for its pod's update round that is
+// logged already, which a charged failure ends (startWaitsForPodRound, waiting).
 type launchTry struct {
 	intent                              *pluginIntent
 	charged, exempt, requested, waiting bool
@@ -4029,7 +4158,7 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (ru
 // place in the same try, charged nothing (start, resumeByID). cause chooses the words of the
 // forget's warning line and of its two texts (forgetWords): the reason the claim keeps with the
 // session it abandons (Claim.Abandoned), which the fresh agent is told at its first task, and the
-// detail the workflow tells the issue, its architect and the controller (Deps.SessionLost).
+// detail the workflow tells the issue and its architect (Deps.SessionLost).
 // answer is the runtime's answer that led to the forget, nil for a Claude Code claim's, which
 // asked the runtime nothing. It is a far side's error text, so the line carries it as the claim
 // keeps one (logFarSideError). Only the texts of a session no store holds (SessionLossGone) carry
@@ -4228,6 +4357,12 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 		return m.relaunchDeath(ctx, ended, uncharged, nil)
 	}
 	m.claim.DeathCharged = true
+	// The death the machine charges is an end of the session's launch (SessionRun), counted in
+	// the decision that charges it, once for the one process; an end charged nothing — the roll
+	// edge's, a resume by Oh My Pi's own lookup that never registered — is not.
+	if !uncharged {
+		m.sessionEnded(diedEnding(slices.Contains(unready, m.claim.State), m.claim.LastDeathCause))
+	}
 	if m.chargeDeath() {
 		return m.fail(ctx, CauseDied, "deaths with work outstanding ran out")
 	}
@@ -4383,6 +4518,10 @@ type AbandonedSession struct {
 	// zero while the table holds them: the boot holds no name of a released session again (store's
 	// recordedNames), and the record of where the session went stays.
 	Released time.Time `json:"released,omitzero"`
+	// ReadyNamed is whether the line that names the project controller's fresh session beside
+	// this one has been written, at that session's first ready (the table's ready,
+	// dispatch://INFRA-2045 R4), so the line is written once for each replacement.
+	ReadyNamed bool `json:"readyNamed,omitempty"`
 }
 
 // Tells is whether a prompt to this claim's agent must still name the session the claim
@@ -4464,15 +4603,19 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // It is the one place a claim leaves its session behind, so every start, retry or resume of a
 // claim relaunches the session the claim records — by its file, or by its id where it records no
 // file (start) — unless that launch forgets the session here, and a claim starts in a new session
-// only after this ran. It has three callers: the launch's startFresh, for a session no store holds
+// only after this ran. It has five callers: the launch's startFresh, for a session no store holds
 // any more, one the pod's launcher could not look up and Oh My Pi did not resume by its id, and
-// one a Claude Code claim records with no transcript file; retry, when freshSession says the retry
-// needs a new session; and the operator's forget-session (forgetSession, the table's), which
-// `legion claims retry --fresh-session` and the controller's fresh_session run (api's
-// freshSession). It clears the claim's mark of a start by Oh My Pi's own lookup with the session
-// (Claim.AgentResumeGeneration), and, where it drops a session, the cause of an earlier forget
-// the machine keeps for the fresh agent's launches; Machine.lostCause says why one that drops
-// nothing keeps it. startFresh sets the cause of its own forget after this call.
+// one a Claude Code claim records with no transcript file; the launch's replaceEndedSession, for
+// the project controller's session whose launches keep ending before it finishes a turn
+// (SessionRun); the launch's replaceAgedSession, for the project controller's session older than
+// its age at a daemon-driven relaunch; retry, when freshSession says the retry needs a new session;
+// and the forget of a recorded session (forgetSession, the table's): the operator's
+// forget-session, which `legion claims retry --fresh-session` runs too, and the controller's own
+// forget, which its fresh_session sends (api's forgetRecordedSession; RequestForgetSession.By names
+// which, forgottenBy). It clears the claim's mark of a start by Oh My Pi's own lookup with the
+// session (Claim.AgentResumeGeneration), and, where it drops a session, the cause of an earlier
+// forget the machine keeps for the fresh agent's launches; Machine.lostCause says why one that
+// drops nothing keeps it. startFresh sets the cause of its own forget after this call.
 //
 // A fresh session is not told the old session's record of what the last let-go of its process
 // ended (EndedWork), and this is the one place that rule is written. When it records the
@@ -4488,19 +4631,20 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // nothing left to say, and its next send retires it (sendPending).
 //
 // Every caller runs it after the old process's record is written, so no let-go writes a record of
-// that process later: the launch's startFresh runs after the launch let the old process go
-// (launchNow, letGo), and retry's fresh session and the operator's forget-session reach only a
-// claim that runs nothing — queued, suspended, failed or retired — whose process the suspension,
-// the failure or the retirement already let go (suspended, fail, retire), or that never had one. A
-// let-go records nothing for a claim that records no process (recordEnd), so the next record
-// written is of the fresh session's own process.
+// that process later: the launch's startFresh, replaceEndedSession and replaceAgedSession run after
+// the launch let the old process go (launchNow, letGo), and retry's fresh session and the table's
+// forget-session reach only a claim that runs nothing — queued, suspended, failed or retired —
+// whose process the suspension, the failure or the retirement already let go (suspended, fail,
+// retire), or that never had one. A let-go records nothing for a claim that records no process
+// (recordEnd), so the next record written is of the fresh session's own process.
 //
 // It puts the claim's run of provider-error turns back to zero as well (Claim.ProviderErrorRun).
 // The run counts the turns one session had refused in a row, and the new session has had none,
 // so the project's controller can be told again if the new one goes the same way — which is what
 // makes a fresh session a recovery the controller can repeat (api's freshSession). Without it a
 // claim that was told once would never be told again until a turn of it ended with no error at
-// all.
+// all. The session's run of ended launches goes with it too (SessionRun): the new session has
+// ended no launch and finished no turn.
 //
 // why is the sentence the abandoned session is recorded under, which can carry a runtime's or a
 // provider's text, so it is kept as a far side's error text is (storetext.FarSideError).
@@ -4529,6 +4673,7 @@ func (m *Machine) forgetSession(why string) {
 	m.admitted.Store(nil)
 	m.freshRun()
 	m.claim.ProviderErrorRun = 0
+	m.claim.SessionRun = SessionRun{}
 }
 
 // fail puts the claim where nothing relaunches it: its timers stop, its locator goes, and the
@@ -5428,6 +5573,8 @@ func claimOf(ev Event) claim.Token {
 		return ev.Claim
 	case StallBackstop:
 		return ev.Claim
+	case TurnPastBound:
+		return ev.Claim
 	case PodUpdateOpen:
 		return ev.Claim
 	case PodUpdateEnded:
@@ -5456,7 +5603,7 @@ func claimOf(ev Event) claim.Token {
 		return ev.Claim
 	case RequestRetry:
 		return ev.Claim
-	case RequestOperatorRetry:
+	case RequestAskedRetry:
 		return ev.Claim
 	case RequestForgetSession:
 		return ev.Claim
@@ -5494,6 +5641,7 @@ func copyClaim(c Claim) Claim {
 	c.CapabilityHash = bytes.Clone(c.CapabilityHash)
 	c.TurnOutcomes = slices.Clone(c.TurnOutcomes)
 	c.EndedWork.Kinds = slices.Clone(c.EndedWork.Kinds)
+	c.SessionRun.Endings = slices.Clone(c.SessionRun.Endings)
 	return c
 }
 

@@ -429,9 +429,9 @@ type DispatchArgs struct {
 	// regionalNetwork shapes the network half both modes build, and since this mode always makes
 	// its own cluster on that subnetwork, true (or unset) changes nothing and false is refused.
 	// clusterName, kubeconfig and serviceAccountIssuer carry the cluster's own values and url,
-	// databaseInstance, principal, agentToken and serviceAccountSubject are "". A stack already
-	// running Dispatch cannot turn it on: such a stack sets the inputs this mode refuses, so the
-	// update is refused before anything is deleted.
+	// databaseInstance, principal, agentToken, serviceAccountSubject and serviceAccountUid are "".
+	// A stack already running Dispatch cannot turn it on: such a stack sets the inputs this mode
+	// refuses, so the update is refused before anything is deleted.
 	ClusterOnly *bool `pulumi:"clusterOnly,optional"`
 
 	// Replicas is the app Deployment's replica count, 1 by default. Above 1 the Deployment rolls
@@ -747,6 +747,16 @@ type Dispatch struct {
 	// own.
 	ServiceAccountIssuer  pulumi.StringOutput `pulumi:"serviceAccountIssuer"`
 	ServiceAccountSubject pulumi.StringOutput `pulumi:"serviceAccountSubject"`
+	// ServiceAccountUid is the metadata.uid of the app's ServiceAccount <hostname>, as the
+	// cluster's API server gave it: the uid form of the app's pods,
+	// principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool>/kubernetes.serviceaccount.uid/<uid>,
+	// is a member no ServiceAccount of the same name in another cluster of the pool holds. Like
+	// every output it resolves only once every child has registered, the app Deployment's
+	// readiness wait included, so a consumer grants by it only a role the app does not need to
+	// become ready; roles/cloudsql.client stays on principal's known form. In a preview that
+	// creates the account it is the uid the API server's dry run answers, which the create
+	// replaces, or unknown where no dry run can be made (dispatchServiceAccountUID).
+	ServiceAccountUid pulumi.StringOutput `pulumi:"serviceAccountUid"`
 }
 
 // dispatchSettings are the plain inputs, validated, with the defaults applied, so they are known at
@@ -2475,23 +2485,25 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	comp.Kubeconfig = cloud.kubeconfig
 	comp.ServiceAccountIssuer = cloud.issuer
 	if s.clusterOnly {
-		// The five outputs Dispatch would decide are an explicit empty string: an output field
+		// The six outputs Dispatch would decide are an explicit empty string: an output field
 		// left unset awaits as unknown, which is one value in preview and another in update,
 		// while "" is the same in both and is what a consumer already reads as "not applied".
 		empty := pulumi.String("").ToStringOutput()
 		comp.Url, comp.DatabaseInstance, comp.Principal = empty, empty, empty
-		comp.AgentToken, comp.ServiceAccountSubject = empty, empty
+		comp.AgentToken, comp.ServiceAccountSubject, comp.ServiceAccountUid = empty, empty, empty
 		return comp, nil
 	}
 	database, err := newDispatchDatabase(ctx, comp, name, args, s, vpc, cloud)
 	if err != nil {
 		return nil, err
 	}
-	if err := newDispatchKubernetes(ctx, comp, name, args, s, cloud, database); err != nil {
+	appUID, err := newDispatchKubernetes(ctx, comp, name, args, s, cloud, database)
+	if err != nil {
 		return nil, err
 	}
 	comp.DatabaseInstance = database.connectionName
 	comp.Principal = database.principal
+	comp.ServiceAccountUid = appUID
 	comp.AgentToken = database.agentToken.Result
 	comp.Url = pulumi.String(s.serverURL()).ToStringOutput()
 	// The app's pods run as ServiceAccount <hostname> in the component's namespace, the account

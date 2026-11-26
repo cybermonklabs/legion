@@ -19,7 +19,7 @@ import (
 // jetStreamWait bounds each JetStream request of a context Cluster.JetStream opens. A create of a
 // stream of more than one copy on a cluster is answered from the stream's first leader, once its
 // members have elected one (processStreamLeaderChange), and on a loaded machine that election can
-// come after jetStreamWait, or the answer never come (sendCreate). Such a create goes through
+// come after jetStreamWait, or the answer never come (SendCreate). Such a create goes through
 // Cluster.CreateStream.
 const jetStreamWait = 10 * time.Second
 
@@ -51,15 +51,11 @@ func (c *Cluster) MemberJetStream(t testing.TB, i int) natsgo.JetStreamContext {
 	return js
 }
 
-// CreateStream creates the stream config names on a connection of its own to the cluster, sending
-// the create until the cluster answers it (sendCreate), and fails the test with the cluster's
-// refusal. The connection retries its first dial as it reconnects after a drop, every
+// CreateStream creates the stream config names on a connection of its own to the cluster
+// (CreateStreamOn). The connection retries its first dial as it reconnects after a drop, every
 // retryInterval: a create sent before it has connected waits in it, as on a loaded machine whose
 // members take longer than dialTimeout to answer a dial, and a create whose answer a drop lost is
-// sent again on it. A stream the cluster already holds under the name with another configuration
-// is refused as "stream name already in use", and the failure then names each field config sets
-// that the stream the cluster holds sets otherwise (streamDifference): a send again of this
-// create is answered with the stream it made, so that refusal is never this create's own stream.
+// sent again on it.
 func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
 	t.Helper()
 	conn, err := natsgo.Connect(c.URL(), natsgo.Timeout(dialTimeout), natsgo.RetryOnFailedConnect(true), natsgo.MaxReconnects(-1), natsgo.ReconnectWait(retryInterval))
@@ -67,11 +63,23 @@ func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
 		t.Fatalf("connect to the cluster to create stream %s: %v", config.Name, err)
 	}
 	defer conn.Close()
+	CreateStreamOn(t, conn, config)
+}
+
+// CreateStreamOn creates the stream config names on conn, sending the create until the cluster
+// answers it (SendCreate), and fails the test with the cluster's refusal. conn is the connection
+// whose grant the create is made under. A stream the cluster already holds under the name with
+// another configuration is refused as "stream name already in use", and the failure then names
+// each field config sets that the stream the cluster holds sets otherwise (streamDifference): a
+// send again of this create is answered with the stream it made, so that refusal is never this
+// create's own stream.
+func CreateStreamOn(t testing.TB, conn *natsgo.Conn, config natsgo.StreamConfig) {
+	t.Helper()
 	js, err := conn.JetStream(natsgo.MaxWait(createSendWait))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	err = sendCreate(t, conn, "create stream "+config.Name, createSendWait, []string{"$JS.API.STREAM.CREATE." + config.Name}, func() error {
+	err = SendCreate(t, conn, "create stream "+config.Name, createSendWait, []string{"$JS.API.STREAM.CREATE." + config.Name}, func() error {
 		_, err := js.AddStream(&config)
 		return err
 	})

@@ -3,6 +3,7 @@ package duty_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // heldSessionLock takes a connection of leases and the session-level advisory lock key on it.
@@ -38,45 +40,31 @@ func requireLockFree(t *testing.T, pool *store.Pool, key int64) {
 		t.Fatalf("acquire a connection of the shared pool: %v", err)
 	}
 	defer other.Release()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("lock %d to be free for another session once FreeSessionLock returned", key), func() (bool, bool) {
 		var taken bool
 		if err := other.QueryRow(ctx, `select pg_try_advisory_lock($1)`, key).Scan(&taken); err != nil {
 			t.Fatalf("try lock %d from another session: %v", key, err)
 		}
-		if taken {
-			if _, err := other.Exec(ctx, `select pg_advisory_unlock($1)`, key); err != nil {
-				t.Fatalf("give back lock %d: %v", key, err)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("lock %d is still held by another session 5s after FreeSessionLock returned", key)
-		}
-		time.Sleep(10 * time.Millisecond)
+		return taken, taken
+	})
+	if _, err := other.Exec(ctx, `select pg_advisory_unlock($1)`, key); err != nil {
+		t.Fatalf("give back lock %d: %v", key, err)
 	}
 }
 
-// requireConnections waits up to 5s for the pool to hold total connections, idle of them idle: a
+// requireConnections waits for the pool to hold total connections, idle of them idle: a
 // connection released closed is destroyed by the pool on a goroutine of its own.
 func requireConnections(t *testing.T, leases *store.RawPool, total, idle int32, why string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("the pool after FreeSessionLock to hold total %d, idle %d: %s", total, idle, why), func() (string, bool) {
 		stat := leases.Stat()
-		if stat.TotalConns() == total && stat.IdleConns() == idle {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("pool after FreeSessionLock: total %d, idle %d; want total %d, idle %d: %s",
-				stat.TotalConns(), stat.IdleConns(), total, idle, why)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return fmt.Sprintf("total %d, idle %d", stat.TotalConns(), stat.IdleConns()), stat.TotalConns() == total && stat.IdleConns() == idle
+	})
 }
 
 // An unlock Postgres confirms gives the lock back and the connection back to its pool.
 func TestFreeSessionLockReturnsTheConnectionOnceItsUnlockAnsweredTrue(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	conn := heldSessionLock(t, leases, 7001)
@@ -91,6 +79,7 @@ func TestFreeSessionLockReturnsTheConnectionOnceItsUnlockAnsweredTrue(t *testing
 // An unlock that answers false leaves what the session holds unknown, so the connection is closed
 // rather than returned, and the lock it did hold goes with the session.
 func TestFreeSessionLockClosesTheConnectionWhenItsUnlockAnsweredFalse(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	conn := heldSessionLock(t, leases, 7002)
@@ -106,6 +95,8 @@ func TestFreeSessionLockClosesTheConnectionWhenItsUnlockAnsweredFalse(t *testing
 // An unlock that does not answer within leaseCallTimeout fails at the bound, and the connection is
 // closed: a half-open connection would otherwise hold the caller until TCP gave it up.
 func TestFreeSessionLockBoundsAnUnlockThatDoesNotAnswer(t *testing.T) {
+	// Not parallel: the unlock must give up within LeaseCallTimeout and 10 s more, a ceiling on a
+	// measured span that load could push a correct unlock past.
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	conn := heldSessionLock(t, leases, 7003)
@@ -127,6 +118,7 @@ func TestFreeSessionLockBoundsAnUnlockThatDoesNotAnswer(t *testing.T) {
 // unlock: its locks go with its session. FreeSessionLock gives it back, which destroys it, and
 // says so with ErrSessionClosed, so a caller whose own statement ended it can stay quiet.
 func TestFreeSessionLockAnswersErrSessionClosedForAConnectionAlreadyClosed(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	conn := heldSessionLock(t, leases, 7004)

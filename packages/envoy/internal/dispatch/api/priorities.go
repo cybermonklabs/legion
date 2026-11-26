@@ -577,7 +577,7 @@ func priorityEvent(actor model.Actor, id, change string) model.Event {
 //
 // It is a read, so no write class stands on it (writeClasses, routes_table.go) and every
 // authenticated caller makes it, as the listing is read: a priority belongs to no project, so a
-// credential held to one reads this as it reads the listing.
+// credential that names one project reads this as it reads the listing.
 //
 // An id no priority row carries is 404 PRIORITY_NOT_FOUND, in the wording the two writes of an
 // id answer (refusePriorityWrite). A priority somebody deleted still answers its history: the

@@ -35,6 +35,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
+import "github.com/sjawhar/envoy/internal/clock"
+
 var (
 	// ErrIssueClosed rejects a document mutation after its issue is closed.
 	ErrIssueClosed = errors.New("issue is closed")
@@ -108,6 +110,10 @@ type Deps struct {
 	// document socket's admission reads take one of them for their whole length (ServeHTTP).
 	// cmd/dispatch hands it; a service with none limits nothing.
 	Outside *admission.Outside
+	// Clock is the clock Shutdown's drain budget (ShutdownDrainBudget) runs on; nil means the real
+	// clock. A test hands a clocktest fake and moves it past the moments it means, so how long a
+	// loaded machine takes between them does not spend the budget.
+	Clock clock.Clock
 	// BuildCommit is the commit this process's binary was built from (cmd/dispatch's buildCommit),
 	// the empty string for an unstamped build. The block-index tick keys its build's event cursor
 	// on it, and compares it with the commit of every live server process to report whether
@@ -197,6 +203,8 @@ type Service struct {
 	editNoticeQuiet time.Duration
 	// settlementResume is Deps.SettlementResume, with its default applied.
 	settlementResume time.Duration
+	// clock is Deps.Clock, the real clock when that is nil: the clock of Shutdown's drain budget.
+	clock clock.Clock
 	// buildCommit is Deps.BuildCommit.
 	buildCommit string
 	// markingRule is the block index's marking rule this build applies, refs.BlockIndexMarkingRule
@@ -1044,6 +1052,10 @@ func New(deps Deps) *Service {
 	if settlementResume <= 0 {
 		settlementResume = SettlementResumeInterval
 	}
+	serviceClock := deps.Clock
+	if serviceClock == nil {
+		serviceClock = clock.Real()
+	}
 	if deps.Events == nil {
 		deps.Events = events.NewBroker()
 	}
@@ -1090,6 +1102,7 @@ func New(deps Deps) *Service {
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
 		settlementResume:  settlementResume,
+		clock:             serviceClock,
 		buildCommit:       deps.BuildCommit,
 		markingRule:       refs.BlockIndexMarkingRule,
 		reads:             newDocumentReads(readBudget),
@@ -1334,7 +1347,8 @@ func poolFigures(stat *pgxpool.Stat) PoolFigures {
 // ones already queued - has room to finish: the live durableAppends counter waits for every append
 // a room's writer records, whenever Shutdown's scan found the room, not just the ones it already
 // held. A settlement it cuts short, and the close of its room's editors that follows it, get what
-// is left of the caller's deadline, so a caller's deadline has to exceed it.
+// is left of the caller's deadline, so a caller's deadline has to exceed it. The budget runs on
+// Deps.Clock, the real clock in production.
 const ShutdownDrainBudget = 9 * time.Second
 
 // Shutdown stops queued settlements and runs one worker per loaded room inside the drain budget:
@@ -1399,7 +1413,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 	s.stopAllSettleTimers()
-	drainCtx, cancelDrain := context.WithTimeout(ctx, ShutdownDrainBudget)
+	drainCtx, cancelDrain := s.clock.WithTimeout(ctx, ShutdownDrainBudget)
 	defer cancelDrain()
 	rooms := make([]string, 0, len(loaded))
 	for _, room := range loaded {

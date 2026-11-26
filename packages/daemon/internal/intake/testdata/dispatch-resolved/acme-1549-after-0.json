@@ -1,0 +1,117 @@
+[
+  {
+    "id": 241063,
+    "issue_key": "ACME-1549",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 1,
+    "type": "issue.created",
+    "actor": {
+      "kind": "session",
+      "id": "00000000-0000-7000-8000-000000000001"
+    },
+    "notify": false,
+    "created_at": "2026-11-07T03:57:44.440261Z",
+    "payload": {
+      "key": "ACME-1549",
+      "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzh",
+      "claim": null,
+      "labels": [],
+      "number": 1549,
+      "parent": "ACME-1547",
+      "status": "triage",
+      "changed": ["title", "status", "rank", "assignee", "parent", "repo"],
+      "project": "ACME",
+      "last_seq": 1,
+      "priority": null,
+      "ancestors": ["ACME-1547"],
+      "closed_at": null,
+      "blocked_by": [],
+      "created_at": "2026-11-07T03:57:44.440261Z",
+      "updated_at": "2026-11-07T03:57:44.440261Z"
+    }
+  },
+  {
+    "id": 241080,
+    "issue_key": "ACME-1549",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 2,
+    "type": "issue.updated",
+    "actor": {
+      "kind": "session",
+      "id": "00000000-0000-7000-8000-000000000001"
+    },
+    "notify": false,
+    "created_at": "2026-11-07T03:58:02.547809Z",
+    "payload": {
+      "key": "ACME-1549",
+      "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzh",
+      "claim": null,
+      "labels": [],
+      "number": 1549,
+      "parent": "ACME-1547",
+      "status": "todo",
+      "changed": ["status"],
+      "project": "ACME",
+      "last_seq": 2,
+      "priority": null,
+      "ancestors": ["ACME-1547"],
+      "closed_at": null,
+      "blocked_by": [],
+      "created_at": "2026-11-07T03:57:44.440261Z",
+      "updated_at": "2026-11-07T03:58:02.55702Z"
+    }
+  },
+  {
+    "id": 591913,
+    "issue_key": "ACME-1549",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 3,
+    "type": "message.created",
+    "actor": {
+      "kind": "session",
+      "id": "00000000-0000-7000-8000-000000000002"
+    },
+    "notify": false,
+    "created_at": "2026-11-16T01:19:47.379056Z",
+    "payload": {
+      "id": "3c9a8c01-36ed-4ec2-ad5e-3bf4a0f0251a",
+      "issue_key": "ACME-1549",
+      "created_at": "2026-11-16T01:19:47.379056Z"
+    }
+  },
+  {
+    "id": 591914,
+    "issue_key": "ACME-1549",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 4,
+    "type": "issue.closed",
+    "actor": {
+      "kind": "session",
+      "id": "00000000-0000-7000-8000-000000000002"
+    },
+    "notify": false,
+    "created_at": "2026-11-16T01:19:47.442517Z",
+    "payload": {
+      "key": "ACME-1549",
+      "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzh",
+      "claim": null,
+      "labels": [],
+      "number": 1549,
+      "parent": "ACME-1547",
+      "status": "done",
+      "changed": ["status", "closed_at"],
+      "project": "ACME",
+      "last_seq": 4,
+      "priority": null,
+      "ancestors": ["ACME-1547"],
+      "closed_at": "2026-11-16T01:19:47.442517Z",
+      "blocked_by": [],
+      "created_at": "2026-11-07T03:57:44.440261Z",
+      "updated_at": "2026-11-16T01:19:47.449544Z"
+    }
+  }
+]
