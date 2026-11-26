@@ -14,6 +14,7 @@ Name them in the day's report and take nothing for them.
 | `label_off` | A root whose `legion` label is off | A person's label |
 | `ancestry` | Its Dispatch chain reaches another live root: that tree's unreleased work | That tree's architect releasing it or its parent, or the chain leaving that tree |
 | `root_awaiting_person` | Its root waits on a person | The root's resume |
+| `awaiting_children` | A parent that holds the start of its next phase while a Dispatch child of it is open (`phase: awaiting_children`) | Its last open child leaving the workflow; the next admission pass then takes it back to the step it waited at |
 | `design_gate` | Its root's design gate is not open at every step that holds the tree: each gated step, and `criteria` where the root registered it | A person's approval of each step's document |
 | `dispatch_blocker` | A `blocked_by` issue is not `done` | Each blocker `done`, or the link taken off |
 | `children_first` | An open child under it | The last open child leaving the workflow |

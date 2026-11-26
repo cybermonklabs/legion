@@ -13,7 +13,7 @@ The pass keeps the order of the work aligned with the project's priorities. Run 
 - On any other turn it is due when the wake's work is done, nothing else waits, and `dispatch issues --project <KEY> --updated-since <the time of your newest pass line> --all` lists an issue, or when your context holds no pass line.
 
 1. Read the `read_state` summary's admission lines, the newest weekly plan, and the open roots, and make [the owner audit](#the-owner-audit) on that read.
-2. Change only a rank, an admission or the plan, where it no longer matches the project's priorities, and change nothing else. Admit an issue only as the intake your deployment instructions give and `skill://legion-controller/references/admission.md#your-moves-to-todo` allow: a free slot is no reason to admit.
+2. Change only a rank, an admission or the plan, where it no longer matches the project's priorities, and change nothing else. Admit an issue only as the intake your deployment instructions give and `skill://legion-controller/references/admission.md#your-moves-to-todo` allow: a free slot is no reason to admit. A plan line that defers a root the daemon queued or runs: `skill://legion-controller/references/deferral-asks.md`.
 3. In the daily form, also [reconcile the weekly plan](#reconcile-the-weekly-plan).
 4. End the pass with exactly one line: `Prioritization pass at <RFC3339>: <what it changed, or none>`.
 
@@ -24,8 +24,6 @@ The pass keeps the order of the work aligned with the project's priorities. Run 
 3. For every plan line whose key has this project's prefix (`daemon.project`), make the board order match the line order exactly, from the plan alone: `dispatch issue-update --issue <KEY> --before <OTHER>` (or `--after`). Set priority P0 only where the project owner's own words, cited on the issue, ask for it, and never from a plan line alone: a P0 issue starts at once, outside the admission cap. Set any other priority a line states; leave it where it states none. Change the P0 bound (`set_p0_bound`, `clear_p0_bound`) only on a person's word, cited in the change's reason.
 4. Reconcile the one-owner map. A `live` or `unresponsive` owner in `envoy_sessions` still owns its work: change nothing. Only an owner that reads `gone`, or that the registry has no record of, has no session. Route such unowned work to a session whose `dir` is a checkout of the issue's repository (`dispatch issue-update --issue <KEY> --route session:<session id>`) and `envoy_send` it `You own <KEY>: <title>.`. Never route an issue that carries the `legion` label, and never change its `Assignee:`, which decides who receives asks.
 5. Edit that line's owner in the artifact with `dispatch doc-edit`, guarded by the token of the current `dispatch doc-read`, replacing superseded text rather than logging changes.
-
-A line that defers a root the daemon queued or runs: `skill://legion-controller/references/deferral-asks.md`.
 
 A directive is a direct Dispatch message to you: answer it, carry it out, record the rule it sets in its weekly-plan row (or the directives section) with the message's link, then run the daily form of the prioritization pass.
 

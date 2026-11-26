@@ -1,6 +1,6 @@
 # Reading admission
 
-Read this when you need to know where an issue stands in admission, what an `admission.held` word means (`skill://legion-controller/references/admission-held.md`), or which trees are live, and before you move an issue to `todo`.
+Read this when you need to know where an issue stands in admission or which trees are live, and before you move an issue to `todo`. What an `admission.held` word means: `skill://legion-controller/references/admission-held.md`.
 An issue's `phase` alone does not say it: read its key against the `admission` lists and the root its `tree` names.
 The `read_state` summary prints `admission.active`, `admission.waiting`, `admission.blocked` and `admission.trees` as its `active`, `waiting`, `blocked` and `trees` lines, and each entry of `admission.held` as a `held` line.
 The rules behind them: [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label).
