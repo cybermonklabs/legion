@@ -225,6 +225,56 @@ test("a row a refused dismiss put back is the reader's hand's again, held under 
   expect(rowIds()).toEqual(["reply:c1", "reply:c9"]);
 });
 
+// Two presses out at once, each refused in turn. A refusal puts back the rows its own press took
+// out and nothing else: had it put the view back as its press found it, the first refusal would
+// draw the second press's row back while that press is still out, and the second would take the
+// first press's row out again, though Dispatch dismissed neither, and the unread count would end
+// one too low.
+test("two dismissals refused in a row put both rows back where they stood, and the unread count as it was", async () => {
+  const client = new QueryClient({
+    defaultOptions: {
+      mutations: { retry: false },
+      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+    },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  client.setQueryData(meInboxQuery().queryKey, oneReadAnswer([replyRow("c1"), replyRow("c9")]));
+  client.setQueryData(meInboxCountQuery().queryKey, 2);
+  const first = Promise.withResolvers<never>();
+  const second = Promise.withResolvers<never>();
+  const dismissed = answerInboxDismisses();
+  dismissed.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+  const { result } = renderHook(
+    () => ({
+      count: useQuery(meInboxCountQuery()).data,
+      dismiss: useInboxDismiss(),
+      inboxThreads: meInboxThreads(useQuery(meInboxQuery()).data).map((row) => row.thread_id),
+    }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+
+  act(() => result.current.dismiss.submit({ rows: [dismissThreadRow(replyRow("c1"))] }));
+  await waitFor(() => expect(result.current).toMatchObject({ count: 1, inboxThreads: ["c9"] }));
+  act(() => result.current.dismiss.submit({ rows: [dismissThreadRow(replyRow("c9"))] }));
+  await waitFor(() => expect(result.current).toMatchObject({ count: 0, inboxThreads: [] }));
+
+  // The first press is refused while the second is still out: its own row is back, and the
+  // second's is still out of the list.
+  await act(async () => first.reject(new ApiError(409, { error: "refused" })));
+  await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(result.current).toMatchObject({ count: 1, inboxThreads: ["c1"] }));
+
+  await act(async () => second.reject(new ApiError(409, { error: "refused" })));
+  await waitFor(() =>
+    expect(result.current).toMatchObject({ count: 2, inboxThreads: ["c1", "c9"] })
+  );
+  expect(result.current.dismiss.refusal).toBe(dismissRefusalText(1, false, "refused"));
+});
+
 // A read of the Inbox's threads, of the Dismissed view or of the count asked while a dismiss is
 // out - an event's refresh, another surface - can reach Dispatch before the dismiss does, and its
 // answer would put the dismissed thread back in the list and in the unread count while the press

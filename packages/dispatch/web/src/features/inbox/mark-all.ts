@@ -6,15 +6,16 @@
  * the list was read at (`as_of`) and the narrowing the list is under, so the server marks exactly
  * the threads the reader is looking at: no row that arrived after that read is swallowed, and no
  * row the Filter hid is marked. The press is applied here first - the rows are drawn as read and
- * every unread count drops - because the reader pressed it, and is taken back whole when Dispatch
- * refuses it, which an old server with no such route is one way of doing. A press the reader
- * stopped is no refusal - it may have marked the rows - so the list is read again instead.
+ * every unread count drops - because the reader pressed it, and when Dispatch refuses it, which an
+ * old server with no such route is one way of doing, the rows it drew read are drawn unread again
+ * and the count rises by them. A press the reader stopped is no refusal - it may have marked the
+ * rows - so the list is read again instead.
  *
  * It takes no row out of the list. A thread stays in the Inbox, read or not, until it is
  * dismissed (`useInboxDismiss.ts`), as an email stays until it is archived.
  */
 
-import { useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 
 import { markInboxReadRequest } from "../../api/client";
 import {
@@ -29,14 +30,8 @@ import { compareTimestamps } from "../../lib/timestamps";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./InboxBar";
-import type { InboxListRow } from "./list-row";
-import {
-  type MeInboxSnapshot,
-  meInboxSnapshot,
-  meInboxThreadRows,
-  patchMeInboxThreads,
-  restoreMeInbox,
-} from "./one-read-cache";
+import { type InboxListRow, rowId } from "./list-row";
+import { meInboxThreadRows, patchMeInboxThreads } from "./one-read-cache";
 import { inboxWriteScope, inWriteScope, sameWriteScope } from "./write-scope";
 
 /** What the page says when the server refused the press and nothing was marked. */
@@ -80,10 +75,29 @@ export function readRow(thread: MyReplyRow, readThrough: string): MyReplyRow {
   return { ...thread, read_through: readThrough, unread: false, unread_count: 0 };
 }
 
-/** What the press rolls back to: every cached read of the one read as it stood before it - the
- *  Inbox's own list and its unread count among them. */
+/** What the press rolls back to: each row it drew read, as it stood before the press, by the
+ *  row's id. */
 interface MarkAllRollback {
-  readonly oneRead: MeInboxSnapshot;
+  readonly marked: ReadonlyMap<string, MyReplyRow>;
+}
+
+/**
+ * Draws unread again each row a refused press drew read (`marked`), as it stood before the press,
+ * in every read of the one read that still draws it read, and raises the unread count by those
+ * the Inbox answer holds, as the press lowered it by them. Only that press's own rows go back: a
+ * row a read since draws unread holds what Dispatch holds, and a row another press still out drew
+ * read stays as it stands.
+ */
+function putBackUnread(queryClient: QueryClient, marked: ReadonlyMap<string, MyReplyRow>): void {
+  const before = (thread: MyReplyRow): MyReplyRow | undefined =>
+    thread.unread ? undefined : marked.get(rowId({ kind: "thread", thread }));
+  const back = meInboxThreadRows(queryClient).filter((thread) => before(thread) !== undefined);
+  if (back.length === 0) return;
+  patchMeInboxThreads(
+    queryClient,
+    (thread) => before(thread) ?? thread,
+    (unread) => unread + back.length
+  );
 }
 
 export interface MarkAllRead {
@@ -157,26 +171,27 @@ export function useMarkAllRead({
         return;
       }
       if (rollback === undefined) return;
-      restoreMeInbox(queryClient, rollback.oneRead);
+      putBackUnread(queryClient, rollback.marked);
     },
     onMutate: (input) => {
-      const oneRead = meInboxSnapshot(queryClient);
       const through = input.read_through;
+      if (through === undefined || through === null) return { marked: new Map() };
+      // Each row the press marks, as it stands now, which a refusal draws unread again.
+      const marked = new Map(
+        meInboxThreadRows(queryClient)
+          .filter((thread) => marksThread(thread, input))
+          .map((thread): [string, MyReplyRow] => [rowId({ kind: "thread", thread }), thread])
+      );
       // The list and the count are written by the same rule, over a read of them still out
       // (`patchMeInboxThreads`): every row the press marks drawn read, and the count every badge
       // shares lowered by what it marks, clamped at zero, so an unfiltered press reads zero and a
       // filtered one takes away only its own rows rather than counting the rest of the Inbox away.
-      if (through !== undefined && through !== null) {
-        const marked = meInboxThreadRows(queryClient).filter((thread) =>
-          marksThread(thread, input)
-        ).length;
-        patchMeInboxThreads(
-          queryClient,
-          (thread) => (marksThread(thread, input) ? readRow(thread, through) : thread),
-          (unread) => Math.max(0, unread - marked)
-        );
-      }
-      return { oneRead };
+      patchMeInboxThreads(
+        queryClient,
+        (thread) => (marksThread(thread, input) ? readRow(thread, through) : thread),
+        (unread) => Math.max(0, unread - marked.size)
+      );
+      return { marked };
     },
     onSuccess: readAgain,
     request: (input) => markInboxReadRequest(input),
