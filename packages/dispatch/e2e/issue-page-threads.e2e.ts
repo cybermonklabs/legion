@@ -1495,13 +1495,20 @@ test("@ in a box that writes a comment names an agent, and a box that writes a m
       const write: string = row.write;
       expect(
         row.covered,
-        `the box ${row.box} writing ${write} carries the picker where it writes a message, or none where it writes a comment`
-      ).toBe(write === "comment");
+        `the box ${row.box} writing ${write} carries the picker where it writes a message, or none where it writes a comment's words, a comment or its edit`
+      ).toBe(write === "comment" || write === "comment-edit");
       await loadThreads(page, key);
       await expectRowsDrawn(page, "All");
       let scope: Locator;
       if (write === "comment") {
         await openRow(page, key, seed.comments.remark);
+        scope = openedRecord(page);
+      } else if (write === "comment-edit") {
+        // The edit box opens only from Edit on the reader's own comment, as a reader opens it.
+        await openRow(page, key, seed.comments.remark);
+        await recordEntry(page, seed.comments.remark)
+          .getByRole("button", { exact: true, name: EDIT })
+          .click();
         scope = openedRecord(page);
       } else if (write === "message-reply") {
         await openRow(page, key, seed.messages.first);

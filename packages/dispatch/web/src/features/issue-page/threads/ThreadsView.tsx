@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { myRepliesOwnerQuery } from "../../../api/queries";
+import type { Message } from "../../../api/types";
 import { focusVisibleRing, pageLineBorder, pageMutedText } from "../../../theme/classes";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { buildIssuePath } from "../../refs/routes";
@@ -12,8 +13,10 @@ import { issueAddress } from "../issue-address";
 import { pageChrome } from "../page-structure";
 import { EMPTY_STATE_LINES, PRESET_NAMES, THREADS_WORDS } from "../page-words";
 import type { SlotProps } from "../slot-props";
+import { NewThread } from "./NewThread";
 import { ThreadList, useThreadLists } from "./ThreadList";
 import { OpenedRecord } from "./ThreadRecord";
+import { threadRecords } from "./thread-records";
 
 /** From this width up the list and the main column stand side by side (R2): 1024 px. */
 export const SIDE_BY_SIDE_QUERY = "(min-width: 64rem)";
@@ -48,8 +51,15 @@ export function ThreadsView({ issue, route }: SlotProps): ReactNode {
     setDrawnRecord(record);
     if (record !== undefined) setNewThread(false);
   }
+  // The thread New thread just sent, drawn from Dispatch's answer at its address until a page
+  // of the list holds it, so it opens with no lookup (R10, R12).
+  const [sent, setSent] = useState<Message>();
   const listPath = buildIssuePath({ key: issue.key, kind: "threads" });
-  const opened = record === undefined ? undefined : lists.records.get(record);
+  const opened =
+    record === undefined
+      ? undefined
+      : (lists.records.get(record) ??
+        (sent?.id === record ? threadRecords({ message: sent, replies: null })[0] : undefined));
   const open = record !== undefined || newThread;
   // The read mark of an opened record reads the reader's unread threads of the issue once
   // (`useMarkThreadRead`, R9, R15). From the first record opened the view watches that read
@@ -85,7 +95,15 @@ export function ThreadsView({ issue, route }: SlotProps): ReactNode {
             thread={[...lists.records.values()].filter((one) => one.thread === opened.thread)}
           />
         )
-      ) : newThread ? null : (
+      ) : newThread ? (
+        <NewThread
+          issueKey={issue.key}
+          onSent={(message) => {
+            setSent(message);
+            navigate(buildIssuePath({ key: issue.key, kind: "threads", record: message.id }));
+          }}
+        />
+      ) : (
         <p className={`text-sm ${pageMutedText}`} {...pageChrome}>
           {EMPTY_STATE_LINES.threads_none_open}
         </p>

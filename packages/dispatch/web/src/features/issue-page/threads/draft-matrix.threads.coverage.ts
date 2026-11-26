@@ -24,6 +24,7 @@ const another = (box: string) =>
   cells(`${HOST} · another record opens, then the record again · ${box}`, TYPED);
 const narrows = cells(`${HOST} · the window narrows below 1024 px, then widens`, TYPED);
 const newThread = cells(`${HOST} · New thread opens, then the record again`, TYPED);
+const sentThread = cells(`${HOST} · the thread New thread sent, then a page holds it`, TYPED);
 const editGoes = cells(`${HOST} · an edit goes for a reply box, then opens again`, TYPED);
 const reloaded = (box: string) => cells(`${HOST} · the page reloaded, then back · ${box}`, TYPED);
 const everyBox = [another("foot"), another("reply"), another("edit")];
@@ -128,6 +129,10 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("ThreadsView | - | form | (wide) ? …", narrows),
   ...answers("ThreadsView | - | form | (newThread) ? …", newThread),
   ...answers("ThreadsView | - | form | (wide || !open) ? …", narrows),
+  ...answers("ThreadsView | OpenedRecord | form | !(opened === undefined) ? …", sentThread),
+  ...answers("ThreadsView | OpenedRecord | form | key={opened.id}", sentThread),
+  ...answers("ThreadsView | - | form | (sent?.id === record) ? …", sentThread),
+  ...answers("ThreadsView | - | form | if (opened !== undefined && !marking)", sentThread),
   ...answers("ViewThreadsSlot | ThreadsView | address prop | issue={issue}", oneIssue),
   ...answers("ViewThreadsSlot | ThreadsView | address prop | route={route}", ...everyBox),
 ];

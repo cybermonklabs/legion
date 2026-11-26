@@ -58,7 +58,8 @@ function messageInput(body: string, address: MessageAddress): CreateMessageInput
  * unsent drafts (`useUnsentDrafts`) as the reader types them, so a box that goes - another
  * entry's Reply, Escape - and comes back shows them again, as a `MentionComposer` box does. They
  * leave the store once Dispatch took the message. While a send is out the field is held, and a
- * refusal says why beside Retry with the words kept.
+ * refusal says why beside Retry with the words kept. A box with no address yet, New thread's
+ * before the reader chose its agent, offers no Send (R10).
  */
 export function MessageBox({
   address,
@@ -69,7 +70,8 @@ export function MessageBox({
   onSent,
   sendKey,
 }: {
-  readonly address: MessageAddress;
+  /** Where the message goes, or undefined while the reader has not chosen it yet. */
+  readonly address: MessageAddress | undefined;
   /** Puts the caret in the field as the box mounts: a box the reader opened with a Reply. */
   readonly autoFocus?: boolean;
   readonly issueKey: string;
@@ -107,7 +109,7 @@ export function MessageBox({
   }, [autoFocus]);
   const words = body.trim();
   const send = () => {
-    if (words === "" || sending) return;
+    if (words === "" || sending || address === undefined) return;
     write.mutate({ body, input: messageInput(words, address) });
   };
   return (
@@ -145,7 +147,7 @@ export function MessageBox({
         <div className={pageComposer.controls}>
           <button
             className={`${pageSend} disabled:cursor-default disabled:opacity-50`}
-            disabled={words === "" || sending}
+            disabled={words === "" || sending || address === undefined}
             type="submit"
             {...pageChrome}
           >

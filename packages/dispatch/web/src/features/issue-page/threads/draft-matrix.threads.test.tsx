@@ -12,14 +12,15 @@
  * | Another record opens, then the record again               | typed     | typed    | typed |
  * | The window narrows below 1024 px, then widens             | -         | typed    | -     |
  * | New thread opens, then the record again                   | -         | typed    | -     |
+ * | The thread New thread sent, then a page holds it          | -         | typed    | -     |
  * | An edit goes for a reply box, then opens again            | -         | -        | typed |
  * | The page reloaded, then back                              | -         | typed    | typed |
  *
  * `draft-matrix.threads.coverage.ts` ties the census to these cells and its numbered reasons.
  */
-import { beforeAll, expect, test } from "bun:test";
-import type { CommentThreadPage } from "@legion/contracts";
-import { screen, waitFor, within } from "@testing-library/react";
+import { beforeAll, expect, spyOn, test } from "bun:test";
+import type { CommentThreadPage, MessageThreadPage } from "@legion/contracts";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
 import {
@@ -28,11 +29,16 @@ import {
   newQueryClient,
   signedInAsReader,
 } from "../../../__tests__/draft-matrix-fixture";
+import { plannerAgent } from "../../../__tests__/search-fixture";
+import { api } from "../../../api/client";
+import type { Message } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { CONTROL_LABELS, THREADS_WORDS } from "../page-words";
 import asksThreadBody from "./fixtures/asks-thread.json";
 import commentsInBody from "./fixtures/comments-in.json";
-import { answerThreads, drawThreads, stubWindow, threadsAt } from "./threads-view-fixture";
+import messageCreatedBody from "./fixtures/message-created.json";
+import messagesInBody from "./fixtures/messages-in.json";
+import { answerThreads, drawThreads, KEY, stubWindow, threadsAt } from "./threads-view-fixture";
 
 const HOST = "Threads record";
 const COMMENTS = (commentsInBody as unknown as CommentThreadPage).threads ?? [];
@@ -213,6 +219,60 @@ test(`${HOST} · New thread opens, then the record again · typed`, async () => 
     await opened(REMARK_ID);
     expect(field("foot").value).toBe(BODY);
   } finally {
+    drawn.done();
+    window.restore();
+  }
+});
+
+test(`${HOST} · the thread New thread sent, then a page holds it · typed`, async () => {
+  const window = stubWindow(1440);
+  const created = messageCreatedBody as unknown as Message;
+  const page = messagesInBody as unknown as MessageThreadPage;
+  // Once the case says the page holds the new thread, the messages' first page answers it first,
+  // as the server orders a page by last activity.
+  let held = false;
+  answerThreads({
+    messages: () =>
+      held
+        ? {
+            ...page,
+            threads: [
+              { last_activity_at: created.created_at, message: created, replies: [] },
+              ...(page.threads ?? []),
+            ],
+          }
+        : page,
+  });
+  const create = spyOn(api, "createMessage").mockResolvedValue(created as never);
+  const user = userEvent.setup();
+  const drawn = drawThreads(threadsAt());
+  const agents = spyOn(api, "listAgents").mockResolvedValue([plannerAgent()]);
+  try {
+    await user.click(await screen.findByRole("button", { name: THREADS_WORDS.new_thread }));
+    await user.click(await screen.findByRole("option", { name: /^planner\b/ }));
+    await write(
+      user,
+      screen.getByRole("textbox", { name: THREADS_WORDS.message_box }),
+      "To the planner."
+    );
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send }));
+    await opened(created.id);
+    expect(
+      document.querySelector(`[data-thread-row="${created.id}"]`),
+      "a page held the new thread before the case said so"
+    ).toBeNull();
+    await write(user, field("foot"));
+    held = true;
+    await act(async () => {
+      await drawn.client.invalidateQueries({ queryKey: ["issue-messages", KEY] });
+    });
+    await waitFor(() =>
+      expect(document.querySelector(`[data-thread-row="${created.id}"]`)).not.toBeNull()
+    );
+    expect(field("foot").value).toBe(BODY);
+  } finally {
+    create.mockRestore();
+    agents.mockRestore();
     drawn.done();
     window.restore();
   }

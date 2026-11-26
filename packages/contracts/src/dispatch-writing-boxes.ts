@@ -27,6 +27,7 @@ export type DispatchWritingBox =
   | "threads-reply"
   | "threads-comment-edit"
   | "threads-message"
+  | "threads-new-thread"
   | "inbox-thread-reply"
   | "margin-composer"
   | "margin-comment-edit"
@@ -65,6 +66,8 @@ export type DispatchWritingBox =
  * - `ask-decline`: a person's note on declining to answer an ask, which closes it with no
  *   answer; the note is stored on the ask's resolution and read by whoever asked.
  * - `message-reply`: a reply in an issue's message thread, delivered to the thread's target.
+ * - `issue-message`: a root message of an issue, which starts a thread with the agent or the
+ *   role it targets.
  * - `agent-message`: a message to one agent's session.
  * - `broadcast`: one message to each selected agent.
  * - `document-text`: the document's own text, which every reader of that document reads and
@@ -89,6 +92,7 @@ export type DispatchWriting =
   | "ask-back"
   | "ask-decline"
   | "message-reply"
+  | "issue-message"
   | "agent-message"
   | "broadcast"
   | "document-text"
@@ -358,6 +362,22 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reason:
       "A message names its agent by its target, so the box offers no @ and stores no mention (R11 of dispatch://INFRA-5704): it is Threads' own field, which mounts no picker.",
     write: "message-reply",
+  },
+  // New thread's box in Threads (R10 of dispatch://INFRA-5704): a root message of the issue to
+  // the agent the chooser above the box names, in Threads' own field, which takes no picker.
+  {
+    box: "threads-new-thread",
+    covered: false,
+    delivers: false,
+    files: [
+      "packages/dispatch/web/src/features/issue-page/threads/MessageBox.tsx",
+      "packages/dispatch/web/src/features/issue-page/threads/NewThread.tsx",
+    ],
+    issueRows: true,
+    reach: "Message",
+    reason:
+      "A message names its agent by its target, which the chooser above the box picks, so the box offers no @ and stores no mention (R10 and R11 of dispatch://INFRA-5704): it is Threads' own field, which mounts no picker.",
+    write: "issue-message",
   },
   // The Inbox's reading column: one reply box, under a comment thread or a message thread. A
   // thread item of Dashboard draws the same box under the same thread.

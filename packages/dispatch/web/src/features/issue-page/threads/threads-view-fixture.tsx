@@ -1,9 +1,9 @@
 /**
  * What the unit tests of the opened record share (`ThreadRecord.test.tsx`,
- * `draft-matrix.threads.test.tsx`, `ThreadRow.test.tsx`): the issue the captured fixtures were
- * read from (`fixtures/README.md`), the server's answers to every read Threads sends, Threads
- * drawn at an address under what the app and the page provide, and a window whose width a case
- * sets.
+ * `draft-matrix.threads.test.tsx`, `ThreadRow.test.tsx`, `NewThread.test.tsx`): the issue the
+ * captured fixtures were read from (`fixtures/README.md`), the server's answers to every read
+ * Threads sends, Threads drawn at an address under what the app and the page provide, and a window
+ * whose width a case sets.
  */
 import { spyOn } from "bun:test";
 import type { QueryClient } from "@tanstack/react-query";
@@ -14,6 +14,7 @@ import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "r
 
 import { newQueryClient, signedInAsReader } from "../../../__tests__/draft-matrix-fixture";
 import { answerRequests } from "../../../__tests__/network";
+import { issueCollaborators } from "../../../__tests__/search-fixture";
 import { api } from "../../../api/client";
 import type { PublishedReferences } from "../../refs/reference-names";
 import { parseIssuePath } from "../../refs/routes";
@@ -91,7 +92,13 @@ export function answerThreads(pages: PageAnswers = {}): SentReads {
     http.get("/api/v1/me/state", () => Response.json(meStateBody)),
     // An edit reads its comment's blocks as it opens. A server with no blocks route refuses the
     // read, and the edit then carries no block ids (`MentionComposer`).
-    http.get("/api/v1/comments/:id/blocks", () => new Response(null, { status: 404 }))
+    http.get("/api/v1/comments/:id/blocks", () => new Response(null, { status: 404 })),
+    // New thread's chooser reads the issue's collaborators as it opens, as the `@` picker does.
+    // No capture holds that read, so it answers as every picker's test does: no agent on the
+    // issue (`search-fixture.ts`). A case about the chooser's parties answers it its own way.
+    http.get("/api/v1/issues/:key/collaborators", () =>
+      Response.json(issueCollaborators({ issue_key: KEY }))
+    )
   );
   return sent;
 }
