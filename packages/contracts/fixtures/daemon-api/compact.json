@@ -1,4 +1,4 @@
 {
   "compacted": false,
-  "reason": "Nothing to compact (session too small)"
+  "reason": "Nothing to hand off (already compacted)"
 }
