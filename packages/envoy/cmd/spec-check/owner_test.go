@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -14,23 +15,17 @@ import (
 )
 
 // Each file that print writes keeps the mode, the owner and the group of the file of that name
-// that it replaces, and a new file gets the owner and the group of the spec directory: a run as
-// root in a container over a bind-mounted checkout leaves the host user's files as they were. A
-// file that the run does not change, which print links or, where the system refuses the link,
-// copies, keeps them too. The group tells the writer from the owner of the file: the test gives
-// the file and the directory a group of the process that is not its own. The control is the file
-// mode 0644 and the process's own group, which print writes either way.
+// that it replaces, and a new file gets the owner and the group of the spec directory, where the
+// process may give them (TestSameOwnerGivesOnlyAnOwnerThatTheProcessMayGive): a run as root in a
+// container over a bind-mounted checkout leaves the host user's files as they were. A file that
+// the run does not change, which print links or, where the system refuses the link, copies, keeps
+// them too. The group tells the writer from the owner of the file: the test gives the file and the
+// directory a group of the process that is not its own. The control is the file mode 0644 and the
+// process's own group, which print writes either way.
 func TestPrintKeepsTheModeAndTheOwnerOfEachFile(t *testing.T) {
 	t.Parallel()
-	other := -1
-	for _, g := range mustGroups(t) {
-		if g != os.Getgid() {
-			other = g
-			break
-		}
-	}
+	other := otherGroup(t)
 	if other < 0 {
-		skipOutsideCI(t, "the process is in no group but its own, so no file of another group can be made")
 		return
 	}
 	const changed = "---\ntype: term\nid: first-term\nname: first term\ndefinition:\n  - A term is a unit of meaning.\n"
@@ -90,6 +85,144 @@ func TestPrintKeepsTheModeAndTheOwnerOfEachFile(t *testing.T) {
 				if gid := int(info.Sys().(*syscall.Stat_t).Gid); gid != row.group {
 					t.Errorf("%s has the group %d, want %d", name, gid, row.group)
 				}
+			}
+		})
+	}
+}
+
+// A spec file that another program turns into a symbolic link after the run read it, and before
+// print writes the new file in its place, is no file whose mode print may keep: a link's mode is
+// 0777. print refuses the run with that line and changes nothing, and the link stays. The stand-in
+// makes the link when print makes its new directory, after the read. The control is the same run
+// with no link made, which writes the file with its old mode.
+func TestPrintRefusesASpecFileThatBecameALinkAfterTheRead(t *testing.T) {
+	t.Parallel()
+	const term = "---\ntype: term\nid: first-term\nname: first term\ndefinition:\n  - A term is a unit of meaning.\n"
+	approvedTerm := strings.Replace(term, "unit", "part", 1)
+	approved := writeApproved(t, map[string]string{"first-term": approvedTerm})
+	a := readApprovedFile(t, approved)
+	for _, swap := range []bool{false, true} {
+		t.Run(map[bool]string{false: "the control: no link", true: "a link in the place of the file"}[swap], func(t *testing.T) {
+			t.Parallel()
+			dir := filepath.Join(t.TempDir(), "spec")
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			file := filepath.Join(dir, "terms.yaml")
+			writeFile(t, file, []byte(term))
+			if err := os.Chmod(file, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(t.TempDir(), "elsewhere.yaml")
+			writeFile(t, target, []byte(term))
+			made := false
+			fsys := callFS{func(op, path string, do func() error) error {
+				if op == "mkdir" && swap && !made {
+					made = true
+					if err := os.Remove(file); err != nil {
+						return err
+					}
+					if err := os.Symlink(target, file); err != nil {
+						return err
+					}
+				}
+				return do()
+			}}
+			var stderr strings.Builder
+			code := printApproved(io.Discard, &stderr, fsys, approved, a, []string{"first-term"}, dir, printBounds{limit: 1 << 20})
+			info, err := os.Lstat(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case !swap && (code != 0 || info.Mode() != 0o600):
+				t.Errorf("print: exit %d, stderr %q, the file of mode %v; want exit 0 and mode 0600", code, stderr.String(), info.Mode())
+			case swap && (code != 2 || !strings.Contains(stderr.String(), "is no regular file") || info.Mode()&fs.ModeSymlink == 0):
+				t.Errorf("print: exit %d, stderr %q, the entry of mode %v; want exit 2, the refusal of the link, and the link as it was", code, stderr.String(), info.Mode())
+			}
+			if names := dirNames(t, filepath.Dir(dir)); !slices.Equal(names, []string{"spec"}) {
+				t.Errorf("beside %s: %q, want nothing", dir, names)
+			}
+		})
+	}
+}
+
+// otherGroup is a group of the process that is not its effective group. A process in no other
+// group fails the test in a CI job and skips it outside one (skipOutsideCI), and answers -1.
+func otherGroup(t *testing.T) int {
+	t.Helper()
+	groups, err := os.Getgroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range groups {
+		if g != os.Getegid() {
+			return g
+		}
+	}
+	skipOutsideCI(t, fmt.Sprintf("the process is in no group but its own (%d), so no entry of another group can be made", os.Getegid()))
+	return -1
+}
+
+// ownedBy describes an entry of the owner uid and the group gid, as os.Lstat of such an entry does
+// to sameOwner, which reads only Sys.
+type ownedBy struct {
+	fs.FileInfo
+	uid, gid uint32
+}
+
+func (o ownedBy) Sys() any { return &syscall.Stat_t{Uid: o.uid, Gid: o.gid} }
+
+// print gives an entry that it made the owner and the group of the entry that it replaces only
+// where the process may give them: a process as root gives any; another gives them when the old
+// owner is its own user and the old group one of its groups, and else leaves the entry its own,
+// the writer's, as git does. So a run as a user over a spec file of another user, or over one of a
+// group that the user is not in, writes the file. The stand-in for lchown answers EPERM, as the
+// system answers a process that may not give the owner, and the old entry is described with the
+// owner and the group of each row (ownedBy). The control is the old entry of the process's own
+// user and another of its groups, which it may give: lchown is called.
+func TestSameOwnerGivesOnlyAnOwnerThatTheProcessMayGive(t *testing.T) {
+	t.Parallel()
+	group := otherGroup(t)
+	if group < 0 {
+		return
+	}
+	root := os.Geteuid() == 0
+	notOurs := 0
+	for slices.Contains(mustGroups(t), notOurs) {
+		notOurs++
+	}
+	for _, row := range []struct {
+		name     string
+		uid, gid int
+		mayGive  bool
+	}{
+		{"the control: the process's own user and another of its groups", os.Geteuid(), group, true},
+		{"another user", os.Geteuid() + 1, os.Getegid(), root},
+		{"the process's own user and a group that it is not in", os.Geteuid(), notOurs, root},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "spec.yaml")
+			writeFile(t, path, []byte("---\n"))
+			info, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var calls []string
+			fsys := callFS{func(op, p string, do func() error) error {
+				if op != "lchown" {
+					return do()
+				}
+				calls = append(calls, p)
+				return &os.PathError{Op: "lchown", Path: p, Err: syscall.EPERM}
+			}}
+			err = sameOwner(fsys, path, "the new file spec.yaml", path, ownedBy{info, uint32(row.uid), uint32(row.gid)})
+			switch {
+			case row.mayGive && (len(calls) != 1 || err == nil):
+				t.Errorf("sameOwner called lchown %d times and answered %v; want one call, and the refusal of the stand-in", len(calls), err)
+			case !row.mayGive && (len(calls) != 0 || err != nil):
+				t.Errorf("sameOwner called lchown %d times and answered %v; want no call, and the writer's owner kept", len(calls), err)
 			}
 		})
 	}

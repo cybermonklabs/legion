@@ -4,7 +4,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"maps"
@@ -184,19 +183,9 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 	// print calls lchown, which the row fails as the system fails it for a user who may not.
 	t.Run("a directory whose owner and group the process may not give the new entries", func(t *testing.T) {
 		t.Parallel()
-		other := -1
-		groups, err := os.Getgroups()
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, g := range groups {
-			if g != os.Getegid() {
-				other = g
-				break
-			}
-		}
+		other := otherGroup(t)
 		if other < 0 {
-			skipOutsideCI(t, fmt.Sprintf("the process is in no group but its own (%d), so the new directory takes the group of the directory", os.Getegid()))
+			return
 		}
 		dir, lock := setUp(t)
 		before, ino := entries(t, dir), inodes(t, dir, kept...)
@@ -217,7 +206,7 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 		st := info.Sys().(*syscall.Stat_t)
 		of := filepath.Join(dir, "a.yaml")
 		want := "print gives the new file a.yaml the owner and the group of " + of + ", " + strconv.Itoa(int(st.Uid)) + ":" + strconv.Itoa(int(st.Gid)) + ", and the system refused it (operation not permitted): " +
-			"run print as the owner of " + of + ", as a member of its group, or as root, then run print again"
+			"run print as the owner of " + of + " or as root, then run print again"
 		if _, _, err := writeDir(failing(callFault{"lchown", "", syscall.EPERM}), dir, lock, files, after); err == nil || err.Error() != want {
 			t.Fatalf("writeDir with lchown refused: %v, want %q", err, want)
 		}
@@ -230,7 +219,7 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 		}
 		dirStat := held.Sys().(*syscall.Stat_t)
 		wantDir := "print gives the new directory the owner and the group of " + dir + ", " + strconv.Itoa(int(dirStat.Uid)) + ":" + strconv.Itoa(int(dirStat.Gid)) + ", and the system refused it (operation not permitted): " +
-			"run print as the owner of " + dir + ", as a member of its group, or as root, then run print again"
+			"run print as the owner of " + dir + " or as root, then run print again"
 		if _, _, err := writeDir(failing(callFault{"lchown", filepath.Base(stagingPath(dir, inode(held))), syscall.EPERM}), dir, lock, files, after); err == nil || err.Error() != wantDir {
 			t.Fatalf("writeDir with the new directory's lchown refused: %v, want %q", err, wantDir)
 		}

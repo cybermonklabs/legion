@@ -183,14 +183,13 @@ func writeDir(fsys fileSystem, dir string, lock *specDirLock, files, after map[s
 	}()
 	for _, name := range slices.Sorted(maps.Keys(after)) {
 		to, from := filepath.Join(staging, name), filepath.Join(dir, name)
-		if !slices.Contains(changed, name) {
+		switch _, held := files[name]; {
+		case !slices.Contains(changed, name):
 			err = linkOrCopy(fsys, from, to, after[name])
-		} else if _, held := files[name]; !held {
+		case !held:
 			err = writeSynced(fsys, to, after[name], 0o644, old, dir)
-		} else if was, statErr := os.Lstat(from); statErr != nil {
-			err = statErr
-		} else {
-			err = writeSynced(fsys, to, after[name], specMode(was), was, from)
+		default:
+			err = copyFile(fsys, from, to, after[name])
 		}
 		if err != nil {
 			return nil, false, err
@@ -284,23 +283,33 @@ func removeRecord(fsys fileSystem, staging string) {
 }
 
 // linkOrCopy puts at to the spec file from, which the run does not change and whose text is
-// content: a hard link to it, the same file, or, where the system refuses the link (another user's
-// file under fs.protected_hardlinks, a file on another file system, a file at its bound of links,
-// a file system with no hard links), a copy of content with the mode, the owner and the group of
-// from.
+// content: a hard link to it, the same file, or, where the system refuses the link (a file of
+// another user under fs.protected_hardlinks, a file on another file system, a file at its bound of
+// links, a file system with no hard links), a copy (copyFile).
 func linkOrCopy(fsys fileSystem, from, to string, content []byte) error {
 	refused := fsys.link(from, to)
 	if refused == nil {
 		return nil
 	}
-	info, err := os.Lstat(from)
-	if err == nil {
-		err = writeSynced(fsys, to, content, specMode(info), info, from)
-	}
-	if err != nil {
+	if err := copyFile(fsys, from, to, content); err != nil {
 		return fmt.Errorf("%w, and print could not copy the file either: %w", refused, err)
 	}
 	return nil
+}
+
+// copyFile writes content at to, a new file in the place of the spec file from, with the mode of
+// from and, where the process may give them, its owner and its group (writeSynced). It refuses a
+// from that is no regular file, such as a link that another program put in the place of the file
+// after the run read it, so that no new file takes the mode of a link, 0777.
+func copyFile(fsys fileSystem, from, to string, content []byte) error {
+	info, err := os.Lstat(from)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is no regular file now, though the run read it as one, so print does not take its mode: another program changed it; run print again", from)
+	}
+	return writeSynced(fsys, to, content, specMode(info), info, from)
 }
 
 // specMode is the mode of a spec file that print writes in the place of the file that info
@@ -310,11 +319,13 @@ func specMode(info fs.FileInfo) fs.FileMode {
 }
 
 // writeSynced writes content to a new file at path, made by fsys, syncs it, gives it the owner
-// and the group of owner, the entry of of that it takes the place of (sameOwner; nil for a file
-// that keeps the writer's), then the mode mode, after the owner, since a change of the owner can
-// clear the setuid and setgid bits. So a file that print writes keeps the mode and the owner of
-// the file that it replaces, and a new file gets the owner of the spec directory: a run as root
-// over a checkout of another user leaves that user's files.
+// and the group of owner, the entry that it takes the place of, named of (sameOwner; nil for a
+// file that keeps the writer's), then the mode mode, after the owner, since a change of the owner
+// can clear the setuid and setgid bits. So a file that print writes keeps the mode of the file
+// that it replaces, and its owner and group where the process may give them; a new file gets the
+// owner and the group of the spec directory, where the process may give them. A run as root over
+// a checkout of another user leaves that user's files; a run as a user writes as itself a file
+// whose owner it may not give, as git does.
 func writeSynced(fsys fileSystem, path string, content []byte, mode fs.FileMode, owner fs.FileInfo, of string) error {
 	f, err := fsys.create(path)
 	if err != nil {
