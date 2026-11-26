@@ -560,10 +560,10 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		scannedHeaders.Del("X-Amz-Date")
 		scannedHeaders.Del("X-Amz-Security-Token")
 	} else {
-		// Swap and not a second Rewrite: Rewrite decides again, and its check refuses a request
-		// whose headers already hold the value it is given, which a space is in nearly every
-		// request. Rewrite above has decided this request, under the kind Swap reads here.
-		scannedHeaders = headerOf(proxyrules.Swap(rules.KindOf(rules.Lookup(grant.Secret)), grant.Placeholder, " ", request).Headers)
+		// SwapForScan, not a second Rewrite: Rewrite decides again, and its check refuses a
+		// request whose headers already hold the value it is given. SwapForScan takes no
+		// decision and bakes in the space separator. Rewrite above has decided this request.
+		scannedHeaders = headerOf(proxyrules.SwapForScan(rules.KindOf(rules.Lookup(grant.Secret)), grant.Placeholder, request).Headers)
 	}
 	scannedHeaders.Del("Proxy-Authorization")
 	scannedHeaders.Del("Proxy-Connection")
@@ -1095,6 +1095,13 @@ func (s *Server) callFields(id string, c call, r *http.Request, status int, reas
 	return answer.ClipFields(fields)
 }
 
+// kindBinds is whether a kind binds host on port: port 443, a kind that exists and whose hosts
+// hold host. It is the one predicate candidates and boundEntries both call, so a change to what
+// is bound is made in one place.
+func kindBinds(kind *proxyrules.Kind, host string, port uint16) bool {
+	return port == 443 && kind != nil && proxyrules.HostBound(kind.Hosts, host)
+}
+
 // pair is one (name, slot) of a grant: which secret a request may be handled for, and which of
 // that secret's values. A github-app name has one slot per installation and no value slot, so
 // the pair rather than the name is what says which token a request's placeholder stands for.
@@ -1119,26 +1126,16 @@ func (p pair) namedSlot() string {
 // takes the first of them, and a map's order would make which value a request is handled for
 // depend on the run.
 //
-// The port is read here because a kind's hosts carry no port, so a kind binds a name on 443 and
-// nowhere else, and another port of that name is another service, which no name of this grant
-// is a candidate for. An empty answer is therefore also what says a CONNECT is a tunnel rather
-// than a connection the proxy reads (serveConnect): one function decides what is bound, and
-// boundEntries walks the same rules for the read of the session's other grants.
-//
 // It is a pure function of the rules, the grant, the host and the port, and it runs once per
 // request on a bound connection, over the grant that request read for itself and the rules the
 // live policy held then: the grant and a secret's proxy tag are what change between two requests
 // of one connection - a name withheld, a name ended, a kind retagged - and a list built once at
 // the CONNECT would answer for them as they were then.
 func candidates(rules proxyrules.Rules, grant requests.AirlockConnection, host string, port uint16) []pair {
-	if port != 443 {
-		return nil
-	}
 	var pairs []pair
 	for name, held := range grant.Names {
 		binding := rules.Lookup(name)
-		kind := rules.KindOf(binding)
-		if kind == nil || !proxyrules.HostBound(kind.Hosts, host) {
+		if !kindBinds(rules.KindOf(binding), host, port) {
 			continue
 		}
 		for slot := range held.Slots {

@@ -146,19 +146,15 @@ func (s *Server) otherGrantsBinding(ctx context.Context, rules proxyrules.Rules,
 	return s.grants.ProxyGrantsOfEnrollment(ctx, own.EnrollmentID, own.GrantID, names)
 }
 
-// boundEntries is the name of every binding whose kind binds host on port, but a dpop binding's.
-// The rules are read once at the request or CONNECT, and a grant that holds none of these names
-// binds host for no request. A dpop binding's name is left out because a minted capability's grant
-// holds it in its kind's own table, and a stored secret's release under a dpop binding writes no
-// placeholder (requests.ErrMintedOnly).
+// boundEntries is the name of every binding whose kind binds host on port (kindBinds), but a dpop
+// binding's. The rules are read once at the request or CONNECT, and a grant that holds none of
+// these names binds host for no request. A dpop binding's name is left out because a minted
+// capability's grant holds it in its kind's own table, and a stored secret's release under a dpop
+// binding writes no placeholder (requests.ErrMintedOnly).
 func boundEntries(rules proxyrules.Rules, host string, port uint16) []string {
-	if port != 443 {
-		return nil
-	}
 	var names []string
 	for _, binding := range rules.Names {
-		kind := rules.KindOf(&binding)
-		if kind != nil && binding.Way != proxyrules.WayDPoP && proxyrules.HostBound(kind.Hosts, host) {
+		if binding.Way != proxyrules.WayDPoP && kindBinds(rules.KindOf(&binding), host, port) {
 			names = append(names, binding.Name)
 		}
 	}

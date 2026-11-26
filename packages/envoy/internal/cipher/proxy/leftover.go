@@ -150,7 +150,7 @@ func headerPlaceholder(prefixes []placeholderPrefix, v string) string {
 func placeholderInPrefixes(text string, prefixes []placeholderPrefix) string {
 	for i := range len(text) {
 		for _, prefix := range prefixes {
-			if !strings.HasPrefix(text[i:], prefix.text) || prefix.leftBounded && i > 0 && asciiLetterOrDigit(text[i-1]) {
+			if !strings.HasPrefix(text[i:], prefix.text) || prefix.leftBounded && i > 0 && placeholder.ASCIILetterOrDigit(text[i-1]) {
 				continue
 			}
 			if found := placeholderAtPrefix(text[i:], prefix); found != "" {
@@ -173,13 +173,6 @@ func placeholderAtPrefix(text string, prefix placeholderPrefix) string {
 		return ""
 	}
 	return text[:end]
-}
-
-// asciiLetterOrDigit is whether b is one ASCII letter or digit, the left-boundary rule for a
-// kind's own placeholder_prefix. logmask carries the same check on a rune for the log mask's
-// placeholder scan; the two must agree.
-func asciiLetterOrDigit(b byte) bool {
-	return 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z' || '0' <= b && b <= '9'
 }
 
 // placeholderAt is the whole default-prefix placeholder text opens with, and "" when it opens
