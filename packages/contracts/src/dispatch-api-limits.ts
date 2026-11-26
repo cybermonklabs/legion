@@ -312,13 +312,14 @@ export const DISPATCH_LOGIN_CHANGED = "LOGIN_CHANGED";
 
 /**
  * The code of the `403` for a write by an access token the secrets broker issued that names a
- * session and a service but no person under the project scope `person`: the machine holding it
- * has signed nobody in, so Dispatch has nobody to record the write under. Its reads are
- * unaffected. The message names `agent-secrets login`, the one command that makes the write
- * possible, because whoever reads the refusal is whoever must run it. A token that names a
- * service and no person under the project scope `named` is no such token: an exchange account
- * entry naming no person minted it, its service is that account, and its writes are recorded
- * under the account.
+ * session and a service but no person under the project scope `person`: a machine's token, and
+ * the machine holding it has signed nobody in, so Dispatch has nobody to record the write under.
+ * Its reads are unaffected. A job's token names a service and no person too, but under the
+ * project scope `named` or `public`, and Dispatch takes its writes as that service rather than
+ * refusing them; so does a token an exchange account entry naming no person minted, under the
+ * project scope `named`, whose service is that account. The message names `agent-secrets
+ * login`, the one command that makes the write possible, because whoever reads the refusal is
+ * whoever must run it.
  */
 export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
 

@@ -33,6 +33,7 @@ import type {
   CreateProjectInput,
   CreateVersionInput,
   CredentialPendingResponse,
+  DispatchApiMethod,
   DispatchEvent,
   DispatchLimits,
   DispatchServiceErrorShape,
@@ -130,6 +131,25 @@ export interface ArtifactFileVersion {
   readonly bytes: Uint8Array;
 }
 
+/**
+ * What `readRoute` and `sendRoute` answer: `payload`, Dispatch's own JSON (a 2xx typed JSON whose
+ * body parses and that carries no `Content-Disposition: attachment`), or, for every other 2xx,
+ * `body`, the bytes that came, with `type`, the answer's Content-Type where it named one. A file
+ * version answers its bytes under its own MIME type, a document version read with
+ * `?download=true` its Markdown, both as an attachment, which is stored content whatever its type
+ * (JSON included) and is never parsed; a bodiless 204 or 205 answers no bytes.
+ */
+export type RouteAnswer =
+  | { readonly payload: unknown }
+  | { readonly body: Uint8Array; readonly type: string | undefined };
+
+/** The members of Dispatch's refusal beside its code and its message that `DispatchServiceError`
+ *  keeps: one list, which the refusal reader (`DispatchRefusal`) and the error's own details
+ *  both name, so a member one of them carries cannot be dropped by the other. */
+type RefusalMember = "candidates" | "changed" | "current" | "hint" | "issues" | "mismatches";
+
+type RefusalMembers = { readonly [Member in RefusalMember]: DispatchServiceErrorShape[Member] };
+
 export class DispatchServiceError extends Error {
   override readonly name = "DispatchServiceError";
   /**
@@ -161,11 +181,9 @@ export class DispatchServiceError extends Error {
     message: string,
     /** The members of Dispatch's refusal beside its message that a caller reads off the error:
      *  its answer's JSON, or another refusal whose members it keeps. */
-    details: {
-      readonly [Member in "candidates" | "changed" | "current" | "hint" | "issues" | "mismatches"]?:
-        | DispatchServiceErrorShape[Member]
-        | undefined;
-    } & { readonly textRefusal?: boolean | undefined } = {}
+    details: { readonly [Member in RefusalMember]?: RefusalMembers[Member] | undefined } & {
+      readonly textRefusal?: boolean | undefined;
+    } = {}
   ) {
     super(message);
     this.candidates = details.candidates;
@@ -181,11 +199,13 @@ export class DispatchServiceError extends Error {
 /**
  * An answer that is not Dispatch's JSON, so whatever answers in its place (a proxy, a load
  * balancer, an auth gateway, a captive portal) wrote it: a non-2xx, or a 2xx that a read, a PUT or
- * a DELETE could not read as JSON (`#response`; a POST's or a PATCH's 2xx is the write table's,
- * `answerEvent`). `answer` says what came back and `advice` what asking again can do, judged from
- * the method and the status alone; the message joins them. A caller that knows more about what
- * its own request did gives `answer` advice of its own instead. `code` is `HTTP_<status>`, as for
- * any refusal that names no code.
+ * a DELETE of a route this client reads as JSON could not read as JSON (`#response`). A keyed
+ * write's 2xx is the write table's (`answerEvent`), and `readRoute` and `sendRoute`, which send a
+ * route their caller wrote, give a 2xx's body that is not Dispatch's JSON back as it came
+ * (`#route`). `answer` says what came back and `advice` what asking again can do, judged from the
+ * method and the status alone; the message joins them. A caller that knows more about what its
+ * own request did gives `answer` advice of its own instead. `code` is `HTTP_<status>`, as for any
+ * refusal that names no code.
  */
 export class DispatchGatewayError extends DispatchServiceError {
   override readonly fromDispatch = false;
@@ -213,6 +233,25 @@ export class DispatchGatewayError extends DispatchServiceError {
     super(`HTTP_${status}`, status, message);
     this.transient = gatewayClears(status);
     this.mayHaveReachedDispatch = reachesDispatch(status);
+  }
+}
+
+/** The code of `DispatchCredentialEchoError`, in Dispatch's form: no status of its own, since any
+ *  2xx can carry such a body. */
+export const CREDENTIAL_ECHOED = "CREDENTIAL_ECHOED";
+
+/** A client refusal of a 2xx that holds a credential this command presented. `whoami` returns
+ *  identity metadata, and `POST /api/v1/me/agent-tokens` returns a newly minted token. Neither
+ *  echoes the caller's credential. Quote nothing from the request or body in this refusal. */
+export class DispatchCredentialEchoError extends DispatchServiceError {
+  override readonly fromDispatch = false;
+
+  constructor(status: number) {
+    super(
+      CREDENTIAL_ECHOED,
+      status,
+      `The answer had HTTP status ${status} (2xx), so a write may have been made. The body held a credential this command presented. It is not printed. Something in Dispatch's place appears to have echoed the request. Check whether any write took effect before sending it again.`
+    );
   }
 }
 
@@ -345,6 +384,9 @@ export class DispatchAnswerNotKeptError extends Error {
   }
 }
 
+/** `value`, a parsed body, as Dispatch's error shape: its members where it is an object, and none
+ *  where it is not, each read unchecked. A body is Dispatch's own refusal where its `error` is a
+ *  string (`refusalIn`). */
 function asErrorShape(value: unknown): DispatchServiceErrorShape {
   return typeof value === "object" && value !== null ? (value as DispatchServiceErrorShape) : {};
 }
@@ -361,6 +403,43 @@ function isJson(response: Response): boolean {
     mediaType === "application/json" ||
     (mediaType.length > "+json".length && mediaType.endsWith("+json"))
   );
+}
+
+/**
+ * Whether an answer's `Content-Disposition` names the disposition type `attachment`, with or
+ * without parameters and letter case aside, as RFC 6266 reads it. Dispatch sets it on every
+ * stored file version and on a document version read with `?download=true`
+ * (`attachmentDisposition`, packages/envoy/internal/dispatch/api/artifact_files.go): stored
+ * content, whatever its Content-Type says.
+ */
+function isAttachment(response: Response): boolean {
+  const [type = ""] = (response.headers.get("content-disposition") ?? "").split(";");
+  return type.trim().toLowerCase() === "attachment";
+}
+
+/** Check decoded JSON keys and strings as well: an escape in the source can hide a credential
+ *  the CLI would print after parsing. Use a stack so deeply nested JSON cannot overflow a
+ *  recursive check. */
+function jsonHoldsCredential(payload: unknown, credentials: ReadonlySet<string>): boolean {
+  const pending: unknown[] = [payload];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value === "string") {
+      for (const credential of credentials) {
+        if (value.includes(credential)) return true;
+      }
+    } else if (value !== null && typeof value === "object") {
+      const members = value as Record<string, unknown>;
+      for (const key in members) {
+        if (!Object.hasOwn(members, key)) continue;
+        for (const credential of credentials) {
+          if (key.includes(credential)) return true;
+        }
+        pending.push(members[key]);
+      }
+    }
+  }
+  return false;
 }
 
 /** Whether `error` is a Dispatch process's answer that it has no route for the request (`404
@@ -613,6 +692,13 @@ interface EncodedBody {
   readonly type: string;
 }
 
+/** A request's answer and the credential headers sent to get it, including any stale attempt. */
+interface SentRequest {
+  readonly answer: Response;
+  readonly presented: Readonly<Record<string, string>>;
+  readonly stalePresentation?: Readonly<Record<string, string>>;
+}
+
 /**
  * The size from which an attempt's body goes out as a stream read a chunk at a time
  * (`STREAMED_BODY_CHUNK`), so each read of a chunk counts as the attempt's progress.
@@ -728,6 +814,35 @@ function parsedJson(response: Response, text: string): ParsedJson {
   }
 }
 
+/** Dispatch's own refusal, as an answer carries it: its code, where it names one, its text, and
+ *  the members some refusals carry beside them, which `DispatchServiceError` keeps. */
+interface DispatchRefusal extends RefusalMembers {
+  readonly code: string | undefined;
+  readonly error: string;
+}
+
+/**
+ * Dispatch's own refusal in `json`, an answer's body parsed (`parsedJson`), or undefined where the
+ * answer is none: its body is typed JSON (`isJson`) that parses to an object whose `error` is a
+ * string, as Dispatch writes every refusal, and its `code` counts only where it is a string. The
+ * rule `writeAnswer` and `#payloadOf` read a refusal by; `tokenNotLive` reads a 401's code alone,
+ * whatever its `error`.
+ */
+function refusalIn(json: ParsedJson): DispatchRefusal | undefined {
+  const shape = asErrorShape(json?.value);
+  if (typeof shape.error !== "string") return undefined;
+  return {
+    code: typeof shape.code === "string" ? shape.code : undefined,
+    error: shape.error,
+    candidates: shape.candidates,
+    changed: shape.changed,
+    current: shape.current,
+    hint: typeof shape.hint === "string" ? shape.hint : undefined,
+    issues: shape.issues,
+    mismatches: shape.mismatches,
+  };
+}
+
 /**
  * One attempt of a write as the loop reads it (`#write`): the table's event, and what its ending,
  * its resend and the loop's own state are read from. A wait the deadline or the caller's stop
@@ -783,16 +898,15 @@ async function writeAnswer(response: Response): Promise<WriteAnswer> {
   const text = await response.text();
   const typed = isJson(response);
   const json = parsedJson(response, text);
-  const shape = response.ok ? {} : asErrorShape(json?.value);
-  const own = typeof shape.error === "string";
+  const refusal = response.ok ? undefined : refusalIn(json);
   return {
     response,
     malformed: text !== "" && typed && json === undefined,
     notJson: text === "" || !typed,
     text,
     json,
-    code: own ? shape.code : undefined,
-    error: own ? (shape.error as string) : undefined,
+    code: refusal?.code,
+    error: refusal?.error,
     replayed: response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1",
     keyEcho: response.headers.get(IDEMPOTENCY_KEY_HEADER) ?? undefined,
   };
@@ -903,8 +1017,9 @@ function stoppedEvent(
 const BROKER_TOKEN_NOT_ACTIVE = "BROKER_TOKEN_NOT_ACTIVE";
 
 /**
- * Whether `response` is Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE`. Its JSON is read from a clone,
- * so the body stays whole for whoever reads the answer.
+ * Whether `response` is Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE`, read by its JSON's code alone,
+ * whatever its `error`. Its JSON is read from a clone, so the body stays whole for whoever reads
+ * the answer.
  */
 async function tokenNotLive(response: Response): Promise<boolean> {
   if (response.status !== 401 || !isJson(response)) return false;
@@ -969,10 +1084,12 @@ const GATEWAY_PAGE = "which looks like a proxy or gateway page rather than Dispa
 /**
  * What asking again can do once a gateway answered `method` with `status`. A status that cannot
  * clear answers the same request the same way. One that can (`gatewayClears`) may clear for a
- * read, and for a 2xx, which reaches here only for a read, a PUT or a DELETE (`#response`), none
- * of which writes twice. A write answered so may already have taken effect only when the request
- * reached Dispatch (`reachesDispatch`), where a blind retry could apply it twice; otherwise it did
- * not, and a retry may succeed as for a read.
+ * read, and for a 2xx, which reaches here only for a read, a PUT or a DELETE, none of which writes
+ * twice: a keyed write's 2xx is the write table's (`#endWrite` reads it, never `#payloadOf`), and
+ * `#route` gives every 2xx's body that is not Dispatch's JSON back as it came, or refuses one that
+ * holds a credential it presented (`DispatchCredentialEchoError`). A write answered so may already
+ * have taken effect only when the request reached Dispatch (`reachesDispatch`), where a blind
+ * retry could apply it twice; otherwise it did not, and a retry may succeed as for a read.
  */
 function gatewayAdvice(method: string, status: number): string {
   if (!gatewayClears(status)) {
@@ -1472,17 +1589,31 @@ export class DispatchClient {
   /** `GET <path>`, for `dispatch api`: one read of a route no method here names. `path` begins
    *  `/api/v1` and may carry a query, and the contract's rule for it (`dispatch_api`) refuses a
    *  scheme, a host and a dot segment, so it resolves under this client's server as every other
-   *  route does (`#url`). Answers Dispatch's JSON as `#response` reads it.
+   *  route does (`#url`). Answers Dispatch's JSON, or any other 2xx's body as the bytes that
+   *  came, an attachment's whatever its type (`RouteAnswer`, `#route`), and refuses a 2xx whose
+   *  body holds a credential the request presented (`DispatchCredentialEchoError`).
    *
-   *  It sends the GET once (one `#send`) and throws a refusal as `#response` throws it, an answer
+   *  It sends the GET through one `#send` (once, and once more only after Dispatch answers that
+   *  the token presented is not live) and throws a refusal as `#payloadOf` throws it, an answer
    *  of no route (`404 NOT_FOUND`, "no route for …") included: unlike every other request this
    *  client makes, it skips `#noRoute`, so it neither sends that request again nor turns the
    *  answer into `DispatchNoRouteError`. The caller wrote this path, and a caller-written path
    *  Dispatch has no route for is far more often a wrong path than half of a release in progress,
    *  so Dispatch's own refusal, which names the route, is printed as it came. */
-  async readRoute(path: string): Promise<unknown> {
-    const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
-    return this.#response("GET", url, await this.#send("GET", url));
+  async readRoute(path: string): Promise<RouteAnswer> {
+    return this.#route("GET", path);
+  }
+
+  /** `<method> <path>`, for `dispatch api --method`: one write of a route no method here names,
+   *  `path` resolved as `readRoute` resolves it, with `body`, where given, sent as written as
+   *  the request's JSON body. Like `readRoute` it goes through one `#send`, skipping `#noRoute`,
+   *  and answers as `readRoute` does: Dispatch's JSON, any other 2xx's body as it came, the
+   *  refusal of a 2xx whose body holds a credential it presented, or Dispatch's refusal thrown.
+   *  It is no write of `#write`'s: it goes once, and once more only after Dispatch answers that
+   *  the token it presented is not live (Dispatch authenticated nothing, so nothing ran), with no
+   *  redirect followed and no `Idempotency-Key`, so a caller that repeats it decides that itself. */
+  async sendRoute(method: DispatchApiMethod, path: string, body?: string): Promise<RouteAnswer> {
+    return this.#route(method, path, body);
   }
 
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
@@ -2031,7 +2162,7 @@ export class DispatchClient {
   async fileVersion(id: string, version: number): Promise<ArtifactFileVersion> {
     const url = this.#url(["api", "v1", "artifacts", id, "versions", String(version)]);
     return this.#noRoute(async () => {
-      const response = await this.#send("GET", url, undefined, "*/*");
+      const { answer: response } = await this.#send("GET", url, undefined, "*/*");
       if (!response.ok) return this.#response<never>("GET", url, response);
       return {
         mime: response.headers.get("Content-Type") ?? "application/octet-stream",
@@ -2292,7 +2423,7 @@ export class DispatchClient {
       return { status: answer.response.status, payload: this.#payloadOf<T>(method, url, answer) };
     }
     return this.#noRoute(async () => {
-      const response = await this.#send(method, url, encoded, undefined, signal);
+      const { answer: response } = await this.#send(method, url, encoded, undefined, signal);
       return { status: response.status, payload: await this.#response<T>(method, url, response) };
     }, signal);
   }
@@ -2389,7 +2520,7 @@ export class DispatchClient {
       return this.#payloadOf<T>(method, url, answer);
     }
     return this.#noRoute(async () =>
-      this.#response<T>(method, url, await this.#send(method, url, body))
+      this.#response<T>(method, url, (await this.#send(method, url, body)).answer)
     );
   }
 
@@ -2433,10 +2564,59 @@ export class DispatchClient {
     }
   }
 
+  /** Send the caller's route once through `#send`, without `#noRoute`. Read non-2xx answers as
+   *  other commands do. For a 2xx, check its bytes for echoed credentials before returning
+   *  anything. An attachment is stored content, never JSON to parse. Without that disposition,
+   *  decode and parse typed JSON where possible. Everything else returns the original bytes,
+   *  never decoded. */
+  async #route(
+    method: "GET" | DispatchApiMethod,
+    path: string,
+    body?: string
+  ): Promise<RouteAnswer> {
+    const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
+    const encoded = body === undefined ? undefined : { content: body, type: "application/json" };
+    const {
+      answer: response,
+      presented,
+      stalePresentation,
+    } = await this.#send(method, url, encoded);
+    if (!response.ok) return { payload: await this.#response(method, url, response) };
+
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const credentials = new Set(this.#sent.with(this.token));
+    // SentTokens keeps token values, not complete headers or request-specific proofs.
+    for (const headers of [presented, stalePresentation]) {
+      if (headers === undefined) continue;
+      for (const [name, value] of Object.entries(headers)) {
+        const header = name.toLowerCase();
+        if (header !== "authorization" && header !== "dpop") continue;
+        const credential = value.trim();
+        if (credential !== "") credentials.add(credential);
+      }
+    }
+    // Every credential is ASCII, so it is in the decoded text only where it is in the bytes.
+    const raw = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (const credential of credentials) {
+      if (raw.includes(credential)) throw new DispatchCredentialEchoError(response.status);
+    }
+    if (!isAttachment(response) && isJson(response)) {
+      const text = new TextDecoder().decode(bytes);
+      const json = parsedJson(response, text);
+      if (json !== undefined) {
+        if (text.includes("\\") && jsonHoldsCredential(json.value, credentials)) {
+          throw new DispatchCredentialEchoError(response.status);
+        }
+        return { payload: this.#payloadOf(method, url, { response, text, json }) };
+      }
+    }
+    return { body: bytes, type: response.headers.get("Content-Type") ?? undefined };
+  }
+
   /**
-   * A read, a PUT or a DELETE: it presents the credential and sends the request once
-   * (`#sendOnce`), and once more where Dispatch answers that the token presented is not live
-   * (`tokenNotLive`, its `401 BROKER_TOKEN_NOT_ACTIVE`) and the credential can be told so
+   * A read, a PUT, a DELETE or `sendRoute`'s write: it presents the credential and sends the
+   * request once (`#sendOnce`), and once more where Dispatch answers that the token presented is
+   * not live (`tokenNotLive`, its `401 BROKER_TOKEN_NOT_ACTIVE`) and the credential can be told so
    * (`RequestCredential.stale`): the broker ended that token before it lapsed, as a person's
    * revoke of their sign-in does. The credential is told which presentation was dead, drops that
    * token alone, and presents the token it holds now, trading at the broker where it holds none;
@@ -2444,7 +2624,8 @@ export class DispatchClient {
    * runs (`brokerTokenActor`, packages/envoy/internal/dispatch/api/broker_token.go), so that 401
    * says it did nothing. A second such answer is returned as any other refusal is. A trade the
    * broker refuses throws out of the second presentation, so the call fails in the broker's own
-   * words, which name `agent-secrets login` after a revoke. A write (POST or PATCH) goes through
+   * words, which name `agent-secrets login` after a revoke. It returns the answer and the headers
+   * of each presentation (`SentRequest`). Every other write (POST or PATCH) goes through
    * `#write` instead.
    */
   async #send(
@@ -2453,25 +2634,29 @@ export class DispatchClient {
     body?: EncodedBody,
     accept = "application/json",
     signal?: AbortSignal
-  ): Promise<Response> {
+  ): Promise<SentRequest> {
     const sent = await this.#sendOnce(method, url, body, accept, signal);
     if (this.#credential.stale === undefined || !(await tokenNotLive(sent.answer))) {
-      return sent.answer;
+      return sent;
     }
     // The presentation the dead token went out in, so the credential drops that token alone.
     this.#credential.stale(undefined, sent.presented);
-    return (await this.#sendOnce(method, url, body, accept, signal)).answer;
+    return {
+      ...(await this.#sendOnce(method, url, body, accept, signal)),
+      stalePresentation: sent.presented,
+    };
   }
 
-  /** One request of a read, presenting the credential for it, and the headers it presented;
-   *  `signal` aborts it beside the client's own signal. */
+  /** One request of `#send`'s (a read, a PUT, a DELETE or `sendRoute`'s write), presenting the
+   *  credential for it, and the headers it presented; `signal` aborts it beside the client's own
+   *  signal. */
   async #sendOnce(
     method: string,
     url: string,
     body: EncodedBody | undefined,
     accept: string,
     signal: AbortSignal | undefined
-  ): Promise<{ readonly answer: Response; readonly presented: Readonly<Record<string, string>> }> {
+  ): Promise<SentRequest> {
     // The call's own deadline and the client's, which the credential is given too, less the
     // request's reserve (`#credentialSignal`): a broker credential waiting on a pod's missing
     // registration stops at it, naming the session, and one whose renewal goes unanswered answers
@@ -2948,9 +3133,9 @@ export class DispatchClient {
     const { response, text, json } = answer;
     const payload: unknown = json === undefined ? text : json.value;
     if (!response.ok) {
-      const error = asErrorShape(payload);
-      if (typeof error.error === "string") {
-        if (response.status === 409 && error.code === IDEMPOTENCY_KEY_COMMITTED) {
+      const refusal = refusalIn(json);
+      if (refusal !== undefined) {
+        if (response.status === 409 && refusal.code === IDEMPOTENCY_KEY_COMMITTED) {
           throw new DispatchWriteLandedError(
             IDEMPOTENCY_KEY_COMMITTED,
             response.status,
@@ -2959,13 +3144,12 @@ export class DispatchClient {
           );
         }
         throw new DispatchServiceError(
-          error.code ?? `HTTP_${response.status}`,
+          refusal.code ?? `HTTP_${response.status}`,
           response.status,
-          error.error,
+          refusal.error,
           {
-            ...error,
+            ...refusal,
             textRefusal: response.headers.has(TEXT_REFUSAL_HEADER),
-            hint: typeof error.hint === "string" ? error.hint : undefined,
           }
         );
       }

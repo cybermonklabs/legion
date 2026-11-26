@@ -1,0 +1,9 @@
+{
+  "c1": {
+    "a-restart-loses-no-message": ["packages/envoy/cmd/listener/*", "packages/envoy/go.mod"]
+  },
+  "m2": {
+    "a-restart-loses-no-message": ["packages/envoy/cmd/listener/*", "packages/envoy/go.mod"]
+  },
+  "c4": { "a-restart-loses-no-message": ["packages/envoy/cmd/listener/*", "packages/envoy/go.mod"] }
+}

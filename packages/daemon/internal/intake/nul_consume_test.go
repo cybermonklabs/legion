@@ -207,8 +207,8 @@ func requestContext(t *testing.T) context.Context {
 
 // seedNULIssue records nulIssue as a root standing in at with the status given, slotted, with its
 // Dispatch mirror row, its tree's lifecycle open under the workflow and the claim of the role
-// working its phase, so the admission pass after each fact finds the tree as a running daemon
-// leaves it (seedRedeliveredIssue says why each row is there).
+// working its phase, so the admission pass after each fact that runs one finds the tree as a
+// running daemon leaves it (seedRedeliveredIssue says why each row is there).
 func seedNULIssue(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string, role claim.Role) {
 	t.Helper()
 	ctx := context.Background()
