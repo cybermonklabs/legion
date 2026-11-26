@@ -183,9 +183,9 @@
 # waits for each daemon it starts until that daemon writes its pidfile, however many naps a
 # loaded machine holds the daemon's start for, start_daemon ends non-zero, naming the daemon's
 # end, once a daemon has ended without writing it, and a shell with job control on starts a
-# daemon that lives; (gg) the suite's waits end at the deadline the CI step exports
-# (LEGION_PROOF_DEADLINE_MS) where it is set, naming their fact, and only on their fact where it
-# is not.
+# daemon that lives; (gg) the suite's waits end at the pool's bound for the suite, which
+# envoy-go-checks' command hands it as LEGION_PROOF_DEADLINE_MS, where it is set, naming their
+# fact, and only on their fact where it is not.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -236,8 +236,8 @@ pass() { printf 'PASS: %s\n' "$*"; }
 
 # The suite's one wait, scripts/e2e/lib/proof-wait.sh's wait_for, which ends at once where its fact
 # can no longer come, naming the fact, through fail (above), and keeps its last poll in work; and
-# its guard, proof_guard_from_env, which is the CI step's own limit: envoy-go-checks queues this
-# suite in .github/scripts/harness-pool.sh with --minutes and hands it the pool's
+# its guard, proof_guard_from_env, which is the pool's bound for the suite: envoy-go-checks queues
+# this suite in .github/scripts/harness-pool.sh with --minutes and hands it the pool's
 # HARNESS_POOL_DEADLINE_MS as LEGION_PROOF_DEADLINE_MS, the suite's start plus that bound less
 # 30 s, and each wait gives up at that moment, naming its fact, before the pool ends the suite.
 # Run anywhere else, with no such deadline set, the suite has no wall-time guard: each wait ends
@@ -4679,14 +4679,14 @@ monitor_hb=$(cat -- "$monitor_dir/heartbeat.pid" 2>/dev/null) && kill -0 "$monit
 kill -TERM -- "-$monitor_hb" 2>/dev/null || true
 pass "up waits for each daemon until it writes its pidfile, however many naps its start is held for, start_daemon ends non-zero, naming the daemon's end, once a daemon has ended without writing it, and a shell with job control on starts a daemon that lives"
 
-# (gg) The suite's guard is the CI step's limit and nothing else. envoy-go-checks' step exports
-# LEGION_PROOF_DEADLINE_MS, and proof_guard_from_env makes every wait give up at it; with none set,
-# as on a person's machine, a wall-time guard of the suite's own would fail a healthy run that a
-# loaded machine only made slow, so there is none. A probe sources proof-wait.sh as this suite
-# does and waits for a fact that holds at its third poll, its clock reading a year later from the
-# second poll on: with a deadline already past it fails at its first poll, naming the fact; with
-# none it holds at the third, which no guard the suite made up for itself, however long, lets it
-# reach.
+# (gg) The suite's guard is the pool's bound for the suite and nothing else, which envoy-go-checks'
+# command hands it as LEGION_PROOF_DEADLINE_MS, and proof_guard_from_env makes every wait give up
+# at it; with none set, as on a person's machine, a wall-time guard of the suite's own would fail
+# a healthy run that a loaded machine only made slow, so there is none. A probe sources
+# proof-wait.sh as this suite does and waits for a fact that holds at its third poll, its clock
+# reading a year later from the second poll on: with a deadline already past it fails at its first
+# poll, naming the fact; with none it holds at the third, which no guard the suite made up for
+# itself, however long, lets it reach.
 gg_dir=$tmp/gg
 mkdir -p "$gg_dir"
 cat >"$gg_dir/probe.sh" <<EOF
