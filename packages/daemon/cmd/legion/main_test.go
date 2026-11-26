@@ -190,7 +190,7 @@ func TestACopyStartedAsLegionRunsAsLegion(t *testing.T) {
 // testMainEnv=1 and no other. While TestMain is in the build no copy reaches it, so this test is
 // what holds the refusal.
 func TestAProcessStartedAsLegionStartsNoCopy(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process.
+	// Not parallel: it sets environment variables of the whole process (fixtureenv.Unset, t.Setenv).
 	fixtureenv.Unset(t, testMainEnv)
 	if err := legionCopyRefusal(); err != nil {
 		t.Fatalf("with %s unset: %v, want no refusal", testMainEnv, err)
