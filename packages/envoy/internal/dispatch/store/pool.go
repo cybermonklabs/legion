@@ -469,7 +469,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // goroutine added inside a caller that has reserved already, and one reservation passed to a
 // second consumer, take a connection nothing counted, and the count still matches: each caller
 // that can hold a connection while another does needs a reservation of its own.
-const LeasePoolSize = 26
+const LeasePoolSize = 27
 
 // Leases is the registry of the lease pool's callers. A periodic maintenance loop takes the
 // connection it holds its lease on here, so that only one process runs each pass

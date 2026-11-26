@@ -1,10 +1,10 @@
 kind: Changed
 body: |-
-  The worker image's `legion-testpg` starts the pod's test Postgres with `max_connections=491`
-  rather than 487. The check states settler takes one more connection of Dispatch's lease pool, so
-  one Dispatch process may open 117 connections, and a Dispatch test suite needs
-  `testlimits.ServerConnections` = 488 (four processes at 117 and 20 for the suite's own
-  clients) beyond the three slots Postgres reserves for superusers. At 487 the server allowed four
+  The worker image's `legion-testpg` starts the pod's test Postgres with `max_connections=495`
+  rather than 491. The check states settler takes one more connection of Dispatch's lease pool, so
+  one Dispatch process may open 118 connections, and a Dispatch test suite needs
+  `testlimits.ServerConnections` = 492 (four processes at 118 and 20 for the suite's own
+  clients) beyond the three slots Postgres reserves for superusers. At 491 the server allowed four
   fewer, so a suite running four Dispatch processes at their ceiling could be refused a connection.
 time: 2026-11-22T01:46:31Z
 custom:
