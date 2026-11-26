@@ -9232,8 +9232,9 @@ test("r on the thread of a decision block presses its Write a reply and puts the
 // R18 below the column's width, in a decision document that holds another question still open:
 // that question's card draws no reply box and says so, and the mark names its own thread. So `r`
 // on the answered question's thread waits for that thread's own "Write a reply", even where the
-// open question's block is drawn first, and puts the caret in the box it opens, never at the
-// view's scroller as though this thread had no box.
+// open question's card is drawn first - the document draws both blocks, and the answered one's
+// card waits on the read of the issue's asks - and puts the caret in the box it opens, never at
+// the view's scroller as though this thread had no box.
 test("below the column's width r on a decision block's thread lands in its own reply box, past another open question's card drawn first", async () => {
   const user = userEvent.setup();
   const done: InboxRow = {
@@ -9248,6 +9249,8 @@ test("below the column's width r on a decision block's thread lands in its own r
   const fake = fakeDocumentRuntime({ text: "The live document" });
   const threadRow = (ask: InboxRow) =>
     replyRow(ask.id, { kind: "ask", ref: `/issues/CORE-1/asks/${ask.id}`, subject: ask.question });
+  const indexed = (asks: readonly InboxRow[]) => asks.map((ask) => ({ ...ask, last_reply: null }));
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue(indexed([open]));
   const spies = [
     spyOn(api, "getInbox").mockResolvedValue([]),
     mockAskReads([done, open]),
@@ -9255,9 +9258,7 @@ test("below the column's width r on a decision block's thread lands in its own r
     spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT),
     spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", token: "", version: null }),
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
-    spyOn(api, "listIssueAsks").mockResolvedValue(
-      [done, open].map((row) => ({ ...row, last_reply: null }))
-    ),
+    listIssueAsks,
     spyOn(api, "listMyReplies").mockResolvedValue({
       as_of: "2026-10-12T00:00:00Z",
       limit: 200,
@@ -9266,7 +9267,7 @@ test("below the column's width r on a decision block's thread lands in its own r
       total: 2,
     }),
   ];
-  const { unmount } = renderInbox("/", { runtime: fake.runtime });
+  const { queryClient, unmount } = renderInbox("/", { runtime: fake.runtime });
 
   try {
     const row = await waitFor(() => shortRow("reply:ask-done"));
@@ -9278,17 +9279,86 @@ test("below the column's width r on a decision block's thread lands in its own r
     await waitFor(() => expect(fake.editors).toHaveLength(1));
     const editor = fake.editors[0];
     if (editor === undefined) throw new Error("the view mounted no editor");
-    // The open question's block first: its card draws no box, and the view lands nowhere yet.
-    drawAskBlock(editor, "block-b", open.question);
+    const nodeViews = editor.viewProps.nodeViews as Record<
+      string,
+      (node: ProseMirrorNode) => { dom: HTMLElement; destroy(): void }
+    >;
+    const construct = nodeViews.ask;
+    if (construct === undefined) throw new Error("the ask node view was not installed");
+    act(() => {
+      editor.root.append(construct(askBlockNode("block-a", done.question)).dom);
+      editor.root.append(construct(askBlockNode("block-b", open.question)).dom);
+    });
+    // The open question's card first: it draws no box, and the view lands nowhere yet.
     await within(view).findByTestId("ask-ask-open");
     await afterFrameAndTasks();
     expect(screen.getByTestId("inbox-pane-scroller")).not.toHaveFocus();
 
-    drawAskBlock(editor, "block-a", done.question);
+    // The read of the issue's asks that holds the answered question too.
+    listIssueAsks.mockResolvedValue(indexed([done, open]));
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["asks", "CORE-1"] });
+    });
     const opener = await within(view).findByRole("button", { name: "Write a reply" });
     await waitFor(() => expect(opener).toHaveAttribute("aria-expanded", "true"));
     const box = document.getElementById(opener.getAttribute("aria-controls") ?? "");
     await waitFor(() => expect(box?.querySelector("[data-reply-box]")).toHaveFocus());
+  } finally {
+    unmount();
+    for (const spy of spies) spy.mockRestore();
+  }
+});
+
+// R18 below the column's width on the thread of a decision block its document no longer holds:
+// the block draws the question's card and its "Write a reply", so with the block gone the thread
+// has no box in the view. Once the document has drawn without the block, `r` lands at the view's
+// scroller, where any pick lands, rather than leaving the reader on the page's body.
+test("below the column's width r on a decision block's thread whose block the document no longer holds opens its reading view at its scroller", async () => {
+  const user = userEvent.setup();
+  const gone: InboxRow = {
+    ...decisionRow("ask-gone", "block-gone", "Ship behind a flag?"),
+    answer: { at: "2026-09-11T03:00:00Z", selected: [], text: "Ship it.", user: "alice" },
+    state: "answered",
+  };
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const spies = [
+    spyOn(api, "getInbox").mockResolvedValue([]),
+    mockAskReads([gone]),
+    mockIssueReads(),
+    spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT),
+    spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", token: "", version: null }),
+    spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([{ ...gone, last_reply: null }]),
+    spyOn(api, "listMyReplies").mockResolvedValue({
+      as_of: "2026-10-12T00:00:00Z",
+      limit: 200,
+      offset: 0,
+      rows: [
+        replyRow("ask-gone", {
+          kind: "ask",
+          ref: "/issues/CORE-1/asks/ask-gone",
+          subject: gone.question,
+        }),
+      ],
+      total: 1,
+    }),
+  ];
+  const { unmount } = renderInbox("/", { runtime: fake.runtime });
+
+  try {
+    const row = await waitFor(() => shortRow("reply:ask-gone"));
+    act(() => row.focus());
+    await user.keyboard("r");
+    const view = await screen.findByTestId("inbox-reading-view");
+    await waitFor(() => expect(fake.connections).toHaveLength(1));
+    act(() => fake.sync());
+    await waitFor(() => expect(fake.editors).toHaveLength(1));
+    const editor = fake.editors[0];
+    if (editor === undefined) throw new Error("the view mounted no editor");
+    // The document draws another block, and not the question's.
+    drawAskBlock(editor, "block-other", "Rename the flag?");
+    await waitFor(() => expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus());
+    expect(view.querySelector("[data-reply-box], [data-reply-opener]")).toBeNull();
   } finally {
     unmount();
     for (const spy of spies) spy.mockRestore();

@@ -494,7 +494,21 @@ export function DocumentPane({
           user={user}
         />
       );
-    return paneBody === undefined ? drawn : <div data-inbox-pane-body={paneBody}>{drawn}</div>;
+    // A document drawn without the block it was opened at, where the host passes no thread to
+    // fall back to: a decision block's ask whose block has gone. The block draws the ask's card
+    // and its "Write a reply", so the item's thread is drawn with no reply box: the mark says so,
+    // by the item, and the reading view's `r` lands at its scroller rather than waiting for one
+    // (`noReplyBoxSelector` in `ReadingView.tsx`).
+    return paneBody === undefined ? (
+      drawn
+    ) : (
+      <div
+        data-inbox-no-reply-box={blockFound === false ? item : undefined}
+        data-inbox-pane-body={paneBody}
+      >
+        {drawn}
+      </div>
+    );
   };
 
   return (

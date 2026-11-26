@@ -20,19 +20,23 @@ import { useControlName } from "./useControlName";
  *  handle (`AskCard.tsx`), as it carries `data-ask-answer` and `data-ask-option`. */
 export const NOTE_DISCLOSURE_SELECTOR = '[data-ask-note-disclosure][aria-expanded="false"]';
 
-/** A thread drawn with no reply box in it and none to come while what it read stands, by the
- *  thread's own id (`data-inbox-no-reply-box`): a decision document draws several asks at once,
+/** The mark of a thread drawn with no reply box in it and none to come while what it read
+ *  stands, whose value is the thread's own id: a decision document draws several asks at once,
  *  so only the thread's own mark speaks for it. Each part that leaves the box out writes it, from
  *  the fact it leaves the box out by (`ThreadBody.tsx`): a comment or message thread whose root
  *  the read does not hold or its author deleted; an Agent row's whose session the live list does
  *  not hold or whose conversation the session's read does not hold; any thread whose read
  *  failed, and one that draws nothing at all. So does an ask's card while the question is still
- *  open, which takes no reply (`AskCard`, by `takesReply`), and a decision block's replies whose
- *  read failed (`AskThreadDisclosure`). Below 1280 px `r` lands at the reading view's scroller
- *  there rather than waiting for a box (`landingIn`); a thread whose reads are still out carries
- *  neither the box nor the mark. */
+ *  open, which takes no reply (`AskCard`, by `takesReply`), a decision block's replies whose read
+ *  failed (`AskThreadDisclosure`), and a decision block's thread whose document is drawn without
+ *  the block (`PaneDocument.tsx`'s `DocumentPane`). Below 1280 px `r` lands at the reading view's
+ *  scroller there rather than waiting for a box (`landingIn`); a thread whose reads are still out
+ *  carries neither the box nor the mark. */
+const NO_REPLY_BOX_ATTRIBUTE = "data-inbox-no-reply-box";
+
+/** The mark (`NO_REPLY_BOX_ATTRIBUTE`) of the thread `threadId`. */
 function noReplyBoxSelector(threadId: string): string {
-  return `[data-inbox-no-reply-box="${CSS.escape(threadId)}"]`;
+  return `[${NO_REPLY_BOX_ATTRIBUTE}="${CSS.escape(threadId)}"]`;
 }
 
 /** The head's Approve or Request changes (`ApprovalChip`'s `data-approval-action`) while it takes
@@ -205,7 +209,13 @@ export function useReadingViewLanding({
     const observer = new MutationObserver(() => {
       if (land()) observer.disconnect();
     });
-    observer.observe(view, { childList: true, subtree: true });
+    // A part already drawn can come to say it draws no box - a document found without the
+    // block, an Agent thread once the live list answers - by the mark alone, which adds no node.
+    observer.observe(view, {
+      attributeFilter: [NO_REPLY_BOX_ATTRIBUTE],
+      childList: true,
+      subtree: true,
+    });
     return () => observer.disconnect();
   });
   return (id, target = READING_VIEW_SCROLLER) => {
