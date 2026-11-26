@@ -681,6 +681,63 @@ test("with no priority the page says so, and offers a writer the way to add the 
   expect(create.mock.calls[0]?.[0]).toEqual({ title: "First" });
 });
 
+// The first priority added from the empty state takes the empty state off the page as its read
+// lands, and with it the New priority its form gave the focus back to. The table's toolbar draws
+// New priority in that one's place, and the focus goes to it, where the going would leave it on
+// the page's body.
+test("the first priority added from the empty state gives the focus to the table's New priority as it lands", async () => {
+  const user = userEvent.setup();
+  const { create, priorities } = page(body({ empty: "No priority has been written yet." }));
+  expect(await screen.findByText("No priority has been written yet.")).toBeDefined();
+  // The read after the add answers with the priority it added.
+  priorities.mockResolvedValue(body({ priorities: [priority("first", { title: "First" })] }));
+  await user.click(screen.getByRole("button", { name: "New priority" }));
+  await user.click(screen.getByRole("textbox", { name: "Title of the new priority" }));
+  await user.keyboard("First{Enter}");
+  await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+  await screen.findByRole("row", { name: "#1 First" });
+  expect(screen.queryByText("No priority has been written yet.")).toBeNull();
+  await waitFor(() =>
+    expect(document.activeElement, "the first priority's landing left the focus on the body").toBe(
+      screen.getByRole("button", { name: "New priority" })
+    )
+  );
+});
+
+// The hand-off lasts only while the empty state's add may still draw the table: an add Dispatch
+// refused, and one that landed but whose read after it drew no priority, end it. A table another
+// person's priority draws later takes the focus nowhere, as any table drawn with no press of the
+// reader's does: the New priority its drawing takes off the page leaves the focus on the body.
+test.each([
+  "refused",
+  "landed, and read again with no priority",
+] as const)("a first add from the empty state that is %s hands a table drawn later no focus", async (end) => {
+  const user = userEvent.setup();
+  const { client, create, priorities } = page(body({ empty: "No priority has been written yet." }));
+  expect(await screen.findByText("No priority has been written yet.")).toBeDefined();
+  if (end === "refused") {
+    create.mockRejectedValue(
+      new ApiError(409, { code: "PRIORITY_EXISTS", error: "A priority named First exists." })
+    );
+  }
+  await user.click(screen.getByRole("button", { name: "New priority" }));
+  await user.click(screen.getByRole("textbox", { name: "Title of the new priority" }));
+  await user.keyboard("First{Enter}");
+  // The add ends, and the priorities are read again after it, with none.
+  await waitFor(() => expect(priorities).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(client.isMutating()).toBe(0));
+  await act(async () => {});
+  expect(screen.getByText("No priority has been written yet.")).toBeDefined();
+
+  // Another person's first priority reaches the page, as a refresh of its read brings it.
+  const theirs = body({ priorities: [priority("theirs", { title: "Theirs" })] });
+  priorities.mockResolvedValue(theirs);
+  act(() => client.setQueryData(prioritiesQuery().queryKey, theirs));
+  await screen.findByRole("row", { name: "#1 Theirs" });
+  await act(async () => {});
+  expect(document.activeElement, "the ended add's hand-off moved the focus").toBe(document.body);
+});
+
 test("with no priority a reader who may not write one is shown only the sentence", async () => {
   page(body({ empty: "No priority has been written yet." }), [], false);
   expect(await screen.findByText("No priority has been written yet.")).toBeDefined();

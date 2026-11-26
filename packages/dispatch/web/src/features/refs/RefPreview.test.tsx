@@ -20,6 +20,8 @@ import type {
   IssueDetails,
   IssueReferenceSummary,
 } from "../../api/types";
+import { IssueActionsMenu } from "../issue-page/IssueActionsMenu";
+import { CONTROL_LABELS } from "../issue-page/page-words";
 import { MarkdownBody } from "./MarkdownBody";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
@@ -485,6 +487,51 @@ test("the Escape that closes the open card is marked taken", () => {
     });
     expect(screen.queryByRole("tooltip"), "the Escape closed the card").not.toBeInTheDocument();
     expect(press.defaultPrevented, "the card took the Escape").toBe(true);
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
+// Escape closes the innermost layer. A card a pointer opened over an open menu is that layer, and
+// the shell adds the card's listener as it mounts, so it hears the press before the menu's, which
+// the menu adds as it opens: the card takes the press (`defaultPrevented`), and the menu, which
+// reads that mark, stays open with the focus where it was. The next Escape closes the menu.
+test("with a card open over the open Issue actions menu, one Escape closes the card alone, and the next closes the menu", async () => {
+  const getIssue = mockIssues();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const view = render(
+    <Harness>
+      <IssueActionsMenu actions={[{ id: "pin", run: () => undefined, text: "Pin" }]} />
+    </Harness>
+  );
+  try {
+    const trigger = screen.getByRole("button", { name: CONTROL_LABELS.issue_actions });
+    await user.click(trigger);
+    const pin = screen.getByRole("button", { name: "Pin" });
+    act(() => pin.focus());
+    // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
+    fireEvent.pointerOver(screen.getByRole("link", { name: "first" }), { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("tooltip"), "the Escape left the card open").not.toBeInTheDocument();
+    expect(trigger, "the card's Escape closed the menu under it").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    expect(pin, "the card's Escape moved the focus out of the menu").toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(trigger, "an Escape with no card open left the menu open").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    expect(trigger).toHaveFocus();
   } finally {
     view.unmount();
     getIssue.mockRestore();

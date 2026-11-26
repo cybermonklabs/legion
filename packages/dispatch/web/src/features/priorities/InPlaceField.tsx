@@ -124,11 +124,12 @@ function heldText(draft: string, base: string, required: boolean): string {
   return required && typed === "" ? base : typed;
 }
 
-/** Makes a heading's box as tall as the text it holds at the width it has now. At `auto` the box
- *  is one line tall (`rows={1}`), so its `scrollHeight` is its text's height and its padding, and
- *  a box that held more lines gives back those its text no longer fills; its border, which
- *  `offsetHeight` counts and `clientHeight` does not, is added. */
-function fitHeading(node: HTMLElement): void {
+/** Makes a box as tall as the text it holds at the width it has now: a heading's box here, and an
+ *  inline box a reply is written in (`MentionField`). At `auto` each is one line tall
+ *  (`rows={1}`), so its `scrollHeight` is its text's height and its padding, and a box that held
+ *  more lines gives back those its text no longer fills; its border, which `offsetHeight` counts
+ *  and `clientHeight` does not, is added. */
+export function fitToText(node: HTMLElement): void {
   node.style.height = "auto";
   node.style.height = `${node.scrollHeight + node.offsetHeight - node.clientHeight}px`;
 }
@@ -363,7 +364,7 @@ export function InPlaceField({
   useLayoutEffect(() => {
     const node = box.current;
     if (closed !== "heading" || node === null) return;
-    fitHeading(node);
+    fitToText(node);
   }, [closed, draft, opened]);
   // A width the open box changes to - the window resized while the reader writes - wraps the
   // title on more lines or fewer, so the box is made as tall as its text again. Only a new width
@@ -379,7 +380,7 @@ export function InPlaceField({
     const sizes = new ResizeObserver(() => {
       if (node.clientWidth === width) return;
       width = node.clientWidth;
-      fitHeading(node);
+      fitToText(node);
     });
     sizes.observe(node);
     return () => sizes.disconnect();

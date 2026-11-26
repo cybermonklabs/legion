@@ -11,6 +11,7 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import {
   architectureTree,
   issueCollaborators,
@@ -252,5 +253,114 @@ test("the box shows the hint of the row it was mounted with", async () => {
     } finally {
       restore();
     }
+  }
+});
+
+// An inline box is as tall as the text it holds. A width it changes to - the window resized, or a
+// composer's field that takes the whole line as it takes the focus below 761 px - wraps the text
+// anew, and the box is made as tall as its text again, so no line of it is scrolled out of the
+// box. The height the box sets itself changes its size too, and at the same width that sets
+// nothing more. happy-dom lays nothing out, so the row says how wide the box is and how tall its
+// text is, and tells the box's observer when that changed.
+test("an inline box whose width changes is made as tall as its text again, and its own height sets nothing more", () => {
+  const sizes = installResizeObserver();
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={new QueryClient()}>
+        <MentionField
+          body="A reply long enough to wrap in a narrow box"
+          inline
+          issueKey="CORE-1"
+          label="Reply"
+          onChange={() => undefined}
+          writing={dispatchWritingBox("conversation-composer", "comment")}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const box = screen.getByRole("textbox", { name: "Reply" });
+    const laidOut = { text: 42, width: 600 };
+    // The box's text and padding (`scrollHeight`) at its width, inside a 1 px border above and
+    // below: drawn 2 px taller than the area inside it.
+    for (const [name, read] of [
+      ["clientWidth", () => laidOut.width],
+      ["scrollHeight", () => laidOut.text],
+      ["offsetHeight", () => 44],
+      ["clientHeight", () => 42],
+    ] as const) {
+      Object.defineProperty(box, name, { configurable: true, get: read });
+    }
+    sizes.resize(box);
+    expect(box.style.height, "the box laid out 600 px wide").toBe("44px");
+
+    Object.assign(laidOut, { text: 90, width: 300 });
+    sizes.resize(box);
+    expect(box.style.height, "the box the window narrowed to 300 px").toBe("92px");
+
+    // Measured again, the box would be 116 px tall: at the same width it is not measured.
+    laidOut.text = 114;
+    sizes.resize(box);
+    expect(box.style.height, "the box's own height change, at the same width").toBe("92px");
+  } finally {
+    view.unmount();
+    sizes.restore();
+  }
+});
+
+/** A reply's host as a composer is one: it holds the box's text, and its Send clears it, a change
+ *  of the host's own that is no edit of the box. */
+function ReplyHost(): ReactNode {
+  const [body, setBody] = useState("");
+  return (
+    <>
+      <MentionField
+        body={body}
+        inline
+        issueKey="CORE-1"
+        label="Reply"
+        onChange={(change) => setBody(change.body)}
+        writing={dispatchWritingBox("conversation-composer", "comment")}
+      />
+      <button onClick={() => setBody("")} type="button">
+        Send
+      </button>
+    </>
+  );
+}
+
+// An inline box is as tall as the text it holds, whoever changed that text: the reader's typing,
+// and the host's own change, which fires no edit of the box - the text cleared after a send, a
+// pick put in. Cleared, the box is one line tall again. happy-dom lays nothing out, so the row
+// says how tall the box's text is.
+test("an inline box whose text the host clears after a send is one line tall again", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={new QueryClient()}>
+        <ReplyHost />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const box = screen.getByRole("textbox", { name: "Reply" }) as HTMLTextAreaElement;
+    // The text and its padding (`scrollHeight`): one line while the box is empty, three once the
+    // reader has written, inside a 1 px border above and below.
+    for (const [name, read] of [
+      ["scrollHeight", () => (box.value === "" ? 40 : 88)],
+      ["offsetHeight", () => 44],
+      ["clientHeight", () => 42],
+    ] as const) {
+      Object.defineProperty(box, name, { configurable: true, get: read });
+    }
+    await user.click(box);
+    await user.keyboard("A reply the box wraps on three lines");
+    expect(box.style.height, "the box the reader wrote three lines in").toBe("90px");
+
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(box.value).toBe("");
+    expect(box.style.height, "the box its host cleared after the send").toBe("42px");
+  } finally {
+    view.unmount();
   }
 });

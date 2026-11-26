@@ -32,8 +32,9 @@ import { CONTROL_LABELS } from "./page-words";
  * The open group closes in these ways:
  * - a second press on its control, 'Issue actions';
  * - a press outside the control and the group, which leaves the focus where the press lands;
- * - Escape anywhere but in a field that takes text, whose Escape is the field's, and an action
- *   pressed from the open group, which give the focus back to the control,
+ * - Escape anywhere but in a field that takes text, whose Escape is the field's, unless a layer
+ *   over the group took it first, and an action pressed from the open group, which give the
+ *   focus back to the control,
  *   as the ARIA menu-button pattern does (WCAG 2.4.3): the group hides the focused action as it
  *   closes, and with no control focused the browser would leave the focus on the page's body,
  *   so the next Tab would start again from the top of the page;
@@ -68,13 +69,16 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
     // and so does Details' (`Margin.tsx`). The group reads the press in the capture phase and
     // marks it taken, as the header's other menus do (`IssueAddMenu.tsx`, `IssuePresets.tsx`), so
     // it marks the press before any listener of the page's that a layer under it added earlier:
-    // Details, opened before the group, added its listener first. A press in a field that takes
-    // text is the field's, which leaves the field, by the field test the keymap reads
-    // (`takesText`), as Details reads it for its own Escape: a focus that fell to the page's body
-    // leaves the group open (`closeOnFocusAway`), and a Tab from there into a field moves no
-    // focus out of the group, so the group stays open around a field the reader types in.
+    // Details, opened before the group, added its listener first. A press a layer over the group
+    // took first - the hover card's, whose listener the shell adds as it mounts, so it hears the
+    // press before the group's (`RefPreview.tsx`) - is that layer's, and leaves the group open. A
+    // press in a field that takes text is the field's, which leaves the field, by the field test
+    // the keymap reads (`takesText`), as Details reads it for its own Escape: a focus that fell to
+    // the page's body leaves the group open (`closeOnFocusAway`), and a Tab from there into a
+    // field moves no focus out of the group, so the group stays open around a field the reader
+    // types in.
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.defaultPrevented) return;
       if (event.target instanceof Element && takesText(event.target)) return;
       event.preventDefault();
       setOpen(false);

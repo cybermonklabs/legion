@@ -474,13 +474,16 @@ export function usePriorityWrites(
     () => queryClient.invalidateQueries({ queryKey: ["priorities"] }),
     [queryClient]
   );
+  // A new priority's press ends once the read it set off has answered, landed or not, so the page
+  // that pressed it reads from its end whether the priority is drawn (`NewPriority`'s `onAdd`).
+  // Nothing waits on it otherwise: the form closes as it sends, and its refusal is the shell's.
   const add = useKeyedWrite({
     detail: (input: CreatePriorityInput) => input.title,
     kind: newPriorityWrite,
     label: (input) => `New priority “${input.title}”`,
     method: "POST",
     write: (input, bounds) => api.createPriority(input, bounds),
-    onSettled: () => void refresh(),
+    onSettled: () => refresh(),
   });
   const patch = useKeyedWrite({
     label: (patch_: PriorityPatch) => patch_.label,

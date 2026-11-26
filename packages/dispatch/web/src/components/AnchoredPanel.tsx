@@ -428,6 +428,10 @@ export function AnchoredPanel({
       // An Escape that ends an IME composition is the input method's (`inputMethodKey`): it
       // cancels what the reader was composing in the panel's text box, and the panel stays open.
       if (event.key !== "Escape" || inputMethodKey(event)) return;
+      // A press a layer over the panel took first - the hover card's, whose listener the shell
+      // adds as it mounts, so it hears the press before the panel's (`RefPreview.tsx`) - is that
+      // layer's, and the panel stays open.
+      if (event.defaultPrevented) return;
       // Escape belongs to whatever the reader is in. This panel takes it only while the press
       // comes from inside the panel or from its anchor; a press in the command bar opened over
       // the panel, or in any other layer, travels on to whoever owns that layer. The listener

@@ -15,7 +15,7 @@ import { Link } from "react-router-dom";
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
-import { useReadBound } from "../../api/read-bound";
+import { type ListReadHold, useListReadBound } from "../../api/read-bound";
 import type {
   Agent,
   Artifact,
@@ -705,7 +705,7 @@ function CommentDeliveryList({
 }
 
 /** What a comment's turn says beneath its card, before why the read of the comments its landed
- *  edit started has not settled once its hold ran out (`useReadBound`). */
+ *  edit started has not settled once its hold ran out (`useListReadBound`). */
 const EDITED_COMMENT_NOT_READ = "The edited comment is not read yet.";
 
 function CommentTurn({
@@ -716,10 +716,12 @@ function CommentTurn({
   current,
   currentReplyId,
   editingCommentId,
+  editUnsettled,
   expanded,
   forceExpanded = false,
   hideReplyComposer = false,
   hideUnreadMark = false,
+  holdEditThrough,
   isClosed,
   isPhone = false,
   issueKey,
@@ -752,6 +754,9 @@ function CommentTurn({
   /** The comment whose editor is open in the thread. The tab owns it, so the phone thread view's
    *  card, drawn afresh each time the view opens, finds the editor the reader left open. */
   editingCommentId: string | undefined;
+  /** Why the list's read of the comments has not settled, where this turn's edit made the latest
+   *  one (`useListReadBound`). */
+  editUnsettled: string | undefined;
   /** Whether the reader has the thread open inline. The tab owns it, so a comment whose thread is
    *  open stays in the list whoever resolves it (`shown`), with its reply and the reply's send. */
   expanded: boolean;
@@ -764,6 +769,9 @@ function CommentTurn({
    *  second after it is on screen, but it marks a conversation a live event makes newer, and a
    *  mark that comes then comes under whatever the reader is pressing. */
   hideUnreadMark?: boolean;
+  /** The turn list's one hold through its read of the comments after an edit's save, which every
+   *  comment's edit reads again (`useListReadBound`). */
+  holdEditThrough: ListReadHold;
   isClosed: boolean;
   isPhone?: boolean;
   issueKey: string;
@@ -796,27 +804,27 @@ function CommentTurn({
   const queryClient = useQueryClient();
   const agentText = useAgentText();
   const [savingCommentEditId, setSavingCommentEditId] = useState<string>();
-  // Why the read of the comments the latest landed edit started has not settled, once its hold
-  // ran out.
-  const [editUnsettled, holdThrough] = useReadBound();
   /** One attempt of a comment edit's save, under the composer's key (`sendRequest`). The attempt
    *  holds the edit - its editor, and every Edit of the card (`savingCommentEditId`) - until the
    *  comments are read again with the saved words, or until the request deadline where that read
    *  has not settled - one the network paused while the browser is offline - so no read holds
    *  the edit for good, and the turn says why beneath the card until the read settles or the
-   *  next save lands (`useReadBound`). */
+   *  next save of any comment's edit lands (`holdEditThrough`). */
   const editComment = useCallback(
     async (id: string, body: string, carried: CarriedBlockIds | undefined, bounds: WriteBounds) => {
       setSavingCommentEditId(id);
       try {
         const comment = await api.editComment(id, { body, ...carried }, bounds);
-        await holdThrough(queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }));
+        await holdEditThrough(
+          item.id,
+          queryClient.invalidateQueries({ queryKey: ["comments", issueKey] })
+        );
         return comment;
       } finally {
         setSavingCommentEditId(undefined);
       }
     },
-    [holdThrough, issueKey, queryClient]
+    [holdEditThrough, issueKey, item.id, queryClient]
   );
   const replySendKey = useMemo(
     () => threadReplySendKey(sendKey, item.root.id),
@@ -1200,6 +1208,12 @@ export function ConversationTab({
       return next;
     });
   }, []);
+  // Every comment's edit reads the issue's one list of comments again (`CommentTurn`), so the
+  // turn list holds every turn's save through that read with one hold: a save that lands forgets
+  // why an earlier one's read had not settled, whichever comment's it was, and only the turn whose
+  // save made the latest read says why that one has not (`useListReadBound`). The phone's thread
+  // view draws the same turn, so it takes the same hold, under the same conversation.
+  const [editUnsettledOf, holdEditThrough] = useListReadBound();
   // The conversation a deep link names, and the reply inside it when the link names one.
   const focus = useMemo(
     () =>
@@ -1678,7 +1692,9 @@ export function ConversationTab({
                   current={current}
                   currentReplyId={currentReplyId}
                   editingCommentId={editingIn.get(item.root.id)}
+                  editUnsettled={editUnsettledOf(item.id)}
                   expanded={openThreads.has(item.root.id)}
+                  holdEditThrough={holdEditThrough}
                   keyed={keyedThreads.get(item.root.id)}
                   onEditingChange={(id) => setEditing(item.root.id, id)}
                   onReplyCancel={
@@ -1782,10 +1798,12 @@ export function ConversationTab({
                   currentReplyId={phoneThread.id === focus?.id ? focus?.replyId : undefined}
                   viewerLogin={viewer.data?.login ?? ""}
                   editingCommentId={editingIn.get(phoneThread.root.id)}
+                  editUnsettled={editUnsettledOf(phoneThread.id)}
                   expanded={openThreads.has(phoneThread.root.id)}
                   forceExpanded
                   hideReplyComposer={phoneReplyTargetsThread}
                   hideUnreadMark
+                  holdEditThrough={holdEditThrough}
                   isClosed={isClosed}
                   issueKey={issueKey}
                   item={phoneThread}

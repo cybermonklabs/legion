@@ -790,7 +790,10 @@ export function RefPreviewHost(_props: { surface?: DispatchReadingSurface }): Re
     // Capture phase, ahead of `useDialog`'s Escape: while a card is open it is the topmost
     // layer, so Escape dismisses it alone and leaves the dialog beneath (the search palette)
     // open. The card takes the press: marked taken as it is stopped, which the key registry reads
-    // (`defaultPrevented`). With no open card the key passes through untouched.
+    // (`defaultPrevented`), and so does each menu and panel open under the card, whose own
+    // listener at this phase, added as it opened, hears the press after this one, added as the
+    // shell mounted (`IssueActionsMenu`, `AnchoredPanel`). With no open card the key passes
+    // through untouched.
     const onKeyDown = (event: KeyboardEvent) => {
       // An Escape that ends an input method's composition is the input method's
       // (`inputMethodKey`), and the card stays open.

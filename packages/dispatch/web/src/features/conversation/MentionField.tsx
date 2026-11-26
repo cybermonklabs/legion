@@ -10,6 +10,7 @@ import {
   useEffect,
   useId,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -22,6 +23,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { fitToText } from "../priorities/InPlaceField";
 import { draftParties } from "../refs/party-references";
 import { RefPickerList } from "../refs/RefPickerList";
 import { applyInsertion, isCompositionKey, type RefPickerInsertion } from "../refs/ref-picker";
@@ -127,7 +129,7 @@ export function MentionField({
    *  it the box's description there rather than a line of its own, which costs it none of that
    *  share and still reaches a reader who cannot see the box. */
   readonly hintClassName?: string;
-  /** A one-line field that grows with what is typed, as a reply's does. */
+  /** A one-line field that grows with the text it holds, as a reply's does. */
   readonly inline?: boolean;
   /** The issue this box writes on, where it has one: the picker offers that issue's people. A
    *  box with none offers everyone who has signed in (`DISPATCH_WRITING_BOXES`'s `issueRows`). */
@@ -290,6 +292,36 @@ export function MentionField({
       element.current = null;
     };
   }, []);
+  // An inline box is as tall as the text it holds, whoever changed that text: the reader's edit,
+  // and the host's own change, which fires no edit of the box - a pick put in, the text cleared
+  // after a send, a draft put back. So the box is fitted as each text is drawn, before it is
+  // painted, and only then: an edit fitted again as it is typed (`onInput`) would measure the
+  // same text at the same width a second time.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `body` is the trigger; the box is read as it stands
+  useLayoutEffect(() => {
+    const node = element.current;
+    if (!inline || node === null) return;
+    fitToText(node);
+  }, [body, inline]);
+  // A width the box changes to - the window resized, or a composer's field that takes the whole
+  // line as it takes the focus below 761 px - wraps the text on more lines or fewer, so the box is
+  // made as tall as its text again, as a priority's heading box is (`InPlaceField`). Only a new
+  // width does: the height set here changes the box's size too, which the observer hears, and the
+  // same text wraps the same at the same width. Where there is no `ResizeObserver` the box keeps
+  // the height its text last gave it.
+  useLayoutEffect(() => {
+    const node = element.current;
+    if (!inline || node === null) return;
+    if (typeof ResizeObserver === "undefined") return;
+    let width = node.clientWidth;
+    const sizes = new ResizeObserver(() => {
+      if (node.clientWidth === width) return;
+      width = node.clientWidth;
+      fitToText(node);
+    });
+    sizes.observe(node);
+    return () => sizes.disconnect();
+  }, [inline]);
 
   return (
     <>
@@ -307,14 +339,6 @@ export function MentionField({
           maxLength={maxLength}
           onChange={(event) => changed(event.target.value, event.target.selectionStart)}
           onDrop={onDrop}
-          onInput={
-            inline
-              ? (event: SyntheticEvent<HTMLTextAreaElement>) => {
-                  event.currentTarget.style.height = "auto";
-                  event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`;
-                }
-              : undefined
-          }
           // The list closes with the box the reader leaves. A row of it keeps the focus here
           // while it is clicked (`RefPickerList` stops the mouse down), so a pick is no blur.
           onBlur={() => {

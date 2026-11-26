@@ -9,7 +9,7 @@ import {
   isCapExceeded,
 } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
-import { useReadBound } from "../../api/read-bound";
+import { type ListReadBound, useListReadBound } from "../../api/read-bound";
 import type { Artifact, ArtifactApproval } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { approvalPillClassName } from "../../components/Pill";
@@ -106,7 +106,7 @@ interface ReviewPress {
 const VERSION_MOVED: ReadonlySet<string> = new Set(["REVIEW_VERSION_MOVED"]);
 
 /** What the chip says beside its actions, before why the reads its landed review made stale have
- *  not settled once their hold ran out (`useReadBound`). */
+ *  not settled once their hold ran out (`reviewReads`). */
 const APPROVAL_NOT_READ = "The new approval is not read yet.";
 
 /** The reads each page draws `reviewed`'s approval from: its own (the Inbox's reading pane), and
@@ -452,6 +452,12 @@ export interface ApprovalChipProps {
   /** Called beside the chip's own refreshes once the server has recorded the reader's review, so
    *  a host that selected the approval request learns it was reviewed here. */
   onReviewed?(): void;
+  /** The line's one hold through the reads each chip's landed review makes stale, where the line
+   *  draws more than one chip with actions, whose reviews read the same issue again
+   *  (`approvalReads`): the new issue page's header (`IssuePropertiesRow`, and its steps through
+   *  `ApprovalSteps`), by each chip's document (`useListReadBound`). Absent, the chip holds its
+   *  own. */
+  reviewReads?: ListReadBound;
   /** The keys that press the pill and the two actions, where the host draws them: named in each
    *  button's `aria-keyshortcuts`, and the first drawn inside it after its label
    *  (`ControlKeyHint`). */
@@ -478,19 +484,42 @@ export interface ApprovalChipProps {
  *
  * It holds the review it made and the change-request dialog, with the reason typed into it, so a
  * host that draws it for one document after another keys it by the document (`ArtifactHeader`).
+ *
+ * Each review that lands reads the reviewed document's issue again, which every chip of that
+ * issue draws from, so a line that draws more than one chip with actions holds them all through
+ * those reads with one hold (`reviewReads`): a review that lands forgets why an earlier one's
+ * reads had not settled, whichever chip's it was, and only the chip whose review made the latest
+ * reads says why those have not. Every other chip holds its own (`ChipWithOwnReads`).
  */
-export function ApprovalChip({
+export function ApprovalChip({ reviewReads, ...chip }: ApprovalChipProps): ReactNode {
+  return reviewReads === undefined ? (
+    <ChipWithOwnReads {...chip} />
+  ) : (
+    <ChipOfReads {...chip} reviewReads={reviewReads} />
+  );
+}
+
+/** The chip where its line holds no reads for it: the chip holds its own. */
+function ChipWithOwnReads(chip: Omit<ApprovalChipProps, "reviewReads">): ReactNode {
+  const reviewReads = useListReadBound();
+  return <ChipOfReads {...chip} reviewReads={reviewReads} />;
+}
+
+/** The chip itself, drawn with the hold through its reviews' reads it is handed
+ *  (`ApprovalChip`). */
+function ChipOfReads({
   actionsDocument,
   artifact,
   keepActionsTogether = false,
   layout = "inline",
   onReviewed,
+  reviewReads: [unsettledOf, holdThrough],
   shortcutKeys,
   stateMarks,
   size = "default",
   variant = "list",
   showActions = variant !== "list",
-}: ApprovalChipProps): ReactNode {
+}: ApprovalChipProps & { reviewReads: ListReadBound }): ReactNode {
   const approval = artifact?.approval;
   const [reviewsOpen, setReviewsOpen] = useState(false);
   const [requestChangesOpen, setRequestChangesOpen] = useState(false);
@@ -498,9 +527,9 @@ export function ApprovalChip({
   const submitGuard = useSubmitGuard();
   const tooltips = useTooltips();
   const page = usePageWords();
-  // Why the reads the latest landed review made stale have not settled, once the hold over them
-  // ran out.
-  const [unsettled, holdThrough] = useReadBound();
+  // Why the reads the latest landed review of the line made stale have not settled, once the
+  // hold over them ran out, where this chip's review made them.
+  const unsettled = artifact === undefined ? undefined : unsettledOf(artifact.id);
 
   const review = useKeyedWrite({
     // The press carries the document it reviews: the indicator names it, the route takes its id,
@@ -532,13 +561,14 @@ export function ApprovalChip({
       // approval while the page still draws the request as waiting. A read that has not settled
       // by the request deadline - one the network paused while the browser is offline - ends the
       // wait there, so no read holds the actions for good, and the chip says why beside them
-      // until the reads settle or the next review lands (`useReadBound`). Outside `NoTooltips`
-      // the dialog closes as the write lands, as on `main`. Inside, it closes once the reads are
-      // in, and a dialog the reader has not closed (`onClose`) then gives the focus back to the
-      // button that opened it. The reads are the reviewed document's, from the press.
+      // until the reads settle or the next review of its line lands (`reviewReads`). Outside
+      // `NoTooltips` the dialog closes as the write lands, as on `main`. Inside, it closes once
+      // the reads are in, and a dialog the reader has not closed (`onClose`) then gives the focus
+      // back to the button that opened it. The reads are the reviewed document's, from the press.
       if (page === null) setRequestChangesOpen(false);
       onReviewed?.();
       const rereads = holdThrough(
+        reviewed.id,
         Promise.all([
           queryClient.invalidateQueries({ queryKey: ["artifact-reviews", reviewed.id] }),
           queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey }),

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
+import type { ListReadBound } from "../../api/read-bound";
 import type { Artifact, Ask } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import { type PageWords, usePageWords } from "../../components/tooltips";
@@ -105,6 +106,7 @@ function StepState({
   actionsTogether,
   entry,
   primaryArtifactId,
+  reviewReads,
   size,
   versions,
 }: {
@@ -113,6 +115,7 @@ function StepState({
   actionsTogether: boolean;
   entry: StepEntry;
   primaryArtifactId: string;
+  reviewReads: ListReadBound | undefined;
   size: "compact" | "default";
   versions: ApprovalVersions | undefined;
 }): ReactNode {
@@ -160,6 +163,7 @@ function StepState({
             ? document.id === primaryArtifactId
             : actionsOn.includes(document.id))
         }
+        reviewReads={reviewReads}
         size={size}
         variant="header"
       />
@@ -255,6 +259,7 @@ export function ApprovalSteps({
   layout = "block",
   primaryArtifactId,
   reasons = true,
+  reviewReads,
   size = "default",
   testId = "issue-approval-steps",
   versions,
@@ -280,6 +285,10 @@ export function ApprovalSteps({
   primaryArtifactId: string;
   /** Whether each step a reviewer sent back says why, under the list. */
   reasons?: boolean;
+  /** The hold of the line the list's chips stand on through the reads each review makes stale,
+   *  which a line with more than one chip with actions holds (`ApprovalChip`'s `reviewReads`):
+   *  the new issue page's header. Absent, each chip holds its own. */
+  reviewReads?: ListReadBound;
   /** `compact` draws each chip and its actions at the new issue page header's size
    *  (`ApprovalChip`), in a list that wraps with 4 px between its lines and takes no full
    *  width. */
@@ -329,6 +338,7 @@ export function ApprovalSteps({
               actionsTogether={contents}
               entry={entry}
               primaryArtifactId={primaryArtifactId}
+              reviewReads={reviewReads}
               size={size}
               versions={versions}
             />

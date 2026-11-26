@@ -8,6 +8,7 @@ import {
   projectsQuery,
   whoAmIQuery,
 } from "../../api/queries";
+import { useListReadBound } from "../../api/read-bound";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
 import { approvalPillClassName } from "../../components/Pill";
@@ -155,6 +156,12 @@ export function IssuePropertiesRow({
     (entry) => entry.document?.id === issue.primary_artifact_id
   );
   const approval = documentArtifact?.approval;
+  // Every review of a document of this issue reads the issue again, which every chip of the line
+  // draws from, so the line holds the reviews of all its chips - the primary document's and each
+  // step's - through those reads with one hold: a review that lands forgets why an earlier one's
+  // reads had not settled, whichever chip's it was, and only the chip whose review made the latest
+  // reads says why those have not (`ApprovalChip`'s `reviewReads`).
+  const reviewReads = useListReadBound();
   const line = useRef<HTMLDivElement>(null);
 
   // The count's press, where an ask or a decision waits: it sets the Decisions filter's address
@@ -284,6 +291,7 @@ export function IssuePropertiesRow({
           keepActionsTogether
           layout="contents"
           showActions={waiting.approvals.includes(documentArtifact.id)}
+          reviewReads={reviewReads}
           size="compact"
           variant="header"
         />
@@ -295,6 +303,7 @@ export function IssuePropertiesRow({
           layout="contents"
           primaryArtifactId={issue.primary_artifact_id}
           reasons={false}
+          reviewReads={reviewReads}
           size="compact"
         />
       )}

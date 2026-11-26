@@ -1,10 +1,11 @@
-import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useMemo } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, useEffect, useMemo, useRef } from "react";
 import { prioritiesQuery } from "../../api/queries";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import { Tabs, tabButtonId } from "../../components/Tabs";
+import { useFocusBack } from "../../hooks/useFocusBack";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import {
   addressWithParam,
@@ -198,6 +199,27 @@ export function PrioritiesPage(): ReactNode {
   );
   // Whether this reader may write the first priority, which the empty tab then offers.
   const canWrite = useIsHuman();
+  // The first priority added from the empty tab takes the empty state off the page as its read
+  // lands, and with it the New priority the form gave the focus back to; the table's toolbar
+  // draws New priority in that one's place. So the empty state's submit asks for the focus back,
+  // as a form that ends does (`useFocusBack`), and the commit that draws the table gives it to
+  // the toolbar's New priority, where the empty state's going left it on the page's body. The ask
+  // lasts as long as an add the empty state sent may still draw the table: once every such add
+  // has ended, landed or not, and the read after it has answered with no priority - Dispatch
+  // refused it, or the priority went again - it is let go, and a table another person's priority
+  // draws later takes no focus (`addFirst`).
+  const firstAdded = useFocusBack((priorities.data?.priorities ?? []).length === 0);
+  const queryClient = useQueryClient();
+  const firstAddsOut = useRef(0);
+  const addFirst = (ended: Promise<void>) => {
+    firstAddsOut.current += 1;
+    firstAdded.handBack();
+    void ended.then(() => {
+      firstAddsOut.current -= 1;
+      const drawn = queryClient.getQueryData(prioritiesQuery().queryKey)?.priorities ?? [];
+      if (firstAddsOut.current === 0 && drawn.length === 0) firstAdded.letGo();
+    });
+  };
   if (priorities.isPending) return <LoadingSkeleton label="Loading priorities" />;
   if (priorities.isError)
     return (
@@ -262,7 +284,7 @@ export function PrioritiesPage(): ReactNode {
             action={
               canWrite ? (
                 <div className="flex flex-wrap items-center justify-center gap-2">
-                  <NewPriority />
+                  <NewPriority onAdd={addFirst} />
                 </div>
               ) : undefined
             }
@@ -270,7 +292,7 @@ export function PrioritiesPage(): ReactNode {
             message={body.empty ?? "No priority has been written yet."}
           />
         ) : (
-          <PrioritiesTable rows={rows} />
+          <PrioritiesTable newPriority={firstAdded.opener} rows={rows} />
         )
       )}
       {panel(

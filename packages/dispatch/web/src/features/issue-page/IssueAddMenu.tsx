@@ -101,10 +101,13 @@ export function IssueAddMenu({
     // (`components/AnchoredPanel.tsx`): the menu takes a press from inside it or from Add,
     // closes and gives the focus back to Add. It reads the press in the capture phase and marks
     // it taken, so neither the phone's Details sheet, which holds the menu, nor Details' own
-    // Escape at every other width closes Details on it.
+    // Escape at every other width closes Details on it. A press a layer over the menu took
+    // first - the hover card's, whose listener the shell adds as it mounts, so it hears the press
+    // before the menu's (`RefPreview.tsx`) - is that layer's, and leaves the menu open.
     const closeOnEscape = (event: KeyboardEvent) => {
       if (
         event.key !== "Escape" ||
+        event.defaultPrevented ||
         !(event.target instanceof Node) ||
         wrapper.current?.contains(event.target) !== true
       ) {

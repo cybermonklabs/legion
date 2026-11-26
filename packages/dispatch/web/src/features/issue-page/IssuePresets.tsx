@@ -141,13 +141,15 @@ export function IssuePresets({
     };
     // The press is the open menu's alone: the page's own Escape - Details' among them - waits for
     // the next one. The menu reads it in the capture phase, so it marks the press before any
-    // listener of the page's that a layer under it added earlier. A dialog open over the row
-    // takes the press wherever the focus is: on the dialog itself in its first frame, on its
-    // field, or gone to the page after a press on its text. Whether one is open is `useDialog`'s
-    // registry's answer (`dialogOpen()`), which also decides which dialog the key closes, as
-    // Details' drawer asks it.
+    // listener of the page's that a layer under it added earlier. A press a layer over the menu
+    // took first - the hover card's, whose listener the shell adds as it mounts, so it hears the
+    // press before the menu's (`RefPreview.tsx`) - is that layer's, and leaves the menu open. A
+    // dialog open over the row takes the press wherever the focus is: on the dialog itself in its
+    // first frame, on its field, or gone to the page after a press on its text. Whether one is
+    // open is `useDialog`'s registry's answer (`dialogOpen()`), which also decides which dialog
+    // the key closes, as Details' drawer asks it.
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape" || inDialog(event.target)) return;
+      if (event.key !== "Escape" || event.defaultPrevented || inDialog(event.target)) return;
       if (dialogOpen()) return;
       event.preventDefault();
       setOpen(undefined);

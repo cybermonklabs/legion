@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useMemo, useState } from "react";
+import { type ReactNode, type RefObject, useCallback, useMemo, useState } from "react";
 import type { PriorityRow } from "../../api/types";
 import {
   DataTable,
@@ -89,7 +89,15 @@ const ROW_TEXTS: readonly EditedText[] = ["description"];
  * reader's own texts kept beside a priority's description (`ChangedMeanwhile`) stand beside its
  * row, or above the table while the view leaves the row out.
  */
-export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): ReactNode {
+export function PrioritiesTable({
+  newPriority,
+  rows,
+}: {
+  /** Where the page reaches the toolbar's New priority, which takes the focus the empty state's
+   *  going leaves on the page's body as the first priority lands (`PrioritiesPage`). */
+  readonly newPriority?: RefObject<HTMLButtonElement | null>;
+  readonly rows: readonly PriorityRow[];
+}): ReactNode {
   const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableAddress(VIEW_ADDRESS);
   // On a desktop the title fills the box: it takes the width the other shown columns leave, so
@@ -281,7 +289,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
           searchPlaceholder="Search priorities: title, owner"
           table={table}
         >
-          <NewPriority />
+          <NewPriority opener={newPriority} />
         </TableToolbar>
         {undrawn.map(({ item, mine }) => (
           <ChangedMeanwhile

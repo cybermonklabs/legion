@@ -101,22 +101,29 @@ export function useReadBound(): readonly [
  *  `read`. */
 export type ListReadHold = (row: string, read: Promise<unknown>) => Promise<void>;
 
+/** A list's one hold through its re-read (`useListReadBound`): why that read has not settled, for
+ *  the row whose press made the latest one (`unsettledOf`), and the hold each row takes. */
+export type ListReadBound = readonly [
+  unsettledOf: (row: string) => string | undefined,
+  holdThrough: ListReadHold,
+];
+
 /**
  * One hold through a list's re-read for every row of the list (`useReadBound`), for a list whose
  * rows each press a write that reads the whole list again and that says why that read has not
  * settled on the row whose press made it: the expired requests of the Inbox's Credential requests
  * section (`CredentialRequestsSection`), the documents of an issue's Artifacts tab
  * (`ArtifactsTab`) and of a document page's header, which draws one document after another
- * (`ArtifactHeader`), and the Inbox's thread cards (`Inbox`). `holdThrough` takes the row whose
+ * (`ArtifactHeader`), the Inbox's thread cards (`Inbox`), the comments of an issue's Conversation,
+ * whose every edit reads the comments again (`ConversationTab`), and the approval chips of the new
+ * issue page's header, whose every review reads the issue again (`IssuePropertiesRow`); every
+ * other approval chip holds one of its own (`ApprovalChip`). `holdThrough` takes the row whose
  * press made the read with the read (`ListReadHold`). Each press begins a new read of the same
  * list, so it forgets why an earlier read had not settled, whichever row's press made that one.
  * `unsettledOf` answers that reason for the row whose press made the latest read, and nothing for
  * every other row.
  */
-export function useListReadBound(): readonly [
-  unsettledOf: (row: string) => string | undefined,
-  holdThrough: ListReadHold,
-] {
+export function useListReadBound(): ListReadBound {
   const [unsettled, holdThrough] = useReadBound();
   // The row whose press made the latest read, the one row that says why it has not settled.
   const [readBy, setReadBy] = useState<string>();

@@ -3143,6 +3143,82 @@ test("the line a comment edit's read the bound ended draws goes as the next save
   }
 });
 
+// Every comment's edit reads the one list of the issue's comments again, so the line one comment's
+// turn draws for a read the bound ended goes as another comment's save lands, though that read is
+// still out: the turn list's one hold forgets it then (`useListReadBound`), and the second turn
+// alone says why the read its own save made has not settled, once that read's bound ends.
+test("the line one comment's edit leaves goes as another comment's save lands", async () => {
+  const user = userEvent.setup();
+  const first = comment("first-comment", { body: "First comment" });
+  const second = comment("second-comment", { body: "Second comment" });
+  const stub = stubLists({ comments: [first, second] });
+  const listComments = api.listComments as Mock<typeof api.listComments>;
+  // Each save's answer and each read of the comments, held until the row gives them.
+  const { answers: saves, next: nextSave } = heldAnswers<Comment>();
+  const editComment = spyOn(api, "editComment").mockImplementation(nextSave);
+  const { answers: rereads, next: nextReread } = heldAnswers<Comment[]>();
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const why = "The edited comment is not read yet. Dispatch did not answer within 30 seconds.";
+
+  try {
+    /** The comment's card, open on its thread, and the turn it is drawn in. */
+    const opened = async (id: string) => {
+      const card = await screen.findByTestId(`margin-comment-${id}`);
+      const turn = card.closest("[data-turn]");
+      if (!(turn instanceof HTMLElement)) throw new Error(`${id}'s card is drawn in no turn`);
+      await user.click(within(turn).getByRole("button", { name: "Expand thread" }));
+      await waitFor(() =>
+        expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(1)
+      );
+      return { card, turn };
+    };
+    const firstTurn = await opened(first.id);
+    const secondTurn = await opened(second.id);
+    listComments.mockImplementation(nextReread);
+    jest.useFakeTimers();
+    const onClock = userOnFakeClock();
+    /** Saves `body` as the words of the comment drawn in `card` through its editor, and lands
+     *  the save. */
+    const save = async (card: HTMLElement, saved: Comment, body: string) => {
+      await onClock.click(within(card).getByRole("button", { name: "Edit" }));
+      const editField = screen.getByLabelText("Edit comment");
+      await onClock.clear(editField);
+      await onClock.click(editField);
+      await onClock.paste(body);
+      await onClock.click(screen.getByRole("button", { name: "Save" }));
+      await settle();
+      await act(async () => saves.at(-1)?.({ ...saved, body }));
+      await tick(0);
+    };
+
+    await save(firstTurn.card, first, "First, edited");
+    await tick(REQUEST_DEADLINE_MS);
+    expect(within(firstTurn.turn).getByText(why)).toBeInTheDocument();
+
+    await save(secondTurn.card, second, "Second, edited");
+    expect(editComment).toHaveBeenCalledTimes(2);
+    expect(
+      within(firstTurn.turn).queryByText(why),
+      "the first comment's read kept its line on its turn past the second comment's save"
+    ).toBeNull();
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(within(secondTurn.turn).getByText(why)).toBeInTheDocument();
+    expect(within(firstTurn.turn).queryByText(why)).toBeNull();
+  } finally {
+    for (const answer of rereads) answer([first, second]);
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    editComment.mockRestore();
+    stub.restore();
+  }
+});
+
 interface ThreadsPage {
   readonly cleanup: () => void;
   readonly mark: Mock<

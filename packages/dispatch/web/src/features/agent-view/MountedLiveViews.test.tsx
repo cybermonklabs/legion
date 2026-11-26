@@ -302,6 +302,42 @@ test("leaving a live view hides it but keeps it watching, and coming back costs 
   expect(watched(socket)).toEqual([PLANNER]);
 });
 
+// The view the person leaves lingers with what they left open in it: the question mark's panel
+// stands open in the hidden view. Escape is the page's in front, so the hidden panel takes none:
+// the press reaches the window's keys unmarked, the focus stays where the person has it, and the
+// panel is still open in the view they come back to.
+test("a lingering view with its question mark's panel open takes no Escape", async () => {
+  const user = userEvent.setup();
+  mockDispatch();
+  renderShell(`/agents/${PLANNER}/live`);
+  await screen.findByTestId("agent-conversation");
+  await user.click(screen.getByTestId("agent-help"));
+  expect(screen.getByTestId("agent-help-popover")).toBeTruthy();
+  // Left from the keyboard, so no press outside the panel closes it on the way.
+  const leave = screen.getByRole("link", { name: "Leave for Agents" });
+  act(() => leave.focus());
+  await user.keyboard("{Enter}");
+  await screen.findByRole("heading", { name: "Agents" });
+  const lingering = viewOf(PLANNER);
+  expect(lingering.getAttribute("aria-hidden")).toBe("true");
+
+  const behind: KeyboardEvent[] = [];
+  const hearBehind = (event: KeyboardEvent) => behind.push(event);
+  window.addEventListener("keydown", hearBehind);
+  try {
+    await user.keyboard("{Escape}");
+    expect(behind.length, "the hidden view's panel stopped the Escape").toBe(1);
+    expect(behind[0]?.defaultPrevented, "the hidden view's panel took the Escape").toBe(false);
+    expect(leave, "the Escape moved the focus into the hidden view").toHaveFocus();
+    expect(
+      within(lingering).queryByTestId("agent-help-popover"),
+      "the Escape closed the hidden view's panel"
+    ).toBeTruthy();
+  } finally {
+    window.removeEventListener("keydown", hearBehind);
+  }
+});
+
 // At most two views are mounted (D6): the one in front and the one lingering. A third opens over
 // the first, which then holds nothing at all - no conversation on the page and no session on the
 // wire - which is what keeps eight pinned agents from costing eight subscriptions.

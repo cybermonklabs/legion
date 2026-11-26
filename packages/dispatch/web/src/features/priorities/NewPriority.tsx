@@ -1,5 +1,5 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, type RefObject, useState } from "react";
 import { controlPadding } from "../../components/control-names";
 import { useFocusBack } from "../../hooks/useFocusBack";
 import {
@@ -24,9 +24,23 @@ const BUTTON = `rounded-lg border text-sm ${controlPadding.toolbar} ${borderDefa
  * reader is shown nothing here. The form opens beside the button in the control row, whose slot
  * keeps one line from `sm` up, and takes a line of its own in a row that wraps. Its submit - Add
  * priority, or Enter in its title - and its Cancel each end it with the focus back on the
- * button, which the form's going would leave on the page's body (`useFocusBack`).
+ * button, which the form's going would leave on the page's body (`useFocusBack`). The first
+ * priority, added from the page alone, takes that button off the page as it lands, and the page
+ * gives the focus on to the table's, so long as the add's end draws one (`onAdd`, `opener`).
  */
-export function NewPriority(): ReactNode {
+export function NewPriority({
+  onAdd,
+  opener,
+}: {
+  /** Told as the form sends a priority, with the add's end: once Dispatch has answered it, landed
+   *  or not, and the read of the priorities it set off has answered (`usePriorityWrites`' `add`).
+   *  The page's empty state takes it, whose New priority the first priority's landing takes off
+   *  the page (`PrioritiesPage`). */
+  readonly onAdd?: (ended: Promise<void>) => void;
+  /** Where the page reaches this New priority: the table's, which takes the focus the empty
+   *  state's going leaves on the page's body (`PrioritiesPage`). */
+  readonly opener?: RefObject<HTMLButtonElement | null>;
+} = {}): ReactNode {
   const { add, canWrite } = usePriorityWrites();
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState("");
@@ -42,7 +56,10 @@ export function NewPriority(): ReactNode {
       <button
         className={BUTTON}
         onClick={() => setAdding((was) => !was)}
-        ref={focusBack.opener}
+        ref={(node) => {
+          focusBack.opener.current = node;
+          if (opener !== undefined) opener.current = node;
+        }}
         type="button"
       >
         New priority
@@ -55,7 +72,13 @@ export function NewPriority(): ReactNode {
             event.preventDefault();
             const named = title.trim();
             if (named === "") return;
-            add.mutate({ title: named });
+            // A refusal is the shell's line's to say (`useKeyedWrite`), so the end is told
+            // alike whether the add landed or not.
+            const ended = add.mutateAsync({ title: named }).then(
+              () => undefined,
+              () => undefined
+            );
+            onAdd?.(ended);
             closeForm();
           }}
         >

@@ -17,6 +17,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { heldAnswers } from "../../__tests__/held-answers";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOpen, optionsOffered, pickFromList, pickNamed } from "../../__tests__/list-picks";
@@ -29,8 +30,9 @@ import { recordEscapes } from "../../__tests__/record-escapes";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
 import { issueQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type {
   ArtifactReview,
   Ask,
@@ -570,6 +572,116 @@ test("the header keeps the primary document's chip when no gated step reviews it
     expect(within(stateActions).getByRole("button", { name: "Request changes" })).not.toBeNull();
   } finally {
     view.unmount();
+    listProjects.mockRestore();
+    restore();
+  }
+});
+
+// Every review the header's line makes reads the same reads of the issue again, so the line one
+// document's chip draws for a read the bound ended goes as another document's review lands, though
+// that read is still out: the line holds every chip's review through that read with one hold
+// (`useListReadBound`), and the second chip alone says why the read its own review made has not
+// settled, once that read's bound ends.
+test("the line one document's review on the header leaves goes as another document's review lands", async () => {
+  const verification = {
+    ...issue.artifacts[0],
+    id: "artifact-2",
+    name: "verification.md",
+    primary: false,
+    ref_key: "CORE-1/verification",
+    slug: "verification",
+  };
+  const restore = stubHeader({
+    ...issue,
+    artifacts: [
+      { ...issue.artifacts[0], approval: { latest_version: 1, state: "awaiting" } },
+      { ...verification, approval: { latest_version: 1, state: "awaiting" } },
+    ],
+    open_asks: [
+      approvalAsk(),
+      {
+        ...approvalAsk(),
+        artifact_id: verification.id,
+        id: "ask-verification",
+        question: "Approve the verification?",
+      },
+    ],
+    verification_artifact_id: verification.id,
+  });
+  const gated: Project = {
+    created_at: "2026-09-09T00:00:00Z",
+    gated_steps: ["spec", "criteria"],
+    open_asks: 0,
+    key: "CORE",
+    name: "Core",
+    proven_sessions: false,
+  };
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
+  // Each review's answer, held until the row gives it, so what it sets off runs in `act`.
+  const { answers: reviews, next } = heldAnswers<ArtifactReview>();
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockImplementation(
+    next
+  );
+  const approved = (artifactId: string): ArtifactReview => ({
+    ...changeRequest,
+    artifact_id: artifactId,
+    reason: null,
+    state: "approved",
+  });
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const view = renderHeader("/issues/CORE-1/conversation", queryClient);
+  let getIssue: Mock<typeof api.getIssue> | undefined;
+
+  try {
+    const stateActions = await screen.findByTestId("issue-state-actions");
+    const steps = await within(stateActions).findByTestId("issue-approval-steps");
+    const step = (name: string) => {
+      const place = steps.querySelector<HTMLElement>(`[data-approval-step="${name}"]`);
+      if (place === null) throw new Error(`the header draws no ${name} step`);
+      return place;
+    };
+    const spec = step("spec");
+    const criteria = step("criteria");
+    const approveSpec = await within(spec).findByRole("button", { name: /^Approve/ });
+    const approveCriteria = within(criteria).getByRole("button", { name: /^Approve/ });
+    // Dispatch answers no read of the issue from the first review on while the row runs.
+    getIssue = spyOn(api, "getIssue").mockReturnValue(
+      Promise.withResolvers<IssueDetails>().promise
+    );
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(approveSpec);
+    await tick(0);
+    await act(async () => reviews[0]?.(approved("artifact-1")));
+    await tick(0);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(within(spec).getByRole("alert").textContent).toContain(
+      "The new approval is not read yet."
+    );
+
+    await user.click(approveCriteria);
+    await tick(0);
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(2);
+    await act(async () => reviews[1]?.(approved(verification.id)));
+    await tick(0);
+    expect(
+      within(spec).queryByRole("alert"),
+      "the spec's review kept its line on its chip past the verification's review"
+    ).toBeNull();
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(within(criteria).getByRole("alert").textContent).toContain(
+      "The new approval is not read yet."
+    );
+    expect(within(spec).queryByRole("alert")).toBeNull();
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    getIssue?.mockRestore();
+    createArtifactVersionReview.mockRestore();
     listProjects.mockRestore();
     restore();
   }
