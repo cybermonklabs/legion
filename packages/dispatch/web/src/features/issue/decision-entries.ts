@@ -23,12 +23,18 @@ export type DecisionsRead = Omit<IssueDecisions, "entries"> & {
 };
 
 /** Whether an entry of the Decisions read is a decision: a `decision` block, whoever decided it,
- *  or an ask a person answered.
- *  An open ask is a question, and a declined one decided nothing, so neither is a decision a view
- *  draws beside the nodes its `shaped` tuples reach, as the old `decisions` member never held
- *  them. */
+ *  or an ask a person answered. An open ask is a question, and a declined one decided nothing, so
+ *  neither is a decision a view draws beside the nodes its `shaped` tuples reach, as the old
+ *  `decisions` member never held them. */
 export function isDecisionEntry(entry: Pick<DecisionEntry, "answer_state" | "kind">): boolean {
   return entry.kind === "agent" || entry.answer_state === "answered";
+}
+
+/** Whether a person made the decision `entry` is: an ask they answered (an entry of kind
+ *  `person`), or a `decision` block whose `decided_by` names a person, since a block's `kind` is
+ *  the node's shape, `agent` whoever decided it. */
+export function isPersonDecision(entry: Pick<DecisionEntry, "decided_by" | "kind">): boolean {
+  return entry.kind === "person" || entry.decided_by?.kind === "person";
 }
 
 /**

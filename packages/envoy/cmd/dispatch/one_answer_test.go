@@ -1070,8 +1070,8 @@ func scanForTheDeletedWriters(t *testing.T) {
 }
 
 // fleetGuard describes the fleet guard askStateWrite opens with - `if twoBuilds { return
-// rollWindowAskAttributes(…) }`, then `return keptAskState(…)` - or is "" where it opens with
-// none, so a write that handed the roll window's attributes out on a fleet of one build fails.
+// rollWindowAskAttributes(…) }`, then `return keptAskState(…)` - or is "" for any other body,
+// so a write that handed the roll window's attributes out on a fleet of one build fails.
 func fleetGuard(function *ast.FuncDecl) string {
 	if function.Body == nil || len(function.Body.List) != 2 {
 		return ""
@@ -1081,10 +1081,7 @@ func fleetGuard(function *ast.FuncDecl) string {
 		return ""
 	}
 	fleet, ok := guard.Cond.(*ast.Ident)
-	if !ok {
-		return ""
-	}
-	if !returnsCallOf(guard.Body.List[0], "rollWindowAskAttributes") || !returnsCallOf(function.Body.List[1], "keptAskState") {
+	if !ok || !returnsCallOf(guard.Body.List[0], "rollWindowAskAttributes") || !returnsCallOf(function.Body.List[1], "keptAskState") {
 		return ""
 	}
 	return "returns rollWindowAskAttributes's write only while " + fleet.Name + ", and keptAskState's otherwise"
