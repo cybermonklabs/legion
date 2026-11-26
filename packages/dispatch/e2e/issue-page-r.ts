@@ -663,10 +663,15 @@ export function nodeOf(answer: IssueTreeRead, id: string): IssueTreeNode | undef
   return (answer.nodes ?? []).find((node) => node.id === id);
 }
 
-/** Whether `answer` holds a `serves` tuple from `from` to `to`. */
-export function serves(answer: IssueTreeRead, from: string, to: string): boolean {
+/** Whether `answer` holds a tuple of kind `kind` from `from` to `to`. */
+export function holdsTuple(
+  answer: IssueTreeRead,
+  kind: NonNullable<IssueTreeRead["tuples"]>[number]["kind"],
+  from: string,
+  to: string
+): boolean {
   return (answer.tuples ?? []).some(
-    (tuple) => tuple.kind === "serves" && tuple.from.id === from && tuple.to.id === to
+    (tuple) => tuple.kind === kind && tuple.from.id === from && tuple.to.id === to
   );
 }
 

@@ -44,6 +44,7 @@ import {
   fragmentTree,
   gateDesignSteps,
   graphEditIds,
+  holdsTuple,
   insertInto,
   landOn,
   MENU_ENTRIES,
@@ -73,7 +74,6 @@ import {
   rowUnder,
   SEED_WORDS,
   seedGraphEdit,
-  serves,
   submenuEntry,
   submenuWords,
   treeAfterReload,
@@ -1041,7 +1041,7 @@ test("Retype gives a prose block another kind", async ({ browser }) => {
       "the statement stays under the criterion"
     ).toBe(ids.criterion);
     expect(
-      serves(retyped, toStatement, ids.criterion),
+      holdsTuple(retyped, "serves", toStatement, ids.criterion),
       "the statement's serves names the criterion"
     ).toBe(true);
     await expect(
@@ -1058,7 +1058,10 @@ test("Retype gives a prose block another kind", async ({ browser }) => {
       "after the retype the identity block reads the spec's approval as changed since"
     );
 
-    // A new prose block under the question becomes a criterion, which stands under the question.
+    // A new prose block under the question becomes a criterion, which stands under the question:
+    // its `parent` names the question's ask, and it keeps the place its PATCH gave it under the
+    // question's row, the ask's block of the spec, which a stored placement holds whatever the
+    // attributes name.
     await landOn(page, key, ids.questionRow, "the question");
     const toCriterion = await newRowUnder(page, sent, TYPED.retypedCriterion, "the question");
     await landOn(page, key, toCriterion, "the new prose block under the question");
@@ -1071,10 +1074,15 @@ test("Retype gives a prose block another kind", async ({ browser }) => {
         timeout: 60_000,
       })
       .toBe("criterion");
+    const criterionRead = await requestedTreeRead(page, key);
     expect(
-      nodeOf(await requestedTreeRead(page, key), toCriterion)?.parent?.id,
+      holdsTuple(criterionRead, "parent", toCriterion, ids.question),
       "the criterion stands under the question"
-    ).toBe(ids.question);
+    ).toBe(true);
+    expect(
+      nodeOf(criterionRead, toCriterion)?.parent?.id,
+      "the criterion keeps its place under the question's row"
+    ).toBe(ids.questionRow);
 
     await landOn(page, key, ids.statements[0], "the first statement");
     await openRowMenu(page, "press", "the first statement");
@@ -1294,7 +1302,7 @@ test("a delete takes the block and its subtree after a confirm that names the co
       "the tree read holds a node the delete took"
     ).toEqual([]);
     expect(
-      [statement1, statement2].map((id) => serves(answer, ids.checkShared, id)),
+      [statement1, statement2].map((id) => holdsTuple(answer, "serves", ids.checkShared, id)),
       "the shared check keeps its serves to the other two statements"
     ).toEqual([true, true]);
     expect(
@@ -1879,13 +1887,15 @@ function readRoutesOfWrite(traffic: ApiRequests, from: number): string[] {
 }
 
 /** Each HTTP write among `traffic`'s requests from `from` on to a route of issue `key` or of a
- *  document, as its method and path: a write of a block would be one. */
+ *  document, as its method and path: a write of a block would be one. A menu's dry run of a delete
+ *  (`?dry_run=true`, R6) writes nothing, so it is none. */
 function blockWrites(traffic: ApiRequests, from: number, key: string): string[] {
   return traffic.requests
     .slice(from)
     .filter(
       (request) =>
         request.method !== "GET" &&
+        !/[?&]dry_run=true(?:&|$)/u.test(request.path) &&
         (request.path.startsWith("/api/v1/artifacts/") ||
           request.path.startsWith(`/api/v1/issues/${encodeURIComponent(key)}`))
     )
