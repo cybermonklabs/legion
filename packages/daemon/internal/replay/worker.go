@@ -124,6 +124,7 @@ var OutboxHandling = map[RowKind]RowHandling{
 
 	{Kind: record.OutboxKindMergeQueueRead}:    {Way: OutboxFinished, Assumption: assumeNoGitHub},
 	{Kind: record.OutboxKindMergeQueueRemoval}: {Way: OutboxFinished, Assumption: assumeNoGitHub},
+	{Kind: record.OutboxKindQueueTimelineRead}: {Way: OutboxFinished, Assumption: assumeNoGitHub},
 	{Kind: record.OutboxKindConflictConfirm}:   {Way: OutboxFinished, Assumption: assumeNoGitHub},
 
 	// Superseded check wakes and their replacements are both left out under the same assumption.

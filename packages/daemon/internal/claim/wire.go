@@ -117,10 +117,11 @@ const (
 // prompt_result carries for the same refusal.
 const TurnCodeCyberPolicy = "cyber_policy"
 
-// TurnOutcomeCaller is one of the two identities a turn outcome is reported under, and the type
-// of whichever one its body named (TurnOutcomeRequest.Caller). They are two types rather than
-// five fields of one, so the route reads the identity the caller gave rather than guessing from
-// which fields are filled in which combination.
+// TurnOutcomeCaller is one of the two identities a turn outcome, or a report of model requests, is
+// reported under, and the type of whichever one its body named (TurnOutcomeRequest.Caller,
+// ModelRequestsRequest.Caller). They are two types rather than five fields of one, so the route
+// reads the identity the caller gave rather than guessing from which fields are filled in which
+// combination.
 type TurnOutcomeCaller interface{ isTurnOutcomeCaller() }
 
 // AgentCaller is the producer inside the agent's own session, which holds the secret its
@@ -201,13 +202,19 @@ type TurnOutcomeRequest struct {
 // Caller is the identity the body named, and false when it named both or neither: each says who
 // is calling, and a caller that cannot say is not answered.
 func (r TurnOutcomeRequest) Caller() (TurnOutcomeCaller, bool) {
-	if r.AgentCaller.named() == r.BootCaller.named() {
+	return CallerOf(r.AgentCaller, r.BootCaller)
+}
+
+// CallerOf is the one of agent and boot a body named, and false where it named both or neither:
+// the caller of each body that embeds the two (TurnOutcomeRequest, ModelRequestsRequest).
+func CallerOf(agent AgentCaller, boot BootCaller) (TurnOutcomeCaller, bool) {
+	if agent.named() == boot.named() {
 		return nil, false
 	}
-	if r.BootCaller.named() {
-		return r.BootCaller, true
+	if boot.named() {
+		return boot, true
 	}
-	return r.AgentCaller, true
+	return agent, true
 }
 
 // TurnOutcomeResponse is what the daemon made of the report: the run of refused turns the claim's
@@ -229,6 +236,76 @@ func (r TurnOutcomeRequest) Caller() (TurnOutcomeCaller, bool) {
 type TurnOutcomeResponse struct {
 	RefusedRun int  `json:"refusedRun"`
 	Failed     bool `json:"failed"`
+}
+
+// MaxModelRequests is the most requests one report of model requests carries: a host sends a
+// report within 15 seconds of a request's end, so a batch holds the requests of a few seconds of
+// its sessions, and one beyond the bound is refused rather than read.
+const MaxModelRequests = 200
+
+// ModelRequestsRequest is a host's report of the model requests of the sessions it runs for one
+// claim's launch: its own session's, each subagent's it starts, and the controller's for the
+// controller's claim (api's modelRequests). The caller is exactly one of AgentCaller and
+// BootCaller, as a turn outcome's is (TurnOutcomeRequest): the Oh My Pi plugin names the claim
+// with its registration's secret, the Claude Code bridge with its launch's boot token. Generation
+// is that launch's, and the daemon keeps each request under the claim, the generation and the
+// request's ID. The body names no project: the project is the claim's.
+//
+// RetriedRefusalsReported says whether the host reports each HTTP 429 that its HTTP transport
+// retries by itself, as a refused request of its own: the Claude Code bridge does (each retried
+// attempt is an `api_retry` line), and the pinned Oh My Pi host gives an extension no event for
+// such an attempt, so its refusals count short. A host of a contract before the member sends
+// none, which reads as false. While a request of a batch that says false is in the hour the
+// refusals read, the provider's refusals are not recorded (admit's LiveSignals), and its headroom
+// is read as from any other batch.
+type ModelRequestsRequest struct {
+	AgentCaller
+	BootCaller
+	Generation              uint64         `json:"generation"`
+	Requests                []ModelRequest `json:"requests"`
+	RetriedRefusalsReported bool           `json:"retriedRefusalsReported,omitempty"`
+}
+
+// Caller is the identity the body named, and false when it named both or neither.
+func (r ModelRequestsRequest) Caller() (TurnOutcomeCaller, bool) {
+	return CallerOf(r.AgentCaller, r.BootCaller)
+}
+
+// ModelRequest is one model request a host made for a session of the project, and nothing else of
+// it: no prompt, no answer and no text of an error. ID is the host's own, unique within the
+// claim's launch generation and kept across the host's retries, so a request reported twice is
+// kept once. Session is the session the request ran in, Model the model the host called, and
+// EndedAt when the request ended, RFC 3339 with a zone, which places it in its UTC minute.
+// UncachedInputTokens is its fresh input plus its cache writes, never its cache reads, and nil
+// where the host did not learn it. Refusal is who refused a refused request, as the host classed
+// its text by the project's two patterns (runtime.OwnRefusalVariable,
+// runtime.ProviderRefusalVariable), and "" for an answered one.
+type ModelRequest struct {
+	ID                  string       `json:"id"`
+	Session             string       `json:"session"`
+	Model               string       `json:"model"`
+	EndedAt             time.Time    `json:"endedAt"`
+	UncachedInputTokens *int64       `json:"uncachedInputTokens,omitempty"`
+	Refusal             RefusalClass `json:"refusal,omitempty"`
+}
+
+// RefusalClass is who refused a model request: the project's own limit, the provider, or unknown
+// where the refusal's text matched neither pattern. The refusals signal counts an unknown one as
+// the project's own (signals.Minute.Own), as the replay counts it, and the store keeps the two
+// apart.
+type RefusalClass string
+
+const (
+	RefusalOwn      RefusalClass = "own"
+	RefusalProvider RefusalClass = "provider"
+	RefusalUnknown  RefusalClass = "unknown"
+)
+
+// ModelRequestsResponse is the daemon's answer to a report: every id of the batch the daemon now
+// holds, new or held already, so the host forgets those and sends the rest again under the same
+// ids.
+type ModelRequestsResponse struct {
+	Kept []string `json:"kept"`
 }
 
 // ActivityRequest is a live role's session reporting what it is doing, after each of its turns

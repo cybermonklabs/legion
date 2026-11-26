@@ -2452,7 +2452,7 @@ The roll-forward appends one pair again to each task a reviewer's row stores, so
 
 This release adds two outbox kinds, and its migration `20261114031356_merge_queue_removal` adds both names to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, `update_ask` among its kinds, and its version stands above the update round's `20261113082214`, so the update round's list never runs after it.
-Six migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news` and then the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), and each list keeps both names.
+Eight migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then admission by signals' `20261126190955_outbox_kinds_with_the_queue_timeline_read` (cybermonklabs/legion#5603), and each list keeps both names.
 A `merge_queue_read` row is the daemon's read of a pull request that GitHub reported out of the merge queue: one read, or up to five in all while the reads fail.
 A `merge_queue_removal` row is the message that tells the issue's merger of that removal.
 The migration changes no column.
@@ -2500,7 +2500,8 @@ An ask of the merger that has landed stays: the earlier release reads it as a la
 
 This release adds the outbox kind `merge_holds_changed`, the notice kind `merge-holds-changed`, and a suspension source of a claim, `controller`.
 It serves the project's controller six actions on an agent, `POST /legion/v1/claims/compact` and `POST /legion/v1/claims/fresh-session`, which it served before, and `POST /legion/v1/agents/stop`, `agents/retry`, `agents/suspend` and `agents/resume`, and it refuses every other grant, an architect's included, `403 CONTROLLER_REQUIRED` at all six (`agentDoor`, `packages/daemon/internal/api/agentdoor.go`).
-Its migration `20261126110259_merge_holds_changed` adds the outbox kind to the outbox's kind check (`outbox_kind_check`), and it writes the whole list, `step_record`, `plan_record`, `conflict_confirm`, `merge_forward`, `design_changes`, `phase_ended`, `pending_basis_seed` and `reparent_seed` among its kinds, and its version stands above `20261122154643_outbox_kinds_with_the_basis_seeds`, `20261119203047_design_news`, `20261119003157_conflict_reads_and_merge_forward`, `20261117023932_outbox_kinds_with_the_plan_record` and `20261117000528_outbox_kinds_with_the_step_record`, whose lists do not name the kind, so it writes the list last on any database.
+Its migration `20261126110259_merge_holds_changed` adds the outbox kind to the outbox's kind check (`outbox_kind_check`), and it writes the whole list, `step_record`, `plan_record`, `conflict_confirm`, `merge_forward`, `design_changes`, `phase_ended`, `pending_basis_seed` and `reparent_seed` among its kinds, and its version stands above `20261122154643_outbox_kinds_with_the_basis_seeds`, `20261119203047_design_news`, `20261119003157_conflict_reads_and_merge_forward`, `20261117023932_outbox_kinds_with_the_plan_record` and `20261117000528_outbox_kinds_with_the_step_record`, whose lists do not name the kind.
+Admission by signals' `20261126190955_outbox_kinds_with_the_queue_timeline_read` (cybermonklabs/legion#5603) stands above it and writes the list last, with `merge_holds_changed` among its kinds.
 Its migration `20261115060739_claim_suspended_by_controller` adds the source to the claims' check (`claims_suspended_by_check`).
 The migrations change no column.
 This release also tells an issue's architect of a run of provider errors, in a `notice` row of the kind `provider-errors`, which only the controller was told before.
@@ -2558,7 +2559,7 @@ The earlier release then runs the controller's pod as `runtime.kubernetes.pod.se
 
 This release stops a conflict from sending an issue back to `implementing`.
 Its migration `20261119003157_conflict_reads_and_merge_forward` adds two outbox kinds to the kind check (`outbox_kind_check`), keeps `phase_ended` in it, deletes every queued `phase_ended` row, and adds two nullable columns to `pull_requests`.
-Two migrations write the list after it, `20261119203047_design_news` and then the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), and each list keeps both names and `phase_ended`.
+Four migrations write the list after it, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then admission by signals' `20261126190955_outbox_kinds_with_the_queue_timeline_read` (cybermonklabs/legion#5603), and each list keeps both names and `phase_ended`.
 The release that holds a parent's start while a child of it is open queues `phase_ended` rows again for one move of its own ([Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open)).
 A `conflict_confirm` row is the second read of a head a first read found conflicting, due a minute after it, and `pull_requests.conflict_read` holds that first read.
 A `merge_forward` row is one message to one role about a conflict the daemon acted on, and `pull_requests.merge_forward` holds the ask that the implementer merge the base forward.
@@ -2647,7 +2648,7 @@ The given-up records stay as they were, and after the roll forward a replay or a
 
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, and its version stands above `20261114031356`, so the merge-queue list never runs after it.
-Five migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news` and then the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), and each list keeps the name.
+Seven migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then admission by signals' `20261126190955_outbox_kinds_with_the_queue_timeline_read` (cybermonklabs/legion#5603), and each list keeps the name.
 A `role_holders_publish` row publishes the session of each live role of one issue to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
 The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
 The migration changes no column.
@@ -2706,7 +2707,7 @@ The rollback needs no statement.
 
 This release adds one outbox kind, `step_record`, the tables `step_starts` and `step_starts_rollback`, and the function `step_run_witness`; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the role-holders publication's kind and the two merge-queue kinds among its kinds, and its version stands above `20261116165926_role_holders_publish`, so the role-holders list never runs after it.
-Five migrations write the list after it, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320) and then the merge-holds release's `20261126110259_merge_holds_changed`, and each list keeps the name.
+Six migrations write the list after it, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then admission by signals' `20261126190955_outbox_kinds_with_the_queue_timeline_read` (cybermonklabs/legion#5603), and each list keeps the name.
 A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
 That migration changes no column.
 
@@ -2764,7 +2765,7 @@ Roll back and roll forward every daemon of one database in the same change, and 
 
 This release adds one outbox kind, `plan_record`; its migration `20261117023932_outbox_kinds_with_the_plan_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the role-holders publication's kind and `step_record` among its kinds, and its version stands above `20261117000528_outbox_kinds_with_the_step_record`, so the step record's list never runs after it.
-Three migrations write the list after it, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news` and then the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), and each list keeps the name.
+Five migrations write the list after it, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then admission by signals' `20261126190955_outbox_kinds_with_the_queue_timeline_read` (cybermonklabs/legion#5603), and each list keeps the name.
 A `plan_record` row writes the plan one run of an issue carries out onto Dispatch (`PUT /api/v1/issues/{key}/plans/{id}`), when the run's work starts and again at each later version of the owner's plan that Legion takes, and Dispatch then shows that version.
 This release also writes the rating a retro gave the plan as a `step_record` row that carries `rating` and `rating_reason`, which the daemon sends to the record's rating route (`PUT /api/v1/issues/{key}/steps/{id}/rating`).
 That migration changes no column.
@@ -2994,7 +2995,7 @@ So one project can roll back while another stays on this release, and the statem
 
 This release's migration `20261119203047_design_news` adds the tables `design_news_told` (with its columns `opening_seq` and `unreached`), `design_changes` and `design_history_unread`, the columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`, the functions `design_news_known`, `design_news_folded`, `design_news_opening_settled`, `design_news_opening_told`, `design_news_current`, `design_news_credits`, `design_news_openings` and `design_news_told_in`, and the outbox kind `design_changes`.
 No statement of the release before this one names the three tables, the four new columns or the eight functions, and this migration's kind list names every kind of the list the release before set, `step_record` of `20261117000528_outbox_kinds_with_the_step_record`, `plan_record` of `20261117023932_outbox_kinds_with_the_plan_record`, `conflict_confirm` and `merge_forward` of `20261119003157_conflict_reads_and_merge_forward`, and `phase_ended`, which that list keeps, among them, with `design_changes` added, so the schema needs no restore.
-Its version stands above `20261119003157`, and two migrations stand above it and write the list again with `design_changes` among their kinds: the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), and above that the release whose daemon tells a held role of a merge hold (`20261126110259_merge_holds_changed`), whose list is the last word of the kind check.
+Its version stands above `20261119003157`, and three migrations stand above it and write the list again with `design_changes` among their kinds: the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), above that the release whose daemon tells a held role of a merge hold (`20261126110259_merge_holds_changed`), and above that admission by signals' `20261126190955_outbox_kinds_with_the_queue_timeline_read` (cybermonklabs/legion#5603), whose list is the last word of the kind check.
 A `design_changes` row that this release queued waits in the outbox under the earlier daemon, which runs no lane of that kind, and it runs once this release is back.
 
 **Four statements must run before the earlier image is pinned.**
@@ -3221,7 +3222,8 @@ It adds four columns to `phases` beside the phase entry.
 `entry_given_task`, `entry_given_entry` and `entry_given_generation` are the last task a phase worker was given for an entry, as it was composed, that entry, and the issue's generation it was given in (`record.PhaseRow.Given`, one `record.GivenTask`, which `record.PhaseRow.GivenFor` reads), `''`, 0 and 0 until this release writes them, and on every architect's row: the raise of an entry writes the work it is raised with, and a retry of the entry writes the retry's own task, beside `entry_task`, which keeps the text the role was sent with the daemon's decorations of a send, the base-merge sentence of a testing task of a parent and the reviewer's two sentences of its review round.
 The admission pass holds the given task for a parent whose start has not reached its worker, or whose worker it stops in the middle of its phase, where the given entry is the entry the row stands on and the given generation is the issue's, after the turn that took the task has ended too, and the return decorates the task it gives back once.
 The design-gate basis of dispatch://INFRA-3320, in this same release, adds the basis and kept-approval columns of `design_gates` and the column `issues.view_of` (`20261114064234_design_gate_basis`), and the outbox kinds `pending_basis_seed` and `reparent_seed` (`20261122154643_outbox_kinds_with_the_basis_seeds`).
-That migration writes the kind check last, above the design news's `20261119203047_design_news`, and keeps `design_changes` and `phase_ended` in it, and this release queues rows of `phase_ended` again: the message that tells a parent's worker that the admission pass ended its phase.
+That migration writes the kind check above the design news's `20261119203047_design_news`, and keeps `design_changes` and `phase_ended` in it; the merge-holds release's `20261126110259_merge_holds_changed` and then admission by signals' `20261126190955_outbox_kinds_with_the_queue_timeline_read` (cybermonklabs/legion#5603) write it after it, and each keeps both seeds, `design_changes` and `phase_ended`.
+This release queues rows of `phase_ended` again: the message that tells a parent's worker that the admission pass ended its phase.
 The release also queues the notice kinds `awaiting-children`, `basis-ended`, `basis-changes-requested` and `resting-root`, and the supervise operation `retire_task`.
 
 **Before the deploy, list the parents that the first admission pass after it stops.**
@@ -3515,6 +3517,57 @@ After a roll forward, the first pod of a kept volume this release records is not
 **Every daemon sharing the database moves together.**
 Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and the two tables, the claims table and the outbox hold the rows of every project.
 Upgrade, and roll back, every daemon of one database in the same change.
+
+#### Rolling back the release that admits by signals
+
+This release keeps what the five signals of admission by signals read, a person's settings of the rule and the record of its changes ([Admission by signals](https://cybermonklabs.github.io/legion/legion/admission-signals/)).
+Its eight migrations add tables, a column, a defaulted column and an outbox kind, and change nothing that an earlier release reads:
+
+- `20261126011110_memory_kills` adds `memory_kills`, one row for each memory kill of a project's issue pods, kept once by the report's guard and sequence at the moment the launcher named it, and `signal_inputs`, the moment the daemon began to keep each input of a signal for each project, which the first boot of this release writes.
+
+- `20261126020201_queue_events` adds `queue_events`, each merge-queue event of GitHub's timeline of a project's pull requests, once by GitHub's event id, and the column `signal_inputs.read_error`, why the boot's read of the merge queue failed.
+
+- `20261126025927_approval_asks` adds `approval_asks`, `approval_assignees` and `approval_default_assignees`: each ask of a project's issues with the person it was asked of and whose turn it is, each issue's assignee, and the project's default assignee, each at the sequence of Dispatch's event that set it.
+
+- `20261126042544_model_requests` adds `model_requests`, each model request a host reported, `model_request_minutes`, the sums of each minute's requests that the provider's signals read, `signal_token_limits`, the token limit a minute each boot found configured, and `claim_turns`, each turn of each claim with the plugin contract its host registered with.
+
+- `20261126055316_signal_deadlines` adds `signal_deadlines`, each project's one deadline of the rule with its fence.
+
+- `20261126070017_model_requests_retried_refusals` adds `model_requests.retried_refusals_reported`, whether the batch of a request came from a host that reports the HTTP 429s its transport retries by itself.
+
+- `20261126072843_signal_settings` adds `signal_settings`, each project's switch and limits with who set each, when and why, `signal_changes`, the record of changes, and `signal_change_ids`, the last id each project's record gave out.
+
+- `20261126190955_outbox_kinds_with_the_queue_timeline_read` adds the outbox kind `queue_timeline_read` to `outbox_kind_check`, which it writes whole: the merge-holds release's list of `20261126110259_merge_holds_changed` with `queue_timeline_read` added.
+
+An earlier release runs over the migrated database as it stands, and needs none of the statements below.
+It names none of the tables and none of the two columns, so it keeps nothing in them and moves no row; it puts `queue_timeline_read` in no outbox lane, so it never decodes or runs such a row, and the widened kind check refuses nothing it writes.
+It reads no setting of the rule, so every project admits under the cap alone, whatever a person set, and it arms no deadline's timer.
+It sets no `noRoleKills` on its answer to a launcher, so a launcher of this release sends it no report of a kill of no role ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
+
+The way back is owed to the roll forward.
+Kept in place, the tables would read the time the earlier release ran as kept with nothing in it: `signal_inputs` would say the kills and the queue were kept all along, and the provider's minutes of that time would hold no request, so for up to an hour after the roll forward the kills and the provider's two series would read too low, and the queue for up to six hours could miss a wait, as if each held its whole span.
+The header of each of the first seven migration files in `packages/daemon/internal/store/migrations` ends with its way back, one transaction in its last paragraph (`migrations.WayBack` reads it), which this section names rather than copies.
+`20261126190955_outbox_kinds_with_the_queue_timeline_read` carries no way back of its own: step 6 below deletes the rows of its kind, and its list stays, since it names every kind the earlier release writes.
+Run each of them, its comment markers taken off, with every daemon of the database stopped and before the earlier image is pinned, through `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1`, one after another, newest first:
+
+1. `20261126072843_signal_settings`, whose drops cost each project's settings, which a person sets again, and its record of changes, which starts again from id 1;
+
+2. `20261126070017_model_requests_retried_refusals`, whose header says it runs before the way back of `20261126042544_model_requests`;
+
+3. `20261126055316_signal_deadlines`, which also deletes the marks in `processed_events` of the deadline's firings, since each firing is applied once under an event id that names its fence (`signal-deadline:<project>:<fence>`), the fence starts again from 1 at the roll forward, and a mark kept would take each firing of a fence that fired before the rollback for a duplicate that runs no pass;
+
+4. `20261126042544_model_requests`;
+
+5. `20261126025927_approval_asks`;
+
+6. `20261126020201_queue_events`, which also deletes the `queue_timeline_read` rows of the outbox;
+
+7. `20261126011110_memory_kills` last, since it drops `signal_inputs`, from which the three before it delete their rows.
+
+Each transaction deletes its own version row of `schema_version` too, so the newer image's `Migrate` applies each migration again at the roll forward, and the roll forward's first boot writes each project's `signal_inputs` anew: each signal that counts over a span then reads as not recorded until its span is whole, rather than as a count that misses what the earlier release did not keep.
+
+**Every daemon sharing the database moves together.**
+Each of these tables holds the rows of every project of the database, and `schema_version` records each migration once for all of them, so roll back, and roll forward, every daemon of one database in the same change.
 
 #### Rolling back below the release that trims an issue pod's volume
 
@@ -4021,6 +4074,7 @@ A rollback of a store that cybermonklabs/legion#5310's release or a later one mi
 A rollback of a store that the release that backs a production check off a checking role that keeps failing migrated runs the way back in the header of `20261125000600_production_check_failed_looks.up.sql` first, with every daemon of the database stopped, which takes `wakeAt` off every queued `check_wake` row, drops `production_checks.failed_looks` and deletes that version's row, and then #5303's, since that release carries #5303; that store then reports the highest version it still records after the two blocks, #4392's 20261124182040, which that release carries too and which has no way back.
 A rollback of a store that the release that lets a message wake go ahead of the other paced wakes migrated runs the way back in the header of `20261125163328_message_wake_pacing.up.sql` first, with every daemon of the database stopped, which makes every catch-up that the wake pacing still holds due at once, takes `paced_turns` off every queued catch-up and clears every claim's message mark; it drops no column and deletes no version row, so that store then reports 20261125163328, whose two columns an earlier release names in no statement.
 A rollback of a store that #5285's release migrated runs the way back of the line above first, since #5285's release carries the release that lets a message wake go ahead and `20261125163328_message_wake_pacing` is the newest of the three migrations, then the ways back in the headers of `20261125023100_pod_replacements.up.sql` and `20261125023041_idle_release_declines_told_pod.up.sql`, newest first ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)), which delete those two versions' rows, and then the steps of the line for the release that backs a production check off, since #5285's release carries that release too.
+A rollback of a store that the release that admits by signals migrated runs the seven ways back in the headers of its migrations first, newest first, as [Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals) orders them, each of which deletes its own version row alone.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
 On a store that a release at contract 146 migrated, run the contract 146 block above first; on one that cybermonklabs/legion#3995 migrated, its four statements before that block; on one that cybermonklabs/legion#4115 migrated, the three statements of [Rolling back the project pause](#rolling-back-the-project-pause) after those four statements and before that block, once that section's first two steps are done; and on one that cybermonklabs/legion#4464 migrated, its own block after those four statements and before that block.
@@ -4128,7 +4182,15 @@ A rollback past it takes `admission_p0_bound` out of `legion.yaml` first, since 
 20261125223008_claim_held_for, of cybermonklabs/legion#5505, adds `claims.held_for` at its default, the empty string, writes `provider_error` in place of each `cyber_policy` that `claims.failure_cause` or `claims.pending_cause` holds and `cyber_policy` in that row's `held_for`, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since the two cause columns then hold only words an earlier release knows, and that release reads a claim held for `cyber_policy` as one failed under `provider_error` and does not hold it.
 The same release writes the outbox key `decided` on each supervise start a person, the controller or the issue's architect decided (`record.SuperviseRequest.Decided`), and an earlier release decodes outbox rows strictly, so a row that carries it fails there on every attempt: before the earlier image boots, with every daemon of the database stopped, run `update outbox set payload = payload - 'decided' where kind = 'supervise' and payload ? 'decided';`, which takes that key off each supervise row and leaves every other key, and every row of another kind, a catch-up notice's own `decided` among them; the earlier release then runs such a start as one of its own.
 That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scratch `outbox` table with the `kind` check and the `payload jsonb` column `0004_record.up.sql` gives it, holding a supervise start that carried `decided` beside `resendEntry`, a supervise start without it and a `notice` row carrying `decided` at the top and under `catch_up`: the first run printed `UPDATE 1` and the second `UPDATE 0`, the first row kept `resendEntry`, and the `notice` row kept both keys.
+20261126011110_memory_kills, of cybermonklabs/legion#5603, adds the tables `memory_kills` and `signal_inputs` and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header last of that release's seven ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops both tables and deletes its version row.
+20261126020201_queue_events, of cybermonklabs/legion#5603, adds the table `queue_events` and the column `signal_inputs.read_error` and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which deletes the queued `queue_timeline_read` rows, drops the table and the column, deletes the queue's row of `signal_inputs` and deletes its version row.
+20261126025927_approval_asks, of cybermonklabs/legion#5603, adds the tables `approval_asks`, `approval_assignees` and `approval_default_assignees` and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops the three tables, deletes the approvals' row of `signal_inputs` and deletes its version row.
+20261126042544_model_requests, of cybermonklabs/legion#5603, adds the tables `model_requests`, `model_request_minutes`, `signal_token_limits` and `claim_turns`, fills `claim_turns` with the turn each working claim is in, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops the four tables, deletes the provider's row of `signal_inputs` and deletes its version row.
+20261126055316_signal_deadlines, of cybermonklabs/legion#5603, adds the table `signal_deadlines` and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops the table, deletes the marks in `processed_events` of the deadline's firings and deletes its version row.
+20261126070017_model_requests_retried_refusals, of cybermonklabs/legion#5603, adds `model_requests.retried_refusals_reported` at its default, false, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header before that of 20261126042544_model_requests ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops the column and deletes its version row.
+20261126072843_signal_settings, of cybermonklabs/legion#5603, adds the tables `signal_settings`, `signal_changes` and `signal_change_ids` and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first of that release's seven ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops the three tables and deletes its version row.
 20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
+20261126190955_outbox_kinds_with_the_queue_timeline_read, of cybermonklabs/legion#5603, writes the outbox's kind check again with `queue_timeline_read` added to the list of 20261126110259 and touches none of the six, so the block holds over it; it carries no way back of its own, and a rollback to a release before it deletes the rows of its kind with the way back of 20261126020201_queue_events ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)) and deletes no version row of it.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -5767,8 +5829,10 @@ For a process of a role, the watch also gives a report to that role's part of th
   <role>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report
   ```
 
-A process of no role has its `ended` line and no report, whether the classifier protects it or not.
-The daemon chooses the note by the report's cause (`memoryGuardKill`, `packages/daemon/internal/workflow/engine.go`) and queues it to the role's topic with the sizes in binary units.
+A process of no role has its `ended` line and a report too, whether the classifier protects it or not:
+the report carries the kill's `cause` as above and `noRole: true`, and goes to the daemon as the guard's report of a process of no role goes ("The report and the note" in [The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), on a connection whose answer carries `noRoleKills: true` beside `kernelKills: true`.
+The daemon keeps it with the project's kills and tells no role of it.
+For a process of a role, the daemon chooses the note by the report's cause (`memoryGuardKill`, `packages/daemon/internal/workflow/engine.go`) and queues it to the role's topic with the sizes in binary units.
 
 For `cause: kernel` the note is `kernelKillNote`'s, and the daemon logs `workflow: the role whose process the pod's kernel stopped is told why` with the report's `cause`:
 
@@ -8033,7 +8097,7 @@ A panic on the guard's loop writes `off reason=panic: <value> at <function> (<fi
 `unread` comes once for each process the guard could not read, and `kill failed` once for each process a kill failed on, which counts unread from then on; the guard ends no such process, and each is in the `unread_processes` of a `stopped for this rise` line written while it lives.
 Read a pod's hourly lines with `kubectl logs <pod> -c roles | grep '^launcher: memory guard: hour '`.
 
-The launcher writes three lines of its own about the reports below, each behind the role's `<role>: ` prefix:
+The launcher writes three lines of its own about the reports of a role's processes below, each behind the role's `<role>: ` prefix:
 
 ```text
 <role>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=32 reports already wait for a connection, the most a role keeps
@@ -8041,15 +8105,29 @@ The launcher writes three lines of its own about the reports below, each behind 
 <role>: launcher: memory guard: report unsent sequence=<n> pid=<pid> reason=<why>; the next connection carries it
 ```
 
+It writes three more about the reports of processes of no role, behind no role's prefix, as the guard's own lines are:
+
+```text
+launcher: memory guard: report dropped sequence=<n> pid=<pid> role=none reason=32 reports of no role already wait for a connection, the most the pod keeps
+launcher: memory guard: report dropped sequence=<n> pid=<pid> role=none reason=no connection's acknowledgement says the daemon behind it knows a report of a process of no role (noRoleKills)
+launcher: memory guard: report unsent sequence=<n> pid=<pid> role=none reason=<why>; the next connection that can carry it does
+```
+
 **The report and the note.**
 For each process of a role that it ends, the guard gives a report to that role's part of the launcher, which sends it to the daemon as one `launcher_memory_kill` frame on the role's connection:
 the guard's own id, its count of kills, the pid, the process's name as its lines give it (`executable`, at most 256 bytes and no argument), the process's size, the reading, the counter and the limit.
 The launcher sends a report only on a connection whose answer carried settings, since a daemon built before the guard closes a connection on a frame it does not know, and it drops a report waiting for any other connection with a line.
 Up to 32 reports wait while the role has no connection, and a 33rd drops the oldest with a line, or the next oldest while the oldest is being written.
-A process of no role has its `ended` line and no report.
+A process of no role has its `ended` line and a report too, marked `noRole: true`, which waits in one queue of the pod's rather than in a role's (`noRoleReports`, `packages/daemon/internal/launcher/memoryguard.go`).
+It goes once, on the connection of the first role of the pod's role list whose answer carried `noRoleKills: true` beside the settings.
+A daemon that keeps the kills for admission by signals (the `admission-signals` entry of the daemon API contract) sets `noRoleKills` on its answer to every issue pod's launcher, and never on its answer to the controller pod's.
+While no connection is up the report waits, up to 32 as a role's do;
+where connections are up and none of their answers carried `noRoleKills`, the launcher drops every report of no role waiting then with a line, since an earlier daemon would tell the role whose connection carried it of a kill that was not its own.
 The daemon applies each report once, under the event id `memory-guard-kill:<guard>:<sequence>`, so a report sent twice tells the role once.
 It credits the report to the issue, the role and the pod that the connection authenticated as, and never to anything the report says.
-It then queues one message to that role's topic, `notifications.role.<role token>` (`memoryGuardNote`, `packages/daemon/internal/workflow/engine.go`), with the sizes in binary units (`3.13 GiB`).
+It keeps each report of an issue pod, of a role's process or of one of no role, for the project's kills signal, at the moment the guard named the kill, so a report sent late counts at that moment.
+For a process of no role it tells no role.
+For a process of a role it then queues one message to that role's topic, `notifications.role.<role token>` (`memoryGuardNote`, `packages/daemon/internal/workflow/engine.go`), with the sizes in binary units (`3.13 GiB`).
 The message names the process as the lines do, by its executable's base name or its `comm`, escaped and cut, and prints no argument, since an argument may hold a credential that no masking rule names, and the role that started the process already has its arguments:
 
 ```text
@@ -8068,7 +8146,7 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
   a report that fails the frame's own checks, and a valid report it could not record, because its store write failed or the bounded time it gives each report ran out.
   The launcher counted the report as sent once it was written, so it does not send it again.
 
-- The workflow dropped the report, with a line in the daemon's log, because the daemon records no such issue.
+- The workflow told no role, with a line in the daemon's log, because the daemon records no such issue; the daemon keeps the kill all the same.
 
 - The role's session held no topic when the outbox row ran, so the message was not delivered:
   the outbox finishes the row with one log line (`roleMessage`, `packages/daemon/internal/daemon/outbox.go`).
@@ -11449,8 +11527,9 @@ It is read once at boot, and is never an environment variable or a flag.
 **The operator-side file.**
 `legion controller start` reads a small file of its own, never the daemon's `legion.yaml`, whose loader would run both GitHub Apps' `private_key_command` on your machine and demand keys the controller never uses.
 `deploy/kubernetes/daemon/controller.yaml.example` is the complete shape:
-the same key names as `legion.yaml`, only the fourteen the controller needs (`project`, `daemon_url`, `operator_token_file`, `envoy_url`, `envoy_token_file`, `nats_urls`, `nats_nkey_seed_file`, `dispatch_url`, `dispatch_token_file`, `dispatch_token_broker`, `instructions`, `omp_invocation`, `omp_launch_prefix`, `state_dir`;
+the same key names as `legion.yaml`, only the sixteen the controller needs (`project`, `daemon_url`, `operator_token_file`, `envoy_url`, `envoy_token_file`, `nats_urls`, `nats_nkey_seed_file`, `dispatch_url`, `dispatch_token_file`, `dispatch_token_broker`, `instructions`, `omp_invocation`, `omp_launch_prefix`, `state_dir`, `signal_own_refusal_pattern`, `signal_provider_refusal_pattern`;
 `nats_nkey_seed_file` is the Go CLI's alone, which the TypeScript CLI refuses as unknown).
+The two refusal patterns are the project's own of its `legion.yaml` entry, held to the same subset, which the controller's host classes the refusals of its own session by; keep them equal to the project's, since this file is read on your machine, which reads no `legion.yaml`.
 Any other key is refused naming it and the example (`unknown key "runtime" in the
 controller configuration; legion controller start reads only … — see
 deploy/kubernetes/daemon/controller.yaml.example`);

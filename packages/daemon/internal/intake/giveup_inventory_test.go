@@ -45,12 +45,12 @@ func githubEventEnvelope(t *testing.T, id string, fields map[string]any) []byte 
 	return envelopeJSON(t, "github-inventory-"+id, "github", string(payload))
 }
 
-// No fact type keeps redelivery without a bound: one message of each of the 18 fact types
+// No fact type keeps redelivery without a bound: one message of each of the 22 fact types
 // decodeMessage returns, on the Dispatch, GitHub and wake subjects, and one message that does not
 // decode, each failing where its handling can fail, is terminated at the bound once a given-up
 // record of it has committed. Each fails in the handler; a review and a checks settlement name a
 // pull request the daemon records, since one of any other is acknowledged with no transaction.
-// The count at the end holds the table to the 18 distinct fact types decode.go returns today; it
+// The count at the end holds the table to the 22 distinct fact types decode.go returns today; it
 // counts the table, not decode.go, so a fact type decode.go returns later is added to the table,
 // and to the count, by hand.
 func TestEveryFactTypeTheDecoderReturnsIsGivenUpAtTheBound(t *testing.T) {
@@ -87,13 +87,19 @@ func TestEveryFactTypeTheDecoderReturnsIsGivenUpAtTheBound(t *testing.T) {
 			"ask_state": "open", "ask_waiting_on": "human"}), "intake.DispatchAskReply"},
 		{dispatch, issue + "ask.edited", dispatchEventEnvelope(t, 7, "ask.edited", map[string]any{"id": "ask-5", "kind": "approval",
 			"approval": map[string]any{"artifact_id": "plan-md", "version": 3, "requested_version": 2}}), "intake.DispatchApprovalMoved"},
-		{dispatch, issue + "issue.claimed", dispatchEventEnvelope(t, 8, "issue.claimed", map[string]any{
+		{dispatch, issue + "ask.asked_of", dispatchEventEnvelope(t, 8, "ask.asked_of", map[string]any{"id": "ask-6", "kind": "question",
+			"state": "open", "asked_of": "person-2@example.invalid"}), "intake.DispatchAskTurn"},
+		{dispatch, defaultAssigneeSubject("CAPTURE"), envelopeJSON(t, "dispatch-inventory-default", "dispatch",
+			`{"id":9,"issue_key":null,"artifact_id":null,"project":"CAPTURE","seq":1,"type":"settings.project_default_assignee.updated","actor":{"kind":"user","id":"someone"},"notify":false,"created_at":"2026-11-20T00:00:00Z","payload":{"project":"CAPTURE","assignee":"person-1@example.invalid"}}`),
+			"intake.DispatchDefaultAssignee"},
+		{dispatch, issue + "issue.claimed", dispatchEventEnvelope(t, 10, "issue.claimed", map[string]any{
 			"claim": map[string]any{"actor": map[string]string{"kind": "session", "id": "ses-1"}}}), "intake.DispatchClaim"},
 		{github, repo + "pr.42", githubEventEnvelope(t, "opened", pr("opened", nil)), "intake.PullRequestOpened"},
 		{github, repo + "pr.42", githubEventEnvelope(t, "synchronize", pr("synchronize", map[string]any{"before": "head-1"})), "intake.PullRequestSynchronized"},
 		{github, repo + "pr.42", githubEventEnvelope(t, "merged", pr("closed", map[string]any{"merged": "true", "merge_commit_sha": "merge-1"})), "intake.PullRequestMerged"},
 		{github, repo + "pr.42", githubEventEnvelope(t, "closed", pr("closed", map[string]any{"merged": "false"})), "intake.PullRequestClosed"},
 		{github, repo + "pr.42", githubEventEnvelope(t, "dequeued", pr("dequeued", nil)), "intake.PullRequestDequeued"},
+		{github, repo + "pr.42", githubEventEnvelope(t, "enqueued", pr("enqueued", map[string]any{"head_ref": "legion/CAPTURE-3"})), "intake.PullRequestEnqueued"},
 		{github, repo + "pr.42", githubEventEnvelope(t, "review_requested", pr("review_requested", nil)), "intake.PullRequestReviewRequests"},
 		{github, repo + "pr.42.review", githubEventEnvelope(t, "review", map[string]any{"kind": "review", "action": "submitted", "number": "42",
 			"state": "approved", "author": "maintainer", "commit_id": "head-2", "head_sha": "head-2", "review_id": "7001",
@@ -158,7 +164,7 @@ func TestEveryFactTypeTheDecoderReturnsIsGivenUpAtTheBound(t *testing.T) {
 			}
 		})
 	}
-	if len(types) != 19 {
-		t.Fatalf("the inventory holds %d fact types, want the 19 decodeMessage returns", len(types))
+	if len(types) != 22 {
+		t.Fatalf("the inventory holds %d fact types, want the 22 decodeMessage returns", len(types))
 	}
 }

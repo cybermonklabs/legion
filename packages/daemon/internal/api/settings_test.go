@@ -247,6 +247,11 @@ var settingsExcluded = map[string]string{
 	"Variant.MemoryBlock":                "derived: whether the arm is the `memory` block's rather than the `experiments` key's, set by config.Project.ExperimentsDeclared, which the settings already tell by carrying the block under `memory` and the key under `experiments`",
 	"Config.Revision":                    "not a setting: the commit this binary was built from, which `legion start` sets from cmd/legion's link-time revision and no legion.yaml key names",
 	"Config.GitHubGraphQLShare":          "not shown yet: the pace of the daemon's own GraphQL reads of GitHub, which no pod or plugin reads or acts on; carrying it on GET /legion/v1/state is a change of the daemon API contract (answers.go, packages/contracts) that the pull request adding the key does not make",
+	"Project.Provider":                   "not shown yet: the project's model provider keys, which reach the hosts as their launch's refusal patterns and admission as the limit and selector it keeps the model requests by; the state shows the provider's signals, not these keys, and carrying them on GET /legion/v1/state is a change of the daemon API contract this change does not make",
+	"SignalProvider.TokenLimit":          "not shown yet: a key of Project.Provider",
+	"SignalProvider.TokenModels":         "not shown yet: a key of Project.Provider",
+	"SignalProvider.OwnRefusal":          "not shown yet: a key of Project.Provider",
+	"SignalProvider.ProviderRefusal":     "not shown yet: a key of Project.Provider",
 
 	// The cache's bucket and the account holding its grant, which no pod but a cache pod reads.
 	"RepositoryCacheConfig.Bucket":         "runtime.kubernetes.repository_cache.bucket: the deployment's own Cloud Storage bucket, named by a route that authenticates nobody (GET /legion/v1/state); the cache pods alone read it, from their own environment, and an issue pod reaches its packs through the addresses its cache signs",

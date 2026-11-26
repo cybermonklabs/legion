@@ -588,6 +588,7 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/claims/ready-for-update", s.readyForUpdate},
 		{"POST /legion/v1/claims/exit", s.exit},
 		{"POST /legion/v1/claims/turn-outcome", s.turnOutcome},
+		{"POST /legion/v1/claims/model-requests", s.modelRequests},
 		{"POST /legion/v1/claims/activity", s.activity},
 		{"POST /legion/v1/claims/release-records", s.releaseRecords},
 		{"POST /legion/v1/grants", s.grant},
@@ -616,6 +617,7 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/intake/discard", s.intakeDiscard},
 		{"POST /legion/v1/project/pause", s.projectPause},
 		{"POST /legion/v1/project/resume", s.projectResume},
+		{"POST /legion/v1/project/signals", s.projectSignals},
 		{"POST /legion/v1/project/p0-bound", s.projectP0Bound},
 		{"POST /legion/v1/project/p0-bound/clear", s.projectP0BoundClear},
 
@@ -634,6 +636,7 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/operator/intake/discard", s.operator(s.operatorIntakeDiscard)},
 		{"POST /legion/v1/operator/project/pause", s.operator(s.operatorProjectPause)},
 		{"POST /legion/v1/operator/project/resume", s.operator(s.operatorProjectResume)},
+		{"POST /legion/v1/operator/project/signals", s.operator(s.operatorProjectSignals)},
 		{"POST /legion/v1/operator/project/p0-bound", s.operator(s.operatorProjectP0Bound)},
 		{"POST /legion/v1/operator/project/p0-bound/clear", s.operator(s.operatorProjectP0BoundClear)},
 

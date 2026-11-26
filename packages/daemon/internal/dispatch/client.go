@@ -115,20 +115,22 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 			}
 		}
 		issues = append(issues, IssueSummary{
-			Key:          issue.Key,
-			Title:        issue.Title,
-			Status:       issue.Status,
-			Parent:       issue.Parent,
-			Rank:         issue.Rank,
-			Priority:     issue.Priority,
-			Resolved:     resolvedPriority(issue.ResolvedPriority, issue.PriorityFrom),
-			HandedOver:   CarriesLegionLabel(issue.Labels),
-			Labels:       issue.Labels,
-			LastSeq:      issue.LastSeq,
-			ResolvedRepo: deref(issue.ResolvedRepo),
-			BlockedBy:    issue.BlockedBy,
-			ClaimedBy:    issue.Claim.holder(),
-			ClaimUnread:  issue.Claim.unread(),
+			Key:           issue.Key,
+			Title:         issue.Title,
+			Status:        issue.Status,
+			Parent:        issue.Parent,
+			Rank:          issue.Rank,
+			Priority:      issue.Priority,
+			Resolved:      resolvedPriority(issue.ResolvedPriority, issue.PriorityFrom),
+			HandedOver:    CarriesLegionLabel(issue.Labels),
+			Labels:        issue.Labels,
+			LastSeq:       issue.LastSeq,
+			ResolvedRepo:  deref(issue.ResolvedRepo),
+			BlockedBy:     issue.BlockedBy,
+			ClaimedBy:     issue.Claim.holder(),
+			ClaimUnread:   issue.Claim.unread(),
+			Assignee:      issue.Assignee.login,
+			AssigneeKnown: issue.Assignee.known,
 		})
 	}
 	return issues, nil
@@ -141,6 +143,74 @@ func (c *HTTPClient) GetIssue(ctx context.Context, key string) (Issue, error) {
 		return Issue{}, err
 	}
 	return response.issue(), nil
+}
+
+// OpenAsks reads GET /api/v1/asks/open?project=<project>: the project's open asks and its default
+// assignee, which Dispatch reads in one statement, so no move of the default falls between the
+// two. It keeps the asks of issues alone: an ask of a project's document is no ask of an issue, and
+// the approvals signal counts the asks of issues, as the replay does. A Dispatch before
+// default_assignee answers none, and so does one that stores no default of the project (JSON null):
+// OpenAsks.DefaultAssignee is then "", never a person guessed from the one an ask waits on
+// (waiting_on_person). An answer that lists an ask of an issue with no id or no key is an error
+// rather than a read with a hole. One whose as_of is no time reads as of no time (OpenAsks.AsOf
+// zero): the store keeps the time beside the default assignee and no reading of the signal reads
+// it, so it fails no read.
+func (c *HTTPClient) OpenAsks(ctx context.Context, project string) (OpenAsks, error) {
+	query := url.Values{}
+	query.Set("project", project)
+	var response struct {
+		AsOf string `json:"as_of"`
+		Asks []struct {
+			ID    string `json:"id"`
+			Owner struct {
+				Issue *struct {
+					Key string `json:"key"`
+				} `json:"issue"`
+			} `json:"owner"`
+		} `json:"asks"`
+		DefaultAssignee personMember `json:"default_assignee"`
+	}
+	if err := c.request(ctx, http.MethodGet, "/api/v1/asks/open?"+query.Encode(), nil, &response); err != nil {
+		return OpenAsks{}, err
+	}
+	open := OpenAsks{Asks: []OpenAsk{}, DefaultAssignee: response.DefaultAssignee.login}
+	if asOf, err := time.Parse(time.RFC3339Nano, response.AsOf); err == nil {
+		open.AsOf = asOf.UTC()
+	}
+	for _, ask := range response.Asks {
+		if ask.Owner.Issue == nil {
+			continue
+		}
+		if ask.ID == "" || ask.Owner.Issue.Key == "" {
+			return OpenAsks{}, fmt.Errorf("read the open asks of %s: an ask of an issue names no id or no issue key", project)
+		}
+		open.Asks = append(open.Asks, OpenAsk{ID: ask.ID, Issue: ask.Owner.Issue.Key})
+	}
+	return open, nil
+}
+
+// IssueAsks reads GET /api/v1/issues/<key>/asks?state=open: each open ask of the issue, with the
+// person it was handed to (asked_of, "" for none) and whether it waits on a person, as Dispatch
+// computes it (waiting_on: `human` or `agent`). An open ask whose turn is neither is an error, since
+// the daemon would otherwise guess it.
+func (c *HTTPClient) IssueAsks(ctx context.Context, key string) ([]IssueAsk, error) {
+	var response []struct {
+		ID        string  `json:"id"`
+		State     string  `json:"state"`
+		AskedOf   *string `json:"asked_of"`
+		WaitingOn string  `json:"waiting_on"`
+	}
+	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key)+"/asks?state=open", nil, &response); err != nil {
+		return nil, err
+	}
+	asks := make([]IssueAsk, 0, len(response))
+	for _, ask := range response {
+		if ask.ID == "" || (ask.WaitingOn != "human" && ask.WaitingOn != "agent") {
+			return nil, fmt.Errorf("read the open asks of %s: the ask %q is open and waits on %q, neither the person nor the agent", key, ask.ID, ask.WaitingOn)
+		}
+		asks = append(asks, IssueAsk{ID: ask.ID, AskedOf: deref(ask.AskedOf), WaitsOnPerson: ask.WaitingOn == "human"})
+	}
+	return asks, nil
 }
 
 // WebhookAppInstalled reads GET /api/v1/github/app-installation/{owner}/{repo}: whether

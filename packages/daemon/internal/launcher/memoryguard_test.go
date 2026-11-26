@@ -1166,7 +1166,9 @@ func (g *roleConn) noMemoryKill(what string) {
 
 // A kill of a role's process is reported on that role's connection, once, with what the guard
 // saw and the process named by its executable's base name alone; another role's connection
-// carries none of it, and a kill of a process in no role is reported nowhere.
+// carries none of it. A kill of a process in no role goes on neither connection, since neither
+// acknowledgement says the daemon knows a report of no role (noRoleKills): the launcher drops its
+// report with a line of its own.
 func TestMemoryGuardReportsAKillOnTheConnectionOfTheProcesssRoleAlone(t *testing.T) {
 	// Not parallel: it writes the package variable roleHome (newFleetDialedOf), which parallel
 	// tests read.
@@ -1211,6 +1213,13 @@ func TestMemoryGuardReportsAKillOnTheConnectionOfTheProcesssRoleAlone(t *testing
 	}
 	for _, role := range []string{"tester", "reviewer"} {
 		f.role(role).noMemoryKill("after its own report the " + role + "'s connection")
+	}
+	line := noRoleDropped(1, none)
+	testwait.Eventually(t, "the launcher's line "+line, func() bool {
+		return slices.Contains(guardLines(f.stderr, "report dropped"), line)
+	})
+	if got := guardLines(f.stderr, "report dropped"); !slices.Equal(got, []string{line}) {
+		t.Fatalf("the launcher's dropped lines are %q, want %q alone", got, line)
 	}
 }
 
@@ -1339,7 +1348,7 @@ func TestMemoryGuardDropsTheNextOldestWhileTheOldestIsBeingWritten(t *testing.T)
 	sent := make(chan struct{})
 	go func() {
 		defer close(sent)
-		m.openMemoryReports(shimwire.NewWriter(conn), true)
+		m.openMemoryReports(shimwire.NewWriter(conn), true, false)
 	}()
 	select {
 	case <-conn.writing:
@@ -1383,6 +1392,161 @@ func TestMemoryGuardDropsTheNextOldestWhileTheOldestIsBeingWritten(t *testing.T)
 	m.mu.Unlock()
 	if left != 0 {
 		t.Fatalf("%d reports still wait after every write succeeded", left)
+	}
+}
+
+// noRoleKillsAck is ack with noRoleKills set too, as a daemon that knows a report of a process of
+// no role answers an issue pod's launcher.
+func noRoleKillsAck(ack shimwire.LauncherHelloAck) shimwire.LauncherHelloAck {
+	ack.NoRoleKills = true
+	return ack
+}
+
+// noRoleDropped is the launcher's own line, behind no role's prefix, for a report of a process of
+// no role it drops because no connection up can carry it.
+func noRoleDropped(sequence uint64, pid int) string {
+	return fmt.Sprintf("launcher: memory guard: report dropped sequence=%d pid=%d role=none "+
+		"reason=no connection's acknowledgement says the daemon behind it knows a report of a process of no role (noRoleKills)", sequence, pid)
+}
+
+// A kill of a process of no role is reported once, on the connection of the first role of the
+// pod's role list whose acknowledgement carries noRoleKills, marked as of no role and with what
+// the guard saw; the other role's connection carries none of it. A kill of a role's process still
+// goes on that role's own connection alone, unmarked.
+func TestMemoryGuardReportsAKillOfNoRoleOnceOnTheFirstConnectionThatKnowsIt(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const none, reviewers = 710, 711
+	pod := newGuardPod(t)
+	pod.add(
+		guardProcess{pid: none, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "outside.py"}, anon: 900 * guardMiB},
+		guardProcess{pid: reviewers, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py", "--reviewer"}, anon: 700 * guardMiB},
+	)
+	rig := useGuardPod(t, pod, map[int]string{reviewers: "reviewer"})
+	f := newFleetDialedOf(t, Config{StopGrace: 2 * time.Second}, "tester", "reviewer")
+	rig.started()
+	for _, role := range []string{"tester", "reviewer"} {
+		f.role(role).acknowledgeWith(noRoleKillsAck(defaultsAck()))
+		// A connection answers a stop only once it serves commands, which is after its reports
+		// opened on it: both connections can carry a report before the first kill.
+		f.role(role).noMemoryKill("before any kill, the " + role + "'s connection")
+	}
+	rig.kill(none)
+	rig.kill(reviewers)
+
+	at := rig.clock.Now()
+	report := f.role("tester").nextMemoryKill()
+	want := shimwire.LauncherMemoryKill{
+		Guard: rig.id(), Sequence: 1, PID: none, Executable: "python3.13", SizeBytes: 900 * guardMiB,
+		ReadingBytes: guardHigh, CounterBytes: guardCounter, LimitBytes: guardLimit, NoRole: true,
+	}
+	if report.At.IsZero() || report.At.After(at) {
+		t.Fatalf("the report of no role is at %s, want the guard's clock at its kill, no later than %s", report.At, at)
+	}
+	report.At = time.Time{}
+	if report != want {
+		t.Fatalf("the tester's connection carries %+v, want the report of no role %+v", report, want)
+	}
+	if err := report.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if report := f.role("reviewer").nextMemoryKill(); report.PID != reviewers || report.Sequence != 2 || report.NoRole {
+		t.Fatalf("the reviewer's connection carries %+v, want its own process %d, the guard's second kill, unmarked", report, reviewers)
+	}
+	for _, role := range []string{"tester", "reviewer"} {
+		f.role(role).noMemoryKill("after the two reports, the " + role + "'s connection")
+	}
+	if got := guardLines(f.stderr, "report dropped"); len(got) != 0 {
+		t.Fatalf("the launcher logged %q, want no report dropped", got)
+	}
+}
+
+// A report of no role is never written on a connection whose acknowledgement lacks noRoleKills: a
+// kill made while the only connection up is such a one is dropped with the launcher's own line.
+// One made while no connection is up waits, and the next connection whose acknowledgement carries
+// noRoleKills carries it.
+func TestMemoryGuardDropsAKillOfNoRoleNoConnectionKnowsAndHoldsOneWhileNoneIsUp(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const dropped, held = 720, 721
+	pod := newGuardPod(t)
+	pod.add(
+		guardProcess{pid: dropped, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "dropped.py"}, anon: 900 * guardMiB},
+		guardProcess{pid: held, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "held.py"}, anon: 800 * guardMiB},
+	)
+	rig := useGuardPod(t, pod, nil)
+	f := newFleetDialedOf(t, Config{StopGrace: 2 * time.Second}, "tester")
+	rig.started()
+	f.role("tester").acknowledgeWith(defaultsAck())
+	f.role("tester").noMemoryKill("before any kill, the tester's connection")
+
+	rig.kill(dropped)
+	line := noRoleDropped(1, dropped)
+	testwait.Eventually(t, "the launcher's line "+line, func() bool {
+		return slices.Contains(guardLines(f.stderr, "report dropped"), line)
+	})
+	f.role("tester").noMemoryKill("a connection whose acknowledgement carries no noRoleKills")
+
+	f.dropConnection("tester")
+	rig.kill(held)
+	again := acceptRole(t, f.listener)
+	f.conns["tester"] = again
+	again.acknowledgeWith(noRoleKillsAck(defaultsAck()))
+	if report := again.nextMemoryKill(); report.PID != held || report.Sequence != 2 || report.Guard != rig.id() || !report.NoRole {
+		t.Fatalf("the next connection carries %+v, want the report of no role made while none was up, pid %d", report, held)
+	}
+	again.noMemoryKill("after the report of no role that waited for it, the next connection")
+	if got := guardLines(f.stderr, "report dropped"); !slices.Equal(got, []string{line}) {
+		t.Fatalf("the launcher's dropped lines are %q, want %q alone", got, line)
+	}
+}
+
+// The pod keeps at most 32 reports of no role while no connection can carry them: the 33rd drops
+// the oldest, with the launcher's own line, and the first connection that can carries the 32
+// newest, each marked as of no role, in the order the guard made them, and keeps none back.
+func TestMemoryGuardKeepsThirtyTwoWaitingReportsOfNoRoleAndDropsTheOldest(t *testing.T) {
+	t.Parallel()
+	const first = 900
+	stderr := &lockedBuffer{}
+	m := &manager{role: "tester", stderr: stderr}
+	reports := newNoRoleReports([]*manager{m}, func(format string, args ...any) { fmt.Fprintf(stderr, format+"\n", args...) })
+	m.noRoleReports = reports
+	for sequence := 1; sequence <= maxWaitingMemoryKills+1; sequence++ {
+		reports.queue(shimwire.LauncherMemoryKill{Guard: "0123456789abcdef", Sequence: uint64(sequence), PID: first + sequence - 1,
+			Executable: "python3", SizeBytes: 600 * guardMiB, ReadingBytes: 3500 * guardMiB, LimitBytes: 4096 * guardMiB, At: time.Now()})
+	}
+	want := fmt.Sprintf("launcher: memory guard: report dropped sequence=1 pid=%d role=none reason=%d reports of no role already wait for a connection, the most the pod keeps",
+		first, maxWaitingMemoryKills)
+	if got := guardLines(stderr, "report dropped"); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the dropped lines are %q, want %q alone", got, want)
+	}
+
+	var out lockedBuffer
+	m.openMemoryReports(shimwire.NewWriter(&out), true, true)
+	var sequences []uint64
+	for _, line := range strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n") {
+		frame, err := shimwire.Decode([]byte(line))
+		if err != nil {
+			t.Fatalf("the connection carries %q: %v", line, err)
+		}
+		kill, ok := frame.(shimwire.LauncherMemoryKill)
+		if !ok || !kill.NoRole {
+			t.Fatalf("the connection carries %#v, want only reports of no role", frame)
+		}
+		sequences = append(sequences, kill.Sequence)
+	}
+	var wantSequences []uint64
+	for sequence := uint64(2); sequence <= maxWaitingMemoryKills+1; sequence++ {
+		wantSequences = append(wantSequences, sequence)
+	}
+	if !slices.Equal(sequences, wantSequences) {
+		t.Fatalf("the connection carries the reports %v, want %v", sequences, wantSequences)
+	}
+	reports.mu.Lock()
+	left := len(reports.kills)
+	reports.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("%d reports of no role still wait after every write succeeded", left)
 	}
 }
 
@@ -4075,7 +4239,8 @@ func TestAMicroVMLauncherRaisesTheAgentsWorkAndKeepsItsOwnProcessesAtTheStarting
 // cause, on the tester's connection, whose acknowledgement carries kernelKills; the reviewer's
 // connection, which carries kernelKills too, gets nothing. The kill of a process of no role in the
 // same rise, which the watch hands the launcher's sink with no role, has its line and reaches no
-// connection.
+// connection: neither acknowledgement carries noRoleKills, so the launcher drops its report with
+// a line of its own.
 func TestAMicroVMLauncherRunsNoGuardAndTellsTheKilledProcesssRoleAlone(t *testing.T) {
 	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
 	// launcher reads to tell whether it is the container's first process.
@@ -4131,13 +4296,85 @@ func TestAMicroVMLauncherRunsNoGuardAndTellsTheKilledProcesssRoleAlone(t *testin
 	}
 	f.role("reviewer").noMemoryKill("after the kernel killed the tester's process and one of no role, the reviewer's connection")
 	f.role("tester").noMemoryKill("after its one report, the tester's connection")
+	dropped := noRoleDropped(2, outside)
+	testwait.Eventually(t, "the launcher's line "+dropped, func() bool {
+		return slices.Contains(guardLines(f.stderr, "report dropped"), dropped)
+	})
 	ended := []string{off,
 		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel less_parent=0 new_read=- executable="python3.13"`,
 			testers, 900*guardMiB, 3500*guardMiB, guardCounter, 64*guardMiB, guardLimit),
 		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=none size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel less_parent=0 new_read=- executable="python3.13"`,
 			outside, 200*guardMiB, 3500*guardMiB, guardCounter, 64*guardMiB, guardLimit),
+		dropped,
 	}
 	if got := guardLines(f.stderr, ""); !slices.Equal(got, ended) {
 		t.Fatalf("the launcher's memory guard lines are %q, want %q", got, ended)
+	}
+}
+
+// A microVM pod's launcher reports the kernel's kill of a process of no role, with the kernel's
+// cause and marked as of no role, on a connection whose acknowledgement carries noRoleKills beside
+// kernelKills, and never on one whose acknowledgement carries kernelKills alone: in one rise the
+// kernel stops a process of the tester's and one of no role, the tester's connection, which lacks
+// noRoleKills, carries the tester's own report alone, and the reviewer's carries the one of no
+// role. Both kills have the watch's own `ended` line as before, and no report is dropped.
+func TestAMicroVMLauncherReportsTheKernelsKillOfNoRoleOnAConnectionThatKnowsIt(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const testers, outside = 760, 761
+	pod := newGuardPod(t)
+	pod.add(
+		guardProcess{pid: testers, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, resident: 900 * guardMiB},
+		guardProcess{pid: outside, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "outside.py"}, resident: 200 * guardMiB},
+	)
+	pod.setSelfScore(0)
+	pod.setScore(testers, 0, 1400)
+	pod.setScore(outside, 0, 1000)
+	pod.setKernelKills(0, guardGiB, 32*guardMiB)
+	noGuard(t, "a microVM pod's launcher built a memory guard")
+	rig := useGuestPod(t, pod, map[int]string{testers: "tester"})
+	f := newFleetDialedOf(t, Config{StopGrace: 2 * time.Second, MicroVM: true}, "tester", "reviewer")
+	rig.started()
+	f.role("tester").acknowledgeWith(shimwire.LauncherHelloAck{KernelKills: true})
+	f.role("reviewer").acknowledgeWith(shimwire.LauncherHelloAck{KernelKills: true, NoRoleKills: true})
+	for _, role := range []string{"tester", "reviewer"} {
+		// A connection answers a stop only once it serves commands, which is after its reports
+		// opened on it: both connections are up before the kernel stops anything.
+		f.role(role).noMemoryKill("before any kill, the " + role + "'s connection")
+	}
+
+	pod.showKernelKill(testers)
+	pod.showKernelKill(outside)
+	pod.setKernelKills(2, 3500*guardMiB, 64*guardMiB)
+	rig.tick()
+	at := rig.clock.Now()
+	if report := f.role("tester").nextMemoryKill(); report.PID != testers || report.Sequence != 1 || report.NoRole ||
+		report.Cause != shimwire.MemoryKillCauseKernel {
+		t.Fatalf("the tester's connection carries %+v, want its own process %d with the kernel's cause, unmarked", report, testers)
+	}
+	report := f.role("reviewer").nextMemoryKill()
+	want := shimwire.LauncherMemoryKill{
+		Guard: rig.id(), Sequence: 2, PID: outside, Executable: "python3.13", SizeBytes: 200 * guardMiB,
+		ReadingBytes: 3500 * guardMiB, CounterBytes: guardCounter, LimitBytes: guardLimit, At: at,
+		Cause: shimwire.MemoryKillCauseKernel, NoRole: true,
+	}
+	if !report.At.Equal(at) {
+		t.Fatalf("the report of no role is at %s, want the scan that saw the kill, at %s", report.At, at)
+	}
+	report.At = at
+	if report != want {
+		t.Fatalf("the reviewer's connection carries %+v, want the report of no role %+v", report, want)
+	}
+	if err := report.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{"tester", "reviewer"} {
+		f.role(role).noMemoryKill("after the two reports, the " + role + "'s connection")
+	}
+	if got := guardLines(f.stderr, "report dropped"); len(got) != 0 {
+		t.Fatalf("the launcher logged %q, want no report dropped", got)
+	}
+	if got := guardLines(f.stderr, "ended "); len(got) != 2 || !strings.Contains(got[1], fmt.Sprintf("ended pid=%d role=none ", outside)) {
+		t.Fatalf("the launcher's kill lines are %q, want the tester's and then the one of pid %d in role none", got, outside)
 	}
 }

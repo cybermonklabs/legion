@@ -26,6 +26,7 @@ type issueSummaryResponse struct {
 	ResolvedRepo     *string         `json:"resolved_repo"`
 	BlockedBy        []string        `json:"blocked_by"`
 	Claim            *claimResponse  `json:"claim"`
+	Assignee         personMember    `json:"assignee"`
 }
 
 type issueResponse struct {
@@ -46,6 +47,7 @@ type issueResponse struct {
 	ResolvedRepo           *string         `json:"resolved_repo"`
 	BlockedBy              []string        `json:"blocked_by"`
 	Claim                  *claimResponse  `json:"claim"`
+	Assignee               personMember    `json:"assignee"`
 }
 
 // issue is the response as Issue: Dispatch's issue detail, and the issue its PATCH answers with.
@@ -69,6 +71,8 @@ func (r issueResponse) issue() Issue {
 		BlockedBy:              r.BlockedBy,
 		Claim:                  r.Claim.claim(),
 		ClaimUnread:            r.Claim.unread(),
+		Assignee:               r.Assignee.login,
+		AssigneeKnown:          r.Assignee.known,
 	}
 }
 
@@ -115,6 +119,24 @@ func (c *claimResponse) unread() bool {
 // holder is the claim as Claim.Holder writes it.
 func (c *claimResponse) holder() string {
 	return c.claim().Holder()
+}
+
+// personMember is a person member of a Dispatch read (an issue's assignee, a project's default
+// assignee): the login, "" for JSON null, and whether the read carried a login or null at all,
+// which a Dispatch before the member does not. A member that is neither reads as not carried, as
+// an unreadable claim does (claimResponse.unread), so an issue read the workflow acts on is never
+// lost to a member only the approvals signal reads.
+type personMember struct {
+	login string
+	known bool
+}
+
+func (p *personMember) UnmarshalJSON(raw []byte) error {
+	var login *string
+	if json.Unmarshal(raw, &login) == nil {
+		p.login, p.known = deref(login), true
+	}
+	return nil
 }
 
 type issueEventResponse struct {

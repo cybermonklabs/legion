@@ -687,15 +687,21 @@ func (d *launchers) earlierRestoreReport(s *launcherSession, report shimwire.Lau
 // memoryKilled hands the daemon one process of a role that was stopped because the pod was out
 // of memory, by the pod's memory guard or, in a microVM pod, by the pod's own kernel, as the
 // launcher reported it on the connection of the role whose process it was
-// (shimwire.LauncherMemoryKill). The launcher sends it unasked, and only on a connection whose
-// acknowledgement carried guard settings (a gVisor pod's launcher) or KernelKills (a microVM
-// pod's), which is a daemon that knows the frame and its cause. The report goes on whole, its
-// cause included, which chooses the note the role is told (workflow's memoryGuardKill).
+// (shimwire.LauncherMemoryKill), or one process of no role of an issue pod, which the launcher
+// reports on the connection of one role of the pod, marked NoRole. The launcher sends it unasked,
+// and only on a connection whose acknowledgement carried guard settings (a gVisor pod's
+// launcher) or KernelKills (a microVM pod's), which is a daemon that knows the frame and its
+// cause, and a report of no role only where it carried NoRoleKills too, which every issue pod's
+// acknowledgement does (launcherHelloAck). The report goes on whole, its cause and its mark
+// included: the cause chooses the note the role is told, and the mark that no role is told one
+// (workflow's memoryGuardKill).
 //
 // The issue, the role and the pod the kill is credited to are the session's own, as the hello's
 // authentication bound them (launcherCredential), and never anything the frame says: a launcher
-// cannot tell another role, issue or pod of a kill. The report's guard and sequence are what
-// apply it once however often it arrives (the event id the daemon applies it under).
+// cannot tell another role, issue or pod of a kill. A report of no role is credited to the issue
+// and the pod of the session that carried it as well, and to that session's role only as the
+// connection it came on. The report's guard and sequence are what apply it once however often it
+// arrives (the event id the daemon applies it under).
 //
 // A session of no issue is the controller's pod, whose one role is the project's controller: its
 // report goes to the controller's receiver (Options.ControllerMemoryGuardKilled), which tells the

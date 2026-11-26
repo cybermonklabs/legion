@@ -1,0 +1,34 @@
+{
+  "comment": "The two refusal patterns a project sets (signal_own_refusal_pattern, signal_provider_refusal_pattern) and the class each host gives a refused model request's text under them: own where the own pattern matches, else provider where the provider's does, else unknown. The Oh My Pi plugin compiles each as new RegExp(pattern, \"su\") (packages/pi-legion/src/model-requests.ts) and the Claude Code bridge as config.SharedPattern does, regexp.Compile(\"(?s)\" + pattern). The tests for both hosts read this file, so the two hosts class one text alike.",
+  "patterns": {
+    "own": "project tokens per minute|per-project limit",
+    "provider": "upstream.*(rate limit|overloaded)"
+  },
+  "cases": [
+    {
+      "name": "own",
+      "text": "429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"standin: project tokens per minute exceeded\"}}",
+      "refusal": "own"
+    },
+    {
+      "name": "provider",
+      "text": "429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"the upstream provider's rate limit is reached\"}}",
+      "refusal": "provider"
+    },
+    {
+      "name": "unknown",
+      "text": "429 Too Many Requests",
+      "refusal": "unknown"
+    },
+    {
+      "name": "both patterns match",
+      "text": "429 project tokens per minute exceeded; the upstream rate limit is reached as well",
+      "refusal": "own"
+    },
+    {
+      "name": "a match across lines",
+      "text": "429 the upstream\nprovider is overloaded",
+      "refusal": "provider"
+    }
+  ]
+}

@@ -156,6 +156,60 @@ func TestMemoryGuardAKillOfAnIssueTheDaemonDoesNotRecordIsLoggedAndDropped(t *te
 	}
 }
 
+// A kill of a process of no role, which the launcher reports on the connection of one role of the
+// pod, was that role's no more than any other's: whatever its cause, it queues nothing for the
+// issue, no role message and no notice, and says so in one line naming the issue, the connection
+// it came on and the cause.
+func TestMemoryGuardAKillOfNoRoleIsToldToNoRole(t *testing.T) {
+	t.Parallel()
+	pool := migratedPool(t)
+	seedTestingIssue(t, pool, "LEGION-209")
+	var logs bytes.Buffer
+	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
+	token := claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleTester))
+	causes := []shimwire.MemoryKillCause{shimwire.MemoryKillCauseGuard, shimwire.MemoryKillCauseKernel, shimwire.MemoryKillCauseKernelProtected}
+	for i, cause := range causes {
+		report := memoryGuardKillReport()
+		report.Sequence, report.Cause, report.NoRole = uint64(i+1), cause, true
+		if _, err := intake.ApplyFact(t.Context(), pool, "launcher", fmt.Sprintf("memory-guard-kill:guard-7f3a:%d", i+1), intake.MemoryGuardKill{
+			Issue: "LEGION-209", Token: token, PodUID: "pod-209", Report: report,
+		}, engine, admissionStub{}); err != nil {
+			t.Fatalf("apply the kill of no role of cause %q: %v", cause, err)
+		}
+	}
+
+	if rows := outboxRowsOf(t, pool, "LEGION-209"); rows != 0 {
+		t.Fatalf("the outbox holds %d rows of LEGION-209 after kills of no role, want none", rows)
+	}
+	text := logs.String()
+	if got := strings.Count(text, "a memory kill of a process of no role is told to no role"); got != len(causes) {
+		t.Fatalf("log = %q, want one line for each of the %d kills of no role", text, len(causes))
+	}
+	if !strings.Contains(text, "issue=LEGION-209") || !strings.Contains(text, "connection="+string(token)) || !strings.Contains(text, "cause=kernel-protected") {
+		t.Fatalf("log = %q, want each line to name the issue, the connection the report came on and its cause", text)
+	}
+}
+
+// A report marked as of no role on the controller's connection, which the daemon never tells the
+// controller pod's launcher it knows, is no kill of the controller's program: it queues nothing and
+// says so in one line.
+func TestMemoryGuardAControllerPodsKillOfNoRoleIsToldToNobody(t *testing.T) {
+	t.Parallel()
+	pool := migratedPool(t)
+	var logs bytes.Buffer
+	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
+	report := memoryGuardKillReport()
+	report.NoRole = true
+	applyControllerKill(t, pool, engine, claim.ControllerToken("legion"), report)
+
+	if rows := outboxRows(t, pool); rows != 0 {
+		t.Fatalf("the outbox holds %d rows, want none for a controller pod's kill of no role", rows)
+	}
+	if text := logs.String(); !strings.Contains(text, "a controller pod's memory kill of a process of no role is told to nobody") {
+		t.Fatalf("log = %q, want one line saying the kill of no role is told to nobody", text)
+	}
+}
+
 // applyControllerKill applies one kill of the controller pod's process, credited to token, under
 // the id the daemon applies such a report under.
 func applyControllerKill(t *testing.T, pool *pgxpool.Pool, engine *Engine, token claim.Token, report shimwire.LauncherMemoryKill) {

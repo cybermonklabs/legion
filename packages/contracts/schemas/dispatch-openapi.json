@@ -26709,6 +26709,17 @@
           "count": {
             "type": "integer"
           },
+          "default_assignee": {
+            "anyOf": [
+              {
+                "description": "on a ?project= read, the login of that project's default assignee, whom an ask on it reaches while nobody handed the ask on and its issue holds nobody; null where no project has the key; absent on an ?author_session= read",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "opened_since": {
             "type": "boolean"
           },

@@ -73,9 +73,12 @@ var urlPassword = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s/?#@:]*:[^\s
 // is one the runtime sets after the operator's variables on every Claude Code pane, or on every
 // resumed Oh My Pi pane (SessionExclusiveVariable), where the operator's value would be overridden
 // without a word, a launch secret's pointer, which every launch sets to a file of its own and
-// the runtime then refuses at every launch, and the table of every role's identity
+// the runtime then refuses at every launch, the table of every role's identity
 // (RoleIdentitiesVariable), which every workflow launch sets for the push step of `legion jj` and
-// which an operator's value would forge. A value that is a URL carrying a password is refused
+// which an operator's value would forge, and the project's two refusal patterns
+// (OwnRefusalVariable, ProviderRefusalVariable), which the project's own file sets on every
+// launch and an operator's value would replace for every host. A value that is a URL carrying a
+// password is refused
 // too: a pane variable is a value on tmux's command line, which every process on the host can
 // read, and a secret reaches a pane as a file. The reason names the variable's role and never the
 // value.
@@ -89,6 +92,8 @@ func PaneVariableRefusal(name, value string) string {
 		return "the runtime sets it on every resumed Oh My Pi pane itself, after the operator's variables"
 	case name == RoleIdentitiesVariable:
 		return "every launch sets it (the identities of the issue's roles, which the push step reads)"
+	case name == OwnRefusalVariable || name == ProviderRefusalVariable:
+		return "every launch sets it from the project's own refusal pattern (projects.<KEY>.signal_own_refusal_pattern, signal_provider_refusal_pattern)"
 	}
 	for _, secret := range launchSecrets {
 		if name == secret+"_FILE" {

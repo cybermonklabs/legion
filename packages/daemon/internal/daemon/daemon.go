@@ -2128,6 +2128,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
 			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
+			provider: cfg.Projects[cfg.Project].Provider,
 		},
 		Identity:                adoptIdentity(p.identity, p.repository),
 		IssueInTurn:             sup.claimInTurn,
@@ -3075,6 +3076,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var githubAPI string
 	var consumerLag func(context.Context) []intake.ConsumerLag
 	var architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
+	var signalsState func(context.Context, pgx.Tx, time.Time) (store.SignalsReading, error)
 	var catchUps *catchUpPacing
 	// The pause service exists only with the workflow, which run builds it with (projectPause): a
 	// daemon without one leaves pauses the nil interface, which the API reads as no pause service
@@ -3094,6 +3096,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		consumerLag = workflow.consumers.Lag
 		pauses = workflow.pauses.service
 		architectStalls = workflow.admission.ArchitectStallArms
+		signalsState = workflow.signals.State
 		// A replay applies a stored message through the handlers a live delivery runs, on the
 		// consumers' pool and spec, so it is judged as the same message delivered now would be.
 		replays, err := intake.NewGiveUps(workflow.consumers.Records(), workflow.handlers...)
@@ -3138,6 +3141,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			// and the NoPluginInstall option three lines below).
 			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 			architectStalls: architectStalls,
+			signals:         signalsState,
 			// Under dispatch_token_broker alone: without it the state carries no
 			// `dispatchCredential` (dispatchTokensOf).
 			dispatchSession: dispatch.DaemonSession(cfg.Project),
@@ -3352,6 +3356,10 @@ type source struct {
 	// which State serves as each root's `architectStalls`; nil for a daemon with no workflow,
 	// which weighs no architect and serves no arm.
 	architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
+	// signals is admission by signals as the state shows it at a moment (admit.LiveSignals.State
+	// over the workflow's own live signals), which State serves as `admission.signals`; nil for a
+	// daemon with no workflow, which admits nothing and serves no reading.
+	signals func(context.Context, pgx.Tx, time.Time) (store.SignalsReading, error)
 }
 
 // projectRecords scopes the shared daemon database to the daemon's configured project without
@@ -3825,6 +3833,19 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	// `paused` with the roles it waits on and the rows it holds while the project is paused, and
 	// `lastPause` while it runs after a pause has ended (decision 25 of dispatch://INFRA-3759).
 	if state.Paused, state.LastPause, err = api.PauseStateTx(ctx, tx, s.project, now); err != nil {
+		return api.State{}, nil, err
+	}
+	// Admission by signals, read through tx as every other durable fact here: each series as the
+	// live signals read it at now from the inputs the daemon keeps, never from an entry, and the
+	// newest entries of the record of changes (S2 and S6 of dispatch://INFRA-5899).
+	if s.signals != nil {
+		reading, err := s.signals(ctx, tx, now)
+		if err != nil {
+			return api.State{}, nil, err
+		}
+		state.Admission.Signals = &reading
+	}
+	if state.Admission.SignalChanges, err = store.SignalChangesTx(ctx, tx, s.project, store.SignalChangesShown); err != nil {
 		return api.State{}, nil, err
 	}
 	state.Daemon = api.DaemonInfo{

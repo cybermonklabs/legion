@@ -47,11 +47,8 @@ type OperatorPauseRequest struct {
 
 // PauseActorView is who paused the project or ended its pause (decision 19 of
 // dispatch://INFRA-3759): `kind` is `controller`, with the session the controller acted from, or
-// `operator`, with no session.
-type PauseActorView struct {
-	Kind    string `json:"kind"`
-	Session string `json:"session,omitempty"`
-}
+// `operator`, with no session. It is the store's actor itself, whose tags are this form.
+type PauseActorView = store.PauseActor
 
 // PauseView is one pause of the project: its id, when it began, who paused and why, and, once a
 // resume has ended it, when and by whom. The pause and resume routes answer it, the refusals that
@@ -307,15 +304,11 @@ func PauseStateTx(ctx context.Context, tx pgx.Tx, project string, now time.Time)
 	return pausedViewOf(p, stops, held), nil, nil
 }
 
-func pauseActorViewOf(a store.PauseActor) PauseActorView {
-	return PauseActorView{Kind: string(a.Kind), Session: a.Session}
-}
-
 // pauseViewOf is p on the wire, every time in UTC, with when and by whom it ended once it has.
 func pauseViewOf(p store.Pause) PauseView {
-	view := PauseView{ID: p.ID, Since: p.Since.UTC(), By: pauseActorViewOf(p.By), Reason: p.Reason}
+	view := PauseView{ID: p.ID, Since: p.Since.UTC(), By: p.By, Reason: p.Reason}
 	if p.Ended() {
-		endedAt, endedBy := p.EndedAt.UTC(), pauseActorViewOf(p.EndedBy)
+		endedAt, endedBy := p.EndedAt.UTC(), p.EndedBy
 		view.EndedAt, view.EndedBy = &endedAt, &endedBy
 	}
 	return view
@@ -323,7 +316,7 @@ func pauseViewOf(p store.Pause) PauseView {
 
 // pausedViewOf is the open pause as the state shows it, with its open stops and the rows it holds.
 func pausedViewOf(open store.Pause, stops []store.PauseStop, held []record.PauseHeldRow) *PausedView {
-	view := &PausedView{ID: open.ID, Since: open.Since.UTC(), By: pauseActorViewOf(open.By), Reason: open.Reason,
+	view := &PausedView{ID: open.ID, Since: open.Since.UTC(), By: open.By, Reason: open.Reason,
 		WaitsOn: make([]PauseStopView, len(stops)), Held: make([]PauseHeldView, len(held))}
 	for i, stop := range stops {
 		view.WaitsOn[i] = PauseStopView{Claim: stop.Claim, Issue: stop.Issue, Role: stop.Role, AskedAt: stop.AskedAt.UTC()}

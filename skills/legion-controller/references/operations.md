@@ -30,6 +30,10 @@ These are the actions on an agent (stop, retry, suspend, resume_agent, compact a
 
 While your project is paused (the summary's `paused:` line), the daemon refuses `resume_agent`, `retry`, `compact`, `fresh_session` and `replace_pod` with `409 PROJECT_PAUSED`. Only the project's resume lifts the pause: your `resume` operation or the operator's `legion project resume`; `resume_agent` lifts none. `stop` and `suspend` still run. On `409 SUSPENDED_BY_OPERATOR`, see [An agent the operator holds](#an-agent-the-operator-holds).
 
+## A change of admission by signals
+
+Make it only on a person's cited word, in `reason`: you regulate nothing yourself.
+
 ## A restart of your project's daemon
 
 Restart it only when a person asks, your deployment instructions name the case, or a change your work waits on reaches the daemon only at its boot. Never restart it to reach one agent, and never while a wave runs. `<daemon label>` is the daemon pod's label your deployment instructions give; with none, delete nothing and name the operation you lack in the day's report.

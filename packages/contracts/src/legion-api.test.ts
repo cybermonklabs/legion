@@ -43,6 +43,8 @@ import {
   LegionIntakeReplayResponse,
   LegionIssueRecordResponse,
   LegionIssueStatusRequest,
+  LegionModelRequestsRequest,
+  LegionModelRequestsResponse,
   LegionOperatorClaimResponse,
   LegionOperatorClaimsResponse,
   LegionOperatorProjectP0BoundRequest,
@@ -60,6 +62,7 @@ import {
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
   LegionProjectResumeResponse,
+  LegionProjectSignalsResponse,
   LegionReadyForUpdateRequest,
   LegionReadyRequest,
   LegionRegisterResponse,
@@ -179,6 +182,10 @@ const schemas: Record<string, z.ZodType> = {
   // `claim.TurnOutcomeResponse`: what a producer's report of one turn comes back as, the run of
   // refused turns the claim now ends with (`LegionTurnOutcomeResponse` says what `failed` holds).
   "turn-outcome.json": LegionTurnOutcomeResponse,
+  // `claim.ModelRequestsResponse`: what a host's report of model requests comes back as, every id
+  // of the batch the daemon now holds.
+  "model-requests.json": LegionModelRequestsResponse,
+  "project-signals.json": LegionProjectSignalsResponse,
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
@@ -420,6 +427,20 @@ function servedBelowSlotsReadingContract(state: Record<string, unknown>): Record
   return state;
 }
 
+/** A state body as a caller below the admission-signals entry is served it: with no
+ * `admission.signals` and no `admission.signalChanges`, the two keys shaping.go's
+ * withoutAdmissionSignals takes off. It takes them off `state` itself, as
+ * `servedBelowSlotsReadingContract` does. */
+function servedBelowAdmissionSignalsContract(
+  state: Record<string, unknown>
+): Record<string, unknown> {
+  if (isJsonObject(state.admission)) {
+    delete state.admission.signals;
+    delete state.admission.signalChanges;
+  }
+  return state;
+}
+
 /** The path of the first key the parse dropped: the first key present in `file` and absent from
  * `parsed`, descending objects by key and arrays by index. A Go field with no line in its schema
  * reads as its own path — `issues.LEGION-207.workers.implementer.claim.somethingNew` — rather
@@ -532,6 +553,8 @@ const RECORD_SCHEMAS: Record<string, readonly z.ZodType[]> = {
   "fresh-session": [LegionFreshSessionResponse],
   compact: [LegionCompactResponse],
   "turn-outcome": [LegionTurnOutcomeResponse],
+  "model-requests": [LegionModelRequestsResponse],
+  "project-signals": [LegionProjectSignalsResponse],
   "wave-release": [LegionWaveReleaseResponse],
   refusal: [LegionErrorResponse, LegionPauseFailureResponse],
   "project-pause": [LegionProjectPauseResponse],
@@ -2248,6 +2271,54 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "grant-208", issue: "LEGION-208", reason: "needs controller triage" },
     ],
     ["signoff", LegionSignOffRequest, { grantId: "grant-208", issue: "LEGION-208" }],
+    // A host's report of model requests, under the claim's secret and under the launch's boot
+    // token: an answered request with its uncached input tokens, and a refused one classed own.
+    // The Oh My Pi plugin's batch says its host does not report the 429s its transport retries,
+    // and the bridge's that it does.
+    [
+      "model requests",
+      LegionModelRequestsRequest,
+      {
+        claimToken: "legion-legion-legion-208-implementer",
+        sessionId: "ses_implementer_208",
+        secret: CLAIM_SECRET,
+        generation: 3,
+        requests: [
+          {
+            id: "req-1",
+            session: "ses_implementer_208",
+            model: "standin-model",
+            endedAt: "2026-11-25T21:53:17.412Z",
+            uncachedInputTokens: 18342,
+          },
+          {
+            id: "req-2",
+            session: "ses_subagent_208",
+            model: "standin-model",
+            endedAt: "2026-11-25T21:53:19Z",
+            refusal: "own",
+          },
+        ],
+        retriedRefusalsReported: false,
+      },
+    ],
+    [
+      "model requests by boot token",
+      LegionModelRequestsRequest,
+      {
+        bootToken: fixtureSecret("boot"),
+        generation: 4,
+        requests: [
+          {
+            id: "msg_1",
+            session: "claude-session",
+            model: "standin-model",
+            endedAt: "2026-11-25T21:53:17Z",
+          },
+        ],
+        retriedRefusalsReported: true,
+      },
+    ],
     [
       "root close",
       LegionRootCloseRequest,
@@ -3230,7 +3301,9 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     dispatchCredential: _credential,
     intakeGiveUps: _giveUps,
     ...rest
-  } = servedBelowSlotsReadingContract(fixtureBody("state.json"));
+  } = servedBelowAdmissionSignalsContract(
+    servedBelowSlotsReadingContract(fixtureBody("state.json"))
+  );
   if (!isJsonObject(rest.issues)) {
     throw new Error("state fixture lacks its issues");
   }

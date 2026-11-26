@@ -681,6 +681,12 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	if line := p0AdmissionLine(state.Admission); line != "" {
 		fmt.Fprintln(stdout, line)
 	}
+	// Admission by signals, each series' value, limit and hold as the JSON gives them, in one line
+	// after the slots and P0 lines; a daemon that runs no workflow, or one before the contract that
+	// added the reading, prints none.
+	if reading := state.Admission.Signals; reading != nil {
+		fmt.Fprintln(stdout, signalsLine(*reading))
+	}
 	// The project's pause: a paused line while it stands, a last-pause line while the project runs
 	// after one has ended, and neither before any pause, as the state carries one key at most.
 	for _, line := range []string{pausedSummary(state.Paused), lastPauseSummary(state.LastPause)} {

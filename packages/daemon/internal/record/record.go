@@ -16,6 +16,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -3066,6 +3068,82 @@ type Store interface {
 	// without its first, for a caller that judges a run by its claim and reads no queued start
 	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
 	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
+	// KeepMemoryKill keeps report, one memory kill of an issue pod of project, once by its guard
+	// and sequence, at the report's own moment, and deletes the project's kills an hour or more
+	// before now, which no read counts again. Admission calls it in the fact's own transaction,
+	// before that fact's pass (admit's keepSignalFacts).
+	KeepMemoryKill(ctx context.Context, tx pgx.Tx, project string, report shimwire.LauncherMemoryKill, now time.Time) error
+	// MemoryKillsAfter is the moment of each kill of project kept later than after, oldest first:
+	// what the kills signal of a moment reads, with after an hour before it.
+	MemoryKillsAfter(ctx context.Context, tx pgx.Tx, project string, after time.Time) ([]time.Time, error)
+	// BeginSignalInput records at as the moment the daemon began keeping input, one input of a
+	// signal, for project, where none is recorded yet; a later call leaves the first moment.
+	BeginSignalInput(ctx context.Context, tx pgx.Tx, project, input string, at time.Time) error
+	// KeepQueueEvents keeps the merge-queue timeline events of one pull request of project once
+	// each by GitHub's event id, in GitHub's order among events of one second, and deletes the
+	// pull requests of project that left the queue 6 hours or more before now, which no read
+	// counts again. Admission calls it in the fact's own transaction, before that fact's pass
+	// (admit's keepSignalFacts).
+	KeepQueueEvents(ctx context.Context, tx pgx.Tx, project string, events []signals.QueueEvent, now time.Time) error
+	// QueueEventsAt is every kept merge-queue event of each pull request of project that stands in
+	// the queue or left it in the 6 hours before at, ordered for signals.WaitsOf: what the queue
+	// signal of a moment reads.
+	QueueEventsAt(ctx context.Context, tx pgx.Tx, project string, at time.Time) ([]signals.QueueEvent, error)
+	// OpenQueuePulls lists each pull request of project whose newest kept merge-queue event enters
+	// the queue (an open wait), which the boot reads the timeline of.
+	OpenQueuePulls(ctx context.Context, tx pgx.Tx, project string) ([]OpenQueuePull, error)
+	// QueueProgressOf is what the store holds of one pull request's merge-queue moves, over the
+	// events kept under any of the repository names given.
+	QueueProgressOf(ctx context.Context, tx pgx.Tx, project string, repos []string, number int) (QueueProgress, error)
+	// SetSignalInputReadError records why the boot's read of input for project failed, or clears
+	// it with "" once a read succeeds.
+	SetSignalInputReadError(ctx context.Context, tx pgx.Tx, project, input, readError string, at time.Time) error
+	// SignalInputStatus is the moment the daemon began keeping input for project, whether one is
+	// recorded (a signal counted over a span is recorded only from that moment plus its span), and
+	// why the boot's read of it failed, "" where it did not.
+	SignalInputStatus(ctx context.Context, tx pgx.Tx, project, input string) (time.Time, bool, string, error)
+	// KeepAskEvent keeps one event of an ask of project's issue, at its sequence in the issue's
+	// Dispatch event log, as signals.NextAsk turns the kept ask by it, where it is newer than the
+	// event the kept ask was last changed by. Admission calls it in the fact's own transaction,
+	// before that fact's pass (admit's keepSignalFacts), as it does each method below that keeps.
+	KeepAskEvent(ctx context.Context, tx pgx.Tx, project string, event signals.AskEvent, seq int64) error
+	// KeepIssueAssignee keeps the assignee of an issue of project, as its issue event named it,
+	// where no newer event of the issue named one.
+	KeepIssueAssignee(ctx context.Context, tx pgx.Tx, project string, assignee IssueAssignee) error
+	// KeepDefaultAssignee keeps the default assignee of project as Dispatch's settings event at seq
+	// in the project's event log moved it, where no newer such event was kept.
+	KeepDefaultAssignee(ctx context.Context, tx pgx.Tx, project, assignee string, seq int64, at time.Time) error
+	// KeepApprovalsRead keeps the boot's read of Dispatch for project: its asks, assignees and
+	// default assignee, each where no newer event of it was kept.
+	KeepApprovalsRead(ctx context.Context, tx pgx.Tx, project string, read ApprovalsRead) error
+	// OpenApprovalAsks is each ask of project the store holds open, which the boot reads the
+	// issues of beside those Dispatch lists open.
+	OpenApprovalAsks(ctx context.Context, tx pgx.Tx, project string) ([]ApprovalAsk, error)
+	// DefaultAssigneeSeq is the sequence of the newest settings event of project's default
+	// assignee the store holds, 0 for none.
+	DefaultAssigneeSeq(ctx context.Context, tx pgx.Tx, project string) (int64, error)
+	// ApprovalsOf is the approvals signal's input of project as the store holds it: the asks that
+	// wait on the project's default assignee, or why the signal cannot be computed.
+	ApprovalsOf(ctx context.Context, tx pgx.Tx, project string) (Approvals, error)
+	// KeepModelRequests keeps each request of report once by its claim, its generation and the
+	// request's id, each marked counted where counts takes its model and with the report's word on
+	// the 429s its host's transport retries, keeps none that ended before the first minute a read
+	// at now or later reaches, and deletes the project's requests of minutes no read reaches again.
+	KeepModelRequests(ctx context.Context, tx pgx.Tx, project string, report ModelRequestsReport, counts func(model string) bool, now time.Time) error
+	// KeepTokenLimit records limit (0 for none) as project's token limit a minute from at, where it
+	// differs from the limit in force then, and deletes the limits no read at at or later reaches.
+	KeepTokenLimit(ctx context.Context, tx pgx.Tx, project string, limit int64, at time.Time) error
+	// ProviderMinutes is project's provider record of each whole minute that begins in [from,
+	// to), each held only where every request of it is known to have been reported by a host of a
+	// plugin contract at or above reporting, and the latest of those minutes that holds a request
+	// of a host that does not report the 429s its transport retries: what the provider's headroom
+	// and refusals read.
+	ProviderMinutes(ctx context.Context, tx pgx.Tx, project string, from, to time.Time, reporting int) (ProviderMinutes, error)
+	// SignalDeadline is project's one deadline of admission by signals as committed, and
+	// PutSignalDeadline writes it, in the transaction of the fact whose pass computed it (admit's
+	// commitDeadline).
+	SignalDeadline(ctx context.Context, tx pgx.Tx, project string) (SignalDeadline, error)
+	PutSignalDeadline(ctx context.Context, tx pgx.Tx, project string, deadline SignalDeadline) error
 }
 
 // RoleRunKey identifies one role's run of an issue generation.

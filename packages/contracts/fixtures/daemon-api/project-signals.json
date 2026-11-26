@@ -1,0 +1,71 @@
+{
+  "changed": true,
+  "settings": {
+    "on": true,
+    "switch": {
+      "setBy": {
+        "kind": "operator"
+      },
+      "at": "2026-11-26T05:00:00Z",
+      "reason": "the owner turned admission by signals on"
+    },
+    "limits": [
+      {
+        "signal": "idle",
+        "part": null,
+        "limit": 0.5,
+        "set": {
+          "setBy": {
+            "kind": "controller",
+            "session": "ses_controller"
+          },
+          "at": "2026-11-26T06:00:00Z",
+          "reason": "the owner set the limit in the weekly plan"
+        }
+      },
+      {
+        "signal": "queue",
+        "part": null,
+        "limit": null,
+        "set": null
+      },
+      {
+        "signal": "provider",
+        "part": "headroom",
+        "limit": 0.9,
+        "set": {
+          "setBy": {
+            "kind": "operator"
+          },
+          "at": "2026-11-26T05:00:00Z",
+          "reason": "the owner turned admission by signals on"
+        }
+      },
+      {
+        "signal": "provider",
+        "part": "refusals",
+        "limit": 2,
+        "set": {
+          "setBy": {
+            "kind": "controller",
+            "session": "ses_controller"
+          },
+          "at": "2026-11-26T06:00:00Z",
+          "reason": "the owner set the limit in the weekly plan"
+        }
+      },
+      {
+        "signal": "kills",
+        "part": null,
+        "limit": null,
+        "set": null
+      },
+      {
+        "signal": "approvals",
+        "part": null,
+        "limit": null,
+        "set": null
+      }
+    ]
+  }
+}

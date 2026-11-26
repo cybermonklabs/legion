@@ -542,6 +542,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if tc.contract < entryNumber(slotsReadingContract) {
 				withoutSlotsReadingKeys(want)
 			}
+			if tc.contract < entryNumber(admissionSignalsContract) {
+				withoutAdmissionSignalsKeys(want)
+			}
 			// A pod below retiredStrandedContract is served the report of claims nothing will
 			// wake without its retired entries, the state contract 56 added (api's
 			// withoutUnadmittedStrandedStates), which is every pod of every band below this
