@@ -38,9 +38,10 @@ func (v *ids) Set(id string) error { *v = append(*v, id); return nil }
 // files in one step (writeDir), so when it cannot write, or the system refuses that step, it
 // answers 2 with dir as it was. Else it changes the files, prints "wrote <id> to
 // <dir>/<file>:<line>" for each node of the run, and answers 0, or 1 when it kept beside dir an
-// entry that another program made or changed there, which a person must compare with dir: in the
-// old directory of this run (finishOld) or in a directory that a killed run left (cleanLeftovers).
-// The line names what it kept and where.
+// entry that another program made or changed there, or whose move back or removal the system
+// refused, which a person must compare with dir: in the old directory of this run (finishOld) or
+// in a directory that a killed run left (cleanLeftovers). The line names what it kept, where, and
+// each cause with its entries.
 //
 // The documents do not pass through runnerlog.Say: they go into the files byte for byte (R2: "A
 // change copies that output into the files, and no agent types it"). Each is its node's document

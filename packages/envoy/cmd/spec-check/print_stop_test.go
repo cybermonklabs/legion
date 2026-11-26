@@ -112,6 +112,27 @@ func TestAStopAfterEachCallOfPrintLeavesTheFilesBeforeOrAfter(t *testing.T) {
 			r.fsys = refuseLinks
 			return r
 		}, ""},
+		// A file system that exchanges two directories and answers EINVAL for a rename with
+		// no-replace, as a gVisor volume does: print moves each entry that it does not own back by
+		// a second name and a removal, or for a directory by a rename, so a stop between the two
+		// steps of a move leaves one entry under two names, which the next run, on the same file
+		// system, must finish.
+		{"a run over entries that print does not own, where the system refuses a rename with no-replace", func(t *testing.T) stopRun {
+			r := newStopRun(t, others(t, stopTree(t, stopClaims(6), limit)), stopClaims(6, "claim-ab", "claim-ad"), []string{"claim-ab", "claim-ad"}, limit,
+				"claim-ab.yaml", "claim-ad.yaml")
+			r.fsys = func(call stopCall) fileSystem {
+				return callFS{func(op, path string, do func() error) error {
+					return call(op, path, func() error {
+						if op == "move" {
+							return &os.LinkError{Op: "renameat2", Old: path, New: path, Err: syscall.EINVAL}
+						}
+						return do()
+					})
+				}}
+			}
+			r.next = r.fsys
+			return r
+		}, ""},
 		{"a run that print refuses, because the system refuses the exchange", func(t *testing.T) stopRun {
 			r := newStopRun(t, others(t, stopTree(t, stopClaims(6), limit)), stopClaims(6, "claim-ac"), []string{"claim-ac"}, limit)
 			r.fsys = func(call stopCall) fileSystem {

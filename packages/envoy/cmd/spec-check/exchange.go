@@ -361,63 +361,92 @@ func syncDir(fsys fileSystem, dir string) error {
 }
 
 // finishOld finishes old, the directory that a run of print exchanged out of dir: it moves each
-// entry that dir does not hold into dir, the same entry, and removes each spec file of old that
-// dir holds in its new text, then old and the record of its run (recordPath). read is textsRead
-// of the text of each spec file of dir when the run read it: a spec file of old is removed when it
-// is a second name of the file that dir holds, or when read holds its text. The run passes what it
-// read; a run that finishes a killed run (cleanLeftovers) passes the killed run's record, or nil
-// where it has none, and then removes only second names. An entry that it can neither move nor
-// remove, which another program made or changed in old while the run built the new directory, it
-// keeps, with old under another name (keep), and it answers a line that names them and where it
-// kept them, and kept true. Where it cannot give old another name, old keeps the name of print's
-// own directory and its record, so the next run finishes it with the same record and removes no
-// such change. It answers no line when it finished old.
+// entry that dir does not hold into dir, the same entry, and removes each entry of old that is a
+// second name of the entry of its name in dir (a file, or a link that a stop between the two steps
+// of moveByHand left under two names) and each spec file of old that dir holds in its new text,
+// then old and the record of its run (recordPath). read is textsRead of the text of each spec file
+// of dir when the run read it: a spec file of old is removed when read holds its text. The run
+// passes what it read; a run that finishes a killed run (cleanLeftovers) passes the killed run's
+// record, or nil where it has none, and then removes only second names. An entry that it can
+// neither move nor remove, which another program made or changed in old while the run built the
+// new directory, or whose move or removal the system refused, it keeps, with old under another
+// name (keep), and it answers a line that gives each cause with its entries (keptCause), and kept
+// true. Where it cannot give old another name, old keeps the name of print's own directory and its
+// record, so the next run finishes it with the same record and removes no such change. It answers
+// no line when it finished old.
 func finishOld(fsys fileSystem, old, dir string, read map[string]string) (lines []string, kept bool) {
 	list, err := os.ReadDir(old)
 	if err != nil {
 		return []string{fmt.Sprintf("print could not read %s, which held %s before the run, so it leaves it: %s", old, dir, err)}, false
 	}
-	var names []string
-	var refused error // the first refusal of a move back into dir that no entry of the name caused
+	var changed, refused []string
+	var refusal error // the first refusal of the system of a move back or a removal
+	refuse := func(name string, err error) {
+		refused = append(refused, name)
+		if refusal == nil {
+			refusal = err
+		}
+	}
 	for _, entry := range list {
 		name := entry.Name()
 		path, now := filepath.Join(old, name), filepath.Join(dir, name)
 		current, err := os.Lstat(now)
-		if errors.Is(err, fs.ErrNotExist) {
-			if err := move(fsys, path, now); err != nil {
-				names = append(names, name)
-				if refused == nil && !errors.Is(err, fs.ErrExist) {
-					refused = err
-				}
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			switch err := move(fsys, path, now); {
+			case errors.Is(err, fs.ErrExist):
+				changed = append(changed, name) // another program made the name in dir
+			case err != nil:
+				refuse(name, err)
 			}
 			continue
+		case err != nil:
+			refuse(name, err)
+			continue
 		}
-		if err != nil || !entry.Type().IsRegular() || !current.Mode().IsRegular() || !removable(path, current, read, name) || fsys.remove(path) != nil {
-			names = append(names, name)
+		info, err := os.Lstat(path)
+		secondName := err == nil && !info.IsDir() && os.SameFile(info, current)
+		if !secondName && (!entry.Type().IsRegular() || !current.Mode().IsRegular() || !removable(path, current, read, name)) {
+			changed = append(changed, name)
+			continue
+		}
+		if err := fsys.remove(path); err != nil {
+			refuse(name, err)
 		}
 	}
-	what, path, removed, err := leave(fsys, old, names)
+	_, path, removed, err := leave(fsys, old, slices.Concat(changed, refused))
 	if removed {
 		return nil, false
 	}
-	cause := "another program made or changed " + what + " there while print ran"
-	held := "which another program made or changed there while print ran"
-	if refused != nil {
-		cause = fmt.Sprintf("the system refused to move %s back into %s (%s)", what, dir, refused)
-		held = fmt.Sprintf("which the system refused to move back into %s (%s)", dir, refused)
-	}
-	switch {
-	case err != nil && read == nil:
-		return []string{fmt.Sprintf("print could not remove %s, which held %s before the run, and holds %s, and print has no record of the texts that the run that left it read: %s", old, dir, what, err)}, true
-	case err != nil:
-		return []string{fmt.Sprintf("print could not remove %s, which held %s before the run, and holds %s, %s: %s", old, dir, what, held, err)}, true
-	}
-	if read == nil {
-		return []string{fmt.Sprintf("print kept %s, which held %s before the run: it holds %s, and print has no record of the texts that the run that left it read, so compare each with the entry of that name in %s",
-			path, dir, what, dir)}, true
+	cause := keptCause(changed, refused, refusal, read == nil)
+	if err != nil {
+		return []string{fmt.Sprintf("print could not remove %s, which held %s before the run: %s: %s", old, dir, cause, err)}, true
 	}
 	return []string{fmt.Sprintf("print kept %s, which held %s before the run: %s, so compare each with the entry of that name in %s",
 		path, dir, cause, dir)}, true
+}
+
+// keptCause is why finishOld kept an old directory, each cause once with its own entries: the
+// entries that another program made or changed there while print ran, or, with no record of the
+// run that left it (unread), the entries that print cannot tell from such a change; and the
+// entries whose move back or removal the system refused, with the first refusal. An old directory
+// that print could not remove though it kept no entry holds an entry that another program made
+// after print read it.
+func keptCause(changed, refused []string, refusal error, unread bool) string {
+	var causes []string
+	switch {
+	case len(changed) > 0 && unread:
+		causes = append(causes, "it holds "+strings.Join(changed, ", ")+", and print has no record of the texts that the run that left it read")
+	case len(changed) > 0:
+		causes = append(causes, "another program made or changed "+strings.Join(changed, ", ")+" there while print ran")
+	}
+	if len(refused) > 0 {
+		causes = append(causes, fmt.Sprintf("the system refused print's move or removal of %s (%s)", strings.Join(refused, ", "), refusal))
+	}
+	if len(causes) == 0 {
+		causes = append(causes, "another program made an entry there after print read it")
+	}
+	return strings.Join(causes, "; ")
 }
 
 // removable reports whether finishOld may remove the regular file path of an old directory, whose

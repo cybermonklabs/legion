@@ -615,6 +615,34 @@ func TestPrintExitsOneWhenItKeepsAnEntryOfAnotherProgram(t *testing.T) {
 			t.Errorf("%s holds %q, want the run's text", dir, got)
 		}
 	})
+	// A move back that the system refuses, after the exchange, beside a spec file that another
+	// program changed: the line gives each cause once, each with its own entries, and the change of
+	// the other program is not blamed on the system. The stand-in answers EIO for the move of the
+	// README and nothing else.
+	t.Run("a move back that the system refuses, beside a spec file that another program changed", func(t *testing.T) {
+		t.Parallel()
+		dir := filepath.Join(t.TempDir(), "spec")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, "terms.yaml"), []byte(first))
+		writeFile(t, filepath.Join(dir, "README"), []byte("The spec files.\n"))
+		refusal := &os.LinkError{Op: "renameat2", Old: "README", New: "README", Err: syscall.EIO}
+		fsys := callFS{func(op, path string, do func() error) error {
+			if op == "move" && filepath.Base(path) == "README" {
+				return refusal
+			}
+			return changeAtExchange.call(op, path, do)
+		}}
+		code, stderr := run(t, dir, fsys)
+		kept := keptBeside(t, dir, code, stderr)
+		want := "spec-check: warning: " + filepath.Join(dir, "README") + ": not a spec file (file): a spec file is a *.yaml file, which spec-check print writes; the importer passes over it\n" +
+			"spec-check: print kept " + kept + ", which held " + dir + " before the run: another program made or changed terms.yaml there while print ran; " +
+			"the system refused print's move or removal of README (" + refusal.Error() + "), so compare each with the entry of that name in " + dir + "\n"
+		if code != 1 || stderr != want {
+			t.Fatalf("print: exit %d, stderr %q, want exit 1 and %q", code, stderr, want)
+		}
+	})
 	t.Run("a new directory that a killed run left, with an entry that print did not make", func(t *testing.T) {
 		t.Parallel()
 		dir := filepath.Join(t.TempDir(), "spec")
@@ -685,7 +713,7 @@ func TestPrintExitsOneWhenItKeepsAnEntryOfAnotherProgram(t *testing.T) {
 			return changeAtExchange.call(op, path, do)
 		}}
 		code, stderr := run(t, dir, parentLocked)
-		if code != 1 || !strings.HasPrefix(stderr, "spec-check: print could not remove "+staging+", which held "+dir+" before the run, and holds terms.yaml, which another program made or changed there while print ran: ") {
+		if code != 1 || !strings.HasPrefix(stderr, "spec-check: print could not remove "+staging+", which held "+dir+" before the run: another program made or changed terms.yaml there while print ran: ") {
 			t.Fatalf("print: exit %d, stderr %q, want exit 1 and the line of %s, which it could not rename", code, stderr, staging)
 		}
 		if err := os.Chmod(root, 0o755); err != nil {

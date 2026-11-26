@@ -109,8 +109,8 @@
 // id or removed it, and when the system refuses to exchange --dir with the new directory that it
 // builds beside it. Else it changes the files that change in one step, also for a kill, prints
 // "spec-check: wrote <id> to <dir>/<file>:<line>" for each node, and exits 0, or 1 when it kept
-// beside --dir an entry that another program made or changed there, with a line that names what it
-// kept and where.
+// beside --dir an entry that another program made or changed there, or whose move back or removal
+// the system refused, with a line that names what it kept, where, and each cause.
 //
 // guard reads every regular file under <dir>/.github/workflows, <dir>/.github/actions,
 // <dir>/.github/scripts and <dir>/scripts as text, and names each line that names the command that
