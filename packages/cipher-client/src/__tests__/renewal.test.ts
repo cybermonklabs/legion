@@ -101,6 +101,29 @@ test("the token in hand is reused until the renewal window, then traded again", 
   }
 });
 
+// A token that lives less than the renewal window, such as the 270 seconds the broker gives a
+// restricted member's machine login, is reused until halfway through its life, as the Go client
+// renews one (`renewalAt`, packages/envoy/internal/cipherclient/brokerclient.go), not traded
+// again at every call: a client that renewed it at once would trade at every Dispatch request
+// and every reconnect, into the broker's per-address bucket.
+test("a token shorter than the renewal window is reused until halfway through its life", async () => {
+  const broker = stubBroker((_trade, count) => ({ body: accepted(`token-${count}`, 300) }));
+  const clock = { now: Date.now() };
+  const client = await clientAt(broker.url, clock, countingSource(), 5 * 60_000);
+  try {
+    expect((await client.token()).accessToken).toBe("token-1");
+    clock.now += 100_000;
+    expect((await client.token()).accessToken).toBe("token-1");
+    expect(broker.trades.length).toBe(1);
+    // Past the halfway mark: traded again, with the token in hand still live.
+    clock.now += 60_000;
+    expect((await client.token()).accessToken).toBe("token-2");
+    expect(broker.trades.length).toBe(2);
+  } finally {
+    broker.stop();
+  }
+});
+
 /** The renewal corpus beside the Go client, read by relative path, never a copy: the Go suite's
  *  `TestRenewalCorpus` replays the same rows through its `renewalAt`. */
 const RENEWAL_CORPUS = new URL(

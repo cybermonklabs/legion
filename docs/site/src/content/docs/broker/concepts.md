@@ -56,7 +56,7 @@ every session it enrolled ends, and the box signs in again to work on.
 A Kubernetes pod trades its own projected ServiceAccount token at the same exchange for a Dispatch
 access token alone: that trade mints no machine login and enrols nothing. The entry that lists the
 pod's account decides what the token is. An entry of `BROKER_EXCHANGE_ACCOUNTS` gives it a person
-and the one Dispatch project it may write, or no project for an entry that names none
+and the one Dispatch project its token names, or no project for an entry that names none
 (`<service account>==<person>`), or neither a person nor a project for an entry that names
 neither (`<service account>==`): such a token acts as the account itself, names the account as its
 service, and Dispatch records its writes under that account. An entry of that setting that names a
@@ -450,7 +450,12 @@ sessions that act for them, and their machine-login page only their own machines
 logins. Their revoke or dismissal of anything else, and their deny of a service's machine login an
 older broker opened, is refused `403 NOT_APPROVER`, saying why, and their revoke of a service's
 machine login `404 NOT_FOUND`. Their own machine logins and the grants of their own sessions stay
-theirs. While Dispatch cannot say what kind of member a person is, those lists leave such rows
+theirs. The broker keeps the member kind Dispatch last answered for each person, so a person
+Dispatch last answered a full member is served as one while Dispatch does not answer, for at most
+an hour (`projectaccess.KeptAnswerTTL`), on every
+route of this section, and "cannot say" below means a person it last answered a restricted member,
+or of whom it keeps no kind ([Asking Dispatch](/legion/broker/operate/#what-it-depends-on)).
+While Dispatch cannot say what kind of member a person is, those lists leave such rows
 out, the machine-login page and its revoke hold the person to their own logins, so a lost
 machine's login can still be ended there, while a service's login is out of reach there until
 Dispatch answers and what remains is cluster access (delete the service's pods, or remove its
@@ -477,7 +482,9 @@ certificate that does not verify or a name that does not resolve. A revoke of a 
 session asks nothing. The member-kind read of each route Dispatch relays ends within 2 seconds,
 inside the 5 that Dispatch waits for the broker, and so does the approval page's; a revoke's read
 of a grant's project is not bounded so, and while all of Dispatch is down it refuses the revoke of
-a grant whose project, or whose reason's issue key, it cannot ask about.
+a grant whose project, or whose reason's issue key, Dispatch last answered hidden from the person,
+or never answered for them; one Dispatch last answered public, visible to them, or no project at
+all is answered so from what the broker kept, for at most an hour (`projectaccess.KeptAnswerTTL`).
 The broker's rate
 limiter caps how often anyone can start a machine login, per source address and per named person,
 and how often anyone can try a token login: per source address before the token is verified, and
@@ -985,8 +992,10 @@ member's pod enrolls nothing, naming projects or not, as that member's machine l
 nothing: `403 RESTRICTED_MEMBER_ENROLLS_NOTHING`. A pod naming a project its person may not see,
 or one Dispatch does not hold, is refused `403 PROJECT_NOT_VISIBLE`, with the same words for both.
 While Dispatch cannot say what kind of member the person is, the pod enrolls nothing
-(`503 MEMBER_KIND_UNCHECKABLE`); on a broker with no `BROKER_PROJECT_ACCESS_URL`, a pod naming a
-project is refused `503 PROJECTS_UNCHECKED` and nothing is enrolled, and a pod naming none enrolls
+(`503 MEMBER_KIND_UNCHECKABLE`), but for a person Dispatch last answered a full member, whose
+kept kind the broker serves while Dispatch does not answer; on a broker with no
+`BROKER_PROJECT_ACCESS_URL`, a pod naming a project is refused `503 PROJECTS_UNCHECKED` and
+nothing is enrolled, and a pod naming none enrolls
 as the person's session does. Only a person's pod names projects: any other pod naming one is
 refused `400 PROJECTS_NEED_A_PERSON`.
 
@@ -1017,7 +1026,8 @@ whether it gets anything at all: a broker with `BROKER_PROJECT_ACCESS_URL` asks 
 person at each request, approval, release and airlock connection of the pod, so the pod of a person
 Dispatch calls a restricted member is denied every secret `restricted-member` after the change as
 before it, and the pod's requests and releases are refused `503 MEMBER_KIND_UNCHECKABLE` while
-Dispatch cannot say what kind of member that person is.
+Dispatch cannot say what kind of member that person is and the broker last kept them as no full
+member.
 [Operate](/legion/broker/operate/#what-to-run) says what else a removal or a move does.
 
 ### A group's secret
@@ -1650,7 +1660,20 @@ string that names another kind than the source's tag is refused (`proxy-kind-con
 that names the same kind is served with one warning line at each full load. The string goes once
 every source it is written for carries its `proxy` tag. And a `proxy` object of kind `dpop` alone
 (below) is kept until a `dispatch` kind with the `dpop` way serves the broker's minted Dispatch
-tokens. Every other `proxy` object is refused, naming `kinds`.
+tokens. In a file that declares a kind, every other `proxy` object is refused, naming `kinds`.
+
+A profiles file that declares no kind, as every deployment's file did before the kinds, is read as
+the broker before the kinds read it, so a broker of this release starts against it. Each `proxy`
+object of no kind, of kind `aws` or of kind `azure` serves its profile's name behind the object's
+`hosts`, `headers` and `allow`, in the way its kind took: no kind swaps a stored value or a minted
+token in, `aws` signs with a stored key pair, and `azure` exchanges an `azure-login` token. The
+name is behind a kind of its own, named for the profile (`DEEL_API_KEY`'s is `deelxapixkey`). No
+`proxy` tag can name that kind, so a secret tagged `proxy` under such a file is refused as naming no
+kind (`proxy-kind-unknown`). The name's fingerprint is the one the broker before the kinds gave it,
+the whole object with its source's `judge` seconds, so it does not move at the upgrade, and a change
+of the object's `kind`, `hosts`, `headers` or `allow` ends the name's live grants. A `judge` or
+`guidance` in such an object is refused, naming the source's tag that holds it now. This reading is
+transitional: it goes once every deployment's file declares kinds.
 
 Who decides a request for a value is no part of a kind: that is the secret's own `judge` and
 `guidance` tags ([The model judge](#the-model-judge)), and a profiles file that still sets `judge`
@@ -2232,8 +2255,10 @@ A read its bound cuts short fails its check, and the request goes to its person.
 with the same token, is one GET of the issue a Legion worker pod's claim names, for its assignee
 alone ([Approvals](#approvals)); the reads of a person's project access and member kind at
 `BROKER_PROJECT_ACCESS_URL`, by the token exchange, an enrollment, a secret request, an approval, a
-release and every airlock connection, and those for a private project's secrets
-([A private project's secrets](#a-private-projects-secrets)), are the last
+release and every airlock connection, those for a private project's secrets
+([A private project's secrets](#a-private-projects-secrets)), and each read of whether Dispatch
+holds the person a credential names
+([What it depends on](/legion/broker/operate/#what-it-depends-on)), are the last
 ([Operating the broker](/legion/broker/operate/)). An approval asks Dispatch again before it is
 written, under a 5-second bound of its own that ends a second before the run does, so a Dispatch
 slow to answer then fails the approval, and the request goes to its person. A run with a verdict
