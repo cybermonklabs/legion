@@ -130,7 +130,7 @@ def directive_files(files: list) -> list:
             continue
         if fast:
             try:
-                with open(os.path.join(REPO, path), "rb") as handle:
+                with open(REPO / path, "rb") as handle:
                     data = handle.read()
             except OSError:
                 continue
