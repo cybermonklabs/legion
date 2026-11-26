@@ -24,10 +24,9 @@ var stepAgentText = regexp.MustCompile(StepAgentTextPattern)
 
 // CheckStepAnswers is the first rule of a step record's answers that answers break, and the index
 // of the entry that breaks it. The index is -1 where the answers hold, or break the rule of their
-// length. pair gives an entry's model and its calls. It is the one statement of the rule:
-// Dispatch's step store refuses a write that breaks it, and the Legion daemon, through
-// github.com/sjawhar/envoy/steprecord, refuses to queue one. Each caller refuses a fault with its
-// own wording, naming its own fields.
+// length. pair gives an entry's model and its calls. It is the one statement of the rule.
+// Dispatch's step store refuses a write that breaks it. The Legion daemon refuses to queue one,
+// through github.com/sjawhar/envoy/steprecord. Each caller refuses a fault with its own wording.
 func CheckStepAnswers[E any](answers []E, pair func(E) (model string, calls int64)) (StepAnswersFault, int) {
 	if len(answers) > StepAnswersMax {
 		return StepAnswersTooMany, -1

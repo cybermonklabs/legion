@@ -105,8 +105,8 @@ func messageModel(t *testing.T, frame shimwire.Frame) (string, int) {
 }
 
 // The shim counts each call of its launch by the model that answered it, and answers the
-// daemon's reads of those totals. A response that ended in an error counts for no model, and so
-// do a response no model wrote and a message that is not the assistant's. A name outside the form
+// daemon's reads of those totals. A response that ended in an error counts for no model. So do a
+// response no model wrote and a message that is not the assistant's. A name outside the form
 // of a step's agent text is counted apart. A call that arrives as an rpc_chunk sequence counts once
 // the sequence is whole. A read that arrives while half of one is in the pipe is answered after all
 // of it. The set model is the one the harness's ready answer names, unless a call came before that

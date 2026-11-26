@@ -71,8 +71,8 @@ const AnswersMax = contracts.StepAnswersMax
 // AnswersHold where they break none (contracts.StepAnswersFault).
 type AnswersFault = contracts.StepAnswersFault
 
-// The faults of a step record's answers: none, more than AnswersMax entries, and of one entry a
-// model outside the form of an agent's text, fewer than 1 call, and a model an earlier entry names.
+// The faults of a step record's answers: none, and more than AnswersMax entries. Then those of one
+// entry: a model outside the form of an agent's text, fewer than 1 call, a model named before.
 const (
 	AnswersHold      = contracts.StepAnswersHold
 	AnswersTooMany   = contracts.StepAnswersTooMany
@@ -82,9 +82,9 @@ const (
 )
 
 // CheckAnswers is the first rule of a step record's answers that answers break, and the index of
-// the entry that breaks it, -1 where none or all of them do (contracts.CheckStepAnswers, the rule
-// Dispatch's store refuses an answers write by). pair gives an entry's model and its calls. Each
-// caller refuses a fault with its own wording, naming its own fields.
+// the entry that breaks it (contracts.CheckStepAnswers). The index is -1 where the answers hold, or
+// hold too many entries. Dispatch's store refuses an answers write by the same rule. pair gives an
+// entry's model and its calls. Each caller refuses a fault with its own wording.
 func CheckAnswers[E any](answers []E, pair func(E) (model string, calls int64)) (AnswersFault, int) {
 	return contracts.CheckStepAnswers(answers, pair)
 }

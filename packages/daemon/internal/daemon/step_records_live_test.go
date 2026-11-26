@@ -338,9 +338,8 @@ type stepLine struct {
 }
 
 // parseSteps reads the output of `dispatch steps --issue key` for an issue in no experiment's
-// group: the header `<key>: <n> steps in <m> tasks`, then exactly n lines of runs (runFields),
-// with no `Experiment <experiment>: variant <variant>.` line between them, which it would read as
-// no run.
+// group. That is the header `<key>: <n> steps in <m> tasks`, then exactly n lines of runs
+// (runFields). An `Experiment <experiment>: variant <variant>.` line between them is no run.
 func parseSteps(key, out string) (stepsPrinted, error) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	var printed stepsPrinted

@@ -12,8 +12,8 @@ import (
 // held in the backlog of the newest backlogLimit lines when none is, and replayed in order —
 // ahead of anything newer — when the next connection is acked (createShimBridge's forward and
 // onConnect, worker-shim.ts). A frame is the lines that carry it: one line, or a whole rpc_chunk
-// sequence, which is written, kept and dropped whole. The pump sends a harness sequence only once
-// it is whole, so every frame goes in the order the shim sends it, and none lands inside another.
+// sequence, which is written, kept and dropped whole. The pump sends a harness sequence in one
+// send: whole, or as it came where the harness broke or left it. So no frame lands inside another.
 type outbox struct {
 	mu      sync.Mutex
 	conn    net.Conn

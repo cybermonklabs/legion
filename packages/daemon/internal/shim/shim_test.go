@@ -385,9 +385,9 @@ func stateAnswer(id, model string, size int) []string {
 	return chunkLines(line)
 }
 
-// chunkedAgentEnd is an agent_end of over 2 MiB as the rpc_chunk lines that carry it: an agent_end
+// chunkedAgentEnd is an agent_end of over 2 MiB, as the rpc_chunk lines that carry it. An agent_end
 // carries the whole transcript, so Oh My Pi chunks a long one. Its 9 chunks are about 3 MB of
-// lines, and its first 4 more than a pipe holds.
+// lines, and its first 4 are more than a pipe holds.
 func chunkedAgentEnd() []string {
 	return chunkLines([]byte(`{"type":"agent_end","messages":[{"pad":"` + strings.Repeat("x", 2<<20) + `"}]}`))
 }
