@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -26,11 +27,6 @@ var (
 	// ErrClosed is the transport failing under a request: the connection closed before the
 	// answer came, or a write to it failed. It is never an acknowledgement and never a refusal.
 	ErrClosed = errors.New("worker stream closed")
-	// ErrNoAnswer is a request whose bound ran out before its answer arrived. The bound is the RPC
-	// timeout (worker_rpc_timeout_seconds) or the request's own. The shipped client puts the RPC
-	// timeout on every request (worker-rpc.ts:407-421). The bound counts from the request's start,
-	// so it covers the wait for the writer and the write too.
-	ErrNoAnswer = errors.New("no answer on the worker stream within the RPC timeout")
 	// ErrNoModelTotals is a read of a launch's model totals on a connection whose hello did not say
 	// that its shim counts them. An older shim would forward the frame to its harness. A stand-in
 	// shim would not answer it. So the read fails at once and writes nothing.
@@ -172,7 +168,11 @@ func (c *Conn) Negotiate(ctx context.Context) error {
 // Prompt hands OMP a task and returns on its acknowledgement — which is not delivery: OMP
 // answers `{success:true}` before the turn starts, and the turn is observed on Events(). OMP
 // refusing the prompt is a *RefusedError that is runtime.ErrPromptRefused; every other failure —
-// ErrClosed, ErrNoAnswer, the context, a refused negotiation — is transport and is not.
+// ErrClosed, runtime.ErrNoAnswer, the context, a refused negotiation — is transport and is not.
+// A wait that runs out after the prompt's frame was written is runtime.ErrPromptUnanswered as
+// well as its own cause: the prompt went out, and Oh My Pi may still run it. A negotiation that
+// times out comes before that write and is not. Nor is a bound that runs out while the prompt
+// waits for the writer or is written, since the request's bound covers both (request).
 func (c *Conn) Prompt(ctx context.Context, deliveryID, message string) error {
 	if deliveryID == "" {
 		return fmt.Errorf("worker-stream: %s: a prompt needs a delivery id, the one thing the shim dedupes a retry on", c.claim)
@@ -182,6 +182,10 @@ func (c *Conn) Prompt(ctx context.Context, deliveryID, message string) error {
 	}
 	id := deliveryID + promptIDSeparator + rand.Text()
 	_, err := c.call(ctx, shimwire.Prompt{ID: id, DeliveryID: deliveryID, Message: message}, id, deliveryID)
+	var written *writtenError
+	if errors.As(err, &written) && (errors.Is(err, runtime.ErrNoAnswer) || errors.Is(err, context.DeadlineExceeded)) {
+		return fmt.Errorf("%w: %w", runtime.ErrPromptUnanswered, err)
+	}
 	return err
 }
 
@@ -228,24 +232,73 @@ func (c *Conn) GetState(ctx context.Context) (runtime.ConnState, error) {
 	return runtime.ConnState{IsStreaming: *data.IsStreaming}, nil
 }
 
-// Compact asks Oh My Pi to compact its session's context. The shim answers nothing of it and
-// forwards it as it forwards a prompt, so the answer is Oh My Pi's own `response` to the
-// command: success for a session compacted, and `success: false` with Oh My Pi's reason for a
-// compaction it refused or skipped, which is a *RefusedError here (runtime.RefusalReason reads
-// the words). The wait is the request's own bound rather than the RPC timeout: Oh My Pi
-// answers only once the summary is written, which is a model call over the whole transcript.
+// Compact shortens Oh My Pi's session context with a handoff (shimwire.Handoff), and never with
+// Oh My Pi's `compact`, whose summary request Anthropic's classifier refuses for a long Claude
+// session (dispatch://INFRA-5798). The shim answers nothing of it and forwards it as it forwards
+// a prompt, so the answer is Oh My Pi's own `response` to the command, read by handoffResult.
+// `success: false` is a handoff Oh My Pi refused — one asked for while a turn runs, a session with
+// nothing to hand off, a model call that failed — which is a *RefusedError carrying Oh My Pi's
+// reason (runtime.RefusalReason reads the words).
+//
+// The wait is the request's own bound rather than the RPC timeout: Oh My Pi answers only once
+// the session's model has written the document over the whole transcript.
 func (c *Conn) Compact(ctx context.Context, customInstructions string, bound time.Duration) error {
 	if err := c.Negotiate(ctx); err != nil {
 		return err
 	}
 	id := rand.Text()
-	frame := shimwire.Compact{ID: id, CustomInstructions: customInstructions}
+	frame := shimwire.Handoff{ID: id, CustomInstructions: customInstructions}
 	if err := frame.Validate(); err != nil {
 		return fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 	}
-	_, err := c.callWithin(ctx, frame, id, "", bound)
-	return err
+	response, err := c.callWithin(ctx, frame, id, "", bound)
+	if err != nil {
+		return err
+	}
+	return c.handoffResult(response.Data)
 }
+
+// handoffResult reads the data of Oh My Pi's successful answer to a handoff, which its RPC writes
+// as the handoff's result object or null (`case "handoff"` in
+// packages/coding-agent/src/modes/rpc/rpc-mode.ts of cybermonklabs/oh-my-pi at the pinned tag):
+//
+//   - any object is a session shortened, and nil here: `{}` for a handoff the daemon asks for,
+//     since the pinned Oh My Pi saves the document to a file only for a handoff it starts itself,
+//     and `{savedPath}` where it saved one. No member of the object is read, since the daemon uses
+//     none;
+//   - null, or no data, is a handoff that made no document and committed nothing, so the session
+//     did not change: a *RefusedError of the handoff carrying the daemon's sentence for it, since
+//     Oh My Pi gave none (noHandoffReason);
+//   - anything that is not an object — a boolean, a number, a string, an array — is an answer the
+//     daemon cannot read, so it claims no change of the session either: a *RefusedError of the
+//     handoff saying so (unreadHandoffReason).
+//
+// The two refusals are the existing refusal (RefusedError), so the caller reads their words as it
+// reads Oh My Pi's own (runtime.RefusalReason), and a compaction that did not shorten the session
+// resets nothing (internal/supervise's compactEnded): a null or unread answer read as a success
+// would report a session shortened that may not be, and reset the claim's run of provider errors.
+func (c *Conn) handoffResult(data json.RawMessage) error {
+	var result *struct{}
+	if len(bytes.TrimSpace(data)) > 0 {
+		if err := json.Unmarshal(data, &result); err != nil {
+			c.log.Warn("worker-stream: the handoff's result is not an object; the session is not reported shortened",
+				"claim", c.claim, "error", err)
+			return &RefusedError{Claim: c.claim, Command: shimwire.TypeHandoff, Reason: unreadHandoffReason}
+		}
+	}
+	if result == nil {
+		return &RefusedError{Claim: c.claim, Command: shimwire.TypeHandoff, Reason: noHandoffReason}
+	}
+	return nil
+}
+
+// noHandoffReason and unreadHandoffReason are the daemon's words for the two successful answers to
+// a handoff that do not shorten the session (handoffResult). A model reads them in the
+// controller's tool result, so they follow ASD-STE100.
+const (
+	noHandoffReason     = "Oh My Pi made no handoff document. The session did not change."
+	unreadHandoffReason = "Oh My Pi gave a handoff result that is not an object. The daemon cannot say if the session changed."
+)
 
 // Shutdown asks the shim to end OMP: SIGTERM, then SIGKILL once the shim's grace runs out. The
 // shim acts on the frame itself and answers nothing (internal/shim); whether the process ended is
@@ -438,11 +491,12 @@ func (c *Conn) callWithin(ctx context.Context, frame shimwire.Frame, id, deliver
 // request writes frame and waits for the frame that answers id. One context bounds the whole
 // request: its wait for the writer, its write and its wait for the answer. That context is the
 // caller's, narrowed by bound where bound is above 0. A bound of 0 leaves the caller's context
-// alone.
+// alone. A wait for the answer that the context ends is a *writtenError, since only then was the
+// frame written whole.
 func (c *Conn) request(ctx context.Context, frame shimwire.Frame, id, deliveryID string, bound time.Duration) (shimwire.Frame, error) {
 	if bound > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeoutCause(ctx, bound, ErrNoAnswer)
+		ctx, cancel = context.WithTimeoutCause(ctx, bound, runtime.ErrNoAnswer)
 		defer cancel()
 	}
 	answer := make(chan shimwire.Frame, 1)
@@ -480,9 +534,19 @@ func (c *Conn) request(ctx context.Context, frame shimwire.Frame, id, deliveryID
 		}
 		return nil, fmt.Errorf("worker-stream: %s %s: %w before it was answered", c.claim, frame.FrameType(), ErrClosed)
 	case <-ctx.Done():
-		return nil, fmt.Errorf("worker-stream: %s %s: %w", c.claim, frame.FrameType(), context.Cause(ctx))
+		return nil, &writtenError{fmt.Errorf("worker-stream: %s %s: %w", c.claim, frame.FrameType(), context.Cause(ctx))}
 	}
 }
+
+// writtenError is a request's failure after its frame was written whole: the context ended the
+// wait for the answer. Its text and chain are its cause's. Prompt reads it, since only a prompt
+// whose frame was written may still run (runtime.ErrPromptUnanswered). The same bound also ends a
+// wait for the writer and a write, so the bound's error alone does not say the frame was written.
+type writtenError struct{ err error }
+
+func (e *writtenError) Error() string { return e.err.Error() }
+
+func (e *writtenError) Unwrap() error { return e.err }
 
 // write writes a frame outside a request. No context bounds it, so the RPC timeout of
 // connWriter.Write bounds its write.

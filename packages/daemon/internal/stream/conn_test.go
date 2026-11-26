@@ -127,9 +127,11 @@ func TestPromptHonoursItsContextAndTheRPCTimeout(t *testing.T) {
 	q.expect(shimwire.TypeHelloAck)
 	short.next()
 	quiet := short.conn()
+	// The peer answers nothing, so the negotiation ahead of the prompt is what runs out, and no
+	// prompt frame was written.
 	err := awaitResult(t, async(func() error { return quiet.Prompt(context.Background(), "delivery-1", "verify #41") }))
-	if !errors.Is(err, ErrNoAnswer) {
-		t.Fatalf("Prompt with no answer = %v, want ErrNoAnswer", err)
+	if !errors.Is(err, runtime.ErrNoAnswer) || errors.Is(err, runtime.ErrPromptUnanswered) {
+		t.Fatalf("Prompt whose negotiation got no answer = %v, want runtime.ErrNoAnswer and not runtime.ErrPromptUnanswered: no prompt was written", err)
 	}
 }
 
@@ -232,7 +234,9 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 				_, result := h.prompt(p, "delivery-1", "verify #41")
 				return awaitResult(h.t, result)
 			},
-			isCase: func(err error) bool { return errors.Is(err, ErrNoAnswer) },
+			isCase: func(err error) bool {
+				return errors.Is(err, runtime.ErrNoAnswer) && errors.Is(err, runtime.ErrPromptUnanswered)
+			},
 		},
 		{name: "the caller's deadline",
 			drive: func(h *harness, p *peer) error {
@@ -244,7 +248,9 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 				p.expect(shimwire.TypePrompt)
 				return awaitResult(h.t, result)
 			},
-			isCase: func(err error) bool { return errors.Is(err, context.DeadlineExceeded) },
+			isCase: func(err error) bool {
+				return errors.Is(err, context.DeadlineExceeded) && errors.Is(err, runtime.ErrPromptUnanswered)
+			},
 		},
 		{name: "OMP refuses the negotiation ahead of the prompt",
 			drive: func(h *harness, p *peer) error {
@@ -1372,6 +1378,44 @@ func TestALongRequestsBlockedWriteEndsAtTheRPCTimeout(t *testing.T) {
 	}
 }
 
+// A request's bound also covers its wait for the writer. A prompt whose context ends while another
+// frame holds the writer writes no frame. So it is not runtime.ErrPromptUnanswered, which says the
+// prompt went out and may still run. The shim reads nothing of it.
+func TestAPromptWhoseBoundEndsBeforeItsWriteIsNotUnanswered(t *testing.T) {
+	conn, shimEnd := pipeConn(t, 2*time.Second)
+	conn.negotiated = true
+	// The compaction's own end is not this test's: the cleanup closes the pipe under it.
+	async(func() error {
+		return conn.Compact(context.Background(), "Write the summary as text.", time.Hour)
+	})
+	// One byte read: the compaction's write has begun and holds the writer.
+	first := make([]byte, 1)
+	if err := awaitReturn(t, async(func() error { _, err := io.ReadFull(shimEnd, first); return err }),
+		"the compaction's write did not begin"); err != nil {
+		t.Fatalf("read the compaction's first byte: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := awaitReturn(t, async(func() error { return conn.Prompt(ctx, "delivery-1", "verify #41") }),
+		"the prompt did not return once its context ended")
+	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, runtime.ErrPromptUnanswered) {
+		t.Fatalf("Prompt whose context ended while it waited for the writer = %v, want the deadline and not runtime.ErrPromptUnanswered: no prompt was written", err)
+	}
+	// Read what the stream holds now, the rest of the compaction's frame, until the pipe stays
+	// quiet. A prompt written after the compaction would be read here too.
+	if err := shimEnd.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+		t.Fatalf("set the shim's read deadline: %v", err)
+	}
+	rest, err := io.ReadAll(shimEnd)
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("read the rest of the stream = %v, want the read's own deadline", err)
+	}
+	handoff, prompt := `"`+shimwire.TypeHandoff+`"`, `"`+shimwire.TypePrompt+`"`
+	if !strings.Contains(string(rest), handoff) || strings.Contains(string(rest), prompt) {
+		t.Fatalf("the shim read %q after the compaction's first byte, want the rest of the handoff frame and no prompt frame", rest)
+	}
+}
+
 // The wait for the totals' answer is bounded by its caller's context, not by the RPC timeout. A
 // request bounded by the RPC timeout, started after the read went out, runs out first. The read
 // still takes the shim's answer that comes after.
@@ -1383,8 +1427,8 @@ func TestAModelTotalsReadIsNotEndedByTheRPCTimeout(t *testing.T) {
 	request := p.expect(shimwire.TypeModelTotals).(shimwire.ModelTotals)
 	state := async(func() error { _, err := conn.GetState(context.Background()); return err })
 	p.negotiate()
-	if err := awaitResult(t, state); !errors.Is(err, ErrNoAnswer) {
-		t.Fatalf("GetState with no answer = %v, want ErrNoAnswer", err)
+	if err := awaitResult(t, state); !errors.Is(err, runtime.ErrNoAnswer) {
+		t.Fatalf("GetState with no answer = %v, want runtime.ErrNoAnswer", err)
 	}
 	totals := someTotals()
 	p.send(shimwire.ModelTotalsResult{ID: request.ID, OK: true, Totals: &totals})
