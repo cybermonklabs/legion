@@ -370,8 +370,12 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				order by t.seq desc limit 1
 			`, graphstore.KindAsk, removedAsk, graphstore.TupleRemovedBy)
 		},
-		// The retraction of alice's removed_by on the answered ask's node.
-		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindAsk, graphstore.TupleRemovedBy}: {"ask_removal"}},
+		// The retraction of alice's removed_by on the answered ask's node, and the version node and
+		// the block text that this branch's settlement writes beside it.
+		Counts: merged(versionCounted, map[graphcensus.StoredKind][]string{
+			{graphstore.KindAsk, graphstore.TupleRemovedBy}: {"ask_removal"},
+			{refs.BlockNodeKind, graphstore.AttributeText}:  {"block_text"},
+		}),
 	}, {
 		// The decisions step's catch-up (a tick of docs.DecisionStep) of an unfollow a build before
 		// this one recorded: that build deleted the follower row of the follower route's follow and
