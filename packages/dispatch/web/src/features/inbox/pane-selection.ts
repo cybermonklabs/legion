@@ -151,11 +151,13 @@ export interface PaneSelection extends InboxHandOff {
    * rather than when it is wanted.
    */
   showing: (listed: readonly PlacedRow[]) => InboxListRow | undefined;
-  /** Gives the element a landed hand-off is waiting to give the focus to - the row after the
-   *  rows acted on, or the list's empty message - the focus now, by the hand-off's own rule
-   *  (`focusTarget`), and answers whether one was waiting: what the bar of selected rows hands
-   *  the focus on by first as it goes (`SelectionBar`'s `returnFocus`). */
-  focusHandOff: () => boolean;
+  /** Takes the landed hand-off whose row has not taken the focus yet off the record, and answers
+   *  that row, by `rowId`, else undefined: the bar of selected rows lands it itself, once the rows
+   *  its press takes away have gone and by the rule its own landing takes (`SelectionBar`'s
+   *  `useLastMarkedPlace`), so one landing runs per press (`Inbox.tsx`'s `returnFocus`). A
+   *  hand-off to the list's empty message stays here: the message is drawn only once those rows
+   *  have gone, and the hand-off's own focus lands it then. */
+  takeHandOff: () => string | undefined;
 }
 
 /**
@@ -221,6 +223,11 @@ export function usePaneSelection({
   const intoView = useRef<{ acted: ReadonlySet<string>; target: HTMLElement } | undefined>(
     undefined
   );
+  /** The row a landed hand-off has just selected (`landHandOff`), which the selection's keeping
+   *  on screen (below) leaves to that hand-off's own landing: it is selected as the reader acts,
+   *  while the rows acted on may still stand above it, and a scroll to it there would carry the
+   *  view past their place by their height once they have gone. */
+  const selectedByHandOff = useRef<string | undefined>(undefined);
   /** A commit for the focus to move in: a landing in card mode changes nothing else that
    *  renders. */
   const [, setLandings] = useState(0);
@@ -407,6 +414,8 @@ export function usePaneSelection({
     // the next commit - keeps the selection, which leaves with it as the settling effect hands
     // it on.
     if (paneShown && target !== null) {
+      // Its own landing shows the row once the rows acted on have gone (`selectedByHandOff`).
+      if (target !== selectedNow.current) selectedByHandOff.current = target;
       select(target);
     } else if (paneShown && !drawsAny(acted) && acted.has(selectedNow.current ?? "")) {
       select(undefined);
@@ -571,7 +580,10 @@ export function usePaneSelection({
     );
   });
 
-  // `PaneSelection.focusHandOff`, which the effect below runs after every commit too.
+  /** Gives the element a landed hand-off is waiting to give the focus to - the row after the rows
+   *  acted on, or the list's empty message - the focus now, by the hand-off's own rule
+   *  (`focusTarget`), and answers whether one was waiting. The effect below runs it after every
+   *  commit. */
   const focusHandOff = (): boolean => {
     const handOff = focusTo.current;
     const target = handOff === undefined ? null : targetElement(handOff.target);
@@ -627,22 +639,37 @@ export function usePaneSelection({
   // the row they cannot see otherwise. It is shown at its nearest edge by the least scroll, by the
   // window's and each box's visible edges and not the root's scroll padding (`scrollToNearest`),
   // as the hand-off lands its target (`landNearest`), but moves no focus: the reader's focus can
-  // be in the column while `j` and `k` step the selection.
+  // be in the column while `j` and `k` step the selection. A row a landed hand-off selected is
+  // that hand-off's to show (`selectedByHandOff`): beside the column the bar's Dismiss selects the
+  // row after the marked ones in the commit the bar goes in, while the marked rows still stand
+  // above it, and a scroll to it then carried the list's box 162 px, the height of the two rows
+  // it took away, past the cut of the row marked last (builds Job `infra-2160-r22-l-qs6mx`,
+  // `e2e/table-controls.e2e.ts`, Chromium and Firefox at 1440x900).
   useEffect(() => {
-    if (!paneShown || selectedId === undefined) {
+    const handed = selectedByHandOff.current;
+    selectedByHandOff.current = undefined;
+    if (!paneShown || selectedId === undefined || selectedId === handed) {
       return;
     }
     const row = selectedRow();
     if (row !== null) scrollToNearest(row);
   }, [paneShown, selectedId, selectedRow]);
 
+  // `PaneSelection.takeHandOff`.
+  const takeHandOff = (): string | undefined => {
+    const target = focusTo.current?.target;
+    if (target === undefined || target === null) return undefined;
+    focusTo.current = undefined;
+    return target;
+  };
+
   return {
     ...stableHandOffs,
-    focusHandOff,
     id: selectedId,
     select,
     selectedRow,
     showing,
     step,
+    takeHandOff,
   };
 }

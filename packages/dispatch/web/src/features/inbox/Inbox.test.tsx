@@ -9341,6 +9341,104 @@ test("a bulk Snooze that lands after its pick's frame, at the reading column's w
   }
 });
 
+/** How tall `layRowsInBox` draws each row and its mark. */
+const BOX_ROW_PX = 100;
+
+/** Lays the Inbox's rows down the list's own box, as happy-dom does not, for the list beside the
+ *  reading column: the box, `list`, stands from the window's top to `height` and clips what
+ *  overflows it, and each row and its mark are `BOX_ROW_PX` tall, in the order the list draws
+ *  them, less the box's `scrollTop`. The box's `scrollTop` starts at 0, and its `scrollBy` moves
+ *  it. Every other element keeps happy-dom's own box. Answers the box's scroll, and the function
+ *  that gives happy-dom its own boxes back. */
+function layRowsInBox(
+  list: HTMLElement,
+  height: number
+): { restore: () => void; top: () => number } {
+  let top = 0;
+  list.style.overflowY = "auto";
+  Object.defineProperty(list, "scrollTop", {
+    configurable: true,
+    get: () => top,
+    set: (value: number) => {
+      top = value;
+    },
+  });
+  list.scrollBy = ((options: ScrollToOptions) => {
+    top += options.top ?? 0;
+  }) as typeof list.scrollBy;
+  const real = Element.prototype.getBoundingClientRect;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this === list) return new DOMRect(0, 0, 600, height);
+    const row = this.matches('[data-inbox-row], input[type="checkbox"]')
+      ? this.closest("[data-inbox-row]")
+      : null;
+    if (row === null) return real.call(this);
+    const index = [...document.querySelectorAll("[data-inbox-row]")].indexOf(row);
+    return new DOMRect(0, index * BOX_ROW_PX - top, 600, BOX_ROW_PX);
+  });
+  return { restore: () => rect.mockRestore(), top: () => top };
+}
+
+// Beside the column, the bar's Dismiss over two threads the reader marked, the upper one last,
+// with its row cut by 30 px at the bottom edge of the list's own box, where the bar stands over the
+// list from `sm` up. The press selects the row after the marked ones in the commit the bar goes in
+// (R8), while the marked rows still stand above it, and the selection's keeping of its row in sight
+// scrolled the box to that row there: by the height of the two rows past the cut once they had
+// gone, 162 px at 1440x900 (`e2e/table-controls.e2e.ts`, builds Job `infra-2160-r22-l-qs6mx`).
+// The bar's hand-off lands that row instead, once the rows have gone and the foot's pass has given
+// the list back the room the bar took: the row takes the focus where the row marked last stood,
+// and is shown whole by the cut alone (`landNearest`).
+test("beside the column the bar's Dismiss with the row marked last cut at the list box's foot gives the row after the marked ones the focus and scrolls the box by that cut alone", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const reads = listThreads(12);
+  const settle = Promise.withResolvers<{ dismissed: number }>();
+  answerInboxDismisses().mockReturnValue(settle.promise);
+  const { unmount } = renderInbox("/?group=none");
+  let laidOut: { restore: () => void; top: () => number } | undefined;
+  try {
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(rowIds()).toHaveLength(12));
+    // The box ends 700 px down the window.
+    const box = layRowsInBox(screen.getByTestId("inbox-list"), 700);
+    laidOut = box;
+    const order = rowIds();
+    const [upper, lower, after] = order.slice(7, 10) as [string, string, string];
+    for (const id of [lower, upper]) await user.click(markOf(id));
+    await screen.findByText("2 selected");
+    // The box scrolled 70 px: the upper row stands at 630 to 730, cut by 30 px at the box's foot.
+    act(() => {
+      screen.getByTestId("inbox-list").scrollTop = 70;
+    });
+    const cut = shortRow(upper).getBoundingClientRect().bottom - 700;
+    expect(cut).toBe(30);
+
+    await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+    await waitFor(() =>
+      expect(rowIds()).toEqual(order.filter((id) => id !== upper && id !== lower))
+    );
+    const landing = shortRow(after);
+    await waitFor(() => expect(landing).toHaveFocus());
+    // The foot's pass, the landing's own second look a microtask after it (`landNearest`), and
+    // the commits after it have all run: nothing moves the box after this.
+    await afterFrameAndTasks();
+    expect(landing).toHaveFocus();
+    expect(selectedIds()).toEqual([after]);
+    expect(box.top()).toBe(70 + cut);
+    expect(landing.getBoundingClientRect().bottom).toBe(700);
+  } finally {
+    await act(async () => {
+      settle.resolve({ dismissed: 2 });
+    });
+    unmount();
+    laidOut?.restore();
+    narrow();
+    reads();
+  }
+});
+
 test("a snooze the column's head writes keeps that column on its row, in flight and refused", async () => {
   const user = userEvent.setup();
   const narrow = widenToReadingPane();

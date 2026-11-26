@@ -1407,18 +1407,21 @@ function InboxBody({
    *  first read the list adopts after that write, which places the row, or until Dispatch refuses
    *  that write. Kept after every commit (below). */
   const snoozedHere = useRef<Map<string, SnoozeName>>(new Map());
-  // The bar's hand-off (`useLastMarkedPlace`): the mark of the row the reader marked last while
-  // the list holds it, out of sight or not. After a press that took that row away: a row the
-  // reader can see at its place, else before it, else after it. With no row marked: the first row
-  // the reader can see below whatever the page draws over the list. Each is shown whole at its
-  // nearest edge. Else the list column's own stop, with no scroll. While a press is taking a
-  // listed row off this view (`leavingNow`), the landing is owed and made by the commit that takes
-  // those rows away: a Dismiss's or a Move to Inbox's rows (`dismissedHere`), and a Snooze's, the
-  // bar's and a row's own (`snoozedHere`). The list keeps a snoozed row in its band only until
-  // the write lands, and its move into a folded Later then is no press's doing, so a focus put on
-  // it falls to the page's body - which is what the bar's Snooze left in WebKit, eight times in
-  // eight repeats (builds Job `infra-3135-infra-3135-r29t-snp-vfht5`). So the name stands until
-  // the read that places the row.
+  // The bar's hand-off (`useLastMarkedPlace`): after a press of the bar that hands the reader on
+  // (R8: a Dismiss, a Move to Inbox, a Snooze once it lands), the row of the item after the marked
+  // ones, which takes the focus itself (`row`, and `paneSelection.takeHandOff` below). Else the
+  // mark of the row the reader marked last while the list holds it, out of sight or not. After a
+  // press that took that row away: a row the reader can see at its place, else before it, else
+  // after it. With no row marked: the first row the reader can see below whatever the page draws
+  // over the list. Each is shown whole at its nearest edge. Else the list column's own stop, with
+  // no scroll. While a press is taking a listed row off this view (`leavingNow`), the landing is
+  // owed and made by the commit that takes those rows away: a Dismiss's or a Move to Inbox's rows
+  // (`dismissedHere`), and a Snooze's, the bar's and a row's own (`snoozedHere`). The list keeps a
+  // snoozed row in its band only until the write lands, and its move into a folded Later then is
+  // no press's doing, so a focus put on it falls to the page's body - which is what the bar's
+  // Snooze left in WebKit, eight times in eight repeats (builds Job
+  // `infra-3135-infra-3135-r29t-snp-vfht5`). So the name stands until the read that places the
+  // row.
   /** Whether a press of the reader's is taking this row off the view: the one answer the bar's
    *  hand-off is given and the one the hand's own hold reads (`seen`, below). A row named here is
    *  never kept on the page for the hand in it: the hold that keeps a row under the reader's hand
@@ -1468,6 +1471,7 @@ function InboxBody({
     leaving: leavingNow,
     list: () => listScroller.current,
     order: () => rowsIn(listRef.current).map((row) => row.dataset.inboxRow ?? ""),
+    row: (id) => rowIn(listRef.current, id),
     shown: bulkBarShown,
   });
 
@@ -1975,17 +1979,17 @@ function InboxBody({
       label="Selected rows"
       notice={snoozeRefusal}
       // The bar gone with the focus, or the control in it that held the focus: the row a press
-      // of the bar hands the reader on to (R8), which the hand-off focuses itself, with no scroll
-      // while the rows the press takes away still stand above it (`focusHandOff`): the bar's own
-      // focus would scroll the view to that row where it stands below them, and their going then
-      // carries it past the place the reader saw. Else the hand-off above (`landAtPlace.land`)
-      // puts the focus itself. The list column's own stop is the last place the focus can go: a
-      // Move to Inbox that empties the Dismissed view leaves no other row, and the view's empty
-      // message takes the focus from there once it is drawn.
+      // of the bar hands the reader on to (R8), which the pane's hand-off gives up to the bar's own
+      // (`paneSelection.takeHandOff`), so one landing runs per press. That landing waits, with no
+      // scroll, while the rows the press takes away still stand above the row (`landAtPlace`): a
+      // scroll to the row where it stands below them would carry the view past the place the
+      // reader saw once they go. Then the row takes the focus, and is shown whole by the least
+      // scroll once the foot's pass has given the list the room the bar took. Else the
+      // hand-off above lands by its own rule. The list column's own stop is the last place the
+      // focus can go: a Move to Inbox that empties the Dismissed view leaves no other row, and the
+      // view's empty message takes the focus from there once it is drawn (`pane-selection.ts`).
       returnFocus={() =>
-        paneSelection.focusHandOff() || landAtPlace.land()
-          ? null
-          : focusListStop(listScroller.current)
+        landAtPlace.land(paneSelection.takeHandOff()) ? null : focusListStop(listScroller.current)
       }
       size={BAR_SIZE}
       state={barState}
