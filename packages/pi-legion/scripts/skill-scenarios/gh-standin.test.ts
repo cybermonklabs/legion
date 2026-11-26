@@ -1,8 +1,16 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
+import { githubFixtures } from "./case-world";
 
 // Every row runs gh-standin.ts as a scenario's agent does, a process of its own, against a run
 // directory holding the row's own fixtures.json.
@@ -388,3 +396,221 @@ test("the merge-queue routes answer the merger's reads and its enqueue, and reco
   expect(calls.map((call) => call.exit)).toEqual([0, 0, 0, 0, 0, 0, 0]);
   expect(calls[4]?.route).toBe("^gh api graphql .*enqueuePullRequest");
 });
+
+/** A commit pushed to branch `branch` of the run's remote (git-world.ts's `remote.git`), made in a
+ * clone of the row's own; its sha. */
+function pushed(run: string, branch: string): string {
+  const remote = path.join(run, "remote.git");
+  const clone = path.join(run, "clone");
+  const env = {
+    PATH: process.env.PATH ?? "",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "Scenario Worker",
+    GIT_AUTHOR_EMAIL: "worker@example.invalid",
+    GIT_COMMITTER_NAME: "Scenario Worker",
+    GIT_COMMITTER_EMAIL: "worker@example.invalid",
+  };
+  const git = (cwd: string, ...args: string[]) => {
+    const result = Bun.spawnSync(["git", ...args], { cwd, env });
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+    return result.stdout.toString().trim();
+  };
+  if (!existsSync(remote)) {
+    git(run, "init", "-q", "--bare", remote);
+    git(run, "init", "-q", clone);
+  }
+  git(clone, "commit", "-q", "--allow-empty", "-m", `on ${branch}`);
+  git(clone, "push", "-q", remote, `HEAD:refs/heads/${branch}`);
+  return git(clone, "rev-parse", "HEAD");
+}
+
+// A pull request the role opens is kept as GitHub keeps it: every read of it answers with it, by
+// number, by branch, with no selector on the issue branch, in the open lists and over REST; its
+// head follows each push to its branch; a body edit reaches it. GitHub's refusals hold: a branch
+// the remote does not hold, and a second pull request of a branch into the same base. A REST
+// creation of another branch takes the next number and is answered whole.
+test("a pull request the role opens is kept, follows its branch, and GitHub's refusals hold", () => {
+  const run = runWith(
+    githubFixtures(
+      { repository: "acme/widgets", pullRequests: [], mergeQueue: [] },
+      "main",
+      "ACME-12"
+    ).routes
+  );
+  writeFileSync(
+    path.join(run, "world.json"),
+    JSON.stringify({ dispatch: { issue: { key: "ACME-12" } } })
+  );
+  pushed(run, "main");
+  expect(gh(run, "pr", "create", "--base", "main", "--title", "T", "--body", "B")).toEqual({
+    code: 1,
+    stdout: "",
+    stderr:
+      "pull request create failed: GraphQL: Head sha can't be blank, Base sha can't be blank, No commits between main and legion/ACME-12, Head ref must be a branch (createPullRequest)\n",
+  });
+  const first = pushed(run, "legion/ACME-12");
+  expect(gh(run, "pr", "create", "--base", "main", "--title", "T", "--body", "B")).toEqual({
+    code: 0,
+    stdout: "https://github.com/acme/widgets/pull/1\n",
+    stderr: "",
+  });
+  expect(
+    JSON.parse(
+      gh(run, "pr", "view", "1", "--json", "number,state,headRefName,headRefOid,title,body").stdout
+    )
+  ).toEqual({
+    number: 1,
+    state: "OPEN",
+    headRefName: "legion/ACME-12",
+    headRefOid: first,
+    title: "T",
+    body: "B",
+  });
+  expect(gh(run, "pr", "view", "--json", "number").stdout).toBe('{"number":1}\n');
+  expect(gh(run, "pr", "list", "--head", "legion/ACME-12", "--json", "number").stdout).toBe(
+    '[{"number":1}]\n'
+  );
+  expect(gh(run, "pr", "list", "--json", "number").stdout).toBe('[{"number":1}]\n');
+  expect(gh(run, "pr", "list", "--state", "all", "--json", "number").stdout).toBe(
+    '[{"number":1}]\n'
+  );
+  expect(gh(run, "pr", "list", "--state", "closed", "--json", "number").stdout).toBe("[]\n");
+  expect(gh(run, "api", "repos/acme/widgets/pulls", "--jq", ".[].number").stdout).toBe("1\n");
+  expect(gh(run, "api", "repos/acme/widgets/pulls/1", "--jq", ".state").stdout).toBe("open\n");
+  expect(gh(run, "api", "repos/acme/widgets/pulls/1/reviews").stdout).toBe("[]\n");
+  expect(gh(run, "pr", "create", "--head", "legion/ACME-12", "--title", "again")).toEqual({
+    code: 1,
+    stdout: "",
+    stderr:
+      'a pull request for branch "legion/ACME-12" into branch "main" already exists:\nhttps://github.com/acme/widgets/pull/1\n',
+  });
+  const second = pushed(run, "legion/ACME-12");
+  expect(gh(run, "pr", "view", "legion/ACME-12", "--json", "headRefOid").stdout).toBe(
+    `{"headRefOid":"${second}"}\n`
+  );
+  expect(gh(run, "api", "repos/acme/widgets/pulls/1", "--jq", ".head.sha").stdout).toBe(
+    `${second}\n`
+  );
+  expect(gh(run, "pr", "list", "--json", "headRefOid", "--jq", ".[].headRefOid").stdout).toBe(
+    `${second}\n`
+  );
+  expect(gh(run, "pr", "edit", "1", "--body", "new").code).toBe(0);
+  expect(gh(run, "pr", "view", "1", "--json", "body").stdout).toBe('{"body":"new"}\n');
+
+  pushed(run, "legion/ACME-13");
+  const posted = gh(
+    run,
+    "api",
+    "-X",
+    "POST",
+    "repos/acme/widgets/pulls",
+    "-f",
+    "head=acme:legion/ACME-13",
+    "-f",
+    "base=main",
+    "-f",
+    "title=U",
+    "--jq",
+    "{number, state, head: .head.ref}"
+  );
+  expect(posted).toEqual({
+    code: 0,
+    stdout: '{"head":"legion/ACME-13","number":2,"state":"open"}\n',
+    stderr: "",
+  });
+  expect(gh(run, "pr", "view", "2", "--json", "title").stdout).toBe('{"title":"U"}\n');
+  expect(gh(run, "pr", "list", "--json", "number", "--jq", ".[].number").stdout).toBe("1\n2\n");
+  const refused = gh(
+    run,
+    "api",
+    "-X",
+    "POST",
+    "repos/acme/widgets/pulls",
+    "-f",
+    "head=legion/ACME-13",
+    "-f",
+    "base=main"
+  );
+  expect([refused.code, refused.stderr, JSON.parse(refused.stdout).errors]).toEqual([
+    1,
+    "gh: Validation Failed (HTTP 422)\n",
+    [
+      {
+        resource: "PullRequest",
+        code: "custom",
+        message: "A pull request already exists for acme:legion/ACME-13.",
+      },
+    ],
+  ]);
+  const exits = readFileSync(path.join(run, "calls.jsonl"), "utf8")
+    .trimEnd()
+    .split("\n")
+    .map((line) => z.object({ exit: z.number() }).parse(JSON.parse(line)).exit);
+  // The three refusals: the branch the remote did not hold, and the two second pull requests.
+  expect(exits.filter((exit) => exit !== 0)).toHaveLength(3);
+}, 60_000);
+
+// Help and the version reach no GitHub: the real gh, the first executable gh on PATH outside the
+// run's bin directory that is no script (a wrapper such as `legion gh`'s is skipped), answers them,
+// and they go to gh-local.jsonl, so `gh pr create --help` opens no pull request and is no call of
+// the record. The row's real gh is a copy of /bin/echo, a binary that prints its arguments.
+test("help and the version are the real gh's answers and no call of the record", () => {
+  const run = runWith(
+    githubFixtures(
+      { repository: "acme/widgets", pullRequests: [], mergeQueue: [] },
+      "main",
+      "ACME-12"
+    ).routes
+  );
+  writeFileSync(
+    path.join(run, "world.json"),
+    JSON.stringify({ dispatch: { issue: { key: "ACME-12" } } })
+  );
+  pushed(run, "legion/ACME-12");
+  const standin = path.join(import.meta.dir, "gh-standin.ts");
+  const own = path.join(run, "bin");
+  const wrapper = path.join(run, "wrapper");
+  const real = path.join(run, "real");
+  for (const dir of [own, wrapper, real]) mkdirSync(dir);
+  writeFileSync(path.join(own, "gh"), `#!/bin/sh\nexec ${process.execPath} ${standin} gh "$@"\n`, {
+    mode: 0o755,
+  });
+  writeFileSync(path.join(wrapper, "gh"), '#!/bin/sh\necho "wrapper: $*"\nexit 2\n', {
+    mode: 0o755,
+  });
+  copyFileSync("/bin/echo", path.join(real, "gh"));
+  chmodSync(path.join(real, "gh"), 0o755);
+  const local = (...args: string[]) => {
+    const result = Bun.spawnSync([process.execPath, standin, "gh", ...args], {
+      env: {
+        PATH: `${own}:${wrapper}:${real}:${process.env.PATH ?? ""}`,
+        SKILL_SCENARIO_RUN: run,
+      },
+    });
+    return {
+      code: result.exitCode,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString(),
+    };
+  };
+  expect(local("pr", "create", "--help")).toEqual({
+    code: 0,
+    stdout: "pr create --help\n",
+    stderr: "",
+  });
+  expect(local("version")).toEqual({ code: 0, stdout: "version\n", stderr: "" });
+  expect(existsSync(path.join(run, "calls.jsonl"))).toBe(false);
+  const LocalCall = z.object({ argv: z.array(z.string()), gh: z.string(), exit: z.number() });
+  expect(
+    readFileSync(path.join(run, "gh-local.jsonl"), "utf8")
+      .trimEnd()
+      .split("\n")
+      .map((line) => LocalCall.parse(JSON.parse(line)))
+      .map(({ argv, gh, exit }) => [argv.join(" "), gh, exit])
+  ).toEqual([
+    ["pr create --help", path.join(real, "gh"), 0],
+    ["version", path.join(real, "gh"), 0],
+  ]);
+  expect(local("pr", "view", "1").code).toBe(1);
+}, 60_000);
