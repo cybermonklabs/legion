@@ -828,15 +828,18 @@ hold none of pgxpool's keys even when `LEGION_TEST_PG_DSN` sets one: `pgx.Connec
 key to the server, which refuses it, `psql` refuses the URL, and Dispatch refuses a URL that sets
 `pool_max_conns`.
 
-A pool a test builds on a URL that names no size (`testdb.Outage`'s, Envoy's `storetest.URL`, a
-test's own temporary database) takes its size from Envoy's public `testpool` package, which holds
-the same rule: a `pool_max_conns` the DSN names wins, and `testpool.PoolConns` is the size where
-it names none. `testpool.ParseConfig` and `testpool.NewPool` apply it to a DSN, and `testpool.Size`
-to a configuration another factory parsed, as `testdb.Outage`'s pool takes the daemon store's
-`PoolConfig` for its dial hook. A test that needs another size names it in the DSN or sets
-MaxConns itself. `testpool` is a public package of the Envoy module, which the daemon imports
-through its replace, and imports only pgx and the standard library: Envoy's `internal/testpg`
-imports testcontainers.
+A pool a test builds itself takes its size from Envoy's public `testpool` package, which holds the
+same rule: a `pool_max_conns` the DSN names wins, and `testpool.PoolConns` is the size where it
+names none. Envoy's `storetest.URL` and a test's own temporary database name none. `testdb.Outage`
+keeps the query of the DSN it is given, so its DSN names a size where the caller's does: an Outage
+of `testDSN(t)` (`store/bound_outage_test.go`) or of `testdb.Database` carries the bounded size,
+which its pool keeps, and `testdb.Outage`'s on an unsized URL names none.
+`testpool.ParseConfig` and `testpool.NewPool` apply the rule to a DSN, and `testpool.Size` to a
+configuration another factory parsed: `owedwrite_test.go`'s pool, on an Outage of a literal
+unsized URL, takes the daemon store's `PoolConfig` for its dial hook, then `testpool.Size`. A test
+that needs another size names it in the DSN or sets MaxConns itself. `testpool` is a public
+package of the Envoy module, which the daemon imports through its replace, and imports only pgx
+and the standard library: Envoy's `internal/testpg` imports testcontainers.
 
 A test that needs one of envoy's binaries takes it from
 `packages/daemon/internal/testbuild`'s `EnvoyBinary`, which builds each command once per test

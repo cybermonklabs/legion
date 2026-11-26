@@ -55,7 +55,14 @@ func Size(config *pgxpool.Config) error {
 // ParseConfig is pgxpool.ParseConfig with Size applied: MaxConns is the pool_max_conns dsn names,
 // or PoolConns where it names none.
 func ParseConfig(dsn string) (*pgxpool.Config, error) {
-	config, err := pgxpool.ParseConfig(dsn)
+	return parseConfig(pgxpool.ParseConfig, dsn)
+}
+
+// parseConfig is ParseConfig over parse. A test passes a parse that answers as pgxpool.ParseConfig
+// does on a machine of more CPUs than PoolConns, so its row fails on a 4-CPU runner too when the
+// rule is gone: pgx's own default there is max(4, NumCPU), which is PoolConns.
+func parseConfig(parse func(string) (*pgxpool.Config, error), dsn string) (*pgxpool.Config, error) {
+	config, err := parse(dsn)
 	if err != nil {
 		return nil, err
 	}
