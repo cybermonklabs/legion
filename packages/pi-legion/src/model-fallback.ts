@@ -405,8 +405,8 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
   /**
    * The plugin's own step down the chain, for a content filter the host did not walk: the host
    * leaves a refusal that lands after the model has already sent text where it is
-   * (`turn-recovery.ts:1820-1854` and `:3228-3238` at tag
-   * `v18.18.6-sami.20261125-001804`).
+   * (`turn-recovery.ts:2068-2102` and `:3482-3492` at tag
+   * `v18.18.6-sami.20261125-164517`).
    *
    * The arming names the `model_change` entry **this** call wrote, read back from `getBranch()`
    * after it. The host's own fallback claim would not do: `pi.setModel` clears the active retry
@@ -460,22 +460,29 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
 
   const settled = async (event: AgentEndEvent, ctx: ModelFallbackContext): Promise<void> => {
     // The host is about to go on with this turn itself (`turnGoesOn`), so it has not settled;
-    // acting on it would step the session down twice (`session/agent-session.ts:6195-6203` at the
+    // acting on it would step the session down twice (`session/agent-session.ts:6336-6344` at the
     // pinned tag). An end that waits only on a background job's result has settled, and the job's
     // result starts the next turn on the model this end leaves the session on.
     //
     // One window stays open there. The host does not wait for this handler (it fires the
-    // extensions' `agent_end` without awaiting them, `:6560`), and it picks each request's model
-    // before that request's `context` hook runs, so a request of a run a job's result starts that
-    // the host selects before the walk below has finished `setModel` goes to the model that
-    // refused; requests selected after the switch completes use the new model. There is no bound
-    // of one request: while `setModel` is still pending, every request selected meanwhile takes
-    // the old model. Measured on 2026-11-21 at the pinned build with a job that had already ended
-    // when the refused turn ended, the result's first request went to the next model in 5 of 5
-    // runs: that is the outcome when the switch is fast (it awaits only the model registry and
-    // `setModel`), not a bound; a `setModel` that waits on the network (a local backend's model
-    // metadata) can be slow. What would close it is in the host: awaiting the extensions'
-    // `agent_end` handlers before it starts the run a background job's result asks for.
+    // extensions' `agent_end` without awaiting them, `session/agent-session.ts:7068` at the pinned
+    // tag), and it picks each request's model before that request's `context` hook runs
+    // (`agent/src/agent-loop.ts:2090-2093`). What a request does wait for is a switch already under
+    // way: `pi.setModel` runs the switch inside `trackModelSwitch`
+    // (`session/model-controls.ts:329-351`), and each main request waits for it before the host
+    // reads its model (`settleModelSwitch`, `session/session-tools.ts:2406-2417`, a hook that
+    // `agent-session.ts:3915` registers and `agent-loop.ts:1469` runs before each model call). So a
+    // request of a run a job's result starts goes to the model that refused only when the host
+    // selects it before the switch has started: while the walk below still awaits the chain's next
+    // model, the model's key or its metadata (`refreshSelectedModelMetadata`,
+    // `model-controls.ts:325`, which for a local backend can wait on the network), every request
+    // selected meanwhile takes the old model, so there is no bound of one request; a request
+    // selected once the tracked switch has started waits for it and takes the new one. Measured on
+    // 2026-11-21 on Oh My Pi 18.18.6-sami.20261119-162325, a build whose requests did not wait for
+    // a switch, with a job that had already ended when the refused turn ended, the result's first
+    // request went to the next model in 5 of 5 runs. What would close the window is in the host:
+    // awaiting the extensions' `agent_end` handlers before it starts the run a background job's
+    // result asks for.
     if (turnGoesOn(event)) return;
     const applied = appliedThisTurn;
     appliedThisTurn = undefined;
@@ -659,7 +666,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         appliedThisTurn = { entryId: own.entry.id, reasoned: event.reason !== undefined };
         // What the host walked for, in the provider's own words: it names the reason as
         // `Request failed: ` and the error text of the message that failed
-        // (`session/turn-recovery.ts` at tag `v18.18.6-sami.20261125-001804`), so
+        // (`session/turn-recovery.ts` at tag `v18.18.6-sami.20261125-164517`), so
         // `Request failed: Refusal (cyber): Declined` reads as Anthropic's `cyber` filter and
         // arms the same refusal the plugin's own walk arms, category and all.
         //
@@ -668,7 +675,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         // settled turn's last assistant message is clean and `settled` below never sees that
         // refusal. An `"other"` arming would then wait on a suppression the host never applies
         // — for a classifier refusal it pins the fallback instead
-        // (`session/turn-recovery.ts:3811` at the pinned tag) — and hand the session straight
+        // (`session/turn-recovery.ts:4123` at the pinned tag) — and hand the session straight
         // back to the model that had just refused it, with no cooldown at all.
         //
         // A host build that sends no reason arms `"other"`, as every arming did before, and
