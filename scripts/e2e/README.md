@@ -47,7 +47,7 @@ A kind proof's containers on the kind network get `--cpus 2 --memory 2g`:
 each runs one static binary from the work directory, a Go test driver that runs the daemon against the cluster or, in `share-volumes-kind.sh`'s probe, `legion probe-boot`.
 The one exception is kind's node container, which `kind create cluster` starts ([`lib/kind-sandbox.sh`](#libkind-sandboxsh)):
 it has no limit, because the kubelet inside it reads the host's capacity, not a cgroup cap.
-`burstable-kind.sh`'s pods declare memory limits of 19 Gi and 32 Gi, which the kubelet admits against the host's memory;
+`burstable-kind.sh`'s pods declare memory limits of 8 Gi and 32 Gi, which the kubelet admits against the host's memory;
 a smaller cap on the node lets the kernel kill pod processes below their own limits, and the kubelet does not see why.
 
 Every `legion.yaml` a proof writes for a Go daemon sets `worker_wakes_per_minute: 0`, which turns the daemon's wake pacing off (INFRA-976).
@@ -98,16 +98,24 @@ Each item below names a script, then what it proves.
 - `leak-guard-image-job.sh`
 
   the published worker image's own `git` and `jj` refuse a push that names something private, driven as one Kubernetes Job on the image digest the caller names, under the rules of `docs/kubernetes.md`, "Running a workload in the cluster from a role":
-  k1 of dispatch://INFRA-1527 — a commit whose message carries a refusable Tailscale MagicDNS host, one whose author identity carries it, one whose only hit is an added line of a tracked file, one whose only hit is the branch name, and a clean one — under `git push` and under `jj git push` in each shape jj's own help in that image enumerates (the bare shape, `--all`, `--change`, `--named` and `--deleted`, the last a ref change with no commit), with `git ls-remote` read before and after every push, the added-line case and the branch-name case reported as checks of their own, and the run failed outright where a shape the script drives is gone from jj;
-  k7's two shared-check failures at those same call sites, the stand-in check removed so that none resolves and a stand-in that exits 2 for an internal error, each of which must refuse under both commands and name the failure it met;
-  and a `jj gerrit upload` of the message case run with `--config git.executable-path=/usr/bin/git`, which the image's jj wrapper must refuse before the upload starts, with exit 2, its `LEAK CHECK SETUP ERROR` line saying `git.executable-path is /usr/bin/git`, and the remote unchanged.
-  The Job runs no launcher, so the daemon pushes it no shared check.
-  It writes its own stand-in shared check into its `emptyDir`, and the rule file embedded in the image's `legion` decides every verdict;
-  k7's other two failures cannot be met in an image at all, since the rules are embedded in that binary and the engine is linked into it, which the Job says in its own log.
+  k1 of dispatch://INFRA-1527 — a commit whose message carries a refusable Tailscale MagicDNS host, one whose author identity carries it, one whose only hit is an added line of a tracked file, one whose only hit is the branch name, and a clean one — under `git push` and under `jj git push` in each shape jj's own help in that image enumerates (the bare shape, `--all`, `--change`, `--named` and `--deleted`, the last a ref change with no commit), with `git ls-remote` read before and after every push, the added-line case and the branch-name case reported as checks of their own, each refusal naming the record and the class and, on the head's image, the text the rule matched and the line it stands on, and the run failed outright where a shape the script drives is gone from jj;
+  a refusable push with no rule file named, which the head's image lands with no `LEAK CHECK` line printed;
+  k7's four setup failures at those same call sites, on the clean case — the stand-in check removed so that none resolves, a stand-in that exits 2 for an internal error, and `LEGION_PRIVATE_NAME_RULES_FILE` naming a missing file or a file that is no TOML — each of which must refuse under both commands as a setup failure (`LEAK CHECK SETUP ERROR`) and name the failure it met;
+  and, on the head's image alone, a `jj gerrit upload` of the message case run with `--config git.executable-path=/usr/bin/git`, which the image's jj wrapper must refuse before the upload starts, with exit 2, its `LEAK CHECK SETUP ERROR` line saying `git.executable-path is /usr/bin/git`, and the remote unchanged.
+
+  - One more case, `jj-push-author-from-trailer`, on the head's image alone, drives the push step of `legion jj` in a repository of its own: one identity makes a commit with `jj new`, the implementer's identity describes it with `jj commit -m` and a `Legion-Role: implementer` trailer, and `jj git push --bookmark` sends it with `LEGION_ROLE_IDENTITIES` set for that push alone.
+    The remote commit's author must be the implementer's identity, which the step sets.
+    The control is the base branch's image from before the rule-file change, which holds the push step or not according to when it was built, so a verdict there would prove nothing.
+
+  The Job runs no launcher, so the daemon hands it neither the shared check nor the deployment's rule file.
+  It writes a stand-in of each into its `emptyDir`:
+  a shared check that clears every call, and a rule file of one rule, for the invented host, which k1's cases name in `LEGION_PRIVATE_NAME_RULES_FILE`.
   The probe the Job runs is `leak-guard-image-probe.sh` beside the harness, which reads it in and writes it into the Job's command, since a Job holds no checkout to read it from, so the two files are one recipe and neither is changed without the other.
   Needs a pod whose projected credential may create a Job (`kubectl -n <namespace> auth can-i create jobs` answers `yes`), the image to prove by digest (`--image`, from the `Worker Image` run's `Record digest` step), and the deployment's compute class (`--node-selector`), whose value is in that deployment's own declaration and in no file of this repository.
-  Its negative control runs in the same Job: a `jj git push` of the message case with `/opt/legion/bin` taken off `PATH`, so the real jj and the real git push with no wrapper and no hook, which must land on the scratch remote.
-  The base branch's image carries the wrappers too, so a run names no `--control`; `--control` drives an image published before the wrappers, on which every push lands, should a second control be wanted;
+  Each arm also runs a negative control in the same Job: a `jj git push` of the message case with `/opt/legion/bin` taken off `PATH`, so the real jj and the real git push with no wrapper and no hook, which must land on the scratch remote.
+  Its second negative control (`--control`) is the base branch's published image from before the `legion` binary stopped carrying a rule file of its own:
+  it carries the same wrappers and runs the rules embedded in its `legion`, reading no `LEGION_PRIVATE_NAME_RULES_FILE`, so it refuses the refusable push with no file named, refuses k1's cases with the Job's file named while naming the class alone, and lands the clean push with a missing or an unparseable file named, and it refuses under the shared check's two failures as the head does.
+  A run without it proves only the head, and an image built after the change is no control;
   `--dry-run` renders the manifest and validates it with `kubectl` without creating anything.
   Legion pod only
 
@@ -1841,7 +1849,7 @@ it appends its pod's uid to a marker file on the pod's own disk and sleeps, so t
 That marker proves a role's identity within one pod and nothing across pods
 — the disk dies with the pod, so a replacement starts with an empty one — and continuity across a pod is read from the session table instead.
 The runtime's settings: a 5-minute boot timeout, 3 registration intervals, a 15-second termination grace, a 10-second probe interval, storage class `LEGION_E2E_STORAGE_CLASS` (AWS's `gp2`, GKE's `standard-rwo`), a 20Gi issue volume, the daemon's default reservations with the issue pod's overridden field by field (`liveIssueOverride`:
-2 CPU and 4 GiB, request equal to limit, and a 10Gi ephemeral-storage limit and request), as a deployment's `runtime.kubernetes.resources.issue` does, the controller's pod at the defaults, and no scheduling beyond the Legion pool the runtime selects:
+2500m CPU and 4 GiB, request equal to limit, and a 10Gi ephemeral-storage limit and request), as a deployment's `runtime.kubernetes.resources.issue` does, the controller's pod at the defaults, and no scheduling beyond the Legion pool the runtime selects:
 no pod asks for or keeps off another pod's node.
 
 The checks, in order, each printing what it observed and then `CHECK <name>: PASS`:
@@ -1898,7 +1906,7 @@ Each item below names a check, then what it does and what it requires.
 - `resources`
 
   the root pod's one `roles` container and its two init containers each reserve the issue pod's one reservation, `runtime.kubernetes.resources.issue` as the rig sets it (`liveIssueOverride`:
-  2 CPU, 4Gi of memory, and ephemeral-storage 10Gi as both request and limit), cpu and memory with request equal to limit, so the pod is `Guaranteed`;
+  2500m CPU, 4Gi of memory, and ephemeral-storage 10Gi as both request and limit), cpu and memory with request equal to limit, so the pod is `Guaranteed`;
   it carries no affinity but GKE Autopilot's own extended-duration one under `LEGION_E2E_PLATFORM=gke-autopilot`;
   `/proc/meminfo`'s `MemTotal` inside the pod is within 3 % of the `roles` container's memory limit on both platforms, the pod cgroup's own limit as gVisor sizes the sandbox;
   on AWS `nproc` inside the pod is max(2, ⌈cpu⌉), gVisor taking the cpu count there from the pod's own cgroup;
@@ -3997,7 +4005,7 @@ The cluster is deleted on any exit.
 | :--- | :--- |
 | `cluster`, `agent-sandbox`, `gvisor` | the lib's: the kind cluster, its one node labelled `legion.dev/pool=legion`, the `legion` namespace and the `standard` storage class; Agent Sandbox v1.0.3's release manifest, pinned by sha256, applied and its controller rolled out; gVisor's dated release, pinned by sha512, installed into the node's containerd as the `runsc` handler with a `gvisor` RuntimeClass, and a `runtimeClassName: gvisor` pod's `dmesg` says `Starting gVisor` |
 | `image` | the worker image, pulled into the node's containerd by digest |
-| `launch` | `TestABurstableIssuePodRendersLive` (`internal/daemon/burstable_live_test.go`, `-tags e2e`), built as a static test binary and run in a container on the kind network, writes two `legion.yaml` files, reads each with the daemon's loader, translates it with `sandboxOptions`, runs the cluster check, and launches one issue's root through the Sandbox runtime's `Spawn` on a worker stream bound to that container's address (pods reach the kind network's containers, while a host firewall can keep them from the host itself); the launch makes the repository's cache first, as every issue pod's does; it holds the `roles` container to the issue pod's request and limit (3 CPU, 8Gi under 32Gi, 6Gi under 80Gi for the first file; 3 CPU, 19Gi, 6Gi under 80Gi for the second) and the pod to its QoS class |
+| `launch` | `TestABurstableIssuePodRendersLive` (`internal/daemon/burstable_live_test.go`, `-tags e2e`), built as a static test binary and run in a container on the kind network, writes two `legion.yaml` files, reads each with the daemon's loader, translates it with `sandboxOptions`, runs the cluster check, and launches one issue's root through the Sandbox runtime's `Spawn` on a worker stream bound to that container's address (pods reach the kind network's containers, while a host firewall can keep them from the host itself); the launch makes the repository's cache first, as every issue pod's does; it holds the `roles` container to the issue pod's request and limit (2 CPU, 8Gi under 32Gi, 6Gi under 80Gi for the first file; 2 CPU, 8Gi, 6Gi under 80Gi for the second) and the pod to its QoS class |
 | `qos-class` | `kubectl get pod <pod> -o jsonpath='{.status.qosClass}'` reads `Burstable` for the file with `issue: {memory: 32Gi, memory_request: 8Gi}` and `Guaranteed` for the file with no `resources` block; each pod has a `roles` container, is `PodScheduled=True` under `runtimeClassName: gvisor`, and its manifest is kept as evidence |
 | `config-check` | `legion config check` passes both files, printing `resources: Burstable (a request below the limit): the issue pod; every other pod is Guaranteed` for the first and no `resources:` line for the second, and refuses `memory_request: 40Gi` (`runtime.kubernetes.resources.issue.memory_request 40Gi exceeds memory 32Gi`) and `memory_request: lots` (`… must be a positive Kubernetes quantity …`) with exit 1 |
 
@@ -4272,7 +4280,7 @@ The setup line names the command the run uses.
 Each run gets `DISPATCH_HOST=omp`, the run's own session, `DISPATCH_URL` and token, and a scratch `HOME`, and the driver gives it a stdin and a working directory when a step needs them.
 The bases case reads two of its answers through the command, which is the surface a reviewer reads.
 The three cases of a bare `-` drive the command for every step, and judge each step by its exit code and what it printed.
-The driver's setup seeds the fake GitHub with two repositories — `acme/verification-live`, whose default branch `main` holds three of the run's commits, and `acme/verification-hidden`, which the installation lookup answers 404 for — sets each as a project's default repository, and writes the one `delivery_settings` row the intake needs before it binds its durable.
+The driver's setup seeds the fake GitHub with two repositories — `acme/verification-live`, whose default branch `main` holds three of the run's commits, and `acme/verification-hidden`, which the installation lookup answers 404 for — sets each as a project's default repository, and waits for the delivery intake to bind its durable, which it does with no `delivery_settings` row; the durable's first bind starts at the stream's next message, so no case publishes an envelope before it.
 `acme/verification-live`'s `commits` names every commit a case records at, since the record route asks GitHub whether the repository holds a result's commit and refuses one it does not; the one commit it names nowhere is what the refusal case drives.
 `commit_pulls` is empty on purpose:
 the record route's read-through asks GitHub which pull requests name a result's commit, so with no answer there the only thing that can teach Dispatch a head is the envelope a case publishes.
@@ -5727,6 +5735,33 @@ The planner's launch follows the move into planning, so the list the line names 
 What the proof stands in for is what [`step-records.sh`](#step-recordssh) stands in for.
 `OWNER_STEPS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
+## look-names-its-check.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  bash scripts/e2e/look-names-its-check.sh
+```
+
+This proof builds and boots the whole daemon and a real Dispatch of this checkout, on databases of the caller's PostgreSQL server and a `nats-server` of its own.
+It needs Linux, Go, Git, jj, Bun after `bun install`, awk and Python 3, as [`owner-steps-client.sh`](#owner-steps-clientsh) does.
+`LOOK_NAMES_ITS_CHECK_EVIDENCE_DIR` keeps its evidence.
+GitHub-hosted CI runs its row in `.github/e2e-scripts.json` with the `e2e` label, by manual dispatch and each night.
+
+`TestLookNamesItsCheckLive`, built with `-tags e2e`, walks one issue to its merge and close under `production_check: tester`.
+The tester takes look 1.
+The client is `executePhaseOp` with `createLegionDaemonClient`, run under Bun by the unchanged `owner-steps-client.ts` runner.
+
+- `control-client-look-unnamed` sends a report without `check_opened_at`.
+  It must throw `409 CHECK_LOOK_NOT_SERVED`, and the operator's `legion state --json` must still show look 1 open.
+
+- `client-look-named` reads the opening time from the task the fake runtime received, never from the store.
+  A `pending` with that `check_opened_at` and a `wake_at` must answer `{}`.
+  The same CLI must show the check still open, `lookOpen: false`, and `nextWakeAt` equal to the wake.
+
+The refused call is run first.
+A daemon that chooses a report from the claim's served look records that unnamed report, so the control fails before the named call can pass.
+The proof stands in for GitHub and each worker's runtime; Dispatch, the daemon, its operator CLI, and the plugin's phase operation and HTTP client are real.
+
 ## owner-steps-client.sh
 
 ```sh
@@ -6474,9 +6509,9 @@ the caller does, with its work directory, which holds both (the profile holds `p
 
 ### The natives download
 
-OMP's native module (`pi_natives.linux-x64-modern.node` or `…-baseline.node`, the one the CPU selects, 123 MiB at the pin;
-builds before 18.11.0 wrote every variant they embed, about twice that) lives in `$HOME/.omp/natives/<omp version>/`, and every profile under that `HOME` shares it; a profile has no natives of its own.
-`getNativesDir` (`@oh-my-pi/pi-natives/native/loader-state.js`) takes the first of `PI_NATIVES_DIR`, `$OMP_DOWNLOAD_ROOT/natives`, `$XDG_DATA_HOME/omp/natives` when `$XDG_DATA_HOME/omp` exists, and `natives/` under `OMP_CONFIG_ROOT`, else under `$HOME/.omp`; the pinned build reads all of them, and none of `PI_NATIVES_DIR`, `OMP_DOWNLOAD_ROOT` and `OMP_CONFIG_ROOT` is set by any Legion process.
+OMP's native module (`pi_natives.linux-x64-modern.node` or `…-baseline.node`, the one the CPU selects, 124 MiB at the pin;
+builds before 18.11.0 wrote every variant they embed, about twice that) lives in `$HOME/.omp/natives/<omp version>-<digest prefix>/` (the version and the first 12 hexadecimal digits of the embedded addons' digest), and every profile under that `HOME` shares it; a profile has no natives of its own.
+`getNativesDir` (`@oh-my-pi/pi-natives/native/natives-dir.js`) takes the first of `PI_NATIVES_DIR`, `$OMP_DOWNLOAD_ROOT/natives`, `$XDG_CACHE_HOME/omp/natives` when `$XDG_CACHE_HOME/omp` exists, and `natives/` under `OMP_CONFIG_ROOT`, else under `$HOME/$PI_CONFIG_DIR` (`$HOME/.omp` when it is unset); the pinned build reads all of them, and none of `PI_NATIVES_DIR`, `OMP_DOWNLOAD_ROOT` and `OMP_CONFIG_ROOT` is set by any Legion process.
 OMP writes it on its first run under a `HOME` that has not run this OMP version, and in this script that run is `omp plugin install`.
 The run's own home links `.omp/natives` to the operator's ([`lib/omp-home.sh`](#libomp-homesh)), so a fresh CI runner, a container, or a newly bumped OMP pin pays that once, into the operator's cache;
 on a box where the pinned OMP has already run, a fresh profile pays nothing.
@@ -7350,6 +7385,8 @@ So the driver runs every Oh My Pi process of the run under `HOME=<dir>`:
 the daemon, and through the pane allow-list every pane, the controller, and each `omp` the libs run (`--home`).
 
 `make_omp_home DIR` creates `DIR/.omp` and links `DIR/.omp/natives` to the operator's native module cache ([The natives download](#the-natives-download)), so the run downloads nothing and removing `DIR` removes the link, never the cache.
+`omp_natives_dir` prints that cache's path: `$XDG_CACHE_HOME/omp/natives` when `XDG_CACHE_HOME` is set and `$XDG_CACHE_HOME/omp` exists, else `$HOME/.omp/natives`.
+`make_omp_home` and the four scripts that link a home of their own (`clean-session-stop-tmux.sh`, `dispatch-session-settings.sh`, `envoy-session-delivery.sh` and `envoy-session-states.sh`) all link to what it prints, and `lib/omp-home.test.ts` holds its rows.
 A second call on the same `DIR` replaces the link rather than writing one inside the cache through it (`ln -sfT`), and a real directory at `DIR/.omp/natives` fails the call.
 It first exports `MISE_DATA_DIR` and `XDG_CONFIG_HOME` as the operator's own, the paths each already resolves to, so what the daemon itself runs under `DIR` finds what it did under the operator's `HOME`:
 `mise` the same pinned Oh My Pi, `secrets` its secretsd config (the daemon resolves `provider_keys` with it), gh and jj their config.

@@ -9,11 +9,12 @@
 // also refuses what a pod could not run with: the `runtime.kubernetes` block's own values, and the
 // keys outside it every pod needs.
 //
-// Load reads the file and nothing it names: a path key (`instructions`, `envoy_token_file`,
-// `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
+// Load reads the file and nothing it names: a path key (`instructions`, `private_name_rules_file`,
+// `envoy_token_file`, `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
 // `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
-// ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
+// ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, the daemon's read of the
+// private-name rule file (internal/daemon's launchSecrets), and the runtime's client, so a
 // configuration loads on a machine that has none of the files it names; `legion config check`
 // then reads them as boot does (daemon.CheckStart). The daemon reads an instructions file again
 // at each launch, so an edit of one needs no restart.
@@ -110,6 +111,16 @@ type Config struct {
 	// InstructionsPath is the operator's deployment instructions, "" when none; boot copies it to
 	// `<state_dir>/deployment-instructions.md` (MaterializeDeploymentInstructions).
 	InstructionsPath string
+	// PrivateNameRulesFile is the deployment's private-name rule file, a gitleaks rule file the
+	// daemon reads and compiles at boot and hands every launch as the launch secret
+	// leakguard.RulesSecret, so that every role's leak guard runs it (internal/daemon's readBoot
+	// and launchSecrets): `private_name_rules_file`, resolved against the file's directory, else
+	// LEGION_PRIVATE_NAME_RULES_FILE (leakguard.RulesFileVar) in the daemon's environment, as
+	// written. "" names none, and every role's guard then runs no private-name rule.
+	// PrivateNameRulesNamedBy is which of the two named it, as the operator wrote it, so that a
+	// refusal of the file names the setting the operator has to change; "" when none is named.
+	PrivateNameRulesFile    string
+	PrivateNameRulesNamedBy string
 	// WorkerStreamPort is the worker stream listener's TCP port under a runtime that dials it by
 	// TCP; Port + 1 unless the file names another.
 	WorkerStreamPort int
@@ -432,6 +443,7 @@ type fileConfig struct {
 	// key: 0 is a value an operator may set, and the count reader refuses it.
 	WorkerWakesPerMinute *int
 	OperatorTokenFile    *string
+	PrivateNameRulesFile *string
 	EnvoyURL             *string
 	NatsURLs             []string
 	EnvoyTokenFile       *string
@@ -868,8 +880,9 @@ var paneGitHubEnv = []string{"GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HO
 // readProviderKeys is `provider_keys`: a mapping of the variable OMP reads to the key that holds
 // it, both sides environment variable names, or to `file:` and the absolute path of the file that
 // holds it, in file order. A variable named twice is refused rather than one entry silently
-// winning, as is one the daemon sets on every pane itself. Which runtime reads a file is resolve's
-// to check (checkProviderKeyFiles).
+// winning, as is one the daemon sets on every pane itself. Which runtime reads a file, and which
+// of the names runtime.PaneVariableRefusal refuses a tmux pane, are resolve's to check
+// (checkProviderKeyFiles, checkTmuxProviderKeyNames).
 func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -1104,6 +1117,19 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, errors.New("postgres_dsn is required (or set LEGION_POSTGRES_DSN)")
 	}
 
+	// The deployment's private-name rule file: the variable first and the file's key over it, as
+	// postgres_dsn is read. A variable set to the empty string names none, as a role's guard reads
+	// the same variable (leakguard.Guard.rules); a key set to it is refused by its reader, as every
+	// other path key's is. The variable is a setting of its own and not a fallback the key retires:
+	// a daemon of an earlier release refuses the key, so a deployment that may roll back names the
+	// file there.
+	if named := env(leakguard.RulesFileVar); named != "" {
+		cfg.PrivateNameRulesFile, cfg.PrivateNameRulesNamedBy = named, leakguard.RulesFileVar
+	}
+	if file.PrivateNameRulesFile != nil {
+		cfg.PrivateNameRulesFile, cfg.PrivateNameRulesNamedBy = underConfig(*file.PrivateNameRulesFile, configDir), "private_name_rules_file"
+	}
+
 	if file.Port != nil {
 		cfg.Port = *file.Port
 	}
@@ -1134,6 +1160,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	}
 	cfg.Runtime.Tmux = resolveTmux(file.Tmux, configDir)
 	if err := checkProviderKeyFiles(file); err != nil {
+		return Config{}, err
+	}
+	if err := checkTmuxProviderKeyNames(file); err != nil {
 		return Config{}, err
 	}
 
@@ -1266,6 +1295,26 @@ func checkProviderKeyFiles(file fileConfig) error {
 	for _, key := range file.ProviderKeys {
 		if key.File != "" {
 			return fmt.Errorf("provider_keys.%s names the file %s, which only runtime tmux reads: under runtime kubernetes a provider key is a key of the providers Secret", key.Env, key.File)
+		}
+	}
+	return nil
+}
+
+// checkTmuxProviderKeyNames refuses, under runtime tmux, a `provider_keys` entry with a name
+// runtime.PaneVariableRefusal refuses with no value, naming the variable and that function's
+// reason. The shim exports a provider key into the agent's environment, where it acts as the pane
+// variable of that name, so the tmux runtime refuses the same name at its construction, at boot
+// (tmux's readProviderKeyNames, which also refuses names only the tmux runtime knows, such as one
+// every pane carries); refusing it here lets `legion config check` see it. Under runtime
+// kubernetes it refuses nothing: there sandbox.CheckPod holds each provider key to the variables a
+// pod sets (podVariables).
+func checkTmuxProviderKeyNames(file fileConfig) error {
+	if file.Kubernetes != nil {
+		return nil
+	}
+	for _, key := range file.ProviderKeys {
+		if why := runtime.PaneVariableRefusal(key.Env, ""); why != "" {
+			return fmt.Errorf("provider_keys names %s: %s", key.Env, why)
 		}
 	}
 	return nil

@@ -16,11 +16,12 @@ import (
 // Source is one platform identity this process can prove, read fresh each time it is asked: the
 // subject token of the broker's RFC 8693 exchange, and the type the exchange reads it under. The
 // grant issues no refresh token, so every renewal asks its Source again — a projected token the
-// kubelet rewrote in place, a metadata token minted anew, a pool token traded again — and a
-// Source that caches must cache for less than the token it answers lives.
+// kubelet rewrote in place, a metadata token minted anew, a pool token traded again, a GitHub
+// Actions run's token asked of GitHub again — and a Source that caches must cache for less than
+// the token it answers lives.
 //
-// Three implementations are the three identities a machine of this deployment holds. Each is a
-// Source so one client serves all three and a caller names which it has in one line.
+// Each implementation is one identity this process can prove. Each is a Source so one client
+// serves them all and a caller names which it has in one line.
 type Source interface {
 	// Token is a subject token to present and the subject_token_type it is presented under, or
 	// an error that never reached the broker: an identity this machine could not read is never
@@ -71,6 +72,9 @@ type MetadataIdentity struct {
 	// Audience is what the minted token's `aud` carries, which the broker checks against
 	// BROKER_GOOGLE_OIDC_AUDIENCE.
 	Audience string
+	// FromBroker is set where the audience is the Google exchange audience the broker answered
+	// (DetectMachineIdentity), not one MachineAudienceVar names.
+	FromBroker bool
 }
 
 // NewMetadataIdentity is the identity of a machine whose metadata server mints its token for
@@ -87,14 +91,34 @@ func (m *MetadataIdentity) Token(ctx context.Context) (string, string, error) {
 	return token, oauthwire.SubjectTokenTypeGoogle, nil
 }
 
-// Describe names the audience MachineAudienceVar sets: as written when it is a plain http(s) URL
-// (internal/redact's allow-list), and by the variable alone otherwise, since the audience is a
-// configured value a person can paste a credential into, and this text is in every trade's log
-// line and error.
+// Describe names the audience: the broker's (FromBroker) as such, or by MachineAudienceVar where
+// that setting chose it (audienceText); as written where it is a plain http(s) URL
+// (internal/redact's allow-list), since the audience is a value a person can paste a credential
+// into, and this text is in every trade's log line and error. It names the metadata server by
+// googleidentity.MetadataHostVar only while that variable is set: a Compute Engine VM's server is
+// at its own address.
 func (m *MetadataIdentity) Describe() string {
-	audience := "the audience " + MachineAudienceVar + " names"
-	if redact.Clean(m.Audience) {
-		audience = m.Audience + " (" + MachineAudienceVar + ")"
+	audience := audienceText(m.Audience)
+	if m.FromBroker {
+		audience = "the Google exchange audience the broker names"
+		if redact.Clean(m.Audience) {
+			audience = m.Audience
+		}
 	}
-	return "this machine's Google identity token for " + audience + " (" + googleidentity.MetadataHostVar + " names the metadata server)"
+	described := "this machine's Google identity token for " + audience
+	if os.Getenv(googleidentity.MetadataHostVar) != "" {
+		described += " (" + googleidentity.MetadataHostVar + " names the metadata server)"
+	}
+	return described
+}
+
+// audienceText names the audience MachineAudienceVar sets: as written when it is a plain http(s)
+// URL (internal/redact's allow-list), and by the variable alone otherwise, since the audience is a
+// configured value a person can paste a credential into, and an identity's Describe is in every
+// trade's log line and error.
+func audienceText(audience string) string {
+	if redact.Clean(audience) {
+		return audience + " (" + MachineAudienceVar + ")"
+	}
+	return "the audience " + MachineAudienceVar + " names"
 }
