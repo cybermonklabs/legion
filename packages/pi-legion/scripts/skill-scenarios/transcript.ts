@@ -2,7 +2,9 @@
 // one parser and one notion of what a tool result says, never two that can drift.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first";
 import { z } from "zod";
+import type { OutcomeRecord } from "./heldout-case";
 
 /** An Oh My Pi session transcript line: a message, whose assistant content holds each tool call
  * whole (`toolCall`: id, tool name, arguments) and whose tool results name the call they answer,
@@ -107,3 +109,69 @@ export function toolResults(entries: SessionEntry[]): string[] {
  * `bash` call, the same run from inside an `eval` cell, or a host that calls the tool by name. A
  * refusal reads `Not created:`, which the capital and the key after it keep from matching. */
 export const CREATED = /\bCreated ([A-Z][A-Z0-9]*-\d+):/;
+
+/** Every assistant tool call in transcript order, with the entry that carried it. */
+export function sessionCalls(entries: readonly SessionEntry[]) {
+  return entries.flatMap((entry) =>
+    entry.message?.role === "assistant"
+      ? (entry.message.content ?? [])
+          .filter((part) => part.type === "toolCall")
+          .map((call) => ({ entry, call }))
+      : []
+  );
+}
+
+export function resultText(message: SessionEntry["message"]): string {
+  return (message?.content ?? []).map((part) => part.text ?? "").join("");
+}
+
+/** Count the bytes delivered, not the path banner or the text of a failure. Match by call id:
+ * tool results in a parallel batch can finish in a different order than their calls. */
+export function skillReads(entries: readonly SessionEntry[]): OutcomeRecord["skillReads"] {
+  const results = new Map(
+    entries
+      .map((entry) => entry.message)
+      .filter((message) => message?.role === "toolResult" && message.toolCallId !== undefined)
+      .map((message) => [message?.toolCallId, message])
+  );
+  let beforeFirstAction = true;
+  const reads: OutcomeRecord["skillReads"] = [];
+  for (const { call } of sessionCalls(entries)) {
+    if (call.name !== "read") {
+      beforeFirstAction = false;
+      continue;
+    }
+    const args = call.arguments;
+    const uri = typeof args === "object" && args !== null ? Reflect.get(args, "path") : undefined;
+    if (typeof uri !== "string") continue;
+    const match = /^skill:\/\/([A-Za-z0-9][A-Za-z0-9._-]*)(?:\/(.*))?$/.exec(uri);
+    if (!match?.[1]) continue;
+    const result = results.get(call.id);
+    const text = resultText(result);
+    const resolved = result !== undefined && !result.isError && !/^Unknown skill\b/i.test(text);
+    reads.push({
+      skill: match[1],
+      path: match[2] || "SKILL.md",
+      resolved,
+      bytes: resolved ? Buffer.byteLength(text.replace(/^\[Skill file: \/[^\n]*\]\r?\n/, "")) : 0,
+      beforeFirstAction,
+    });
+  }
+  return reads;
+}
+
+/** Recognize the actual context message, not a tool result quoting the marker. Some hosts
+ * inject this on the provider request only; pass positive wire evidence in that case. */
+export function dispatchFirstInjected(
+  entries: readonly SessionEntry[],
+  onProviderRequest = false
+): boolean {
+  return (
+    onProviderRequest ||
+    entries.some(
+      ({ message }) =>
+        message?.role === "user" &&
+        message.content?.[0]?.text?.startsWith(DISPATCH_FIRST_MARKER) === true
+    )
+  );
+}

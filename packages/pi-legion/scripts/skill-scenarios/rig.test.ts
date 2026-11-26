@@ -19,6 +19,8 @@ import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { rowWaits } from "../../../../scripts/e2e/lib/row-waits";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
+import { caseGateway } from "./case-gateway";
+import { armOrder, loadCase } from "./case-world";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
 // takes longer than bun's 5 s default (the eight-turn conversation took 11 s), so each test gets
@@ -1757,4 +1759,193 @@ describe("worker_routes", () => {
       });
     }
   });
+});
+
+const caseData = path.join(import.meta.dir, "testdata");
+const heldoutExample = path.join(caseData, "heldout-case-example.json");
+const skilluseExample = path.join(caseData, "skilluse-case-example.json");
+const withoutCaseTools = skipWithout("git", "jj");
+
+describe.skipIf(withoutCaseTools)("lane R dry world builders", () => {
+  const dryRun = (run: string, file: string, set: string, id: string) =>
+    childSpawn(["bash", path.join(import.meta.dir, "rig.sh"), "case-world", set, id, run], {
+      SKILL_SCENARIOS_WORK: work,
+      SKILL_SCENARIOS_CASES: file,
+    });
+
+  test("P05 keeps its starting commit local and builds identical starting commits for both arms", () => {
+    const first = freshDir("p05-base");
+    const second = freshDir("p05-candidate");
+    for (const dir of [first, second]) {
+      const run = dryRun(dir, heldoutExample, "heldout", "P05");
+      expect({ code: run.exitCode, error: run.stderr.toString() }).toEqual({ code: 0, error: "" });
+    }
+    const p05 = loadCase(heldoutExample, "heldout", "P05");
+    const map = readFileSync(path.join(first, "commit-map.json"), "utf8");
+    expect(map).toBe(readFileSync(path.join(second, "commit-map.json"), "utf8"));
+    expect(JSON.parse(readFileSync(path.join(first, "world.json"), "utf8"))).toEqual(p05.world);
+    const sha = JSON.parse(map)[p05.world.git?.workspace.standingOn ?? ""];
+    const jj = childSpawn(
+      ["jj", "-R", path.join(first, "ws"), "log", "-r", "@-", "--no-graph", "-T", "commit_id"],
+      {
+        JJ_CONFIG: path.join(first, "jj.toml"),
+      }
+    );
+    expect(jj.stdout.toString()).toBe(sha);
+    expect(
+      childSpawn(["git", "--git-dir", path.join(first, "remote.git"), "cat-file", "-e", sha])
+        .exitCode
+    ).not.toBe(0);
+    expect(readFileSync(path.join(first, "pushes.log"), "utf8")).toBe("");
+    expect(JSON.parse(readFileSync(path.join(first, "launch.json"), "utf8"))).toMatchObject({
+      role: "implementer",
+      plain: false,
+      tools: p05.tools,
+    });
+  });
+
+  test("P09 plans a retro launch, and a case cannot cross sets", () => {
+    const dir = freshDir("p09");
+    const run = dryRun(dir, skilluseExample, "skilluse", "P09");
+    expect({ code: run.exitCode, error: run.stderr.toString() }).toEqual({ code: 0, error: "" });
+    expect(JSON.parse(readFileSync(path.join(dir, "launch.json"), "utf8"))).toMatchObject({
+      role: "retro",
+      plain: false,
+    });
+    expect(readFileSync(path.join(dir, "clock.txt"), "utf8")).toBe("2030-01-09T10:00:00Z\n");
+    const p09 = loadCase(skilluseExample, "skilluse", "P09");
+    expect(readFileSync(path.join(dir, "prompt.txt"), "utf8")).toContain(p09.task);
+    expect(
+      dryRun(freshDir("wrong-set"), heldoutExample, "devcase", "P05").stderr.toString()
+    ).toContain("holds heldout, not devcase");
+  });
+
+  test("D1 stages a dirty copy without touching its index", () => {
+    const dir = freshDir("d1");
+    const example = JSON.parse(readFileSync(heldoutExample, "utf8"));
+    example.set = "devcase";
+    example.cases[0].kind = "D1";
+    delete example.cases[0].plantedOmission;
+    const file = path.join(freshDir("d1-input"), "devcases.json");
+    writeFileSync(file, JSON.stringify(example));
+    const run = dryRun(dir, file, "devcase", "P05");
+    expect({ code: run.exitCode, error: run.stderr.toString() }).toEqual({ code: 0, error: "" });
+    const a = path.join(dir, "tmp", "stage-a");
+    const b = path.join(dir, "tmp", "stage-b");
+    const stage = (name: string, checkout: string) => {
+      const result = childSpawn([path.join(dir, "bin", "stage-job"), name, checkout]);
+      expect({ code: result.exitCode, error: result.stderr.toString() }).toEqual({
+        code: 0,
+        error: "",
+      });
+      return JSON.parse(result.stdout.toString());
+    };
+    const index = readFileSync(path.join(a, ".git", "index"));
+    const before = stage("original", b);
+    writeFileSync(path.join(a, "change-1.txt"), "different contents\n");
+    writeFileSync(path.join(a, "another.txt"), "one untracked file\n");
+    const after = stage("dirty", a);
+    expect(after.tree).not.toBe(before.tree);
+    expect(after.files).toEqual(["another.txt", "change-1.txt"]);
+    expect(readFileSync(path.join(a, ".git", "index"))).toEqual(index);
+    expect(
+      readFileSync(path.join(dir, "staging.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+    ).toEqual([before, after]);
+  });
+
+  test("A cases ask the plain host for one named task call", () => {
+    const dir = freshDir("a-case");
+    const example = JSON.parse(readFileSync(heldoutExample, "utf8"));
+    example.cases[0].kind = "A";
+    example.cases[0].agent = "plan-reviewer";
+    delete example.cases[0].plantedOmission;
+    example.cases[0].traces.good.agentReport =
+      "The plan has a requirement clause with no test row.";
+    example.cases[0].traces.bad.agentReport = "The plan is ready.";
+    const file = path.join(freshDir("a-input"), "cases.json");
+    writeFileSync(file, JSON.stringify(example));
+    const run = dryRun(dir, file, "heldout", "P05");
+    expect({ code: run.exitCode, error: run.stderr.toString() }).toEqual({ code: 0, error: "" });
+    expect(JSON.parse(readFileSync(path.join(dir, "launch.json"), "utf8"))).toMatchObject({
+      agent: "plan-reviewer",
+      plain: true,
+      tools: ["task"],
+    });
+    expect(readFileSync(path.join(dir, "prompt.txt"), "utf8")).toContain(
+      'task(agent="plan-reviewer")'
+    );
+  });
+});
+
+test("case arm order is seeded per pair and independent of argv order", () => {
+  const first = armOrder("rig-seed", "heldout:P05:0", ["base", "cand"]);
+  expect(armOrder("rig-seed", "heldout:P05:0", ["cand", "base"])).toEqual(first);
+  const orders = Array.from({ length: 20 }, (_, i) =>
+    armOrder("rig-seed", `heldout:P05:${i}`, ["base", "cand"]).join(",")
+  );
+  expect(new Set(orders).size).toBe(2);
+});
+
+test("case gateway keeps request fields, uses fresh run identities, and records deployment", async () => {
+  const received: { user: string; session: string | null; content: unknown }[] = [];
+  const upstream = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      const body = (await request.json()) as {
+        metadata: { user_id: string };
+        messages: [{ content: unknown }];
+      };
+      received.push({
+        user: body.metadata.user_id,
+        session: request.headers.get("x-litellm-session-id"),
+        content: body.messages[0].content,
+      });
+      return new Response("answer", { headers: { "x-litellm-model-id": "deployment-2" } });
+    },
+  });
+  try {
+    const content = [
+      {
+        type: "text",
+        text: "<dispatch-first-skill>\nContext.\n</dispatch-first-skill>",
+        cache_control: { type: "ephemeral" },
+      },
+    ];
+    for (const arm of ["base", "cand"]) {
+      const dir = freshDir(`case-${arm}`);
+      writeFileSync(
+        path.join(dir, "models.yml"),
+        JSON.stringify({ providers: { anthropic: { baseUrl: upstream.url.origin } } })
+      );
+      writeFileSync(path.join(dir, "config.yml"), "{}");
+      const gateway = caseGateway(dir, dir);
+      try {
+        const model = JSON.parse(readFileSync(path.join(dir, "gateway-run.json"), "utf8"));
+        expect(model).toMatchObject({ model: "anthropic/claude-opus-5-5", thinking: "xhigh" });
+        const response = await fetch(new URL("/v1/messages", gateway.url), {
+          method: "POST",
+          body: JSON.stringify({ model: "claude-opus-5-5", messages: [{ role: "user", content }] }),
+        });
+        expect(await response.text()).toBe("answer");
+        expect(received.at(-1)).toEqual({ user: model.userId, session: model.sessionId, content });
+        expect(JSON.parse(readFileSync(path.join(dir, "deployments.jsonl"), "utf8"))).toMatchObject(
+          {
+            status: 200,
+            deployment: "deployment-2",
+            dispatchFirst: true,
+          }
+        );
+      } finally {
+        gateway.stop(true);
+      }
+    }
+    expect(received[0]?.user).not.toBe(received[1]?.user);
+    expect(received[0]?.session).not.toBe(received[1]?.session);
+  } finally {
+    upstream.stop(true);
+  }
 });

@@ -78,6 +78,9 @@
 //                                          the asks and documents on the issue <file> names, as
 //                                          score.ts's askgateReview reads them (asks.json,
 //                                          artifacts.json in <run dir>)
+//   seed.ts case-world                     seed the Dispatch part of $SKILL_SCENARIO_RUN/launch-world.json
+//   seed.ts case-readback <run dir>         capture the issue, documents, handoffs, comments,
+//                                          asks, results and complete event log (with seed cursor)
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type {
@@ -85,6 +88,7 @@ import type {
   ArtifactBlock,
   Ask,
   AskOption,
+  DispatchEvent,
   Handoff,
   HandoffSummary,
 } from "@legion/contracts";
@@ -92,6 +96,7 @@ import { z } from "zod";
 import {
   answerAsk,
   baseUrl,
+  changeIssueStatus,
   createAsk,
   createComment,
   createHandoff,
@@ -109,8 +114,11 @@ import {
   listComments,
   listIssueAsks,
   listIssueMessages,
+  recordCheckResult,
+  resolveAsk,
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
+import { World } from "./heldout-case";
 import { parseInstant } from "./production-dispatch";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 
@@ -923,8 +931,184 @@ async function captureBrainstorm(runDir: string): Promise<void> {
   console.log(`captured ${issue ?? "no new issue"}: ${asks.length} asks`);
 }
 
+const CaseDispatchFixture = z.object({ issue: z.string(), seedThrough: z.number().int() });
+
+async function caseEvents(issue: string): Promise<DispatchEvent[]> {
+  const reader = { as: "agent" } as const;
+  const events: DispatchEvent[] = [];
+  let after: number | undefined;
+  for (;;) {
+    const page = await getIssueEvents(issue, { after, limit: EVENT_PAGE }, reader);
+    events.push(...page);
+    if (page.length < EVENT_PAGE) return events;
+    const next = page.at(-1)?.seq;
+    if (next === undefined || (after !== undefined && next <= after))
+      throw new Error(`${issue}: Dispatch event cursor did not advance`);
+    after = next;
+  }
+}
+
+/** File in a fresh scratch Dispatch. Dispatch allocates issue numbers; the placeholders reserve
+ * preceding keys so the case's own references (including its parent's key) resolve unchanged.
+ * Dispatch owns the ids and stamps of records. Seed across record kinds in case time order. */
+export async function seedCaseDispatch(runDir: string): Promise<void> {
+  const world = World.parse(
+    JSON.parse(readFileSync(path.join(runDir, "launch-world.json"), "utf8"))
+  );
+  const { issue, documents, handoffs, comments, asks, results } = world.dispatch;
+  const seed = { as: "agent", actor: { kind: "session", id: "rig-seed" } } as const;
+  const writer = (id: string) => ({ as: "agent", actor: { kind: "session", id } }) as const;
+  // The case supplies a session id or a human login, not a Dispatch Actor object.
+  const author = (id: string) =>
+    id.startsWith("ses-") ? writer(id) : ({ login: id, as: "user" } as const);
+  const keyParts = (key: string): [string, number] => {
+    const [project, number] = key.split("-");
+    const n = Number(number);
+    if (project === undefined || !Number.isSafeInteger(n) || n < 1 || `${project}-${n}` !== key)
+      throw new Error(`${key}: cannot allocate a Dispatch key`);
+    return [project, n];
+  };
+  const [project, number] = keyParts(issue.key);
+  const parent = issue.parent === null ? undefined : keyParts(issue.parent);
+  if (parent?.[0] === project && parent[1] >= number)
+    throw new Error(`${issue.key}: parent ${issue.parent} must precede its child in the project`);
+  const createThrough = async (prefix: string, count: number, target: boolean) => {
+    await createProject({ key: prefix, name: prefix });
+    for (let n = 1; n <= count; n += 1) {
+      const expected = `${prefix}-${n}`;
+      const own = target && expected === issue.key;
+      const created = await createIssue(
+        {
+          project: prefix,
+          force: true,
+          title: own
+            ? issue.title
+            : expected === issue.parent
+              ? `Parent of ${issue.key}`
+              : `Reserved key ${expected}`,
+          ...(own
+            ? { spec: issue.spec, parent: issue.parent, repo: world.github?.repository }
+            : {}),
+        },
+        seed
+      );
+      if (created.key !== expected)
+        throw new Error(`scratch Dispatch assigned ${created.key}, wanted ${expected}`);
+    }
+  };
+  if (parent && parent[0] !== project) await createThrough(...parent, false);
+  await createThrough(project, number, true);
+  for (const { name, body } of documents)
+    await createIssueArtifact(issue.key, { name, content: body }, seed);
+  const steps: Step[] = [
+    ...handoffs.map((record) => ({
+      at: time(record.at, record.id),
+      write: async () => {
+        const saved = await createHandoff(
+          issue.key,
+          record.phase,
+          record.body,
+          writer(record.author).actor
+        );
+        if (saved.version !== record.version)
+          throw new Error(
+            `${record.id}: got ${record.phase} v${saved.version}, wanted v${record.version}`
+          );
+      },
+    })),
+    ...comments.map((comment) => ({
+      at: time(comment.at, comment.id),
+      write: async () => {
+        await createComment(issue.key, { body: comment.body }, author(comment.author));
+      },
+    })),
+    ...asks.map((ask) => ({
+      at: time(ask.at, ask.id),
+      write: async () => {
+        const opened = await createAsk(
+          issue.key,
+          { question: ask.question, options: ask.options.map((label) => ({ label })) },
+          author(ask.author)
+        );
+        if (ask.state === "answered") {
+          if (ask.answer === null) throw new Error(`${ask.id}: answered with no answer`);
+          const option = ask.options.find((label) => label === ask.answer);
+          await answerAsk(
+            opened.id,
+            {
+              selected: option === undefined ? [] : [option],
+              text: ask.answer,
+              expected_edited_at: opened.edited_at,
+            },
+            { login: PERSON }
+          );
+        } else if (ask.state === "dismissed") {
+          await resolveAsk(
+            opened.id,
+            { kind: "resolved", reason: ask.answer ?? "No answer needed." },
+            author(ask.author)
+          );
+        }
+      },
+    })),
+    ...results.map((result) => ({
+      at: time(result.at, result.check),
+      write: async () => {
+        const { at: _at, ...fields } = result;
+        await recordCheckResult(
+          issue.key,
+          { ...fields, observed: "Recorded in the case's starting state." },
+          writer(`rig-seed-${result.role}`)
+        );
+      },
+    })),
+  ];
+  for (const step of steps.sort((a, b) => byTime(a.at, b.at))) await step.write();
+  // A closed issue refuses a document upload. Finish seeding the evidence before closing it.
+  if (issue.status !== "triage") {
+    await changeIssueStatus(issue.key, { status: issue.status, include_parent: true }, seed);
+  }
+  const seeded = await caseEvents(issue.key);
+  const fixture = { issue: issue.key, seedThrough: seeded.at(-1)?.seq ?? 0 };
+  writeFileSync(path.join(runDir, "dispatch-fixture.json"), `${JSON.stringify(fixture)}\n`);
+}
+
+/** Keep the native API envelopes and original timestamps; outcome.ts selects run writes and
+ * reshapes them to the machine-independent schema. Each handoff carries its immutable body. */
+export async function captureCaseDispatch(runDir: string): Promise<void> {
+  const { issue: key, seedThrough } = CaseDispatchFixture.parse(
+    JSON.parse(readFileSync(path.join(runDir, "dispatch-fixture.json"), "utf8"))
+  );
+  const reader = { as: "agent" } as const;
+  const route = `/api/v1/issues/${encodeURIComponent(key)}`;
+  const issue = await getIssue(key, reader);
+  const documents = await Promise.all(
+    (issue.artifacts ?? []).map(async (artifact) => ({
+      ...artifact,
+      ...(artifact.kind === "doc"
+        ? { text: (await getArtifactText(artifact.id, reader)).markdown }
+        : {}),
+    }))
+  );
+  const summaries = await agentGet<HandoffSummary[]>(`${route}/handoffs`);
+  const handoffs = await Promise.all(
+    summaries.map(({ id }) => agentGet<Handoff>(`/api/v1/handoffs/${encodeURIComponent(id)}`))
+  );
+  const captured = {
+    issue,
+    seedThrough,
+    documents,
+    handoffs,
+    comments: await listComments(key, undefined, reader),
+    asks: await listIssueAsks(key, reader),
+    results: await agentGet<unknown>(`${route}/results`),
+    events: await caseEvents(key),
+  };
+  writeFileSync(path.join(runDir, "dispatch-readback.json"), `${JSON.stringify(captured)}\n`);
+}
+
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | case-world | case-readback <run dir>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -967,6 +1151,10 @@ async function main(argv: string[]): Promise<boolean> {
     await implementHandoff(file, second, third);
   else if (command === "capture-handoffs" && file !== undefined && second !== undefined && n === 3)
     await captureHandoffs(file, second);
+  else if (command === "case-world" && n === 1 && process.env.SKILL_SCENARIO_RUN !== undefined)
+    await seedCaseDispatch(process.env.SKILL_SCENARIO_RUN);
+  else if (command === "case-readback" && n === 2 && file !== undefined)
+    await captureCaseDispatch(file);
   else return false;
   return true;
 }

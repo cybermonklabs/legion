@@ -11,6 +11,12 @@
 #   rig.sh batch     <scenario> <runs> <label>...  starts the scratch services, runs 1..<runs> per
 #                                                  label (SKILL_SCENARIOS_PARALLEL at once), and
 #                                                  stops the services
+#   rig.sh batch <heldout|skilluse|devcase> <case id> <pairs> <label>...
+#                                                  run locked cases from SKILL_SCENARIOS_CASES
+#   rig.sh <heldout|skilluse|devcase> <case id> <label>...
+#                                                  shorthand for one pair
+#   rig.sh case-world <heldout|skilluse|devcase> <case id> <empty directory>
+#                                                  dry-run git and write launch fixtures only
 #   rig.sh score     [<scenario>]                  one row per run, then counts per label
 #   rig.sh judge     <run dir>...                  the judge's prompts on each spec-writing or
 #                                                  spec-rewrite run (judge.ts run), each in a fresh
@@ -57,6 +63,23 @@
 #                   handoff a record on the run's own Dispatch issue (seed.ts tester-proof and
 #                   implement-handoff). After the run, seed.ts capture-handoffs reads back every
 #                   handoff record of the issue. Scored by testerProof.
+#   heldout         Run one held-out case's Legion role (or the named task agent in a plain
+#                   session), starting from its scratch Dispatch, git and daemon worlds.
+#   skilluse        Run one need or near-miss case's Legion role or plain Envoy session and
+#                   record its skill reads and whether Dispatch-first was sent.
+#   devcase         Run one development case with the same worlds and evidence as heldout.
+# All three write outcome.json last. They take SKILL_SCENARIOS_CASES, a local case file, never
+# fetched by the rig. On a model run the file must be kept outside the pane's reach (the case file
+# includes the grading key). The dry run reads the T0 examples. The role gets the case time in
+# SKILL_SCENARIOS_CLOCK and its task; clock.txt is that time and clock-real.txt the wall-clock
+# instant at launch. Logs use the real clock and the outcome puts them on the case timeline.
+# D1 gets $TMPDIR/stage-a and stage-b at the default branch's head and a local stage-job recorder.
+# These comparisons do not use the old scenarios' ablate rule. Arms use the same model and
+# thinking effort (claude-opus-5-5, xhigh), run serially in order from SKILL_SCENARIOS_SEED,
+# and send fresh per-run gateway identities. Each run keeps the selected deployment id in
+# deployments.jsonl (null if the gateway did not supply it).
+# Run model cases only in a builds Job. Optional daemon fixtures: SKILL_SCENARIOS_DAEMON_ANSWERS
+# names the shared answer file; SKILL_SCENARIOS_CASE_ANSWERS names an overlay for this case.
 #   measure-before-ask
 #                   A plain session is told to ask Sami which of three ways to finish an owner
 #                   session posted, with the export the message names in its working directory;
@@ -1767,6 +1790,166 @@ run_tester_proof() {
   seed_ts capture-handoffs "$R/fixture.json" "$R"
 }
 
+is_case_scenario() {
+  case ${1:-} in heldout | skilluse | devcase) return 0 ;; *) return 1 ;; esac
+}
+
+case_input() {
+  [ -n "${SKILL_SCENARIOS_CASES:-}" ] || fail "set SKILL_SCENARIOS_CASES to a local case file"
+  realpath -e -- "$SKILL_SCENARIOS_CASES" || fail "cannot read $SKILL_SCENARIOS_CASES"
+}
+
+cmd_case_world() {
+  [ $# = 3 ] && is_case_scenario "$1" || fail "usage: rig.sh case-world <heldout|skilluse|devcase> <case id> <empty directory>"
+  local file dir
+  file=$(case_input) || exit 1
+  dir=$(realpath -m -- "$3")
+  [ ! -e "$dir" ] || { [ -d "$dir" ] && [ -z "$(ls -A -- "$dir")" ]; } ||
+    fail "$dir is not an empty directory"
+  bun "$here/case-world.ts" prepare "$dir" "$file" "$1" "$2"
+}
+
+# Read the label's daemon module for the pane, never a restatement of its role prompt.
+case_legion_pane() {
+  local role=$1 issue tree claim port repo branch project
+  local -a answers=()
+  issue=$(jq -er .dispatch.issue.key "$R/launch-world.json")
+  tree=$(jq -er '.dispatch.issue | .parent // .key' "$R/launch-world.json")
+  repo=$(jq -er '.github.repository // "example/widgets"' "$R/launch-world.json")
+  branch=$(jq -er '[.git.remote.branches[]?.name] | if index("main") then "main" else .[0] // "main" end' "$R/launch-world.json")
+  claim=$role
+  case $role in
+    root-architect | child-architect) claim=architect ;;
+    headless-controller) claim=controller ;;
+    retro) claim=implementer ;;
+    production-check) claim=tester ;;
+  esac
+  project=sc$(openssl rand -hex 6)
+  mkdir -p "$R/state/gh" "$R/state/secrets"
+  chmod 0700 "$R/state/secrets"
+  (umask 077 && openssl rand -hex 16 >"$R/state/secrets/boot")
+  if [ -n "${SKILL_SCENARIOS_DAEMON_ANSWERS:-}" ]; then
+    answers+=(--answers "$SKILL_SCENARIOS_DAEMON_ANSWERS")
+  fi
+  if [ -n "${SKILL_SCENARIOS_CASE_ANSWERS:-}" ]; then
+    answers+=(--case-answers "$SKILL_SCENARIOS_CASE_ANSWERS")
+  fi
+  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$R/state/secrets/boot" \
+    "$project" "$issue" "$claim" "$repo" "$branch" --world "$R/launch-world.json" \
+    --tree "$tree" --gh-calls "$R/calls.jsonl" "${answers[@]}"
+  await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
+  port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
+  bun "$here/case-world.ts" pane "$R" "$co" "$port" "$profile" "$project" "$claim" "$issue" "$tree"
+  mv "$R/worker.env" "$R/pane.env"
+}
+
+run_case() {
+  local scenario=$1 id=$2 name=$3 file role agent model tools gateway_pid=
+  file=$(case_input) || exit 1
+  bun "$here/case-world.ts" prepare "$R" "$file" "$scenario" "$id" >>"$R/fixture.log" 2>&1 ||
+    fail "case-world prepare failed; see $R/fixture.log"
+  SKILL_SCENARIO_RUN="$R" own_dispatch case-world
+  base_env
+  standins
+  {
+    cat "$services_env"
+    echo "GIT_CONFIG_COUNT=0"
+    echo "GIT_CONFIG_GLOBAL=/dev/null"
+    echo "GIT_CONFIG_NOSYSTEM=1"
+    echo "JJ_CONFIG=$R/jj.toml"
+    echo "GH_REPO=$(jq -r '.github.repository // empty' "$R/launch-world.json")"
+    echo "SKILL_SCENARIOS_CLOCK=$(<"$R/clock.txt")"
+  } >>"$R/pane.env"
+  if [ "$(jq -r .plain "$R/launch.json")" != true ]; then
+    role=$(jq -er .role "$R/launch.json")
+    case_legion_pane "$role"
+  fi
+  {
+    echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
+    echo "DISPATCH_TOKEN_FILE=$work/services/dispatch-token"
+    echo "OMP_SESSION_STORAGE=jsonl"
+  } >>"$R/pane.env"
+  SKILL_SCENARIO_RUN="$R" start_process gateway bun "$here/case-gateway.ts" "$R" "$R/home/.omp/profiles/$profile/agent"
+  await_start gateway "$gateway_pid" 30 "the case gateway proxy to listen" grep -q '^listening on ' "$R/logs/gateway.log"
+  model=$(jq -er .model "$R/gateway-run.json")
+  tools=$(jq -er '.tools | join(",")' "$R/launch.json")
+  date -u +%FT%T.%NZ >"$R/clock-real.txt"
+  launch "$name" --model "$model" --thinking xhigh --tools "$tools"
+  seed_ts case-readback "$R"
+  agent=$(jq -r '.agent // empty' "$R/launch.json")
+  bun "$here/outcome.ts" "$R" ${agent:+"$agent"}
+}
+
+run_heldout() { run_case heldout "$@"; }
+run_skilluse() { run_case skilluse "$@"; }
+run_devcase() { run_case devcase "$@"; }
+
+cmd_case_run() {
+  [ $# = 4 ] || fail "usage: rig.sh run <heldout|skilluse|devcase> <case id> <label> <n>"
+  local scenario=$1 id=$2 n=$4 name case_tag
+  is_case_scenario "$scenario" || fail "unknown case scenario $scenario"
+  [[ $id =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $n =~ ^[1-9][0-9]*$ ]] || fail "bad case id or run number"
+  [ -f "$services_env" ] || fail "a case run needs its batch's services"
+  load_label "$3"
+  # own_dispatch uses a SQL identifier from the run name and only replaces hyphens.
+  case_tag=$(printf '%s' "$id" | sha256sum | cut -c1-12)
+  name=$scenario-$case_tag-${P##*/}-$n
+  R=$work/runs/$name
+  evidence=$R
+  mkdir "$R" || fail "run directory $R already exists"
+  on_exit stop_run
+  mkdir -p "$R/bin" "$R/sessions" "$R/cwd" "$R/logs"
+  cp "$P/built-from" "$R/built-from"
+  case $scenario in
+    heldout) run_heldout "$id" "$name" ;;
+    skilluse) run_skilluse "$id" "$name" ;;
+    devcase) run_devcase "$id" "$name" ;;
+  esac
+  note "$name ($id): $(tail -n 1 "$R/out.txt")"
+}
+
+cmd_case_batch() {
+  [ $# -ge 4 ] || fail "usage: rig.sh batch <heldout|skilluse|devcase> <case id> <pairs> <label>..."
+  local scenario=$1 id=$2 pairs=$3 label n file order case_tag first=1 next seed
+  batch_scenario=$scenario
+  shift 3
+  [[ $pairs =~ ^[1-9][0-9]*$ ]] || fail "case batch needs a positive pair count"
+  seed=${SKILL_SCENARIOS_SEED:?set SKILL_SCENARIOS_SEED for case comparisons}
+  file=$(case_input) || exit 1
+  bun "$here/case-world.ts" check "$file" "$scenario" "$id"
+  local -A seen=()
+  case_tag=$(printf '%s' "$id" | sha256sum | cut -c1-12)
+  for label do
+    load_label "$label"
+    [ "${#label}" -le 24 ] || fail "case profile labels may have at most 24 characters"
+    [ -z "${seen[$label]:-}" ] || fail "duplicate case arm $label"
+    seen[$label]=1
+    next=$(next_run "$scenario-$case_tag" "$label")
+    (( next > first )) && first=$next
+  done
+  mkdir -p "$work/runs"
+  lock_services
+  on_exit stop_batch
+  services_up
+  export SKILL_SCENARIOS_CASES=$file
+  for ((n=0; n<pairs; n++)); do
+    order=$(bun "$here/case-world.ts" order "$seed" "$scenario:$id:$n" "$@") || exit 1
+    while IFS= read -r label; do
+      bash "$here/rig.sh" run "$scenario" "$id" "$label" "$((first + n))" &
+      runs_pid=$!
+      wait "$runs_pid"
+      runs_pid=''
+    done <<<"$order"
+  done
+}
+
+cmd_case_once() {
+  [ $# -ge 3 ] || fail "usage: rig.sh $1 <case id> <label>..."
+  local scenario=$1 id=$2
+  shift 2
+  cmd_case_batch "$scenario" "$id" 1 "$@"
+}
+
 cmd_run() {
   [ $# = 5 ] || fail "usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite> <label> <n> <index> <start>"
   local scenario=$1 n=$3 index=$4 start=$5 name
@@ -1870,8 +2053,10 @@ cmd_batch() {
 case "${1:-}" in
 profile) shift && cmd_profile "$@" ;;
 live-read) shift && cmd_live_read "$@" ;;
-batch) shift && cmd_batch "$@" ;;
-run) shift && cmd_run "$@" ;;
+batch) shift && if is_case_scenario "${1:-}"; then cmd_case_batch "$@"; else cmd_batch "$@"; fi ;;
+run) shift && if is_case_scenario "${1:-}"; then cmd_case_run "$@"; else cmd_run "$@"; fi ;;
+heldout | skilluse | devcase) cmd_case_once "$@" ;;
+case-world) shift && cmd_case_world "$@" ;;
 score) shift && bun "$here/score.ts" runs "$work/runs" "$@" ;;
 judge) shift && cmd_judge "$@" ;;
 judge-omp) shift && cmd_judge_omp "$@" ;;

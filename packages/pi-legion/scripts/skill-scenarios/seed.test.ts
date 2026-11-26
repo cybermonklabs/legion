@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { parseHeldoutFile, parseSkillUseFile } from "./heldout-case";
 import type * as seedModule from "./seed";
 
 // e2e/api.ts, which seed.ts calls, reads its port when it loads: set it as rig.sh's seed_ts does,
@@ -106,6 +107,7 @@ class FakeDispatch {
     body: string;
   }[] = [];
   results: Record<string, unknown>[] = [];
+  events: { seq: number; type: string; created_at: string }[] = [];
   /** A seeded spec's ask blocks no settlement has indexed yet, by issue. Dispatch settles a
    * seeded document a moment after the issue is created; here the issue's second read of its asks
    * is the first to find them. */
@@ -156,10 +158,50 @@ class FakeDispatch {
     const strip = <T extends { markdown: string }>({ markdown: _markdown, ...rest }: T) => rest;
     // Each route: its method and path pattern, and what it answers for the path's captures.
     const routes: [RegExp, (id: string, second: string) => Response][] = [
+      [/^POST \/api\/v1\/projects$/, () => json(body, 201)],
+      [/^POST \/api\/v1\/issues\/([^/]+)\/status-change$/, () => json({ changed: [] })],
+      [
+        /^POST \/api\/v1\/issues\/([^/]+)\/comments$/,
+        (issue) => {
+          const row = {
+            id: this.id("comment"),
+            issue_key: issue,
+            body: body?.body,
+            author: actor(),
+          };
+          this.comments.push(row);
+          return json(row, 201);
+        },
+      ],
+      [
+        /^POST \/api\/v1\/asks\/([^/]+)\/resolve$/,
+        (id) => {
+          const ask = this.asks.find((a) => a.id === id);
+          if (!ask) return json({ error: "not found" }, 404);
+          ask.state = "resolved";
+          return json(ask);
+        },
+      ],
+      [
+        /^GET \/api\/v1\/issues\/([^/]+)\/events$/,
+        () =>
+          json(
+            this.events
+              .filter(({ seq }) => seq > Number(url.searchParams.get("after")))
+              .slice(0, Number(url.searchParams.get("limit")))
+          ),
+      ],
+      [
+        /^GET \/api\/v1\/issues\/([^/]+)\/results$/,
+        (issue) =>
+          json({ checks: [{ results: this.results.filter((row) => row.issue_key === issue) }] }),
+      ],
       [
         /^POST \/api\/v1\/issues$/,
         () => {
-          const key = `LWEVAL-${this.issues.size + 2}`;
+          const project = String(body?.project);
+          const count = [...this.issues].filter(([key]) => key.startsWith(`${project}-`)).length;
+          const key = `${project}-${count + (project === "LWEVAL" ? 2 : 1)}`;
           const spec = this.issue(key, body?.title);
           const artifact = this.artifacts.find((a) => a.id === spec);
           if (artifact !== undefined && typeof body?.spec === "string") {
@@ -1160,5 +1202,88 @@ describe("tester-proof", () => {
       ["h-test", '{"phase":"test"}'],
       [dispatch.handoffs[0]?.id, '{"phase":"implement"}'],
     ]);
+  });
+});
+
+describe("case-world Dispatch", () => {
+  const example = (name: string) =>
+    readFileSync(path.join(import.meta.dir, "testdata", `${name}-case-example.json`), "utf8");
+
+  test("allocates P05's issue and parent and writes its predecessor's handoff under that session", async () => {
+    const p05 = parseHeldoutFile(example("heldout")).cases.find(({ id }) => id === "P05");
+    if (!p05) throw new Error("missing P05");
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(p05.world));
+    await seed.seedCaseDispatch(dir);
+    const creates = dispatch.calls.filter(
+      ({ method, path }) => method === "POST" && path === "/api/v1/issues"
+    );
+    expect(creates).toHaveLength(12);
+    expect(creates[9]?.body?.title).toBe("Parent of ACME-12");
+    const { status, key, ...issue } = p05.world.dispatch.issue;
+    expect(creates.at(-1)?.body).toMatchObject(issue);
+    expect(dispatch.calls).toContainEqual(
+      expect.objectContaining({
+        path: `/api/v1/issues/${key}/status-change`,
+        body: expect.objectContaining({ status }),
+      })
+    );
+    expect(dispatch.handoffs[0]).toMatchObject({
+      issue_key: key,
+      phase: "plan",
+      version: 1,
+      author: { kind: "session", id: "ses-acme-12-planner" },
+      body: JSON.stringify(p05.world.dispatch.handoffs[0]?.body),
+    });
+  });
+
+  test("seeds P09's results, comments and asks and reads every page with its time", async () => {
+    const p09 = parseSkillUseFile(example("skilluse")).cases.find(({ id }) => id === "P09");
+    if (!p09) throw new Error("missing P09");
+    const world = structuredClone(p09.world);
+    const at = "2030-01-09T09:15:00.123456Z";
+    world.dispatch.comments.push({ id: "c1", author: "alice", body: "Keep the plan.", at });
+    world.dispatch.asks.push(
+      {
+        id: "a1",
+        author: "ses-qa",
+        question: "Keep it?",
+        options: ["Yes", "No"],
+        state: "answered",
+        answer: "Yes",
+        at,
+      },
+      {
+        id: "a2",
+        author: "ses-qa",
+        question: "Still needed?",
+        options: [],
+        state: "dismissed",
+        answer: null,
+        at,
+      }
+    );
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
+    dispatch.events.push({ seq: 1, type: "issue.created", created_at: at });
+    await seed.seedCaseDispatch(dir);
+    expect(dispatch.comments).toMatchObject([{ body: "Keep the plan." }]);
+    expect(dispatch.asks.map(({ state }) => state)).toEqual(["answered", "resolved"]);
+    expect(dispatch.asks[0]?.answer).toMatchObject({ selected: ["Yes"], text: "Yes" });
+    expect(dispatch.results).toHaveLength(world.dispatch.results.length);
+    for (let seq = 2; seq <= 201; seq += 1)
+      dispatch.events.push({ seq, type: "comment.created", created_at: at });
+    await seed.captureCaseDispatch(dir);
+    const data = JSON.parse(readFileSync(path.join(dir, "dispatch-readback.json"), "utf8"));
+    expect(data.seedThrough).toBe(1);
+    expect(data.events).toEqual(dispatch.events);
+    expect(data.documents).toContainEqual(
+      expect.objectContaining({
+        name: "verification.md",
+        text: world.dispatch.documents[0]?.body,
+      })
+    );
+    expect(data.results.checks[0].results).toEqual(dispatch.results);
+    expect(data.handoffs).toHaveLength(world.dispatch.handoffs.length);
   });
 });
