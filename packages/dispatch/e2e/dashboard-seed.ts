@@ -44,7 +44,7 @@ import { awaitBlockAsk, pause } from "./issue-layout-seed-support";
 import { LEGION_PROJECT, seedLegionDaemon } from "./legion-seed";
 import { sql } from "./psql";
 import { sqlLiteral } from "./seed";
-import { ONE_PIXEL_PNG } from "./sends";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 
 /** The person every Dashboard row signs in as: the assignee of each seeded issue, so every open
  *  question of it waits on her unless it is handed on. */
