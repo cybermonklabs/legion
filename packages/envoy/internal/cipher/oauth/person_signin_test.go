@@ -51,27 +51,50 @@ type signInFixture struct {
 	*exchangeFixture
 	google    *oidctest.Issuer
 	googleKey *oidctest.Key
+	// issuer is the `iss` the fixture's tokens carry and the exchange is configured to take: the
+	// stand-in issuer's own URL unless a test names another spelling (newSignInFixtureAt).
+	issuer string
 
 	mu sync.Mutex
 	// recorded is every sign-in the exchange asked to record, in order.
 	recorded []oauth.PersonSignIn
 	// revoked is the box key thumbprints the recorder answers ErrSignInRevoked for, as the
-	// broker's own table answers a sign-in the person has revoked, and moved those it answers
-	// ErrSignInMachineChanged for, as it answers a sign-in's key presented from elsewhere.
-	revoked map[string]bool
-	moved   map[string]bool
+	// broker's own table answers a sign-in the person has revoked, moved those it answers
+	// ErrSignInMachineChanged for, as it answers a sign-in's key presented from elsewhere,
+	// otherAccount those it answers ErrSignInSubjectChanged for, as it answers a key another
+	// account signed in with, and replaced the `sub`s it answers ErrSignInSubjectReplaced for, as
+	// it answers an account that no longer holds the person's address.
+	revoked      map[string]bool
+	moved        map[string]bool
+	otherAccount map[string]bool
+	replaced     map[string]bool
 }
 
 // newSignInFixture starts the Google issuer and builds a provider that takes a person's sign-in
 // on a machine of the one listed fleet.
 func newSignInFixture(t *testing.T) *signInFixture {
 	t.Helper()
-	return newSignInFixtureWith(t, func(*oauth.Config) {})
+	return newSignInFixtureAt(t, "")
+}
+
+// newSignInFixtureAt is newSignInFixture with the exchange taking, and the fixture's tokens
+// carrying, issuer as their `iss` in place of the stand-in issuer's URL (empty keeps the URL); the
+// tokens are still signed by the stand-in's key, which is all the exchange checks a signature by.
+func newSignInFixtureAt(t *testing.T, issuer string) *signInFixture {
+	t.Helper()
+	return newSignInFixtureAtWith(t, issuer, func(*oauth.Config) {})
 }
 
 // newSignInFixtureWith is newSignInFixture with adjust applied to the configuration last, so a
 // test can give the exchange a project-access check or entries of its own.
 func newSignInFixtureWith(t *testing.T, adjust func(*oauth.Config)) *signInFixture {
+	t.Helper()
+	return newSignInFixtureAtWith(t, "", adjust)
+}
+
+// newSignInFixtureAtWith is the fixture both of those build: its tokens carrying issuer
+// (newSignInFixtureAt), and adjust applied to the configuration last (newSignInFixtureWith).
+func newSignInFixtureAtWith(t *testing.T, issuer string, adjust func(*oauth.Config)) *signInFixture {
 	t.Helper()
 	google := oidctest.New(t)
 	googleKey := google.PublishKey(t, "google-key")
@@ -79,10 +102,14 @@ func newSignInFixtureWith(t *testing.T, adjust func(*oauth.Config)) *signInFixtu
 	if err != nil {
 		t.Fatalf("Google keys: %v", err)
 	}
-	f := &signInFixture{google: google, googleKey: googleKey, revoked: map[string]bool{}, moved: map[string]bool{}}
+	if issuer == "" {
+		issuer = google.URL()
+	}
+	f := &signInFixture{google: google, googleKey: googleKey, issuer: issuer, revoked: map[string]bool{}, moved: map[string]bool{},
+		otherAccount: map[string]bool{}, replaced: map[string]bool{}}
 	f.exchangeFixture = newExchangeFixture(t, func(c *oauth.Config) {
 		c.Exchange.Policy = newPolicy(t, nil, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet})
-		c.Exchange.Google = oauth.IssuerConfig{Issuer: google.URL(), Audience: machineAudience, Keys: googleKeys}
+		c.Exchange.Google = oauth.IssuerConfig{Issuer: issuer, Audience: machineAudience, Keys: googleKeys}
 		c.Exchange.PersonAudience = deviceAudience
 		// The credential a trade mints, written in the exchange's own transaction as
 		// cmd/cipherd writes it, so the access token's row may name it.
@@ -99,10 +126,14 @@ func (f *signInFixture) record(_ context.Context, in oauth.PersonSignIn) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {
+	case f.replaced[in.Subject]:
+		return fmt.Errorf("%w: another account holds the address", oauth.ErrSignInSubjectReplaced)
 	case f.revoked[in.Thumbprint]:
 		return fmt.Errorf("%w: the person revoked it", oauth.ErrSignInRevoked)
 	case f.moved[in.Thumbprint]:
 		return fmt.Errorf("%w: it was made on another machine", oauth.ErrSignInMachineChanged)
+	case f.otherAccount[in.Thumbprint]:
+		return fmt.Errorf("%w: another account made it", oauth.ErrSignInSubjectChanged)
 	}
 	f.recorded = append(f.recorded, in)
 	return nil
@@ -140,7 +171,7 @@ func (f *signInFixture) personToken(t *testing.T, login, audience string, verifi
 	t.Helper()
 	now := time.Now()
 	claims := map[string]any{
-		"iss":            f.google.URL(),
+		"iss":            f.issuer,
 		"sub":            "109" + login,
 		"aud":            audience,
 		"iat":            now.Add(-time.Minute).Unix(),
@@ -160,7 +191,7 @@ func (f *signInFixture) machineToken(t *testing.T, account, audience string, ver
 	t.Helper()
 	now := time.Now()
 	return f.google.Mint(t, f.googleKey, map[string]any{
-		"iss":            f.google.URL(),
+		"iss":            f.issuer,
 		"sub":            "110" + account,
 		"aud":            audience,
 		"iat":            now.Add(-time.Minute).Unix(),
@@ -215,9 +246,28 @@ func TestAPersonSignedInOnAMachineExchangesForATokenNamingBoth(t *testing.T) {
 		}
 	}
 
-	want := []oauth.PersonSignIn{{Person: person, Thumbprint: thumbprint(t, key), Machine: signInMachine}}
+	want := []oauth.PersonSignIn{{Person: person, Thumbprint: thumbprint(t, key), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person}}
 	if got := f.signIns(); len(got) != 1 || got[0] != want[0] {
-		t.Fatalf("the exchange recorded %+v, want %+v: the first trade of a person and a box key is the sign-in", got, want)
+		t.Fatalf("the exchange recorded %+v, want %+v: the first trade of a person and a box key is the sign-in, made by the account the person's token names", got, want)
+	}
+}
+
+// A person's token whose `iss` is Google's scheme-less spelling, accounts.google.com, which Google
+// documents beside https://accounts.google.com and a broker configured with that spelling takes,
+// records its sign-in under the one spelling Dispatch names a replaced account by
+// (oidc.CanonicalIssuer): a revoke naming https://accounts.google.com must find it, and a sign-in
+// recorded under the raw spelling would be found by no revoke and refused by no record of a
+// replaced account.
+func TestASignInUnderGooglesSchemelessIssuerIsRecordedUnderTheCanonicalOne(t *testing.T) {
+	f := newSignInFixtureAt(t, "accounts.google.com")
+	key := newKey(t)
+	f.exchanged(t, signInForm(
+		f.personToken(t, person, deviceAudience, true, signInDomain),
+		f.machineToken(t, signInMachine, machineAudience, true),
+		"ada-box-1"), key)
+	want := oauth.PersonSignIn{Person: person, Thumbprint: thumbprint(t, key), Machine: signInMachine, Issuer: oidc.GoogleIssuer, Subject: "109" + person}
+	if got := f.signIns(); len(got) != 1 || got[0] != want {
+		t.Fatalf("a trade of a token issued by accounts.google.com recorded %+v, want %+v: the issuer as oidc.CanonicalIssuer spells it", got, want)
 	}
 }
 
@@ -238,9 +288,9 @@ func TestEachTradeOfOneSignInRecordsTheSameKeyAndASecondBoxIsItsOwn(t *testing.T
 	}
 	got := f.signIns()
 	want := []oauth.PersonSignIn{
-		{Person: person, Thumbprint: thumbprint(t, first), Machine: signInMachine},
-		{Person: person, Thumbprint: thumbprint(t, first), Machine: signInMachine},
-		{Person: person, Thumbprint: thumbprint(t, second), Machine: signInMachine},
+		{Person: person, Thumbprint: thumbprint(t, first), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person},
+		{Person: person, Thumbprint: thumbprint(t, first), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person},
+		{Person: person, Thumbprint: thumbprint(t, second), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("the exchange recorded %d sign-ins, want %d: every trade names the key it proved", len(got), len(want))
@@ -311,6 +361,55 @@ func TestASignInsKeyPresentedFromAnotherMachineIsRefusedAndNamesTheSignInCommand
 		if !strings.Contains(description, names) {
 			t.Errorf("the refusal reads %q, which does not name %q", description, names)
 		}
+	}
+}
+
+// TestATradeByAnotherOrAReplacedAccountIsRefusedSayingWhich: the two refusals the account a
+// sign-in records makes are invalid_grant, each with its own words. A box key another account
+// signed in with names the sign-in command, which makes a key of its own; an account that no
+// longer holds the person's address says so and names the address, since signing in again as
+// that account fixes nothing. Neither mints anything.
+func TestATradeByAnotherOrAReplacedAccountIsRefusedSayingWhich(t *testing.T) {
+	f := newSignInFixture(t)
+	key := newKey(t)
+	trade := func() (int, map[string]any) {
+		return f.exchange(t, signInForm(
+			f.personToken(t, person, deviceAudience, true, signInDomain),
+			f.machineToken(t, signInMachine, machineAudience, true),
+			"ada-box-1"), key)
+	}
+	f.mu.Lock()
+	f.otherAccount[thumbprint(t, key)] = true
+	f.mu.Unlock()
+	status, body := trade()
+	changed, _ := body["error_description"].(string)
+	if status != http.StatusBadRequest || body["error"] != "invalid_grant" || body["access_token"] != nil {
+		t.Fatalf("a box key another account signed in with = %d %v, want 400 invalid_grant and no access token", status, body)
+	}
+	for _, names := range []string{"agent-secrets login", "another Google account"} {
+		if !strings.Contains(changed, names) {
+			t.Errorf("the refusal reads %q, which does not name %q", changed, names)
+		}
+	}
+
+	f.mu.Lock()
+	f.replaced["109"+person] = true
+	f.mu.Unlock()
+	status, body = trade()
+	replaced, _ := body["error_description"].(string)
+	if status != http.StatusBadRequest || body["error"] != "invalid_grant" || body["access_token"] != nil {
+		t.Fatalf("a replaced account's trade = %d %v, want 400 invalid_grant and no access token", status, body)
+	}
+	for _, names := range []string{person, "no longer holds", "another account holds that address now"} {
+		if !strings.Contains(replaced, names) {
+			t.Errorf("the refusal reads %q, which does not name %q", replaced, names)
+		}
+	}
+	if strings.Contains(replaced, "agent-secrets login") {
+		t.Errorf("the refusal reads %q, which sends the person to sign in again, and that account's sign-in fixes nothing", replaced)
+	}
+	if got := f.signIns(); len(got) != 0 {
+		t.Errorf("the refused trades recorded %+v, want nothing", got)
 	}
 }
 
@@ -461,22 +560,10 @@ func recordCredential(ctx context.Context, cred oauth.MachineCredential) (string
 }
 
 // realSignIns is oauth.ExchangeConfig.PersonSignIns over the broker's own person_signins table, as
-// cmd/cipherd wires it (personSignIns): the sign-in recorded in the exchange's transaction, which
-// holds the sign-in's row locked until the trade commits.
-func realSignIns(ctx context.Context, in oauth.PersonSignIn) error {
-	tx, ok := oauthstore.TxFrom(ctx)
-	if !ok {
-		return errors.New("the sign-in is recorded in the exchange's transaction")
-	}
-	err := store.RecordPersonSignIn(ctx, tx, in.Person, in.Thumbprint, in.Machine)
-	switch {
-	case errors.Is(err, store.ErrSignInRevoked):
-		return fmt.Errorf("%w: %v", oauth.ErrSignInRevoked, err)
-	case errors.Is(err, store.ErrSignInMachineChanged):
-		return fmt.Errorf("%w: %v", oauth.ErrSignInMachineChanged, err)
-	}
-	return err
-}
+// cmd/cipherd wires it where BROKER_PROJECT_ACCESS_URL is set (enroll.PersonSignIns(true)): the
+// sign-in recorded in the exchange's transaction, which holds the sign-in's row locked until the
+// trade commits.
+var realSignIns = enroll.PersonSignIns(true)
 
 // enrollments is the enrollment service over f's database, which ends a sign-in and a credential
 // as the broker's routes do.
@@ -725,7 +812,7 @@ func TestANarrowedTokenEndsWithWhatItWasTradedFrom(t *testing.T) {
 	})
 	t.Run("a machine login's, once an older build ends its credential", func(t *testing.T) {
 		token, credential, _ := machineRead(t)
-		inTx(t, func(tx pgx.Tx) error { return oauthstore.EndCredential(ctx, tx, credential) })
+		inTx(t, func(tx pgx.Tx) error { _, err := oauthstore.EndCredential(ctx, tx, credential); return err })
 		notLive(t, token, "the statement an older replica runs ended its credential's tokens")
 	})
 	t.Run("a person's, once the sign-in is revoked", func(t *testing.T) {

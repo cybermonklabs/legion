@@ -35,6 +35,7 @@ const (
 // each asking BuildCommand for hello, running it, and appending the path it was handed to
 // buildPathsEnv's file. It is skipped where buildChildEnv is unset.
 func TestBuildChild(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(buildChildEnv) == "" {
 		t.Skip("subprocess of the build rows")
 	}
@@ -167,6 +168,7 @@ func requireGone(t *testing.T, path string) {
 // handed one binary, which go built once, in a subdirectory of the process's own directory
 // (cmdtest-<pid>-*), and that directory is gone once the process has ended.
 func TestATestProcessUnderMainBuildsEachCommandOnce(t *testing.T) {
+	t.Parallel()
 	run := runBuildChild(t, "main")
 	if run.exit != 0 || len(run.paths) != 2 {
 		t.Fatalf("the process exited %d with paths %q; want 0 and two:\n%s", run.exit, run.paths, run.out)
@@ -185,6 +187,7 @@ func TestATestProcessUnderMainBuildsEachCommandOnce(t *testing.T) {
 // no directory of builds, so a build fails the test that asked, naming cmdtest.Main, and runs no go
 // build.
 func TestABuildWithoutMainFailsNamingMain(t *testing.T) {
+	t.Parallel()
 	run := runBuildChild(t, "plain")
 	if run.exit != 1 || len(run.paths) != 0 || len(run.builds) != 0 || !strings.Contains(run.out, "does not run its tests through cmdtest.Main or cmdtest.Run") {
 		t.Fatalf("the process exited %d with paths %q after %d builds; want 1, no path, no build, and the failure naming cmdtest.Main:\n%s", run.exit, run.paths, len(run.builds), run.out)
@@ -195,6 +198,7 @@ func TestABuildWithoutMainFailsNamingMain(t *testing.T) {
 // another environment is handed another binary, built again, in a directory of its own, so the
 // directory of each binary holds that binary alone.
 func TestAnotherEnvironmentIsAnotherBuildUnderMain(t *testing.T) {
+	t.Parallel()
 	run := runBuildChild(t, "main", buildSecondEnvEnv+"=1")
 	if run.exit != 0 || len(run.paths) != 2 {
 		t.Fatalf("the process exited %d with paths %q; want 0 and two:\n%s", run.exit, run.paths, run.out)
@@ -208,6 +212,7 @@ func TestAnotherEnvironmentIsAnotherBuildUnderMain(t *testing.T) {
 // that asked with go's own output, and every later test that asks for the same build with that
 // output too, without building it again.
 func TestAFailedBuildFailsEveryTestThatAsksUnderMain(t *testing.T) {
+	t.Parallel()
 	failOnce := filepath.Join(t.TempDir(), "fail-once")
 	if err := os.WriteFile(failOnce, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -228,6 +233,7 @@ func TestAFailedBuildFailsEveryTestThatAsksUnderMain(t *testing.T) {
 // and user leaves, as each role container of a Legion pod does: its name carries a pid that runs
 // nowhere here, and its process holds its lock.
 func TestMainRemovesTheBuildsOfEndedProcesses(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	ended := exec.Command("true")
 	if err := ended.Run(); err != nil {
@@ -272,6 +278,7 @@ func TestMainRemovesTheBuildsOfEndedProcesses(t *testing.T) {
 // here, so a sweep beside that process does not remove the builds it is still making. (#5123's
 // directories, cmdtest-<digits>, are kept by the name check before any of this.)
 func TestMainKeepsAnUnlockedDirectoryOfAProcessThatRuns(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	unlocked := filepath.Join(tmp, processDirPrefix+strconv.Itoa(os.Getpid())+"-nolock")
 	if err := os.MkdirAll(filepath.Join(unlocked, "build-1"), 0o700); err != nil {
@@ -289,6 +296,7 @@ func TestMainKeepsAnUnlockedDirectoryOfAProcessThatRuns(t *testing.T) {
 // TestAProcessHoldsTheLockOfItsDirectoryOfBuilds: under Main, the directory of the process's
 // builds is locked while its tests run, so no other process's sweep can take it.
 func TestAProcessHoldsTheLockOfItsDirectoryOfBuilds(t *testing.T) {
+	t.Parallel()
 	run := runBuildChild(t, "main", buildLockProbeEnv+"=1")
 	if run.exit != 0 || len(run.paths) != 2 {
 		t.Fatalf("the process exited %d with paths %q; want 0 and two:\n%s", run.exit, run.paths, run.out)
