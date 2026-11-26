@@ -1391,10 +1391,7 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 		return err
 	}
 	way, place := fixWayOf(*fix, len(w.Steps))
-	fix.Way = way
-	if err := e.store.UpdateFix(ctx, tx, *fix); err != nil {
-		return err
-	}
+	_ = way
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return err
