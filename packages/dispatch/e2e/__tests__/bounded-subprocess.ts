@@ -123,18 +123,29 @@
  *   one to stderr, then slept, started eight at once under six busy loops on a two-CPU pod on
  *   2026-11-24. The diagnostic control below lets its bound pass after five seconds, which is
  *   more than three times that reading and keeps the suite's deliberate stuck child short.
- * - `publicT5Diagnostic`, against 9.905 s: the largest of 150 starts from the public leg's child
- *   spawn to its T5 relay hold, in 30 runs on a three-CPU gVisor build pod beside eight busy loops
- *   on 2026-11-26. Each run used the file's parallel P6 row and its browser row; the starts read
- *   6.018 s minimum, 9.1415 s median and 9.905 s maximum. Three times the maximum is 29.715 s,
- *   rounded up to 30 s.
+ * - `publicT5Diagnostic`, 5 s counted from the stand-in hold's start, not from the leg's spawn:
+ *   the row of `outside-agent-public.test.ts` whose T5 relay hold never closes passes this bound
+ *   to `runBounded` with `boundStartsWhen`, the hold-started file its stand-in probe's `hold`
+ *   writes as its first act. Nothing after that point races the bound: the hold does not close
+ *   inside its 1,200 s window, and the leg wrote its T5 line before it started the hold
+ *   (`outside-agent-public.sh`, the `say` of the window and then `probe_exec hold`). So 5 s is no
+ *   multiple of a reading: it is the time the row's subject, the diagnostic of a passed bound, is
+ *   given to show the held relay, the 5 s the suite's deliberate stuck child gets. The leg's way
+ *   to its hold is the machine's, and the row's limit covers it with `publicRun`: on the dev box,
+ *   three runs of the row reached the hold 5.6 s to 6.4 s after the spawn, unloaded (their cost
+ *   lines, 10,600 ms to 11,362 ms, less this bound), on 2026-11-26; 150 such starts on a three-CPU
+ *   gVisor build pod beside eight busy loops read 6.018 s to 9.905 s the same day. When the bound
+ *   was 30 s from the spawn, the row failed once at 30.5 s in a 13-CPU build pod running the whole
+ *   lane beside the public rows looping (run 20261126T183141Z-593db6af99da-0181, its message not
+ *   kept), and a plant that starts each probe command 2 s late failed it with "the held relay did
+ *   not reach the T5 window" (dispatch://INFRA-3904).
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
- * laptop as in CI: a `short` child after 60 s, a public T5 diagnostic child after 30 s, a stop
- * row's driver (`stoppedLeg`) after 90 s, a listing after 6 minutes, the generation after 6.5
- * minutes, a run of the Codex leg after 3 minutes, a run of the public leg after 4 minutes, a run
- * of the edge check after 9 minutes, and
- * the two-stack build after 30 minutes.
+ * laptop as in CI: a `short` child after 60 s, a stop row's driver (`stoppedLeg`) after 90 s, a
+ * listing after 6 minutes, the generation after 6.5 minutes, a run of the Codex leg after 3
+ * minutes, a run of the public leg after 4 minutes, a run of the edge check after 9 minutes, and
+ * the two-stack build after 30 minutes. The public T5 diagnostic child fails 5 s after its stand-in
+ * hold starts, the one bound counted from a point the caller names (`boundStartsWhen`).
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
  * its own work, so the child's bound fires before the row's limit and the failure names the child.
  * The lane runs in the `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15
@@ -180,8 +191,8 @@ export const bounds = Object.freeze({
   stoppedLeg: 90_000,
   /** The deliberate stuck child that proves a timeout reports its output and live processes. */
   stuckOnPurpose: 5_000,
-  /** The public leg's start through its T5 hold, measured under the row's parallel shape. */
-  publicT5Diagnostic: 30_000,
+  /** The public T5 diagnostic row's held relay, counted from its stand-in hold's start. */
+  publicT5Diagnostic: 5_000,
   /** One run of `e2e/acceptance/outside-agent-public.sh` against the stand-ins of its tests. */
   publicRun: 240_000,
 });
@@ -1137,6 +1148,15 @@ interface BoundedOptions extends Child {
   /** Writes every cost line this child captured on to this process's stderr. One caller passes
    *  it: the `row-map` generation, whose two listings are bounded children of its own. */
   readonly relaysLines?: boolean;
+  /** Where given, the bound counts from when `settled` settles, in place of the child's start:
+   *  for a row whose subject is what the bound does to a child that has reached a given point,
+   *  where how long the child takes to reach it is the machine's. `event` names that point in the
+   *  failure. The wait before it ends when `settled` settles or when the child and its pipes end,
+   *  whichever comes first, and nothing bounds it but the row's own limit, which `rowLimit` reads
+   *  from the bounds the row names, so a row that gives one names a bound that covers the child's
+   *  way to that point too. A rejection of `settled` kills the child and is thrown. Unset, the
+   *  bound counts from the spawn, as for every other child. */
+  readonly boundStartsWhen?: { readonly event: string; readonly settled: PromiseLike<unknown> };
 }
 
 /** How long the pipes get to end after a stuck child's tree is killed, before both readers are
@@ -1195,15 +1215,16 @@ async function drain(
  *  builds its message from `named`.
  *
  *  The bound covers the whole wait: the child's exit and the end of both pipes, so a process the
- *  child left holding a pipe is stuck as the child itself would be. It holds at any depth, since
- *  a child started inside another bounded child has a bound and a kill of its own, and its
+ *  child left holding a pipe is stuck as the child itself would be. It counts from the spawn, or
+ *  from `boundStartsWhen` where the caller gives one (`BoundedOptions`). It holds at any depth,
+ *  since a child started inside another bounded child has a bound and a kill of its own, and its
  *  failure is named before its ancestor's bound fires. When the bound passes,
  *  `stopTreeYielding` kills the child and every process it started, the pipes get `pipeGrace` to
  *  end and are then cancelled, and this throws a message naming the file that started the child,
- *  the command with its arguments, the environment the caller gave it, the bound and the time
- *  waited. */
+ *  the command with its arguments, the environment the caller gave it, the bound, where it
+ *  counted from if not the spawn, and the time waited. */
 export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
-  const { argv, bound, cwd, env, from, relaysLines = false } = options;
+  const { argv, bound, boundStartsWhen, cwd, env, from, relaysLines = false } = options;
   const started = performance.now();
   const token = crypto.randomUUID();
   const ancestors = process.env[tokensVariable];
@@ -1239,6 +1260,7 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
   // Read once the child and its pipes ended, before its kill; a stuck child throws instead.
   let endedAt = Number.NaN;
   try {
+    if (boundStartsWhen !== undefined) await Promise.race([boundStartsWhen.settled, whole]);
     const settled = await beforeDeadline(whole, performance.now() + bounds[bound]);
     endedAt = Date.now();
     if (settled === pastDeadline) {
@@ -1287,7 +1309,8 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
   process.stderr.write(`${marker} ${name} | ${ms} ms${ended}\n`);
   if (stuck) {
     throw new Error(
-      `the bounded child ${name} did not end inside the ${bound} bound of ${bounds[bound]} ms: ` +
+      `the bounded child ${name} did not end inside the ${bound} bound of ${bounds[bound]} ms` +
+        `${boundStartsWhen === undefined ? "" : `, counted from ${boundStartsWhen.event}`}: ` +
         `it and every process it started were killed after ${ms} ms\n` +
         `${stuckProcesses || "the process table was not read before the child was killed"}\n` +
         `${wroteTo("stdout", stdout)}\n${wroteTo("stderr", stderr)}`

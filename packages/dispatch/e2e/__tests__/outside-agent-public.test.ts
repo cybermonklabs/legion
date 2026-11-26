@@ -59,7 +59,8 @@ interface PublicScenario {
  *  counts the trades the leg made, in trades.count, and its `hold` reads that count every 25 ms, a
  *  gap no verdict reads, until the trade it closes at: a write of another process raises no event
  *  the hold could await. Without a close, the hold keeps its socket open for the window the leg
- *  asks for, as the real probe does. */
+ *  asks for, as the real probe does. The hold's first act is to write hold-started beside it: the
+ *  point a run armed at the hold (`publicStandInRun`) starts its bound at. */
 const standInProbe = `
 const dir = import.meta.dir;
 const scenario = JSON.parse(await Bun.file(dir + "/scenario.json").text());
@@ -113,6 +114,7 @@ switch (command) {
     break;
   }
   case "hold": {
+    await Bun.write(dir + "/hold-started", String(Date.now()));
     print({ opened_at: Date.now() });
     const end = Date.now() + Number(args[0]) * 1000;
     if (closes) {
@@ -131,10 +133,15 @@ switch (command) {
 }
 `;
 
-/** One run of a copy of the public leg against the stand-ins, as `scenario` says. */
+/** One run of a copy of the public leg against the stand-ins, as `scenario` says. With `atHold`,
+ *  the bound counts from the stand-in hold's start, the hold-started file its `hold` writes first
+ *  (`standInProbe`), rather than from the leg's spawn; that file is read every 25 ms, a gap no
+ *  verdict reads, since a write of another process raises no event to await, until it is there or
+ *  the run has ended. */
 async function publicStandInRun(
   scenario: PublicScenario,
-  bound: BoundName = "publicRun"
+  bound: BoundName = "publicRun",
+  atHold = false
 ): Promise<LegRun> {
   const leg = copyLeg(scratch, publicLeg);
   const legDir = leg.slice(0, leg.lastIndexOf("/"));
@@ -194,7 +201,12 @@ exit 0
     `#!/bin/sh\ncat '${rowsFile}' >"$OUTSIDE_T5_TSV"\n`
   );
   const origin = `http://127.0.0.1:${await closedPort()}`;
-  const { code, stdout, stderr } = await runBounded({
+  const holdStarted = join(legDir, "hold-started");
+  let ended = false;
+  const holding = async () => {
+    while (!ended && !(await Bun.file(holdStarted).exists())) await Bun.sleep(25);
+  };
+  const run = runBounded({
     argv: ["bash", leg],
     bound,
     cwd: scratch("cwd"),
@@ -215,6 +227,12 @@ exit 0
       ...(browserRows.length === 0 ? {} : { OUTSIDE_T5_COMMAND: browser }),
     },
     from: import.meta.url,
+    ...(atHold
+      ? { boundStartsWhen: { event: "its stand-in hold's start", settled: holding() } }
+      : {}),
+  });
+  const { code, stdout, stderr } = await run.finally(() => {
+    ended = true;
   });
   return { code, stdout, stderr };
 }
@@ -316,14 +334,21 @@ describe.skipIf(skipWithout("bash", "bun"))(
     );
 
     // With no close time the real stand-in's hold sleeps for the T5 window (20 minutes). The
-    // 30-second publicT5Diagnostic bound covers the measured public-leg start to this hold under
-    // the row's parallel shape, so the forced hold names the T5 window and live processes.
+    // publicT5Diagnostic bound counts from the hold's start, the hold-started file the stand-in's
+    // `hold` writes first, so the leg has written its T5 line (outside-agent-public.sh's `say`
+    // before it starts the hold) and the hold runs when the bound passes, however long the leg
+    // took to get there. A bound of 30 s counted from the leg's spawn passed before a leg whose
+    // probe commands each started 2 s late reached its hold, and the row then read no T5 line
+    // (dispatch://INFRA-3904).
     test(
       "a T5 relay hold that never closes leaves a named timeout diagnostic",
       async () => {
-        const failure = await publicStandInRun({ trades: [true] }, "publicT5Diagnostic").then(
+        const failure = await publicStandInRun({ trades: [true] }, "publicT5Diagnostic", true).then(
           () => "the public leg ended before its deliberate held relay bound",
           (error: unknown) => (error instanceof Error ? error.message : String(error))
+        );
+        expect(failure, "the bound did not count from the hold's start").toContain(
+          "publicT5Diagnostic bound of 5000 ms, counted from its stand-in hold's start"
         );
         expect(failure, "the held relay did not reach the T5 window").toContain(
           "outside-agent-public: T5: window open for up to 1200 s"
@@ -332,7 +357,9 @@ describe.skipIf(skipWithout("bash", "bun"))(
           /still running when its bound passed:\n {2}pid=\d+ ppid=\d+ name=/
         );
       },
-      rowLimit("publicT5Diagnostic")
+      // The run, a bounded child: its way to the hold, which a run of the public leg's bound
+      // covers, then the bound from the hold's start.
+      rowLimit("publicRun", "publicT5Diagnostic")
     );
   }
 );

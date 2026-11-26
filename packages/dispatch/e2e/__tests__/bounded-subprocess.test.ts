@@ -234,8 +234,10 @@ test(
       (error: unknown) => (error instanceof Error ? error.message : String(error))
     );
 
+    // No `boundStartsWhen`: the bound counts from the spawn, and the message says nothing more.
     expect(failure, "the timeout did not name the child").toStartWith(
-      `the bounded child ${named(child)} did not end inside the stuckOnPurpose bound of `
+      `the bounded child ${named(child)} did not end inside the stuckOnPurpose bound of ` +
+        `${bounds.stuckOnPurpose} ms: it and every process it started were killed after `
     );
     expect(failure, "the timeout lacks the stdout marker").toContain(marks.stdout);
     expect(failure, "the timeout lacks the stderr marker").toContain(marks.stderr);
@@ -248,6 +250,117 @@ test(
     );
   },
   rowLimit("stuckOnPurpose")
+);
+
+// `boundStartsWhen` moves the start of a bound to a point the child reaches. The child prints its
+// `late` line only after its own 15 s sleep, three times the stuckOnPurpose bound, and makes the
+// file the bound starts at only after that line. So the failure holds the line where the bound
+// counted from the file, by the order of the child's own steps; a bound that counted from the
+// spawn would have ended the child in its sleep, before the line.
+test(
+  "a bound given boundStartsWhen counts from when it settles, and its failure names that point",
+  async () => {
+    const directory = mkdtempSync(join(tmpdir(), "bounded-starts-"));
+    const reached = join(directory, "reached");
+    let ended = false;
+    try {
+      const failure = await runBounded({
+        argv: ["bash", "-c", `sleep 15; printf 'late\\n'; : >'${reached}'; exec sleep 120`],
+        bound: "stuckOnPurpose",
+        boundStartsWhen: {
+          event: "the child's reached file",
+          settled: (async () => {
+            while (!ended && !existsSync(reached)) await Bun.sleep(25);
+          })(),
+        },
+        from: import.meta.url,
+      }).then(
+        ({ code }) => `the child ended by itself, with exit ${code}`,
+        (error: unknown) => (error instanceof Error ? error.message : String(error))
+      );
+      expect(failure, "the timeout did not say where its bound counted from").toContain(
+        `did not end inside the stuckOnPurpose bound of ${bounds.stuckOnPurpose} ms, counted from ` +
+          "the child's reached file: it and every process it started were killed after "
+      );
+      expect(failure, "the bound passed before the child reached the point").toContain(
+        "\n  late\n"
+      );
+    } finally {
+      ended = true;
+      rmSync(directory, { force: true, recursive: true });
+    }
+  },
+  // The child's way to its file, a sleep and a printf, which a short child's bound covers, then the
+  // bound from the file.
+  rowLimit("short", "stuckOnPurpose")
+);
+
+test(
+  "a child that ends before its boundStartsWhen settles ends its wait, with no bound passed",
+  async () => {
+    const { code, stdout } = await runBounded({
+      argv: ["bash", "-c", "printf 'done\\n'"],
+      bound: "stuckOnPurpose",
+      boundStartsWhen: { event: "a point that never comes", settled: new Promise(() => {}) },
+      from: import.meta.url,
+    });
+    expect({ code, stdout }).toEqual({ code: 0, stdout: "done\n" });
+  },
+  rowLimit("short")
+);
+
+// A point that never comes leaves no bound of `runBounded`'s on a child that never ends: the row's
+// own limit ends the wait, as Bun's timeout, and Bun kills the child then. The inner row runs in a
+// `bun test` of its own with a 3 s limit, as a bounded child of this row, and its sleep's argument
+// is a number no other process sleeps for, so the row reads whether that sleep outlived the runner.
+test.skipIf(commandLines() === undefined)(
+  "a boundStartsWhen that never settles leaves the wait to the row's limit, which ends it and its child",
+  async () => {
+    const seconds = `${rowLimit("short", "short") / 1000}.${randomInt(10_000_000, 100_000_000)}`;
+    const directory = mkdtempSync(join(tmpdir(), "bounded-starts-never-"));
+    try {
+      writeFileSync(
+        join(directory, "c.test.ts"),
+        `import { test } from "bun:test";\n` +
+          `import { runBounded } from ${JSON.stringify(boundedModule)};\n` +
+          `test("waits for a bounded child whose bound never starts", async () => {\n` +
+          `  await runBounded({ argv: ["sleep", "${seconds}"], bound: "stuckOnPurpose", from: import.meta.url, ` +
+          `boundStartsWhen: { event: "a point that never comes", settled: new Promise(() => {}) } });\n` +
+          `}, 3000);\n`
+      );
+      const { code, stderr } = await runBounded({
+        argv: ["bun", "test", "--timeout", "3000", "./c.test.ts"],
+        bound: "short",
+        cwd: directory,
+        from: import.meta.url,
+      });
+      expect({ code, stderr }).toMatchObject({
+        code: 1,
+        stderr: expect.stringContaining(
+          "(fail) waits for a bounded child whose bound never starts"
+        ),
+      });
+      expect(stderr, "the inner row did not end at its own limit").toContain(
+        "this test timed out after 3000ms"
+      );
+      expect(stderr, "a bound of runBounded passed in the inner row").not.toContain("bound passed");
+      // A killed process can take a moment to leave the process table; a survivor stays, since
+      // its sleep outlasts every wait of this row.
+      await whether(() => holding(seconds).length === 0);
+      const survivors = holding(seconds);
+      for (const [pid] of survivors) kill(pid, "SIGKILL");
+      expect(
+        survivors.map(([pid, line]) => `${pid} ${line}`),
+        "the inner row's child outlived its runner"
+      ).toEqual([]);
+    } finally {
+      for (const [pid] of holding(seconds)) kill(pid, "SIGKILL");
+      rmSync(directory, { force: true, recursive: true });
+    }
+  },
+  // The inner runner, a short child, then the wait for its sleep to leave the table, which the
+  // short bound ends.
+  rowLimit("short", "short")
 );
 
 /** The pid, start and token of the child of every scripted kill below. A table lists its pid
