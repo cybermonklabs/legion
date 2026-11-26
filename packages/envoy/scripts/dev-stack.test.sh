@@ -68,7 +68,8 @@
 # and one line naming the bash it needs and the one it is, while 5.1 and 5.3 are taken, by the
 # gate the driver runs at its top; (q) a --project-access run points the broker at its own
 # Dispatch's access routes with a token of its own account, has Dispatch admit that account, and
-# starts the airlock in a container of its own, while a run without it sets none of it; (r) a
+# starts the airlock in a container of its own, with a profiles file of the one kind priv and no
+# profile and that kind in its banner, while a run without it sets none of it; (r) a
 # --project-access run names the airlock's proxy by a front on a port of its own, gives the broker's
 # proxy port 0 and points the front at the address that proxy logged, and stops the front with
 # the rest; (s) only --project-access needs the airlock's stands: it builds
@@ -476,11 +477,12 @@ echo "fake broker: profiles=${BROKER_PROFILES_FILE:-} airlock-ca=${BROKER_AIRLOC
 echo "fake broker: nats=${BROKER_NATS_URLS:-} seeds=${BROKER_NATS_SEED_FILE:-},${BROKER_NATS_ISSUER_SEED_FILE:-},${BROKER_NATS_XKEY_SEED_FILE:-} nats-audience=${BROKER_NATS_K8S_AUDIENCE:-} services=${BROKER_NATS_SERVICES:-}" >&2
 echo "fake broker: pod-registrars=${BROKER_POD_REGISTRARS:-}" >&2
 echo "fake broker: airlock-listen=${BROKER_AIRLOCK_LISTEN_ADDR:-}" >&2
-# The proxy binds the address it was given, as the real one does, and only when a profile of the
-# profiles file has a proxy block, as the real one binds it; given port 0 it reports a port of its
-# own choosing, which 1 and this stub's PID stand for, as a kernel's choice is one nobody named.
+# The proxy binds the address it was given, as the real one does, and only when the profiles file
+# declares a kind or holds a dpop block, as the real one binds it (config.AirlockSubjects). Given
+# port 0 it reports a port of its own choosing, which 1 and this stub's PID stand for, as a
+# kernel's choice is one nobody named.
 if [ -n "${BROKER_AIRLOCK_LISTEN_ADDR:-}" ] && [ -n "${BROKER_PROFILES_FILE:-}" ] &&
-  jq -e 'any(.profiles[]; .proxy != null)' "$BROKER_PROFILES_FILE" >/dev/null 2>&1; then
+  jq -e '(.kinds // []) != [] or any(.profiles[]; .proxy | type == "object" and .kind == "dpop")' "$BROKER_PROFILES_FILE" >/dev/null 2>&1; then
   airlock_addr=$BROKER_AIRLOCK_LISTEN_ADDR
   [ "${airlock_addr##*:}" != 0 ] || airlock_addr="${airlock_addr%:*}:1$$"
   printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"airlock proxy listening","addr":"%s"}\n' \

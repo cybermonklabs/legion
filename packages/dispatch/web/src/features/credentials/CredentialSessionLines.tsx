@@ -8,7 +8,7 @@ import {
   type CredentialSessionLine,
   type CredentialSessionSource,
   credentialSessionLines,
-} from "./session";
+} from "./logic/session";
 
 // Only the enrollment line carries a preamble: when both ids are shown, it says which one the
 // broker verified. The request's line is the request's session as written, with no preamble.
