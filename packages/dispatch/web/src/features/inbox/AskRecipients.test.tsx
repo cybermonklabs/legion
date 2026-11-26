@@ -6,6 +6,12 @@ import { MemoryRouter } from "react-router-dom";
 
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type { Agent, AskFollower } from "../../api/types";
+import {
+  disclosureButtonText,
+  pageMutedText,
+  pageQuietText,
+  textMutedOnSurface,
+} from "../../theme/classes";
 import { AskRecipients, reachLabel, reachRows } from "./AskRecipients";
 import { followers, renderRecipients, subscriber } from "./ask-recipients-fixture";
 
@@ -60,6 +66,35 @@ test("AskRecipients folds its routing list at rest and still names the count", a
     view.unmount();
     listAgents.mockRestore();
     getIssueSubscribers.mockRestore();
+  }
+});
+
+// Part N's R13: the new issue page draws the Reaches control in its own colours, and only where
+// it asks (`page`); every other surface keeps today's.
+test("AskRecipients draws its Reaches control in today's colours, and the page's only where the new page asks", async () => {
+  const classesOf = (element: Element | null) => (element?.getAttribute("class") ?? "").split(" ");
+  const expectClasses = (element: Element | null, classes: string, where: string) =>
+    expect(
+      classes.split(" ").filter((name) => !classesOf(element).includes(name)),
+      `${where} lacks classes`
+    ).toEqual([]);
+  for (const page of [false, true]) {
+    const drawn = await renderRecipients({ props: page ? { page } : {} });
+    try {
+      const toggle = within(screen.getByRole("region", { name: "Recipients" })).getByRole(
+        "button",
+        { name: /^Reaches/ }
+      );
+      const where = page ? "the new page's toggle" : "today's toggle";
+      expectClasses(toggle, page ? pageMutedText : textMutedOnSurface, where);
+      expectClasses(
+        toggle.querySelector("svg")?.parentElement ?? null,
+        page ? pageQuietText : disclosureButtonText,
+        `${where}'s chevron`
+      );
+    } finally {
+      drawn.unmount();
+    }
   }
 });
 

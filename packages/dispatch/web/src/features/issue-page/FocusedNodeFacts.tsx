@@ -268,6 +268,7 @@ function AskThreadFacts({
             claimant={thread.claimant}
             followers={thread.followers ?? []}
             owner={ask}
+            page
             route={thread.route}
             routeHolder={thread.route_holder}
             routeStatus={thread.route_status}

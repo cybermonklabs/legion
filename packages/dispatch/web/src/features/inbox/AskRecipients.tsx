@@ -13,7 +13,7 @@ import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
 import type { EventFreshness } from "../../hooks/useIsHuman";
 import { useIsHuman } from "../../hooks/useIsHuman";
-import { textMutedOnSurface } from "../../theme/classes";
+import { pageMutedText, pageQuietText, textMutedOnSurface } from "../../theme/classes";
 import { RouteReachUnknownMarker, UnreachableRouteMarker } from "../issue/RouteReach";
 import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
 import { AgentName, useAgentText } from "../refs/AgentName";
@@ -77,6 +77,10 @@ export interface AskRecipientsProps {
    *  default, the app's. */
   freshness?: EventFreshness;
   owner: AskOwner;
+  /** Whether the new issue page draws the card, which draws its Reaches control in the page's
+   *  colours (part N's R13): Details' facts of a focused question (`FocusedNodeFacts.tsx`). Unset
+   *  on every other surface. */
+  page?: boolean;
   /** Write seam for tests; defaults to the real API. */
   removeFollower?: (askId: string, sessionId: string, bounds: WriteBounds) => Promise<void>;
   /** The ask's issue's route (`session:<id>` or `role:<name>`), from the same thread read. */
@@ -236,6 +240,7 @@ export function AskRecipients({
   followers,
   freshness,
   owner,
+  page = false,
   removeFollower = removeAskFollower,
   route,
   routeHolder,
@@ -354,7 +359,8 @@ export function AskRecipients({
         expanded={open}
         label={counted ? reachLabel({ count, unknownRoute }) : "Recipients"}
         onToggle={() => setOpen((shown) => !shown)}
-        textClassName={textMutedOnSurface}
+        textClassName={page ? pageMutedText : textMutedOnSurface}
+        {...(page ? { chevronClassName: pageQuietText } : {})}
       />
       {!open ? null : (
         <>

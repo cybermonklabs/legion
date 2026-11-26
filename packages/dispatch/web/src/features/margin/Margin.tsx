@@ -483,7 +483,7 @@ function DetailsResizeHandle({
       aria-valuemax={maxMarginWidth()}
       aria-valuemin={MIN_MARGIN_WIDTH}
       aria-valuenow={width}
-      className={`fixed top-0 z-50 h-dvh w-2 border-0 border-l cursor-col-resize focus-visible:outline-none focus-visible:ring-2 ${borderDefault} ${focusVisibleRing}`}
+      className={`fixed top-0 z-50 h-dvh w-2 border-0 border-l cursor-col-resize focus-visible:outline-none focus-visible:ring-2 ${pageLineBorder} ${focusVisibleRing}`}
       style={{ right: `${width - 4}px` }}
       onDoubleClick={() => onWidthChange(DEFAULT_MARGIN_WIDTH)}
       onKeyDown={(event) => {
