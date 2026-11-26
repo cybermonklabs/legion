@@ -1,0 +1,28 @@
+kind: Changed
+body: |-
+  Dispatch takes a write by a broker token that names a service and no person when the token's
+  project scope is `named` or `public`, the two shapes of a job's token. It records the write under
+  the token's session and its service, the identity the job entry lists, and under no person. The
+  access log names the caller `broker-token:service:<identity>`. `GET /api/v1/whoami` answers
+  `owner` null, `service` that identity, and `project` the entry's one project for `named` and null
+  for `public`. It also answers `project_scope`, a broker token's project scope (`named`, `public`
+  or `person`), and leaves it out for every other credential, and `sign_in_required` is false for a
+  job's token. A job's token holds no OAuth scope, so a route that needs `person` or `approve`
+  refuses it with `403 OAUTH_SCOPE_REQUIRED` before Dispatch's project check runs. A `named` job
+  token writes its one project, and that check judges its write to another project as it judges
+  a person's `named` token's for the same project: it writes another project's objects as a token
+  that names no project does, but an object of a private project that the token does not name
+  gets the answer of an object that does not exist, and a write that belongs to the deployment is
+  `403 PROJECT_SCOPE_DEPLOYMENT`. A `public` one writes wherever a token that names no project may
+  write. Every other broker token that names a service and no person is
+  still refused every write with `403 SIGN_IN_REQUIRED`: that is a machine's token under the project
+  scope `person`, from a machine nobody signed in on. Dispatch, the Envoy listener and the NATS auth
+  service now refuse, as no session's credential, a `named` token that names no person and holds an
+  OAuth scope word, the token of an account entry naming no person among them: the broker mints
+  every such token with no scope, so no token it mints is refused. A deployment that lists no job
+  entry sees no other change. Run every Dispatch, Envoy listener and broker replica on this release
+  before the broker lists a job entry: an older verifier refuses a job's token as no session's
+  credential.
+time: 2026-11-24T01:52:17Z
+custom:
+    Issue: job-tokens

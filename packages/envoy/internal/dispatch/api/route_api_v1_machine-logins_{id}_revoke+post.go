@@ -16,6 +16,7 @@ var _ = declareRoute(routeDecl{
 	WriteClass:  scopeDeployment,
 	ID:          &idRoute{Reason: "a machine login id"},
 	OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},
+	ApproveOnly: true,
 	Shape: routeShape{
 		// POST /v1/launcher-credentials/{id}/revoke-by-approver
 		// (cipher.Client.RevokeMachineLogin).

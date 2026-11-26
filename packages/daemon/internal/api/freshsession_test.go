@@ -59,16 +59,19 @@ func freshSessionHarnessStopping(t *testing.T, handler intake.Handler, stopping 
 // `legion claims retry --fresh-session`, which names the claim by its token, and the
 // controller's fresh_session, which names it by its issue and role and carries a controller
 // grant. One effect stands behind both (api's freshSession), so every case runs through both.
-// stated is the header the request carries beside the door's own credential, such as the
-// contract a caller states (pluginContractHeader), and nil for a request that carries none.
+// by is who asks through the door, which decides the suspensions it is refused at the door
+// itself (wantHeldRefusal). stated is the header the request carries beside the door's own
+// credential, such as the contract a caller states (pluginContractHeader), and nil for a request
+// that carries none.
 type freshSessionDoor struct {
 	name string
+	by   supervise.SuspendSource
 	ask  func(t *testing.T, h *harness, issue string, role claim.Role, stated http.Header) *httptest.ResponseRecorder
 }
 
 func freshSessionDoors() []freshSessionDoor {
 	return []freshSessionDoor{
-		{"the operator's retry --fresh-session", func(t *testing.T, h *harness, issue string, role claim.Role, stated http.Header) *httptest.ResponseRecorder {
+		{"the operator's retry --fresh-session", supervise.SuspendedByOperator, func(t *testing.T, h *harness, issue string, role claim.Role, stated http.Header) *httptest.ResponseRecorder {
 			t.Helper()
 			header := stated.Clone()
 			if header == nil {
@@ -78,13 +81,28 @@ func freshSessionDoors() []freshSessionDoor {
 			return h.request(http.MethodPost, "/legion/v1/operator/claims/"+string(freshSessionToken(t, issue, role))+"/retry",
 				RetryRequest{FreshSession: true}, header)
 		}},
-		{"the controller's fresh_session", func(t *testing.T, h *harness, issue string, role claim.Role, stated http.Header) *httptest.ResponseRecorder {
+		{"the controller's fresh_session", supervise.SuspendedByController, func(t *testing.T, h *harness, issue string, role claim.Role, stated http.Header) *httptest.ResponseRecorder {
 			t.Helper()
 			grant := controllerGrant(t, h)
 			return h.request(http.MethodPost, "/legion/v1/claims/fresh-session",
 				ClaimRequest{GrantID: grant.GrantID, Issue: issue, Role: string(role)}, stated)
 		}},
 	}
+}
+
+// wantHeldRefusal holds the answer this door gave the fresh session of token's agent, over which
+// a suspension by heldBy is held, to the refusal it gives such an agent: the held suspension's
+// own, code and message (refuseHeldSuspension), except where the suspension outranks the door's
+// caller. The agent door refuses the controller the operator's suspension, held or landed,
+// before the fresh session reads anything of the claim (agentDoor, SUSPENDED_BY_OPERATOR), and
+// nothing outranks the operator.
+func (d freshSessionDoor) wantHeldRefusal(t *testing.T, recorder *httptest.ResponseRecorder, token claim.Token,
+	heldBy supervise.SuspendSource, code, message string) {
+	t.Helper()
+	if d.by == supervise.SuspendedByController && heldBy == supervise.SuspendedByOperator {
+		code, message = suspendedByOperator, operatorHoldRefusal(token, "a fresh session", "the controller")
+	}
+	refusedSaying(t, recorder, http.StatusConflict, code, message)
 }
 
 func freshSessionToken(t *testing.T, issue string, role claim.Role) claim.Token {
@@ -181,15 +199,13 @@ func freshSessionCases() []freshSessionCase {
 			start: idleOnTheLadder,
 		},
 		{
+			// The controller's suspension, which both doors lift: the operator's lifts every
+			// suspension, and the controller's its own. The operator's own suspension is the
+			// controller door's SUSPENDED_BY_OPERATOR, which
+			// TestTheControllerCannotGetPastTheOperatorsSuspension holds, and the operator's door
+			// is held to it in TestTheOperatorLiftsItsOwnSuspensionAndTheControllers.
 			name: "a suspended phase worker", issue: "LEGION-209", role: claim.RoleImplementer, facts: 1, launches: true,
-			start: func(t *testing.T, h *harness) claim.Token {
-				t.Helper()
-				token := readyImplementer(t, h)
-				if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusOK {
-					t.Fatalf("suspend = %d, want 200; body %s", recorder.Code, recorder.Body)
-				}
-				return token
-			},
+			start: controllerSuspendedImplementer,
 		},
 		{
 			name: "a phase worker an operator stopped", issue: "LEGION-209", role: claim.RoleImplementer, facts: 1,
@@ -251,12 +267,12 @@ func freshSessionCases() []freshSessionCase {
 }
 
 // Every claim of the project that is not in a turn gets a new session through either door: the
-// claim forgets the session it recorded and starts again, and the run of provider errors it
-// carried starts again with it, so the project's controller can be told a second time. A phase
-// worker that comes back owing no task is started through its issue's phase, which is what
-// hands it that phase's task: without it a tester waiting on CI, or a worker an idle release
-// suspended, would come back in a new session with nothing to do. A claim that still owes a
-// task keeps it, and a root architect works no phase at all.
+// claim forgets the session it recorded and starts again, and the run of provider errors it carried
+// starts again with it, so the provider-errors notice can be sent a second time (internal/daemon's
+// providerErrorRunReached says to whom). A phase worker that comes back owing no task is started
+// through its issue's phase, which is what hands it that phase's task: without it a tester waiting
+// on CI, or a worker an idle release suspended, would come back in a new session with nothing to
+// do. A claim that still owes a task keeps it, and a root architect works no phase at all.
 func TestAFreshSessionStartsEveryClaimThatIsNotInATurn(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		for _, tc := range freshSessionCases() {
@@ -480,21 +496,16 @@ func freshSessionNote(t *testing.T, recorder *httptest.ResponseRecorder) string 
 // answer names the refused restart, because nothing in the claim's state records that its phase
 // was not restarted. A refusal here instead would tell the caller nothing happened for a worker
 // this route had just relaunched, and, for the worker it suspended itself, leave it stopped
-// behind an operator's hold no rule of the daemon's can lift.
+// behind a hold no rule of the daemon's can lift. The hold here is the controller's, which both
+// doors lift; the controller's door refuses the operator's own
+// (TestTheControllerCannotGetPastTheOperatorsSuspension).
 func TestAFreshSessionStartsTheClaimWhenThePhaseRestartIsRefused(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		for _, tc := range []struct {
 			name  string
 			start func(t *testing.T, h *harness) claim.Token
 		}{
-			{"a claim the operator suspended", func(t *testing.T, h *harness) claim.Token {
-				t.Helper()
-				token := readyImplementer(t, h)
-				if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusOK {
-					t.Fatalf("suspend = %d, want 200; body %s", recorder.Code, recorder.Body)
-				}
-				return token
-			}},
+			{"an agent the controller suspended", controllerSuspendedImplementer},
 			{"a claim the daemon suspended", func(t *testing.T, h *harness) claim.Token {
 				t.Helper()
 				return suspendedImplementer(t, h, supervise.SuspendedByDaemon)
@@ -723,9 +734,10 @@ func TestAFreshSessionIsRefusedForAClaimInATurn(t *testing.T) {
 // started: a fresh session suspends a ready claim as the operator and then resumes it, and
 // the suspension it runs lets the held request go with the process (supervise's letGo), so
 // the operator's own suspend — answered 202 and still waiting on its retry — would be
-// dropped unrun and the worker started again in a new session. The compaction's answer to
-// the same claim is its own route's (compact_test.go), and the fixture both read is shared
-// (recovery_refusals_test.go).
+// dropped unrun and the worker started again in a new session. The hold is the operator's, so
+// the controller's door refuses it first, in the hold's own code (wantHeldRefusal). The
+// compaction's answer to the same claim is its own route's (compact_test.go), and the fixture
+// both read is shared (recovery_refusals_test.go).
 func TestAFreshSessionOfAReadyClaimUnderAHeldSuspensionIsRefused(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		t.Run(door.name, func(t *testing.T) {
@@ -735,7 +747,7 @@ func TestAFreshSessionOfAReadyClaimUnderAHeldSuspensionIsRefused(t *testing.T) {
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
-			refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
+			door.wantHeldRefusal(t, recorder, token, supervise.SuspendedByOperator, claimUnsettled,
 				heldSuspensionRefusal(token, freshSessionName, "a fresh session", wantFreshSessionLive))
 			m, _ := h.supervisor.Machine(token)
 			if view := m.View(); view.State != supervise.StateReady || !view.SuspensionHeld {
@@ -838,7 +850,7 @@ func TestTheControllersFreshSessionRefusesTheRoleController(t *testing.T) {
 
 	refusedSaying(t, recorder, http.StatusBadRequest, "INVALID_ROLE",
 		"role must be one of architect, planner, implementer, tester, reviewer, merger; "+
-			"the project's controller is none of them, and its own claim takes no fresh session")
+			"the project's controller is none of them, and its own agent takes no fresh session")
 }
 
 // The controller's own claim is refused through the operator's door too, which names a claim by
@@ -853,6 +865,46 @@ func TestAFreshSessionRefusesTheControllersOwnClaim(t *testing.T) {
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry", RetryRequest{FreshSession: true})
 
 	refused(t, recorder, http.StatusConflict, "NOT_THE_CONTROLLER")
+}
+
+// A controller held for OpenAI's cyber-policy refusal is the one controller its keeper does not
+// retry (the daemon's controllerKeeper), so the operator's `legion claims retry` is its way back,
+// and both of its forms are admitted. Each leaves the recorded session, which holds the refused
+// content, behind, and starts the controller in a new one: without --fresh-session the machine's
+// retry forgets it (supervise's freshSession), since a resume would send that content to OpenAI
+// again with the keeper's start message.
+func TestTheOperatorsRetryStartsAHeldControllerInANewSession(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		fresh bool
+	}{{"asking for a new session", true}, {"asking for none", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := freshSessionHarness(t, &phaseRestarter{})
+			token := claim.ControllerToken(testProject)
+			m, _, err := h.supervisor.Create(h.ctx, supervise.Claim{
+				Token: token, Project: testProject, Role: claim.RoleController, Generation: 1, State: supervise.StateFailed,
+				Session: "ses_controller", SessionFile: "/tmp/controller.jsonl", FailureCause: supervise.CauseCyberPolicy,
+				Failure: "a provider error that cannot clear ended this claim's turn: OpenAI's cyber_policy refusal of this session's content",
+			}, "")
+			if err != nil {
+				t.Fatalf("create the held controller: %v", err)
+			}
+
+			recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry", RetryRequest{FreshSession: tc.fresh})
+
+			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+				t.Fatalf("the operator's retry of the held controller = %d %s, want it admitted", recorder.Code, recorder.Body)
+			}
+			m.Wait()
+			c := m.Claim()
+			if c.State != supervise.StateLaunching || c.FailureCause != "" {
+				t.Fatalf("the controller is %s (%q), want it launching with no failure record", c.State, c.FailureCause)
+			}
+			if c.Session != "" || c.Abandoned.Session != "ses_controller" {
+				t.Fatalf("the controller records session %q and abandoned %q; want the recorded session left behind", c.Session, c.Abandoned.Session)
+			}
+		})
+	}
 }
 
 // A fresh session is refused for a claim no launch has registered yet: its suspension would be
@@ -894,6 +946,122 @@ func TestTheControllersFreshSessionNeedsAControllerGrantAndAClaim(t *testing.T) 
 	refused(t, h.request(http.MethodPost, "/legion/v1/claims/fresh-session",
 		ClaimRequest{GrantID: controllerGrant(t, h).GrantID, Issue: "LEGION-777", Role: string(claim.RoleTester)}, nil),
 		http.StatusNotFound, "NO_CLAIM")
+}
+
+// Each step of a fresh session is a decision of its own, so the operator's suspension can take the
+// agent over between them: after the controller's own suspension of a live agent, and after the
+// read at the request of an agent the controller suspended earlier. The forget reads the hold
+// again in its own decision (supervise.RequestForgetSession.By) and is refused, so the claim keeps
+// the session it recorded under the operator's suspension, nothing is started, and the controller
+// is answered that hold's refusal, which says whether its own suspension ran. Let through, the
+// forget would drop the session of an agent whose resume the machine then refuses, and the
+// controller would read a 200 for an agent only the operator can start.
+func TestAFreshSessionKeepsTheSessionOfAnAgentASuspensionAboveTheCallerTookOver(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		start  func(t *testing.T, h *harness) claim.Token
+		by     supervise.SuspendSource
+		holder supervise.SuspendSource
+		code   string
+		want   func(token claim.Token) string
+	}{
+		{
+			name: "the operator's over the controller's own suspension of a ready worker", start: readyImplementer,
+			by: supervise.SuspendedByController, holder: supervise.SuspendedByOperator, code: suspendedByOperator,
+			want: func(token claim.Token) string {
+				return string(token) + " is held by the operator's own suspension, which only the operator lifts, so a fresh session " +
+					"by the controller went no further than its own suspension of the agent, which that suspension then took over, " +
+					"and the agent keeps the session its claim recorded. Ask the operator: `legion claims resume --claim " + string(token) +
+					"` is theirs to run"
+			},
+		},
+		{
+			name: "the operator's over an agent the controller suspended before the request", start: controllerSuspendedImplementer,
+			by: supervise.SuspendedByController, holder: supervise.SuspendedByOperator, code: suspendedByOperator,
+			want: func(token claim.Token) string {
+				return operatorHoldRefusal(token, "a fresh session", "the controller")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := freshSessionHarness(t, &phaseRestarter{})
+			token := tc.start(t, h)
+			m, _ := h.supervisor.Machine(token)
+			s := routeServer(h)
+			tookOver := false
+			s.beforeForgetSessionHandle = func() {
+				tookOver = true
+				if err := m.Handle(h.ctx, supervise.RequestSuspend{
+					Claim: token, Reason: "a suspension above the caller takes the agent over", By: tc.holder,
+				}); err != nil {
+					t.Errorf("the takeover before the forget: %v", err)
+				}
+			}
+			launches := len(h.runtime.CallsOf("Resume")) + len(h.runtime.CallsOf("Spawn"))
+			recorder := httptest.NewRecorder()
+
+			_, _, _, ok := s.freshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token, tc.by)
+
+			if !tookOver {
+				t.Fatalf("the fresh session reached no forget, so nothing took the agent over before one; body %s", recorder.Body)
+			}
+			if ok {
+				t.Fatalf("the fresh session reported success; body %s", recorder.Body)
+			}
+			refusedSaying(t, recorder, http.StatusConflict, tc.code, tc.want(token))
+			if got := h.stored(token); got.State != supervise.StateSuspended || got.SuspendedBy != tc.holder || got.Session != "ses_implementer" {
+				t.Fatalf("the claim is %s suspended by %q on session %q, want it suspended by %s on ses_implementer",
+					got.State, got.SuspendedBy, got.Session, tc.holder)
+			}
+			if got := len(h.runtime.CallsOf("Resume")) + len(h.runtime.CallsOf("Spawn")); got != launches {
+				t.Errorf("the runtime was asked for %d launches, want the %d made before the request", got, launches)
+			}
+		})
+	}
+}
+
+// A suspension above the caller can take the agent over after the fresh session's forget dropped
+// the session it recorded and before its resume: the resume is refused that hold, and the
+// refusal says the session was left behind, since the holder's resume starts the agent in a new
+// session rather than the one the request found. Said "nothing of the claim changed", the caller
+// would read the agent as resumable on the session it can no longer reach.
+func TestAFreshSessionWhoseResumeAHoldRefusesAfterTheForgetSaysTheSessionWasLeftBehind(t *testing.T) {
+	h := freshSessionHarness(t, &phaseRestarter{})
+	token := controllerSuspendedImplementer(t, h)
+	m, _ := h.supervisor.Machine(token)
+	s := routeServer(h)
+	tookOver := false
+	s.beforeFreshSessionResume = func() {
+		tookOver = true
+		if err := m.Handle(h.ctx, supervise.RequestSuspend{
+			Claim: token, Reason: "a suspension above the caller takes the agent over", By: supervise.SuspendedByOperator,
+		}); err != nil {
+			t.Errorf("the takeover before the resume: %v", err)
+		}
+	}
+	launches := len(h.runtime.CallsOf("Resume")) + len(h.runtime.CallsOf("Spawn"))
+	recorder := httptest.NewRecorder()
+
+	_, _, _, ok := s.freshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token, supervise.SuspendedByController)
+
+	if !tookOver {
+		t.Fatalf("the fresh session reached no resume, so nothing took the agent over before one; body %s", recorder.Body)
+	}
+	if ok {
+		t.Fatalf("the fresh session reported success; body %s", recorder.Body)
+	}
+	refusedSaying(t, recorder, http.StatusConflict, suspendedByOperator, string(token)+
+		" is held by the operator's own suspension, which only the operator lifts, so a fresh session by the controller "+
+		"went no further than leaving behind the session the claim recorded before that suspension took the agent over, "+
+		"so the agent starts in a new session once it is started. Ask the operator: `legion claims resume --claim "+
+		string(token)+"` is theirs to run")
+	if got := h.stored(token); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByOperator || got.Session != "" {
+		t.Fatalf("the claim is %s suspended by %q on session %q, want it suspended by the operator with no session",
+			got.State, got.SuspendedBy, got.Session)
+	}
+	if got := len(h.runtime.CallsOf("Resume")) + len(h.runtime.CallsOf("Spawn")); got != launches {
+		t.Errorf("the runtime was asked for %d launches, want the %d made before the request", got, launches)
+	}
 }
 
 // A plugin below contract 104 reads the 200 of a fresh session as a claim that runs again

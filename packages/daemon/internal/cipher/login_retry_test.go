@@ -15,26 +15,13 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
 // loginRoute is the token login's path, which every cause below names, since do wraps a failed
 // call as "broker <method> <path>: …".
 const loginRoute = "/v1/launcher-credentials/token"
-
-// deadAddress is an address nothing answers at: a port reserved and given back at once, the
-// recipe internal/dispatch/unreachable_test.go uses for a dial the network refuses.
-func deadAddress(t *testing.T) string {
-	t.Helper()
-	reserved, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve a port: %v", err)
-	}
-	address := reserved.Addr().String()
-	if err := reserved.Close(); err != nil {
-		t.Fatalf("give the port back: %v", err)
-	}
-	return address
-}
 
 // listening accepts every connection and hands it to serve, which decides what a peer that took
 // the connection then does with it. It answers its address.
@@ -333,7 +320,7 @@ func TestEachFailedLoginLogsItsClassItsScheduleAndItsCause(t *testing.T) {
 			class:    "broker-unavailable",
 			schedule: "short",
 			rig: func(t *testing.T) (string, *http.Client, func() string) {
-				address := deadAddress(t)
+				address := testport.Refused(t)
 				brokerURL := "http://" + address
 				return brokerURL, &http.Client{}, fixed(failedCall(brokerURL,
 					"dial tcp "+address+": connect: connection refused"))

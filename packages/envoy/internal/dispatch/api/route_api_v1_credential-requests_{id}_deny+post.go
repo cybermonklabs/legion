@@ -16,6 +16,7 @@ var _ = declareRoute(routeDecl{
 	WriteClass:  scopeDeployment,
 	ID:          &idRoute{Reason: "a credential request id"},
 	OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},
+	ApproveOnly: true,
 	Shape: routeShape{
 		// POST /v1/credential-requests/{record}/deny (cipher.Client.Deny), which answers
 		// the terminal state rather than a credential.

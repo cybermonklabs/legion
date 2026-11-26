@@ -251,6 +251,25 @@ type routeDecl struct {
 	// read-only gate reads it.
 	Read readEntry
 
+	// ApproveOnly is a route an approve-only token may call: the token the secrets broker mints
+	// for a person's approve grant, binds to its own pod's key and spends through its proxy, never
+	// released (model.Credential.ApproveOnly). It acts as its person with both of the person's
+	// scopes, and every route that does not state ApproveOnly, and GET /ws/live beside them,
+	// answers it 403 APPROVE_ONLY_TOKEN before anything else the route does
+	// (refuseApproveOnlyToken), so a route added later stays closed to it until its file states
+	// it.
+	//
+	// The routes that state it are the routes whose OAuthScopes name approve, the routes that
+	// settle what a person settles, less two: the mint and the change of a personal token, since a
+	// token they made or widened would be an approve credential written to the box the session
+	// runs on, which is what the proxy exists to keep off it. The revoke of a personal token
+	// states it. Beside them is the answer of an ask, which checks approve in its handler for an
+	// approval request and refuses an approve-only token the answer of every other ask, 403
+	// APPROVE_ONLY_TOKEN, once the ask's kind is read (ask_transitions.go). Like Read, it is no
+	// scope: the route index and the OpenAPI document do not carry it, and only the approve-only
+	// gate reads it.
+	ApproveOnly bool
+
 	// Shape is what the route takes and answers, in the Go types the OpenAPI document is
 	// reflected out of (routeShape, routes_shapes.go). Every route states one, which
 	// shapelessRoutes holds the table to; the OpenAPI emitter is what reads it.

@@ -14,8 +14,8 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).putLegionSetting,
 	// Which daemon a project's Legion state is read from: addressed under the project it serves,
 	// and not belonging to it. Pointing Dispatch at a host is the deployment's write, so a
-	// credential that may write one project's issues is refused it by name, the project its
-	// path names included.
+	// credential that names one project is refused it by name, the project its path names
+	// included.
 	WriteClass: scopeDeployment,
 	Shape: routeShape{
 		Status: http.StatusOK, Response: legion.Settings{}, Request: putLegionSettingInput{},

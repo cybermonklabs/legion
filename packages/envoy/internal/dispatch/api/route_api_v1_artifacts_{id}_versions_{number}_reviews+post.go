@@ -17,6 +17,7 @@ var _ = declareRoute(routeDecl{
 	// The review that names the version its caller read settles what POST
 	// /api/v1/artifacts/{id}/reviews settles, with that version as a guard.
 	OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},
+	ApproveOnly: true,
 	Shape: routeShape{
 		Status: http.StatusCreated, Response: model.ArtifactReview{}, Request: createArtifactReviewInput{},
 	},

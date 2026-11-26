@@ -15,6 +15,7 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).lookupMachineCredential,
 	WriteClass:  scopeDeployment,
 	OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},
+	ApproveOnly: true,
 	Shape: routeShape{
 		// POST /v1/machine-logins/lookup (cipher.Client.MachineLookup). Dispatch forwards
 		// the body to the broker unparsed (readRelayBody) rather than reading it, but the broker

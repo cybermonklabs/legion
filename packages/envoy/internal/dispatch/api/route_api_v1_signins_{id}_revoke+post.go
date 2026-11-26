@@ -16,6 +16,7 @@ var _ = declareRoute(routeDecl{
 	WriteClass:  scopeDeployment,
 	ID:          &idRoute{Reason: "a sign-in id at the secrets broker"},
 	OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},
+	ApproveOnly: true,
 	Shape: routeShape{
 		// POST /v1/person-signins/{id}/revoke (cipher.Client.RevokeSignIn), which says how
 		// many access tokens ended with the sign-in.

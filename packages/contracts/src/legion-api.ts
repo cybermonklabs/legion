@@ -44,8 +44,8 @@ const dispatchPriority = z.number().int().min(0).max(3).nullable().optional();
  * refuses a few strings that decode takes (`+24:00`, a comma before the fraction). `timestamp`
  * above takes `2026-11-06T10:00Z`, which that decode rejects, so a plugin that validated a request
  * field against it would send a body the daemon answers with its generic invalid-body error rather
- * than the field's own guidance. The plugin reads this same schema for both fields a session
- * sends — `wake_at` and `read_release_records`' `since`
+ * than the field's own guidance. The plugin reads this same schema for the request times
+ * `wake_at`, `check_opened_at` and `read_release_records`' `since`
  * (`packages/pi-shared/src/legion-phase-ops.ts`). Only a field a session sends reads it: every
  * other field here is the daemon's own output, which Go always writes with seconds. */
 export const LegionInstant = timestamp.regex(
@@ -56,14 +56,20 @@ export const LegionInstant = timestamp.regex(
 /** `api.Phase` — the state an admitted issue sits in, in the transition table's own order. Not
  * the role working it: `workers` is keyed by role (`LEGION_ROLES`). `awaiting_person` is a root
  * that keeps its admission slot while its architect waits on a person's answer (`waitingOn` on
- * the issue record). `accepting` is the architect's acceptance, where the issue's task places its
- * `acceptance:owner` step (in the default steps, between the reviewer's approval and retro): no
- * worker runs it. The merger merges in `merging`, and the daemon closes the issue when
- * it reads that merge (`done`); the production check after the close is no phase (`check` on the
- * issue record). */
+ * the issue record). `awaiting_children` is a parent that an open Dispatch child of it holds: no
+ * phase of a parent starts while such a child stands under it, so the daemon moved it here in
+ * place of a phase start, or stopped its phase under way. It keeps no slot, shows `in_progress`,
+ * and comes back to the start it held when no open child is left, a held `testing`, `reviewing`
+ * or `accepting` as the first step of its walk after the implementer's (`testing` on the default
+ * steps) unless its pull request merged meanwhile. `accepting` is the architect's acceptance,
+ * where the issue's task places its `acceptance:owner` step (in the default steps, between the
+ * reviewer's approval and retro): no worker runs it. The merger merges in `merging`, and the
+ * daemon closes the issue when it reads that merge (`done`); the production check after the close
+ * is no phase (`check` on the issue record). */
 export const LEGION_WORKFLOW_PHASES = [
   "admitted",
   "awaiting_person",
+  "awaiting_children",
   "planning",
   "implementing",
   "testing",
@@ -193,12 +199,15 @@ const legionStepView = z.object({
 });
 
 /** The two fields a wake the daemon's pacing holds carries: what kind of wake it is, and
- * `dueAt`, the moment the pacing gave it, which is when it runs (contract 193). The claim view's
- * `wake` and `legionWakeWaiting` below carry the same wake, so both spread this one object and
- * cannot drift apart in type. Both fields are optional here, since no plugin code reads the claim
- * view's `wake`; `legionWakeWaiting` requires `dueAt` over the spread, because the controller's
- * `read_state` summary reads it (LEGION_ANSWER_READS). The kind is read as a plain string, so a
- * lane a later daemon adds is read rather than refused. */
+ * `dueAt`, the pacing's estimate at the read of the moment it lets the wake out, as its queues
+ * stand (contract 193; entry 20261125211005). A change to the queues or to the pace can move that
+ * moment earlier or later, so two reads can name two moments: for example, a wake ahead of it in
+ * its own queue that leaves moves it earlier, and a wake that joins and is let out ahead of it
+ * moves it later. The claim view's `wake` and `legionWakeWaiting` below carry the same wake, so
+ * both spread this one object and cannot drift apart in type. Both fields are optional here, since
+ * no plugin code reads the claim view's `wake`; `legionWakeWaiting` requires `dueAt` over the
+ * spread, because the controller's `read_state` summary reads it (LEGION_ANSWER_READS). The kind
+ * is read as a plain string, so a lane a later daemon adds is read rather than refused. */
 const legionPacedWake = {
   kind: nonEmptyString.optional(),
   dueAt: timestamp.optional(),
@@ -217,6 +226,7 @@ export const LEGION_FAILURE_CAUSES = [
   "stale_plugin",
   "prompt_retires_exhausted",
   "provider_error",
+  "cyber_policy",
   "unrecorded",
 ] as const;
 
@@ -308,8 +318,9 @@ const legionClaimView = z.object({
   updateState: z.enum(["none", "open", "asked", "answered"]).optional(),
   /** How many turns of this claim ended in a provider error in a row, absent for a claim whose
    * last turn ended with none. It bounds nothing — a limit here would fail every claim of a
-   * project at once in a provider outage — and the project's controller is told of it once, at
-   * a run of six, so this is the only surface the number behind that telling reaches. */
+   * project at once in a provider outage. At a run of six the daemon sends the `provider-errors`
+   * notice once (`providerErrorRunReached` in `packages/daemon/internal/daemon/workflow.go` says to
+   * whom), so this key is the only surface that shows the count before or after that notice. */
   providerErrorRun: z.number().int().positive().optional(),
   /** The task the claim holds, reduced to what a reader of this body decides on and never
    * carrying its text; absent for a claim holding none. */
@@ -481,7 +492,10 @@ const legionMergeWaitView = z.object({
 });
 
 /** `api.GateView` — the design gate; `approvedVersion` is null until a human approves one, and
- * the gate is open exactly when it equals `currentVersion`. */
+ * the gate is open exactly when it equals `currentVersion`. A spec step that stands open on an
+ * ancestor's approval (entry 20261125161152 (gate-basis)) holds the version its root registered there, which no person
+ * approved: the step's entry in `gatedSteps` reads `open_on_basis` and names that approval, so a
+ * reader that names a person's approval reads `gatedSteps`, not this. */
 const legionGateView = z.object({
   artifactId: nonEmptyString.optional(),
   currentVersion: z.number().int().positive().optional(),
@@ -493,22 +507,54 @@ const legionGateView = z.object({
  * its primary document. */
 const legionDesignStep = z.enum(GATED_STEPS);
 
+/** `api.GatedStepBasis` — the ancestor's approval a step stands open on, or the ancestor's open
+ * approval request it waits on (entry 20261125161152 (gate-basis)): the ancestor `issue`, its document's `artifactId`
+ * and the `version` a person approved or is asked to approve; for an approval, `approver`, who
+ * gave it as Dispatch names an actor (`user:<login>`), and `approvedAt`, Dispatch's time of it
+ * where Dispatch gave one; for a request, its `askId`. */
+const legionGatedStepBasis = z.object({
+  issue: issueKey,
+  artifactId: nonEmptyString.optional(),
+  version: z.number().int().positive(),
+  approver: nonEmptyString.optional(),
+  approvedAt: timestamp.optional(),
+  askId: nonEmptyString.optional(),
+});
+
 /** `api.GatedStepView` — one step of a tree's design gate (`record.TreeSteps`) as its root
  * stands in it (contract 55). `artifactId` and `currentVersion` are the document its architect
  * registered for the step and that document's current version, absent until one is registered;
  * `approvedVersion` is the version a person approved, null until one does. `status` is where the
  * step stands: `unregistered` (the deployment gates it and the issue holds no record of it, so it
  * holds the tree's work), `waiting` (registered, and no person has reviewed its current version),
- * `approved` (a person approved its current version, the one status that lets the work past the
- * step) or `changes_requested` (its reviewer asked for changes at its current version, with
- * `changesReason` the reason they gave; absent under every other status). */
+ * `approved` (a person approved its current version, which lets the work past the step) or
+ * `changes_requested` (its reviewer asked for changes at its current version, with
+ * `changesReason` the reason they gave; absent under every other status). Entry 20261125161152 (gate-basis) adds two
+ * words and `basis` beside them: `open_on_basis`, a step its architect registered on a person's
+ * approval of an ancestor's document, which lets the work past the step as an approval does and is
+ * no person's approval of the root, its `approvedVersion` being the root's version registered; and
+ * `pending_on_basis`, a step that waits, closed, on the ancestor's open approval request, which a
+ * person's approval of that version opens, its `approvedVersion` being a person's approval of the
+ * root's own earlier version, if any. `basis` is present under those two words alone. A daemon at
+ * that contract serves a caller below it no `gatedSteps` on an issue any step of which reads either
+ * word. */
 const legionGatedStepView = z.object({
   step: legionDesignStep.optional(),
   artifactId: nonEmptyString.optional(),
   currentVersion: z.number().int().positive().optional(),
   approvedVersion: z.number().int().positive().nullable().optional(),
-  status: z.enum(["unregistered", "waiting", "approved", "changes_requested"]).optional(),
+  status: z
+    .enum([
+      "unregistered",
+      "waiting",
+      "approved",
+      "changes_requested",
+      "open_on_basis",
+      "pending_on_basis",
+    ])
+    .optional(),
   changesReason: nonEmptyString.optional(),
+  basis: legionGatedStepBasis.optional(),
 });
 
 /** `api.SlotView` — the admission slot the issue occupies and when it took it. */
@@ -602,19 +648,20 @@ const legionCheckWakeView = z.object({
  * pending report, the retry of a look nobody reported, or the check's own bound — the moment its
  * last look starts — where neither stands. The bound has no field of its own: `nextWakeAt` is the
  * bound whenever no agent's time is set, `openedAt` is here, and `production_check_hours` is in
- * the settings. Present on the issue record only while the check is open; absent once it closed
- * or while none was opened. */
+ * settings. These members are optional: the tool reads no check state to choose a call or
+ * validate a look. The daemon validates the named check; read_record passes this record on.
+ */
 const legionCheckView = z.object({
   repo: nonEmptyString.optional(),
   pullRequest: z.number().int().positive().optional(),
   mergeCommit: z.string().optional(),
   openedAt: timestamp.optional(),
-  role: nonEmptyString,
-  looks: z.number().int().nonnegative(),
+  role: nonEmptyString.optional(),
+  looks: z.number().int().nonnegative().optional(),
   lookOpen: z.boolean().optional(),
   lastWake: legionCheckWakeView.optional(),
   nextWakeAt: timestamp.optional(),
-  last: z.boolean(),
+  last: z.boolean().optional(),
 });
 
 /** `record.Answer` — the act that ended a root's wait on a person: a person's answer on the awaited
@@ -715,13 +762,18 @@ const legionHeldOutboxRow = z.object({
 
 /** `api.WakeWaiting` — one wake the daemon's pacing is holding until its turn
  * (`worker_wakes_per_minute`, `worker_wake_burst`, contract 53): the claim it will wake, that
- * claim's issue and role, what kind of wake it is, and `dueAt`, the moment the pacing gave it,
- * which is when it runs. The kinds are the daemon's three paced lanes: `launch`, a role process it
- * is about to start, and `plugin-refresh`, the relaunch of a process whose plugin speaks an
- * earlier contract than the daemon's, which the stale-plugin lane's own gate admits (contract
- * 73), both held in the claim's machine and lost with a restart, which raises the wave
- * again through its own paths; and `catch-up`, the notice a start writes to an architect already
- * running in place of a launch, which waits on its own outbox row. `kind` is an unconstrained
+ * claim's issue and role, what kind of wake it is, and `dueAt`, the pacing's estimate at the read
+ * of the moment it lets the wake out, as its queues stand (entry 20261125211005). A waiting wake
+ * holds a place and no moment of its own. A change to the queues or to the pace can move that
+ * moment earlier or later, so two reads can name two moments: for example, a wake ahead of it in
+ * its own queue that leaves moves it earlier, and a wake that joins and is let out ahead of it
+ * moves it later. The kinds are the daemon's three paced lanes: `launch`, a role process it is
+ * about to start, and `plugin-refresh`, the relaunch of a process whose plugin speaks an earlier
+ * contract than the daemon's, which the stale-plugin lane's own gate admits (contract 73), both
+ * held in the claim's machine and lost with a restart, which raises the wave again through its own
+ * paths; and
+ * `catch-up`, the notice a start writes to an architect already running in place of a launch,
+ * whose outbox row stands held while its place waits in the queue. `kind` is an unconstrained
  * string, so a lane a later daemon names is read rather than refused. `dueAt` is required: the
  * controller's `read_state` summary names the earliest of them (`pi-legion/src/tools.ts`), and
  * the daemon writes it on every wake. The rest is optional, since no plugin code reads it
@@ -786,6 +838,15 @@ const legionIssue = z.object({
    * `unrecorded`, an operator's claim), which stands in no tree, and absent from every issue of
    * the body the route serves a caller before 51 (`api.stateFor`, `withoutTrees`). */
   tree: issueKey.optional(),
+  /** Whether the tree this root roots runs under the workflow, as the daemon's own rule answers it
+   * (`record.TreeRuns`, entry 20261125161152 (gate-basis)): its lifecycle stands open under the workflow, the root does
+   * not linger, and the root does not wait in the line for that tree to be opened. On every root
+   * the daemon records and on no other issue, since no other field decides it in every case: a
+   * root a re-admission left at `todo` waiting for a slot runs nothing whatever its architect's
+   * claim reads, and a root a person answered runs while it waits in the line for its resume.
+   * Absent from every issue of the body the route serves a caller before entry 20261125161152 (gate-basis)
+   * (`api.stateFor`, `withoutGateBasis`), which is why a reader takes it as optional. */
+  treeRuns: z.boolean().optional(),
   /** The repository (`owner/name`) the issue targets and that repository's default branch, taken
    * when the daemon first recorded the issue and never changed after; absent on an issue the
    * workflow does not record (phase `unrecorded`, an operator's claim) (contract 31). */
@@ -794,7 +855,8 @@ const legionIssue = z.object({
   /** Why a held issue is held, when its hold has one: `escalated` once its architect sent it to
    * the controller; and from contract 219 `task-stopped` once its owner stopped its task with
    * stop_task, and `children` while a parent whose task's last step is not the owner's acceptance
-   * waits, before its retro, for the issues beneath it. A caller whose contract (the one it states, else its pod's
+   * waits, before its retro, for the issues beneath it, the roots that rest on its approval or its
+   * open Dispatch children. A caller whose contract (the one it states, else its pod's
    * lowest) is below 219 is served an issue held for either of those two with no `holdReason`
    * (the daemon's value strip `withoutUnadmittedHoldReason`). `heldFrom` beside it is the phase
    * the hold took the issue out of, and is absent for an issue that is not held. The linger
@@ -837,7 +899,8 @@ const legionIssue = z.object({
    * record; a daemon before contract 55 writes none, which is why a reader takes it as absent
    * rather than as an empty list.
    * `designGate` above is unchanged beside it, the `spec` step's row, which a reader that asks one
-   * question of one gate takes. */
+   * question of one gate takes. A caller from before the two basis words of `legionGatedStepView`
+   * is served no `gatedSteps` on an issue any step of which reads one of them. */
   gatedSteps: z.array(legionGatedStepView).optional(),
   slot: legionSlotView.optional(),
   /** Where the issue stands in `admission.waiting` (contract 58): present only for an issue that
@@ -882,11 +945,11 @@ const legionIssue = z.object({
    * each minute, so the two are equal for a role holding its work and differ for one the daemon
    * has still to reach. A root carries them as a child does, since the architect is the role
    * that works `admitted` (contract 146); both are absent together for a phase no role works —
-   * `awaiting_person`, `done` and `held` — and each is absent where it is 0, which is a role no
-   * entry has been raised for and one the daemon holds no claim row of; a daemon before contract
-   * 94 writes neither, and a caller in a pod whose plugin declares a contract below 94 is served
-   * the state with neither (the daemon's `withoutPhaseEntries`), which is why a reader takes both
-   * as optional. */
+   * `awaiting_person`, `awaiting_children`, `done` and `held` — and each is absent where it is 0,
+   * which is a role no entry has been raised for and one the daemon holds no claim row of; a
+   * daemon before contract 94 writes neither, and a caller in a pod whose plugin declares a
+   * contract below 94 is served the state with neither (the daemon's `withoutPhaseEntries`),
+   * which is why a reader takes both as optional. */
   phaseEntry: z.number().int().nonnegative().optional(),
   givenEntry: z.number().int().nonnegative().optional(),
   /** The two times of a claim's handshake of the last entry it was queued a task of (contract
@@ -1014,7 +1077,9 @@ const legionBlockedIssue = z.object({
  * `record.HeldReason` — the words of `admission.held`, in `record.HeldReasons`' order.
  * `children_before_retro` and `task_stopped` came with contract 219; a caller below it is served
  * each such row as `unclassified` with no `heldBy` (the daemon's value strip
- * `withoutUnadmittedHeldWords`).
+ * `withoutUnadmittedHeldWords`). `awaiting_children` came with entry 20261125161152 (gate-basis); a caller below it is
+ * served each such row as `children_first`, the one word that strip stands another in for
+ * (`heldReasonStandIn`).
  * `at_work` names an issue in `accepting`, `retro` or `merging`, which keeps no admission slot;
  * `record.HeldAtWork` says which issues read it.
  */
@@ -1024,6 +1089,7 @@ export const LEGION_HELD_REASONS = [
   "label_off",
   "ancestry",
   "root_awaiting_person",
+  "awaiting_children",
   "design_gate",
   "dispatch_blocker",
   "children_first",
@@ -1197,7 +1263,9 @@ const legionCacheView = z.object({
 
 /** `api.AppInstallationsView` — each role App's installation on one repository (contract 152):
  * the implement App a worker pushes and opens pull requests with, and the review App a reviewer
- * approves with. No plugin code reads either (`LEGION_ANSWER_READS`), so both are optional. */
+ * approves with. The controller's `read_state` summary reads both on each `live` entry
+ * (`LEGION_ANSWER_READS`), and both stay optional: the daemon writes `apps` only once GitHub
+ * answered both reads. */
 const legionAppInstallations = z.object({
   implement: z.boolean().optional(),
   review: z.boolean().optional(),
@@ -1211,7 +1279,10 @@ const legionAppInstallations = z.object({
  * 404, or a read that did not answer); and `cache`, its repository cache under the Kubernetes
  * runtime. The daemon writes `repo` on every entry and each other key only once it holds
  * something. What Dispatch answered of its webhook App is in the block's `withoutWebhookApp`
- * alone. No plugin code reads an entry (`LEGION_ANSWER_READS`), so every key is optional. */
+ * alone. The controller's `read_state` summary reads `repo`, `servedAs`, `apps` and `readError`
+ * to print `legion state`'s line for each repository whose last read failed or that a role App is
+ * not installed on (`LEGION_ANSWER_READS`), and every key stays optional, since the summary
+ * leaves out what an entry does not carry. */
 const legionLiveRepository = z.object({
   repo: nonEmptyString.optional(),
   servedAs: nonEmptyString.optional(),
@@ -1235,9 +1306,10 @@ const legionWebhookAppGap = z.object({
  * by its lowercased `<owner>/<name>`; `withoutWebhookApp`, each of those that Dispatch's GitHub App
  * is not known to be installed on, in `live`'s order; and `caches`, the repository caches of
  * repositories no live record names, each kept until its `retainedUntil` (contract 32). The daemon
- * writes all three on every body, never null, and no plugin code reads any of them
- * (`LEGION_ANSWER_READS`), so each is optional here. A repository is served once GitHub answered
- * that both role Apps are installed on it, whatever names it.
+ * writes all three on every body, never null; the controller's `read_state` summary reads `live`
+ * and no plugin code reads the other two (`LEGION_ANSWER_READS`), so each is optional here. A
+ * repository is served once GitHub answered that both role Apps are installed on it, whatever
+ * names it.
  *
  * `withoutWebhookApp` is the block's one report of Dispatch's webhook App, and no `live` entry
  * carries a copy of it. It keeps contract 152's shape for every caller: the operator's `legion
@@ -1572,7 +1644,11 @@ export type LegionReadyRequestBody = z.output<typeof LegionReadyRequest>;
  * counts in the claim's run of provider-error turns. A refused report without it is judged by the
  * result of the prompt its turn ran, never by itself, and a clean report, with it or without, ends
  * that run when no later turn's report has reached the daemon before it
- * (`claim.TurnOutcomeRequest`). */
+ * (`claim.TurnOutcomeRequest`). `code` is the class the producer gave a refused turn with the
+ * host's own classifier (Oh My Pi's `isCyberPolicyRefusal`, the reading that sets a prompt
+ * result's `code`): `cyber_policy` alone, OpenAI's refusal of the session's content, which fails
+ * an `unprompted` turn's claim at once under cause `cyber_policy`, whatever its status. A daemon
+ * before contract entry 20261125174608 (cyber-policy) refuses a body that carries it. */
 const turnOutcomeFields = {
   generation: z.number().int().positive(),
   sequence: z.number().int().positive(),
@@ -1580,6 +1656,7 @@ const turnOutcomeFields = {
   message: z.string().optional(),
   httpStatus: z.number().int().min(100).max(599).optional(),
   unprompted: z.boolean().optional(),
+  code: z.literal("cyber_policy").optional(),
 };
 
 /** `claim.AgentCaller`'s report: the producer inside the agent's own session — pi-legion's
@@ -1616,12 +1693,12 @@ export type LegionTurnOutcomeRequestBody = z.output<typeof LegionTurnOutcomeRequ
 /** `claim.TurnOutcomeResponse`, the answer to a reported turn: `refusedRun` is the run of refused
  * turns the claim's reports now end with, counted up to `launch_failure_limit`, which the daemon
  * answers each report with and which decides nothing. `failed` is whether this report failed the
- * claim: a run of refused turns fails none (dispatch://INFRA-4508), and the one report that does
- * is that of an `unprompted` turn the provider refused with a status that cannot clear, which
- * holds the issue for its architect as such a prompt's result does. This and
- * `claim.TurnOutcomeResponse` are where that rule is stated; every other reader of `failed` points
- * here. The producer acts on neither field — its turn is over — and logs them, which is where an
- * operator sees the count being made. */
+ * claim: a run of refused turns fails none (dispatch://INFRA-4508), and the one kind of report
+ * that does is that of an `unprompted` turn the provider refused with a status that cannot clear,
+ * or that carries `code: "cyber_policy"` whatever its status, which holds the issue for its
+ * architect as such a prompt's result does. This and `claim.TurnOutcomeResponse` are where that
+ * rule is stated; every other reader of `failed` points here. The producer acts on neither field —
+ * its turn is over — and logs them, which is where an operator sees the count being made. */
 export const LegionTurnOutcomeResponse = z.object({
   refusedRun: z.number().int().nonnegative(),
   failed: z.boolean(),
@@ -1855,9 +1932,81 @@ const legionDeliveryView = z.object({
 
 /** Who a suspension is held for (`supervise.SuspendedBy`). `unknown` is a suspension recorded
  * before migration 0038; `released` is one whose idle issue pod the daemon released, which keeps
- * the claim's phase and its pending task until the next wake for its role; only an `operator`
- * one holds against the daemon's rules. */
-const legionSuspendedBy = z.enum(["unknown", "operator", "daemon", "exit", "released"]);
+ * the claim's phase and its pending task until the next wake for its role; an `operator` and a
+ * `controller` one hold against the daemon's rules, ranked in that order: the controller's
+ * `resume_agent` lifts its own and never the operator's (the agent-actions contract). */
+const legionSuspendedBy = z.enum([
+  "unknown",
+  "operator",
+  "controller",
+  "daemon",
+  "exit",
+  "released",
+]);
+
+/** `api.AgentActionResponse`, what four of the controller's actions on an agent (stop, retry,
+ * suspend, resume_agent, compact and fresh session of one agent, named by its issue and role)
+ * answer: stop, retry, suspend and resume
+ * (`POST /legion/v1/agents/stop|retry|suspend|resume`, each taking `LegionClaimRequest`, the
+ * agent-actions contract): the claim's `state` after the request — `retired` after a stop; `suspended` after a
+ * suspension that landed, and still `working` or `launching` with
+ * `suspensionHeld` after one held for the agent's turn or its ready; `launching` after a resume or
+ * a retry the claim's machine ran; and still `failed` or `retired` after a retry of a phase worker
+ * whose start its issue's phase queued. `suspendedBy` (while the claim is suspended) and
+ * `suspensionHeldBy` (while one is held) say who holds the suspension: `controller` for the
+ * controller's own, which its `resume_agent` and the operator's resume lift; and `operator` for
+ * the operator's, which only the operator lifts. These
+ * routes are the one session-facing surface that names a suspender, since no plugin below
+ * the agent-actions contract calls them; the state does not ("no session-facing response carries suspendedBy"
+ * in legion-api.test.ts). The `legion` tool hands the answer to its agent whole, which is no
+ * read, so the reader takes every field as optional (`LEGION_ANSWER_READS`), `state` among them,
+ * though the daemon always writes it. The three enumerations are the entry's enumerated rows
+ * (`enumeratedRows` of `contracts/20261125182642_agent-actions.json`), each whole at the
+ * agent-actions contract. */
+export const LegionAgentActionResponse = z.object({
+  state: z.enum(LEGION_CLAIM_STATES).optional(),
+  suspendedBy: legionSuspendedBy.optional(),
+  suspensionHeld: z.literal(true).optional(),
+  suspensionHeldBy: legionSuspendedBy.optional(),
+});
+
+/** `api.PodUpdateRequest`, the project's controller asking the daemon to replace the pod one issue
+ * of its project runs in (`POST /legion/v1/issues/pod-update`, the agent-actions contract): its grant and the
+ * issue. The daemon opens its update round over that pod as a drift opens one, and over a pod an
+ * earlier round kept as well: each role of the pod is asked to push its work and answer
+ * `ready_for_update`, and the round reaches its end once each has answered, no turn runs and each
+ * role's report since its last turn names no running background work, or at the round's bound
+ * (`pod_update_grace_minutes`). The daemon then reads the pod's workspace and replaces the pod only
+ * where that read finds nothing that no branch or tag on origin holds; where it finds such work, or
+ * fails, the round keeps the pod and ends with no replacement. It takes a controller
+ * grant alone (`CONTROLLER_REQUIRED`). An issue of another project, or one with no claim the daemon
+ * supervises, is `NO_CLAIM`; one whose claims run no worker in a pod is `NO_POD`; one whose pod is
+ * being replaced already is `POD_CHANGING`; an opening a limit of the project holds back is
+ * `POD_UPDATE_LIMITED`, whose message names the limit; and a round no claim records within the
+ * daemon's wait is `POD_UPDATE_NOT_RECORDED` (503), since a 200 is only ever a round a claim
+ * records in the daemon's store, which the daemon's sweeps carry across a restart. A request that
+ * waits more than the daemon's bound (30 s) for a sweep's walk over the project's issues, or ends
+ * before it, opens nothing and is `POD_UPDATE_BUSY` (503, with `Retry-After`, whose wait its
+ * sentence names). While the project is paused it is `PROJECT_PAUSED` (409, with the `pause` that
+ * stands). A pod a pause holds is `POD_HELD_BY_PAUSE` (409): the hold of a pause that began after
+ * the daemon read the project as running, or a hold the resume left on a pod none of whose roles
+ * is live yet. Neither opens a round. */
+export const LegionPodUpdateRequest = z.strictObject({
+  grantId: nonEmptyString,
+  issue: nonEmptyString,
+});
+
+/** `api.PodUpdateResponse`, what the controller's pod update answers: the `round` over the issue's
+ * pod (`pod:<pod uid>`), the `reasons` it records, which its ask to each role states, and whether
+ * this request `opened` it — false for a round already open over the pod, a drift's or an earlier
+ * request's, which the request leaves as it stands. The `legion` tool's `replace_pod` hands the
+ * answer to its agent whole, which is no read, so the reader takes every field as optional
+ * (`LEGION_ANSWER_READS`), though the daemon always writes all three. */
+export const LegionPodUpdateResponse = z.object({
+  round: nonEmptyString.optional(),
+  reasons: z.string().optional(),
+  opened: z.boolean().optional(),
+});
 
 /** `api.OperatorClaim`, the body of the operator routes that act on one claim (`POST
  * /legion/v1/operator/claims`, `…/{token}/deliver|suspend|resume|stop|retry|forget-session|close`):
@@ -2191,7 +2340,8 @@ export function legionPlanRatingLoneField(
 }
 
 /** `api.HandoffCompleteRequest`, the observation one worker reports to the workflow: a phase
- * completion, or the checking role's report on a look of its closed issue's production check.
+ * completion, or a production check's look report when `checkOpenedAt` names that check. The
+ * field alone selects the call, on any phase; absent it, the completion is a phase's.
  * A file-backed phase (planning, implementing, testing, reviewing) ends with a handoff record on
  * the Dispatch issue, which the worker writes with `dispatch handoff-write` under its own session;
  * its completion names it, `handoffId` and `handoffVersion`, which the daemon reads back from
@@ -2208,6 +2358,7 @@ export function legionPlanRatingLoneField(
  * role does not work report the commit the workspace stands on instead, the merger's reports the
  * head the merger merged, and a check report carries neither commit nor record (the look pushed
  * nothing), so all three are optional here, and the daemon requires each where it applies.
+ * A named check report with any of these phase fields is refused (`CHECK_PHASE_FIELDS_UNEXPECTED`).
  * `verdict` is `pass`
  * or `fail` for the tester's completion, `pass`, `pending` or `fail` for a check report
  * (`CHECK_VERDICT_REQUIRED`), and the empty string for every other completion; it stays a string
@@ -2233,6 +2384,7 @@ export const LegionHandoffCompleteRequest = z
     commit: nonEmptyString.optional(),
     handoffId: nonEmptyString.optional(),
     handoffVersion: z.number().int().positive().optional(),
+    checkOpenedAt: LegionInstant.optional(),
     wakeAt: LegionInstant.optional(),
     planRating: legionPlanRatingScale(z.number()).optional(),
     planReason: legionPlanReason.optional(),
@@ -2244,7 +2396,17 @@ export const LegionHandoffCompleteRequest = z
   )
   .refine((request) => request.returnTo === undefined || request.verdict === "fail", {
     message: "returnTo is carried only by a completion with the verdict fail",
-  });
+  })
+  .refine(
+    (request) =>
+      request.checkOpenedAt === undefined ||
+      (request.commit === undefined &&
+        request.handoffId === undefined &&
+        request.handoffVersion === undefined),
+    {
+      message: "a report naming checkOpenedAt carries no commit, handoffId or handoffVersion",
+    }
+  );
 
 /** `api.IssueStatusRequest`, the controller's explicit board-status write. */
 export const LegionIssueStatusRequest = z.strictObject({
@@ -2317,13 +2479,24 @@ export const LegionOperatorProjectPauseRequest = z.strictObject({
  * a child's own architect (`GATE_ROOT_ONLY`). `step` is the step the document is for; the
  * deployment's list says which steps a registration takes, with `criteria` beside a list that
  * names `spec` and not `criteria`. A deployment that gates one step alone takes a request that
- * leaves it out, and one that gates several refuses it (`GATE_STEP_REQUIRED`). */
+ * leaves it out, and one that gates several refuses it (`GATE_STEP_REQUIRED`). `basisArtifactId`,
+ * `basisVersion` and `reason` name a basis (entry 20261125161152 (gate-basis)): the same step's document of an ancestor
+ * on the issue's Dispatch `child_of` chain, the version of it a person approved or an open
+ * approval request asks a person to approve, and the architect's reason, 1 to 1,000 characters
+ * with no decision block, which the daemon posts on the issue. The three come together or not at
+ * all (`BASIS_INCOMPLETE`), and the daemon checks the basis against what Dispatch shows before it
+ * records anything, refusing one it cannot take with a code that names what Dispatch shows
+ * (`BASIS_*`, `ROOT_VERSION_NOT_LATEST`, `ROOT_CHANGES_REQUESTED`, `VIEW_*`, `REASON_INVALID`,
+ * `REASON_HOLDS_DECISION_BLOCK`). */
 export const LegionGateRegisterRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
   artifactId: z.uuid(),
   version: z.number().int().positive(),
   step: legionDesignStep.optional(),
+  basisArtifactId: z.uuid().optional(),
+  basisVersion: z.number().int().positive().optional(),
+  reason: nonEmptyString.optional(),
 });
 
 /** `api.WaveReleaseRequest`, the architect's selected child issues. */
@@ -2336,7 +2509,9 @@ export const LegionWaveReleaseRequest = z.strictObject({
  * on its own issue, or an architect's on an issue it owns, from `accepting`. An architect may own
  * more issues than its own, so its request names `issue` (required for that grant); a phase
  * worker's grant names its own issue, so `issue` may be left out and, when given, must be the
- * grant's (`ISSUE_NOT_GRANTS`). */
+ * grant's (`ISSUE_NOT_GRANTS`). Since entry 20261125161152 (gate-basis), the daemon refuses it on an issue in
+ * `awaiting_children` (`WAITING_ON_CHILDREN`, naming its open Dispatch children and the start it
+ * holds), which stands in no phase a move back acts on (dispatch://INFRA-3320, R11). */
 export const LegionPhaseBackwardRequest = z.strictObject({
   grantId: nonEmptyString,
   to: z.enum(LEGION_PHASE_BACKWARD_TARGETS),
@@ -2375,14 +2550,23 @@ export const LegionEscalateRequest = z.strictObject({
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
  * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
  * parent, since a parent is accepted only once no issue beneath it is still in the workflow
- * (dispatch://INFRA-980). */
+ * (dispatch://INFRA-980), and it is accepted on a head that need not carry their merges once its
+ * checks pass on a base commit that carries them (dispatch://INFRA-3320 R14). Since entry 20261125161152
+ * (gate-basis) it is refused after that while a root whose design-gate step rests on the issue's approval is
+ * still in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`, naming each), and last while a
+ * Dispatch child of the issue is open (`SIGNOFF_CHILD_OPEN`, naming each with its Dispatch
+ * status): the daemon answers the first of the three that holds (dispatch://INFRA-3320, R8). On an
+ * issue in `awaiting_children` it is refused `WAITING_ON_CHILDREN`, naming its open Dispatch
+ * children and the start it holds, before any of those (R11). */
 export const LegionSignOffRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
 });
 
 /** `api.RootCloseRequest`, a root architect's close of its tree before the tree's first phase starts,
- * with the reason the daemon posts on the issue. */
+ * with the reason the daemon posts on the issue. It is refused with the sign-off's three codes, in
+ * the same order (`SIGNOFF_CHILD_IN_WORKFLOW`, `SIGNOFF_RESTING_ROOT_IN_WORKFLOW`,
+ * `SIGNOFF_CHILD_OPEN`). */
 export const LegionRootCloseRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
@@ -2419,19 +2603,24 @@ export const LegionPlanRegisterRequest = z.strictObject({
  * (`ISSUE_OUTSIDE_TREE`), a stop of a run of the issue that ended before the daemon applied it
  * (`TASK_STALE_GENERATION`), a stop of a root that waits on a person before its first step
  * (`TASK_AWAITING_PERSON`), which a later version of the plan changes, or which stops once the
- * person has answered, and every task of an issue whose experiment's group runs the project's
- * default steps, since Legion takes no plan from its owner (`PLAN_NOT_TAKEN`). Each refusal
- * writes nothing. */
+ * person has answered, every task of an issue whose experiment's group runs the project's
+ * default steps, since Legion takes no plan from its owner (`PLAN_NOT_TAKEN`, contract 220), and,
+ * since entry 20261125161152 (gate-basis), a stop of a parent that waits in `awaiting_children` on its open Dispatch
+ * children (`WAITING_ON_CHILDREN`, naming them and what the architect can do about each). A stop
+ * on an issue that meets both is answered `PLAN_NOT_TAKEN`, since the daemon reads the issue's
+ * group before anything of its plan. Each refusal writes nothing. */
 export const LegionTaskStopRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
   task: nonEmptyString,
 });
 /** What plugin code takes the value of in one issue's record: `legion-phase-ops.ts` reads the
- * issue's phase and its open check for `handoff_complete`, `phase-reminder.ts` and
- * `pi-legion/src/stall-evidence.ts` read the architect's claim state, and the controller's
- * `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot,
- * design gate, and the state and both turn times of the architect's claim and of every worker's.
+ * issue's phase for a fieldless `handoff_complete`; a named check report reads no record.
+ * `phase-reminder.ts` and `pi-legion/src/stall-evidence.ts` read the architect's claim state.
+ * The controller's `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold
+ * reason, slot and design gate, and the spec step's entry in its gated steps (its step, status and
+ * basis). It also reads the state and both turn times of the architect's claim and every worker's
+ * claim.
  * The record route and the state's `issues{}` answer the same node, so the read set below names
  * these paths at both, `LegionIssueRecordResponse` as they stand and `LegionStateResponse` under
  * the state's prefix. They are written once here because the two entries must say the same thing.
@@ -2453,13 +2642,15 @@ const ISSUE_RECORD_READS = [
   "workers{}.claim.state",
   "workers{}.claim.lastTurnStart",
   "workers{}.claim.lastTurnEnd",
-  "check",
-  "check.role",
-  "check.looks",
-  "check.last",
   "designGate",
   "designGate.currentVersion",
   "designGate.approvedVersion",
+  "gatedSteps",
+  "gatedSteps[].step",
+  "gatedSteps[].status",
+  "gatedSteps[].basis",
+  "gatedSteps[].basis.issue",
+  "gatedSteps[].basis.version",
   "slot",
   "slot.index",
   "slot.admittedAt",
@@ -2476,7 +2667,8 @@ const ISSUE_RECORD_READS = [
  * names `LegionHealthResponse`'s `project` and not its `status`, or off the same node reached by
  * another path, since one node several paths reach is named at each of them (below): the issue
  * record's root is the state's `issues{}` node, so the record names `status`, `holdReason`,
- * `designGate` and `slot`, which the `read_state` summary reads off the state's issues.
+ * `designGate`, `gatedSteps` and `slot`, which the `read_state` summary reads off the state's
+ * issues.
  * A path names each key from that schema's root, with a record's value written `{}` and a list's
  * element `[]`, as the object census in `legion-api.test.ts` writes them, and a discriminated
  * union's member by its index after `|` (`paused.by|0.session`, the controller's entry). An
@@ -2540,6 +2732,18 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "capabilities[].status",
     "capabilities[].detail",
     "capabilities[].configLine",
+    // The summary prints `legion state`'s line for each repository the live records name that
+    // GitHub's last read did not name or a role App is not installed on (#4065), with the name it
+    // is served under. The block and its entries stay optional: a reader that finds none prints no
+    // such line.
+    "repositories",
+    "repositories.live",
+    "repositories.live[].repo",
+    "repositories.live[].servedAs",
+    "repositories.live[].apps",
+    "repositories.live[].apps.implement",
+    "repositories.live[].apps.review",
+    "repositories.live[].readError",
     // The summary's line on the wakes the pacing holds counts them and names the earliest
     // `dueAt`, and its line on the project's pause (contract 178) names the pause that stands,
     // with the roles whose stop it waits on and how many rows it holds, or the last pause with

@@ -12,10 +12,12 @@ import {
 import * as legionApi from "./legion-api";
 import {
   LEGION_FAILURE_CAUSES,
+  LEGION_HELD_REASONS,
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PHASES,
   LEGION_WORKFLOW_PHASES,
   LegionActivityRequest,
+  LegionAgentActionResponse,
   LegionCapabilityReport,
   LegionChildRequest,
   LegionClaimRequest,
@@ -49,6 +51,8 @@ import {
   LegionPhaseRetryRequest,
   LegionPlanRegisterRequest,
   LegionPlanRegisterResponse,
+  LegionPodUpdateRequest,
+  LegionPodUpdateResponse,
   LegionProjectPauseRequest,
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
@@ -69,6 +73,20 @@ import {
 } from "./legion-api";
 import { DISPATCH_KEY_PATTERN, isLegionRole, LEGION_ROLES } from "./legion-roles";
 import { PlanRatingCases } from "./plan-rating-cases";
+
+test("a look's report names its check and carries no step's record or commit", () => {
+  const report = {
+    grantId: "grant",
+    summary: "looked",
+    verdict: "pending",
+    checkOpenedAt: "2026-10-19T06:00:00.123456Z",
+    wakeAt: "2026-10-19T09:00:00Z",
+  };
+  expect(LegionHandoffCompleteRequest.parse(report)).toEqual(report);
+  for (const fields of [{ commit: "c0ffee" }, { handoffId: "handoff" }, { handoffVersion: 1 }]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...report, ...fields }).success).toBeFalse();
+  }
+});
 
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
 
@@ -173,6 +191,15 @@ const schemas: Record<string, z.ZodType> = {
   "issue-status.json": LegionEmptyResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
+  // Four of the controller's six agent actions, stop, retry, suspend and resume (the agent-actions
+  // contract): the claim's state after each, and who holds a suspension over the agent.
+  "agent-stop.json": LegionAgentActionResponse,
+  "agent-retry.json": LegionAgentActionResponse,
+  "agent-suspend.json": LegionAgentActionResponse,
+  "agent-resume.json": LegionAgentActionResponse,
+  // The controller's request for the replacement of one issue's pod (the agent-actions contract):
+  // the update round over it, its reasons, and whether the request opened it.
+  "issue-pod-update.json": LegionPodUpdateResponse,
   "gate-register.json": LegionEmptyResponse,
   "wave-release.json": LegionWaveReleaseResponse,
   "phase-backward.json": LegionEmptyResponse,
@@ -450,6 +477,9 @@ const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   "issue-record": LegionIssueRecordResponse,
   register: LegionRegisterResponse,
   "intake-replay": LegionIntakeReplayResponse,
+  // Four of the controller's six agent actions, stop, retry, suspend and resume (the agent-actions
+  // contract): the claim's `state`, and who holds a suspension over it.
+  "agent-action": LegionAgentActionResponse,
 };
 
 /** The schemas this module parses each answer of the daemon's table that writes a body with, by
@@ -474,6 +504,7 @@ const RECORD_SCHEMAS: Record<string, readonly z.ZodType[]> = {
   "project-resume": [LegionProjectResumeResponse],
   "plan-register": [LegionPlanRegisterResponse],
   "intake-discard": [LegionIntakeDiscardResponse],
+  "pod-update": [LegionPodUpdateResponse],
 };
 
 /** The reason the refusal's `reasons` is named by no schema of this module. */
@@ -1056,6 +1087,7 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
   expect(LEGION_WORKFLOW_PHASES).toEqual([
     "admitted",
     "awaiting_person",
+    "awaiting_children",
     "planning",
     "implementing",
     "testing",
@@ -1087,6 +1119,29 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
       reason: "retro reopened the review",
     }).success
   ).toBeTrue();
+});
+
+// The held words are the daemon's `record.HeldReasons`, in its order: dispatch://INFRA-3320 added
+// `awaiting_children`, a parent waiting on its open children, between `root_awaiting_person` and
+// `design_gate`, and contract 219 added `children_before_retro` and `task_stopped` after
+// `accepted_ancestor`.
+test("the held words are the daemon's, with awaiting_children before design_gate", () => {
+  expect(LEGION_HELD_REASONS).toEqual([
+    "tree_closed",
+    "tree_parked",
+    "label_off",
+    "ancestry",
+    "root_awaiting_person",
+    "awaiting_children",
+    "design_gate",
+    "dispatch_blocker",
+    "children_first",
+    "accepted_ancestor",
+    "children_before_retro",
+    "task_stopped",
+    "at_work",
+    "unclassified",
+  ]);
 });
 
 // Contract 40: the state golden carries LEGION-212, a root waiting on a person whose question the
@@ -2130,6 +2185,7 @@ test("every request the plugin sends parses and names its required fields", () =
       LegionClaimRequest,
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
     ],
+    ["pod update", LegionPodUpdateRequest, { grantId: "grant-208", issue: "LEGION-209" }],
     [
       "gate register",
       LegionGateRegisterRequest,
@@ -2876,9 +2932,164 @@ test("a reader at the previous contract parses the state body this daemon serves
   expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
 });
 
+// The gate-basis contract entry: a root's gated step may stand open on an ancestor's approval (`open_on_basis`) or
+// wait, closed, on an ancestor's open approval request (`pending_on_basis`), each with the `basis`
+// that names the approval or the request, and every root the daemon records says whether its
+// tree runs (`treeRuns`). The state golden carries LEGION-207's step open on LEGION-200's
+// approval, LEGION-214's waiting on LEGION-200's request, and `treeRuns` on every root and on no
+// child. What a caller below the contract is served — no `treeRuns`, and no `gatedSteps` on an
+// issue with a step on a basis — still parses, and a word no step reads, a basis that names no
+// version and a `treeRuns` that is no boolean are refused.
+test("the state golden carries a step on an ancestor's basis and whether each root's tree runs", () => {
+  const state = LegionStateResponse.parse(fixture("state.json"));
+  expect(state.issues["LEGION-207"]?.gatedSteps).toEqual([
+    {
+      step: "spec",
+      artifactId: "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
+      currentVersion: 4,
+      approvedVersion: 4,
+      status: "open_on_basis",
+      basis: {
+        issue: "LEGION-200",
+        artifactId: "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58",
+        version: 5,
+        approver: "user:alice",
+        approvedAt: "2026-09-20T15:02:41Z",
+      },
+    },
+  ]);
+  expect(state.issues["LEGION-214"]?.gatedSteps).toEqual([
+    {
+      step: "spec",
+      artifactId: "a4c9e2f7-1b3d-4e68-9f05-7d2b8c6e1a39",
+      currentVersion: 2,
+      approvedVersion: null,
+      status: "pending_on_basis",
+      basis: {
+        issue: "LEGION-200",
+        artifactId: "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58",
+        version: 6,
+        askId: "c81e5d3a-7f42-4b96-a0d8-3e6f9b1c2a75",
+      },
+    },
+  ]);
+  const runs = Object.fromEntries(
+    Object.entries(state.issues).map(([key, issue]) => [key, issue.treeRuns])
+  );
+  expect(runs).toEqual({
+    "LEGION-207": false,
+    "LEGION-208": true,
+    "LEGION-209": undefined,
+    "LEGION-210": true,
+    "LEGION-211": false,
+    "LEGION-212": true,
+    "LEGION-214": false,
+    "LEGION-218": true,
+    "LEGION-219": true,
+  });
+  expect("treeRuns" in (state.issues["LEGION-209"] ?? {})).toBeFalse();
+
+  type Served = {
+    issues: Record<string, { treeRuns?: unknown; gatedSteps?: Record<string, unknown>[] }>;
+  };
+  const served = () => fixture("state.json") as Served;
+  const issueOf = (body: Served, key: string) => {
+    const issue = body.issues[key];
+    if (issue === undefined) {
+      throw new Error(`state fixture lacks ${key}`);
+    }
+    return issue;
+  };
+  const stepOf = (body: Served, key: string) => {
+    const step = issueOf(body, key).gatedSteps?.[0];
+    if (step === undefined) {
+      throw new Error(`state fixture lacks a gated step of ${key}`);
+    }
+    return step;
+  };
+
+  // A daemon before the contract, and a caller below it (`api`'s `withoutGateBasis`).
+  const older = served();
+  for (const issue of Object.values(older.issues)) {
+    delete issue.treeRuns;
+    if (issue.gatedSteps?.some((step) => step.basis !== undefined)) {
+      delete issue.gatedSteps;
+    }
+  }
+  expect(LegionStateResponse.safeParse(older).error?.issues ?? []).toEqual([]);
+
+  const unknownWord = served();
+  stepOf(unknownWord, "LEGION-207").status = "approved_on_basis";
+  expect(LegionStateResponse.safeParse(unknownWord).success).toBeFalse();
+  const noVersion = served();
+  delete (stepOf(noVersion, "LEGION-214").basis as Record<string, unknown>).version;
+  expect(LegionStateResponse.safeParse(noVersion).success).toBeFalse();
+  const notBoolean = served();
+  issueOf(notBoolean, "LEGION-208").treeRuns = "yes";
+  expect(LegionStateResponse.safeParse(notBoolean).success).toBeFalse();
+});
+
+// `legionGatedStepView`'s status as contracts 55 to 275 hold it: four words, in an enum. Every
+// plugin parses the state with the schema of the contract it was built at, so this reader is live
+// in every pod still on an image before the gate-basis entry. It reads every step of the golden that stands on no
+// basis, and refuses the two words of that entry — and with them the whole state body, since
+// `gatedSteps` is an array it parses whole — which is why the state route serves a caller below
+// that entry's contract no `gatedSteps` on an issue with a step on a basis (`api`'s `withoutGateBasis` and
+// `withoutUnadmittedStepStatuses`, pinned on the Go side): neither `waiting` nor `approved` is true
+// of such a step, so it serves no entry of that issue rather than a wrong one.
+const gatedStepStatusBeforeBasis = z.object({
+  status: z.enum(["unregistered", "waiting", "approved", "changes_requested"]),
+});
+
+test("a reader before the basis words reads every gated step but those on a basis", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { gatedSteps?: { status: string }[] }>;
+  };
+  const steps = Object.values(state.issues).flatMap((issue) => issue.gatedSteps ?? []);
+  const words = new Set(["open_on_basis", "pending_on_basis"]);
+  const older = steps.filter((step) => !words.has(step.status));
+  const onBasis = steps.filter((step) => words.has(step.status));
+  expect(older.length).toBeGreaterThan(1);
+  expect(onBasis.length).toBe(2);
+  for (const step of older) {
+    expect(gatedStepStatusBeforeBasis.safeParse(step).error?.issues ?? []).toEqual([]);
+  }
+  for (const step of onBasis) {
+    const refused = gatedStepStatusBeforeBasis.safeParse(step);
+    expect(refused.success).toBeFalse();
+    expect(refused.error?.issues[0]?.path).toEqual(["status"]);
+  }
+});
+
+// The architect's registration on an ancestor's basis (the gate-basis entry): the three fields come
+// together, the document is a UUID, the version positive and the reason a sentence; a request
+// that names none of them is the request it was.
+test("a gate registration names a basis by its document, its version and a reason", () => {
+  const request = {
+    grantId: "grant-208",
+    issue: "LEGION-208",
+    artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+    version: 7,
+    step: "spec",
+    basisArtifactId: "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58",
+    basisVersion: 5,
+    reason: "LEGION-208 delivers r1 of LEGION-200 in this repository.",
+  };
+  expect(LegionGateRegisterRequest.safeParse(request).error?.issues ?? []).toEqual([]);
+  expect(
+    LegionGateRegisterRequest.safeParse({ ...request, basisArtifactId: "spec" }).success
+  ).toBeFalse();
+  expect(LegionGateRegisterRequest.safeParse({ ...request, basisVersion: 0 }).success).toBeFalse();
+  expect(LegionGateRegisterRequest.safeParse({ ...request, reason: "" }).success).toBeFalse();
+  const { grantId, issue, artifactId, version } = request;
+  expect(
+    LegionGateRegisterRequest.safeParse({ grantId, issue, artifactId, version }).success
+  ).toBeTrue();
+});
+
 // A plugin from 152 to 189 reads the repositories block with contract 152's schema
 // (`repositoriesAt152`), which requires `owners`, `mapped`, `refused` and `withoutWebhookApp`: the
-// block this contract writes refuses there, and with it the whole state. A plugin from 193 on reads
+// block this daemon writes refuses there, and with it the whole state. A plugin from 193 on reads
 // every key of the block as optional (#3659), and the route serves every caller below 202 the
 // block in 152's shape all the same, written from the same entries, and leaves every other key as
 // the contract it serves the caller at writes it. `state-narrowed-repositories.json` is the body
@@ -2886,7 +3097,7 @@ test("a reader at the previous contract parses the state body this daemon serves
 // TestStateNarrowedRepositoriesGolden), and the drift gate above holds every key of it to that
 // copy. The entries land where 152 put them: `owners` and `mapped` are the ones both role Apps are
 // installed on, under the name each is served under, every `default` false; `refused` is each
-// other entry with why; `withoutWebhookApp` is this contract's own list.
+// other entry with why; `withoutWebhookApp` is contract 202's own list.
 test("a reader at contract 152 parses the repositories block served below 202", () => {
   // The caller states the contract before 202, the one whose entry made the block live
   // (`repositoriesLiveContract` in `internal/api/shaping.go`), and the `contract` mark below names
@@ -2955,11 +3166,15 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // `intakeGiveUps` off; the pod hold's at 246, which leaves `podHold` off every issue
   // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
   // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
-  // claim view; and contract 275's, which takes `dispatchCredential` off the state; so the
-  // golden's issues, rows and claim views are compared without them. One value strip stands above
-  // 199 as well: `caches`, the source of the repository-cache-room row, arrived at contract 213,
-  // so that row is served here without its `source`, every other field of it and every other row
-  // as the state golden holds them.
+  // claim view; and contract 275's, which takes `dispatchCredential` off the state. Above them
+  // stands the gate-basis entry's band, which takes every root's `treeRuns` and the `gatedSteps`
+  // of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`). So the golden's
+  // issues, rows and claim views are compared without them. One value strip stands above 199 as
+  // well: `caches`, the source of the repository-cache-room row, arrived at contract 213, so that
+  // row is served here without its `source`, every other field of it and every other row as the
+  // state golden holds them. The gate-basis entry's value strips take nothing more here: the strip
+  // of its two step statuses takes the `gatedSteps` its band has taken already, and the golden
+  // holds no issue in `awaiting_children` and no held row of it.
   const recordedBelow = daemonApiRecords(fixtureDir)
     .records.map((record) => record.contract)
     .filter((contract) => contract < repositoriesLiveContract);
@@ -2979,6 +3194,19 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     intakeGiveUps: _giveUps,
     ...rest
   } = fixtureBody("state.json");
+  if (!isJsonObject(rest.issues)) {
+    throw new Error("state fixture lacks its issues");
+  }
+  for (const issue of Object.values(rest.issues)) {
+    if (!isJsonObject(issue)) {
+      throw new Error("state fixture holds an issue that is not an object");
+    }
+    delete issue.treeRuns;
+    const steps = issue.gatedSteps;
+    if (Array.isArray(steps) && steps.some((step) => isJsonObject(step) && "basis" in step)) {
+      delete issue.gatedSteps;
+    }
+  }
   const withoutCauseTimes = (view: unknown): unknown => {
     if (!isJsonObject(view)) {
       return view;
@@ -3039,10 +3267,26 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   ]);
 });
 
-/** The responses an operator's bearer opens, the only ones that may name a suspension. */
+/** The responses an operator's bearer opens, the only ones of the operator's that may name a
+ * suspension. */
 const operatorSchemas: Record<string, true> = {
   LegionOperatorClaimResponse: true,
   LegionOperatorClaimsResponse: true,
+};
+
+/** The one session-facing exception: four of the controller's six agent actions
+ * (`POST /legion/v1/agents/stop|retry|suspend|resume`) answer who holds a suspension,
+ * because those routes are where the caller reads whether its own resume_agent lifts it. The
+ * reason the guard exists does not reach them: they arrived with the agent-actions contract, so only a plugin at
+ * that contract or later calls them, and no reader of these bodies predates the key. The schema
+ * and the four fixtures it pins are named here, and nothing else; a new session-facing body that
+ * names a suspender still fails the walk below. */
+const agentActionSchemas: Record<string, true> = { LegionAgentActionResponse: true };
+const agentActionFixtures: Record<string, true> = {
+  "agent-stop.json": true,
+  "agent-retry.json": true,
+  "agent-suspend.json": true,
+  "agent-resume.json": true,
 };
 
 /** Every key `schema` can carry, at any depth, through objects, arrays, unions, records, optional
@@ -3078,23 +3322,46 @@ function schemaKeys(
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
 // older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
-// `suspendedBy` is served to the operator's bearer and nowhere else, and this holds that for every
+// `suspendedBy` is served to the operator's bearer and, from the agent-actions contract, to the
+// controller's four agent actions (agentActionSchemas), and nowhere else; this holds that for every
 // schema the module exports, present and future.
 test("no session-facing response carries suspendedBy", () => {
   let walked = 0;
   for (const [name, schema] of Object.entries(legionApi)) {
-    if (!isSchema(schema) || operatorSchemas[name] === true) continue;
+    if (!isSchema(schema) || operatorSchemas[name] === true || agentActionSchemas[name] === true)
+      continue;
     walked += 1;
     expect([...schemaKeys(schema)], `${name} carries suspendedBy`).not.toContain("suspendedBy");
   }
   expect(walked).toBeGreaterThan(20);
   // The walk finds the key where it does live, so an empty walk cannot pass for a clean one.
   expect([...schemaKeys(LegionOperatorClaimResponse)]).toContain("suspendedBy");
+  expect([...schemaKeys(LegionAgentActionResponse)]).toContain("suspendedBy");
 
-  // And no body the daemon writes carries it outside the operator's own.
-  for (const name of readdirSync(fixtureDir).filter((entry) => entry.endsWith(".json"))) {
-    if (name.startsWith("operator-")) continue;
+  // And no body the daemon writes carries it outside the operator's own and the four routes'.
+  // The fixtures of this directory are bodies, and main's frozen tables, none of which names it.
+  // The daemon's records of every answer's key paths and value domains are the frozen tables and
+  // then each entry's fixture under `contracts/`, composed as `daemonApiRecords` composes them: they
+  // name `suspendedBy` at the four routes' answer, `agent-action`, and must name it at no other.
+  const fixtures = readdirSync(fixtureDir);
+  for (const name of fixtures.filter((entry) => entry.endsWith(".json"))) {
+    if (name.startsWith("operator-") || agentActionFixtures[name] === true) continue;
     expect(readFileSync(path.join(fixtureDir, name), "utf8"), name).not.toContain("suspendedBy");
+  }
+  const build = daemonApiRecords(fixtureDir);
+  const naming = [...build.records, ...build.enumeratedFields].filter((row) =>
+    JSON.stringify(row).includes("suspendedBy")
+  );
+  // The composition finds the key where it does live, so an empty read cannot pass for a clean one.
+  expect(naming.length).toBeGreaterThan(0);
+  for (const row of naming) {
+    expect(row.answer, `a record names suspendedBy at the ${row.answer} answer`).toBe(
+      "agent-action"
+    );
+  }
+  // The exception is the four routes' and no wider: each of their fixtures exists.
+  for (const name of Object.keys(agentActionFixtures)) {
+    expect(fixtures, name).toContain(name);
   }
 });
 

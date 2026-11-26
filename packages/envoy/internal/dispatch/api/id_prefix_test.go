@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -550,11 +551,12 @@ func TestAWriteRouteThatParsesNoIDActsOnTheResolvedItem(t *testing.T) {
 	}
 }
 
-// TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk: the project check runs behind the
-// prefix layer, so it judges the item the prefix named. A credential scoped to one project is
-// refused another project's ask by its prefix exactly as it is by its whole id, and the refusal
-// names both projects.
-func TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk(t *testing.T) {
+// TestAProjectScopedTokenResolvesAnotherProjectsAskByAPrefix: the project check runs behind the
+// prefix layer, so it judges the item the prefix named, and a credential scoped to one project
+// writes another project's ask as a credential that names no project does (INFRA-4799). It
+// resolves one ask of another project by its whole id and another by its prefix, and each
+// request reaches the handler, which answers 200 with the ask the path named, resolved.
+func TestAProjectScopedTokenResolvesAnotherProjectsAskByAPrefix(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -563,24 +565,21 @@ func TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk(t *testing.T) {
 	seedProject(t, rig, brokerTestProject, "Broker")
 	other := seedProject(t, rig, "OTH", "Other")
 
-	const prefix = "b0000001"
-	id := chosenID(prefix, 1)
-	seedAsk(t, rig.database, other.issue, id, "Which way?")
-
 	body := map[string]any{"kind": "resolved", "reason": "Answered elsewhere."}
-	for _, spelling := range []struct{ name, written string }{{"the whole id", id}, {"its prefix", prefix}} {
-		name, written := spelling.name, spelling.written
-		refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+written+"/resolve", token, body))
-		if refused.Code != http.StatusForbidden {
-			t.Fatalf("%s: status=%d body=%s, want 403", name, refused.Code, refused.Body.String())
-		}
-		refusal := decodeBody[refusalAnswer](t, refused)
-		if refusal.Code != codeProjectScope {
-			t.Fatalf("%s: refusal = %+v, want %s", name, refusal, codeProjectScope)
-		}
-		if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, other.key) {
-			t.Fatalf("%s: refusal %q names neither %s nor %s", name, refusal.Error, brokerTestProject, other.key)
-		}
+	for _, spelling := range []struct{ name, id, written string }{
+		{"the whole id", chosenID("b0000001", 1), chosenID("b0000001", 1)},
+		{"its prefix", chosenID("b0000002", 1), "b0000002"},
+	} {
+		t.Run(spelling.name, func(t *testing.T) {
+			seedAsk(t, rig.database, other.issue, spelling.id, "Which way?")
+			resolved := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+spelling.written+"/resolve", token, body))
+			if resolved.Code != http.StatusOK {
+				t.Fatalf("resolve %s's ask by %s: status=%d body=%s, want 200", other.key, spelling.name, resolved.Code, resolved.Body.String())
+			}
+			if ask := decodeBody[model.Ask](t, resolved); ask.ID != spelling.id || ask.Resolution == nil {
+				t.Fatalf("the answer is ask %s with resolution %+v, want %s resolved", ask.ID, ask.Resolution, spelling.id)
+			}
+		})
 	}
 }
 

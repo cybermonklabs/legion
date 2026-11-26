@@ -17,7 +17,7 @@
 #      wrapper runs, /usr/local/bin/jj, so a later pin needs no change here.
 #   3. `legion workspace-init cache` in the background, `workspace-init fetch` from it, and
 #      `workspace-init provision`, which looks jj up on PATH once (cmd/legion/workspace_init.go,
-#      provisioningTools) and so runs every jj command of its own through the measuring jj this
+#      workspaceProcess.tools) and so runs every jj command of its own through the measuring jj this
 #      probe puts first on PATH: one RESULT line each, with its argv, peak and wall time.
 #   4. Under the role's own GIT_CONFIG block, which the harness put on this container, the four
 #      pack settings at command scope, with the clone's local value beside each.
@@ -1080,7 +1080,7 @@ fi
 if going; then
   echo
   say "== legion workspace-init provision, its jj commands through the measuring jj"
-  # Provisioning resolves jj from PATH once, at its start (provisioningTools), and passes that path
+  # Provisioning resolves jj from PATH once, at its start (workspaceProcess.tools), and passes that path
   # to every jj command it runs, so this jj, first on PATH for provisioning alone, is the one it
   # runs: each command runs the image's jj under the sampler, keeps its own stdin, stdout and
   # stderr for provisioning to read, and appends its RESULT line to the results.
@@ -1161,11 +1161,25 @@ fi
 mkdir -p "$scratch/leak-check"
 cat > "$scratch/leak-check/public-leak-check.sh" << 'SH'
 #!/usr/bin/env bash
-# Clears every call: the push rows measure memory, and the embedded rule file still reads each push.
+# Clears every call: the push rows measure memory, and the rule pass still reads each push.
 exit 0
 SH
 chmod 0755 "$scratch/leak-check/public-leak-check.sh"
 export PUBLIC_LEAK_CHECK=$scratch/leak-check/public-leak-check.sh
+# Nor does the daemon hand it the deployment's private-name rule file, and a guard with no rule file
+# runs no rule pass, so a push would skip work a role's push does. This file of one rule, for a
+# host no push here carries, is what LEGION_PRIVATE_NAME_RULES_FILE names, so the rule pass reads
+# each push and refuses none.
+mkdir -p "$scratch/rules"
+cat > "$scratch/rules/private-name-rules.toml" << 'TOML'
+title = "the pack-memory probe's own rules"
+
+[[rules]]
+id = "pack_memory_probe_rule"
+description = "a host no push of this probe carries"
+regex = '''never-pushed-host[.]pack-memory[.]invalid'''
+TOML
+export LEGION_PRIVATE_NAME_RULES_FILE=$scratch/rules/private-name-rules.toml
 
 # --------------------------------------------------------------------------------------------
 # 4. The four pack settings under the role's block.

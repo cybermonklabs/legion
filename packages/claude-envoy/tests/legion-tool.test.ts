@@ -9,6 +9,7 @@ import { type ClaimCapability, PHASE_OP_SENTENCES } from "@legion/pi-shared/legi
 import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest"
 import pkg, { name, version } from "../package.json" with { type: "json" }
+import * as legionTool from "../src/legion-tool"
 import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
 
 /** The contract this build speaks, as `legion-tool.ts` reads it (`daemonContract`): this
@@ -122,6 +123,7 @@ async function daemon(
         },
       })
     }
+    if (path === "/legion/v1/claims/ready-for-update") return new Response(null, { status: 204 })
     // One issue's record, as the daemon answers it, and its 404 for an issue it records
     // nothing of (dispatch://INFRA-2694).
     const named = /^\/legion\/v1\/issues\/([^/]+)\/record$/.exec(path)
@@ -171,6 +173,70 @@ const grantRequest = {
   },
 }
 
+test("answerLegionTool closes only a step and answers an update without closing a look", async () => {
+  const { client } = await daemon({ state: stateAtPhase("testing") })
+  const calls: string[] = []
+  const runtime = {
+    daemon: client,
+    claim: () => implementer,
+    handoffReport: async () => ({ commit: "c0ffee" }),
+    branchHead: async () => "",
+  }
+  const hook = {
+    phaseClosed: () => {
+      calls.push("closed")
+    },
+    updateAnswered: () => {
+      calls.push("update")
+    },
+  }
+  await legionTool.answerLegionTool(
+    runtime,
+    {
+      op: "handoff_complete",
+      summary: "looked",
+      verdict: "pass",
+      check_opened_at: "2026-10-19T06:00:00.123456Z",
+    },
+    hook,
+  )
+  expect(calls).toEqual([])
+  await legionTool.answerLegionTool(
+    runtime,
+    { op: "handoff_complete", summary: "tested", verdict: "pass" },
+    hook,
+  )
+  expect(calls).toEqual(["closed"])
+  await legionTool.answerLegionTool(runtime, { op: "ready_for_update", round: "update-1" }, hook)
+  expect(calls).toEqual(["closed", "update"])
+})
+
+test("a named look of a running issue reaches the daemon through executeLegionTool", async () => {
+  const { client, requests } = await daemon({ state: stateAtPhase("implementing") })
+  const runtime = {
+    daemon: client,
+    claim: () => ({ ...implementer, role: "tester" as const }),
+    handoffReport: async (): Promise<never> => {
+      throw new Error("look reads no handoff")
+    },
+    branchHead: noBranchHead,
+  }
+  await expect(
+    executeLegionTool(runtime, {
+      op: "handoff_complete",
+      summary: "checking",
+      verdict: "pending",
+      wake_at: "2026-10-19T09:00:00Z",
+      check_opened_at: "2026-10-19T06:00:00.123456Z",
+    }),
+  ).resolves.toEqual({})
+  expect(requests.map(({ path }) => path)).toEqual([
+    "/legion/v1/grants",
+    "/legion/v1/handoff/complete",
+  ])
+  expect(requests.at(-1)?.body).toMatchObject({ checkOpenedAt: "2026-10-19T06:00:00.123456Z" })
+})
+
 test("declares the six phase-worker operations under one op, and names the Envoy publish tool as Claude Code shows it", () => {
   const definition = legionToolDefinition()
   expect(definition.name).toBe("legion")
@@ -203,7 +269,7 @@ test("declares the six phase-worker operations under one op, and names the Envoy
     `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}${PHASE_OP_SENTENCES.readReleaseRecords}handoff_complete`,
   )
   expect(definition.description).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. That move counts no review round: only a review that requests changes counts one. read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. It also reports the contract the daemon states on its answer to the health route. That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. The two numbers can differ, and the answer shows both. Report the version this call answers, never the one at the plugin's path on the image. In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under the role's own state home, and a Claude Code role installs no plugin: it loads its pod image's own claude-envoy. read_build reads no project state. What a later phase needs",
+    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. A kept volume stays with its Sandbox through the round, but a reset or a change of its disk shape still deletes it, so push first there too. If the daemon finds work that origin does not hold, it keeps the pod and says so; push that work. A round over a drift that breaks the pod replaces the pod anyway. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. That move counts no review round: only a review that requests changes counts one. read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. It also reports the contract the daemon states on its answer to the health route. That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. The two numbers can differ, and the answer shows both. Report the version this call answers, never the one at the plugin's path on the image. In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under the role's own state home, and a Claude Code role installs no plugin: it loads its pod image's own claude-envoy. read_build reads no project state. What a later phase needs",
   )
   expect(definition.description).toContain("with mcp__legion__envoy_publish.")
 })

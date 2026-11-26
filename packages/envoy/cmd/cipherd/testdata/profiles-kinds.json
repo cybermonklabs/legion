@@ -1,0 +1,335 @@
+{
+  "kinds": [
+    {
+      "name": "github",
+      "hosts": ["api.github.com", "github.com", "uploads.github.com"],
+      "headers": ["Authorization"],
+      "variables": ["GH_TOKEN", "GITHUB_TOKEN"],
+      "ways": ["swap", "mint"],
+      "max_grant": "12h"
+    },
+    {
+      "name": "slack",
+      "hosts": ["slack.com"],
+      "headers": ["Authorization"],
+      "variables": ["SLACK_BOT_TOKEN"],
+      "ways": ["swap"],
+      "max_grant": "12h"
+    },
+    {
+      "name": "aws",
+      "hosts": ["sts.amazonaws.com"],
+      "variables": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"],
+      "ways": ["sign"],
+      "max_grant": "12h"
+    },
+    {
+      "name": "gcp",
+      "hosts": ["*.googleapis.com", "*.pkg.dev"],
+      "headers": ["Authorization"],
+      "ways": ["mint"],
+      "max_grant": "24h"
+    },
+    {
+      "name": "gws",
+      "hosts": ["*.googleapis.com"],
+      "headers": ["Authorization"],
+      "ways": ["mint"],
+      "max_grant": "24h"
+    },
+    {
+      "name": "azure",
+      "hosts": ["login.microsoftonline.com", "management.azure.com"],
+      "headers": ["Authorization"],
+      "ways": ["exchange"],
+      "max_grant": "1h"
+    },
+    {
+      "name": "tailscale",
+      "hosts": ["api.tailscale.com"],
+      "headers": ["Authorization"],
+      "ways": ["swap", "exchange"],
+      "max_grant": "12h"
+    },
+    {
+      "name": "anthropic",
+      "hosts": ["api.anthropic.com"],
+      "headers": ["Authorization"],
+      "variables": ["ANTHROPIC_ADMIN_TOKEN"],
+      "ways": ["mint"],
+      "max_grant": "1h",
+      "allow": [
+        { "method": "GET", "pathPrefix": "/v1/organizations/" },
+        { "method": "POST", "pathPrefix": "/v1/organizations/" },
+        { "method": "DELETE", "pathPrefix": "/v1/organizations/" }
+      ]
+    }
+  ],
+  "profiles": [
+    {
+      "name": "GITHUB_READ",
+      "source": "LEGION_IMPLEMENT_APP",
+      "tier": "agent",
+      "github": {
+        "accounts": ["cybermonklabs", "sjawhar", "example-org"],
+        "permissions": {
+          "actions": "read",
+          "attestations": "read",
+          "checks": "read",
+          "contents": "read",
+          "issues": "read",
+          "metadata": "read",
+          "pull_requests": "read",
+          "statuses": "read"
+        },
+        "value": "token"
+      },
+      "proxy": "github"
+    },
+    {
+      "name": "GITHUB_ADMIN_READ",
+      "source": "LEGION_IMPLEMENT_APP",
+      "tier": "agent",
+      "github": {
+        "accounts": ["cybermonklabs", "sjawhar", "example-org"],
+        "permissions": {
+          "actions": "read",
+          "actions_variables": "read",
+          "administration": "read",
+          "attestations": "read",
+          "checks": "read",
+          "contents": "read",
+          "environments": "read",
+          "issues": "read",
+          "members": "read",
+          "metadata": "read",
+          "organization_administration": "read",
+          "organization_self_hosted_runners": "read",
+          "packages": "read",
+          "pull_requests": "read",
+          "secrets": "read",
+          "security_events": "read",
+          "statuses": "read"
+        },
+        "value": "token"
+      },
+      "proxy": "github"
+    },
+    {
+      "name": "GITHUB_WRITE",
+      "source": "LEGION_IMPLEMENT_APP",
+      "tier": "agent",
+      "requesters": ["legion-daemon", "owner@example.com"],
+      "github": {
+        "accounts": ["cybermonklabs", "sjawhar", "example-org"],
+        "permissions": {
+          "actions": "write",
+          "attestations": "read",
+          "checks": "read",
+          "contents": "write",
+          "issues": "write",
+          "metadata": "read",
+          "pull_requests": "write",
+          "security_events": "read",
+          "statuses": "write",
+          "workflows": "write"
+        },
+        "value": "token"
+      },
+      "proxy": "github"
+    },
+    {
+      "name": "LEGION_IMPLEMENT_APP",
+      "requesters": ["owner@example.com"],
+      "github": {
+        "accounts": ["cybermonklabs", "sjawhar", "example-org"],
+        "permissions": {
+          "actions": "write",
+          "attestations": "read",
+          "checks": "read",
+          "contents": "write",
+          "issues": "write",
+          "metadata": "read",
+          "pull_requests": "write",
+          "security_events": "read",
+          "statuses": "write",
+          "workflows": "write"
+        },
+        "value": "installations"
+      }
+    },
+    {
+      "name": "LEGION_IMPLEMENT_APP_READ",
+      "source": "LEGION_IMPLEMENT_APP",
+      "requesters": ["owner@example.com"],
+      "github": {
+        "accounts": ["cybermonklabs", "sjawhar", "example-org"],
+        "permissions": {
+          "actions": "read",
+          "attestations": "read",
+          "checks": "read",
+          "contents": "read",
+          "issues": "read",
+          "metadata": "read",
+          "pull_requests": "read",
+          "statuses": "read"
+        },
+        "value": "installations"
+      }
+    },
+    {
+      "name": "GITHUB_APP_OWNER",
+      "requesters": ["owner@example.com"],
+      "github": {
+        "accounts": ["cybermonklabs", "sjawhar", "example-org"],
+        "permissions": {
+          "actions": "write",
+          "actions_variables": "read",
+          "checks": "read",
+          "contents": "write",
+          "environments": "read",
+          "issues": "write",
+          "members": "read",
+          "metadata": "read",
+          "organization_administration": "read",
+          "organization_events": "read",
+          "organization_projects": "write",
+          "packages": "write",
+          "pull_requests": "write",
+          "repository_projects": "write",
+          "statuses": "read",
+          "workflows": "write"
+        },
+        "value": "installations"
+      }
+    },
+    {
+      "name": "GITHUB_APP_OWNER_READ",
+      "source": "GITHUB_APP_OWNER",
+      "requesters": ["owner@example.com"],
+      "github": {
+        "accounts": ["cybermonklabs", "sjawhar", "example-org"],
+        "permissions": { "contents": "read", "metadata": "read" },
+        "value": "installations"
+      }
+    },
+    {
+      "name": "GITHUB_APP_OWNER_AGENT",
+      "source": "GITHUB_APP_OWNER",
+      "github": {
+        "accounts": ["cybermonklabs", "sjawhar", "example-org"],
+        "permissions": {
+          "actions": "write",
+          "actions_variables": "read",
+          "checks": "read",
+          "contents": "write",
+          "environments": "read",
+          "issues": "write",
+          "members": "read",
+          "metadata": "read",
+          "organization_administration": "read",
+          "organization_events": "read",
+          "organization_projects": "write",
+          "packages": "write",
+          "pull_requests": "write",
+          "repository_projects": "write",
+          "statuses": "read",
+          "workflows": "write"
+        },
+        "value": "token"
+      },
+      "proxy": "github"
+    },
+    {
+      "name": "GITHUB_ADMIN_APP",
+      "requesters": ["owner@example.com"],
+      "github": {
+        "accounts": ["example-org"],
+        "permissions": {
+          "actions": "read",
+          "administration": "write",
+          "contents": "read",
+          "environments": "write",
+          "members": "write",
+          "metadata": "read",
+          "organization_administration": "write",
+          "pull_requests": "read"
+        },
+        "value": "token"
+      }
+    },
+    { "name": "AIRLOCK_PROBE" },
+    { "name": "AIRLOCK_AWS_PROBE" },
+    { "name": "LEGION_SLACK_BOT_TOKEN" },
+    { "name": "GITHUB_ADMIN_PAT" },
+    { "name": "GITHUB_PERSONAL_ADMIN_PAT" },
+    { "name": "TAILSCALE_API_KEY" },
+    { "name": "GCLOUD_OWNER" },
+    { "name": "AZURE_ADMIN" },
+    { "name": "GWS_EXAMPLE_ADMIN_OAUTH" },
+    {
+      "name": "GITHUB_ENTERPRISE_ADMIN",
+      "allow": [
+        {
+          "method": "GET",
+          "pathPrefix": "/enterprises/example-enterprise/actions/cache/storage-limit",
+          "host": "api.github.com"
+        },
+        {
+          "method": "PUT",
+          "pathPrefix": "/enterprises/example-enterprise/actions/cache/storage-limit",
+          "host": "api.github.com"
+        },
+        {
+          "method": "GET",
+          "pathPrefix": "/enterprises/example-enterprise/audit-log/stream-key",
+          "host": "api.github.com"
+        },
+        {
+          "method": "GET",
+          "pathPrefix": "/enterprises/example-enterprise/audit-log/streams",
+          "host": "api.github.com"
+        },
+        {
+          "method": "POST",
+          "pathPrefix": "/enterprises/example-enterprise/audit-log/streams",
+          "host": "api.github.com"
+        }
+      ]
+    },
+    {
+      "name": "ANTHROPIC_ADMIN_HDO",
+      "allow": [
+        { "method": "GET", "pathPrefix": "/v1/organizations/" },
+        { "method": "POST", "pathPrefix": "/v1/organizations/" },
+        { "method": "DELETE", "pathPrefix": "/v1/organizations/" }
+      ]
+    },
+    {
+      "name": "ANTHROPIC_ADMIN_HDO_V2",
+      "allow": [
+        { "method": "GET", "pathPrefix": "/v1/organizations/" },
+        { "method": "POST", "pathPrefix": "/v1/organizations/" },
+        { "method": "DELETE", "pathPrefix": "/v1/organizations/" }
+      ]
+    },
+    {
+      "name": "ANTHROPIC_ADMIN_PBC",
+      "allow": [
+        { "method": "GET", "pathPrefix": "/v1/organizations/" },
+        { "method": "POST", "pathPrefix": "/v1/organizations/" },
+        { "method": "DELETE", "pathPrefix": "/v1/organizations/" }
+      ]
+    },
+    {
+      "name": "AWS_ADMIN",
+      "allow": [
+        {
+          "method": "POST",
+          "pathPrefix": "/v1/projects/-/serviceAccounts/aws-admin@example-aws-admin.iam.gserviceaccount.com:generateIdToken",
+          "host": "iamcredentials.googleapis.com"
+        }
+      ]
+    }
+  ]
+}

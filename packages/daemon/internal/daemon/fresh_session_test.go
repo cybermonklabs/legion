@@ -156,7 +156,7 @@ const refusal400 = "400 invalid_request_error: messages: unexpected role"
 // refuseTurns works the claim's pending task through turns its provider refuses, each reported
 // refused by the claim's producer, and then answers the task's prompt with a provider error that
 // cannot clear: an HTTP 400, a client error that is none of 401, 403, 408 and 429, which fails the
-// claim (supervise's holdsTheIssue). The reports fail nothing, however many there are
+// claim (supervise's classifyProviderError). The reports fail nothing, however many there are
 // (dispatch://INFRA-4508): they are the claim's run of refused turns, which the daemon answers each
 // report with and which decides nothing.
 func (r *freshSessionRig) refuseTurns(turns int) {
@@ -242,9 +242,9 @@ func (r *freshSessionRig) recordedPhase() (phase.Phase, phase.Phase) {
 }
 
 // wantsHeldForTheArchitect holds what a failure that holds the issue leaves: the issue held from
-// implementing, and the architect's and the controller's held notices and the worker-died notice,
-// each carrying the failure's sentence in its failure record's `detail`, where every reader of the
-// notice finds it beside the cause word, so each names the status the provider answered.
+// implementing, and the architect's held notice and the worker-died notice, each carrying the
+// failure's sentence in its failure record's `detail`, where every reader of the notice finds it
+// beside the cause word, so each names the status the provider answered.
 func (r *freshSessionRig) wantsHeldForTheArchitect() {
 	r.t.Helper()
 	current, from := r.recordedPhase()
@@ -258,7 +258,7 @@ func (r *freshSessionRig) wantsHeldForTheArchitect() {
 			r.t.Errorf("the %s notice's failure detail says %q, want the status the provider answered in it", notice.kind, notice.detail)
 		}
 	}
-	if want := []string{"held", "held (controller)", "worker-died"}; !slices.Equal(kinds, want) {
+	if want := []string{"held", "worker-died"}; !slices.Equal(kinds, want) {
 		r.t.Fatalf("the failure queued %v, want %v", kinds, want)
 	}
 }

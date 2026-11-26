@@ -16,6 +16,7 @@ var _ = declareRoute(routeDecl{
 	WriteClass:  scopeDeployment,
 	ID:          &idRoute{Reason: "a credential request id"},
 	OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},
+	ApproveOnly: true,
 	Shape: routeShape{
 		// POST /v1/credential-requests/{record}/approve (cipher.Client.Approve).
 		Status: http.StatusOK, Response: wire.DecisionResponse{}, Request: credentialDecisionInput{}, OptionalRequest: true,

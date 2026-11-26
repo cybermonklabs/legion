@@ -8,6 +8,28 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+func TestTheCheckTaskNamesItsCheckInTheFormAReportSendsBack(t *testing.T) {
+	t.Parallel()
+	opened := time.Date(2026, 10, 19, 6, 0, 0, 123456000, time.UTC)
+	issue := record.Issue{Key: "LEGION-208", Title: "a production check"}
+	task := checkTask(issue, record.ProductionCheck{Issue: issue.Key, OpenedAt: opened, Looks: 2}, "merge", "merge-43", false)
+	_, value, ok := strings.Cut(task, "check_opened_at `")
+	if !ok {
+		t.Fatal("the task gives no check identity to report")
+	}
+	value, _, ok = strings.Cut(value, "`")
+	if !ok {
+		t.Fatal("the task gives no closing delimiter for the check identity")
+	}
+	got, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil || !got.Equal(opened) {
+		t.Fatalf("reported check identity %q = %s (%v), want %s", value, got, err, opened)
+	}
+	if value != "2026-10-19T06:00:00.123456Z" {
+		t.Fatalf("wire identity = %q, want RFC3339 with its microseconds", value)
+	}
+}
+
 // checkTaskWakes are the four wakes a look can have, each written as its own caller writes it:
 // the merge that opened the check (openCheck, the merge commit as the detail), the wake the
 // checking agent named on a pending report (checkReported, the report's summary), the retry of a
@@ -265,6 +287,33 @@ func TestTheLastLooksPendingIsOnlyForAnIssueWithNoneOfThoseRequirements(t *testi
 		before := checkTaskFor(tc.cause, tc.detail, false)
 		if strings.Contains(before, "closes the check as not run") {
 			t.Errorf("the task of a look before the last, woken by %s, says its pending closes the check as not run, but only the last look's pending closes it: %q", tc.name, before)
+		}
+	}
+}
+
+// A defect a look finds is routed as the tester's prompt routes it (prompts/go/tester.md) and as
+// skill://legion-worker/references/findings.md says: a defect no tree owns goes to the controller
+// of the project its repository maps to, and to the tester's own project's controller only where
+// Dispatch maps the repository to none, and an ask covers a defect that needs a person's decision,
+// a deploy window or work much larger than the tester's own, and any other finding that needs a
+// person's authority, taste or risk appetite. The task is the text in front of the tester at every
+// look, so a task that sent every such defect to the tester's own controller, or that kept the ask
+// for a decision alone, would overrule the prompt it comes with.
+func TestTheCheckTaskRoutesADefectAsTheTesterPromptDoes(t *testing.T) {
+	for _, last := range []bool{false, true} {
+		task := checkTaskFor(wakeMerge, "merge-43", last)
+		for _, want := range []string{
+			"when no tree owns that code, to the controller of the project that repository maps to, or to your own project's controller, the one your Legion addressing line names, when Dispatch maps it to none:",
+			"a defect that needs a person's decision, a deploy window or work much larger than your own, and any other finding that needs a person's authority, taste or risk appetite, is a dispatch ask",
+		} {
+			if !strings.Contains(task, want) {
+				t.Errorf("the check task (last %t) = %q, want it to say %q", last, task, want)
+			}
+		}
+		for _, retired := range []string{"the controller's role token from your Legion addressing line", "only a defect that needs a decision"} {
+			if strings.Contains(task, retired) {
+				t.Errorf("the check task (last %t) still says %q", last, retired)
+			}
 		}
 	}
 }

@@ -182,6 +182,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.Instructions = v }),
 		},
 		{
+			Name: "private_name_rules_file", Default: "`LEGION_PRIVATE_NAME_RULES_FILE` in the daemon's environment, else no private-name rule runs", RequiredBy: "no",
+			Description: "The deployment's private-name rule file, in gitleaks' rule format, which the daemon reads and compiles at boot and hands to every launch, so that every role's leak guard refuses a name it matches in a write to a public repository; it overrides `LEGION_PRIVATE_NAME_RULES_FILE` in the daemon's environment, and a daemon of an earlier release refuses the key, so a deployment that may roll back sets the variable instead.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.PrivateNameRulesFile = v }),
+		},
+		{
 			Name: "provider_keys", Default: "the agents' Oh My Pi receives no provider credential", RequiredBy: "no",
 			Description: "The provider credentials every agent's Oh My Pi receives in its environment: each variable Oh My Pi reads mapped to the key of the providers Secret that holds it, or, under `runtime: tmux`, to a secretsd key or a `file:/abs/path` the daemon reads once at boot.",
 			Read:        reads(readProviderKeys, func(f *fileConfig, v []ProviderKey) { f.ProviderKeys = v }),
@@ -247,7 +252,7 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonNkeySeedFile = v }),
 		},
 		{
-			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set or `dispatch_token_broker` is true, and when runtime is kubernetes: every pod works one issue of a configured project",
+			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set or `dispatch_token_broker` is true, and when runtime is kubernetes: every pod works one issue of one of the projects it names",
 			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; it names no repository, since the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project, and an issue may name any repository both role Apps are installed on. Its block carries what only that project does — its Slack channels, its production check, its default steps, its memory group, its experiments and the repositories whose commits carry their issue key.",
 			Read: func(value *yaml.Node, key string, file *fileConfig) error {
 				// The projects' own warnings join whatever a warned key above them raised, in file
@@ -475,6 +480,13 @@ func (g memberGroup) topLevel() string {
 	return g.Path
 }
 
+// podDefault is the Default text of a `resources.<POD>` key the daemon fills itself: its own limit
+// or request for an issue pod and for the controller's, given from defaultResources so the table
+// holds no copy of the default.
+func podDefault(side, issue, controller string) string {
+	return "the daemon's own " + side + " for that pod: `" + issue + "` for an issue pod, `" + controller + "` for the controller's"
+}
+
 // nestedKeys is every mapping whose nested keys carry a description, by the path an operator
 // writes them under. describedMembers looks a group up by that path, so a reader that passes a
 // path this list does not hold is a bug TestNoKeyBypassesTheKeyTable catches, never a value.
@@ -662,17 +674,17 @@ var nestedKeys = []memberGroup{
 			Description: "The taint effect tolerated: `NoSchedule`, `NoExecute` or `PreferNoSchedule`."},
 	}},
 	{Path: kubernetesKey + ".resources.<POD>", Members: []member{
-		{Name: "cpu", Default: "the daemon's own limit for that pod: `3` for an issue pod, `1` for the controller's", RequiredBy: "no",
+		{Name: "cpu", Default: podDefault("limit", defaultResources.Issue.CPU, defaultResources.Controller.CPU), RequiredBy: "no",
 			Description: "The CPU limit every container of the pod carries, as a Kubernetes quantity."},
 		{Name: "cpu_request", Default: "the pod's own `cpu`, which is what makes a pod that raises a limit alone Guaranteed", RequiredBy: "no",
 			Description: "What the scheduler reserves of that CPU, at most the limit; below the limit the pod is Burstable rather than Guaranteed."},
-		{Name: "memory", Default: "the daemon's own limit for that pod: `19Gi` for an issue pod, `4Gi` for the controller's", RequiredBy: "no",
+		{Name: "memory", Default: podDefault("limit", defaultResources.Issue.Memory, defaultResources.Controller.Memory), RequiredBy: "no",
 			Description: "The memory limit every container of the pod carries; under gVisor every process of the pod draws on this one number, so the pod's whole peak must fit it."},
 		{Name: "memory_request", Default: "the pod's own `memory`, which is what makes a pod that raises a limit alone Guaranteed", RequiredBy: "no",
 			Description: "What the scheduler reserves of that memory, at most the limit; below the limit the pod is Burstable rather than Guaranteed."},
-		{Name: "ephemeral_storage", Default: "the daemon's own limit for that pod: `80Gi` for an issue pod, `10Gi` for the controller's", RequiredBy: "no",
+		{Name: "ephemeral_storage", Default: podDefault("limit", defaultResources.Issue.EphemeralStorage, defaultResources.Controller.EphemeralStorage), RequiredBy: "no",
 			Description: "The pod's bound on the node's own disk — the image's content and each role's home and `/tmp`, the issue volume being its own — past which that pod alone is evicted."},
-		{Name: "ephemeral_storage_request", Default: "the daemon's own request for that pod: `6Gi` for an issue pod, `1Gi` for the controller's", RequiredBy: "no",
+		{Name: "ephemeral_storage_request", Default: podDefault("request", defaultResources.Issue.EphemeralStorageRequest, defaultResources.Controller.EphemeralStorageRequest), RequiredBy: "no",
 			Description: "What the scheduler reserves of that disk; an operator who knows the root volume raises it so no pod is placed where a full node could not hold it."},
 		{Name: "requests", Default: "", RequiredBy: "no",
 			Description: "Removed: a reservation is its `cpu` and `memory` limits, with `cpu_request` and `memory_request` below them where set; the loader refuses a file that still sets it."},
@@ -724,6 +736,8 @@ var nestedKeys = []memberGroup{
 			Description: "Where each of those volumes is mounted in every pod, read-only unless the mount says otherwise."},
 		{Name: "service_account", Default: "the namespace's `default` ServiceAccount", RequiredBy: "no",
 			Description: "The ServiceAccount the agents' pods run as; it needs no permission of its own, and its projected token can be the model route's credential."},
+		{Name: "controller_service_account", Default: "the controller's pod runs as `service_account`", RequiredBy: "no",
+			Description: "The ServiceAccount the daemon-launched controller's pod runs as in place of `service_account`, so that pod presents a cloud identity of its own; only `controller: daemon` may set it, since `controller: operator` launches no controller pod."},
 	}},
 	{Path: podKey + ".volumes[]", Members: []member{
 		{Name: "name", Default: "none: a volume that names no name is refused", RequiredBy: "yes",

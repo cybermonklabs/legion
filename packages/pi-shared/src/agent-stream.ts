@@ -593,7 +593,7 @@ export class AgentStreamPublisher {
    * away. The `{tokens: 0, contextWindow, percent: null}` answer reports a window and no figure,
    * so it leaves the slot as it is, neither replacing nor clearing it.
    *
-   * The pinned host (Oh My Pi 18.18.6-sami.20261125-001804, `.omp-pin`) answers undefined only
+   * The pinned host (Oh My Pi 18.18.6-sami.20261126-110039, `.omp-pin`) answers undefined only
    * from a runner not yet initialised, never after a good reading, so clearing on it cannot make
    * the ring flicker. A window of zero comes from a model with no window, or from no model, and
    * lasts until the model changes. The `percent: null` guard stays for an older pinned build,

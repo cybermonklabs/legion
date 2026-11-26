@@ -94,15 +94,6 @@
         "state": "merged",
         "reviewDecision": "approved"
       },
-      "gatedSteps": [
-        {
-          "step": "spec",
-          "artifactId": "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
-          "currentVersion": 4,
-          "approvedVersion": 4,
-          "status": "approved"
-        }
-      ],
       "check": {
         "repo": "acme/widgets",
         "pullRequest": 1239,
@@ -1026,6 +1017,7 @@
       "GEMINI_API_KEY"
     ],
     "instructions": "/etc/legion/deployment-instructions.md",
+    "private_name_rules_file": "/etc/legion/private-names.toml",
     "worker_boot_timeout_seconds": 180,
     "worker_rpc_timeout_seconds": 8,
     "worker_stop_timeout_seconds": 30,

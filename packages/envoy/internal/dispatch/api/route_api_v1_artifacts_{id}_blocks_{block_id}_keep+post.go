@@ -17,6 +17,7 @@ var _ = declareRoute(routeDecl{
 	// Keeping a decision records the person's agreement with it ("Kept by" in the web app), which
 	// takes it out of what waits on their review, so it settles what a person settles.
 	OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},
+	ApproveOnly: true,
 	Shape: routeShape{
 		Status: http.StatusOK, Response: model.DecisionKeep{}, Request: keepDecisionInput{},
 	},

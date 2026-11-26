@@ -16,6 +16,7 @@ var _ = declareRoute(routeDecl{
 	ID:          &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
 	// A review settles what a person settles, so it needs the approve scope beside person.
 	OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},
+	ApproveOnly: true,
 	Shape: routeShape{
 		Status: http.StatusCreated, Response: model.ArtifactReview{}, Request: createArtifactReviewInput{},
 	},

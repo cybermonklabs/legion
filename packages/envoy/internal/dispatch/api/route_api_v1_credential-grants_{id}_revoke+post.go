@@ -16,6 +16,7 @@ var _ = declareRoute(routeDecl{
 	WriteClass:  scopeDeployment,
 	ID:          &idRoute{Reason: "a credential grant id"},
 	OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},
+	ApproveOnly: true,
 	Shape: routeShape{
 		// POST /v1/grants/{id}/revoke-by-approver (cipher.Client.RevokeByApprover).
 		Status: http.StatusOK, Response: wire.StateResponse{},

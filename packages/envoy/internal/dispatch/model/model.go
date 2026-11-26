@@ -32,10 +32,11 @@ const (
 // (api's legion_status_scope.go). The secrets broker grants it to the daemon's token alone, and
 // Dispatch reads it from the broker's answer (brokerTokenActor).
 //
-// It is not in Scopes, and it must stay out. The browser's credential, the personal-token check
-// and a new token's default scopes all read Scopes, and none of them may hold this scope: it is
-// the daemon's broker token's alone. A person-scoped broker token holds ScopePerson alone
-// (brokerPersonScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
+// It is not in Scopes, and it must stay out. The browser's credential, the personal-token check,
+// a new token's default scopes and the approve-only token's scopes (brokerTokenActor) all read
+// Scopes, and none of them may hold this scope: it is the daemon's broker token's alone. A
+// person-scoped broker token holds ScopePerson alone (brokerPersonScopes), and the approve-only
+// token both of Scopes, never this scope either. DISPATCH_SCOPES in @legion/contracts and the
 // check on agent_tokens.scopes do not name it either, so no personal token can hold it. The word
 // is the broker's own (oauthwire), so the scope the broker grants and the one Dispatch reads are
 // one string.
@@ -88,8 +89,9 @@ func (a *ActorAct) Holds(scope string) bool {
 }
 
 // Credential is the request's credential as optionalActor resolved it: the scopes it holds, the
-// agent it names, and whether it may only read. A pointer, so Actor stays comparable with ==,
-// which this package's callers and its tests rely on.
+// agent it names, what a broker-issued token's project scope lets it write, and whether it may
+// only read. A pointer, so Actor stays comparable with ==, which this package's callers and its
+// tests rely on.
 type Credential struct {
 	// Scopes are the OAuth scopes the credential holds: ScopePerson, ScopeApprove, or neither.
 	// A named broker token (one the secrets broker scoped to a project) holds ScopeLegionStatus
@@ -102,13 +104,6 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
-	// Projects are the projects the credential may use, sorted. Nothing in this tree sets it, so
-	// it is empty for every credential here: a later slice sets it from a personal token's
-	// agent_tokens.projects and from a broker token's list. Empty is a credential that names none.
-	// What a list decides is access.CredentialCovers': for a full member's credential, and one
-	// that names no person, only which private projects it reaches; for a restricted member's,
-	// every project it reaches.
-	Projects []string
 	// ReadOnly is a credential that may only read. Two credentials set it: a broker-issued token
 	// its verifier decided is read-only (ciphertoken.Caller.ReadOnly), which the secrets broker
 	// minted from a read entry or narrowed to reading because its trade asked for read; and a
@@ -121,18 +116,36 @@ type Credential struct {
 	// Scopes. False for every other credential: a cookie, the deployment's shared token, a
 	// service-account token, and a broker-issued or personal token that may write.
 	ReadOnly bool
+	// ApproveOnly is a broker-issued token that holds only the scope approve
+	// (ciphertoken.ScopeApprove) beside the project scope person: the token the secrets broker
+	// mints for a person's approve grant, binds to its own pod's key and spends through its proxy,
+	// never released. It acts as its person with both of the person's scopes, and Dispatch serves
+	// it on the routes whose declaration states ApproveOnly (api's routeDecl.ApproveOnly) alone,
+	// answering it 403 APPROVE_ONLY_TOKEN on every other (refuseApproveOnlyToken), before anything
+	// else the route does. False for every other credential.
+	ApproveOnly bool
 	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
 	// the zero time for a credential that names no cut. Only a read-only credential carries one.
 	Cut time.Time
-	// ProjectScope is a broker-issued token's project scope as the broker answered it, read as
-	// its base word (ciphertoken.Caller.ProjectScope): `named` for a token an operator's entry
-	// mapped, `person` for one acting as its person or for a machine nobody signed in on, `none`
-	// for the read entry's token; a token narrowed to reading carries the word it narrows, with
-	// ReadOnly beside it. It is what tells a token that names a service and no person apart: a
-	// `named` one is an account entry's that names no person, whose writes are recorded under its
-	// account (writeNeedsASignedInPerson), and a `person` one is a machine's that nobody signed in
-	// on, which writes nothing. Empty for every other credential.
+	// ProjectScope is a broker-issued token's `project_scope` as the broker answered it, read as
+	// its base word (ciphertoken.Caller.ProjectScope): `named`, a token an operator's entry
+	// mapped to its one project, or to none for an account entry that names a person and no
+	// project or neither; `person`, a token held to no one project, a person's own or a
+	// machine's nobody signed in on; `none`, the read entry's token's; or `public`, a job's token
+	// that names no one project, which writes wherever a token naming no project may, since no
+	// write check reads its list (Projects) at this release. A token narrowed to reading carries
+	// the word it narrows, with ReadOnly beside it. Empty for every other credential. A
+	// broker-issued token that names a service and no person writes only under `named` or
+	// `public` — a job's two shapes, and under `named` an account entry's naming no person, whose
+	// writes are recorded under its account — and is refused every write under any other
+	// (writeNeedsASignedInPerson).
 	ProjectScope string
+	// Projects is the credential's list, sorted: a broker token's ciphertoken.Caller.Projects, and
+	// nil for every other credential until a later slice sets a personal token's
+	// agent_tokens.projects. Empty is a credential that names none. What a list decides is
+	// access.CredentialCovers': for a full member's credential, and one that names no person, only
+	// which private projects it reaches; for a restricted member's, every project it reaches.
+	Projects []string
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -158,9 +171,12 @@ func BrowserActor(login string) Actor {
 // the verified Kubernetes subject of the projected service-account token a
 // session authenticated with ("system:serviceaccount:<namespace>:<name>"), set
 // by the server from the token and never from a request body. Project is the
-// one project key a broker-issued access token lets its session write, set by
-// the server from that token and never from a request body; it is nil for
-// every other credential and for a token whose scope names no single project.
+// one project key a broker-issued access token names, set by the server from
+// that token and never from a request body. It is nil for every other
+// credential and for a token whose scope names no single project. A token that
+// names a project writes every project's objects that a credential naming none
+// may write, a private project it does not name excepted. A target that
+// resolves to no project or to nothing is refused it (api/project_scope.go).
 type Actor struct {
 	Kind    string       `json:"kind"`
 	ID      string       `json:"id"`
@@ -460,7 +476,8 @@ type Project struct {
 	// ProvenSessions is the project's setting that a session's credential must prove the
 	// session: when it is on, an architect's write of an issue's spec or Verification document
 	// passes only on a credential that proves the architect's session, and a role-holder
-	// publication only on one that proves legion-daemon:<project>
+	// publication only on one that proves legion-daemon:<project>, or legion-daemon:<P> of
+	// another project's daemon on a broker token that names P
 	// (PUT and DELETE /api/v1/projects/{key}/proven-sessions). Off by default, and always
 	// present, so a reader never has to tell an absent setting from one that is off.
 	ProvenSessions bool      `json:"proven_sessions"`
@@ -1814,8 +1831,11 @@ type CheckResultRetracted struct {
 // document (check_results). IssueKey is the issue it was recorded on, which may be a descendant
 // of CheckIssueKey, the issue whose Verification document holds the check. CheckVersion and
 // CheckSHA256 are the block's changed_version and text_sha256 when the result was recorded, so
-// a read can tell a result whose check has been reworded since. CommitStands, CheckWordsMoved
-// and Retracted are read when the results are read and are absent from the record's own answer.
+// a read can tell a result whose check has been reworded since: one whose check's digest and
+// version both moved, since a block respelled by another renderer version takes a new digest
+// and keeps its changed version (refs.BlockIndexing.KeepRespelled). CommitStands,
+// CheckWordsMoved and Retracted are read when the results are read and are absent from the
+// record's own answer.
 type CheckResult struct {
 	ID              string    `json:"id"`
 	IssueKey        string    `json:"issue_key"`
@@ -1856,9 +1876,10 @@ type CheckResult struct {
 	ObservedTree DisplayTree `json:"observed_tree,omitempty"`
 	// CommitStands is where this result's commit stands against what its check compared with,
 	// and CheckWordsMoved whether the check's words moved after the result was recorded, which
-	// CheckSHA256 beside the check's SHA256 decides. They are two facts and two fields: a
-	// result at the compared commit under an older wording is both, and one word for both
-	// would hide which.
+	// CheckSHA256 and CheckVersion beside the check's SHA256 and Version decide: the words moved
+	// where both differ (api's comparisonReader.answer says why). They are two facts and two
+	// fields: a result at the compared commit under an older wording is both, and one word for
+	// both would hide which.
 	CommitStands    *ResultCommitStands   `json:"commit_stands,omitempty"`
 	CheckWordsMoved *bool                 `json:"check_words_moved,omitempty"`
 	Retracted       *CheckResultRetracted `json:"retracted,omitempty"`
@@ -2482,9 +2503,10 @@ type AskEditEventPayload struct {
 	// that an earlier version already moved since it was opened or last handed back
 	// (requested_version below the version it named), which changes only the version the request
 	// names, and a settlement's move that keeps the request waiting on the human because the new
-	// version, which a settlement wrote, holds byte for byte the text of the version the request
-	// names (docs.MoveApprovalAsk), which changes only the number that text is stored under; a
-	// version a route writes moves the request to its agent whatever text it holds. Like a human's
+	// version, which a settlement wrote, holds the text of the version the request names - byte
+	// for byte, or, for a version another renderer version stored or none stamped, as this build
+	// renders it (docs.MoveApprovalAsk) - which changes only the number that text is stored under;
+	// a version a route writes moves the request to its agent whatever text it holds. Like a human's
 	// unnamed artifact.version, such a move wakes nobody (events.Broker.Notify) and reaches no
 	// follower (the outbox's follower routes), while the event log and the event feed carry it as
 	// they carry every event. The first move after an opening or a hand-back is not quiet, even

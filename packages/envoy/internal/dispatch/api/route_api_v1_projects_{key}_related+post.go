@@ -16,9 +16,9 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).postRelated,
 	// The POST form of the related-item check writes nothing. Its scope class is the project its
 	// path names, which is the project it searches and the one a scoped credential may run it
-	// over. Its answer also carries the answered questions of other projects (other_projects),
-	// and that discloses nothing a read this credential already makes does not: no GET route of
-	// this table is project-scoped, so every scoped credential reads every project already.
+	// over. Its answer also carries the answered questions of other projects (other_projects).
+	// That leg reads no project's visibility: which private projects' questions it may show is a
+	// read rule, and no write check of this table decides it.
 	WriteClass: scopeProject,
 	Shape: routeShape{
 		Status: http.StatusOK, Response: model.Suggestions{}, Request: relatedRequest{},
