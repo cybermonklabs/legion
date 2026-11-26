@@ -46,12 +46,14 @@ type runAt struct {
 }
 
 // factRuns is what one fact names of the runs it ends that the record does not hold: the end each
-// move of the table names for the run it leaves, and the trees whose linger it closed. settled says
-// the fact's runs are settled already: an engine and the admission that holds it share one fact.
+// move of the table names for the run it leaves, the trees whose linger it closed, and the task
+// branch deletions a leave or a new generation defers until every old start ended. settled says the
+// fact's runs are settled already: an engine and the admission that holds it share one fact.
 type factRuns struct {
-	ends    map[runAt]StepEnd
-	closed  map[string]bool
-	settled bool
+	ends               map[runAt]StepEnd
+	closed             map[string]bool
+	deleteAfterOldRuns map[runAt]record.Issue
+	settled            bool
 }
 
 // factRunsKey is the context key of a fact's factRuns.
@@ -84,7 +86,7 @@ func (runs *factRuns) endOf(run runAt) StepEnd {
 // fact, is answered as it is (intake.Settler).
 func (e *Engine) OpenFact(ctx context.Context) context.Context {
 	if _, ok := ctx.Value(factRunsKey{}).(*factRuns); !ok {
-		ctx = context.WithValue(ctx, factRunsKey{}, &factRuns{ends: map[runAt]StepEnd{}, closed: map[string]bool{}})
+		ctx = context.WithValue(ctx, factRunsKey{}, &factRuns{ends: map[runAt]StepEnd{}, closed: map[string]bool{}, deleteAfterOldRuns: map[runAt]record.Issue{}})
 	}
 	return record.WithIssueWrites(ctx)
 }
@@ -259,12 +261,40 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 		}
 		var onWalk bool
 		if stood.Phase, onWalk = phaseAt(w, row.Place); !onWalk {
-			if err := e.endOffWalk(ctx, tx, row, runs.endOf(run)); err != nil {
+			err = e.endOffWalk(ctx, tx, row, runs.endOf(run))
+		} else {
+			err = e.endStep(ctx, tx, stood, w, runs.endOf(run))
+		}
+		if err != nil {
+			return err
+		}
+		if e.afterOldGenerationRunEnd != nil {
+			if err := e.afterOldGenerationRunEnd(ctx, tx, row); err != nil {
 				return err
 			}
-			continue
 		}
-		if err := e.endStep(ctx, tx, stood, w, runs.endOf(run)); err != nil {
+	}
+	if err := e.queueDeletesAfterOldRuns(ctx, tx, runs); err != nil {
+		return err
+	}
+	return nil
+}
+
+// queueDeletesAfterOldRuns queues each deletion a leave or a new generation requested only after
+// this fact ended every open start of that task's old generation. The old generation's agent can
+// push until its own start ends, so the earlier dropFixWay must not queue the deletion yet.
+func (e *Engine) queueDeletesAfterOldRuns(ctx context.Context, tx pgx.Tx, runs *factRuns) error {
+	for task, issue := range runs.deleteAfterOldRuns {
+		starts, err := e.store.StepRuns(ctx, tx, []string{task.issue})
+		if err != nil {
+			return err
+		}
+		for _, start := range starts {
+			if start.Generation == task.generation && start.Place.Task == task.place.Task && start.Run == record.RunOpen {
+				return fmt.Errorf("the old generation of task %s of %s still has an open start at %s/%d", task.place.Task, task.issue, start.Place.Kind, start.Place.Place)
+			}
+		}
+		if err := e.queueBesideDelete(ctx, tx, issue, task.place.Task, 0); err != nil {
 			return err
 		}
 	}
@@ -287,11 +317,6 @@ func (e *Engine) endOffWalk(ctx context.Context, tx pgx.Tx, row record.IssueStep
 	ended, err := e.endRun(ctx, tx, row.Issue, row.Place, end, func(record.StepStart) record.StepRecord { return row.Kept })
 	if err != nil || !ended {
 		return err
-	}
-	if e.afterOldGenerationRunEnd != nil {
-		if err := e.afterOldGenerationRunEnd(ctx, tx, row); err != nil {
-			return err
-		}
 	}
 	e.logOnCommit(ctx, "workflow: a run on no step of the walk of its run is ended", "issue", row.Issue, "generation", row.Generation,
 		"task", row.Place.Task, "kind", row.Place.Kind, "place", row.Place.Place, "result", end.Result,

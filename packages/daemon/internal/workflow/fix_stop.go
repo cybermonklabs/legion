@@ -29,17 +29,22 @@ const wayNone = 4
 // StoppedBy, so it reaches an owner that made the stop as well: the fix ended with the stop, and
 // where the work beside it stands (besideWorkSentence). A stop deletes no branch beside a fix, since
 // a todo on the root starts the task again and that work can be the only copy. A leave and a new
-// generation, where no step of the task can run again, delete every branch beside the task's fixes
-// at that generation (queueBesideDelete, fix 0), whatever the latest fix's way. The seam
-// besideDeleteAsBefore deletes the branches beside the fix a stop marks too.
+// generation defer the deletion of every branch beside the task's fixes at that generation until
+// every old-generation start of that task ended (factRuns.deleteAfterOldRuns), whatever the latest
+// fix's way. The seam besideDeleteAsBefore deletes the branches beside the fix a stop marks too.
 func (e *Engine) dropFixWay(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, said string) error {
 	if !w.Stored {
 		return nil
 	}
 	if said == "" {
-		if err := e.queueBesideDelete(ctx, tx, issue, w.Task, 0); err != nil {
+		runs, err := factRunsOf(ctx)
+		if err != nil {
 			return err
 		}
+		if runs.deleteAfterOldRuns == nil {
+			runs.deleteAfterOldRuns = map[runAt]record.Issue{}
+		}
+		runs.deleteAfterOldRuns[runAt{issue: issue.Key, generation: issue.Generation, place: record.StepPlace{Task: w.Task}}] = issue
 	}
 	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
 	if err != nil || fix == nil || fix.Way != 0 || (e.wayMarkRunningOnly && fix.State != record.FixRunning) {
