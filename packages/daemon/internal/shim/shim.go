@@ -30,9 +30,11 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/subreaper"
 )
 
 const (
@@ -132,11 +134,43 @@ type Config struct {
 	// when its loop ends — the wrapped process has exited — and it must return once that context
 	// ends, its build stopped and its lease released, since Run waits for it (bounded by
 	// warmUpDrain) before returning the agent's exit status: a stop mid-build then leaves no lease
-	// behind for the role's relaunch to read as a live build. `launched` is when the shim's Run
+	// behind for the role's relaunch to read as a live build. start is how the warm-up starts each
+	// codegraph it runs: the shim's own guard (Config.ReapOrphans), so a reaper of this process's
+	// orphans never takes that codegraph's exit. `launched` is when the shim's Run
 	// began — the role's launcher starting this generation — which the warm-up's success
 	// line reports its build against. Nil on a tmux pane, whose workspace the daemon warms itself,
 	// and on the controller, which has no workspace: nothing runs.
-	WarmCodegraph func(ctx context.Context, dir string, launched time.Time)
+	WarmCodegraph func(ctx context.Context, start procgroup.Starter, dir string, launched time.Time)
+	// ReapOrphans makes the shim the child subreaper of everything it starts and reaps every
+	// exited child it does not wait for itself (subreaper.Guard.Serve): `legion worker-shim
+	// --reap-orphans`, which the controller pod's launcher passes when it runs the shim as its own
+	// child, with no role-init above it (internal/launcher's manager.command).
+	//
+	// There the shim's process group is the agent's, and Oh My Pi's tools leave orphans in it (a
+	// `cmd &` whose shell exits). Without this the container's PID 1, the launcher, which is in a
+	// group of its own, adopts and reaps each of them. The cluster's gVisor keeps a count, per
+	// process group, of the members whose parent is in another group of the session, and it takes
+	// one from that count when such a member is reaped but adds none when a member is reparented
+	// (gVisor's pkg/sentry/kernel: the count is `ancestors` in sessions.go, taken from on a reap
+	// in task_exit.go, and left as it is by reparentLocked there). So each orphan the launcher reaps
+	// takes the count of the agent's group one lower, until it reads 0 while the shim, which links
+	// the group, still runs. gVisor then treats the group as orphaned, and a member that is
+	// stopped at that moment brings SIGHUP and SIGCONT to the whole group: the shim stops on that
+	// SIGHUP, and Oh My Pi in rpc mode exits 129. An orphan this shim reaps is reaped by a parent
+	// in its own group, which takes nothing from the count.
+	//
+	// A role under role-init needs none of this: role-init starts its shim in role-init's own
+	// process group (internal/launcher's runRoleShim), so the role's orphans are reaped in their
+	// own group there, and the role's process tree stays what the launcher's session peer check
+	// and memory guard read (a shim whose direct children are its own). A tmux pane runs on a
+	// real kernel, whose count reparenting moves.
+	//
+	// Every child the shim starts and waits for itself starts through one guard (s.children),
+	// whether or not this is set, so the reaper never takes the exit of Oh My Pi, of the secrets
+	// keygen or renewer, of a command the daemon asked for, or of the warm-up's codegraph.
+	// TestEveryChildTheShimWaitsForStartsThroughItsGuard reads every start the shim's process
+	// reaches.
+	ReapOrphans bool
 	// LeakCheckDir is where the pod's launcher installed the shared public leak check, which
 	// spawnOnce reads (leakguard.Installed) before the wrapped process is started; empty is
 	// leakguard.InstallDir. The launcher installs the check the daemon served once for the pod,
@@ -169,7 +203,7 @@ type Config struct {
 // the shim exits 143 as that signal would have. The error is the shim's own failure to start
 // the child, never the child's.
 func Run(ctx context.Context, cfg Config) (int, error) {
-	s := &shim{cfg: cfg, clock: cfg.Clock, grace: cfg.Grace, stopGrace: cfg.StopGrace, childExited: make(chan struct{}), started: time.Now()}
+	s := &shim{cfg: cfg, clock: cfg.Clock, grace: cfg.Grace, stopGrace: cfg.StopGrace, childExited: make(chan struct{}), started: time.Now(), children: subreaper.NewGuard()}
 	if s.clock == nil {
 		s.clock = realClock{}
 	}
@@ -185,6 +219,16 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	}
 	s.log = log.New(out, "", 0)
 	s.out.log = s.log
+	// The reaper serves before anything is started and is stopped last, once every wait deferred
+	// below has returned, so an orphan any child of the shim leaves until then is reaped here.
+	if cfg.ReapOrphans {
+		stopReaping, err := s.children.Serve(func(format string, args ...any) { s.log.Printf("[worker-shim] "+format, args...) })
+		if err != nil {
+			return 1, err
+		}
+		defer stopReaping()
+		s.log.Print("[worker-shim] this shim is the child subreaper of everything it starts, and reaps their orphans")
+	}
 	s.loop, s.stop = context.WithCancel(context.Background())
 	s.warm, s.stopWarm = context.WithCancel(s.loop)
 	// The commands take the stop the shim was given, and end with the agent's own SIGTERM
@@ -217,6 +261,12 @@ type shim struct {
 	// in the single-threaded shim this is ported from: a start replayed for a retried delivery
 	// never overtakes OMP's own start on its way to the daemon.
 	order sync.Mutex
+
+	// children is the guard every child the shim starts and waits for itself starts through: Oh
+	// My Pi (spawnOnce), the secrets keygen and renewer (identity, startRenewer), every command the
+	// daemon asked for (openWorkspace) and the warm-up's codegraph (warmCodegraph). Under
+	// Config.ReapOrphans its reaper passes each of them over until its own wait has read its exit.
+	children *subreaper.Guard
 
 	// loop ends with the shim: every dial, connection, and backoff is bound to it.
 	loop context.Context
@@ -508,7 +558,7 @@ func (s *shim) spawnOnce() bool {
 		return false
 	}
 	cmd.Stdout = childStdout
-	if err := cmd.Start(); err != nil {
+	if _, err := s.children.Start(cmd); err != nil {
 		_ = stdout.Close()
 		_ = childStdout.Close()
 		s.exiting = true
@@ -589,7 +639,7 @@ func (s *shim) warmCodegraph() {
 	s.warmUps.Add(1)
 	go func() {
 		defer s.warmUps.Done()
-		s.cfg.WarmCodegraph(s.warm, dir, s.started)
+		s.cfg.WarmCodegraph(s.warm, s.children.Starter(), dir, s.started)
 	}()
 }
 
@@ -621,6 +671,7 @@ func (s *shim) drainWarmUp() {
 // ends the shim with its status.
 func (s *shim) reap(cmd *exec.Cmd, stdout *os.File, pumped <-chan struct{}) {
 	_ = cmd.Wait()
+	s.children.Done(cmd.Process.Pid)
 	close(s.childExited)
 	select {
 	case <-pumped:

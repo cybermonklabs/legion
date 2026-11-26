@@ -882,7 +882,7 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 		shim = append(shim, "--provider-env-dir", ProvidersDir)
 	}
 	if l.enrolls(r) {
-		shim = append(shim, "--agent-secrets-key-dir", AgentSecretsKeyDir, "--pod-token-file", AgentSecretsTokenDir+"/"+AgentSecretsTokenFile, "--agent-secrets-bin", r.tools.AgentSecrets)
+		shim = append(shim, "--agent-secrets-key-dir", AgentSecretsKeyDir, "--pod-token-file", AgentSecretsTokenDir+"/"+AgentSecretsTokenFile, "--"+shimwire.AgentSecretsBinFlag, r.tools.AgentSecrets)
 		if l.proxiesGitHub() {
 			shim = append(shim, "--github-forwarder", dir+"/"+gitHubForwarderFile)
 		}
