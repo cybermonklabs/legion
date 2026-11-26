@@ -8195,11 +8195,8 @@ So a deployment that keeps volumes names a regional class in `microvm.storage_cl
 **What the next pod finds.**
 The issue's next pod finds the volume as the last pod left it: the clone, the workspace with each commit and edit that no role pushed, every ignored file, the scratch, the caches and each role's state home.
 Each role's `$HOME`, its `/tmp` and a test Postgres are not on the volume, so they go with the pod.
-`workspace-init` keeps the clone and workspace it finds, fetching their GitHub delta and rewriting
-the clone's narrow refspecs and settings.
-On a volume kept across the 2026-11-26 layout change, an older clone can still name
-`/legion/feed` through its alternates; that path remains reachable through the whole-volume mount,
-and the clone keeps the older remote-tracking refs until the volume is made again.
+`workspace-init` keeps the clone and workspace it finds, fetching their GitHub delta and rewriting the clone's narrow refspecs and settings.
+On a volume kept across the 2026-11-26 layout change, an older clone can still name `/legion/feed` through its alternates; that path remains reachable through the whole-volume mount, and the clone keeps the older remote-tracking refs until the volume is made again.
 An agent that resumes on a kept volume is told `LEGION_WORKSPACE_RECREATED=false`, because the workspace keeps the creation record of its first pod.
 
 **What an agent plants.**
@@ -9001,9 +8998,8 @@ The Go coordinator's pods (`packages/daemon`) keep to that rule with one init co
   completed clone into place.
   A retry finds an existing clone and fetches its delta instead.
 
-  The container reads the provisioning token for its GitHub transfer, and the gh refresher updates
-  each live pod's provisioning Secret to the current lease. A failed provision is retried only by
-  the kubelet's three-restart grace.
+  The container reads the provisioning token for its GitHub transfer, and the gh refresher updates each live pod's provisioning Secret to the current lease.
+  A failed provision is retried only by the kubelet's three-restart grace.
   Provisioning runs no git or jj configuration an agent can plant before it starts.
 
 `packages/daemon/internal/runtime/sandbox/boundary_test.go` runs `workspace-init` exactly as the
