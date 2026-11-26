@@ -10,7 +10,7 @@ import { installIntersectionObserver } from "../../__tests__/intersection-observ
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { installResizeObserver } from "../../__tests__/scroll-box";
 import { api } from "../../api/client";
-import { prependEventToLog } from "../../api/event-feed";
+import type { EventPages } from "../../api/event-feed";
 import type {
   Artifact,
   DispatchEvent,
@@ -28,6 +28,7 @@ import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { measureNearWords } from "./clamp-fixtures";
 import { HistoryHandoff } from "./HistoryHandoff";
+import { HISTORY_EXCLUDED_TYPES } from "./history-model";
 import { type AddressedTurn, IssueHistory } from "./IssueHistory";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -71,13 +72,17 @@ function claim(seq: number): DispatchEvent {
 }
 
 /** The reads the history makes (`IssueHistory.tsx`), stubbed: the log answers `events` and the
- *  issue's messages read `messages`, with no comment and no ask. Returns what restores them. */
+ *  issue's messages read `messages`, with no comment and no ask; the read of the first event past
+ *  the reader's read mark answers `boundary`. Returns what restores them. */
 function stubHistoryReads(
   events: readonly DispatchEvent[],
-  messages: readonly MessageRead[] = []
+  messages: readonly MessageRead[] = [],
+  boundary: readonly DispatchEvent[] = []
 ): () => void {
   const reads = [
-    spyOn(api, "getIssueEvents").mockResolvedValue([...events]),
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+      options?.after === undefined ? [...events] : [...boundary]
+    ),
     spyOn(api, "listComments").mockResolvedValue([]),
     spyOn(api, "listIssueMessages").mockResolvedValue([...messages]),
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
@@ -135,8 +140,23 @@ function installRowLayout(): { restore: () => void } {
   };
 }
 
-// The history reads `["events", <key>]`, the query the live feed prepends every published event
-// into at the front of page 0 (`prependEventToLog`), and draws it newest first: each arrival
+/** The history's own log, which it reads filtered (`IssueHistory.tsx`). */
+const HISTORY_LOG = ["events", KEY, "history"];
+
+/** An event arriving in the history's log, as the read that the feed's refresh starts answers it
+ *  (`eventRefreshTargets` invalidates `["events", <key>]`, a prefix of the history's key): page 0
+ *  with the event at its head, as `prependEventToLog` writes it into Activity's log. */
+function arriveInHistoryLog(queryClient: QueryClient, event: DispatchEvent): void {
+  queryClient.setQueryData<EventPages>(HISTORY_LOG, (current) => {
+    if (current === undefined) return current;
+    return {
+      ...current,
+      pages: [[event, ...(current.pages[0] ?? [])], ...current.pages.slice(1)],
+    };
+  });
+}
+
+// The history reads `["events", <key>, "history"]` and draws it newest first: each arrival
 // pushes a reader who is down in the history one entry further down unless something holds
 // their place, as the old Activity tab's `ViewportAnchor` did. Each entry carries
 // `data-history-entry`, its own id, the identity the anchor follows.
@@ -174,7 +194,7 @@ test("an event arriving while the reader is in the history leaves their entry wh
     const before = reading?.getBoundingClientRect().top;
 
     act(() => {
-      prependEventToLog(queryClient, claim(13));
+      arriveInHistoryLog(queryClient, claim(13));
     });
     await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(13));
 
@@ -237,7 +257,7 @@ test("an event arriving just after midnight leaves the entry the reader reads wh
     // Midnight passes; the first event of the new day arrives.
     setSystemTime(new Date(2026, 10, 20, 0, 0, 30, 0));
     act(() => {
-      prependEventToLog(queryClient, claim(13));
+      arriveInHistoryLog(queryClient, claim(13));
     });
     await waitFor(() =>
       expect(
@@ -329,7 +349,7 @@ test("a reader on one of two threads whose events are unread keeps their entry w
     const before = reading?.getBoundingClientRect().top;
 
     act(() => {
-      prependEventToLog(queryClient, claim(7));
+      arriveInHistoryLog(queryClient, claim(7));
     });
     await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(9));
 
@@ -535,12 +555,14 @@ test("a repaired block's words are a link to its question's address, and its id 
 const FOLLOWING = "default /issues/CORE-1/messages";
 
 /** The history of `KEY` with nothing above it but a query client that never retries, drawn in
- *  `container` where one is given, at the address of the turn `item` where one is given, and
- *  under the names a page published of its batched read (`published`) where those are given. */
+ *  `container` where one is given, at the address of the turn `item` where one is given, under
+ *  the names a page published of its batched read (`published`) where those are given, and with
+ *  the read mark `visitMark` of the visit (99,999 unless a case gives one). */
 function drawHistory(
   item: string | undefined,
   container?: HTMLElement,
-  published?: PublishedReferences
+  published?: PublishedReferences,
+  visitMark = 99999
 ): {
   queryClient: QueryClient;
   unmount: () => void;
@@ -555,8 +577,8 @@ function drawHistory(
       activityFollowing={undefined}
       issue={issue}
       item={item === undefined ? undefined : { following: FOLLOWING, id: item }}
-      state={{ [KEY]: { dismissed: [], last_read_seq: 99999, pinned: false, seq: 0 } }}
-      visitMark={99999}
+      state={{ [KEY]: { dismissed: [], last_read_seq: visitMark, pinned: false, seq: 0 } }}
+      visitMark={visitMark}
     />
   );
   const { unmount } = render(
@@ -585,7 +607,7 @@ function failLogRefetchThenFirstRead(
   entries: number,
   message?: string
 ): Promise<void> {
-  const key = ["events", KEY];
+  const key = HISTORY_LOG;
   return failRefreshOverHeld({
     client: queryClient,
     held: "the log",
@@ -681,17 +703,16 @@ test("a failed read of the log once the history holds it keeps every entry it ho
     const failing = spyOn(api, "getIssueEvents").mockRejectedValue(new Error("the log is down"));
     try {
       await act(async () => {
-        await drawn.queryClient.refetchQueries({ queryKey: ["events", KEY] });
+        await drawn.queryClient.refetchQueries({ queryKey: HISTORY_LOG });
       });
       expect(failing).toHaveBeenCalled();
       expect(
         document.querySelectorAll("[data-event-seq]"),
         "a failed read of the log erased the history it held"
       ).toHaveLength(3);
-      expect(
-        drawn.queryClient.getQueryState(["events", KEY])?.status,
-        "the refetch did not fail"
-      ).toBe("error");
+      expect(drawn.queryClient.getQueryState(HISTORY_LOG)?.status, "the refetch did not fail").toBe(
+        "error"
+      );
       expect(
         screen.queryByRole("alert"),
         "a failed refetch said a failure over the entries it held"
@@ -791,7 +812,7 @@ test("a newer upload that joins a run drawn keeps the run's Pin and the focus on
     expect(document.activeElement).toBe(pin);
 
     act(() => {
-      prependEventToLog(drawn.queryClient, upload(4, 5, "c.png"));
+      arriveInHistoryLog(drawn.queryClient, upload(4, 5, "c.png"));
     });
     await waitFor(() =>
       expect(document.querySelector('[data-history-uploads="3"]')).not.toBeNull()
@@ -842,9 +863,11 @@ test("the history draws 20 entries at a time, and Show more says how many are le
       "Show more went with the last entries and did not move the focus to the first it drew"
     ).toBe(true);
     expect(
-      api.getIssueEvents,
+      (api.getIssueEvents as Mock<typeof api.getIssueEvents>).mock.calls.filter(
+        ([, options]) => options?.after === undefined
+      ),
       "a press that drew entries already read read the log"
-    ).toHaveBeenCalledTimes(1);
+    ).toHaveLength(1);
   } finally {
     unmount?.();
     restoreReads();
@@ -1232,7 +1255,7 @@ test("a history Retry pressed by keyboard keeps the focus while it reads and whe
   try {
     const drawn = drawHistory(undefined);
     unmount = drawn.unmount;
-    const fetchStatus = () => drawn.queryClient.getQueryState(["events", KEY])?.fetchStatus;
+    const fetchStatus = () => drawn.queryClient.getQueryState(HISTORY_LOG)?.fetchStatus;
     (await screen.findByRole("button", { name: SHOW_MORE })).focus();
     await userEvent.keyboard("{Enter}");
     const older = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
@@ -1462,7 +1485,7 @@ test("Show more pressed by keyboard keeps the focus while its page is read, then
   try {
     const drawn = drawHistory(undefined);
     unmount = drawn.unmount;
-    const fetchStatus = () => drawn.queryClient.getQueryState(["events", KEY])?.fetchStatus;
+    const fetchStatus = () => drawn.queryClient.getQueryState(HISTORY_LOG)?.fetchStatus;
     const more = await screen.findByRole("button", { name: SHOW_MORE });
     const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
     const before = new Set(list.querySelectorAll("a[href], button"));
@@ -1576,7 +1599,7 @@ test("two presses of Show more before a render read its page once, and the focus
   try {
     const drawn = drawHistory(undefined);
     unmount = drawn.unmount;
-    const fetchStatus = () => drawn.queryClient.getQueryState(["events", KEY])?.fetchStatus;
+    const fetchStatus = () => drawn.queryClient.getQueryState(HISTORY_LOG)?.fetchStatus;
     const more = await screen.findByRole("button", { name: SHOW_MORE });
     const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
     const before = new Set(list.querySelectorAll("a[href], button"));
@@ -1695,7 +1718,7 @@ test("Show more pressed while a refetch of the log is out reads the next page", 
   try {
     const drawn = drawHistory(undefined);
     unmount = drawn.unmount;
-    const fetchStatus = () => drawn.queryClient.getQueryState(["events", KEY])?.fetchStatus;
+    const fetchStatus = () => drawn.queryClient.getQueryState(HISTORY_LOG)?.fetchStatus;
     const more = await screen.findByRole("button", { name: SHOW_MORE });
     readFirst = () => refetched.promise;
     act(() => {
@@ -2392,7 +2415,7 @@ test("a press of Show more moves the focus to the first entry it drew though a c
     act(() => more.focus());
     await userEvent.keyboard("{Enter}");
     await waitFor(() =>
-      expect(drawn.queryClient.getQueryState(["events", KEY])?.fetchStatus).toBe("idle")
+      expect(drawn.queryClient.getQueryState(HISTORY_LOG)?.fetchStatus).toBe("idle")
     );
     await waitFor(() => expect(drawnEntries()).toHaveLength(2 * PAGE_SIZE));
     const added = box.querySelector<HTMLElement>('[data-history-entry="file:200"] a[href]');
@@ -3262,6 +3285,88 @@ test("a block's line in the history reads a reference as its target's name", asy
   } finally {
     unmount?.();
     listIssueAsks.mockRestore();
+    restoreReads();
+  }
+});
+
+// The history leaves the nine kinds of event that write a post out of its read of the log
+// (`HISTORY_EXCLUDED_TYPES`), so a log of thousands of comments is read in one request, and holds
+// the filtered pages under its own key: Activity's key holds every event, and never a filtered page.
+test("the history reads the log without the events that write a post, under its own key", async () => {
+  const restoreReads = stubHistoryReads([claim(3), claim(2), claim(1)]);
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    await waitFor(() => expect(drawnEntries()).toHaveLength(3));
+
+    expect(
+      drawn.queryClient.getQueryData(["events", KEY]),
+      "the history's filtered pages are held under Activity's key"
+    ).toBeUndefined();
+    expect(
+      drawn.queryClient.getQueryData<EventPages>(HISTORY_LOG)?.pages.flat(),
+      "the history's own key holds no filtered page"
+    ).toHaveLength(3);
+    expect(
+      api.getIssueEvents,
+      "the history's first read did not leave out the events that write a post"
+    ).toHaveBeenCalledWith(KEY, {
+      exclude_types: HISTORY_EXCLUDED_TYPES,
+      limit: 200,
+      order: "desc",
+    });
+    expect(HISTORY_EXCLUDED_TYPES.split(",")).toEqual([
+      "comment.answered",
+      "comment.created",
+      "comment.deleted",
+      "comment.edited",
+      "message.accepted",
+      "message.answered",
+      "message.created",
+      "message.deleted",
+      "message.edited",
+    ]);
+  } finally {
+    unmount?.();
+    restoreReads();
+  }
+});
+
+// A thread whose created event the filtered log leaves out carries no place in the log, so
+// whether it is new is told from when it began against the first event past the read mark, which
+// one read of the log's own answers, as the Conversation tab tells it. The thread that began
+// after the mark is new and the one before it is not, with the line that says what is new
+// between them.
+test("a thread whose created event the filtered log leaves out is new where it began after the read mark, with the line that says what is new between the threads", async () => {
+  // The first event past the read mark, a comment, which the history's read leaves out.
+  const boundary = {
+    ...claimAgo(6, 120),
+    payload: { id: "boundary" },
+    type: "comment.created",
+  } as unknown as DispatchEvent;
+  const restoreReads = stubHistoryReads(
+    [claimAgo(3, 600)],
+    [agentMessage("m-before", 300), agentMessage("m-after", 50)],
+    [boundary]
+  );
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined, undefined, undefined, 5).unmount;
+    await waitFor(() => expect(drawnEntries()).toHaveLength(3));
+
+    expect(api.getIssueEvents).toHaveBeenCalledWith(KEY, { after: 5, limit: 1 });
+    const order = [...document.querySelectorAll("[data-history-day] > ol > li")].map(
+      (item) => item.getAttribute("data-history-entry") ?? item.getAttribute("aria-label")
+    );
+    expect(
+      order,
+      "the thread after the read mark is not new, or the line that says what is new does not stand between the threads"
+    ).toEqual(["thread:m-after", CONTROL_LABELS.history_unread, "thread:m-before", "event:3"]);
+  } finally {
+    unmount?.();
     restoreReads();
   }
 });

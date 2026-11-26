@@ -25,6 +25,7 @@ import { Entry, runKeys } from "./history-entries";
 import {
   buildHistory,
   comparePlaces,
+  HISTORY_EXCLUDED_TYPES,
   HISTORY_PAGE,
   type HistoryPlace,
   historyBlocks,
@@ -112,25 +113,38 @@ export function IssueHistory({
 }): ReactNode {
   const issueKey = issue.key;
   const queryClient = useQueryClient();
+  // The history's own filtered read of the log, leaving out the post-write event types it never
+  // draws (`HISTORY_EXCLUDED_TYPES`), under its own key so it never shares Activity's unfiltered
+  // cache. `eventRefreshTargets` invalidates `["events", issueKey]`, which covers this key too.
   const log = useInfiniteQuery({
     initialPageParam: null as number | null,
-    queryKey: ["events", issueKey],
+    queryKey: ["events", issueKey, "history"],
     queryFn: ({ pageParam }) =>
       api.getIssueEvents(
         issueKey,
-        pageParam === null ? { limit: PAGE, order: "desc" } : { before: pageParam, limit: PAGE }
+        pageParam === null
+          ? { exclude_types: HISTORY_EXCLUDED_TYPES, limit: PAGE, order: "desc" }
+          : { before: pageParam, exclude_types: HISTORY_EXCLUDED_TYPES, limit: PAGE }
       ),
     // A page can hold more than the server's 200 once streamed events sit above a full response
     // (mergeEventPages, prependEventToLog); it is still a full page with older events beneath it.
     getNextPageParam: (page) => (page.length >= PAGE ? page.at(-1)?.seq : undefined),
-    // The feed (api/event-feed.ts) prepends events as they are published; a refetch whose read
-    // predates one of them must not take it back.
+    // A refetch whose read predates an event held in page 0 must not take that event back.
     structuralSharing: (current, incoming) =>
       replaceEqualDeep(
         current,
         mergeEventPages(current as EventPages | undefined, incoming as EventPages)
       ),
   });
+  // The first event of the whole log past the reader's read mark, shared with the Conversation
+  // tab under its key: a thread whose created event the filtered log left out carries `seq` 0,
+  // so its `created_at` against this moment tells whether the thread is new (`history-model.ts`).
+  const unreadBoundary = useQuery({
+    enabled: visitMark > 0,
+    queryKey: ["events", issueKey, "unread-boundary", visitMark],
+    queryFn: () => api.getIssueEvents(issueKey, { after: visitMark, limit: 1 }),
+  });
+  const unreadFrom = unreadBoundary.data?.[0]?.created_at;
   // The outline's own reads, under its keys, so the threads cost no request of their own: never
   // stale here, since the outline's own reads and every invalidation keep them current, so an
   // open of Details reads the cache however long ago the outline read it. The asks tell a reply
@@ -198,6 +212,7 @@ export function IssueHistory({
       ...(loadedFrom === undefined ? {} : { loadedFrom }),
       messages: messages.data,
       today,
+      ...(unreadFrom === undefined ? {} : { unreadFrom }),
     });
   }, [
     asks.data,
@@ -211,6 +226,7 @@ export function IssueHistory({
     refusesCheck,
     results.data,
     today,
+    unreadFrom,
     visitMark,
   ]);
   // The key each run of uploads is drawn under, held from one render to the next by its files'

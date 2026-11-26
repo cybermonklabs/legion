@@ -1114,3 +1114,61 @@ test("while the blocks are not known, a repaired block's line names a block, nev
     CONTROL_LABELS.history_gone_block
   );
 });
+
+// When post-write events are left out of the log, a thread carries sequence 0; entries of one
+// instant are ordered by id so a thread stands at the same place among the paged events as when
+// its created event is in the log.
+test("a thread stands at the same place among paged events when created events are left out of the log", () => {
+  seq = 0;
+  const instant = "2026-11-15T10:00:00Z";
+  const first = comment("c-1", instant, AGENT);
+  const second = comment("c-2", instant, AGENT);
+  const claim = event("issue.claimed", "2026-11-15T09:59:00Z", {});
+  const firstCreated = event("comment.created", instant, { id: first.id }, AGENT);
+  const secondCreated = event("comment.created", instant, { id: second.id }, AGENT);
+  const handoff = event("handoff.recorded", "2026-11-15T10:01:00Z", {});
+
+  const order = (log: readonly DispatchEvent[]) =>
+    flat(daysOf(log, 0, [first, second])).map((entry) => entry.id);
+
+  expect(
+    order([claim, handoff]),
+    "leaving created events out of the log changed the order of threads among the paged events"
+  ).toEqual(order([claim, firstCreated, secondCreated, handoff]));
+});
+
+// A thread whose created event the log read does not hold carries sequence 0, and is new where
+// it began at or after the first event past the read mark, as the Conversation tab says a post is
+// new; threads whose created event is held keep the sequence rule.
+test("a thread whose created event is left out of the log is new where it began at or after the first unread event", () => {
+  seq = 0;
+  const before = comment("before", "2026-11-15T09:00:00Z", AGENT);
+  const after = comment("after", "2026-11-15T11:00:00Z", REVIEWER);
+  const events = [
+    event("issue.claimed", "2026-11-15T08:00:00Z", {}),
+    event("issue.claimed", "2026-11-15T12:00:00Z", {}),
+  ];
+  const draw = (unreadFrom: string | undefined) =>
+    flat(
+      buildHistory({
+        artifacts: [],
+        asks: [],
+        blocks: new Map(),
+        comments: [before, after],
+        events,
+        lastReadSeq: 1,
+        messages: [],
+        today: "2026-11-15",
+        ...(unreadFrom === undefined ? {} : { unreadFrom }),
+      })
+    ).map((entry) => entry.id);
+
+  expect(
+    draw("2026-11-15T10:30:00Z"),
+    "the thread after the read mark is not new, or the line that says what is new is not between the threads"
+  ).toEqual(["event:2", "thread:after", "unread", "thread:before", "event:1"]);
+  expect(
+    draw(undefined),
+    "threads were told apart as read and unread while the first unread event is not known"
+  ).toEqual(["event:2", "thread:after", "thread:before", "unread", "event:1"]);
+});

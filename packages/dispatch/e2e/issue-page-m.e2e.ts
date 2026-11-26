@@ -127,7 +127,6 @@ import {
   historyPanel,
   historyShowMore,
   historyShowMoreState,
-  isOlderPageRead,
   newestHistoryEntry,
   olderPageAnswered,
   putStepExperiment,
@@ -1212,6 +1211,25 @@ async function seedMessages(title: string, count: number, words = "Existing mess
   return { issue, newest };
 }
 
+/** Moves the status of `key` `count` times, back and forth between two statuses, so each write
+ *  is an `issue.updated` of its own and a line of the history. The history's read of the log
+ *  leaves out every message and comment, so a row that needs a log of many events writes these. */
+async function writeStatusMoves(key: string, count: number): Promise<void> {
+  let status = (await getIssue(key)).status;
+  for (let index = 0; index < count; index += 1) {
+    status = status === "in_progress" ? "testing" : "in_progress";
+    await patchIssue(key, { status });
+  }
+}
+
+/** An issue with `count` status moves (`writeStatusMoves`). */
+async function seedStatusMoves(title: string, count: number) {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title });
+  await writeStatusMoves(issue.key, count);
+  return issue;
+}
+
 test("a reader scrolled down the history keeps their place when a new entry arrives", async ({
   browser,
 }) => {
@@ -1390,20 +1408,24 @@ test("entries made before the reader's midnight are found in the day the history
 // the entries already on screen, so the entry the reader is on does not move; and the reader who
 // presses on reaches the log's start, where the control goes.
 test("loading older history entries keeps the reader anchor", async ({ browser }) => {
-  // The seed's 205 messages and the presses that draw 200 of them, 20 at a time.
+  // The seed's 205 status moves and the presses that draw 200 of them, 20 at a time.
   test.setTimeout(120_000);
-  // Five more than the history's 200-event page (`IssueHistory.tsx`), so a second page exists.
-  const { issue, newest } = await seedMessages("Older events", 205, "Older message");
+  // Five more than the history's 200-event page (`IssueHistory.tsx`), so a second page exists:
+  // each is a line of the history, which a message of the daemon's is not, since the history's
+  // read of the log leaves every message and comment out.
+  const issue = await seedStatusMoves("Older events", 205);
   const events = await allEvents(issue.key);
   const created = events.find((event) => event.type === "issue.created");
   if (created === undefined) throw new Error(`${issue.key} recorded no issue.created`);
+  const newest = events[0];
+  if (newest === undefined) throw new Error(`${issue.key} recorded no event`);
 
   const context = await reader(browser, "alice");
   try {
     const page = await context.newPage();
     await gotoIssue(page, `/issues/${issue.key}/conversation`);
-    // Every write of this issue is a message of the Legion daemon, which the outline draws no
-    // row for, so the tree is drawn with no row in it.
+    // Every write of this issue is a status move, which the outline draws no row for, so the
+    // tree is drawn with no row in it.
     await expectIssuePageDrawn(page);
     await expect(page.getByRole("button", { name: CONTROL_LABELS.show_more })).toHaveCount(0);
 
@@ -1413,7 +1435,11 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
     // move the entry the reader is on is a history that draws something else in place of its
     // list while that page is read, or that hands the focus to a control off screen once it lands.
     await withoutScrollAnchoring(page);
-    await seededHistoryEntry(page, historyItem(page, newest.id), newest.created_at);
+    await seededHistoryEntry(
+      page,
+      historyPanel(page).locator(`[data-event-seq="${newest.seq}"]`),
+      newest.created_at
+    );
     await expect(
       historyShowMore(page),
       "Show more does not say that an older page of the log is unread"
@@ -1487,13 +1513,15 @@ const OVER_ENTRIES = 205;
 // The log's first page is its newest 200 events, and on a real issue most of them are comments
 // of people, which the outline draws and the history leaves out. Found by a row on copies of real
 // issues: the first page held 0, 12 or 17 entries of the history, which drew them under a Show
-// more that said no number, the older pages unread. The history reads older pages before it
-// draws, one at a time, until it holds more entries than it draws at once or the log has ended.
-// Here the log's first page holds none of its entries and the second all of them: the first view
-// draws 20, Show more says how many are left, and the reader presses down to the log's start.
+// more that said no number, the older pages unread. The history now reads the log without the
+// events that write a post (`exclude_types`), so a log of thousands of comments is read in one
+// request. Here the log read whole holds the person's comments in its first page of 200 and the
+// history's entries in its second: the first view is one read of the log that answers every entry,
+// draws 20, says how many are left, and the reader presses down to the log's start with no read
+// of another page.
 // SLOW(>=2s): 30 messages and 205 comments written, a sign-in, one load of the history and its
 // read down.
-test("the history reads older pages before it draws, so its first view draws 20 entries and Show more says how many are left", async ({
+test("the history leaves the comments of people out of its read of the log, so its first view is one read that draws 20 entries and Show more says how many are left", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -1522,11 +1550,13 @@ test("the history reads older pages before it draws, so its first view draws 20 
   const context = await reader(browser, "alice");
   try {
     const page = await context.newPage();
-    // Each read of a page of the log older than the first that the page sends.
-    const olderReads: string[] = [];
+    // Each read of a page of the log that the page sends: 200 events long, as the history reads
+    // them, so the read of the first event past the read mark (`after`) is none of them.
+    const logReads: string[] = [];
     page.on("request", (request) => {
-      if (isOlderPageRead(new URL(request.url()), issue.key)) {
-        olderReads.push(new URL(request.url()).search);
+      const url = new URL(request.url());
+      if (url.pathname === `/api/v1/issues/${issue.key}/events` && !url.searchParams.has("after")) {
+        logReads.push(url.search);
       }
     });
     await gotoIssue(page, `/issues/${issue.key}/activity`);
@@ -1540,7 +1570,7 @@ test("the history reads older pages before it draws, so its first view draws 20 
       "the history's first view did not draw 20 entries"
     ).toHaveCount(PAGE_SIZE);
     await expect(historyShowMore(page)).toHaveText(showMoreName(total - PAGE_SIZE));
-    expect(olderReads, "the first view did not read the older page once").toHaveLength(1);
+    expect(logReads, "the first view sent more than one read of the log").toHaveLength(1);
 
     await readHistoryDown(page, issue.key, events.length, (control) => control.click(), "gone");
     await seededHistoryEntry(
@@ -1549,7 +1579,7 @@ test("the history reads older pages before it draws, so its first view draws 20 
       created.created_at
     );
     await expect(historyEntries(page)).toHaveCount(total);
-    expect(olderReads, "reading down read an older page again").toHaveLength(1);
+    expect(logReads, "reading down read the log again").toHaveLength(1);
   } finally {
     await context.close();
   }
@@ -1557,22 +1587,23 @@ test("the history reads older pages before it draws, so its first view draws 20 
 
 /**
  * An issue of `title` whose log's first page of 200 events ends in a run of ten uploads by one
- * author that straddles it (`history-model.ts`): eight uploads, `between` messages of the
- * daemon's, which split no run, the run's two newest uploads within the minute, and as many
- * messages after them as fill that page, so the first page holds the run's two newest uploads and
- * the older page its other eight. That page holds 199 entries with 19 or 20 messages between the
+ * author that straddles it (`history-model.ts`): eight uploads, `between` status moves, which
+ * split no run, the run's two newest uploads within the minute, and as many status moves after
+ * them as fill that page, so the first page holds the run's two newest uploads and the older page
+ * its other eight. A status move is an event the history's read of the log keeps; a message of
+ * the daemon's is not. That page holds 199 entries with 19 or 20 status moves between the
  * uploads: the history draws them 20 at a time down to the 180th, and Show more then says "19+",
  * fewer entries left than a press draws (`historyNextPage`), so that press reads the older page,
- * which extends the run, before it draws. With 19 messages between the uploads the run is the
+ * which extends the run, before it draws. With 19 status moves between the uploads the run is the
  * 180th entry, the last drawn above Show more; with 20, the newest of them stands between the run
- * and Show more. Answers the issue's key, the newest message between the uploads, the newest
+ * and Show more. Answers the issue's key, the newest status move between the uploads, the newest
  * upload's event and the log's events.
  */
 async function seedRunAcrossPage(
   title: string,
   between: 19 | 20
 ): Promise<{
-  between: { readonly created_at: string; readonly id: string };
+  between: DispatchEvent;
   events: DispatchEvent[];
   key: string;
   newestUpload: DispatchEvent;
@@ -1586,15 +1617,12 @@ async function seedRunAcrossPage(
       name: `shot-${index}.png`,
     });
   for (let index = 0; index < 8; index += 1) await upload(index);
-  let newestBetween: { readonly created_at: string; readonly id: string } | undefined;
-  for (let index = 0; index < between; index += 1) {
-    newestBetween = await createMessage(key, { body: `Between the uploads ${index}` }, asDaemon);
-  }
-  if (newestBetween === undefined) throw new Error(`${key} holds no message between the uploads`);
+  await writeStatusMoves(key, between);
+  const [newestBetween] = await getIssueEvents(key, { limit: 1, order: "desc" });
+  if (newestBetween === undefined)
+    throw new Error(`${key} holds no status move between the uploads`);
   for (let index = 8; index < 10; index += 1) await upload(index);
-  for (let index = 0; index < 200 - 2 - between; index += 1) {
-    await createMessage(key, { body: `Later message ${index}` }, asDaemon);
-  }
+  await writeStatusMoves(key, 200 - 2 - between);
   const events = await allEvents(key);
   const newestUpload = events.find(
     (one) => one.type === "artifact.created" && one.payload.artifact.name === "shot-9.png"
@@ -1723,14 +1751,14 @@ test("loading older keeps the reader's place on an upload run the older page ext
 
 // The focus rule of `IssueHistory.tsx`: Show more pressed by keyboard where it reads the log's
 // next page hands the focus to a control the page it read added, never one out of the reader's
-// view, where a press of Enter would follow a link the reader cannot see. Here a message of the
-// daemon's stands between the run and Show more, so the older page's files of the run land above
-// that message and push every control below it down by their height: the first entry the press
-// draws, the next message between the uploads, is pushed down under Details' foot. Found by the
+// view, where a press of Enter would follow a link the reader cannot see. Here a status move
+// stands between the run and Show more, so the older page's files of the run land above that
+// line and push every control below it down by their height: the first entry the press
+// draws, the next status move between the uploads, is pushed down under Details' foot. Found by the
 // tester on a running build of 864163bf with a copy of a large real issue: after the press by
 // keyboard the focus was on a turn's time link at 1,425 px, the view ending at 900, with 13 files
 // of a run (572 px) added above the entry between that run and the control; the next page's Retry
-// did the same. The run and the message stand at the foot of the log's first page
+// did the same. The run and the status move stand at the foot of the log's first page
 // (`seedRunAcrossPage`), so the reader first draws that page's entries down to them, by presses
 // dispatched to Show more while it draws the next ones at once, which move neither the focus nor
 // Details.
@@ -1765,10 +1793,11 @@ test("Show more by keyboard keeps the focus in view when the older page it reads
       firstPage > 0 && firstPage < 10,
       `the log's first page holds ${firstPage} of the run's 10 uploads, so the run does not straddle the page and the row proves nothing`
     ).toBe(true);
-    await seededHistoryEntry(page, historyItem(page, between.id), between.created_at);
+    const betweenLine = historyPanel(page).locator(`[data-event-seq="${between.seq}"]`);
+    await seededHistoryEntry(page, betweenLine, between.created_at);
     await expect(
-      historyPanel(page).getByText("Between the uploads 19", { exact: true }),
-      "the message between the uploads is not drawn on the first page"
+      betweenLine,
+      "the status move between the uploads is not drawn on the first page"
     ).toHaveCount(1);
     const showMore = historyNextPage(page);
     await showMore.focus();
@@ -4495,13 +4524,14 @@ async function readDownByShowMore(page: Page, key: string, events: number): Prom
  *  its list open, is taller than Details' view at 1440 px and at 390. */
 const MANY_AGENTS = 16;
 
-/** How many notes the history of each of the two rows below holds: more than the first page of
- *  200 the history reads, so Show more reads on. */
+/** How many notes the history of each of the two rows below holds: more than it draws at once,
+ *  and more than the log's first page of 200, so reading down takes many presses of Show more. */
 const LONG_HISTORY_NOTES = 205;
 
-/** An issue whose history holds `LONG_HISTORY_NOTES` notes of the daemon's, so Show more reads
- *  on, and which `MANY_AGENTS` Legion agents worked, so the collaborators' row with its list open
- *  is taller than Details' view: its key, and how many events its log holds. */
+/** An issue whose history holds `LONG_HISTORY_NOTES` notes of the daemon's, which the history
+ *  reads from the issue's messages, and which `MANY_AGENTS` Legion agents worked, so the
+ *  collaborators' row with its list open is taller than Details' view: its key, and how many
+ *  events its log holds. */
 async function seedCollaboratorsOverLongHistory(): Promise<{ events: number; key: string }> {
   const { issue } = await seedMessages(
     "Collaborators over a long history",
@@ -4787,6 +4817,61 @@ test("t v after the history is read down by Show more brings the history's headi
     }
   }
   expect(outOfPlace, outOfPlace.join("; ")).toEqual([]);
+});
+
+// `t v` brings the history's heading to the top of Details' view as the key's focus lands: the
+// history's own landing puts it there as soon as its log is drawn, which, with the log already
+// read, is the first frame after the key, and the focus follows two frames later. A row above the
+// history that changes height between the two moved the heading from the top, and the hold of the
+// landed place kept it there: 18 px above Details' view on a copy of a real issue at 390 px, by
+// pointer and by keyboard. Here the row above the history shrinks by 18 px in the very turn the
+// heading says it has landed (`history-heading-landed`, which the history's heading raises), and
+// the heading must stand at the top of Details' view once the key has focused the history. The
+// browser's own scroll anchoring is turned off, so the row reads the page's own hold alone.
+// SLOW(>=2s): 30 messages written, a sign-in, the history read, Details closed and opened again.
+test("t v at 390 px with the history's log read leaves its heading at the top of Details' view when a row above it shrinks as the key lands", async ({
+  browser,
+}) => {
+  const { issue, newest } = await seedMessages("A heading after a key", 30);
+  const context = await reader(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize(PHONE);
+    await openHistory(page, issue.key, newest);
+    await withoutScrollAnchoring(page);
+    await readyForPageKey(page, PHONE);
+    await page.evaluate(() => {
+      document.addEventListener(
+        "history-heading-landed",
+        () => {
+          const row = document.querySelector(
+            '[data-testid="issue-history"]'
+          )?.previousElementSibling;
+          if (!(row instanceof HTMLElement)) return;
+          row.style.marginBottom = "-18px";
+          document.documentElement.dataset.rowAboveShrank = "";
+        },
+        { once: true }
+      );
+    });
+
+    await page.keyboard.press("t");
+    await page.keyboard.press("v");
+    await expect(historyPanel(page), "t v did not focus the history").toBeFocused();
+    await expect(
+      page.locator("html"),
+      "the row above the history did not shrink, so the row proves nothing"
+    ).toHaveAttribute("data-row-above-shrank", "");
+    await detailsStandStill(page, "t v");
+    const view = await historyViewport(page);
+    const heading = await boxOf(historyHeading(page), "the history's heading");
+    expect(
+      Math.abs(heading.y - view.top) <= 1,
+      `t v left the History heading ${Math.round(heading.y - view.top)} px from the top of Details' view`
+    ).toBe(true);
+  } finally {
+    await context.close();
+  }
 });
 
 // The address of an agents' turn opens Details with that turn marked

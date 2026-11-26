@@ -2,6 +2,7 @@ import { type InfiniteData, useQuery, useQueryClient } from "@tanstack/react-que
 import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 
+import { api } from "../../api/client";
 import type { DispatchEvent, DisplayTree } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
@@ -16,6 +17,7 @@ import {
   pinnedConversations,
   pinnedEventIds,
 } from "../issue/pins";
+import { fetchPinnedEvents } from "../margin/useMarginItems";
 import { EditedMark } from "../refs/PostMarks";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { EVENT_FRESH } from "../refs/reference-target";
@@ -38,16 +40,19 @@ import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIss
  * and its Unpin. The pins are one list, drawn 20 at a time with Show more under them. The pin of
  * a row itself is the focused row's, in its facts (`FocusedNodeFacts.tsx`).
  *
- * The words come from the reads the outline and the history are drawn from, so the list costs no
- * request of its own: each read here is the outline's, by its definition (`useIssueTree.ts`) and
- * with its options (`EVENT_FRESH`: kept fresh by events, never read again by its age, and by a
- * window focus only while its last read failed), so it shares the outline's answer and is read
- * again only when the outline's is. A record's line is its one line, as the outline draws a
- * node's (`PinLine`), drawn whole, wrapping rather than cut. Where a read has not answered, has
- * failed, or holds no words for a pin - a handoff, an event older than the history has read -
- * the pin is drawn by the page's word for its kind and never by its id. Until the reader's own
- * state has answered, which pins there are is not known: the section draws its heading alone,
- * and says None only once that state holds no pin.
+ * The words come from the reads the outline and the history are drawn from, so the list costs
+ * no request of its own for a pin they hold: each read here is the outline's, by its definition
+ * (`useIssueTree.ts`) and with its options (`EVENT_FRESH`: kept fresh by events, never read again
+ * by its age, and by a window focus only while its last read failed), so it shares the outline's
+ * answer and is read again only when the outline's is. A pinned line of the history that the
+ * history's own pages do not hold - an event that writes a post, which the history's read leaves
+ * out, or one older than the pages read so far - is read by its id once those pages have
+ * answered (`fetchPinnedEvents`), as the margin's Pinned tab reads it. A record's line is its
+ * one line, as the outline draws a node's (`PinLine`), drawn whole, wrapping rather than cut.
+ * Where a read has not answered, has failed, or holds no words for a pin - a handoff - the pin is
+ * drawn by the page's word for its kind and never by its id. Until the reader's own state has
+ * answered, which pins there are is not known: the section draws its heading alone, and says
+ * None only once that state holds no pin.
  *
  * A comment or a message its author corrected carries its mark here as its row in the outline
  * does (INFRA-1523, R2 and R3), read from the same answer as its words: one its author deleted
@@ -76,13 +81,30 @@ export function IssuePins({
   const asks = useQuery({ ...issueAsksQuery(issueKey), ...EVENT_FRESH, enabled: reading });
   const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH, enabled: reading });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH, enabled: reading });
-  // The history's own log, under its key (`IssueHistory.tsx`), which the history under this list
-  // reads: watched here and never asked for, so a pinned line is drawn from the pages it holds.
+  // The history's own filtered log, under its key (`IssueHistory.tsx`), which the history under
+  // this list reads: watched here and never asked for, so a pinned line it holds is drawn from
+  // its pages with no extra read.
   const log = useQuery<InfiniteData<DispatchEvent[]>>({
     enabled: false,
-    queryKey: ["events", issueKey],
+    queryKey: ["events", issueKey, "history"],
   });
-  const events = eventPins.length === 0 ? [] : (log.data?.pages.flat() ?? []);
+  const logEvents = eventPins.length === 0 ? [] : (log.data?.pages.flat() ?? []);
+  // Any pinned event not in the history's pages - a post-write event pinned on the Activity tab,
+  // which the history's filtered read leaves out, or an event older than the pages read so far -
+  // is read by id once the history's pages are in, under the same shape the margin's Pinned tab
+  // uses (`fetchPinnedEvents`), so every pinned line keeps its text and its post's marks.
+  const missingEventPins =
+    log.data === undefined
+      ? []
+      : eventPins.filter((eventId) => !logEvents.some((one) => String(one.id) === eventId));
+  const fetchedEventPins = useQuery({
+    ...EVENT_FRESH,
+    enabled: missingEventPins.length > 0,
+    queryFn: () => fetchPinnedEvents(api.getIssueEvents.bind(api), issueKey, missingEventPins),
+    queryKey: ["events", issueKey, "margin-pinned", missingEventPins],
+  });
+  const events =
+    fetchedEventPins.data === undefined ? logEvents : [...logEvents, ...fetchedEventPins.data];
   /** The record a pin names, as the read that holds it answered it: its text as stored, the
    *  server's reading of it, and for a comment or a message its author's corrections of it
    *  (`edited_at`, `deleted_at`, `deleted_by`), which its line is marked by. None where that read
