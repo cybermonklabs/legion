@@ -1,0 +1,9 @@
+{"kind":"commit","sha":"cd085fe06bed4bb6835f6119567ce6baf1a2f228","paths":["shelf/stock.go"]}
+{"kind":"commit","sha":"a6f58ef375d18005c4d8345b75d2b94cbe4f9f2b","paths":["aisle/sort.go"]}
+{"kind":"commit","sha":"6317269cae91d70c4e8e5eff3142caf42532d905","paths":["shelf/stock.go"]}
+{"kind":"pull","pr":11,"merge":"a6f58ef375d18005c4d8345b75d2b94cbe4f9f2b","heads":2}
+{"kind":"head","pr":11,"sha":"9134632e6104051de637049101740bd310b5d0fc","at":"2001-03-05T09:45:00Z","from":"commit","tip":"cd085fe06bed4bb6835f6119567ce6baf1a2f228","mergeBase":"276d59ee64c153c8e17b136b662bf94d8349ba76","paths":["aisle/sort.go"],"verdicts":[]}
+{"kind":"head","pr":11,"sha":"e5007700813da5c89b77fd0b5c907659a26901b7","at":"2001-03-05T10:30:00Z","from":"commit","tip":"cd085fe06bed4bb6835f6119567ce6baf1a2f228","mergeBase":"cd085fe06bed4bb6835f6119567ce6baf1a2f228","paths":["aisle/sort.go"],"verdicts":[]}
+{"kind":"pull","pr":12,"merge":"6317269cae91d70c4e8e5eff3142caf42532d905","heads":2}
+{"kind":"head","pr":12,"sha":"00f5a4b7aafa493a3cbea2261ac020cc71a265cf","at":"2001-03-05T09:50:00Z","from":"commit","tip":"a6f58ef375d18005c4d8345b75d2b94cbe4f9f2b","mergeBase":"276d59ee64c153c8e17b136b662bf94d8349ba76","paths":["shelf/stock.go"],"verdicts":[{"base":"cd085fe06bed4bb6835f6119567ce6baf1a2f228","conflict":true,"paths":["shelf/stock.go"]}]}
+{"kind":"head","pr":12,"sha":"a9a3e0f773fc4de19377f504346b76307ca394c8","at":"2001-03-05T10:35:00Z","from":"commit","tip":"a6f58ef375d18005c4d8345b75d2b94cbe4f9f2b","mergeBase":"cd085fe06bed4bb6835f6119567ce6baf1a2f228","paths":["shelf/stock.go"],"verdicts":[]}

@@ -1,0 +1,81 @@
+{
+  "branch": "main+conflicts=drawn",
+  "rules": {
+    "main": {
+      "source": "replay",
+      "rule": "main",
+      "branch": "main+conflicts=drawn",
+      "seed": 1,
+      "slowdown": 1,
+      "from": "2001-03-05T09:00:00Z",
+      "to": "2001-03-05T13:00:00Z",
+      "unplaced": 0,
+      "done": 3,
+      "workLeft": 0,
+      "waitOnlyForSlot": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "startedWithoutSlot": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewHolding": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.3125,
+        "max": 2,
+        "hours": 1.25
+      },
+      "priorityTaken": 0.375,
+      "priorityTakenBanded": 0.04791666666666667,
+      "loops": {},
+      "waits": {},
+      "slotHoursInTurn": 2.3333333333333335,
+      "slotHoursNoTurn": 0,
+      "inFlight": {
+        "average": 0.8958333333333334,
+        "max": 2,
+        "hours": 3.5833333333333335
+      },
+      "slotsGivenByDay": {
+        "2001-03-05": 3
+      },
+      "medianSlotWaitMinutes": 23,
+      "firstSlot": {
+        "ACME-1": "2001-03-05T09:25:00Z",
+        "ACME-2": "2001-03-05T10:55:00Z",
+        "ACME-3": "2001-03-05T09:00:00Z"
+      },
+      "doneAt": {
+        "ACME-1": "2001-03-05T11:40:00Z",
+        "ACME-2": "2001-03-05T11:35:00Z",
+        "ACME-3": "2001-03-05T09:40:00Z"
+      },
+      "assumptions": [1, 2, 9, 11, 18],
+      "scenario": "none"
+    }
+  },
+  "checks": {
+    "main": {
+      "log": [
+        {
+          "time": "2001-03-05T10:40:00Z",
+          "msg": "replay: a stretch's conflict drawn",
+          "issue": "ACME-1",
+          "running": "reviewing",
+          "fitted": "reviewing",
+          "start": "2001-03-05T10:10:00Z",
+          "merges": 0,
+          "by": "end",
+          "outcome": "clean"
+        }
+      ]
+    }
+  }
+}

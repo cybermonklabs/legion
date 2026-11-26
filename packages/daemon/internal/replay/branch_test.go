@@ -102,6 +102,58 @@ func TestBranchesAreTheMainBranchAndEachOneKnobChange(t *testing.T) {
 	}
 }
 
+// A fixture can name a branch that changes more than one knob: BranchNamed reads
+// main+<knob>=<value>+<knob>=<value>…, each knob at most once and in any order, as the main branch
+// with each knob a change names set to that change's value and every other knob at the main
+// branch's, under the name it was given. The test reads main+neverStarted=drawn+timing=wall,
+// main+firstStarts=rank+answer=wall+afterSendBack=less-slot-wait, whose knobs it names in another
+// order than the knobs', and main+conflicts=git+neverStarted=drawn: the conflicts knob takes git, a
+// value no list of branches runs (Branches, DiagnosticBranches), which draws as drawn does until the
+// git branch is built, and which a run takes (Branch.check). It refuses a knob named twice, with one
+// value or two, a value its knob does not take in a later change, a change that names no knob of a
+// branch, a change with no value or none at all, and a name that does not begin main+.
+func TestBranchNamedReadsSeveralKnobChangesEachOnce(t *testing.T) {
+	t.Parallel()
+	twoKnobs := MainBranch
+	twoKnobs.Name, twoKnobs.NeverStarted, twoKnobs.Timing = "main+neverStarted=drawn+timing=wall", neverStartedDrawn, valueWall
+	threeKnobs := MainBranch
+	threeKnobs.Name, threeKnobs.FirstStarts, threeKnobs.Answer, threeKnobs.AfterSendBack = "main+firstStarts=rank+answer=wall+afterSendBack=less-slot-wait",
+		firstStartsRank, valueWall, lessSlotWait
+	git := MainBranch
+	git.Name, git.Conflicts, git.NeverStarted = "main+conflicts=git+neverStarted=drawn", conflictsGit, neverStartedDrawn
+	for _, want := range []Branch{twoKnobs, threeKnobs, git} {
+		if got, err := BranchNamed(want.Name); err != nil || got != want {
+			t.Errorf("BranchNamed(%q) is %+v (%v), want %+v", want.Name, got, err, want)
+		}
+	}
+	if err := git.check(); err != nil || git.recordedConflicts() {
+		t.Errorf("the branch %s is refused by a run (%v), or keeps the recorded conflicts (%t)", git.Name, err, git.recordedConflicts())
+	}
+	for _, at := range slices.Concat(Branches(), DiagnosticBranches()) {
+		if at.Branch.Conflicts == conflictsGit {
+			t.Errorf("the lists of branches run %s at f %v, and none runs the conflicts knob's git", at.Branch.Name, at.Slowdown)
+		}
+	}
+	for name, says := range map[string]string{
+		"main+timing=wall+timing=wall":      "timing twice",
+		"main+timing=wall+timing=offset":    "timing twice",
+		"main+timing=wall+answer=later":     `answer to "later"`,
+		"main+timing=wall+slowdown=1.2":     "no knob",
+		"main+timing=wall+answer":           "neither main nor",
+		"main+timing=wall+answer=":          "neither main nor",
+		"main+timing=wall+":                 "neither main nor",
+		"main+":                             "neither main nor",
+		"mainline+timing=wall":              "neither main nor",
+		"main+neverStarted=drawn+timing":    "neither main nor",
+		"main+answer=wall+answer=offset":    "answer twice",
+		"main+answer=wall+timing=sometimes": `timing to "sometimes"`,
+	} {
+		if got, err := BranchNamed(name); err == nil || !strings.Contains(err.Error(), says) {
+			t.Errorf("BranchNamed(%q) is %+v (%v), want a refusal that says %q", name, got, err, says)
+		}
+	}
+}
+
 // knobRun replays window under rule on the branch named name, at seed 1 and f 1, and answers its
 // result and its log.
 func knobRun(t *testing.T, window Window, rule record.SlotRule, name string) (RunResult, []replayLine) {

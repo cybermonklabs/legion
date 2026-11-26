@@ -35,6 +35,13 @@ This file gives the conventions every window is written and worked by, once: the
 | `p0-inherited-ancestor-missing` | the same window without the required ancestor's record: the rule with the new P0 start is refused, naming it | `main`; `p0-at-once` refused |
 | `p0-recorded-descendant-update` | Dispatch's recorded update of a child whose own priority stays null and whose resolved priority becomes P0 starts it at a full cap | `main`, `p0-at-once` |
 | `one-free-slot-opposite-order` | one free slot and two issues below P0 in opposite order under the recorded rule and by resolved priority | `main`, `p0-at-once` |
+| `git-store-verdicts` | on the branch that asks git, a read that the store answers with a conflict where the record shows none, and a read that it answers clean where the record shows a conflict | `legion-v20.42.5`, `main` |
+| `git-unanswered-reads` | on the branch that asks git, one read of each kind that git cannot answer, which the generator answers | `main` |
+| `merge-event-time` | a merge lands in the replay's base at GitHub's merge event, not at its committer's time | `main` |
+| `drawn-skipped-loop` | on the branch that draws every conflict, a stretch that goes on past a skipped conflict loop draws no second time | `main` |
+| `drawn-boot-earlier-phase` | a boot's draw in an earlier phase than the one its stretch ends in enters its conflict at the stretch's end, in that phase | `legion-v20.42.5` |
+| `drawn-touching-merges` | a draw counts the merges that change a path of the issue's profile, and a stretch with none draws no conflict | `legion-v20.42.5` |
+| `drawn-work-conflict` | drawn work keeps its source's recorded conflict on the main branch, and draws it by its source's profile on the branch that draws | `main`, on two branches |
 
 The three windows of R10, the start of a P0 issue outside the cap, run it under `p0-at-once`, and under `main` once cybermonklabs/legion#5488 merges and `main` starts a P0 issue outside the cap.
 Until then each run under `main` waits on the skip list (`pending_test.go`, ruling D16), and its expected values are those of the run under `p0-at-once`.
@@ -44,15 +51,19 @@ The four windows of spec v36's R10 rest on the priority Dispatch resolves for an
 Their record names an issue's parent in another project, ACMEAUX, as its events do; `p0-recorded-descendant-update` is Dispatch's record from a release that serves `resolved_priority`, and the three others are from before it, so the replay reconstructs the resolved priority from the window's parent chains.
 Each waits on the skip list (`pending_test.go`) until the replay reads the resolved priority (plan task t39).
 
+The seven windows from `git-store-verdicts` on are worked by the spec's R2 as "The branch that asks git, and the generator's profile" below gives it.
+`drawn-skipped-loop` and `drawn-boot-earlier-phase` hold no git input and run as the replay draws today.
+The five others wait on the skip list (`pending_test.go`) until the replay reads git's verdicts and the generator counts by profile; of `drawn-work-conflict`, only the run on the branch that draws waits.
+
 ## What a directory holds
 
-- `window.json`, `log.jsonl` and `events/<KEY>.jsonl` (and `merges/<owner>__<name>.jsonl` in `clock-far-from-now` and `conflict-from-fitted-rate`, which hold base-branch commits), in the format of `window.go`: `ReadWindow` checks each input against the sha256 `files` records.
+- `window.json`, `log.jsonl` and `events/<KEY>.jsonl` (and `merges/<owner>__<name>.jsonl` in `clock-far-from-now`, `conflict-from-fitted-rate` and the seven windows of the git branch and the generator, which hold base-branch commits, and `git/<owner>__<name>.jsonl` in the five of them that hold git's reading), in the format of `window.go`: `ReadWindow` checks each input against the sha256 `files` records.
   A window that holds a record of R11's signals holds its inputs too, each optional: `launcher/log.jsonl` (`{time, pod, text}`, the launcher's lines, in `signal-crosses-with-no-event` and `no-crossing-due`), `signals/provider.jsonl`, `signals/memory.jsonl`, `queue/<owner>__<name>.jsonl` and `settings/events.jsonl`.
   Its `window.json` names each signal's spans in `signals` (`{"kills": [{"from", "to"}]}`), and may give `defaultAssignee` and the P0 bound's changes in `p0Bounds` (`[{"at", "bound"}]`, in `p0-at-its-bound`).
   It may name in `missingAncestors` each ancestor on a Dispatch parent chain whose events `collect` could not read (`["ACMEAUX-1"]`, in `p0-recorded-descendant-update`).
   Every other window names none: each holds the events of every parent its events name, but `p0-inherited-ancestor-missing`, which lacks ACMEAUX-1's as a window collected before `collect` read each ancestor can.
   `replay.md`'s "The records of the signals" gives each file's form.
-  After an edit of an input, write its new hash into `files`: `sha256sum log.jsonl events/*.jsonl`, adding `merges/*.jsonl` and each signal input where the window has them.
+  After an edit of an input, write its new hash into `files`: `sha256sum log.jsonl events/*.jsonl`, adding `merges/*.jsonl`, `git/*.jsonl` and each signal input where the window has them.
   `TestFixtureWindows` reads every window with `ReadWindow` before it replays it (it needs `LEGION_TEST_PG_DSN`), and `TestTheFixtureWindowsCoverK1` reads each window of k1's list without a database, so a hash that differs fails them.
 
 - `README.md`: the window's issues, what happens, what changes under each rule it names, and every
@@ -69,11 +80,18 @@ Each waits on the skip list (`pending_test.go`) until the replay reads the resol
     <Scorecard>}}`, one set for each value of `NeverStarted`; the scenario `none` runs on `main`,
     the others on `main+neverStarted=<scenario>`.
 
+  - `branches` (`drawn-work-conflict` alone, in place of `rules`): `{"<branch>": {"<rule>": <Scorecard>}}`, one set for each branch the window runs on, each named as `branch` names one.
+    A branch that changes more than one knob names each change in turn, as `main+conflicts=drawn+neverStarted=drawn`.
+
   - `moves` (optional): `{"<KEY>": [{"from", "to", "trigger"}, …]}`, each issue's
     recorded moves in order.
     A replay under the window's recorded rule must write the same `workflow: phase changed` lines in its own log, issue by issue, which a move the replay refuses breaks.
 
-  - `checks`: optional additional assertions by rule. `run` lists exact fields in `run.json`. A missing field fails even if its expected value is zero or an empty array. `log` lists structured lines, comparing each named attribute. These assertions cover the bound refusal, deadline history, slot pass kinds and timed signal values.
+  - `checks`: optional additional assertions by rule.
+    `run` lists exact fields in `run.json`.
+    A missing field fails even if its expected value is zero or an empty array.
+    `log` lists structured lines, comparing each named attribute.
+    These assertions cover the bound refusal, deadline history, slot pass kinds, timed signal values, the reads of the branch that asks git and the draws of a stretch's conflict.
 
   - `refused` (optional): `{"<rule>": "<text>"}`, each rule under which `legion replay run` must refuse the window, on the window's branch, with an error that holds the text, in place of a `Scorecard` in `rules` and of `checks`.
     `p0-inherited-ancestor-missing` names `p0-at-once`, whose refusal must name `ACMEAUX-1`, the ancestor whose history the window lacks.
@@ -84,15 +102,18 @@ The two may differ by the reconstruction error the tool reports; these windows h
 ## How a window is written
 
 - Every window is one day, 2001-03-05 (`clock-far-from-now` too), a few hours long, with an admission cap of 1 to 3 (43 in `forty-two-more-in-flight`), so each value is a sum of a few whole minutes.
-  Most windows start at the daemon's boot, with an empty start state. The conflict windows in accepting and retro and the signal window with a crossing start after boot and seed the state from the earlier record.
+  Most windows start at the daemon's boot, with an empty start state.
+  The conflict windows in accepting and retro and the signal window with a crossing start after boot and seed the state from the earlier record.
 
-- Issue keys are `ACME-<n>`. `ACMEAUX-<n>` are synthetic issues of a different project: a blocker in `signal-crosses-with-no-event`, and the Dispatch parents of roots handed to Legion in the four windows of spec v36's R10.
+- Issue keys are `ACME-<n>`.
+  `ACMEAUX-<n>` are synthetic issues of a different project: a blocker in `signal-crosses-with-no-event`, and the Dispatch parents of roots handed to Legion in the four windows of spec v36's R10.
   A root handed to Legion is filed `todo` with the label `legion` by a person (`user:acme-person`);
   a child is filed under its parent by the role that files it (its claim token as a session) with no label, `todo` (recorded at once under a live tree) or `backlog` (not released, which Dispatch still counts as an open child).
   An issue Legion does not work has no label.
   Ranks are short strings compared as bytes (`a0` < `a1` < `b01`).
 
-- The record follows the daemon's own code under the rule it ran. `window.json`'s `parts` name the recorded rule and commit, `collector` names the collector's commit, and `release` is `fixture`.
+- The record follows the daemon's own code under the rule it ran.
+  `window.json`'s `parts` name the recorded rule and commit, `collector` names the collector's commit, and `release` is `fixture`.
   The log holds each line kind of the code the window's facts make, with the code's msgs and attribute keys (`window_builder_test.go` writes the same shapes): the admission pass's slot lines (`admission: slot taken|released`, the in-transaction `admission gives a slot back to …` and `admission: an issue waits for the Dispatch children under it`), the engine's `workflow:` lines, and the supervisor's `supervise: launched`, `a turn started` and `a turn ended`.
   Within one instant, a pass's in-transaction lines come before its after-commit lines.
   `window.json`'s `lines` lists every msg the log holds; a kind left out is a kind the window does not hold.
@@ -103,7 +124,8 @@ The two may differ by the reconstruction error the tool reports; these windows h
   A replay leaves them out and applies the echo of its own status write at the instant of the fact that queued it, which matters where a Legion issue's `done` ends another issue's wait (`two-waiters-one-blocker`).
 
 - Defaults: `gateSteps` empty (the registration opens the gate at once; `gate-holds-child-first-phase` gates `spec`), `linger` 2 h, `tickInterval` 1 h, `reviewRoundCap` 3, `workerSilence` and `workerBackground` 4 h, no experiment.
-  The tick changes nothing in the original windows. `signal-crosses-with-no-event` checks admission at a tick.
+  The tick changes nothing in the original windows.
+  `signal-crosses-with-no-event` checks admission at a tick.
 
 ## Work segments and their replayed length
 
@@ -223,6 +245,54 @@ The two may differ by the reconstruction error the tool reports; these windows h
 
 - `legion replay run` of `replay.md`, and its assumptions 23 and 37, give the rest: the loops a draw falls back on where the window records none from the conflict's phase, and under `main` a conflict in accepting or retro, which waits for merging.
   `conflict-from-fitted-rate`, the one window with a conflict, has one loop, which left merging and ended, so its draws need none of them.
+
+## The branch that asks git, and the generator's profile
+
+The spec's R2 gives the conflicts of a replay three sources: the main branch keeps the record's conflicts, `conflicts=git` asks git's verdicts, and `conflicts=drawn` draws every conflict.
+The windows `git-store-verdicts`, `git-unanswered-reads`, `merge-event-time`, `drawn-touching-merges` and `drawn-work-conflict` hold `git/<owner>__<name>.jsonl` (`replay.md`, "Add git's verdicts of each repository") and are worked by the rules below.
+"Conflicts" above says how the main branch draws until the replay is built so.
+
+- **The replay's base.**
+  For a repository whose window holds git input, the base holds the record's first-parent commits (`merges/`), each from its `at` on, never from its `committed`.
+  The merge commit of a pull request that an issue of the window links, whose work the replay runs, enters the base as the replay merges that issue (as it enters the issue's `pull_request_merged` move), and never where the replay does not merge it.
+
+- **A read.**
+  On `conflicts=git` the replay reads an issue's head at each end of a stretch (each move that ends one, the later end of a stretch that went on past a passed-over loop among them) and at each boot inside a stretch.
+  The head is the one of the issue's pull request that stands at the read's recorded moment, the latest `at` at or before it: for an end, the recorded time of the move that ends the stretch.
+  The touching merges at the read are the commits that the replay's base holds at the read, that the head does not hold (after its merge base on the record's first-parent chain), and whose `commit` line's paths meet the head's `paths`, in the order in which the replay's base took them.
+  The record's touching merges of the head are the bases of its `verdicts`, in their order; they stop before the pull request's own merge.
+
+- **An answered read.**
+  The store answers a read where the replay's touching merges are the first n of the record's: git's verdict at the nth, and clean at n = 0.
+  An answered conflict at a stretch's end is made through the daemon's own path, as a drawn conflict is: where the record ended that stretch in a conflict the issue runs its own loop, and where it did not the loop's work is drawn from the window's recorded loops.
+  An answered clean read at an end that the record shows as a conflict lets the stretch go on past the loop, as a clean draw does.
+
+- **An unanswered read.**
+  Every other read is unanswered, of the first of these kinds that holds:
+  `never-ran`, where the work is drawn or the issue has no pull request in the record;
+  `missing`, where the window holds no git input for the repository or the pull request, no head stands at the read's recorded moment, a `missing` line names the head, or a commit that may touch has no `commit` line;
+  `after-merge`, where the replay's touching merges hold a commit that the record's base took after the pull request's own merge (the `pull` line's `merge`);
+  and `order`, every other one.
+  An unanswered read goes to the generator, and a live stretch draws once.
+
+- **After a loop the record does not hold.**
+  A loop whose work is drawn, one that an answered conflict began at a stretch the record ended otherwise or one that the generator drew, leaves the issue's head merged with the replay's base at the loop's end: the return to the phase the conflict left, or the landing of the merge forward.
+  A later read of that issue counts its touching merges only among the commits that the replay's base took after that loop's end: with none the read is answered clean, n = 0, and with one or more it is unanswered, `order`, since the replay merged those changes in an order the record does not hold.
+  The generator counts a later stretch's M the same way.
+  A loop that is the record's own needs no such rule: the recorded heads after it carry the record's merge forward.
+
+- **What a run writes.**
+  Each read writes one line of the replay's own log, `replay: a head's merge state read from git`, with `issue`, `repo`, `head`, `recorded` (the read's recorded moment), `by` (`end` or `boot`), `n` and `answer` (`clean` or `conflict`), or, for an unanswered read, `answer` `unanswered` and its `kind`.
+  `run.json` counts the reads of each repository in `gitReads` (`clean`, `conflict`, `order`, `after-merge`, `missing` and `never-ran`), and gives in `gitLoopHours` the hours of the conflict loops that an answered read began (`answered`) and that the generator began (`drawn`).
+
+- **The generator.**
+  On `conflicts=drawn`, and for an unanswered read, a stretch draws as "Conflicts" above says, with M the stretch's touching merges where the repository holds git input.
+  An issue's profile is the `paths` of its head that stands at the draw, and the touching merges are the commits of the replay's base at the draw that change a path of the profile and came after that head's merge base.
+  A stretch with no touching merge draws no conflict: its chance is 0, and its draw's line says `merges` 0 and `chance` 0.
+  The model is fitted on the window's recorded stretches, with M counted the same way on the record's base before each stretch's end; a stretch with M = 0 is left out of the fit.
+  Work that the record never ran has no head: it takes the profile of the issue that its scenario drew its work from, and its touching merges are those that the replay's base took after the later of the replay's start of its first implementing segment and the landing of its last merge forward.
+  On the main branch such work keeps the recorded conflicts of the issue it was drawn from.
+  A repository with no git input keeps the count of "Conflicts" above, every commit strictly inside the stretch (`drawn-skipped-loop`, `drawn-boot-earlier-phase`).
 
 ## The measures
 

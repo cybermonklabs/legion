@@ -62,7 +62,7 @@ A recorded window is a directory.
 | `window.json` | The project, the span (`from`, `to`), the reach (`before`), the run-out (`after`, only where the window has one), the cap from each change on, the release, commit and rule of each part of the span, the deployment's settings, the kinds of line that the log holds, the collector's commit, and the sha256 of each input file. |
 | `log.jsonl` | The daemon's lines in the reach, the span and the run-out, one JSON object each, as the daemon writes them on standard error: `time`, `level`, `msg` and the attributes. |
 | `events/<KEY>.jsonl` | Each issue's Dispatch events, oldest first, as Dispatch's issue event log serves them. |
-| `merges/<owner>__<name>.jsonl` | The first-parent commits of each base branch, which the conflict draw reads, each at GitHub's merge event or, where GitHub records none, at its committer date. |
+| `merges/<owner>__<name>.jsonl` | The first-parent commits of each base branch, which the conflict draw reads, each at GitHub's merge event or, where GitHub records none, at its committer date, with its committer date beside it. |
 | `git/<owner>__<name>.jsonl` | Git's reading of the repository's pull requests: their heads, the paths that each head and each first-parent commit of the base branch change, and git's verdict of merging each head with each later commit of the base that changes one of its paths ([Add git's verdicts of each repository](#add-gits-verdicts-of-each-repository)). |
 | `signals/provider.jsonl` | The deployment's record of the model provider, one line a minute. |
 | `launcher/log.jsonl` | The launcher's lines of the project's issue pods, whose memory guard lines are the record of its kills. |
@@ -335,7 +335,9 @@ Where that list leaves out a pull request's `merge_commit_sha`, it reads that pu
 It reads nothing of a commit that the walk does not reach.
 A commit whose merge GitHub records keeps that pull request as `pr`, and its line says `"event": true`.
 A commit whose merge GitHub does not record, or records for more than one pull request, keeps its committer date, which is an estimate and no merge event, and its line has no `event` and no `pr`, whatever its message names.
-Older windows contain committer dates alone and retain any pull request number from the commit subject.
+Every line also holds `committed`, the commit's committer date in RFC 3339, so a line whose merge event came later shows both times.
+The replay reads `at` alone.
+Older windows contain committer dates alone, with no `committed`, and retain any pull request number from the commit subject.
 Commits that land at the same moment keep their first-parent order.
 
 The listing reaches only the commits that were committed from a day before `--from`.

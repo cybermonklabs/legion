@@ -1,0 +1,6 @@
+{"kind":"commit","sha":"bda92ac4811278f6560d7462d622746d2d569048","paths":["shelf/stock.go"]}
+{"kind":"commit","sha":"1141fccb2975359507ed5b631f61097886235c44","paths":["shelf/stock.go"]}
+{"kind":"commit","sha":"3cfafb9e947a062238e1b3c6dc28e09e1f928d23","paths":["billing/invoice.go"]}
+{"kind":"pull","pr":11,"merge":"1141fccb2975359507ed5b631f61097886235c44","heads":2}
+{"kind":"head","pr":11,"sha":"5a1daa53ae5d9aa9b82328bb2c1d4834aea46aa5","at":"2001-03-05T09:45:00Z","from":"commit","tip":"bda92ac4811278f6560d7462d622746d2d569048","mergeBase":"7ef0a87360bab053a962b02afff2079d7a8280d1","paths":["shelf/stock.go"],"verdicts":[{"base":"bda92ac4811278f6560d7462d622746d2d569048","conflict":true,"paths":["shelf/stock.go"]}]}
+{"kind":"head","pr":11,"sha":"9f640d9ef7e1f5e8d8f6b1360b60361ebbd94575","at":"2001-03-05T10:30:00Z","from":"commit","tip":"bda92ac4811278f6560d7462d622746d2d569048","mergeBase":"bda92ac4811278f6560d7462d622746d2d569048","paths":["shelf/stock.go"],"verdicts":[]}

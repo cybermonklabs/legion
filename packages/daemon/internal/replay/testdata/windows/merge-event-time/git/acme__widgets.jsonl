@@ -1,0 +1,5 @@
+{"kind":"commit","sha":"86e878e2ec86b85928957600ceb04f3b295b33d8","paths":["shelf/stock.go"]}
+{"kind":"commit","sha":"2f99d18a5e2ba64a007036864018386adf672872","paths":["shelf/stock.go"]}
+{"kind":"pull","pr":11,"merge":"2f99d18a5e2ba64a007036864018386adf672872","heads":2}
+{"kind":"head","pr":11,"sha":"b0904d26ad9b31e0d03ebbd5b232228e8769aa15","at":"2001-03-05T09:45:00Z","from":"commit","tip":"86e878e2ec86b85928957600ceb04f3b295b33d8","mergeBase":"094f3582fc7a8a77c91d6f30c0c123189609f3ed","paths":["shelf/stock.go"],"verdicts":[{"base":"86e878e2ec86b85928957600ceb04f3b295b33d8","conflict":true,"paths":["shelf/stock.go"]}]}
+{"kind":"head","pr":11,"sha":"55bcda55916ae045d3373138c55127fce331ff07","at":"2001-03-05T10:30:00Z","from":"commit","tip":"86e878e2ec86b85928957600ceb04f3b295b33d8","mergeBase":"86e878e2ec86b85928957600ceb04f3b295b33d8","paths":["shelf/stock.go"],"verdicts":[]}

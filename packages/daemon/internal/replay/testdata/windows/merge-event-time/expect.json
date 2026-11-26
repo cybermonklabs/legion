@@ -1,0 +1,110 @@
+{
+  "branch": "main+conflicts=git",
+  "rules": {
+    "main": {
+      "source": "replay",
+      "rule": "main",
+      "branch": "main+conflicts=git",
+      "seed": 1,
+      "slowdown": 1,
+      "from": "2001-03-05T09:00:00Z",
+      "to": "2001-03-05T13:00:00Z",
+      "unplaced": 0,
+      "done": 1,
+      "workLeft": 0,
+      "waitOnlyForSlot": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "startedWithoutSlot": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewHolding": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.1875,
+        "max": 1,
+        "hours": 0.75
+      },
+      "priorityTaken": 0,
+      "loops": {
+        "review_changes": {
+          "rounds": 1,
+          "hours": 0.5
+        }
+      },
+      "waits": {},
+      "slotHoursInTurn": 2,
+      "slotHoursNoTurn": 0,
+      "inFlight": {
+        "average": 0.6875,
+        "max": 1,
+        "hours": 2.75
+      },
+      "slotsGivenByDay": {
+        "2001-03-05": 1
+      },
+      "medianSlotWaitMinutes": 0,
+      "firstSlot": {
+        "ACME-1": "2001-03-05T09:00:00Z"
+      },
+      "doneAt": {
+        "ACME-1": "2001-03-05T11:45:00Z"
+      },
+      "assumptions": [1, 2, 3, 9, 13],
+      "scenario": "none"
+    }
+  },
+  "checks": {
+    "main": {
+      "run": {
+        "gitReads": {
+          "acme/widgets": {
+            "clean": 2,
+            "conflict": 0,
+            "order": 0,
+            "after-merge": 0,
+            "missing": 0,
+            "never-ran": 0
+          }
+        },
+        "gitLoopHours": {
+          "acme/widgets": {
+            "answered": 0,
+            "drawn": 0
+          }
+        }
+      },
+      "log": [
+        {
+          "time": "2001-03-05T10:15:00Z",
+          "msg": "replay: a head's merge state read from git",
+          "issue": "ACME-1",
+          "repo": "acme/widgets",
+          "head": "b0904d26ad9b31e0d03ebbd5b232228e8769aa15",
+          "recorded": "2001-03-05T10:15:00Z",
+          "by": "end",
+          "n": 0,
+          "answer": "clean"
+        },
+        {
+          "time": "2001-03-05T11:45:00Z",
+          "msg": "replay: a head's merge state read from git",
+          "issue": "ACME-1",
+          "repo": "acme/widgets",
+          "head": "55bcda55916ae045d3373138c55127fce331ff07",
+          "recorded": "2001-03-05T11:45:00Z",
+          "by": "end",
+          "n": 0,
+          "answer": "clean"
+        }
+      ]
+    }
+  }
+}

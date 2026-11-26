@@ -13,7 +13,8 @@ import (
 // the seventh knob, travels beside the branch as RunConfig.Slowdown, the one place a run reads
 // it.
 type Branch struct {
-	// Name is "main" or "main+<knob>=<value>", the main branch with one knob changed.
+	// Name is "main" or "main+<knob>=<value>", the main branch with one knob changed, or with
+	// several, each "+<knob>=<value>" in turn (BranchNamed).
 	Name string `json:"name"`
 	// Timing is when a link removal, a child moved out, a gate closing and an outside blocker's
 	// close happen in the replay: "wall", at their recorded time, or "offset", at their recorded
@@ -40,7 +41,8 @@ type Branch struct {
 	// diagnostic knob (knob.diagnostic): a validation runs its other value at every slowdown factor
 	// as R5's branch of the recorded conflicts, which names each issue its replay of the recorded
 	// rule starts that the record did not and each the record filed that it leaves out, and gates
-	// nothing; no comparison runs it.
+	// nothing; no comparison runs it. "git", each read of a head's merge state answered from git's
+	// verdicts (spec R2), is a value BranchNamed takes and no list of branches runs (knob.unlisted).
 	Conflicts string `json:"conflicts"`
 }
 
@@ -61,6 +63,9 @@ const (
 	mergesZero = "zero"
 	// conflictsRecorded is Conflicts' value that keeps the record's conflicts and draws none.
 	conflictsRecorded = "recorded"
+	// conflictsGit is Conflicts' value that answers each read of a head's merge state from git's
+	// verdicts (GitInput), as the git branch does (recordedConflicts).
+	conflictsGit = "git"
 )
 
 // MainBranch is the branch a replay runs unless it is asked for another: events and answers at
@@ -80,12 +85,20 @@ var MainBranch = Branch{
 // knob is one knob of a branch: its JSON name, the field of a Branch it sets, and its values,
 // the main branch's first. A diagnostic knob is one only a validation runs, as R5's branch of the
 // recorded conflicts beside R5's tests (DiagnosticBranches): no comparison runs it (Branches), and
-// what it names gates nothing.
+// what it names gates nothing. unlisted is the values beside values that a branch may set the knob
+// to (BranchNamed, check) and that no list of branches runs: neither Branches nor
+// DiagnosticBranches changes the knob to one.
 type knob struct {
 	name       string
 	field      func(*Branch) *string
 	values     []string
+	unlisted   []string
 	diagnostic bool
+}
+
+// takes says whether a branch may set k to value: one of its values, or of its unlisted values.
+func (k knob) takes(value string) bool {
+	return slices.Contains(k.values, value) || slices.Contains(k.unlisted, value)
 }
 
 // knobs is every knob of a branch, in the order of design section 7, each with its values, and
@@ -99,7 +112,7 @@ var knobs = []knob{
 		values: []string{MainBranch.NeverStarted, neverStartedDrawn, neverStartedDrawnDone}},
 	{name: "merges", field: func(b *Branch) *string { return &b.Merges }, values: []string{MainBranch.Merges, mergesZero}},
 	{name: "conflicts", field: func(b *Branch) *string { return &b.Conflicts }, values: []string{MainBranch.Conflicts, conflictsRecorded},
-		diagnostic: true},
+		unlisted: []string{conflictsGit}, diagnostic: true},
 }
 
 // Slowdowns is the slowdown factors f every branch is run at (design section 7; spec R3): 1.0,
@@ -165,36 +178,53 @@ func (k knob) changes() []Branch {
 	return changed
 }
 
-// BranchNamed is the branch name names: "main", the main branch, or "main+<knob>=<value>", the
-// main branch with the one knob whose JSON name is <knob> set to <value>. It refuses any other
-// name, a knob no Branch holds and a value its knob does not take.
+// BranchNamed is the branch name names: "main", the main branch, or
+// "main+<knob>=<value>+<knob>=<value>…", the main branch with each knob whose JSON name a change
+// names set to that change's value, so a fixture can name a branch that changes more than one knob
+// (main+conflicts=git+neverStarted=drawn). The branch keeps name as its Name. It refuses any other
+// name, a knob no Branch holds, a knob named twice and a value its knob does not take (knob.takes).
 func BranchNamed(name string) (Branch, error) {
 	branch := MainBranch
 	if name == MainBranch.Name {
 		return branch, nil
 	}
-	change, ok := strings.CutPrefix(name, MainBranch.Name+"+")
-	knobName, value, set := strings.Cut(change, "=")
-	if !ok || !set || value == "" {
-		return Branch{}, fmt.Errorf("replay: the branch %q is neither main nor main+<knob>=<value>", name)
+	malformed := func() error {
+		return fmt.Errorf("replay: the branch %q is neither main nor main+<knob>=<value>, with one or more such changes", name)
 	}
-	at := slices.IndexFunc(knobs, func(k knob) bool { return k.name == knobName })
-	if at < 0 {
-		return Branch{}, fmt.Errorf("replay: the branch %q names no knob of a replay's branch", name)
+	changes, ok := strings.CutPrefix(name, MainBranch.Name+"+")
+	if !ok {
+		return Branch{}, malformed()
 	}
-	if !slices.Contains(knobs[at].values, value) {
-		return Branch{}, fmt.Errorf("replay: the branch %q sets %s to %q, which is none of its values %v", name, knobName, value, knobs[at].values)
+	var named uint // bit i: knobs[i] is set by a change already
+	for change := range strings.SplitSeq(changes, "+") {
+		knobName, value, set := strings.Cut(change, "=")
+		if !set || value == "" {
+			return Branch{}, malformed()
+		}
+		at := slices.IndexFunc(knobs, func(k knob) bool { return k.name == knobName })
+		switch {
+		case at < 0:
+			return Branch{}, fmt.Errorf("replay: the branch %q names no knob of a replay's branch in %q", name, change)
+		case named&(1<<at) != 0:
+			return Branch{}, fmt.Errorf("replay: the branch %q sets %s twice", name, knobName)
+		case !knobs[at].takes(value):
+			return Branch{}, fmt.Errorf("replay: the branch %q sets %s to %q, which is none of its values %v", name, knobName, value,
+				slices.Concat(knobs[at].values, knobs[at].unlisted))
+		}
+		named |= 1 << at
+		*knobs[at].field(&branch) = value
 	}
-	*knobs[at].field(&branch), branch.Name = value, name
+	branch.Name = name
 	return branch, nil
 }
 
-// check refuses a branch with a knob set to a value it does not take; a knob left empty takes the
-// main branch's value.
+// check refuses a branch with a knob set to a value it does not take (knob.takes); a knob left
+// empty takes the main branch's value.
 func (b Branch) check() error {
 	for _, k := range knobs {
-		if value := *k.field(&b); value != "" && !slices.Contains(k.values, value) {
-			return fmt.Errorf("replay: the branch %s sets %s to %q, which is none of its values %v", b.Name, k.name, value, k.values)
+		if value := *k.field(&b); value != "" && !k.takes(value) {
+			return fmt.Errorf("replay: the branch %s sets %s to %q, which is none of its values %v", b.Name, k.name, value,
+				slices.Concat(k.values, k.unlisted))
 		}
 	}
 	return nil
@@ -218,5 +248,6 @@ func (b Branch) timingWall() bool { return b.Timing == valueWall }
 func (b Branch) answerWall() bool { return b.Answer == valueWall }
 
 // recordedConflicts says whether b keeps the record's conflicts and draws none (Conflicts
-// recorded).
+// recorded). Every other value draws: Conflicts git draws as drawn does, since the git branch's
+// reads of git's verdicts are built by the task the gitBranch names of pendingUntilBuilt wait on.
 func (b Branch) recordedConflicts() bool { return b.Conflicts == conflictsRecorded }

@@ -1,0 +1,108 @@
+{
+  "branch": "main+conflicts=drawn",
+  "rules": {
+    "legion-v20.42.5": {
+      "source": "replay",
+      "rule": "legion-v20.42.5",
+      "branch": "main+conflicts=drawn",
+      "seed": 1,
+      "slowdown": 1,
+      "from": "2001-03-05T09:00:00Z",
+      "to": "2001-03-05T13:00:00Z",
+      "unplaced": 0,
+      "done": 2,
+      "workLeft": 0,
+      "waitOnlyForSlot": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "startedWithoutSlot": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewHolding": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.4791666666666667,
+        "max": 2,
+        "hours": 1.9166666666666667
+      },
+      "priorityTaken": 0,
+      "loops": {
+        "conflict": {
+          "rounds": 1,
+          "hours": 1.5
+        }
+      },
+      "waits": {},
+      "slotHoursInTurn": 3.5,
+      "slotHoursNoTurn": 0,
+      "inFlight": {
+        "average": 1.3541666666666667,
+        "max": 2,
+        "hours": 5.416666666666667
+      },
+      "slotsGivenByDay": {
+        "2001-03-05": 3
+      },
+      "medianSlotWaitMinutes": 0,
+      "firstSlot": {
+        "ACME-1": "2001-03-05T09:00:00Z",
+        "ACME-2": "2001-03-05T09:05:00Z"
+      },
+      "doneAt": {
+        "ACME-1": "2001-03-05T12:45:00Z",
+        "ACME-2": "2001-03-05T10:45:00Z"
+      },
+      "assumptions": [1, 2, 3, 9, 13, 18],
+      "scenario": "none"
+    }
+  },
+  "checks": {
+    "legion-v20.42.5": {
+      "log": [
+        {
+          "time": "2001-03-05T10:45:00Z",
+          "msg": "replay: a stretch's conflict drawn",
+          "issue": "ACME-2",
+          "running": "merging",
+          "fitted": "merging",
+          "start": "2001-03-05T09:50:00Z",
+          "merges": 0,
+          "by": "end",
+          "chance": 0,
+          "outcome": "clean"
+        },
+        {
+          "time": "2001-03-05T11:00:00Z",
+          "msg": "replay: a stretch's conflict drawn",
+          "issue": "ACME-1",
+          "running": "merging",
+          "fitted": "merging",
+          "start": "2001-03-05T09:45:00Z",
+          "merges": 1,
+          "by": "end",
+          "chance": 1,
+          "outcome": "conflict"
+        },
+        {
+          "time": "2001-03-05T12:45:00Z",
+          "msg": "replay: a stretch's conflict drawn",
+          "issue": "ACME-1",
+          "running": "merging",
+          "fitted": "merging",
+          "start": "2001-03-05T11:30:00Z",
+          "merges": 0,
+          "by": "end",
+          "chance": 0,
+          "outcome": "clean"
+        }
+      ]
+    }
+  }
+}
