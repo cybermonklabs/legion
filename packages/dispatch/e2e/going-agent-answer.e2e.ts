@@ -130,7 +130,10 @@ test("each number of a chart is the server's count over the read, and the number
             x: "status",
             y: "count",
           }),
-          say("CORE holds 47 issues in progress."),
+          // 83 is above 59, so no time or date on the page can hold it: the chart's caption shows
+          // the time of its read ("as of 11:47 AM"), where a number up to 59 shows whenever the
+          // clock's minute is that number.
+          say("CORE holds 83 issues in progress."),
         ],
         words,
       },
@@ -146,6 +149,6 @@ test("each number of a chart is the server's count over the read, and the number
     // Two issues are in progress and one keeps a new issue's status, each count beside its own.
     await expect(chartValue(chart, "in_progress")).toHaveText("2");
     await expect(chartValue(chart, unstarted)).toHaveText("1");
-    await expect(chart).not.toContainText("47");
+    await expect(chart).not.toContainText("83");
   });
 });

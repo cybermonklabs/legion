@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -189,23 +190,31 @@ func TestTheNewIssueLineFilesAtOnce(t *testing.T) {
 
 	t.Run("a run stopped after its create landed names the issue it filed and offers undo", func(t *testing.T) {
 		const words = "file a bug: the board's legend covers its first column"
-		release := make(chan struct{})
-		t.Cleanup(func() { close(release) })
 		rig.loop.script.set(words, func(n int) agenttest.Reply {
 			if n == 1 {
 				return proposing(goingChange(goingIssueCreateTool, map[string]any{"project": "DEMO", "title": "The board's legend covers its first column",
 					"spec": "The legend of a board hides the cards of its first column.\n"}))
 			}
-			// Held until the test ends, so the run still works when its person stops it.
-			return agenttest.Reply{Hold: release, Text: "Filed."}
+			return answered("No further call of this run was scripted.")
 		})
 		page := rig.issue(t, "Boards")
+		// A new-issue run ends done as soon as its create answers, and makes no model call after
+		// it, so the create's answer is held from the agent once the issue is saved, until the
+		// stop is sent: the stop finds the run still working, with its issue filed.
+		stopped := make(chan struct{})
+		release := sync.OnceFunc(func() { close(stopped) })
+		t.Cleanup(release)
+		rig.hooks.set(t, http.MethodPost, "/api/v1/issues", func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+			inner.ServeHTTP(w, r)
+			<-stopped
+		})
 		before := issues(t)
 		run := start(t, words, page)
 		goingEventually(t, "the run's create to land", func() bool { return issues(t) > before })
 		if response := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs/"+run.ID+"/stop", nil, "alice"); response.Code != http.StatusOK {
 			t.Fatalf("stop the run answered %d %s", response.Code, response.Body.String())
 		}
+		release()
 		frame := rig.endFrame(t, run.ID)
 		if frame.State != agentwire.StateStopped || frame.Issue == "" || !slices.Contains(frame.Offers, agentwire.OfferUndo) {
 			t.Fatalf("the stopped run's end is %+v, want it stopped, naming the issue it filed and offering undo", frame)

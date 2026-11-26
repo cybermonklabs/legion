@@ -612,13 +612,16 @@ var routeScopes = map[string]routeScopeSet{
 // added later stays closed to it until it is listed here.
 //
 // The list is the rows routeScopes gives approve, the routes that settle what a person settles,
-// less two: the mint and the change of a personal token, since a token they made or widened would
-// be an approve credential written to the box the session runs on, which is what the proxy exists
-// to keep off it. The revoke of a personal token stays. Beside them is the answer of an ask, which
-// checks approve in its handler for an approval request and refuses an approve-only token the
-// answer of every other ask, 403 APPROVE_ONLY_TOKEN, once the ask's kind is read
-// (ask_transitions.go). register refuses to mount a table whose list names a row it does not mount
-// (routesNotMounted).
+// less three. Two are the mint and the change of a personal token, since a token they made or
+// widened would be an approve credential written to the box the session runs on, which is what
+// the proxy exists to keep off it; the revoke of a personal token stays. The third is the approval
+// of a command-bar run's plan (POST /api/v1/going/runs/{id}/plan/approve): an approval of a plan
+// runs every write of the plan as its person, and an approve-only token approves a document, an
+// ask or a credential, never a run of writes. That row keeps approve, which keeps a person-scoped
+// token from approving a plan. Beside them is the answer of an ask, which checks approve in its
+// handler for an approval request and refuses an approve-only token the answer of every other ask,
+// 403 APPROVE_ONLY_TOKEN, once the ask's kind is read (ask_transitions.go). register refuses to
+// mount a table whose list names a row it does not mount (routesNotMounted).
 var approveScopeRoutes = []string{
 	"POST /api/v1/artifacts/{id}/reviews",
 	"POST /api/v1/artifacts/{id}/versions/{number}/reviews",

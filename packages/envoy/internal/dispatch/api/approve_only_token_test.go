@@ -86,16 +86,19 @@ func TestAnApproveOnlyTokenApprovesAsItsPersonAndNothingElse(t *testing.T) {
 
 // TestTheApproveListIsTheApproveRowsLessTheTokenMintsAndTheAnswer: the routes an approve-only token
 // may call are every row of the route table that needs approve, less the mint and the change of a
-// personal token - a token they make or widen would be an approve credential on the box - and
-// with the answer of an ask, which checks approve in its handler for an approval request. The
-// list is read against the table, so a row added later that needs approve is on it unless it is
-// named here.
+// personal token - a token they make or widen would be an approve credential on the box - and less
+// the approval of a command-bar run's plan, which runs every write of the plan as its person, while
+// an approve-only token approves a document, an ask or a credential, never a run of writes; and
+// with the answer of an ask, which checks approve in its handler for an approval request. The list
+// is read against the table, so a row added later that needs approve is on it unless it is named
+// here.
 func TestTheApproveListIsTheApproveRowsLessTheTokenMintsAndTheAnswer(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	var want []string
 	for _, route := range approveRows(rig.served) {
 		name := route.Method + " " + route.Pattern
-		if name == "POST /api/v1/me/agent-tokens" || name == "PATCH /api/v1/me/agent-tokens/{id}" {
+		if name == "POST /api/v1/me/agent-tokens" || name == "PATCH /api/v1/me/agent-tokens/{id}" ||
+			name == "POST /api/v1/going/runs/{id}/plan/approve" {
 			continue
 		}
 		want = append(want, name)
