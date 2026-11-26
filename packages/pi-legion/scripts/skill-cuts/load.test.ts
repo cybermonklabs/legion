@@ -976,7 +976,7 @@ const COPY_TEXTS: Readonly<Record<string, string>> = { beta: BETA_SKILL, gamma: 
  *  installed from its repository, in the profile's order, under the cache key context.ts gives it
  *  (`cacheKey` of its repository, commit and path), then `tested` from the arm. A saved capture
  *  whose record names other copies than its task's profile gives is refused (capture.ts's
- *  `restoredCapture`). Writes each copy under `cache` at that key, its SKILL.md the text `texts`
+ *  `restoreCopies`). Writes each copy under `cache` at that key, its SKILL.md the text `texts`
  *  gives its name, so the capture read back makes none of them again and reads no repository. */
 function profileContext(
   profile: {

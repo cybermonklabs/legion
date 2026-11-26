@@ -274,7 +274,8 @@ skill's cases (`cases.ts`), one JSON object per line.
   For each stage kind it prints a line `<stage> deployments by arm: old <id> <n>, <id> <n>; new
   ...; none ...` (confirm's arms old and new, control's old, minus and twin): each arm's runs
   counted once each by the deployment that answered them, as the first 8 hex digits of the
-  gateway's `x-litellm-model-id` (an opaque prefix, never a deployment's name; `unnamed` for a run
+  gateway's `x-litellm-model-id` (an opaque prefix, never a deployment's name; an id that does not
+  begin with 8 hex digits gives the first 8 of its SHA-256 instead; `unnamed` for a run
   whose replies named none, `no reply` for a replay that failed, two ids joined by `+` for a run
   answered by both). Runs saved before runs recorded their deployments print `not recorded` for
   their stage kind, or are counted apart where some runs of it record them; a kind with no runs
@@ -346,11 +347,12 @@ skill's cases (`cases.ts`), one JSON object per line.
     extra-run rule does not replace it with a fresh run, and its stage stays running until that
     decision. A reply that acts, has no read the replay answers, or is undecided ends the run as
     the live rules say. Without it a continuation goes as far as the live rule does.
-    A run stopped by `--further-rounds` keeps only its earlier rounds' tool calls, as every saved
-    step does, and not the reply it stopped at, so a later `continue-mixed` cannot resume it:
-    it has no whole reply to send back, and the run takes the next step as a fresh run. The
-    stage's next step is therefore a fresh run of the stage on the same runner (the runner's
-    architect, 2026-11-26T11:15:56Z), and the continued `--out` stays as history.
+    A run stopped by `--further-rounds` has no verdict and carries the `continueMixed` mark, so a
+    later `continue-mixed` keeps it as it is. Its saved step also keeps only its earlier rounds'
+    read calls (a saved step drops earlier rounds' thinking and text), so the request it would
+    send next cannot be rebuilt from the record. The stage's next step is therefore a fresh run of
+    the stage on the same runner (the runner's architect, 2026-11-26T11:15:56Z), and the
+    continued `--out` stays as history.
   - Each case result in `--out` holds every stage its saved result holds. A stage keeps its
     unchanged runs as saved. Each continued run takes its saved run's place and number, and its
     `continueMixed` names the saved run (number, blind id, round, verdict and runner), this
@@ -394,8 +396,9 @@ of the results whose session id no replay call of the log holds (results made wi
 written whole after each round of runs, so a run started again goes on from what was saved and
 skips each complete case. Each run in it keeps its arm, its verdict, the session id it went with
 (`userId`), its routing id (`routingId`, below), the deployment that answered each of its requests
-(`deployments`: the first 8 hex digits of each `x-litellm-model-id`, in order, `""` where the
-answer carried none; empty for a replay that failed) and its place in its round's send order
+(`deployments`: the first 8 hex digits of each `x-litellm-model-id` (the first 8 of its SHA-256 for
+an id that does not begin with 8 hex digits), in order, `""` where the answer carried none; empty
+for a replay that failed) and its place in its round's send order
 (`sendPlace`), so both controls can be recounted from it. A round sends every arm's runs in one
 order, shuffled by the round's recorded seed (`replay.ts`'s `sendOrder`); the first run of each
 arm in that order goes alone among its arm's, so its reply writes the prefix cache the arm's
@@ -953,9 +956,10 @@ other skills of the run's profile file from the copies its task's saved capture 
 the runs and the judged runs; the runs that end at an action (`actions`), that it would continue
 now (`continues`), that another skill's answer would send on now (`sentBy`), with no verdict past
 the last round (`pastLastRound`) or for an undecided call (`unresolved`), each with its run number,
-session id and the tools that decided it; and the runs it does not reach (`untouched`), whose last
-reply makes no mix (`ends`) or only reads skill files (`skillRound`). It holds ids, counts and
-tool names, never a reply's text.
+session id and the tools that decided it; the runs it does not reach (`untouched`: a run that
+loaded the skill, a run another skill sent on, a Claude Code run, a run with no reply); and the
+runs it reaches whose last reply makes no mix (`ends`) or only reads skill files (`skillRound`).
+It holds ids, counts and tool names, never a reply's text.
 
 Every load applies the listing rule (the architect, 2026-11-22; on added names too, 2026-11-24;
 narrowed by how the capture shows the listing, 2026-11-25), so no one applies it by hand. Each
@@ -2128,7 +2132,8 @@ id, its request id and the provider's request id, the gateway's headers of it (`
 `x-litellm-attempted-retries` and the provider's request-id headers, each it came with), its
 cache read and write tokens, usage and dollars at list price. It never holds the key or a
 message's text. What a call was for (`kind`) is `judge`, `replay` or `hint` for a stage command,
-`continuation` for a request of `behaviour continue-mixed`, and `probe` for its `--probe`;
+`continuation` for a continuation request of `behaviour continue-mixed` (its judgements and fresh
+runs are `judge` and `replay`), and `probe` for its `--probe`;
 `continue-mixed` reads the `userId` and `gateway` of each line of a saved `--out`'s log to find the
 deployment that answered a run saved before runs recorded one.
 

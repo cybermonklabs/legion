@@ -9042,8 +9042,9 @@ const TasksQuery = z.strictObject({
 });
 type TasksQuery = z.infer<typeof TasksQuery>;
 
-/** What a build-tasks run is made from: the skill's SKILL.md, the stores, the window, and the
- *  model `--model` names, when it names one. */
+/** What a build-tasks run is made from: the skill's SKILL.md, the stores, the window, the model
+ *  `--model` names, when it names one, and the test setup (`--test-setup`) with the session whose
+ *  context it installs into (`--context-session`), when given. */
 const TasksInputs = z.strictObject({
   skill: Digested,
   stores: z.array(z.string()),

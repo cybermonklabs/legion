@@ -319,6 +319,7 @@ import {
 } from "./capture";
 import { Case, listedName, Profile, ProfileSkill, type Thinking } from "./cases";
 import {
+  counted,
   json,
   ompSkillName,
   ompText,
@@ -3282,7 +3283,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     const deployments =
       recorded.length === 0 && unrecorded > 0
         ? "not recorded"
-        : `${deploymentWords(recorded)}${unrecorded === 0 ? "" : ` (and ${unrecorded} runs made before runs recorded their deployments)`}`;
+        : `${deploymentWords(recorded)}${unrecorded === 0 ? "" : ` (and ${counted(unrecorded, "run")} made before runs recorded their deployments)`}`;
     return { verdict, usd: spend.usd, outside, deployments };
   };
   writeSummary();

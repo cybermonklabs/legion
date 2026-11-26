@@ -7,8 +7,9 @@
  * `behaviour` and `load` read skill texts from directories, cases or tasks from a file, and the
  * key from a file; the repositories a context needs come from `--repos <dir>` (a tree of
  * `<owner>/<name>/<commit>/` directories, context.ts's `localSource`), or else from GitHub
- * through `gh` (context.ts's `ghSource`). A load with `--test-setup` reads its inventory copy
- * even when all its captures are saved.
+ * through `gh` (context.ts's `ghSource`). So they read GitHub, with its token, only to make a
+ * capture with no `--repos`, to make again the installed copies a saved capture names where the
+ * cache lacks them, and, for a load with `--test-setup`, to read its inventory copy.
  *
  *   bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> --config <file>
  *       --key-file <file> --out <dir> --old <dir> --new <dir> --cases <file>
@@ -1070,9 +1071,10 @@ const Run = z.strictObject({
    *  failed (`REPLAY_FAILED`) records none, though the rounds it had answered were paid. */
   replaySpent: z.array(SpentRecord),
   /** The deployment that answered each of the replay's requests, in the order sent (gateway.ts's
-   *  `deploymentOf`: the first 8 hex digits of its `x-litellm-model-id`, "" where the answer
-   *  carried none); empty when the replay failed, as `replaySpent` is; absent from a run made
-   *  before this field. */
+   *  `deploymentOf`: the first 8 hex digits of its `x-litellm-model-id`, or the first 8 of its
+   *  SHA-256 where the id does not begin with 8 hex digits, "" where the answer carried none);
+   *  empty when the replay failed, as `replaySpent` is; absent from a run made before this
+   *  field. */
   deployments: z.array(z.string()).optional(),
   judgeSpent: z.array(SpentRecord),
   /** The runner that made the run (`runnerDigest`); absent from a run made before runs recorded
@@ -4500,7 +4502,7 @@ function copyCaptures(
     if (saved?.capture === undefined) continue;
     const target = capturePaths(armCaptureDir(r.out, saved.arm, state.texts), c.id, name);
     for (const part of ["body", "record"] as const) {
-      const inside = path.resolve(saved.files[part]).startsWith(path.resolve(from));
+      const inside = path.resolve(saved.files[part]).startsWith(`${path.resolve(from)}${path.sep}`);
       if (existsSync(target[part]) || !inside) continue;
       mkdirSync(path.dirname(target[part]), { recursive: true });
       copyFileSync(saved.files[part], target[part]);
@@ -4881,7 +4883,7 @@ function routePinsOf(given: readonly string[], command: string): Map<ArmName, st
   const stage = Stage.safeParse(command);
   if (!stage.success) {
     throw new Refused(
-      `--route-id goes with behaviour screen, confirm and control only: ${command} makes no model call. ${BEHAVIOUR_USAGE}`
+      `--route-id goes with behaviour screen, confirm and control only: ${command === "continue-mixed" ? "continue-mixed sends each run with the routing id it was saved with" : `${command} makes no model call`}. ${BEHAVIOUR_USAGE}`
     );
   }
   const arms: readonly ArmName[] = STAGE_ARMS[stage.data];
