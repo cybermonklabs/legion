@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -146,66 +145,43 @@ func TestReadGathersEveryFactTheRulesRead(t *testing.T) {
 	}
 }
 
-// TestTheTitleReadsSkipTheLegionDaemonsSession: the Legion daemon writes on its issues as
-// `legion-daemon:<PROJECT>` (its role-holder publications among them), a session that stamps no
-// title, so delivery.ResolveSessionTitles would read it to the end of its own events for nothing:
-// its title can never be a WorkerTitle. The test records just the two title reads that must omit
-// it, readRoleEvents' and phase work's. Its control is the corpus's merger, which only those two
-// reads hold: exactly their two title reads name it.
-func TestTheTitleReadsSkipTheLegionDaemonsSession(t *testing.T) {
-	database := corpus(t)
-	for seq, kind := range []string{"issue.role_holders_changed", "issue.updated"} {
-		if _, err := database.Pool.Exec(t.Context(), `insert into events (issue_key, seq, type, actor, payload, notify, created_at)
-			values ('INFRA-2', $1, $2, '{"kind":"session","id":"legion-daemon:INFRA"}'::jsonb, '{}'::jsonb, false, $3)`,
-			100+seq, kind, after(3)); err != nil {
-			t.Fatalf("seed the daemon's %s: %v", kind, err)
-		}
+// seedTitledEvent seeds a comment event that session wrote on issue at seq, stamping the given
+// session title, which readRoleEvents and the phase-work read resolve.
+func seedTitledEvent(t *testing.T, database *store.Store, issue string, seq int, session, title string, at time.Time) {
+	t.Helper()
+	actor := fmt.Sprintf(`{"kind":"session","id":%q,"origin":{"session_title":%q}}`, session, title)
+	if _, err := database.Pool.Exec(t.Context(), `insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ($1, $2, 'comment.created', $3::jsonb, '{}'::jsonb, false, $4)`, issue, seq, actor, at); err != nil {
+		t.Fatalf("seed %s's %s event on %s: %v", session, title, issue, err)
 	}
+}
+
+// TestReadIgnoresTheLegionDaemonsOwnEvents: the Legion daemon writes on its issues as
+// `legion-daemon:<PROJECT>` (its role-holder publications among them). That session stamps no
+// title of its own, so resolving it would read every event it wrote for nothing; readRoleEvents
+// leaves it out before the title read (legion.DaemonSession). This seeds the daemon an event that
+// does carry a role title for the issue, which the old code would resolve into a role event, and
+// holds that the read records none: its control is that the same title from an ordinary session
+// is recorded, so the title path does record a role event at all.
+func TestReadIgnoresTheLegionDaemonsOwnEvents(t *testing.T) {
+	database := corpus(t)
+	seedTitledEvent(t, database, "INFRA-2", 100, "legion-daemon:INFRA", "Legion reviewer · INFRA-2", after(3))
+	seedTitledEvent(t, database, "INFRA-2", 101, "s-plain", "Legion tester · INFRA-2", after(3))
+
 	population, err := Read(t.Context(), database.Pool, nil, "INFRA", after(-2), after(24))
 	if err != nil {
-		t.Fatalf("read the population's facts: %v", err)
+		t.Fatalf("read the population: %v", err)
 	}
-	sent := &storetest.SentStatements{}
-	recorded := storetest.SentStore(t, database, sent)
-	if err := population.readRoleEvents(t.Context(), recorded.Pool, population.Keys); err != nil {
-		t.Fatalf("read the role events: %v", err)
+	child := population.Issues["INFRA-2"]
+	if child == nil {
+		t.Fatalf("the population holds %v, want INFRA-2 among them", population.Keys)
 	}
-	if _, err := legion.PhaseWorkKeys(t.Context(), recorded.Pool); err != nil {
-		t.Fatalf("read the phase work: %v", err)
+	if _, ok := child.FirstRoleEvent["reviewer"]; ok {
+		t.Errorf("a role event was recorded for the daemon's reviewer title, which the daemon skip must drop")
 	}
-	if blind := sent.Blind(); len(blind) != 0 {
-		t.Fatalf("the recorder could not read %v, so a title read may be unseen", blind)
-	}
-	// An enumeration of nothing is not a pass: the daemon rule is only exercised when both reads
-	// handed the resolver a session, so a run that recorded no title read at all says so rather
-	// than reading as clean.
-	mergerTitleReads, titleReads, statementsSeen := 0, 0, len(sent.Statements())
-	const merger = "s-Legion merger · INFRA-2"
-	var titleReadDetails []string
-	for _, statement := range sent.Statements() {
-		if !strings.Contains(statement.SQL, "from unnest($1::text[]) s(id)") {
-			continue
-		}
-		titleReads++
-		ids, ok := statement.Text(0)
-		if !ok {
-			ids = "<no first parameter>"
-		}
-		titleReadDetails = append(titleReadDetails, fmt.Sprintf("%q", ids))
-		if strings.Contains(ids, "legion-daemon:") {
-			t.Errorf("a title read names the daemon's session: %q", ids)
-		}
-		if strings.Contains(ids, merger) {
-			mergerTitleReads++
-		}
-	}
-	if titleReads == 0 {
-		t.Fatalf("UNKNOWN: the recorder saw %d statements and no title read, so this run exercised nothing; population keys %v",
-			statementsSeen, population.Keys)
-	}
-	if mergerTitleReads != titleReads {
-		t.Fatalf("%d of %d title reads name %q, want every one of them; title reads: %v",
-			mergerTitleReads, titleReads, merger, titleReadDetails)
+	if at, ok := child.FirstRoleEvent["tester"]; !ok || !at.Equal(after(3)) {
+		t.Errorf("the ordinary session's tester event = %v (%t), want %v: the control that the title path records a role event at all",
+			at, ok, after(3))
 	}
 }
 
