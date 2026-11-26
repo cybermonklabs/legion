@@ -70,9 +70,12 @@ var contractComparisonRows = []contractComparisonRow{
 	{row: "The owner's plan", declares: []declarationSite{
 		{"internal/api/plan.go", "OwnerPlanContract"},
 	}},
+	// The release records' strip of the claims' tokens below the stranded token's entry is the
+	// same answer's own row of shapeAnswer as the pause's strip of a resume's `pause`.
 	{row: "The pause and plan refusals", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < pauseContract"),
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < OwnerPlanContract"),
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(strandedTokenContract)"),
 	}},
 	{row: "A caller's recorded contract", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "recordedContractAtOrBelow", "n >= DaemonAPIVersion()"),
