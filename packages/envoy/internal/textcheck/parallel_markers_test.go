@@ -1,8 +1,8 @@
 package textcheck
 
-//ci:reads packages/envoy/internal/cipher/requests/*_test.go TestEveryBrokerTestSaysWhetherItRunsBesideTheOthers parallelMarkerOffences parses every _test.go file of the package, each build's
-//ci:reads packages/envoy/internal/cipher/api/*_test.go TestEveryBrokerTestSaysWhetherItRunsBesideTheOthers parallelMarkerOffences parses every _test.go file of the package, each build's
-//ci:reads packages/envoy/cmd/cipherd/*_test.go TestEveryBrokerTestSaysWhetherItRunsBesideTheOthers parallelMarkerOffences parses every _test.go file of the package, each build's
+//ci:reads packages/envoy/internal/cipher/requests/*_test.go TestEveryBrokerTestSaysWhetherItRunsBesideTheOthers parallelMarkerOffences parses every _test.go file of the package, each build's files included
+//ci:reads packages/envoy/internal/cipher/api/*_test.go TestEveryBrokerTestSaysWhetherItRunsBesideTheOthers parallelMarkerOffences parses every _test.go file of the package, each build's files included
+//ci:reads packages/envoy/cmd/cipherd/*_test.go TestEveryBrokerTestSaysWhetherItRunsBesideTheOthers parallelMarkerOffences parses every _test.go file of the package, each build's files included
 
 import (
 	"go/ast"
@@ -25,8 +25,11 @@ var parallelMarkedPackages = []string{"../cipher/requests", "../cipher/api", "..
 const notParallel = "// Not parallel:"
 
 // citedLine is a line a comment names, which the next edit above that line makes false: a file's
-// (logtest.go:36), a bare one (:85), or one in words (line 85).
-var citedLine = regexp.MustCompile(`(?i):\d+|\bline \d+`)
+// (logtest.go:36), a bare one (:85, after a space, a line's start or a parenthesis, so that an
+// address's port such as 127.0.0.1:1 and a time such as 10:30 are not read as one), or one in
+// words (line 85, lines 85-90, with any space between, a line break included). It is matched
+// against the comment group's text (ast.CommentGroup.Text), which drops the // of each line.
+var citedLine = regexp.MustCompile(`(?i)\.go:\d+|(^|[\s(]):\d+\b|\blines?\s+\d+`)
 
 // Every top-level test of the broker's requests, api and cmd/cipherd packages calls t.Parallel()
 // first or says on its first line why it does not, so a new test cannot run alone for no reason,
@@ -48,8 +51,10 @@ func TestEveryBrokerTestSaysWhetherItRunsBesideTheOthers(t *testing.T) {
 }
 
 // The check can fail: a test with neither first line, one with both, and a serial one whose
-// comment names a line (a file's, on its first line or its second, a bare one, or one in words)
-// are each named, and a parallel test and a serial one that names its call are not.
+// comment names a line (a file's, on its first line or its second, a bare one, or one in words,
+// on one line or across two, singular or plural, after a tab) are each named; a parallel test, a
+// serial one that names its call, and a serial one under which the test's own comment holds an
+// address with its port and a time of day are not.
 func TestTheParallelMarkerCheckNamesEachTestThatBreaksTheRule(t *testing.T) {
 	dir := t.TempDir()
 	source := `package planted
@@ -95,6 +100,28 @@ func TestSerialNamingALineInWords(t *testing.T) {
 	_ = t
 }
 
+func TestSerialNamingALineAcrossTwoLines(t *testing.T) {
+	// Not parallel: it holds an upper bound on a measured time (the check on line
+	// 85).
+	_ = t
+}
+
+func TestSerialNamingLinesInWords(t *testing.T) {
+	// Not parallel: it holds an upper bound on a measured time (the checks on lines 85-90).
+	_ = t
+}
+
+func TestSerialNamingALineAfterATab(t *testing.T) {
+	// Not parallel: it holds an upper bound on a measured time (the check on line	85).
+	_ = t
+}
+
+func TestSerialWithAnAddressUnderIt(t *testing.T) {
+	// Not parallel: it sets the environment (t.Setenv).
+	// The stand-in listens on 127.0.0.1:1, which nothing serves, from 10:30 on.
+	_ = t
+}
+
 func helper(t *testing.T) {}
 
 func TestMain(m *testing.M) {}
@@ -107,9 +134,11 @@ func TestMain(m *testing.M) {}
 	for _, offence := range offences {
 		named = append(named, offence[strings.LastIndex(offence, ":")+1:])
 	}
-	want := []string{"TestBoth", "TestNeither", "TestSerialNamingABareLine", "TestSerialNamingALine", "TestSerialNamingALineInWords", "TestSerialNamingALineOnItsSecondLine"}
-	if !slices.Equal(named, want) || tests != 8 {
-		t.Fatalf("the check read %d tests and named %v; want 8 tests read and %v named:\n\t%s", tests, named, want, strings.Join(offences, "\n\t"))
+	want := []string{"TestBoth", "TestNeither", "TestSerialNamingABareLine", "TestSerialNamingALine",
+		"TestSerialNamingALineAcrossTwoLines", "TestSerialNamingALineAfterATab", "TestSerialNamingALineInWords",
+		"TestSerialNamingALineOnItsSecondLine", "TestSerialNamingLinesInWords"}
+	if !slices.Equal(named, want) || tests != 12 {
+		t.Fatalf("the check read %d tests and named %v; want 12 tests read and %v named:\n\t%s", tests, named, want, strings.Join(offences, "\n\t"))
 	}
 }
 
@@ -143,10 +172,7 @@ func parallelMarkerOffences(t *testing.T, dirs ...string) ([]string, int) {
 				where := filepath.ToSlash(path) + ":" + fn.Name.Name
 				first, marker := "", ""
 				if group := firstComment(file, fn.Body); group != nil {
-					first = group.List[0].Text
-					for _, line := range group.List {
-						marker += line.Text + "\n"
-					}
+					first, marker = group.List[0].Text, group.Text()
 				}
 				serial := strings.HasPrefix(first, notParallel)
 				parallel := callsParallelFirst(fn)
