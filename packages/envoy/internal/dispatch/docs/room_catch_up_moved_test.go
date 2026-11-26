@@ -5,7 +5,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -48,7 +47,7 @@ func TestACatchUpThatReadsItsDocumentMovedClosesTheRoomOnce(t *testing.T) {
 		}
 		work(ctx)
 	}
-	if reads := countNotes(notes.reads, document, 100*time.Millisecond); reads != 1 {
+	if reads := countNotes(notes.reads, document); reads != 1 {
 		t.Errorf("the catch-ups of the moved document's room read the store %d times, want once", reads)
 	}
 	if lane.pop() != nil {
