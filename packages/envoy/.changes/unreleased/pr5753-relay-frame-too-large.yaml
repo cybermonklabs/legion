@@ -1,0 +1,17 @@
+kind: Fixed
+custom:
+  Issue: pr5753
+body: |-
+  A message too large to relay no longer holds a session's later deliveries. A session in consumer
+  mode receives a stored message as its bytes under the relay's own headers, and a message stored
+  with less room than those headers take could not be published as a frame: the publish failed, the
+  relay restarted at the consumer's ack floor, the same message came first again, and the session
+  received nothing more until the stream's 72-hour retention removed it. The relay now sends a
+  notice in the frame's place, under the frame's own headers and reply subject, so the session's
+  `done` acknowledges the message and its `nak` has the server send it again, and the later messages
+  arrive. The notice is the listener's own envelope on the message's own topic, and its payload
+  names the message: `reason` `too_large`, its `event_id`, `original_topic`, `stream_seq`, `size`,
+  the `frame_size` those bytes make with the headers, and the server's `max_payload`. The listener's
+  size checks also keep the relay's headers their room now, so a message a message route or a role
+  forward accepts reaches a session whole, and one past that room is answered `413` naming the
+  message's size, its frame's size and the max payload.
