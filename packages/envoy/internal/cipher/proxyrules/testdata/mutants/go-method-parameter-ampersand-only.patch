@@ -1,0 +1,18 @@
+# go-method-parameter-ampersand-only: check splits the query on "&" alone, so "x;_method=DELETE",
+# which a PHP service whose arg_separator.input holds ";" reads as "_method", gets through under
+# an allow list. Caught by the comparison fuzz test: the model splits on ";" too and still
+# answers "request carries a method override parameter". Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxyrules/airlock.go
++++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
+@@ -528,7 +528,9 @@
+ // which Rails, Laravel and Symfony honour: the decision reads no body, which internal/cipher/proxy
+ // streams to the service unread.
+ func hasMethodOverrideParameter(query string) bool {
+-	for _, part := range strings.Split(strings.ReplaceAll(query, ";", "&"), "&") {
++	// MUTANT: the query is split on "&" alone, so "x;_method=DELETE", which a PHP service whose
++	// arg_separator.input holds ";" reads as "_method", gets through.
++	for _, part := range strings.Split(query, "&") {
+ 		raw, _, _ := strings.Cut(part, "=")
+ 		name, err := url.QueryUnescape(raw)
+ 		if err != nil {
