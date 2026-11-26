@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // On a three-copy stream with a byte limit (in-process three-server cluster), a GitHub delivery,
@@ -179,12 +180,7 @@ func TestAWindowSendTheFullStreamRefusedIsStoredOnceAndAPassedDeadlineSendsNothi
 	}
 
 	passed := client.WindowUntil(func() time.Time { return time.Now().Add(-time.Second) })
-	var err error
-	select {
-	case err = <-passed.PublishAsync(item):
-	case <-time.After(time.Minute):
-		t.Fatal("the send was not answered within a minute")
-	}
+	err := testwait.Receive(t, "the send through a window whose deadline has passed to be answered", passed.PublishAsync(item))
 	if !errors.Is(err, ErrWindowDeadline) {
 		t.Fatalf("a send through a window whose deadline has passed = %v, want ErrWindowDeadline", err)
 	}

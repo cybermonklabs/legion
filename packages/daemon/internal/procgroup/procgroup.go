@@ -271,11 +271,13 @@ func Said(err error, output string) error {
 // exited child it does not hold, so it passes one that holds the child out of that reaper until
 // its own wait has read the exit (internal/launcher's pidGuard): a child that reaper took first
 // fails its own wait with `waitid: no child processes`, or under gVisor at times `wait: no child
-// processes` or `waitid: no such process`. Every other process passes NoReaper. There is no
-// default: every caller names the one it runs under, so code the launcher reaches cannot start a
-// child through one it did not choose (internal/launcher's
-// TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt reads every start that process
-// reaches).
+// processes` or `waitid: no such process`. `legion worker-shim` passes its subreaper.Guard's
+// (internal/subreaper) for the same reason: under --reap-orphans it reaps every exited child it
+// does not hold. Every other process passes NoReaper. There is no default: every caller names the
+// one it runs under, so code the launcher or the shim reaches cannot start a child through one it
+// did not choose (internal/launcher's
+// TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt and internal/shim's
+// TestEveryChildTheShimWaitsForStartsThroughItsGuard read every start each process reaches).
 type Starter func(cmd *exec.Cmd) (done func(), err error)
 
 // NoReaper is the Starter of a process that reaps no child it did not start itself: cmd.Start,
