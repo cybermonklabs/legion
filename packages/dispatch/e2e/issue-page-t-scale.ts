@@ -710,14 +710,21 @@ export function readFirstScreen(page: Page, posts: readonly string[]): Promise<F
     for (let at = root?.parentElement ?? null; at !== null; at = at.parentElement) {
       if (at !== document.scrollingElement) scrolled += at.scrollTop;
     }
+    // The first line is read from the boxes of the row's text nodes alone. A range over the
+    // row's contents also answers the border box of each element it holds whole, and the row's
+    // card spans the whole row, so the top box would be the card's, and its foot the row's.
     const firstLine = (element: Element): { bottom: number; top: number } => {
       const range = document.createRange();
-      range.selectNodeContents(element);
-      const boxes = [...range.getClientRects()].filter((box) => box.width > 0 && box.height > 0);
-      const first = boxes.reduce<DOMRect | undefined>(
-        (best, box) => (best === undefined || box.top < best.top ? box : best),
-        undefined
-      );
+      const texts = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      let first: DOMRect | undefined;
+      for (let text = texts.nextNode(); text !== null; text = texts.nextNode()) {
+        range.selectNodeContents(text);
+        for (const box of range.getClientRects()) {
+          if (box.width > 0 && box.height > 0 && (first === undefined || box.top < first.top)) {
+            first = box;
+          }
+        }
+      }
       const own = element.getBoundingClientRect();
       return first === undefined
         ? { bottom: own.bottom, top: own.top }
