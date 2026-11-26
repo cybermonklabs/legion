@@ -169,7 +169,7 @@ function waitsBody(blockedBy: readonly string[] | undefined): {
 
 /** The issues an issue answer says the issue waits on: its needs, where the answer holds it, and
  *  else its blocked_by, which a Dispatch of the release before answers alone. */
-export function waitsOf(issue: {
+function waitsOf(issue: {
   readonly needs?: readonly string[] | null;
   readonly blocked_by?: readonly string[] | null;
 }): readonly string[] {
@@ -190,7 +190,7 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
   const components = optionalComponents(args, "components");
   const repo = optionalString(args, "repo");
   const labels = args.labels;
-  const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
+  const blockedBy = optionalStringArray(args, "blocked_by");
   const duplicateOf = optionalString(args, "duplicate_of");
   const filedFrom = optionalString(args, "filed_from");
   const advances = optionalStringArray(args, "advances");
@@ -298,9 +298,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   const rankAfter = optionalString(args, "after");
   const priority = optionalPriority(args, "priority");
   const assignee = optionalNullableString(args, "assignee");
-  const labels = Array.isArray(args.labels) ? (args.labels as string[]) : undefined;
+  const labels = optionalStringArray(args, "labels");
   const labelsAdd = optionalStringArray(args, "labels_add");
-  const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
+  const blockedBy = optionalStringArray(args, "blocked_by");
   const duplicateOf = optionalString(args, "duplicate_of");
   const filedFrom = optionalString(args, "filed_from");
   const advances = optionalStringArray(args, "advances");
@@ -850,7 +850,8 @@ async function hasVerificationDocument(
 }
 
 /** `dispatch results`: each check of an issue's Verification document with every result recorded
- *  against it. */
+ *  against it, and for an issue with no Verification query or role document, that it has none
+ *  rather than an empty list. */
 export async function resultsCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client } = context;
   const issue = stringArg(args, "issue");
@@ -861,7 +862,9 @@ export async function resultsCommand(context: CommandContext): Promise<DispatchT
   const hasVerification =
     checks.length > 0 || (await hasVerificationDocument(client, issue, results));
   return {
-    text: formatCheckResults(results, hasVerification, brief),
+    text: hasVerification
+      ? formatCheckResults(results, brief)
+      : `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`,
     details: {
       issue,
       checks: checks.length,

@@ -4,6 +4,8 @@ import type {
   AskWithTrees,
   BlockPath,
   Comment,
+  CommentNodeAnchor,
+  CommentRead,
   GraphEdge,
   GraphReferences,
   MessageRead,
@@ -14,12 +16,7 @@ import type {
 import { actorActText, encodeBlockId, POST_HISTORY_PAGE_LIMIT } from "@legion/contracts";
 import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
-import type {
-  CommentNodeAnchor,
-  CommentReadWithNodeAnchor,
-  DispatchClient,
-  WithNodeAnchor,
-} from "../dispatch-http";
+import type { DispatchClient, WithNodeAnchor } from "../dispatch-http";
 import { ownerTitle } from "../dispatch-owner";
 import type { ResolvedArtifact } from "./context";
 import { dispatchAnswered } from "./failures";
@@ -257,7 +254,7 @@ export function postHistorySummary(
 }
 
 export function commentSummary(
-  { comment, replies }: CommentReadWithNodeAnchor,
+  { comment, replies }: CommentRead,
   graph: readonly string[]
 ): string {
   const root = [

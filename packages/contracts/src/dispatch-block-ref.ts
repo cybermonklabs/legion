@@ -151,12 +151,12 @@ const ITEM_BLOCK_REFERENCE = new RegExp(
  * reason than Go gives; both refuse it. A message records no revisions, so a pinned message block
  * is no reference.
  */
-function itemBlockKind(value: string): "ask" | "comment" | "message" | undefined {
+function itemBlockKind(value: string): DispatchItemBlockReference["item"] | undefined {
   const match = ITEM_BLOCK_REFERENCE.exec(value);
   if (match === null) {
     return undefined;
   }
-  const kind = (match[1] ?? match[2]) as "ask" | "comment" | "message";
+  const kind = (match[1] ?? match[2]) as DispatchItemBlockReference["item"];
   const id = match[3] ?? "";
   if (/\s/.test(id) || decodeBlockId(id) === undefined) {
     return undefined;
@@ -296,7 +296,7 @@ export function parseCanonicalItemBlockReference(
  * `text.ParseRef` reads an item with no fragment - its id written with no whitespace and decoding
  * to no control character - or undefined.
  */
-function wholeItemKind(value: string): "ask" | "comment" | "message" | undefined {
+function wholeItemKind(value: string): DispatchItemBlockReference["item"] | undefined {
   const match = WHOLE_ITEM_REFERENCE.exec(value);
   const id = match?.[3] ?? "";
   if (match === null || /\s/.test(id)) {
@@ -311,7 +311,7 @@ function wholeItemKind(value: string): "ask" | "comment" | "message" | undefined
   if (decoded === "" || hasControlCharacter(decoded)) {
     return undefined;
   }
-  return (match[1] ?? match[2]) as "ask" | "comment" | "message";
+  return (match[1] ?? match[2]) as DispatchItemBlockReference["item"];
 }
 
 /**
@@ -352,18 +352,6 @@ export function blockPointerValueProblem(
     return `${JSON.stringify(value)} must be block references separated by exactly one space, with none leading or trailing`;
   }
   return blockPointersProblem(value.split(" "), items);
-}
-
-/** Whether `value` is a reference a `block[]` attribute declaring `items` holds. */
-function acceptedPointer(value: string, items: readonly BlockItemKind[]): boolean {
-  if (parseCanonicalBlockReference(value) !== undefined) {
-    return true;
-  }
-  const item = parseCanonicalItemBlockReference(value);
-  if (item !== undefined && items.includes(item.item)) {
-    return true;
-  }
-  return items.includes("issue") && CANONICAL_ISSUE_REFERENCE.test(value);
 }
 
 /** How a reference to an item of kind `item` is written where a `block[]` attribute declares it. */
@@ -411,7 +399,11 @@ export function blockPointersProblem(
 ): string | undefined {
   const seen = new Set<string>();
   for (const value of values) {
-    if (!acceptedPointer(value, items)) {
+    // A canonical block of a document, or an item `items` declares (`pointerItemKind`), is held.
+    if (
+      parseCanonicalBlockReference(value) === undefined &&
+      pointerItemKind(value, items) === undefined
+    ) {
       const block = itemBlockKind(value);
       const whole = wholeItemKind(value);
       // The kind takes the article its noun does: an ask, a comment, a message.

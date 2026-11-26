@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import * as branch from "../src/dispatch-api";
 
 /**
- * Whether what a Dispatch of this branch answers still parses under the strict schemas of `main`,
+ * Whether what a Dispatch of this checkout answers still parses under the strict schemas of `main`,
  * the release a deployed client was built from: a client of `main` reads a comment with
  * `CommentSchema` and keeps an event under `WrittenCommentEventPayloadSchema`, and both refuse a
  * member they do not declare.
@@ -15,8 +15,8 @@ import * as branch from "../src/dispatch-api";
  * writes it (`NODE_ANCHOR_WIRE` in `internal/dispatch/api/node_anchor_check_test.go`): the name of
  * the schema `value` is parsed with, what the test calls the value, and the value as the server
  * answered it. The schema is read from `dispatch-api.ts` under the first argument, a checkout of
- * `main` whose dependencies are installed. A name `main` does not export is a schema this branch
- * adds, such as `CommentWithNodeAnchorSchema`, and is read from this branch's `src/dispatch-api.ts`
+ * `main` whose dependencies are installed. A name `main` does not export is a schema this checkout
+ * adds, such as `CommentWithNodeAnchorSchema`, and is read from this checkout's `src/dispatch-api.ts`
  * instead; a name neither exports refuses its line.
  *
  * Every line parsed prints `PASS: wire-against-main <n> ...` and exits 0. Otherwise each refused
@@ -26,7 +26,7 @@ import * as branch from "../src/dispatch-api";
  */
 
 /** The part of a zod schema this script reads, so a schema of `main`'s zod and one of this
- *  branch's are read alike: each package resolves its own copy of the library. */
+ *  checkout's are read alike: each package resolves its own copy of the library. */
 interface WireSchema {
   safeParse(value: unknown):
     | { readonly success: true }
@@ -108,7 +108,7 @@ for (const { number, text } of lines) {
   if (schema === undefined) {
     refused++;
     console.log(
-      `REFUSED: line ${number} (${line.label}): neither main nor this branch exports a schema ${line.schema}`
+      `REFUSED: line ${number} (${line.label}): neither main nor this checkout exports a schema ${line.schema}`
     );
     continue;
   }
@@ -124,7 +124,7 @@ for (const { number, text } of lines) {
   }
   refused++;
   console.log(
-    `REFUSED: line ${number} (${line.label}) by ${fromMain ? "main's" : "this branch's"} ${line.schema}:`
+    `REFUSED: line ${number} (${line.label}) by ${fromMain ? "main's" : "this checkout's"} ${line.schema}:`
   );
   for (const issue of answer.error.issues) {
     const path = issue.path.length === 0 ? "(the value)" : issue.path.map(String).join(".");
@@ -144,7 +144,7 @@ if (refused > 0) {
 const branchPart =
   parsedByBranch === 0
     ? ""
-    : `, ${parsedByBranch} with this branch's ${[...branchSchemas].sort().join(", ")}`;
+    : `, ${parsedByBranch} with this checkout's ${[...branchSchemas].sort().join(", ")}`;
 console.log(
   `PASS: wire-against-main ${lines.length} lines: ${parsedByMain} with main's schemas${branchPart}`
 );

@@ -473,6 +473,18 @@ const commentValidation: NonNullable<DispatchToolSpec["validation"]> = {
 const ISSUE_FILED_FROM_REFUSAL =
   "An issue key, a block reference, a pinned reference, a document, an item of another project, an item no row holds and an item reserved for its author are each refused with 400 FILED_FROM_INPUT, the last three in one text.";
 
+/** What a filed_from names, in the field's own words on both issue tools. */
+const ISSUE_FILED_FROM_FORM =
+  "The conversation item this issue was filed out of: the canonical reference of a public ask, comment or message of the same project, dispatch://<KEY>/<ask|comment|message>/<uuid> or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>";
+
+/** A quote's block_id, in the words of every tool that takes one beside the quote. */
+const QUOTE_BLOCK_ID_DESCRIPTION =
+  "Optional id of the block the quote is in: the quote is found inside that block alone.";
+
+/** A quote's optional occurrence, where the tool takes its block_id too. */
+const QUOTE_OCCURRENCE_DESCRIPTION =
+  "Optional zero-based occurrence of quote, counted inside block_id when it is given.";
+
 const ISSUE_UPDATE_FIELDS_RULE =
   "Issue update requires at least one field besides issue: status, title, labels, labels_add, priority, assignee, external_links, route, parent, blocked_by, duplicate_of, filed_from, advances, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
@@ -1318,9 +1330,7 @@ export const dispatchToolSpecs = [
         .optional(),
       filed_from: z
         .string()
-        .describe(
-          `The conversation item this issue was filed out of: the canonical reference of a public ask, comment or message of the same project, dispatch://<KEY>/<ask|comment|message>/<uuid> or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>. ${ISSUE_FILED_FROM_REFUSAL}`
-        )
+        .describe(`${ISSUE_FILED_FROM_FORM}. ${ISSUE_FILED_FROM_REFUSAL}`)
         .optional(),
       advances: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_ADVANCES })
@@ -1521,7 +1531,7 @@ export const dispatchToolSpecs = [
       filed_from: z
         .string()
         .describe(
-          `The conversation item this issue was filed out of: the canonical reference of a public ask, comment or message of the same project, dispatch://<KEY>/<ask|comment|message>/<uuid> or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>; an empty string clears it. ${ISSUE_FILED_FROM_REFUSAL}`
+          `${ISSUE_FILED_FROM_FORM}; an empty string clears it. ${ISSUE_FILED_FROM_REFUSAL}`
         )
         .optional(),
       advances: z
@@ -1683,12 +1693,7 @@ export const dispatchToolSpecs = [
               "Zero-based occurrence of the quote, counted inside block_id when it is given."
             )
             .optional(),
-          block_id: z
-            .string()
-            .describe(
-              "Optional id of the block the quote is in: the quote is found inside that block alone."
-            )
-            .optional(),
+          block_id: z.string().describe(QUOTE_BLOCK_ID_DESCRIPTION).optional(),
         })
         .describe("Optional document location for the question.")
         .optional(),
@@ -1853,18 +1858,8 @@ export const dispatchToolSpecs = [
         .optional(),
       ref: z.string().describe("Optional dispatch:// issue or document reference.").optional(),
       quote: z.string().describe("Optional exact quoted document text.").optional(),
-      occurrence: z
-        .number({ int: true, min: 0 })
-        .describe(
-          "Optional zero-based occurrence of quote, counted inside block_id when it is given."
-        )
-        .optional(),
-      block_id: z
-        .string()
-        .describe(
-          "Optional id of the block the quote is in: the quote is found inside that block alone."
-        )
-        .optional(),
+      occurrence: z.number({ int: true, min: 0 }).describe(QUOTE_OCCURRENCE_DESCRIPTION).optional(),
+      block_id: z.string().describe(QUOTE_BLOCK_ID_DESCRIPTION).optional(),
       body: z.string().describe(`Review comment. ${BODY_BLOCK_RULE}`),
       reply_to: z
         .string()
@@ -1945,18 +1940,8 @@ export const dispatchToolSpecs = [
             "heading stays as its #s alone). A CR LF or a lone carriage return in it is written as a line feed."
         ),
       body: z.string().describe(`Optional rationale. ${BODY_BLOCK_RULE}`).optional(),
-      occurrence: z
-        .number({ int: true, min: 0 })
-        .describe(
-          "Optional zero-based occurrence of quote, counted inside block_id when it is given."
-        )
-        .optional(),
-      block_id: z
-        .string()
-        .describe(
-          "Optional id of the block the quote is in: the quote is found inside that block alone."
-        )
-        .optional(),
+      occurrence: z.number({ int: true, min: 0 }).describe(QUOTE_OCCURRENCE_DESCRIPTION).optional(),
+      block_id: z.string().describe(QUOTE_BLOCK_ID_DESCRIPTION).optional(),
     }),
     validation: documentOwnerValidation(true, true),
   },

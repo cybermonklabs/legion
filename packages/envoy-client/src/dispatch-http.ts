@@ -22,7 +22,7 @@ import type {
   CheckResultRetractionInput,
   ClaimedIssue,
   Comment,
-  CommentNodeAnchorSchema,
+  CommentNodeAnchor,
   CommentRead,
   CommentWriteResponse,
   ConstraintInput,
@@ -127,7 +127,6 @@ import {
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
-import type { z } from "zod";
 import { credentialDeadline, type RequestCredential } from "./bearer";
 import { reachedNothing } from "./errors";
 import { bodyForText, excerpt, redirectOrigin, SentTokens } from "./excerpt";
@@ -621,20 +620,10 @@ export interface CommentReadOptions {
   readonly nodeAnchors?: boolean;
 }
 
-/** The member `node_anchor` of a comment a read asked with `?node_anchor=true` answers
- *  (`CommentNodeAnchorSchema` in `@legion/contracts`): the node the comment's anchor names, by
- *  its store kind and id, with its state; the words the anchor quotes; their zero-based match in
- *  the node's text, null for a document anchor; and whether those words left the text. */
-export type CommentNodeAnchor = z.output<typeof CommentNodeAnchorSchema>;
-
-/** A comment as a read with `CommentReadOptions.nodeAnchors` answers it. */
+/** A comment as a read with `CommentReadOptions.nodeAnchors` answers it: with `node_anchor`
+ *  (`CommentNodeAnchor` of the route table) where its anchor names a node or a block. `GET
+ *  /api/v1/comments/{id}`'s answer (`CommentRead`) carries it on its comment already. */
 export type WithNodeAnchor<Read> = Read & { readonly node_anchor?: CommentNodeAnchor };
-
-/** `GET /api/v1/comments/{id}`'s answer, its comment read with `CommentReadOptions`. Its replies
- *  carry no `node_anchor`, since a reply quotes no text. */
-export type CommentReadWithNodeAnchor = CommentRead & {
-  readonly comment: WithNodeAnchor<CommentRead["comment"]>;
-};
 
 /** The query of a comment read asked with `options`: `node_anchor=true` for node anchors, and
  *  none otherwise. */
@@ -2305,10 +2294,7 @@ export class DispatchClient {
     await this.#json("DELETE", ["api", "v1", "asks", id, "followers", sessionId], { actor });
   }
 
-  async getComment(
-    id: string,
-    options: CommentReadOptions = {}
-  ): Promise<CommentReadWithNodeAnchor> {
+  async getComment(id: string, options: CommentReadOptions = {}): Promise<CommentRead> {
     return this.#json("GET", ["api", "v1", "comments", id], undefined, nodeAnchorQuery(options));
   }
 
