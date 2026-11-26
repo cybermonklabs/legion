@@ -359,12 +359,12 @@ func TestADeliveryHeldThroughAProjectReleaseWaitsForTheRoleAfterTheClaimIsReady(
 // A merge forward's message (record.MergeForwardMessage) is held for its role as a merge-queue
 // removal is (deliverHeld): while nobody holds the role the row waits rather than ending. For a
 // claim the boot found stopped by the project release it also publishes nothing until that claim
-// has come back, as the role message and the hook prompt above do (wakeForDelivery's
-// awaitsBootStart): before the boot's start of it has run, and while the start's process is
-// launching and registered. Once the claim has stood ready past the first-turn bound its session
-// holds the role, and the ask is published to it once, under its row's key. The negative control
-// is deliverHeld without that wait: each of those attempts then publishes to the topic nobody
-// holds yet, and the row counts publishes the test wants none of.
+// has come back, as the role message, the phase-ended message and the hook prompt above do
+// (wakeForDelivery's awaitsBootStart): before the boot's start of it has run, and while the
+// start's process is launching and registered. Once the claim has stood ready past the first-turn
+// bound its session holds the role, and the ask is published to it once, under its row's key. The
+// negative control is deliverHeld without that wait: each of those attempts then publishes to the
+// topic nobody holds yet, and the row counts publishes the test wants none of.
 func TestAMergeForwardMessageHeldThroughAProjectReleaseWaitsForTheBootsStart(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
