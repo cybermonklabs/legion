@@ -1,4 +1,4 @@
--- packages/envoy/internal/cipher/store/migrations/0046_person_subjects.up.sql
+-- packages/envoy/internal/cipher/store/migrations/0047_person_subjects.up.sql
 -- An address is held by one account of the identity provider at a time, and the broker records
 -- that account on the credentials it made under the address. A Dispatch that records accounts
 -- calls POST /v1/person-subjects/revoke when another Google account takes an address, naming the
@@ -19,7 +19,7 @@
 -- Each is null on every row written before this migration, and on a machine login whose approval
 -- names no account, as every approval Dispatch in this tree relays does: such a row is read as
 -- possibly the replaced account's, and the revoke ends it too. A sign-in row with none recorded is
--- never given one (0047 refuses any change of a recorded account): where the broker asks Dispatch
+-- never given one (0048 refuses any change of a recorded account): where the broker asks Dispatch
 -- (BROKER_PROJECT_ACCESS_URL), its next trade ends it and writes a row of its own, and elsewhere
 -- it goes on recording none (store.RecordPersonSignIn). The two columns of each pair are set
 -- together or not at all, and neither is ever empty, so a row either names one account or says

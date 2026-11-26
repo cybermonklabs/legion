@@ -1,4 +1,4 @@
--- packages/envoy/internal/cipher/store/migrations/0047_recorded_accounts_unchanged.up.sql
+-- packages/envoy/internal/cipher/store/migrations/0048_recorded_accounts_unchanged.up.sql
 -- A credential's account is written once, when the credential is made, and never changed: the
 -- account a person's sign-in on a machine records (person_signins' issuer and subject), the
 -- account that approved a machine login (launcher_credentials' approver_issuer and
@@ -24,8 +24,8 @@
 -- old row with the new.
 --
 -- refuse_recorded_account_change runs under a search_path of its own, pg_catalog, the schema the
--- broker's tables are in, pg_temp (the do block at the end), as 0046's guards do and for the
--- reason 0046 gives: it raises alone, and still resolves its own call under the caller's path
+-- broker's tables are in, pg_temp (the do block at the end), as 0047's guards do and for the
+-- reason 0047 gives: it raises alone, and still resolves its own call under the caller's path
 -- without one.
 create function refuse_recorded_account_change() returns trigger language plpgsql as $$
 begin

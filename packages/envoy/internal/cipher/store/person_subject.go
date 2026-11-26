@@ -10,7 +10,7 @@ import (
 
 // An address is held by one account of the identity provider at a time, and Dispatch decides
 // which. When another account takes an address Dispatch holds for a person, Dispatch names
-// the account it replaced (POST /v1/person-subjects/revoke), and the broker records it in 0046's
+// the account it replaced (POST /v1/person-subjects/revoke), and the broker records it in 0047's
 // replaced_person_subjects: every credential that account holds under the address, and every
 // session it holds on the broker's own approval page, ends in the revoke's own transaction
 // (enroll.Service.RevokePersonSubject), and every later sign-in trade, machine-login approval and
@@ -28,7 +28,7 @@ import (
 // before the address moved stays valid for an hour.
 
 // IssuerSubject is one account of an identity provider: its issuer, as oidc.CanonicalIssuer spells
-// it, and its `sub`. The zero value names no account: a row written before migration 0046, or a
+// it, and its `sub`. The zero value names no account: a row written before migration 0047, or a
 // machine login whose approval an older Dispatch relayed without the approving account.
 type IssuerSubject struct {
 	Issuer  string
@@ -116,7 +116,7 @@ var ErrSubjectIsHolder = errors.New("store: the replaced account and the holder 
 // ReplacedSubjectDeleteSetting is the setting a delete from replaced_person_subjects must name its
 // row in first, in the deleting transaction itself, as the JSON array
 // jsonb_build_array(pg_current_xact_id()::text, person, issuer, subject)::text
-// (replacedSubjectDeleteMarkSQL), before the row's guard lets the delete through (migration 0046,
+// (replacedSubjectDeleteMarkSQL), before the row's guard lets the delete through (migration 0047,
 // guard_replaced_person_subjects). The transaction's id makes a marker left on a pooled connection
 // name nothing in any later transaction, and the array names one row whatever its fields hold,
 // where fields joined by a separator could name two.
@@ -139,7 +139,7 @@ const replacedSubjectDeleteMarkSQL = `select set_config($1, jsonb_build_array(pg
 // It first reads the greatest session generation a revoke it applied at person's address carried
 // (person_replacement_generations). A revoke carrying a lower one was superseded by a later
 // replacement at the address, so it writes nothing and answers that greatest generation, and the
-// caller ends nothing either; migration 0046's comment says why such a revoke can arrive. A revoke
+// caller ends nothing either; migration 0047's comment says why such a revoke can arrive. A revoke
 // at or above the greatest generation applies and raises it to its own. It answers nil when it
 // applied.
 func RecordReplacedSubjectTx(ctx context.Context, tx pgx.Tx, person, issuer, subject, holder string, sessionGeneration int64) (supersededBy *int64, err error) {

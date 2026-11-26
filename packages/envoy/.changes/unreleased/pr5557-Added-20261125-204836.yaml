@@ -4,7 +4,7 @@ body: |-
   on a machine records the issuer and `sub` of the person's own Google identity token, a machine
   login records the account that approved it (`approver_issuer` and `approver_subject` in the
   approve), and an approval-page session records the account that signed in (migration
-  `0046_person_subjects`). A recorded account never changes (`0047_recorded_accounts_unchanged`),
+  `0047_person_subjects`). A recorded account never changes (`0048_recorded_accounts_unchanged`),
   and the guards that hold these tables run under a `search_path` of their own, set by the same two
   migrations. Introspection answers `account_issuer`, `account_subject` and `credential_created_at`
   beside a token whose credential records them. `POST

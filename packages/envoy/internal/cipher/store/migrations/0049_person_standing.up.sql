@@ -1,4 +1,4 @@
--- packages/envoy/internal/cipher/store/migrations/0048_person_standing.up.sql
+-- packages/envoy/internal/cipher/store/migrations/0049_person_standing.up.sql
 -- The last answer Dispatch gave the broker for each person, whether Dispatch holds
 -- them, so an outage of Dispatch releases no held person and a restart or a second process
 -- answers alike. Each answer is written unless the row holds a later one, by Dispatch's own clock

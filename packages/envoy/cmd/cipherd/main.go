@@ -613,7 +613,7 @@ func main() {
 		// token, so BROKER_SIGNIN_DEVICE_AUDIENCE needs BROKER_GOOGLE_OIDC_AUDIENCE and the two
 		// share the key set read above. What a person may be is BROKER_SIGNIN_DOMAIN's to say,
 		// which the exchange's policy already holds. A trade ends a sign-in from before migration
-		// 0046, which records no account, only where BROKER_PROJECT_ACCESS_URL is set
+		// 0047, which records no account, only where BROKER_PROJECT_ACCESS_URL is set
 		// (store.SignInTrade.EndUnrecorded); unset, such a sign-in goes on as before.
 		exchangeConfig.PersonAudience = cfg.SignInDeviceAudience
 		exchangeConfig.PersonSignIns = enroll.PersonSignIns(endUnrecordedSignIns(projectAccess))
@@ -1503,7 +1503,7 @@ func projectAccessHTTPClient() *http.Client {
 }
 
 // endUnrecordedSignIns reports whether a trade ends the sessions of a sign-in from before
-// migration 0046 that recorded no account. The broker does that only where it can ask Dispatch:
+// migration 0047 that recorded no account. The broker does that only where it can ask Dispatch:
 // projectAccess is nil exactly when BROKER_PROJECT_ACCESS_URL is unset.
 func endUnrecordedSignIns(projectAccess projectaccess.Access) bool {
 	return projectAccess != nil

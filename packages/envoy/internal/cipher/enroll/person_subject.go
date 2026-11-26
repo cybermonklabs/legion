@@ -66,7 +66,7 @@ type SubjectRevoked struct {
 //     service's login is never touched: it acts for no person, and whoever approved it, it is not
 //     what the address holds.
 //
-// A row recording no account is one from before migration 0046, or a machine login whose approval
+// A row recording no account is one from before migration 0047, or a machine login whose approval
 // an older Dispatch relayed without the approving account: it might be the replaced account's, so
 // it ends, and if it was the holder's, the holder's machine signs in or logs in again, and the
 // holder signs in to the approval page again.

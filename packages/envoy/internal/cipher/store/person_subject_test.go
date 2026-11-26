@@ -48,7 +48,7 @@ func replace(t *testing.T, st *store.Store, person, subject, holder string) {
 }
 
 // TestATradeRecordsTheAccountItsPersonTokenNames: the first trade of a box key records the
-// account the person's token names; a row from before migration 0046, which records none, is
+// account the person's token names; a row from before migration 0047, which records none, is
 // ended by its next trade and replaced by a row of its own, recording that trade's account, so no
 // row's account ever changes; and a trade of a box key another account signed in with is
 // ErrSignInSubjectChanged, leaving the row as it was.
@@ -65,7 +65,7 @@ func TestATradeRecordsTheAccountItsPersonTokenNames(t *testing.T) {
 
 	if _, err := st.Pool.Exec(ctx, `insert into person_signins (person, thumbprint, machine_account) values ($1, $2, $3)`,
 		signInPerson, signInBoxTwo, signInMachine); err != nil {
-		t.Fatalf("write a sign-in from before migration 0046: %v", err)
+		t.Fatalf("write a sign-in from before migration 0047: %v", err)
 	}
 	legacy := signInFor(t, st, signInPerson, signInBoxTwo)
 	if err := record(t, st, signInPerson, signInBoxTwo, signInMachine); err != nil {
@@ -125,7 +125,7 @@ func TestATradeOfAReplacedAccountIsRefusedOnEveryBoxKey(t *testing.T) {
 	}
 }
 
-// The guard on replaced_person_subjects (migration 0046, guard_replaced_person_subjects): a row
+// The guard on replaced_person_subjects (migration 0047, guard_replaced_person_subjects): a row
 // moves only as the revoke moves it, whatever statement is sent. guardPerson's rows are
 // guardReplaced and guardOther, each recorded at session generation 5, guardHolder holding the
 // address.
@@ -480,7 +480,7 @@ func TestThePersonSubjectsMigrationHoldsAnAccountWholeOrNotAtAll(t *testing.T) {
 }
 
 // TestAReplacedAccountWithNoGenerationIsRefused: every revoke carries a session generation, so
-// replaced_person_subjects.session_generation is not null (migration 0046): a row inserted with
+// replaced_person_subjects.session_generation is not null (migration 0047): a row inserted with
 // none is refused with SQLSTATE 23502 (not_null_violation), and nothing is written.
 //
 // Control, in the test: with the column's not null dropped, in a transaction rolled back, the same

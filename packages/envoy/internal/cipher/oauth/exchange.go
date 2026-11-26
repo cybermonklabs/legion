@@ -1586,7 +1586,7 @@ func (p *Provider) personSignIn(ctx context.Context, session *oauthstore.Exchang
 	}
 	// Write the account this trade's identity token names, and when the sign-in row was made, onto
 	// the session the token is stored with, so an introspection answers both from the token's own
-	// row and never from the sign-in's. A pre-0046 sign-in can record no account when EndUnrecorded
+	// row and never from the sign-in's. A pre-0047 sign-in can record no account when EndUnrecorded
 	// is false; its newly minted token still records this trade's identity account.
 	session.Extra[ClaimAccountIssuer] = oidc.CanonicalIssuer(issuer)
 	session.Extra[ClaimAccountSubject] = subject
