@@ -225,6 +225,150 @@ func TestARemovalMakesTwoPassesOverADirectoryWhoseNamesKeepAppearing(t *testing.
 	}
 }
 
+// A name made in a directory after the removal's read found none and before its rmdir appeared
+// while the removal ran, as a writer's name does: the rmdir's ENOTEMPTY sends the removal back to
+// read the directory again, within volumeRemovalPasses, rather than answering it as a failure of
+// the directory's own (removeDir). The case above meets that window only when its writer falls
+// behind; here the window is the removal's own (beforeRemoveDir), before each rmdir of the entry,
+// so nothing is raced. A name made before the first rmdir alone is read, removed, and the entry
+// goes; a name made before every rmdir spends the passes, and the removal answers errStillFilling
+// of the entry after volumeRemovalPasses+1 rmdirs; and an ENOTEMPTY that the next read finds no
+// name for, which beforeRemoveDir answers in the rmdir's place as a name no read lists, is the
+// entry's own and is answered as it is.
+func TestARemovalOfADirectoryRefilledBeforeItsRmdirReadsItAgain(t *testing.T) {
+	// Not parallel: it writes the package variable beforeRemoveDir, which parallel tests read.
+	for _, tc := range []struct {
+		name string
+		// refill is the window before the entry's rmdir number rmdir.
+		refill     func(t *testing.T, entry string, rmdir int) error
+		wantRmdirs int
+		want       func(error) bool
+		wantText   string
+		gone       bool
+	}{
+		{
+			name: "a name made before the first rmdir alone",
+			refill: func(t *testing.T, entry string, rmdir int) error {
+				if rmdir == 1 {
+					writeLate(t, entry, rmdir)
+				}
+				return nil
+			},
+			wantRmdirs: 2,
+			want:       func(err error) bool { return err == nil },
+			wantText:   "nil, the entry removed once the name made before its first rmdir was",
+			gone:       true,
+		},
+		{
+			name: "a name made before every rmdir",
+			refill: func(t *testing.T, entry string, rmdir int) error {
+				writeLate(t, entry, rmdir)
+				return nil
+			},
+			wantRmdirs: volumeRemovalPasses + 1,
+			want: func(err error) bool {
+				return errors.Is(err, errStillFilling) && strings.Contains(err.Error(), strconv.Quote("entry")+":")
+			},
+			wantText: fmt.Sprintf("%v of %q", errStillFilling, "entry"),
+		},
+		{
+			name:       "an ENOTEMPTY no read finds a name for",
+			refill:     func(*testing.T, string, int) error { return syscall.ENOTEMPTY },
+			wantRmdirs: 1,
+			want: func(err error) bool {
+				return errors.Is(err, syscall.ENOTEMPTY) && !errors.Is(err, errStillFilling) &&
+					strings.Contains(err.Error(), strconv.Quote("entry")+":")
+			},
+			wantText: fmt.Sprintf("unlinkat %q: %v", "entry", syscall.ENOTEMPTY),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			held, err := os.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer held.Close()
+			entry := filepath.Join(dir, "entry")
+			mkdirFixture(t, entry)
+			rmdirs := 0
+			beforeRemoveDir = func(name string) error {
+				if name != "entry" {
+					return nil
+				}
+				rmdirs++
+				return tc.refill(t, entry, rmdirs)
+			}
+			t.Cleanup(func() { beforeRemoveDir = nil })
+
+			removal := removeEntryAt(held, "entry", make([]byte, volumeRemovalNamesBytes))
+
+			if !tc.want(removal) {
+				t.Errorf("the removal answered %v, want %s", removal, tc.wantText)
+			}
+			if rmdirs != tc.wantRmdirs {
+				t.Errorf("the removal made %d rmdirs of the entry, want %d", rmdirs, tc.wantRmdirs)
+			}
+			if _, err := os.Lstat(entry); errors.Is(err, os.ErrNotExist) != tc.gone {
+				t.Errorf("after the removal the entry's lstat answered %v, want it gone: %t", err, tc.gone)
+			}
+		})
+	}
+}
+
+// writeLate makes the file late<n> in entry, a name that appears after the removal's read.
+func writeLate(t *testing.T, entry string, n int) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(entry, fmt.Sprintf("late%d", n)), nil, 0o644); err != nil {
+		t.Error(err)
+	}
+}
+
+// A name the removal cannot remove does not reach an rmdir at all: a pass over a directory that
+// removes none of its names ends empty with that name's error (empty), so neither the directory
+// holding the name nor the entry above it is ever rmdir'd, and the answer is the name's own error,
+// not errStillFilling, with no writer to blame. The name is a file in a directory made 0500, whose
+// unlink fails with EACCES on every pass; beforeRemoveDir counts the rmdirs the removal reaches.
+func TestARemovalOfANameItCannotRemoveAnswersThatNamesErrorBeforeAnyRmdir(t *testing.T) {
+	// Not parallel: it writes the package variable beforeRemoveDir, which parallel tests read.
+	if os.Geteuid() == 0 {
+		t.Skip("root unlinks in a directory whatever its mode, so a directory made 0500 is no failure that lasts for it")
+	}
+	dir := t.TempDir()
+	held, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	locked := filepath.Join(dir, "entry", "locked")
+	mkdirFixture(t, locked)
+	if err := os.WriteFile(filepath.Join(locked, "kept"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	var rmdirs []string
+	beforeRemoveDir = func(name string) error {
+		rmdirs = append(rmdirs, name)
+		return nil
+	}
+	t.Cleanup(func() { beforeRemoveDir = nil })
+
+	removal := removeEntryAt(held, "entry", make([]byte, volumeRemovalNamesBytes))
+
+	if !errors.Is(removal, syscall.EACCES) || errors.Is(removal, errStillFilling) {
+		t.Errorf("the removal answered %v, want the %v its unremovable name failed with", removal, syscall.EACCES)
+	}
+	if want := quotedPathText("unlinkat", "entry/.../kept", " (depth 2)", syscall.EACCES); removal == nil || removal.Error() != want {
+		t.Errorf("the removal answered %v, want %q: the name that could not be removed, two levels below the entry", removal, want)
+	}
+	if len(rmdirs) != 0 {
+		t.Errorf("the removal reached the rmdir of %v, want none: the pass that removed nothing ends it in empty", rmdirs)
+	}
+}
+
 // A directory still being written in that also holds a name whose removal fails for a reason of
 // its own is answered with that reason, not with errStillFilling: the writer is what made the
 // removal stop at its bound, but the name that failed is what would still stand once the writer
