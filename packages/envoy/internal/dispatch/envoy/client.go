@@ -445,14 +445,11 @@ func (b windowedBody) Close() error {
 // error that kept it from answering: build's own, an identity token that could not be presented
 // (ErrAccountToken), or a failure of the transport, which transport classifies (each caller's
 // ErrUnavailable, and ErrUnreachable where nothing answered). That failure reaches transport
-// through causeOf: redact.Cause over the base URL, its text without net/http's quote of the
-// request URL when the base is a plain http(s) URL and the route a plain path, a context's end's
-// fixed text beside any URL ("context canceled", "context deadline exceeded"), and its class
-// otherwise, so a user name or a query in ENVOY_URL, which net/http's quote keeps, never reaches
-// Dispatch's log or the API answers that carry this error (a 503 ENVOY_UNAVAILABLE, a 502
-// ENVOY_UNSUBSCRIBE_FAILED), while a read still says whether a shutdown, its own bound or the
-// client's window (ErrCallWindow) ended it. Each caller names the route itself. It still unwraps
-// to the failure, so errors.Is and errors.As classify it as before.
+// through causeOf, so no part of ENVOY_URL's user info or query, which net/http's error quotes,
+// reaches Dispatch's log or an API answer that carries the error (a 503 ENVOY_UNAVAILABLE, a 502
+// ENVOY_UNSUBSCRIBE_FAILED); redact.Cause and causeOf say what prints in its place. Each caller
+// names the route itself. The error still unwraps to the failure, so errors.Is and errors.As
+// classify it as before.
 //
 // A client that presents Dispatch's identity (WithAccountTokenFile or WithGoogleIdentity) makes
 // the call on its identity token. A try whose token could not be presented, or that the listener
@@ -520,7 +517,8 @@ func identityNotTaken(response *http.Response, err error) bool {
 }
 
 // identityRefusal is what a log line says of a try identityNotTaken reports: the error, which
-// names the token's file and never the token, or the listener's status.
+// names the token's file by its setting and never its path or the token (accountTokenFromFile), or
+// the listener's status.
 func identityRefusal(response *http.Response, err error) string {
 	if err != nil {
 		return err.Error()

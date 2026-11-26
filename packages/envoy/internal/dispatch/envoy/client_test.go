@@ -110,58 +110,83 @@ func TestASendsWindowRunsOnTheClientsClock(t *testing.T) {
 // context.DeadlineExceeded and a net.Error whose Timeout is true, as an end of http.Client.Timeout
 // was; a call the caller's own deadline ended first is not ErrCallWindow, so a caller tells its
 // own bound's end from the window's. A send carries the chain (errors.Is); a read carries its cause
-// as text, which names ErrCallWindow the same way.
+// as text, which names ErrCallWindow the same way. Each holds under a listener URL carrying a
+// made-up token as its user name or in its query too, and no call's error holds any part of the
+// token, though net/http's error under it quotes the request URL (causeOf).
 func TestACallTheWindowEndedIsErrCallWindowAndOneItsCallerEndedIsNot(t *testing.T) {
-	reached, held := make(chan struct{}, 4), make(chan struct{})
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reached <- struct{}{}
-		select {
-		case <-held:
-		case <-r.Context().Done():
-		}
-	}))
-	defer func() {
-		close(held)
-		listener.Close()
-	}()
-	start := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC)
-	fake := clocktest.New(start)
-	client := New(listener.URL, WithClock(fake))
-	send := func(ctx context.Context) error {
-		_, err := client.Send(ctx, SendInput{TargetSession: "s1", Message: "held", IdempotencyKey: "held:steer"})
-		return err
-	}
-
-	ended := make(chan error, 2)
-	go func() { ended <- send(context.Background()) }()
-	testwait.Receive(t, "the send to reach the listener", reached)
-	go func() {
-		_, err := client.Sessions(context.Background())
-		ended <- err
-	}()
-	testwait.Receive(t, "the read to reach the listener", reached)
-	fake.Set(start.Add(CallWindow))
-	for range 2 {
-		err := testwait.Receive(t, "a call to end once its clock reached its window", ended)
-		var timeout net.Error
-		if strings.Contains(err.Error(), "/v1/sessions") {
-			if !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) || !strings.Contains(err.Error(), ErrCallWindow.Error()) {
-				t.Fatalf("a read the window ended = %v, want it to name %v and %v", err, context.DeadlineExceeded, ErrCallWindow)
+	const token = "madeUpEnvoyToken0123"
+	for _, form := range []struct {
+		name string
+		url  func(host string) string
+	}{
+		{"a plain listener URL", func(host string) string { return "http://" + host }},
+		{"a token as the user name", func(host string) string { return "http://" + token + "@" + host }},
+		{"a token in the query", func(host string) string { return "http://" + host + "?token=" + token }},
+	} {
+		// Each form's own listener, so a call of one form that reached it is no arrival of the next's.
+		reached, held := make(chan struct{}, 4), make(chan struct{})
+		listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			reached <- struct{}{}
+			select {
+			case <-held:
+			case <-r.Context().Done():
 			}
-			continue
+		}))
+		t.Cleanup(func() {
+			close(held)
+			listener.Close()
+		})
+		printsNoToken := func(what string, err error) {
+			t.Helper()
+			if err != nil && strings.Contains(err.Error(), token[:10]) {
+				t.Fatalf("%s, %s = %q, which holds part of the token", form.name, what, err)
+			}
 		}
-		if !errors.Is(err, ErrCallWindow) || !errors.Is(err, context.DeadlineExceeded) || !errors.As(err, &timeout) || !timeout.Timeout() {
-			t.Fatalf("a send the window ended = %v, want ErrCallWindow, context.DeadlineExceeded and a net.Error that is a timeout", err)
+		start := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC)
+		fake := clocktest.New(start)
+		client := New(form.url(strings.TrimPrefix(listener.URL, "http://")), WithClock(fake))
+		send := func(ctx context.Context) error {
+			_, err := client.Send(ctx, SendInput{TargetSession: "s1", Message: "held", IdempotencyKey: "held:steer"})
+			return err
 		}
-	}
 
-	caller, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if err := send(caller); !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrCallWindow) {
-		t.Fatalf("a send its caller's own deadline ended = %v, want context.DeadlineExceeded and not ErrCallWindow", err)
-	}
-	if _, err := client.Sessions(caller); err == nil || strings.Contains(err.Error(), ErrCallWindow.Error()) {
-		t.Fatalf("a read its caller's own deadline ended = %v, want a failure that does not name %v", err, ErrCallWindow)
+		ended := make(chan error, 2)
+		go func() { ended <- send(context.Background()) }()
+		testwait.Receive(t, "the send to reach the listener", reached)
+		go func() {
+			_, err := client.Sessions(context.Background())
+			ended <- err
+		}()
+		testwait.Receive(t, "the read to reach the listener", reached)
+		fake.Set(start.Add(CallWindow))
+		for range 2 {
+			err := testwait.Receive(t, "a call to end once its clock reached its window", ended)
+			printsNoToken("a call the window ended", err)
+			var timeout net.Error
+			if strings.Contains(err.Error(), "/v1/sessions") {
+				if !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) || !strings.Contains(err.Error(), ErrCallWindow.Error()) {
+					t.Fatalf("%s, a read the window ended = %v, want it to name %v and %v", form.name, err, context.DeadlineExceeded, ErrCallWindow)
+				}
+				continue
+			}
+			if !errors.Is(err, ErrCallWindow) || !errors.Is(err, context.DeadlineExceeded) || !errors.As(err, &timeout) || !timeout.Timeout() {
+				t.Fatalf("%s, a send the window ended = %v, want ErrCallWindow, context.DeadlineExceeded and a net.Error that is a timeout", form.name, err)
+			}
+		}
+
+		caller, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		err := send(caller)
+		printsNoToken("a send its caller's own deadline ended", err)
+		if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrCallWindow) {
+			cancel()
+			t.Fatalf("%s, a send its caller's own deadline ended = %v, want context.DeadlineExceeded and not ErrCallWindow", form.name, err)
+		}
+		_, err = client.Sessions(caller)
+		cancel()
+		printsNoToken("a read its caller's own deadline ended", err)
+		if err == nil || strings.Contains(err.Error(), ErrCallWindow.Error()) {
+			t.Fatalf("%s, a read its caller's own deadline ended = %v, want a failure that does not name %v", form.name, err, ErrCallWindow)
+		}
 	}
 }
 
@@ -1188,58 +1213,6 @@ func TestNoListenerCallPrintsATokenInTheListenersURL(t *testing.T) {
 			}
 			if strings.Contains(err.Error(), token[:10]) {
 				t.Errorf("%s, %s: err = %q, which holds part of the token", form, name, err)
-			}
-		}
-	}
-}
-
-// A call the client's window ended, under a listener URL that carries a made-up token as its user
-// name or in its query, prints no part of the token and still names the window's end, while
-// net/http's error under it quotes the request URL: a read's text names ErrCallWindow after its
-// cause, and a send's does too and carries it in its chain (errors.Is).
-func TestACallTheWindowEndedPrintsNoTokenInTheListenersURL(t *testing.T) {
-	const token = "madeUpEnvoyToken0123"
-	reached, held := make(chan struct{}, 4), make(chan struct{})
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reached <- struct{}{}
-		select {
-		case <-held:
-		case <-r.Context().Done():
-		}
-	}))
-	defer func() {
-		close(held)
-		listener.Close()
-	}()
-	host := strings.TrimPrefix(listener.URL, "http://")
-	for form, listenerURL := range map[string]string{
-		"a token as the user name": "http://" + token + "@" + host,
-		"a token in the query":     "http://" + host + "?token=" + token,
-	} {
-		start := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC)
-		fake := clocktest.New(start)
-		client := New(listenerURL, WithClock(fake))
-		ended := make(chan error, 2)
-		go func() {
-			_, err := client.Sessions(context.Background())
-			ended <- err
-		}()
-		go func() {
-			_, err := client.Send(context.Background(), SendInput{TargetSession: "s1", Message: "held", IdempotencyKey: "held:steer"})
-			ended <- err
-		}()
-		testwait.Receive(t, "the first call to reach the listener", reached)
-		testwait.Receive(t, "the second call to reach the listener", reached)
-		fake.Set(start.Add(CallWindow))
-		for range 2 {
-			err := testwait.Receive(t, "a call to end once its clock reached its window", ended)
-			sent := err != nil && strings.Contains(err.Error(), "/v1/messages/send")
-			if err == nil || !strings.Contains(err.Error(), ErrCallWindow.Error()) || sent && !errors.Is(err, ErrCallWindow) {
-				t.Errorf("%s: a call the window ended = %v, want one naming %v (a send's chain holding it)", form, err, ErrCallWindow)
-				continue
-			}
-			if strings.Contains(err.Error(), token[:10]) {
-				t.Errorf("%s: a call the window ended = %q, which holds part of the token", form, err)
 			}
 		}
 	}
