@@ -566,6 +566,82 @@ test("a statement is ordered by the ask it came from, a check by the statements 
   ]);
 });
 
+test("a task's chips may name its statements otherwise where the asks they came from stand otherwise", () => {
+  // Task 16 serves r10, which came from ask 5, and r11, from ask 3: the task stands by both asks.
+  const naming = (made: readonly [string, string]): Naming => ({
+    anchors: new Map([["plan-md#b-t16", ["ask-5", "ask-3"]]]),
+    issue: ISSUE,
+    names: new Map([
+      [ISSUE, "key"],
+      ["ask-3", 'ask "Should three?"'],
+      ["ask-5", 'ask "Should five?"'],
+    ]),
+    times: new Map([
+      ["ask-3", { made: made[0] }],
+      ["ask-5", { made: made[1] }],
+    ]),
+  });
+  const earlier = naming(["2026-11-26T08:00:01Z", "2026-11-26T08:00:02Z"]);
+  const later = naming(["2026-11-26T08:00:02Z", "2026-11-26T08:00:01Z"]);
+  const task = (statements: readonly string[], words: string) =>
+    viewRecord(
+      view([
+        row({
+          aria: `- treeitem "${words}"`,
+          id: "plan-md#b-t16",
+          links: statements.map((block) => `/issues/${ISSUE}/spec#b-${block}`),
+          type: "plan_task",
+          words,
+        }),
+      ]),
+      earlier,
+      "Plan"
+    );
+  const both = task(["r10", "r11"], "Task 16. The reply line counts… The tree read pages…");
+  const once = task(["r10", "r10"], "Task 16. The reply line counts… The reply line counts…");
+  expect(both.rows[0]?.anchors.map((anchor) => anchor.name)).toEqual([
+    'ask "Should five?"',
+    'ask "Should three?"',
+  ]);
+  // Where the two asks stand in another order on the page's seed, the chips may name the
+  // statements otherwise: links block for block, and the words and the tree with them.
+  const onOtherSeed = viewRecord(
+    view([
+      row({
+        aria: `- treeitem "${once.rows[0]?.words ?? ""}"`,
+        id: "plan-md#b-t16",
+        links: [`/issues/${ISSUE}/spec#b-r10`, `/issues/${ISSUE}/spec#b-r10`],
+        type: "plan_task",
+        words: once.rows[0]?.words ?? "",
+      }),
+    ]),
+    later,
+    "Plan"
+  );
+  expect(viewDifferences(both, onOtherSeed)).toEqual([]);
+  // Where they stand in the same order, every such difference is one.
+  expect(viewDifferences(both, once).map((one) => one.clause)).toEqual([
+    "words",
+    "links",
+    "accessible tree",
+  ]);
+  // And a link that is no block's is never excused, nor a chip more.
+  const toAnIssue = viewRecord(
+    view([
+      row({
+        aria: `- treeitem "${both.rows[0]?.words ?? ""}"`,
+        id: "plan-md#b-t16",
+        links: [`/issues/${ISSUE}/spec#b-r10`, "/issues/LAY-2"],
+        type: "plan_task",
+        words: both.rows[0]?.words ?? "",
+      }),
+    ]),
+    later,
+    "Plan"
+  );
+  expect(viewDifferences(both, toAnIssue).map((one) => one.clause)).toEqual(["links"]);
+});
+
 test("the children's section may hold other children at its page's edge, ordered by their keys", () => {
   // Children are named by the seed's place and ordered by the key the server gave them, as text.
   const naming = (keys: readonly string[]): Naming => ({

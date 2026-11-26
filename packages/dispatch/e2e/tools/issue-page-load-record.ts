@@ -54,16 +54,18 @@
  *  a time (`inBursts`), and answers the spec's questions six at a time: the server gives those
  *  writes their times and the children their keys in the order it took them, which another run
  *  does not repeat. The page orders rows by those times and keys: the asks and the posts by when
- *  they were made, the Decisions view's asks by when they closed (`decisions-parts.ts`'s
- *  `newestFirst`), the children's section by the child's key as text (the issue read's
- *  `order by i.key`), a statement by the ask or post it came from, and a check or a plan task by
- *  the statements it is drawn under. So each row carries its anchors: the writes of the server its
- *  place depends on, each by its name and its rank among all the issue's writes by each measure
- *  the server orders it by (`made`, `closed`, `key`) — its own write where it is one, the ask or
- *  post a statement came from (`seeded.origins`), the ask the server indexed a question of the
- *  spec into (the ask's `block_id`), and the anchors of each row a row of the same node stands
- *  under. Two seeds are not the same data in exactly those places, and the comparison lets
- *  exactly two things differ there:
+ *  they were made, the Decisions view's asks and the spec's questions by when they closed
+ *  (`decisions-parts.ts`'s `newestFirst`), the children's section by the child's key as text (the
+ *  issue read's `order by i.key`), a statement by the ask or post it came from, and a check or a
+ *  plan task by the statements it serves. So each row carries its anchors: the writes of the
+ *  server its place depends on, each by its name and its rank among all the issue's writes by
+ *  each measure the server orders it by (`made`, `closed`, `key`) — its own write where it is
+ *  one, the ask or post a statement came from (`seeded.origins`), the ask the server indexed a
+ *  question of the spec into (the spec's questions read, and the ask's own `block_id`), the
+ *  anchors of each statement a check or a plan task serves (the `serves` of its block in the
+ *  Verification document and the plan), and the anchors of each row a row of the same node
+ *  stands under. Two seeds are not the same data in exactly those places, and the comparison
+ *  lets exactly three things differ there:
  *
  *  1. the order of two rows under one parent, where one anchor of the first and another of the
  *     second stand in another order by some measure on the two seeds, or at one rank on either:
@@ -73,11 +75,23 @@
  *     `tree-fold.ts`, `CHILDREN_PAGE` of `children-section.tsx`), which of its anchored rows
  *     stand at the page's edge, and the rows under them: the number of rows drawn under that
  *     parent before its control and the control's words must be the base's, so a row more, or a
- *     row less, is still a difference.
+ *     row less, is still a difference;
+ *  3. which statement each chip of a row names, where two of the row's own anchors stand in
+ *     another order, or at one rank, on the two seeds (`chipsMovedByServer`): the row's links
+ *     may differ only where each side links a block, one for one, and its words and accessible
+ *     tree, which name those chips, may then differ too. The base names a plan task's statement
+ *     chips from its parent line and the other parents of the one of its rows the view takes
+ *     (`PlanFilterBody.tsx`'s `serves`), and a task that serves two statements is a row under
+ *     each. On the two seeds the record was made on, `t16` (serving r10, from ask 5, and r11,
+ *     from ask 3) named r10 and r11 where Spec drew r10 before r11, and r10 twice where it drew
+ *     r11 first; `t7` and `t20` (serving r22 and r23, from posts 10 and 12) named r22 and r23 on
+ *     those seeds and r22 twice on another. Each pair is two statements whose asks or posts the
+ *     seed wrote in one burst.
  *
  *  Two focused rows that stand at one place in the view, under one parent, each with anchors, are
  *  the same focus. Everything else is compared exactly: every row the seed places, each paired
- *  row's address, words, links, tab stops, accessible tree and visible words, and the Keys list.
+ *  row's address, tab stops and visible words, each row's words, links and accessible tree but
+ *  for the third exception, and the Keys list.
  *
  *  How to make it, at the base, with this branch's test files carried by `--patch`, in a builds
  *  Job: run the row `record the rows the base draws @phone` of `e2e/issue-page-load-same.e2e.ts`
@@ -110,7 +124,14 @@ import { expect, type Page } from "@playwright/test";
 
 import { CONTROL_LABELS } from "../../web/src/features/issue-page/page-words";
 import { compareTimestamps } from "../../web/src/lib/timestamps";
-import { getIssue, listComments, listIssueAsks, listIssueMessages } from "../api";
+import {
+  getArtifactText,
+  getDocumentQuestions,
+  getIssue,
+  listComments,
+  listIssueAsks,
+  listIssueMessages,
+} from "../api";
 import { LOAD_ROW_SELECTOR, rowAddress } from "../issue-page-load";
 import { seedKeys, sortedFields } from "../issue-page-t";
 import type { LargestShapeSeed } from "../issue-page-t-scale";
@@ -130,7 +151,7 @@ export const RECORD_DIRECTORY = new URL("../fixtures/issue-page-load-rows/", imp
 
 /** The shape of what the record row prints and the record holds. A line or a file of another
  *  shape was made by another recorder, and the record is made again. */
-export const RECORD_FORMAT = 2;
+export const RECORD_FORMAT = 3;
 
 /** What begins the line the record row prints for its width. */
 export const RECORD_LINE = "LOAD-RECORD";
@@ -817,6 +838,25 @@ function orderedApart(
   return false;
 }
 
+/** A link to a block of one of the issue's documents: what a chip naming a statement links to. */
+const BLOCK_LINK = /#b-[\w-]+$/;
+
+/** Whether a row names its statements otherwise on the two seeds, and no more than that (the
+ *  head comment's third exception): its links differ, but only where each side links a block,
+ *  one link for one, and the writes it stands by (its anchors) stand in another order on the two
+ *  seeds, or at one rank on either. */
+function chipsMovedByServer(base: RecordedRow, page: RecordedRow): boolean {
+  if (base.links.length !== page.links.length) return false;
+  let differ = false;
+  for (const [at, link] of base.links.entries()) {
+    const now = page.links[at] ?? "";
+    if (link === now) continue;
+    if (!BLOCK_LINK.test(link) || !BLOCK_LINK.test(now)) return false;
+    differ = true;
+  }
+  return differ && orderedApart([base, base], [page, page]);
+}
+
 /** The first line on which two accessible trees differ. */
 function firstChange(base: string, page: string): string {
   const before = base.split("\n");
@@ -997,19 +1037,22 @@ export function viewDifferences(recorded: ViewRecord, drawn: ViewRecord): Differ
   for (const row of recorded.rows) {
     const page = drawn.rows[drawnAt.get(pairOf(row)) ?? -1];
     if (page === undefined) continue;
+    // The head comment's third exception: the row's words, links and accessible tree follow its
+    // chips, which name its statements otherwise on the two seeds.
+    const chipsMoved = chipsMovedByServer(row, page);
     if (row.address !== page.address) {
       say(
         "address",
         `${row.key}: the base's ${JSON.stringify(row.address)}, the page's ${JSON.stringify(page.address)}`
       );
     }
-    if (row.words !== page.words) {
+    if (!chipsMoved && row.words !== page.words) {
       say(
         "words",
         `${row.key}: the base's ${JSON.stringify(row.words)}, the page's ${JSON.stringify(page.words)}`
       );
     }
-    if (canonical(row.links) !== canonical(page.links)) {
+    if (!chipsMoved && canonical(row.links) !== canonical(page.links)) {
       say(
         "links",
         `${row.key}: the base links ${canonical(row.links)}, the page ${canonical(page.links)}`
@@ -1021,7 +1064,7 @@ export function viewDifferences(recorded: ViewRecord, drawn: ViewRecord): Differ
         `${row.key}: the base stops at ${canonical(row.tabStops)}, the page at ${canonical(page.tabStops)}`
       );
     }
-    if (row.aria !== page.aria)
+    if (!chipsMoved && row.aria !== page.aria)
       say("accessible tree", `${row.key}: ${firstChange(row.aria, page.aria)}`);
     for (const word of newlyHidden(row.hidden, page.hidden)) {
       say("visibility", `${row.key}: the page hides ${JSON.stringify(word)}, which the base shows`);
@@ -1112,15 +1155,25 @@ export function recordWidth(viewport: { readonly width: number } | null): Record
   );
 }
 
+/** A block of a document that serves statements: a check of the Verification document or a task
+ *  of the plan, with its block id and the references its `serves` names. */
+const SERVING_BLOCK = /:::(?:check|plan_task)\{#([^\s}]+)([^}]*)\}/g;
+
+/** The `serves` attribute of a block's attributes. */
+const SERVES = /\bserves="([^"]*)"/;
+
 /** The names, the server's measures and the anchors the rows are named by (the head comment's
  *  "How a row is named" and "What two seeds may differ in"), read from what the seed returned and
  *  from the issue's reads. */
 export async function seedNaming(seeded: LargestShapeSeed): Promise<Naming> {
-  const [issue, asks, comments, messages] = await Promise.all([
+  const [issue, asks, comments, messages, plan, verification, questions] = await Promise.all([
     getIssue(seeded.key),
     listIssueAsks(seeded.key),
     listComments(seeded.key),
     listIssueMessages(seeded.key),
+    getArtifactText(seeded.planArtifactId),
+    getArtifactText(seeded.verificationArtifactId),
+    getDocumentQuestions(seeded.specArtifactId),
   ]);
   // The seed fills `replies` as the server answers posts it writes six at a time, so the list's
   // order is another in each run: a reply is named by its post and its place in its thread.
@@ -1138,9 +1191,19 @@ export async function seedNaming(seeded: LargestShapeSeed): Promise<Naming> {
     const closed = ask.answer?.at ?? ask.resolution?.at;
     times.set(ask.id, { made: ask.created_at, ...(closed === undefined ? {} : { closed }) });
     // A question of a document is the node of its block, which the server indexed into this ask.
-    const slug = slugOf(ask.artifact_id);
-    if (ask.block_id !== null && slug !== undefined) {
+    const slug = ask.block_artifact?.slug ?? slugOf(ask.artifact_id ?? null);
+    if (typeof ask.block_id === "string" && slug !== undefined) {
       anchors.set(`${slug}#b-${ask.block_id}`, [ask.id]);
+    }
+  }
+  // The spec's own account of each question block and the ask the server settled for it, which
+  // names the ask where the asks read names no document of its block. `ask` is the ask's id, or
+  // an address whose last part is.
+  const spec = slugOf(seeded.specArtifactId);
+  for (const question of questions.questions ?? []) {
+    const ask = question.ask.split("/").at(-1) ?? "";
+    if (spec !== undefined && times.has(ask)) {
+      anchors.set(`${spec}#b-${question.block_id}`, [ask]);
     }
   }
   for (const comment of comments) times.set(comment.id, { made: comment.created_at });
@@ -1152,10 +1215,26 @@ export async function seedNaming(seeded: LargestShapeSeed): Promise<Naming> {
   for (const child of seeded.children) times.set(child, { key: child });
   // A statement stands under the ask or the post its `From:` line cites: its address's last part
   // is that item's id.
-  const spec = slugOf(seeded.specArtifactId);
   for (const [block, address] of Object.entries(seeded.origins)) {
     const item = address.split("/").at(-1);
     if (spec !== undefined && item !== undefined) anchors.set(`${spec}#b-${block}`, [item]);
+  }
+  // A check or a task stands by the statements it serves: which of its rows the page takes, and
+  // which statement each of its chips names, follow where those statements stand, which is where
+  // the asks and posts they came from stand.
+  for (const [id, text] of [
+    [seeded.planArtifactId, plan.markdown],
+    [seeded.verificationArtifactId, verification.markdown],
+  ] as const) {
+    const slug = slugOf(id);
+    if (slug === undefined || spec === undefined) continue;
+    for (const [, block = "", attributes = ""] of text.matchAll(SERVING_BLOCK)) {
+      const served = (SERVES.exec(attributes)?.[1] ?? "").split(/\s+/).flatMap((reference) => {
+        const at = reference.indexOf("#b-");
+        return at === -1 ? [] : (anchors.get(`${spec}${reference.slice(at)}`) ?? []);
+      });
+      if (served.length > 0) anchors.set(`${slug}#b-${block}`, [...new Set(served)]);
+    }
   }
   return { anchors, issue: seeded.key, names, times };
 }

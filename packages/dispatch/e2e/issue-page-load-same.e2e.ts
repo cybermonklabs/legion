@@ -61,14 +61,17 @@ import {
  *   children their keys in the order it took them, which another run does not repeat. The page
  *   orders rows by those times and keys, so each row carries its anchors, the writes its place
  *   depends on, each ranked by when the server made it, when an ask closed and a key as text.
- *   The two seeds are not the same data in exactly those places, so two things, and nothing
+ *   The two seeds are not the same data in exactly those places, so three things, and nothing
  *   else, may differ: (1) the order of two rows under one parent where an anchor of one and
  *   another of the other stand in another order, or at one rank, on the two seeds; (2) under a
  *   parent whose rows past its first page are held back, which of its anchored rows stand at
  *   the page's edge, with the rows under them, while the number drawn before the control and the
- *   control's words are the base's. Two focused rows at one place under one parent, each
- *   anchored, are the same focus. The head of `e2e/tools/issue-page-load-record.ts` holds the
- *   whole rule, and its test `e2e/__tests__/issue-page-load-record.test.ts` each part of it.
+ *   control's words are the base's; (3) which statement each chip of a row names (a plan task's
+ *   statement chips), where two of the row's own anchors stand in another order or at one rank:
+ *   its links may differ only block for block, and its words and accessible tree with them. Two
+ *   focused rows at one place under one parent, each anchored, are the same focus. The head of
+ *   `e2e/tools/issue-page-load-record.ts` holds the whole rule, and its test
+ *   `e2e/__tests__/issue-page-load-record.test.ts` each part of it.
  * - `a row drawn late is reached by j, k, an address, the Contents pane and z`, in `chromium`
  *   alone. It first loads Conversation at the processor's own rate and reads, once the load has
  *   ended, the rows it draws before any control of the paging rule is pressed: the row each act
