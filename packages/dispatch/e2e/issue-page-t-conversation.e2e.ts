@@ -7,7 +7,7 @@ import type { IssueTreeRead } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { GAP_LINES, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
-import { createComment, createMessage, editArtifact, getIssue } from "./api";
+import { createComment, createMessage, editArtifact } from "./api";
 import { seedWholeIssue } from "./issue-layout-seed";
 import { asPlanner } from "./issue-layout-seed-support";
 import { requirementBlockId, SUMMARY_BLOCK_ID } from "./issue-layout-seed-text";
@@ -18,10 +18,12 @@ import type { RowReading } from "./issue-page-t";
 import {
   anchoredComments,
   answerRowIds,
+  artifactSlugs,
   awaitIndexedCoverage,
   firstRowOutOfPlace,
   foldedRowIds,
   idSet,
+  nodesById,
   nodesNoRowDraws,
   type OpenedOutline,
   openOutline,
@@ -39,10 +41,10 @@ import { expect, test } from "./test";
  * gates are.
  */
 
-/** The kinds Conversation's read names, as spec R9 lists them and as INFRA-1253's `kind` filter
- *  names each: the asks, the comments, the readings, the lenses with their findings and risks, the
- *  criteria, the requirements, the checks, the decisions, the child issues, the blocks written in
- *  the conversation, and the memo's callout, which the three sentences draw. */
+/** The kinds Conversation's read names, as spec R9 lists them and as the tree route's `kind`
+ *  filter names each: the asks, the comments, the readings, the lenses with their findings and
+ *  risks, the criteria, the requirements, the checks, the decisions, the child issues, the blocks
+ *  written in the conversation, and the memo's callout, which the three sentences draw. */
 const R9_KINDS = [
   "ask",
   "callout",
@@ -121,8 +123,7 @@ async function seedConversationRead(): Promise<ConversationReadSeed> {
     },
     asPlanner
   );
-  const artifacts = (await getIssue(seeded.key)).artifacts ?? [];
-  const slugOf = (id: string) => artifacts.find((artifact) => artifact.id === id)?.slug ?? "";
+  const slugOf = await artifactSlugs(seeded.key);
   return {
     child: seeded.children.keys[0] ?? "",
     key: seeded.key,
@@ -169,7 +170,7 @@ function storedText(opened: OpenedOutline, id: string): string | undefined {
  *  a requirement no check serves carries its gap (spec R9). */
 function statementsWithoutGap(rows: readonly RowReading[], opened: OpenedOutline): string[] {
   const idOf = treeIdOf(opened.answer, opened.reads);
-  const nodes = new Map((opened.answer.nodes ?? []).map((node) => [node.id, node]));
+  const nodes = nodesById(opened.answer);
   const served = new Set(
     (opened.answer.tuples ?? []).flatMap((tuple) =>
       tuple.kind === "serves" && nodes.get(tuple.from.id)?.supertag === "check"

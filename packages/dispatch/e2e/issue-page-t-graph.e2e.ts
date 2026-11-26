@@ -4,12 +4,13 @@
 import type { Page } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";
+import { firstLineOf } from "../web/src/features/issue-page/issue-tree";
 import { CONTROL_LABELS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { buildIssuePath } from "../web/src/features/refs/routes";
-import { createComment, getIssue } from "./api";
+import { createComment } from "./api";
 import { seedSpineCases, seedWholeIssue } from "./issue-layout-seed";
 import { SUMMARY_BLOCK_ID } from "./issue-layout-seed-text";
-import { filterRow, gotoIssue, phase, presetToggle, presetToggles } from "./issue-page";
+import { filterRow, gotoIssue, phase, presetToggle } from "./issue-page";
 import {
   blockNode,
   DESKTOP,
@@ -21,8 +22,10 @@ import {
 } from "./issue-page-g";
 import { drawnRowReadings, parentIndex, type RowReading } from "./issue-page-t";
 import {
+  addressOf,
   anchoredComments,
   answerRowIds,
+  artifactSlugs,
   awaitIndexedCoverage,
   firstRowOutOfPlace,
   foldedRowIds,
@@ -30,6 +33,7 @@ import {
   nodesNoRowDraws,
   type OpenedOutline,
   openOutline,
+  presetControls,
   ROW_MS,
   rowsNotWhole,
   servingOutOfPlace,
@@ -50,10 +54,6 @@ const THREAD_DEPTH = 9;
 
 /** How many levels a row's indent grows through (spec R11, root R16). */
 const INDENT_LEVELS = 6;
-
-/** The most characters a folded node's first line holds where its first sentence is longer
- *  (spec R11). */
-const FIRST_LINE_LIMIT = 100;
 
 /** What row 6 reads of the whole issue beyond `seedWholeIssue`'s. */
 interface GraphSeed {
@@ -85,8 +85,7 @@ async function seedGraph(): Promise<GraphSeed> {
     });
     thread.push(comment.id);
   }
-  const artifacts = (await getIssue(seeded.key)).artifacts ?? [];
-  const slugOf = (id: string) => artifacts.find((artifact) => artifact.id === id)?.slug ?? "";
+  const slugOf = await artifactSlugs(seeded.key);
   return {
     check: seeded.checks.passed,
     commentThread: seeded.comments.threads[0] ?? "",
@@ -131,27 +130,6 @@ async function expectGraphOpens(page: Page, key: string, where: string): Promise
   ).toEqual([]);
   expect(await rowsNotWhole(page), `${where}, each row's text is whole`).toEqual([]);
   return opened;
-}
-
-/** How a folded node's first line breaks the rule of spec R11, or undefined where it keeps it: its
- *  text to its first sentence end (a full stop, question mark or exclamation mark followed by a
- *  space or the end) where that falls within `FIRST_LINE_LIMIT` characters, else the text cut at
- *  a word within them. `stored` is the node's text, its whitespace as one space each. */
-function firstLineOffence(stored: string, line: string): string | undefined {
-  const drawn = line.replace(/\s*…$/u, "").trimEnd();
-  const end = /[.?!](?=\s|$)/u.exec(stored);
-  if (end !== null && end.index < FIRST_LINE_LIMIT) {
-    const sentence = stored.slice(0, end.index + 1);
-    return drawn === sentence ? undefined : `"${line}", not its first sentence "${sentence}"`;
-  }
-  const cut =
-    drawn !== "" &&
-    drawn.length <= FIRST_LINE_LIMIT &&
-    stored.startsWith(drawn) &&
-    /\s/u.test(stored[drawn.length] ?? " ");
-  return cut
-    ? undefined
-    : `"${line}", which is not "${stored}" cut at a word within ${FIRST_LINE_LIMIT} characters`;
 }
 
 /** How many rows stand under the first row of node `id` in `rows`, at every level below it. */
@@ -253,11 +231,7 @@ test("Graph draws the tree read whole, and folds and zooms @phone", async ({ bro
     // each open it; it draws no version control.
     await page.setViewportSize(DESKTOP);
     await expectGraphOpens(page, seeded.key, "at 1440 px");
-    const names = await presetToggles(page).evaluateAll((buttons) =>
-      buttons.map((button) =>
-        (button.querySelector("[data-preset-name]")?.textContent ?? "").trim()
-      )
-    );
+    const names = (await presetControls(page)).map((control) => control.name);
     expect(names.at(-1), "Graph is the last control the row draws").toBe(PRESET_NAMES.graph);
     await expect(presetToggle(page, "graph"), "/graph does not open Graph").toHaveAttribute(
       "aria-pressed",
@@ -269,8 +243,9 @@ test("Graph draws the tree read whole, and folds and zooms @phone", async ({ bro
     ).toHaveCount(0);
 
     // Three nodes folded: one by its control, one by the left arrow and one by `o`. Each draws
-    // its first line, read against the words its row drew whole before the fold (a paragraph
-    // break read as one space), and the count of the nodes under it.
+    // its first line by the page's own first-line rule (`firstLineOf`) over the words its row
+    // drew whole before the fold (a paragraph break read as one space), and the count of the
+    // nodes under it.
     const statement = blockNode(seeded.specSlug, seeded.statement);
     const folds = [
       { by: "its control", id: statement },
@@ -296,9 +271,9 @@ test("Graph draws the tree read whole, and folds and zooms @phone", async ({ bro
       );
       const line = (await row.locator("[data-node-first-line]").textContent()) ?? "";
       expect(
-        firstLineOffence(whole, line.replace(/\s+/gu, " ").trim()),
+        line.replace(/\s+/gu, " ").trim().replace(/\s*…$/u, ""),
         `${id} folded by ${by} draws its first line, to its first sentence end or 100 characters at a word`
-      ).toBeUndefined();
+      ).toBe(firstLineOf(whole).line);
     }
     // The right arrow and `o` unfold a node; folded again, `z` unfolds all three.
     const [first, second] = folds;
@@ -359,19 +334,17 @@ test("Graph draws the tree read whole, and folds and zooms @phone", async ({ bro
     await expectOpeningLanded(page);
     await presetToggle(page, "graph").click();
     await expect(page, "Graph's control does not open Graph").toHaveURL(
-      new RegExp(`${presetPath(seeded.key, "graph")}$`)
+      addressOf(seeded.key, "graph")
     );
     await presetToggle(page, "graph").click();
     await expect(page, "pressing Graph again does not return to Conversation").toHaveURL(
-      new RegExp(`${presetPath(seeded.key, "conversation")}$`)
+      addressOf(seeded.key, "conversation")
     );
     await expectOpeningLanded(page);
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("g");
-    await expect(page, "t g does not open Graph").toHaveURL(
-      new RegExp(`${presetPath(seeded.key, "graph")}$`)
-    );
+    await expect(page, "t g does not open Graph").toHaveURL(addressOf(seeded.key, "graph"));
     // `/graph/<the statement's id>` opens Graph zoomed to it, under the same breadcrumb.
     await gotoIssue(page, buildIssuePath({ key: seeded.key, kind: "graph", node: statement }));
     await expectZoomedTo(page, statement, [seeded.key], "/graph/<the statement's id>");

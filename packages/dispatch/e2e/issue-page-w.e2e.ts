@@ -1329,7 +1329,7 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
     expect(statementTwoAddress, "the coverage read holds no statement 2").toBeDefined();
 
     // The first reading of what the lens rows draw: statement 2's row, found by the read id it
-    // draws, offers the Lens act once it holds the focus.
+    // draws, offers the Lens act.
     const statementTwo = await drawnId(
       page,
       ids.statements[1] ?? "",

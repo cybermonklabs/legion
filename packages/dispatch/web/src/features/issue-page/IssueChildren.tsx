@@ -31,7 +31,7 @@ export function ChildIssueTag({
   child,
   tabStops = false,
 }: {
-  child: IssueChild;
+  child: Pick<IssueChild, "key">;
   tabStops?: boolean;
 }): ReactNode {
   return (

@@ -78,7 +78,9 @@ export function TreeRows({
   onOlder?: () => void;
   /** Draws the next page of a node's children, which the row that pages them does. */
   onPage: (row: PageRow) => void;
-  onToggle: (node: TreeNode, expanded: boolean | undefined) => void;
+  /** Folds or unfolds one row, by its key (`rowKeyOf`), which a press on its fold control does:
+   *  the fold is the row's, so another row of the same node stays as it was. */
+  onToggle: (row: string, expanded: boolean | undefined) => void;
   /** Each row that carries the conversation's current point, by its key (`current-point.ts`'s
    *  `pointMarks`, R12): a row it holds no key of is not marked. */
   points: ReadonlyMap<string, PointMark>;
@@ -112,8 +114,8 @@ export function TreeRows({
   // What each document's room last admitted the page to, read once for every row: a row of a
   // document its room admitted read-only takes no typing (`nodeEditable`).
   const admissions = useDocumentAdmissions();
-  // The Lens act the focused row offers in Conversation and in Graph, one value while the
-  // address stands (`useLensAct`).
+  // The Lens act each row offers in Conversation and in Graph, whatever the focus, one value
+  // while the address stands (`useLensAct`).
   const lensAct = useLensAct();
   // Graph's node menu (`graph-edit/RowMenu.tsx`): each row's, and the delete's confirm while one
   // is open, which outlives the row's focus. Nothing outside Graph.
@@ -187,7 +189,7 @@ export function TreeRows({
               level={row.level}
               node={row.node}
               onFocus={() => onFocus(key, row.node)}
-              onToggle={() => onToggle(row.node, row.expanded)}
+              onToggle={() => onToggle(key, row.expanded)}
               ownAnswer={isReader(row.node.answer?.by, reader)}
               placesItself={unplaced !== key}
               {...(report?.row === key ? { report: report.line } : {})}

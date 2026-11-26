@@ -32,6 +32,7 @@ import {
 } from "./issue-tree";
 import { citedReferences } from "./row-references";
 import { askState } from "./tree-drafts";
+import { holdsPlanTask } from "./tree-read/tree-nodes";
 import { type TreeAnswer, type TreeRead, useTreeRead, viewQuery } from "./tree-read/tree-read";
 import { useLineRefusals } from "./useLineRefusals";
 
@@ -243,6 +244,7 @@ const TREE_INPUTS: Readonly<Record<Exclude<keyof IssueTreeReads, "tree">, true>>
   comments: true,
   coverage: true,
   decisions: true,
+  holdsPlanTask: true,
   issue: true,
   messages: true,
   results: true,
@@ -383,13 +385,19 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     }
     return Object.keys(held).length === 0 ? undefined : held;
   }, [decisions.data, plan, spec, verification]);
-  // One value, so the model is given the reads and nothing else.
+  // One value, so the model is given the reads and nothing else. Of the Plan view's answer the
+  // model reads only whether it holds a plan task (`IssueTreeReads.holdsPlanTask`), so a next page
+  // or a refresh of that view that leaves it as it was builds no tree again. It is read from the
+  // answer the page holds (`plan`): a later read of it that is refused keeps the answer before,
+  // so a statement it marks keeps its mark.
+  const planTaskHeld = useMemo(() => holdsPlanTask(plan), [plan]);
   const reads = useMemo<IssueTreeReads>(
     () => ({
       asks: asks.data,
       comments: comments.data,
       coverage: coverage.data,
       decisions: decisions.data,
+      holdsPlanTask: planTaskHeld,
       issue,
       messages: messages.data,
       results: results.data,
@@ -403,6 +411,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       decisions.data,
       issue,
       messages.data,
+      planTaskHeld,
       read.answer,
       results.data,
       viewer,

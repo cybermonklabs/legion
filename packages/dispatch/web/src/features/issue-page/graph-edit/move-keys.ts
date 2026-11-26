@@ -5,7 +5,7 @@ import { focusOnDocument } from "../../shell/roving";
 import type { TreeNode } from "../issue-tree";
 import { useLensAct } from "../lenses/LensMenu";
 import type { MoveKey } from "../node-caret";
-import type { DrawnRow } from "../tree-fold";
+import { type DrawnRow, placesAlong } from "../tree-fold";
 import { rowKeyOf } from "../tree-keys";
 import { outlineQuery, type TreeAnswer } from "../tree-read/tree-read";
 import type { EditedRow, MoveKeyBridge } from "../useNodeEditing";
@@ -60,8 +60,9 @@ export function useMoveKeyBridge(): MoveKeyBridge {
 /**
  * Graph's move keys for the rows `rows` of the tree `root` (`IssueTree.tsx`): sets the bridge's
  * `take` in Graph alone, and follows a node a move key moved to its new row. `closed` is the set
- * of branches the outline draws folded, and `unfoldPath` how it unfolds a path; `zoomRoot` is the
- * id of the node the outline is zoomed to (`TreeNode.id`).
+ * of places of the rows the outline draws folded (`tree-fold.ts`' `OpenedBranches`), and
+ * `unfoldPath` how it unfolds a path; `zoomRoot` is the id of the node the outline is zoomed to
+ * (`TreeNode.id`).
  */
 export function useMoveKeys({
   bridge,
@@ -164,7 +165,7 @@ export function useMoveKeys({
         held.row = to;
         restoreNext.current = true;
         bridge.follow?.(from, to);
-      } else if (trail.some((id) => closed.has(id))) {
+      } else if (placesAlong(trail).some((place) => closed.has(place))) {
         unfoldPath(trail);
       }
     }

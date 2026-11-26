@@ -20,7 +20,13 @@ import {
 } from "../../../theme/classes";
 import { dialogOpen } from "../../shell/useDialog";
 import type { TreeNode } from "../issue-tree";
-import { LensActContext, LensKinds, LensRefusal, lensActFor } from "../lenses/LensMenu";
+import {
+  type LensAct,
+  LensActContext,
+  LensKinds,
+  LensRefusal,
+  lensActFor,
+} from "../lenses/LensMenu";
 import { pageChrome } from "../page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, LENS_WORDS } from "../page-words";
 import {
@@ -53,7 +59,9 @@ import { type RowEdit, RowEditorContext } from "./row-edits";
  * The node menu of Graph's focused row (INFRA-5705's R1 to R8): the WAI-ARIA menu button and
  * menu, as `lenses/LensMenu.tsx` draws its own, which `NodeRow.tsx`'s `RowActs` draws after Copy
  * reference on the focused row in Graph alone, where part W's Lens act leaves the row for the
- * menu's last entry. Its names avoid `nodeMenu`, the presets row's documents menu.
+ * menu's last entry. Every other row of Graph keeps the control's place (`RowMenuPlace`), so the
+ * focus moving changes no row's height. Its names avoid `nodeMenu`, the presets row's documents
+ * menu.
  *
  * On a converted issue (the tree read's `converted`) the menu holds R1's entries in R1's order,
  * each as `placement.ts` answers it for the node from Graph's held read as it stands, on the row
@@ -165,6 +173,27 @@ function heldNode(client: QueryClient, key: string, node: string): TreeAnswerNod
   return held?.nodes?.find((each) => each.id === node);
 }
 
+/** Lens's entry of the menu of `node`: the act part W offers on it, where it offers one
+ *  (`lensActFor`), on the node's address. */
+function lensOf(
+  act: LensAct | undefined,
+  node: TreeNode
+): { readonly act: LensAct; readonly on: string } | undefined {
+  const on = node.reference;
+  return act !== undefined && on !== undefined && lensActFor(node, act) ? { act, on } : undefined;
+}
+
+/** Whether the menu holds R1's editing entries for the node of read id `readId`: where Graph's
+ *  held read of issue `key` is of a converted issue and holds that node. */
+function holdsEditing(client: QueryClient, key: string, readId: string | undefined): boolean {
+  const held = client.getQueryData<TreeAnswer>(outlineQuery(key, "graph").queryKey);
+  return (
+    held?.converted === true &&
+    readId !== undefined &&
+    (held.nodes ?? []).some((each) => each.id === readId)
+  );
+}
+
 /**
  * Keeps the row of a node an act moves in view and focused (R4, R8). Made as the act is pressed,
  * it notes the node's `placement_seq` as Graph's held read holds it; once the act is taken with a
@@ -232,9 +261,7 @@ export function RowMenu({
   const failedId = useId();
   const { key, status, zoomRoot } = edit.outline.issue;
   const readId = node.readId;
-  const on = node.reference;
-  const lens =
-    act !== undefined && on !== undefined && lensActFor(node, act) ? { act, on } : undefined;
+  const lens = lensOf(act, node);
 
   /** Each entry's verdict for the node from Graph's held read as it stands now, or undefined
    *  where the menu holds Lens alone: an issue the conversion has not reached, and a node the
@@ -524,12 +551,7 @@ export function RowMenu({
     if (to !== undefined) items[to]?.focus();
   };
 
-  const held = client.getQueryData<TreeAnswer>(outlineQuery(key, "graph").queryKey);
-  const editable =
-    held?.converted === true &&
-    readId !== undefined &&
-    (held.nodes ?? []).some((each) => each.id === readId);
-  if (!editable && lens === undefined) return null;
+  if (!holdsEditing(client, key, readId) && lens === undefined) return null;
 
   return (
     <>
@@ -596,6 +618,35 @@ export function RowMenu({
           </span>
         </span>
       ) : null}
+    </>
+  );
+}
+
+/**
+ * What a row of Graph that does not hold the focus draws where the focused row draws the node
+ * menu's control (`RowMenu`): the control's words in the control's box, hidden and inert, on the
+ * rows that draw the control once focused, so the focus moving changes no row's text or height
+ * (part T's R11, as part W's Lens act stands on every row for it); and the line of Lens's refused
+ * pick, which stands on the row whatever the focus, as part W's does. Only the focused row has
+ * the menu (R1): no press, key or screen reader reaches this.
+ */
+export function RowMenuPlace({ edit, node }: { edit: RowEdit; node: TreeNode }): ReactNode {
+  const act = useContext(LensActContext);
+  const client = useQueryClient();
+  const lens = lensOf(act, node);
+  if (!holdsEditing(client, edit.outline.issue.key, node.readId) && lens === undefined) {
+    return null;
+  }
+  return (
+    <>
+      <span
+        aria-hidden="true"
+        className={`dispatch-inline-link invisible ${pageRowAct}`}
+        {...pageChrome}
+      >
+        {CONTROL_LABELS.edit_menu}
+      </span>
+      {lens === undefined ? null : <LensRefusal act={lens.act} on={lens.on} />}
     </>
   );
 }

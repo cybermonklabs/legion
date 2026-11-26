@@ -579,8 +579,9 @@ function DrawnText({
   /** The link inside the words that took the focus last, until the focus moves to another
    *  element. */
   const focusedLink = useRef<HTMLAnchorElement | null>(null);
-  // The page's address, which a store link is placed on at each paint: a store link opens a row of
-  // the issue it names (`storeLinkPath`).
+  // The page's address, which the store links are placed on when the reading changes: a store
+  // link opens a row of the issue it names (`storeLinkPath`). It is read through a ref, so a move
+  // of the page's address alone paints nothing again.
   const location = useLocation();
   const page = useRef(location);
   page.current = location;

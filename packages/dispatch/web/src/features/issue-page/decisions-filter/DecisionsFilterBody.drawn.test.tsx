@@ -49,6 +49,12 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { blockReads, Publisher, publishedNames } from "../projection-fixture";
+import {
+  accessibleNameOf,
+  rowControls,
+  tabStopsOf,
+  withMarginAfterWords,
+} from "../row-name-fixtures";
 import { EditorBox } from "../StagedDocument";
 import { ViewStage } from "../slots/stage";
 import { AppProviders } from "../slots/stage-fixtures";
@@ -2850,4 +2856,35 @@ test("nothing the body draws is hidden at a width", async () => {
       .map((element) => element.getAttribute("class"))
   ).toEqual([]);
   expect(view.container.querySelectorAll("[data-decisions-body] [hidden]").length).toBe(0);
+});
+
+// A Decisions row holds the outline's margin - the kind's tag, who decided and when, how it
+// stands - first in the document, as the outline's row does, so that on a phone it floats beside
+// the words' first line (`NodeRow.tsx`). It is named by its words and what it draws under them,
+// then its margin: word for word the name its text gives a copy of the row with its margin after
+// its words, and with the kind after the words. Named by its text in the document's order, it
+// would read the kind first. Its controls stand in the order it reads in - the link to the
+// statement it informs, Keep, Change and the link to the entry in the conversation, all under its
+// words - and it takes no tab stop of its own.
+test("a Decisions row is named by its words before its kind, and its controls stand in its reading order", () => {
+  const view = renderBody(wholeIssue());
+  const row = rowOf(view, D("first"));
+  const ordered = withMarginAfterWords(row);
+  const words = "The decision first.";
+  try {
+    const name = accessibleNameOf(row);
+    expect(name.startsWith(words), name).toBe(true);
+    expect(name.indexOf(NODE_TYPE_NAMES.decision, words.length), name).toBeGreaterThan(0);
+    expect(name).toBe(accessibleNameOf(ordered));
+    expect(rowControls(row)).toEqual([
+      "The page draws s1.",
+      CONTROL_LABELS.keep_decision,
+      CONTROL_LABELS.change_decision,
+      `${DECISIONS_WORDS.in_conversation} ›`,
+    ]);
+    expect(tabStopsOf(row)).toEqual([]);
+  } finally {
+    ordered.remove();
+    view.unmount();
+  }
 });
