@@ -89,13 +89,13 @@ interface Production {
 /** The four stand-ins of a look, as its environment carries them, and the log in `dir`/log. Each
  *  stand-in is a bash function in a `BASH_FUNC_<name>%%` variable, the form in which bash exports
  *  a function, so the script's bash imports it and runs it in place of the program of that name:
- *  each request is answered in the script's own shell and starts no process. A look of 600 reads
- *  that started a process for each one took from 1.9 s to 60.1 s in one leg of the repeated
- *  harness lane (run 45866491242, round 3), so its 60 s bound decided the row there. Executables of
- *  the same names come first on PATH and only fail, so a shell that did not import a function
- *  reaches nothing past this host. What the stand-ins record goes in `dir`, and lasts from one
- *  look of a row to the next; each also records the shell that ran it, which the row "each request
- *  a look sends is answered in the script's own shell" reads. */
+ *  each runs in the shell that calls it and starts no process. A look of 600 reads that started a
+ *  process for each one took from 1.9 s to 60.1 s in one leg of the repeated harness lane (run
+ *  45866491242, round 3), so its 60 s bound decided the row there. Executables of the same names
+ *  come first on PATH and only fail, so a shell that did not import a function reaches nothing
+ *  past this host. What the stand-ins record goes in `dir`, and lasts from one look of a row to the
+ *  next; each also records the process and the subshell depth it ran in, which the row "each
+ *  stand-in a look calls runs in the shell that calls it" reads. */
 function standIns(dir: string, production: Production): Record<string, string> {
   const time = (form: Form) => (production.slowForm === form ? "1.500000" : "0.040000");
   const status = production.issueStatus ?? 200;
@@ -118,7 +118,7 @@ function standIns(dir: string, production: Production): Record<string, string> {
     "  shift",
     "done",
     `printf '%s %s\\n' "$agent" "$url" >>'${join(dir, "curl-calls")}'`,
-    `printf 'curl %s\\n' "$$" >>'${shells}'`,
+    `printf 'curl %s %s\\n' "$BASHPID" "$BASH_SUBSHELL" >>'${shells}'`,
     ...(production.sendsNothing
       ? ["echo 'curl: this look was to send nothing' >&2", "return 7"]
       : []),
@@ -133,19 +133,21 @@ function standIns(dir: string, production: Production): Record<string, string> {
   ];
   const gh = [
     `printf '%s\\n' "$*" >>'${join(dir, "gh-calls")}'`,
-    `printf 'gh %s\\n' "$$" >>'${shells}'`,
+    `printf 'gh %s %s\\n' "$BASHPID" "$BASH_SUBSHELL" >>'${shells}'`,
     production.compare === "unanswered"
       ? "echo 'HTTP 502: Bad Gateway (https://api.github.com/repos/cybermonklabs/legion/compare)' >&2; return 1"
       : `echo '${production.compare ?? "ahead"}'`,
   ];
   // The probe id the filter names, a commit's 40 hex digits, a slash and 16 hex digits, is read
-  // with a glob and not a regular expression, which would set the script's own BASH_REMATCH.
+  // with a glob and not a regular expression, which would set the script's own BASH_REMATCH. The
+  // log is read whole and written back with the probe id in it, its last newline or the lack of one
+  // kept, the bytes `sed` wrote.
   const agent = "user_agent=priority-list-production/";
   const probeId = `${"[0-9a-f]".repeat(40)}/${"[0-9a-f]".repeat(16)}`;
   const gcloud = [
-    `local dir='${dir}' calls=0 probe='' argument='' line=''`,
+    `local dir='${dir}' calls=0 probe='' argument='' text=''`,
     `{ printf 'call\\0'; printf '%s\\0' "$@"; } >>"$dir/gcloud-calls"`,
-    `printf 'gcloud %s\\n' "$$" >>'${shells}'`,
+    `printf 'gcloud %s %s\\n' "$BASHPID" "$BASH_SUBSHELL" >>'${shells}'`,
     'read -r calls 2>/dev/null <"$dir/gcloud-count" || calls=0',
     "calls=$((calls + 1))",
     `printf '%s\\n' "$calls" >"$dir/gcloud-count"`,
@@ -157,13 +159,12 @@ function standIns(dir: string, production: Production): Record<string, string> {
     "  fi",
     "done",
     "[[ -n $probe ]] || return 0",
-    "while IFS= read -r line || [[ -n $line ]]; do",
-    `  printf '%s\\n' "\${line//@PROBE@/"$probe"}"`,
-    `done <"$dir/log"`,
+    `IFS= read -r -d '' text <"$dir/log" || true`,
+    `printf '%s' "\${text//@PROBE@/"$probe"}"`,
   ];
   const sleep = [
     `printf '%s\\n' "$*" >>'${join(dir, "sleeps")}'`,
-    `printf 'sleep %s\\n' "$$" >>'${shells}'`,
+    `printf 'sleep %s %s\\n' "$BASHPID" "$BASH_SUBSHELL" >>'${shells}'`,
   ];
   const bin = join(dir, "bin");
   mkdirSync(bin, { recursive: true });
@@ -641,7 +642,7 @@ test(
 );
 
 test(
-  "each request a look sends is answered in the script's own shell, so its reads start no process",
+  "each stand-in a look calls runs in the shell that calls it, and not in a process of its own",
   async () => {
     const dir = directories();
     const run = await look(
@@ -650,13 +651,25 @@ test(
       { slowForm: "page", lateReads: 1, log: formLines("page", times(21, 150)) },
       settled()
     );
+    // Each line: the stand-in, its process ($BASHPID) and its subshell depth ($BASH_SUBSHELL).
+    // The script calls gh inside `$(...)`, one subshell down, and the other three in its own
+    // shell. A stand-in that runs as an executable, or in a subshell of its own, changes its depth
+    // or its process.
     const shells = recorded(dir, "shells").map((line) => line.split(" "));
     const calls: Record<string, number> = {};
-    for (const [name = ""] of shells) calls[name] = (calls[name] ?? 0) + 1;
+    for (const [name, , depth] of shells) {
+      const call = `${name} at ${depth}`;
+      calls[call] = (calls[call] ?? 0) + 1;
+    }
+    const scriptShell = shells.filter(([, , depth]) => depth === "0").map(([, pid]) => pid);
     expect(
-      { code: run.code, calls, shells: new Set(shells.map(([, pid]) => pid)).size },
+      { code: run.code, calls, scriptProcesses: new Set(scriptShell).size },
       said(run)
-    ).toEqual({ code: 3, calls: { curl: 23, gh: 1, gcloud: 2, sleep: 1 }, shells: 1 });
+    ).toEqual({
+      code: 3,
+      calls: { "curl at 0": 23, "gh at 1": 1, "gcloud at 0": 2, "sleep at 0": 1 },
+      scriptProcesses: 1,
+    });
   },
   rowLimit("short")
 );
