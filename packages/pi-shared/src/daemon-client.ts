@@ -474,10 +474,10 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * longer the role's phase), `sign_off` (a repeat finds the issue out of accepting and changes
  * nothing) and `register_gate` (its fact is keyed by the gate's issue, generation, document,
  * version and Dispatch sequence; a repeat after the sequence moved is a new fact, which the gate
- * takes as a re-registration of the same document and tells no one again), `register_plan` (its
- * fact is keyed by the issue, the generation, the document and the version, so a repeat is the
- * same fact, answered the same) and `stop_task` (a repeat finds the task stopped and changes
- * nothing). `call` is the whole
+ * takes as a re-registration of the same document and tells no one again), `register_plan` (the
+ * daemon judges every give against its store: a repeat of a give it applied is answered as taken
+ * while that version is in force, and writes nothing) and `stop_task` (a repeat finds the task
+ * stopped and changes nothing). `call` is the whole
  * operation, grant mint included, since grants live in the daemon's memory and do not survive
  * its restart. `onRetrying` is told once. A daemon refusal after a dropped attempt is told that
  * the dropped one may have been applied.
