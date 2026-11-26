@@ -11,18 +11,20 @@
 # a fake dev-stack.sh, which prints the banner the real one prints (one export per line,
 # "dev-stack: ready.", the databases line) and puts a fake agent-secrets and agent-secrets-helper
 # in the stack's bin directory, as the real one puts the built binaries there. Fakes of bun
-# (print-trade.ts), psql, curl, python3 (the metadata stand-in) and sleep go first on PATH. The
-# driver starts every caller with env -i, so the fakes find this run's state through a path
-# written into each of them, never through the environment. Each fake answers as the real program
-# answers on the right stack, and one word in the state directory (the scenario) turns one answer
-# wrong, as a broker or Dispatch with a bug would.
+# (print-trade.ts), psql, curl, python3 (the metadata stand-in) and sleep go first on PATH, with a
+# wrapper of the real jq (below). The driver starts every caller with env -i, so the fakes find
+# this run's state through a path written into each of them, never through the environment. Each
+# fake answers as the real program answers on the right stack, and one word in the state directory
+# (the scenario) turns one answer wrong, as a broker or Dispatch with a bug would.
 #
 # The fakes hold what the real programs hold to the driver: the trade's answer depends on the
 # sign-in the driver's login wrote and on AGENT_SECRETS_PROJECTS; a session's projects come from
 # register --projects or AGENT_SECRETS_PROJECTS; a request's answer reads the fake secrets file the
 # driver rewrote, so an untagged PRIV_KEY goes to every caller as it would; the issuer approves a
 # device code only after the person was queued; psql answers only for the Dispatch database; the
-# proxy refuses only once the driver's own write took carol off PRIV.
+# proxy serves PRIV_KEY only when its proxy tag names the kind the banner exports, as the real
+# proxy serves only a secret behind a kind, and refuses only once the driver's own write took
+# carol off PRIV.
 #
 #   bash scripts/project-secrets-check.test.sh
 #
@@ -120,6 +122,7 @@ if [ "$scenario" != empty-banner ]; then
   export DEV_STACK_PRIV_POD_TOKEN_FILE=$work/priv-pod-token
   export DEV_STACK_PROJECT_ACCESS=true
   export DEV_STACK_PRIV_SECRET=PRIV_KEY
+  export DEV_STACK_AIRLOCK_KIND=priv
   export DEV_STACK_AIRLOCK_PROXY_URL=http://127.0.0.1:5104
   export DEV_STACK_AIRLOCK_BOUND_URL=https://priv.airlock.test
   export DEV_STACK_AIRLOCK_CA_CERT_FILE=$work/ca.crt
@@ -446,11 +449,13 @@ done
 if [ -n "$proxy" ]; then
   secrets="$(cat "$state/current-stack")/fake-secrets.json"
   tagged="$(jq -r '[.secrets[] | select(.name | endswith("/priv-key")) | .tags["dispatch-project"] // ""][0] // ""' "$secrets")"
+  behind="$(jq -r '[.secrets[] | select(.name | endswith("/priv-key")) | .tags.proxy // ""][0] // ""' "$secrets")"
   refused=false
   [ "$proxy" = "http://127.0.0.1:5104" ] || refused=true
   [ "$proxyuser" = "agent-secrets:pw-not-a-secret" ] || refused=true
   [ "$authorization" = "Bearer agent-secrets-placeholder-not-a-secret" ] || refused=true
   [ "$url" = "https://priv.airlock.test/ok" ] || refused=true
+  [ "$behind" = priv ] || refused=true
   [ "$scenario" = airlock-first-refused ] && refused=true
   if [ -e "$state/carol-off" ] && [ -n "$tagged" ] && [ "$scenario" != airlock-still-served ]; then
     refused=true
@@ -504,6 +509,15 @@ fake "$fakes/sleep" <<'EOF'
 printf '%s\n' "$*" >>"$state/sleeps"
 "$real_sleep" 0.01
 EOF
+
+# --- jq, the real one, which the driver and the fakes above read JSON with. Each of them runs
+# under env -i with HOME set to this test's directory, and a version manager's jq shim (mise's)
+# reads whether the user trusts their configuration under HOME, so under this HOME it refuses to
+# run at all and every row fails. The wrapper runs the jq this test found on its own PATH with the
+# HOME this test was started with; a jq that is no shim ignores HOME. ---
+real_jq="$(command -v jq)"
+printf '#!/usr/bin/env bash\nHOME=%q exec %q "$@"\n' "$HOME" "$real_jq" >"$fakes/jq"
+chmod +x "$fakes/jq"
 
 # --- Running the driver, and the assertions. ---
 passed=0
@@ -620,6 +634,10 @@ check "before F: PRIV_KEY was written tagged dispatch-project=PRIV" \
   test "$(jq -r '.secrets[] | select(.name | endswith("/priv-key")) | .tags["dispatch-project"]' "$(cat "$state/current-stack")/fake-secrets.json")" = PRIV
 check "before F: PUB_KEY was written with no project" \
   test "$(jq -r '.secrets[] | select(.name | endswith("/pub-key")) | .tags["dispatch-project"] // "none"' "$(cat "$state/current-stack")/fake-secrets.json")" = none
+check "before F: PRIV_KEY was written tagged proxy=priv, the kind the banner exports" \
+  test "$(jq -r '.secrets[] | select(.name | endswith("/priv-key")) | .tags.proxy // "none"' "$(cat "$state/current-stack")/fake-secrets.json")" = priv
+check "before F: PUB_KEY was written with no proxy tag, so it is released as its value" \
+  test "$(jq -r '.secrets[] | select(.name | endswith("/pub-key")) | .tags.proxy // "none"' "$(cat "$state/current-stack")/fake-secrets.json")" = none
 check "before F: the driver waited out the broker's 30 s K3 cache before the refused request" grep -qx '35' "$state/sleeps"
 check "before F: alice's session named PRIV at enrollment" grep -qF 'register person=alice@example.com projects=PRIV' "$state/register.log"
 check "before F: carol's session naming nothing named no project" grep -qx 'register person=carol@example.com projects=' "$state/register.log"
@@ -666,6 +684,8 @@ run_driver control before-f --database-url "$admin_url" --control untagged
 check "control: the run exits 1" exits 1
 check "control: PRIV_KEY was written with no project" \
   test "$(jq -r '.secrets[] | select(.name | endswith("/priv-key")) | .tags["dispatch-project"] // "none"' "$(cat "$state/current-stack")/fake-secrets.json")" = none
+check "control: PRIV_KEY was still written behind the kind, proxy=priv" \
+  test "$(jq -r '.secrets[] | select(.name | endswith("/priv-key")) | .tags.proxy // "none"' "$(cat "$state/current-stack")/fake-secrets.json")" = priv
 check "control: the first caller that got PRIV_KEY is named" says "control: the first caller that got PRIV_KEY although it should have been refused: carol's session naming nothing"
 check "control: that caller's row fails on PRIV_KEY" says "FAIL: carol's session naming nothing: PRIV_KEY:"
 
