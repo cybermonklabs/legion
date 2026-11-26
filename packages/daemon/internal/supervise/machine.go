@@ -3002,7 +3002,7 @@ func (m *Machine) fence(ctx context.Context, ev Event) (bool, error) {
 }
 
 // timesADelivery is whether a timer of kind waits on one delivery rather than on the claim or
-// its process: the wait for an acknowledged prompt's turn, and the ladder's wait a provider
+// its process: the wait for an outstanding prompt's turn, and the ladder's wait a provider
 // error arms (providererror.go). Each is fenced on the claim's pending delivery as well as on
 // the id the arming recorded, so one that fires after the task it was armed for was replaced
 // decides nothing about the task that replaced it.

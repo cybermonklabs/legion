@@ -166,7 +166,7 @@ const (
 	// TimerRegistration is the registration deadline, which runs until the agent is ready: a live
 	// process whose agent never registered, or registered and never said it was ready, is retired.
 	TimerRegistration TimerKind = "registration"
-	// TimerTurn is the wait for the turn an acknowledged prompt should start.
+	// TimerTurn is the wait for the turn an outstanding prompt, acknowledged or held, should start.
 	TimerTurn TimerKind = "turn"
 	// TimerProbe is the re-probe of an uncertain process.
 	TimerProbe TimerKind = "probe"
@@ -1765,9 +1765,9 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 	p := m.claim.Pending
 	untold, handshakeMoved := false, false
 	if !m.awaitsResult() {
-		// No acknowledged prompt of the task is left, so no copy of its news stands, and the
-		// write below ends the credit of a confirmation it takes back (Delivery.Carried,
-		// takeBackConfirmation).
+		// No prompt of the task is outstanding, acknowledged or held, so no copy of its news
+		// stands, and the write below ends the credit of a confirmation it takes back
+		// (Delivery.Carried, takeBackConfirmation).
 		handshakeMoved = m.takeBackConfirmation(p)
 		untold = m.moveTelling(p.ID, "")
 	}
@@ -2595,10 +2595,10 @@ func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read, busy boo
 }
 
 // resultPending is whether the claim is still waiting on the result of a prompt of its pending task
-// it has had acknowledged (Machine.outstanding): the window in which a turn that ends may be any
-// turn at all. It is open only while the agent can still answer — a claim whose process a
-// suspension, a death or a retirement has taken is told nothing more, and the turn's end is all
-// the answer there will ever be.
+// still outstanding, acknowledged or held (Machine.outstanding): the window in which a turn that
+// ends may be any turn at all. It is open only while the agent can still answer — a claim whose
+// process a suspension, a death or a retirement has taken is told nothing more, and the turn's end
+// is all the answer there will ever be.
 func (m *Machine) resultPending() bool {
 	if m.claim.Pending == nil || !m.awaitsResult() {
 		return false

@@ -27,9 +27,9 @@ var ErrPromptRefused = errors.New("runtime: the agent refused the prompt")
 // and fails, which the workflow reports.
 //
 // What is not this, and is charged nothing because it is no answer about the workspace: no answer
-// within the RPC timeout, a closed connection, a frame lost on the way — the prompt never reached
-// the far side — and a failure to mint the role's identity, which is ErrIdentityUnavailable
-// below.
+// within the request's reply deadline (ErrNoAnswer), a closed connection, a frame lost on the way
+// — the prompt never reached the far side — and a failure to mint the role's identity, which is
+// ErrIdentityUnavailable below.
 //
 // Every `ok: false` is this, the shim's own command timeout included, and the refusal's text is
 // never read to decide: a jj wedged on a stale lock reports as that timeout, and that is the very
@@ -56,7 +56,7 @@ var ErrIdentityUnavailable = errors.New("runtime: the role's GitHub App identity
 // its caller passes (CompactTimeout), and an adoption of the working copy and a read of the
 // workspace's work wait for the shim's own timeout plus the RPC timeout, the round trip. It is the
 // transport's silence, which is no answer of either kind.
-var ErrNoAnswer = errors.New("no answer on the worker stream within the RPC timeout")
+var ErrNoAnswer = errors.New("no answer on the worker stream within the request's reply deadline")
 
 // ErrPromptUnanswered is a prompt whose frame the daemon wrote to the worker stream and whose
 // reply did not come within its deadline. It says the frame was written, not that the agent
