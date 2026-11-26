@@ -77,6 +77,13 @@ const LAYOUT_SHEET_ID = "layout-pinned-sheet";
 
 const pinnedPages = new WeakSet<Page>();
 
+/** Each pinned face's file by its path under `e2e/fonts/`, read the first time a page of this
+ *  worker asks for it and answered from here after that: the files are committed and do not
+ *  change during a run. Only the read is kept: each request a document sends still reaches the
+ *  page's routes, so one registered after this (the 404 for one face in
+ *  `e2e/layout-measure.stub.e2e.ts`) still answers it first. */
+const faceFiles = new Map<string, Buffer>();
+
 /** Adds the layout sheet to every document the page loads from now on, before its first frame,
  *  and answers the faces' requests from `e2e/fonts/`; once per page. An init script, not a style
  *  tag added after the load: a page can replace its document after `page.goto` returns - a
@@ -94,10 +101,12 @@ async function installLayoutSheet(page: Page): Promise<void> {
       await route.fulfill({ body: `no pinned face ${asked}`, status: 404 });
       return;
     }
-    await route.fulfill({
-      body: readFileSync(new URL(`./fonts/${face.dir}/${face.file}`, import.meta.url)),
-      contentType: "font/ttf",
-    });
+    let body = faceFiles.get(asked);
+    if (body === undefined) {
+      body = readFileSync(new URL(`./fonts/${asked}`, import.meta.url));
+      faceFiles.set(asked, body);
+    }
+    await route.fulfill({ body, contentType: "font/ttf" });
   });
   await page.addInitScript(addLayoutSheet, { id: LAYOUT_SHEET_ID, sheet: LAYOUT_SHEET });
 }
@@ -125,22 +134,26 @@ function addLayoutSheet({ id, sheet }: { id: string; sheet: string }): void {
 /** Fails unless every pinned face loaded in the page's current document. A route that stopped
  *  answering, or a sheet that never reached the page, would leave the text in the host's own
  *  faces, which only a host with other fonts than CI's would show; `document.fonts.ready`
- *  resolves either way, so each face is asked for by its family and weight. */
+ *  resolves either way, so each face is asked for by its family and weight. The faces are asked
+ *  for together, since no load waits on another, and each that did not load is named in
+ *  `PINNED_FACES`' order. */
 async function expectPinnedFacesLoaded(page: Page): Promise<void> {
   const wanted = PINNED_FACES.map(({ family, weight }) => ({ family, weight }));
   const unloaded = await page.evaluate(async (faces) => {
-    const missing: string[] = [];
-    for (const { family, weight } of faces) {
-      try {
-        const loaded = await document.fonts.load(`${weight} 16px ${JSON.stringify(family)}`);
-        if (loaded.length === 0 || loaded.some((face) => face.status !== "loaded")) {
-          missing.push(`${family} ${weight}`);
+    const missing = await Promise.all(
+      faces.map(async ({ family, weight }) => {
+        try {
+          const loaded = await document.fonts.load(`${weight} 16px ${JSON.stringify(family)}`);
+          if (loaded.length === 0 || loaded.some((face) => face.status !== "loaded")) {
+            return `${family} ${weight}`;
+          }
+          return null;
+        } catch {
+          return `${family} ${weight} (load rejected)`;
         }
-      } catch {
-        missing.push(`${family} ${weight} (load rejected)`);
-      }
-    }
-    return missing;
+      })
+    );
+    return missing.filter((face): face is string => face !== null);
   }, wanted);
   expect(unloaded, "pinned faces that did not load: the font route or the sheet is broken").toEqual(
     []
@@ -396,9 +409,13 @@ export function layoutRowTimeoutMs(route: Pick<LayoutRoute, "states">): number {
   return Math.max(60_000, readings * 6_000);
 }
 
-/** Reads `route` at every width of `LAYOUT_WIDTHS`: the page loaded fresh and settled, and then,
- *  for each of its states, loaded fresh again, settled, acted on and settled again. Fails once,
- *  after every reading, with every failure `judgeReading` found. */
+/** Reads `route` at every width of `LAYOUT_WIDTHS`: the page loaded fresh and settled, and then
+ *  each of its states acted on and settled again. The first state acts on the page the plain
+ *  reading has just read, since that reading changes nothing the state draws: `measureLayout`
+ *  only reads, and the faces `expectPinnedFacesLoaded` loads are the ones the state's own reading
+ *  requires anyway. Each later state acts on the page loaded fresh again, so it draws over
+ *  nothing an earlier state opened. Fails once, after every reading, with every failure
+ *  `judgeReading` found. */
 export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSeed): Promise<void> {
   await route.prepare?.(page.context());
   await installLayoutSheet(page);
@@ -423,8 +440,8 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
         minElements,
       })
     );
-    for (const state of route.states ?? []) {
-      await loadSettled(page, route, address, inFlight);
+    for (const [index, state] of (route.states ?? []).entries()) {
+      if (index > 0) await loadSettled(page, route, address, inFlight);
       await state.act(page);
       await waitForRouteSettled(page, route, inFlight);
       const acted = { route: route.name, state: state.name, width };

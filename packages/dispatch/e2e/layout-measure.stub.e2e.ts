@@ -80,10 +80,16 @@ function failureIdentities(failures: readonly LayoutFailure[]): unknown[] {
   });
 }
 
+/** The viewport the controls draw in: a phone's width. */
+const PHONE_SIZE = { height: 900, width: 360 } as const;
+
 /** Draws `body` as a page's own region at a phone's width, and reads it as a layout row reads a
- *  page. */
+ *  page. The viewport is written only when it is another size: a row's later cases find it set. */
 async function measure(page: Page, body: string): Promise<LayoutReading> {
-  await page.setViewportSize({ height: 900, width: 360 });
+  const size = page.viewportSize();
+  if (size === null || size.width !== PHONE_SIZE.width || size.height !== PHONE_SIZE.height) {
+    await page.setViewportSize(PHONE_SIZE);
+  }
   await page.setContent(
     `<!doctype html><html><body style="margin: 0"><main data-testid="main-content">${body}</main></body></html>`
   );

@@ -27,8 +27,8 @@ const test = stubbed(() => seedLayoutStress({ boundMs: expectTimeout }));
 test.use({ locale: "en-US", timezoneId: "UTC" });
 
 for (const route of layoutRoutes) {
-  // SLOW(>=2s): a load of a drawn page at each of five widths, and again for each of its states,
-  // each settled and measured.
+  // SLOW(>=2s): a load of a drawn page at each of five widths, and again for each of its states
+  // after the first, each settled and measured.
   test(`${route.name} breaks no layout rule from 360 to 1920 px @pr`, async ({
     page,
     scene,
