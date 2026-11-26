@@ -270,8 +270,18 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	// takes first and which the transaction holds until Commit writes the queued answer, so the
 	// kind checked is the kind answered; the refusal is the gate's own (missingScopeError), which
 	// writeHandlerError gives the challenge header.
+	//
+	// An approve-only token (model.Credential.ApproveOnly) reaches this route because the approve
+	// list names it for the answer of an approval request, and for nothing else: an answer of any
+	// other ask, a question's free text among them, is no approval, so it is refused here, under
+	// the same lock and for the same reason, with the approve-only gate's own code.
+	approveOnly := approveOnlyRequest(r)
 	recordAnswer := transition.Apply
 	transition.Apply = func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask) (model.Ask, error) {
+		if ask.Kind != "approval" && approveOnly {
+			return model.Ask{}, errorf(http.StatusForbidden, contracts.DispatchApproveOnlyToken,
+				"this request's credential is an approve-only token, which answers an approval request and no other ask, and this ask is a %s: nothing was recorded", ask.Kind)
+		}
 		if ask.Kind == "approval" && !actor.Act.Holds(model.ScopeApprove) {
 			return model.Ask{}, missingScopeError(model.ScopeApprove,
 				"this request's credential does not hold the approve scope, which answering an approval request requires")

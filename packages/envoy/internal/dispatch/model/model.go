@@ -32,10 +32,11 @@ const (
 // (api's legion_status_scope.go). The secrets broker grants it to the daemon's token alone, and
 // Dispatch reads it from the broker's answer (brokerTokenActor).
 //
-// It is not in Scopes, and it must stay out. The browser's credential, the personal-token check
-// and a new token's default scopes all read Scopes, and none of them may hold this scope: it is
-// the daemon's broker token's alone. A person-scoped broker token holds ScopePerson alone
-// (brokerPersonScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
+// It is not in Scopes, and it must stay out. The browser's credential, the personal-token check,
+// a new token's default scopes and the approve-only token's scopes (brokerTokenActor) all read
+// Scopes, and none of them may hold this scope: it is the daemon's broker token's alone. A
+// person-scoped broker token holds ScopePerson alone (brokerPersonScopes), and the approve-only
+// token both of Scopes, never this scope either. DISPATCH_SCOPES in @legion/contracts and the
 // check on agent_tokens.scopes do not name it either, so no personal token can hold it. The word
 // is the broker's own (oauthwire), so the scope the broker grants and the one Dispatch reads are
 // one string.
@@ -121,6 +122,14 @@ type Credential struct {
 	// which holds whatever the deployment holds: api's namedProjectOf reads it. A fact of the
 	// request, never written to a row or an answer.
 	NamedProject string `json:"-"`
+	// ApproveOnly is a broker-issued token that holds only the scope approve
+	// (ciphertoken.ScopeApprove) beside the project scope person: the token the secrets broker
+	// mints for a person's approve grant, binds to its own pod's key and spends through its proxy,
+	// never released. It acts as its person with both of the person's scopes, and Dispatch serves
+	// it on the routes its approve list names (approveScopeRoutes) alone, answering it 403
+	// APPROVE_ONLY_TOKEN on every other (refuseApproveOnlyToken), before anything else the route
+	// does. False for every other credential.
+	ApproveOnly bool
 	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
 	// the zero time for a credential that names no cut. Only a read-only credential carries one.
 	Cut time.Time

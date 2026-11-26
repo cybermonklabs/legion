@@ -106,6 +106,7 @@ func noReadSent(t *testing.T, g *rig, tokens ...claim.Token) {
 // tester's own process. The pod's launcher reads the workspace before the replacement, and the
 // daemon is handed the commit it found.
 func TestALaunchThatReplacesAPodWhoseStreamMovedSaysWhatItTook(t *testing.T) {
+	t.Parallel()
 	var took tookLaunches
 	g := newRig(t, nil, withWorkspaceRead(oneCommitRead))
 	loc := g.spawn(workerSpec(t))
@@ -125,6 +126,7 @@ func TestALaunchThatReplacesAPodWhoseStreamMovedSaysWhatItTook(t *testing.T) {
 // together (supersededDisk), with the reviewer running in that pod. The pod's launcher reads the
 // workspace first, and the daemon is handed the commit it found.
 func TestALaunchThatReplacesASandboxOfTheSupersededDiskShapeSaysWhatItTook(t *testing.T) {
+	t.Parallel()
 	var took tookLaunches
 	g := supersededIssue(t, withWorkspaceRead(oneCommitRead), withOptions(func(o *Options) { o.LaunchTook = took.record }))
 	g.connectRunning(otherToken, 1)
@@ -142,6 +144,7 @@ func TestALaunchThatReplacesASandboxOfTheSupersededDiskShapeSaysWhatItTook(t *te
 // the pod carries (keptBy), with the reviewer running in it. The pod's launcher reads the workspace
 // first, and the daemon is handed the commit it found.
 func TestALaunchThatCannotReadAKeptPodsTemplateSaysWhatItTook(t *testing.T) {
+	t.Parallel()
 	var took tookLaunches
 	g := newRig(t, nil, withWorkspaceRead(oneCommitRead))
 	loc := g.spawn(workerSpec(t))
@@ -167,6 +170,7 @@ func TestALaunchThatCannotReadAKeptPodsTemplateSaysWhatItTook(t *testing.T) {
 // launcher bound wrongly is no word that no process of the pod can read (GPT-6.1 Sol's point 4 on
 // #5285 at 0259f8af, the Legion reviewer's point 4).
 func TestALaunchIntoAPodWithUnboundLaunchersReadsThroughALauncherThatCan(t *testing.T) {
+	t.Parallel()
 	var took tookLaunches
 	g := newRig(t, nil, withWorkspaceRead(oneCommitRead), withOptions(func(o *Options) { o.LaunchTook = took.record }))
 	testerLoc := g.spawn(workerSpec(t))
@@ -184,6 +188,7 @@ func TestALaunchIntoAPodWithUnboundLaunchersReadsThroughALauncherThatCan(t *test
 // read is sent, and the daemon is handed that no read could be made, because no launcher of the
 // pod can make it.
 func TestALaunchIntoAPodWithUnboundLaunchersAndNoReaderSaysNoReadCouldBeMade(t *testing.T) {
+	t.Parallel()
 	var took tookLaunches
 	g := newRig(t, nil, withOptions(func(o *Options) { o.LaunchTook = took.record }))
 	testerLoc := g.spawn(workerSpec(t))
@@ -252,6 +257,7 @@ func volumeTaken(sandbox types.UID) runtime.TakenPod {
 // point 6, GPT-6.1 Sol's non-blocking point on fa9deb04). The control is a launch that keeps the
 // volume: it completes in the same Sandbox, deletes no disk and is handed nothing.
 func TestALaunchThatDeletesAKeptVolumeWithNoPodSaysWhatItTook(t *testing.T) {
+	t.Parallel()
 	newSandbox := func(t *testing.T, g *rig, loc runtime.Locator, old types.UID, err error) {
 		t.Helper()
 		if err != nil {
@@ -307,6 +313,7 @@ func TestALaunchThatDeletesAKeptVolumeWithNoPodSaysWhatItTook(t *testing.T) {
 // suspension proves only that the pod was taken. Once the launch deletes the Sandbox, the act reads
 // made.
 func TestARecordedVolumeDeleteIsMadeOnlyOnceItsSandboxIsGone(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// stopAtRecord stops the launch at its record's hook (Options.LaunchTakes), as a daemon
@@ -355,6 +362,7 @@ func TestARecordedVolumeDeleteIsMadeOnlyOnceItsSandboxIsGone(t *testing.T) {
 // The death path's Resume over a Failed issue pod its Sandbox still runs: the pod is not live, so
 // no process in it can read the workspace, and the daemon is handed that no read could be made.
 func TestALaunchOverAPodThatIsNotLiveSaysNoReadCouldBeMade(t *testing.T) {
+	t.Parallel()
 	var took tookLaunches
 	name := SandboxName(workerToken)
 	labels := claimLabels(claim.RoleTester)

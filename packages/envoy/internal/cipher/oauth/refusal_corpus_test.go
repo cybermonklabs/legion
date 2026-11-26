@@ -63,6 +63,11 @@ var corpusRefusals = []corpusRefusal{
 	// another daemon holds, the second for a name bound to none.
 	{oauth2.ErrInvalidGrant.WithDescription(oauthwire.SessionNameNotThisRegistrars + ":"), "The session name '%s' belongs to another daemon: a pod trades only under a session name the daemon that registered it holds.", []any{corpusSession}, "exchange.go"},
 	{oauth2.ErrInvalidGrant.WithDescription(oauthwire.SessionNameNotThisRegistrars + ":"), "The session name '%s' is bound to no daemon: a pod trades only under a session name the daemon that registered it holds.", []any{corpusSession}, "exchange.go"},
+	// A trade for the approve capability's proxy placeholder that no person's sign-in made, or that a
+	// broker serving no approve capability was asked (grantApprove), and one that asks for the scope
+	// read (exchangeGrant).
+	{oauth2.ErrInvalidRequest, "Only a person's sign-in is traded for the approve capability's proxy placeholder, on a broker that serves it.", nil, "approve.go"},
+	{oauth2.ErrInvalidRequest, "A trade for the approve capability's proxy placeholder asks for the scope %s, and a trade narrowed to reading approves nothing: trade for the placeholder without the scope, a cut or a DPoP-Holder proof.", []any{oauthwire.ScopeRead}, "exchange.go"},
 	// A read trade's refusals (exchange.go): its holder proof, the credential a person's read trade
 	// names, the launcher credential it may not ask for, its cut, and a job entry's read trade,
 	// refused since a job's token is minted whole.
