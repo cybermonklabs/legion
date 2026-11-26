@@ -21,9 +21,8 @@ const stepRecordsRelease = "the roll forward of the release that records each st
 // migration's way back (migrations.WayBack) from the embedded migration, which is that file's
 // bytes as the binary ships them; what names the release a failure to read it is about. A header
 // with no way back stops the test by name: a block this cannot find is a block it would pass
-// while running nothing. The doc comment of migrations.WayBack says which of these blocks
-// docs/kubernetes.md gives too, and which of those internal/textcheck holds to the header's text.
-// Where it holds them, the block an operator runs is the one these tests run.
+// while running nothing. Where internal/textcheck holds a block to the one docs/kubernetes.md
+// gives, the block an operator runs is the one these tests run.
 func wayBackOf(t *testing.T, version int, what string) string {
 	t.Helper()
 	block, err := migrations.WayBack(version)
