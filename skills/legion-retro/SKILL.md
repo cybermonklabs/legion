@@ -1,6 +1,6 @@
 ---
 name: legion-retro
-description: "Use when the Legion daemon starts you, the implementer, on `Phase: retro` after the task's last step passed."
+description: "Use when the Legion daemon starts you, the implementer, on `phase: retro` after the task's last step passed."
 ---
 
 # Legion retro

@@ -1,7 +1,7 @@
 # Contributing to Legion
 
 `README.md` has the commands that build and test the repository.
-The `AGENTS.md` at the root and beside most packages holds the rules for working in that part.
+The `AGENTS.md` at the root and beside some packages holds the rules for working in that part.
 
 ## Pull requests and merging
 

@@ -17,6 +17,9 @@ import (
 // `-ldflags -X 'github.com/sjawhar/envoy/infra/provider.downloadURL=<that URL>'`; that is why it
 // is a var, since -X writes a variable and never a constant. A build with no such flag - a
 // developer's, and provider_test.go's - serves the address below, this repository's own today.
+// The tag and the asset name are the ones release-envoy-infra.yaml publishes, so a change to this
+// URL, to repo-paths.sh's, or to the workflow's tag or archive name breaks every install unless the
+// others change with it.
 var downloadURL = "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}"
 
 // New returns the envoy-infra provider serving every component the plugin registers, refusing a

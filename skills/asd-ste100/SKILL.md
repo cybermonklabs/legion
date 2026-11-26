@@ -61,7 +61,7 @@ Scan for all six before you rewrite:
 5. Stop when each sentence has one reading, not when it is shortest.
 6. If the text already complies, say so and change nothing.
 
-Read `skill://asd-ste100/examples/before-after.md` when you want worked rewrites of agent output, each with what was flagged and what was kept.
+Read `skill://asd-ste100/references/before-after.md` when you want worked rewrites of agent output, each with what was flagged and what was kept.
 
 ## Output
 

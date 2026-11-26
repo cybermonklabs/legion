@@ -48,7 +48,7 @@ Every launch opens with a start message. Envoy keeps no wake sent while no contr
 | Wake | Read |
 |---|---|
 | `triage` | `skill://legion-controller/references/triage.md` |
-| `slot-free`, `todo`, `unslotted`, `awaiting-person` | Take nothing; name it in your summary |
+| `slot-free`, `todo`, `unslotted`, `awaiting-person` (the last one `low`, read at your next turn) | Take nothing; name it in your summary |
 | `tick` | The every-turn steps, then the parked-root walk |
 | `parked-decision` | `skill://legion-controller/references/parked-decisions.md#deciding` |
 | `held` with `reason: "escalated"`, `update-stalled`, an architect's escalation | `skill://legion-controller/references/escalation.md` |

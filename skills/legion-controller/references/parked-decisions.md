@@ -2,7 +2,7 @@
 
 Read this on a `parked-decision` wake, and for the parked-root walk at every start and on each `tick`. A parked tree is a labelled root in `backlog` or `icebox` whose `issues.<KEY>.phase` is `done`. Its architect is gone, so nobody inside it hears a person's decision. The daemon sends you each one as `parked-decision` (`decision`, `root`, `ref`, `actor`, and a spec decision's `version` and `reason`); the walk finds those sent while no controller ran.
 
-A person's own approval of a parked root's primary document while no tree is live is no decision for you: the daemon sets the root `todo` itself, unless the daemon sends it as a `parked-decision` whose `reason` says the root's status changed after the approval and Legion queued nothing; decide that one as [Deciding](#deciding) says. A carried approval, or one on a root that keeps a Dispatch parent, is a decision. A session's reply on a parked tree is none.
+A person's own approval of a parked root's primary document while no tree is live is no decision for you: the daemon sets the root `todo` itself, unless the daemon sends it as a `parked-decision` with `not_queued: true`, which says the root's status changed after the approval (`approval_seq`, `status_change_seq`) and Legion queued nothing, and names the issue to set to `todo` (`set_todo`); decide that one as [Deciding](#deciding) says. A carried approval, or one on a root that keeps a Dispatch parent, is a decision. A session's reply on a parked tree is none.
 
 A held root is not a parked one: `todo` on a root at `phase: held` releases the hold at the same generation. A root still in the workflow whose architect stopped takes `backlog`, then `todo`, which re-admits the tree.
 

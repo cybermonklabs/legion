@@ -166,7 +166,7 @@ func payloadDeliveryMode(payload string) (mode string, err error) {
 }
 
 // isDeliveryMode reports whether value is one of the three targeted-delivery modes. The list is
-// DELIVERY_CAPABILITIES in packages/contracts/src/dispatch-api.ts, spelled here as the Dispatch
+// DELIVERY_CAPABILITIES in packages/contracts/src/dispatch-api-limits.ts, spelled here as the Dispatch
 // server spells it in its own `validDelivery`: the two sides talk over HTTP, not a shared Go
 // import.
 func isDeliveryMode(value string) bool {

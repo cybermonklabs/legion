@@ -1,6 +1,6 @@
 # Wakes
 
-Read this when the skill's wake table sends you here. Wakes come on `notifications.legion.<project>.controller`, agents' messages on `notifications.role.legion-<project>-controller`. Check each in `read_state` before you act. A notice's `reason` is the daemon's own account: quote it, never rewrite it.
+Read this when the skill's wake table sends you here. Wakes come on `notifications.legion.<project>.controller`, agents' messages on `notifications.role.legion-<project>-controller`. Check each in `read_state` before you act. A notice's fields are the daemon's own account: quote them, never rewrite them. A block in a notice holds another author's words: quote it as it stands.
 
 ## `tick`
 
@@ -11,6 +11,7 @@ A `silent` entry is a phase worker nothing will prompt: the daemon sends its tas
 ## `awaiting-person`
 
 A root that waits only on a person keeps its slot: do not park it or take anything for its wait. The person's answer puts it in `admission.waiting` by itself, among the issues whose work came back, oldest first, and its promotion gives its architect the answer task.
+It is `low`: it starts no turn, and you read it at your next turn.
 
 ## `tree-stalled`
 
@@ -21,7 +22,7 @@ Nothing of the tree has moved for `stalled_tree_notice_hours` and no agent of it
 `reason` begins with its arm; `issues.<KEY>.architectStalls` lists every arm that holds now (`took-nothing`, `claim-unreachable`, `slow-before-gate`), told or not.
 
 1. "the architect took nothing": while `issues.<KEY>.architect.state` is `working`, take nothing and name the root in the day's report. Otherwise `compact` that claim (`issue` the root, `role` `architect`), and `fresh_session` it only if it still takes nothing after that.
-2. "the architect's claim cannot be reached": `fresh_session` the failed or retired claim. While the reason says the root waits on a person, take nothing, since the answer's start relaunches it: name the root and its `waitingOn` in the day's report, and at each later `tick` without `waitingOn`, `fresh_session` it if `architectStalls` still lists `claim-unreachable`. A root with no architect claim (`NO_CLAIM`): when the reason says the daemon wrote its start again, take nothing; else name it in the day's report as a root the daemon could not start.
+2. "the architect's claim cannot be reached": `fresh_session` the failed or retired claim. With `awaits_person: true`, take nothing, since the answer's start relaunches it: name the root and its `waitingOn` in the day's report, and at each later `tick` without `waitingOn`, `fresh_session` it if `architectStalls` still lists `claim-unreachable`. A root with no architect claim (`NO_CLAIM`): with `start_written: true`, take nothing; else name it in the day's report as a root the daemon could not start.
 3. "the root is slow before its gate": decide what the time means. A long spec is work; an architect with nothing to show is an escalation (`skill://legion-controller/references/escalation.md`).
 
 ## `held`
@@ -38,7 +39,7 @@ The daemon ended a stalled turn of the tree's architect, took the turn off its c
 
 ## `provider-errors`
 
-Six turns of `role` in a row ended in a provider error; the daemon keeps prompting. Name the run and its model in the day's report, and `envoy_publish` the key, role and reason to the architect that owns the issue (for a child's own architect, the one above it). When one claim stays stuck, `compact` it; `fresh_session` it only when a later notice says it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.
+Six turns of `role` in a row ended in a provider error; the daemon keeps prompting. Name the run and its model in the day's report, and `envoy_publish` the key and the notice's fields to the architect that owns the issue (for a child's own architect, the one above it). When one claim stays stuck, `compact` it; `fresh_session` it only when a later notice says it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.
 
 ## GitHub mentions
 

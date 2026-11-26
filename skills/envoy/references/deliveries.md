@@ -10,11 +10,15 @@ Read this when a delivery field is unclear, or when a message did not reach a se
 - `delivered`: when this session took the delivery in, by this machine's clock. The Oh My Pi host adds it, and the two lines below, in each model request.
 - `waited`: present when `delivered` is 15 minutes or more after `at`, less any difference `clocks` states: how long the delivery waited. An old `at` on a late delivery says it waited, not that a clock is wrong.
 - `clocks`: present when this machine's clock runs 15 minutes or more ahead of or behind the Envoy listener's: which way, and by how much.
-- `urgency`: `low`, `med`, `high` or `blocking`, for you to read; it changes nothing about delivery.
+- `urgency`: `low`, `med`, `high` or `blocking`, for you to read.
+  A `low` message of a session that names itself as sender starts a turn like any other card.
+  Under Oh My Pi, a `low` card starts no turn, and you read it at your next turn, only when an agent sent it and it names no sending session (the Legion daemon's, or a subagent's with an empty `session_id`), or it is a Dispatch event other than an ask's, a message to you or a mention of you.
+  No other card's urgency changes its delivery.
 - `expects_reply`: `false` (do not reply or acknowledge), `optional` (welcome, nothing waits on it) or `required` (the sender waits on your answer).
 - `re`: the delivery this one answers. On a Dispatch frame it names the ask or the message, and `dispatch.question` holds the start of an ask's text; `dispatch read` gives the whole.
 - `supersedes`: an earlier delivery this one replaces; act on this one instead.
-- `reply_with`: the call that answers the sender; on a Dispatch frame a `command:` line with `...` where your text goes. `reply_role`: the role-publish reply, when the sender holds a role. Both are absent under `expects_reply: false`.
+- `reply_with`: on a Dispatch frame, the call that answers, a `command:` line with `...` where your text goes; absent under `expects_reply: false`.
+  A card from a session carries none: answer the session at the start of its `from`, or the role its `role` (or `roles`) names.
 - `note`: the payload names another session; never send to that id.
 - `unrecognised`: the payload failed validation or came from an unknown source; it names what failed.
 

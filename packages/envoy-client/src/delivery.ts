@@ -1669,7 +1669,9 @@ function encodeCardFields(
 }
 
 /**
- * One inbound envelope's JSON as a card for the agent, with what the host does with it.
+ * One inbound envelope's JSON as a card for the agent, with what the host does with it. Every host
+ * renders a frame for its agent through this function and builds no card of its own, so a session
+ * reads the same card whichever plugin it runs in.
  *
  * The card is TOON under `envoy:`, each field once, and then a block (`wordsBlocks`) for each part
  * of it that another author wrote: a session's message, JSON text too, the body, reply, answer or

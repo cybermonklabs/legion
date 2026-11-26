@@ -655,7 +655,9 @@ func goingCatalogueDescription() string {
 // routes lists every native-workspace route. Add a row here, never a mux.HandleFunc line. A
 // mutating row's write class comes from writeClasses, which Register's project-scope check
 // reads; a row that names no class there is one that check cannot decide, and Register refuses
-// to mount it (undecidableWrites).
+// to mount it (undecidableWrites). A row whose answer carries a credential is a row of
+// answerHoldsSecret too, or the keyed-write layer keeps that answer for a day under its
+// Idempotency-Key.
 func (s *server) routes() []apiRoute {
 	rows := []routeRow{
 		{http.MethodGet, "/api/v1", authPublic, "This index: every route with its method, auth, and purpose.", s.getRouteIndex},

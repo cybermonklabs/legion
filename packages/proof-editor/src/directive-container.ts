@@ -37,6 +37,7 @@
  * differently; a body that is only displayed can.
  */
 
+import { DOCUMENT_TYPED_BLOCK_NESTING_MAX } from "@legion/contracts";
 import { factorySpace } from "micromark-factory-space";
 import { markdownLineEnding, markdownSpace } from "micromark-util-character";
 import type {
@@ -151,11 +152,13 @@ function directiveParse(context: TokenizeContext): DirectiveParse {
 }
 
 /**
- * How many directive containers may stand inside one another. An opener standing inside this many
- * open directive containers does not open; the document service refuses a typed block nested that
- * deep.
+ * How many directive containers may stand inside one another: `DOCUMENT_TYPED_BLOCK_NESTING_MAX` of
+ * `@legion/contracts`, which the document service reads as `contracts.DocumentTypedBlockNestingMax`
+ * (`maxTypedNesting` in packages/envoy/internal/dispatch/pmdoc/nesting.go). An opener standing
+ * inside this many open directive containers does not open; the document service refuses a typed
+ * block nested that deep.
  */
-export const maxDirectiveNesting = 32;
+export const maxDirectiveNesting = DOCUMENT_TYPED_BLOCK_NESTING_MAX;
 
 const directiveContainer: Construct = {
   name: "directiveContainer",

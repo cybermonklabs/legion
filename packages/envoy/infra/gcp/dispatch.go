@@ -164,7 +164,8 @@ func isSecretKey(key string) bool {
 
 // DispatchArgs are the inputs of an envoy-infra:gcp:Dispatch. Every field of a plain Go type is a
 // value the consumer's program knows when it runs; the pulumi.*Input fields may come from another
-// resource or stack.
+// resource or stack. A new plain string field joins dispatchSeededInput, with a row in
+// TestDispatchRefusesAnNKeySeedInAPlainInput: no test walks these fields for one.
 type DispatchArgs struct {
 	Region   string `pulumi:"region"`
 	Hostname string `pulumi:"hostname"`

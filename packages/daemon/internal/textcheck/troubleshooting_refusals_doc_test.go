@@ -4,8 +4,8 @@ package textcheck
 // no row: troubleshooting_refusals_extract.txt, the copy of the troubleshooting page's refusal
 // table it reads its rows from, stands in its own directory, and this row is what holds that
 // copy to the page, in the text-check job (dispatch://INFRA-1413).
-//ci:reads docs/site/src/content/docs/legion/troubleshooting.md internal/textcheck/waiting_line_texts_test.go:498 reads it under ../../../.. for TestTheTroubleshootingRefusalsExtractIsTheGuidesRefusalTable (shippedText)
-//ci:reads packages/daemon/cmd/legion/troubleshooting_refusals_extract.txt internal/textcheck/waiting_line_texts_test.go:488 reads it as ../../cmd/legion/troubleshooting_refusals_extract.txt for TestTheTroubleshootingRefusalsExtractIsTheGuidesRefusalTable, the committed copy it holds the page's refusal table to (quotedBody)
+//ci:reads docs/site/src/content/docs/legion/troubleshooting.md internal/textcheck/waiting_line_texts_test.go:494 reads it under ../../../.. for TestTheTroubleshootingRefusalsExtractIsTheGuidesRefusalTable (shippedText)
+//ci:reads packages/daemon/cmd/legion/troubleshooting_refusals_extract.txt internal/textcheck/waiting_line_texts_test.go:484 reads it as ../../cmd/legion/troubleshooting_refusals_extract.txt for TestTheTroubleshootingRefusalsExtractIsTheGuidesRefusalTable, the committed copy it holds the page's refusal table to (quotedBody)
 
 import (
 	"errors"

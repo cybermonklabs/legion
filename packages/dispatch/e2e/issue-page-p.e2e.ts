@@ -169,10 +169,11 @@ async function pressOutOfTheEdit(
 
 // Row (1): the header draws every property with a value at every width, on the measured title
 // and 20 labels.
-// On the phone it reads what the 390 px viewport decides, a layout claim "Phone acceptance" in
-// `packages/dispatch/AGENTS.md` tags `@phone` for: the header's height limit there, the 24 px
-// targets, the page no wider than the window, the navigation's control first on row one and the
-// dialog it opens, and the 44 px buttons and 16 px type of the dialog a header control opens.
+// On the phone it reads what the 390 px viewport decides, a layout claim
+// `packages/dispatch/README.md`'s "Projects" tags `@phone` for: the header's height limit there,
+// the 24 px targets, the page no wider than the window, the navigation's control first on row one
+// and the dialog it opens, and the 44 px buttons and 16 px type of the dialog a header control
+// opens.
 // SLOW(>=2s): 15,176 ms on chromium and 7,070 ms on iphone (one worker, Job e2e-rows-rdf2g at
 // 43949bc0): twelve loads of the issue on chromium and five on iphone, and at each of its widths
 // every part of the header read whole and Details opened and closed three times.
@@ -803,9 +804,9 @@ test("the approval entries stay in the header and read the document each step ap
 // Row (3): the header holds its limits in the typeface and, with every request for the
 // typeface's file refused, in the fallback. What the file holds and its licence are not the
 // header's, and the row reads neither. On the phone it reads what the 390 px viewport decides
-// in the fallback, as row (1) reads it in the face, a layout claim "Phone acceptance" in
-// `packages/dispatch/AGENTS.md` tags `@phone` for: the header's height limit and the 24 px
-// targets at 390 px, and the page no wider than the window at 390 and 320 px.
+// in the fallback, as row (1) reads it in the face, a layout claim
+// `packages/dispatch/README.md`'s "Projects" tags `@phone` for: the header's height limit and the
+// 24 px targets at 390 px, and the page no wider than the window at 390 and 320 px.
 // SLOW(>=2s): 14,270 ms on chromium and 13,365 ms on iphone (one worker, Job e2e-rows-rdf2g at
 // 43949bc0): thirteen loads of the issue in two signed-in contexts, each waiting for the
 // typeface to load or fail, and the header's limits measured at twelve of them.
@@ -898,9 +899,8 @@ test("the header holds its limits when the typeface does not load @phone", async
 
 // Row (4): the count of what waits on the reader opens the first thing that waits. The node the
 // press reaches is drawn outside the header, and other rows read it. On the phone every press
-// of the count is a tap of the touch screen, a touch claim "Phone acceptance" in
-// `packages/dispatch/AGENTS.md` tags `@phone` for, and each opens what the mouse's click opens on
-// `chromium`.
+// of the count is a tap of the touch screen, a touch claim `packages/dispatch/README.md`'s
+// "Projects" tags `@phone` for, and each opens what the mouse's click opens on `chromium`.
 // SLOW(>=2s): 4,370 ms on chromium and 3,416 ms on iphone (one worker, Job e2e-rows-rdf2g at
 // 43949bc0): three more issues written with their requests and documents, five loads on
 // chromium and four on iphone, and the count pressed twice and Back pressed at each width.
@@ -1218,8 +1218,8 @@ test("a press on the status straight out of the title's editor lands on the stat
 // Row (7): ending the edit of a title of two or three lines must not move the control under it
 // between the mousedown and the mouseup, as `e2e/issue.e2e.ts:1016` at 750e2716 ("issue header
 // delivers the click that ends a title edit to the control under the pointer @phone") reads. On the
-// phone the press is a tap of the touch screen, a touch claim "Phone acceptance" in
-// `packages/dispatch/AGENTS.md` tags `@phone` for. A tap's mouse events come after its touch
+// phone the press is a tap of the touch screen, a touch claim `packages/dispatch/README.md`'s
+// "Projects" tags `@phone` for. A tap's mouse events come after its touch
 // events: the order `IssueTitleRow.tsx` holds the title's height by until the press is
 // delivered, at 390 px.
 // SLOW(>=2s): 10,227 ms on chromium and 4,970 ms on iphone (one worker, Job e2e-rows-rdf2g at
@@ -1620,10 +1620,10 @@ async function openScrollingPage(page: Page, key: string, width: number): Promis
 }
 
 // Row (9): the band, which holds the identity and the title, stays when the page scrolls. On
-// the phone it reads what the 390 px viewport decides, a layout claim "Phone acceptance" in
-// `packages/dispatch/AGENTS.md` tags `@phone` for: the title's 20 px type and its 362 px words
-// with no clamp, and the whole header scrolling off the screen with the page, where the band
-// stays from 761 px up.
+// the phone it reads what the 390 px viewport decides, a layout claim
+// `packages/dispatch/README.md`'s "Projects" tags `@phone` for: the title's 20 px type and its
+// 362 px words with no clamp, and the whole header scrolling off the screen with the page, where
+// the band stays from 761 px up.
 // SLOW(>=2s): 3,328 ms on chromium and 1,642 ms on iphone (one worker, Job e2e-rows-rdf2g at
 // 43949bc0): a load into a short window at each of four widths on chromium, each page scrolled
 // 320 px and polled until the band reads its stuck state.

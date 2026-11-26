@@ -4,9 +4,9 @@ package textcheck
 // any more and has no row: upgrade_way_back_extract.txt and
 // upgrade_architect_entry_way_back_extract.txt stand in its own directory, and this row is what
 // holds those copies to the guide, in the text-check job (dispatch://INFRA-1413).
-//ci:reads docs/kubernetes.md internal/textcheck/waiting_line_texts_test.go:498 reads it under ../../../.. for wayBackBlockOfTheGuide (shippedText)
-//ci:reads packages/daemon/internal/daemon/upgrade_way_back_extract.txt internal/textcheck/waiting_line_texts_test.go:488 reads it as ../daemon/upgrade_way_back_extract.txt for assertTheExtractIsTheGuidesBlock, the committed copy it holds the guide's block to (quotedBody)
-//ci:reads packages/daemon/internal/daemon/upgrade_architect_entry_way_back_extract.txt internal/textcheck/waiting_line_texts_test.go:488 reads it as ../daemon/upgrade_architect_entry_way_back_extract.txt for assertTheExtractIsTheGuidesBlock, the committed copy it holds the guide's contract 146 block to (quotedBody)
+//ci:reads docs/kubernetes.md internal/textcheck/waiting_line_texts_test.go:494 reads it under ../../../.. for wayBackBlockOfTheGuide (shippedText)
+//ci:reads packages/daemon/internal/daemon/upgrade_way_back_extract.txt internal/textcheck/waiting_line_texts_test.go:484 reads it as ../daemon/upgrade_way_back_extract.txt for assertTheExtractIsTheGuidesBlock, the committed copy it holds the guide's block to (quotedBody)
+//ci:reads packages/daemon/internal/daemon/upgrade_architect_entry_way_back_extract.txt internal/textcheck/waiting_line_texts_test.go:484 reads it as ../daemon/upgrade_architect_entry_way_back_extract.txt for assertTheExtractIsTheGuidesBlock, the committed copy it holds the guide's contract 146 block to (quotedBody)
 
 import (
 	"errors"
