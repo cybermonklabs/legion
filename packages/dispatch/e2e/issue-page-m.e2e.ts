@@ -5083,12 +5083,18 @@ const MANY_COMPONENTS = Array.from(
   (_, index) => `part-${String(index + 1).padStart(2, "0")}`
 );
 
-/** The lines of the comment `number` of another issue that cites the issue `key`: seven, so the
- *  comment runs past five lines wherever it is drawn whole. */
+/** The lines of the comment `number` of another issue that cites the issue `key`: seven, which
+ *  the seed writes as one paragraph with a hard line break, a backslash at the line's end, after
+ *  each line but the last, so the renderer draws the comment in seven lines wherever it draws it
+ *  whole. A paragraph of a comment is one block, and Referenced by lists the block that cites the
+ *  issue by the server's excerpt of that block, which holds the whole paragraph: seven
+ *  paragraphs would be seven blocks, and the excerpt the first line alone. The address stands
+ *  before the end of its line, as a backslash written straight after it would be read as more of
+ *  the address, which then names nothing. */
 function citingNoteLines(key: string, number: number): string[] {
   const note = String(number).padStart(2, "0");
   return [
-    `Note ${note} of the other issue cites dispatch://${key}.`,
+    `Note ${note} of the other issue cites dispatch://${key} in its first line.`,
     ...Array.from({ length: 6 }, (_, line) => `Line ${line + 2} of note ${note}.`),
   ];
 }
@@ -5162,7 +5168,7 @@ async function seedLongLists() {
     Array.from({ length: LONG_LIST }, (_, index) =>
       createComment(
         other.key,
-        { body: citingNoteLines(issue.key, index + 1).join("\n") },
+        { body: citingNoteLines(issue.key, index + 1).join("\\\n") },
         { login: "bob" }
       )
     )
@@ -5269,7 +5275,9 @@ test("each list of Details shows 20 entries and a control for the next 20", asyn
     ).toBeGreaterThanOrEqual(LONG_LIST * 2);
     await showEveryEntry(
       referenceRows,
-      panel.getByRole("button", { name: CONTROL_LABELS.show_more }),
+      // The list's own Show more, by its name, which says how many rows are left: an excerpt
+      // clamped with a Show more of its own is no control of the list's.
+      panel.getByRole("button", { name: new RegExp(`^${CONTROL_LABELS.show_more} \\(`, "u") }),
       listed,
       "Referenced by",
       // The first row a press drew takes the focus, or, where it is the first row of its card,
@@ -5282,18 +5290,28 @@ test("each list of Details shows 20 entries and a control for the next 20", asyn
         })
     );
     // The list is drawn and settled: every row was counted and pressed down above, so one read of
-    // its paragraphs is the state the row checks.
-    const paragraphs = await measureWords(panel.locator("p"));
+    // its excerpts is the state the row checks. An excerpt is the element the renderer draws a
+    // citing comment's words in, under its row's line of the time, in the comment's card.
+    const cards = panel.locator("[data-reference-card]");
+    const excerpts = await measureWords(
+      cards.locator("[data-reference-rows] > div > .dispatch-markdown")
+    );
     for (let number = 1; number <= LONG_LIST; number += 1) {
       const lines = citingNoteLines(seeded.key, number);
-      const excerpts = paragraphs.filter((paragraph) => paragraph.text.includes(lines[1] ?? ""));
-      expect(excerpts, `Referenced by draws no citing comment ${number}`).toHaveLength(1);
-      for (const excerpt of excerpts) {
+      const drawn = excerpts.filter((excerpt) => excerpt.text.includes(lines[1] ?? ""));
+      expect(drawn, `Referenced by draws no citing comment ${number}`).toHaveLength(1);
+      for (const excerpt of drawn) {
         for (const line of [(lines[0] ?? "").replace(/ dispatch:.*$/u, ""), ...lines.slice(1)]) {
           expect(excerpt.text, `Referenced by cut citing comment ${number}`).toContain(line);
         }
         expectWordsWhole(excerpt, `citing comment ${number}`);
       }
+      await expect(
+        cards
+          .filter({ hasText: lines[1] ?? "" })
+          .getByRole("button", { name: /^Show (?:more|less)$/u }),
+        `Referenced by draws a control that cuts citing comment ${number}`
+      ).toHaveCount(0);
     }
 
     // What references the statement, from its facts.
@@ -6092,4 +6110,45 @@ test("Steps in Details names the experiment and the variant of the newest run on
       await expect(section.locator("[data-step-variant]")).toHaveCount(0);
     }
   });
+});
+
+// A person's comment cites a block of a document the issue never held, by an address as long as a
+// real block's: the issue's key, the document's slug and the block's UUID. The read of what the
+// words cite names no target for it, so the outline draws its chip in place in the comment's
+// words by the whole address, which is wider than the row at 390 px. The chip breaks the address
+// where it must, so the page is no wider than the window; and the chip is drawn, holding the
+// address, so a page that draws no chip fails the row.
+// SLOW(>=2s): an issue and a comment written, a sign-in, and one load of the issue waited out
+// until its reads settle.
+test("a row's chip whose target is gone wraps inside the page at 390 px", async ({ browser }) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      const issue = await createIssue({ project: "CORE", title: "A chip whose target is gone" });
+      const block = "4f4f7706-5e2f-4f98-ba08-ba9afa843985";
+      const address = `dispatch://${issue.key}/artifact/release-notes-md#b-${block}`;
+      const comment = await createComment(
+        issue.key,
+        { body: `Bob reads ${address} before the release.` },
+        { login: "bob" }
+      );
+      return { address, comment: comment.id, key: issue.key };
+    },
+    async (page, seeded) => {
+      await page.setViewportSize(PHONE);
+      // The names of what the words cite arrive by a read of their own after the tree, so the
+      // load is waited out until its reads settle: the chip is then drawn as that read left it.
+      const settling = watchApiRequests(page);
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectLoadSettled(settling);
+      await expectIssuePageDrawn(page);
+      const chip = nodeRow(page, seeded.comment).locator("[data-node-words] [data-row-chip]");
+      await expect(chip, "the comment's row draws no chip in its words").toHaveCount(1);
+      await expect(chip, "the chip does not draw its target's whole address").toHaveText(
+        seeded.address
+      );
+      await assertPageFits(page);
+    }
+  );
 });
