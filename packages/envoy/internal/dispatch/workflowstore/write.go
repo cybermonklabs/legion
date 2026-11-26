@@ -430,30 +430,25 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 }
 
 // answersAttribute checks the models that answered a run's agent against the rules of a step
-// record's answers. It answers the attribute that holds them, in the order the write gives them.
-// A record names at most contracts.StepAnswersMax models, each in the form of an agent's text,
-// each once and with 1 call or more. Its value tuple holds the list as JSON text, an empty list as
-// [], which is a run whose agent made no call.
+// record's answers (contracts.CheckStepAnswers), and answers the attribute that holds them, in the
+// order the write gives them. A record names at most contracts.StepAnswersMax models, each in the
+// form of an agent's text, each once and with 1 call or more. Its value tuple holds the list as
+// JSON text, an empty list as [], which is a run whose agent made no call.
 func answersAttribute(answers []StepAnswer) (attribute, error) {
-	if len(answers) > contracts.StepAnswersMax {
+	fault, at := contracts.CheckStepAnswers(answers, func(answer StepAnswer) (string, int64) { return answer.Model, answer.Calls })
+	switch fault {
+	case contracts.StepAnswersTooMany:
 		return attribute{}, refusal(ErrStepInput, "%s holds %d entries, more than the %d a step record holds",
 			AttributeAnswers, len(answers), contracts.StepAnswersMax)
-	}
-	named := make(map[string]bool, len(answers))
-	for index, answer := range answers {
-		entry := index + 1
-		switch {
-		case !agentTextForm.MatchString(answer.Model):
-			return attribute{}, refusal(ErrStepInput, "%s entry %d names %q, which is not an agent's text: %s",
-				AttributeAnswers, entry, answer.Model, contracts.StepAgentTextRule)
-		case answer.Calls < 1:
-			return attribute{}, refusal(ErrStepInput, "%s entry %d (%s) has %d calls: a model that answered has 1 or more",
-				AttributeAnswers, entry, answer.Model, answer.Calls)
-		case named[answer.Model]:
-			return attribute{}, refusal(ErrStepInput, "%s names %s twice: each model is listed once with all its calls",
-				AttributeAnswers, answer.Model)
-		}
-		named[answer.Model] = true
+	case contracts.StepAnswerModelForm:
+		return attribute{}, refusal(ErrStepInput, "%s entry %d names %q, which is not an agent's text: %s",
+			AttributeAnswers, at+1, answers[at].Model, contracts.StepAgentTextRule)
+	case contracts.StepAnswerNoCall:
+		return attribute{}, refusal(ErrStepInput, "%s entry %d (%s) has %d calls: a model that answered has 1 or more",
+			AttributeAnswers, at+1, answers[at].Model, answers[at].Calls)
+	case contracts.StepAnswerModelTwice:
+		return attribute{}, refusal(ErrStepInput, "%s names %s twice: each model is listed once with all its calls",
+			AttributeAnswers, answers[at].Model)
 	}
 	// A pointer to a nil list states the empty list, as a pointer to an empty one does, and JSON
 	// writes a nil list as null.

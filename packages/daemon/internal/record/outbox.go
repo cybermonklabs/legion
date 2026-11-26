@@ -2763,8 +2763,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // answersHold is nil where answers keep the rules Dispatch holds a step record's answers to, and
 // else the first rule they break. Nil answers state nothing and keep every rule. A pointer to a nil
 // list is refused: it is stored as null, which reads back as not known, so a step with no call
-// states an empty list. There are at most steprecord.AnswersMax entries. Each names a model in the
-// form of a step's agent text, with 1 call or more, and no model is named twice.
+// states an empty list. That rule is the daemon's own. The rest are Dispatch's, through
+// steprecord.CheckAnswers.
 func answersHold(answers *[]ModelCalls) error {
 	if answers == nil {
 		return nil
@@ -2772,23 +2772,23 @@ func answersHold(answers *[]ModelCalls) error {
 	if *answers == nil {
 		return fmt.Errorf("a step record's answers point to no list: a step with no call states an empty list")
 	}
-	if len(*answers) > steprecord.AnswersMax {
+	// Dispatch reads calls as int64. A count past its range wraps below 1, so it is refused, as
+	// Dispatch refuses it.
+	fault, at := steprecord.CheckAnswers(*answers, func(answer ModelCalls) (string, int64) { return answer.Model, int64(answer.Calls) })
+	switch fault {
+	case steprecord.AnswersHold:
+		return nil
+	case steprecord.AnswersTooMany:
 		return fmt.Errorf("a step record's answers hold %d entries, more than the %d a step record holds", len(*answers), steprecord.AnswersMax)
 	}
-	named := make(map[string]bool, len(*answers))
-	for i, answer := range *answers {
-		if !steprecord.AgentTextHolds(answer.Model) {
-			return fmt.Errorf("a step record's answers entry %d names %q, which is not an agent's text Dispatch takes", i+1, answer.Model)
-		}
-		if answer.Calls == 0 {
-			return fmt.Errorf("a step record's answers entry %d (%s) has 0 calls: a model that answered has 1 or more", i+1, answer.Model)
-		}
-		if named[answer.Model] {
-			return fmt.Errorf("a step record's answers name %s twice: each model is listed once with all its calls", answer.Model)
-		}
-		named[answer.Model] = true
+	answer := (*answers)[at]
+	switch fault {
+	case steprecord.AnswerModelForm:
+		return fmt.Errorf("a step record's answers entry %d names %q, which is not an agent's text Dispatch takes", at+1, answer.Model)
+	case steprecord.AnswerNoCall:
+		return fmt.Errorf("a step record's answers entry %d (%s) has %d calls: a model that answered has 1 or more", at+1, answer.Model, answer.Calls)
 	}
-	return nil
+	return fmt.Errorf("a step record's answers name %s twice: each model is listed once with all its calls", answer.Model)
 }
 
 // validNoticeKinds is every notice kind the daemon publishes, which is also every kind a row may
