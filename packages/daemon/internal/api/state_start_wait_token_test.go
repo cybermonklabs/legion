@@ -11,8 +11,7 @@ const startWaitTokenDropped = "the claim tokens of the issues' startWaitsForPod,
 
 // A caller one contract below the start-wait token's entry is told of that entry's band in one
 // line, among the lines of the bands above the contract it is served at. It reads the band's
-// number from the registry (entryNumber), so it holds no entry to be the newest (R4 of
-// dispatch://INFRA-1569).
+// number from the registry (entryNumber), so it holds no entry to be the newest.
 func TestACallerBelowTheStartWaitTokenEntryIsToldOfItsBand(t *testing.T) {
 	state := populatedState(t)
 	if entryNumber(startWaitTokenContract) <= entryNumber(strandedTokenContract) {
