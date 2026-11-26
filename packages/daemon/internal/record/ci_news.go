@@ -363,6 +363,11 @@ type BesideBranchesDelete struct {
 	Generation uint64 `json:"generation"`
 	Task       string `json:"task"`
 	Fix        int    `json:"fix,omitempty"`
+	// Through is, for a row of Fix 0, the newest fix the task held when the row was queued, and
+	// 0 for a row of one fix. A fix the task opens later in the generation, once a later version
+	// adds the task again or a move back takes it out of its retro, numbers above Through
+	// (PutFix numbers each fix after the task's latest), so a row queued before it never names it.
+	Through int `json:"through,omitempty"`
 }
 
 func (BesideBranchesDelete) OutboxKind() OutboxKind { return OutboxKindBesideBranchesDelete }
