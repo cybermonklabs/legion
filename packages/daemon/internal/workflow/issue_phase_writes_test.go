@@ -53,7 +53,7 @@ func forgeTaskPlace(t *testing.T, pool *pgxpool.Pool, key string, generation uin
 // place and the phase that place stands in. Each fixture puts the task elsewhere through the store
 // alone, since no write of the workflow can leave the two apart. The writers that move the task
 // before they write (transition and its hold before the retro, closeMerged, leave and
-// beginLinger) or that refuse a task elsewhere themselves (startHeldRetro) write the phase the
+// beginLinger) or that refuse a task elsewhere themselves (StartHeldRetro) write the phase the
 // place gives, so no fixture makes them disagree.
 func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 	t.Parallel()

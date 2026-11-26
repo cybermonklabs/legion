@@ -37,6 +37,10 @@ const (
 	// (Issue.AwaitingPerson, answered or not): the daemon starts no issue of that tree before
 	// that root resumes.
 	HeldRootAwaitingPerson HeldReason = "root_awaiting_person"
+	// HeldAwaitingChildren is a parent that holds a phase start because a Dispatch child of it is
+	// still open (Issue.Phase awaiting_children): the daemon runs no phase of the parent's own
+	// work and holds the start it had while a child of it is open.
+	HeldAwaitingChildren HeldReason = "awaiting_children"
 	// HeldDesignGate is an issue of a tree whose design gate stands shut at a step that holds the
 	// tree (TreeGate.Open over TreeSteps): a step the deployment gates, or a criteria step the root
 	// registered beside a deployment that gates spec and not criteria.
@@ -50,10 +54,13 @@ const (
 	// HeldAcceptedAncestor is an issue beneath an ancestor the daemon has already accepted:
 	// nothing of it starts while that ancestor stands in retro or merging (HeldUnderAccepted).
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
-	// HeldChildrenBeforeRetro is a parent whose task's last step is not the owner's acceptance, held before its retro
-	// while issues beneath it are still in the workflow (HoldForChildren, HeldForChildren). heldBy
-	// names each of them (OpenBeneath). Once none of them is open beneath it in a tree that runs,
-	// the hold ends and the daemon starts the retro itself (workflow's releaseHeldParents). It stands below every
+	// HeldChildrenBeforeRetro is a parent whose task's last step is not the owner's acceptance,
+	// held before its retro while a hold on its acceptance holds it (HoldForChildren,
+	// HeldForChildren): issues beneath it still in the workflow, roots that rest on its approval
+	// still in the workflow, or open Dispatch children of it. heldBy names each issue of the first
+	// of them that holds it, in R8's order (retroHeldBy), as the retro-held notice and the refusal
+	// of a retry name them. Once none of them holds it in a tree that runs, the hold ends and the
+	// daemon starts the retro itself (workflow's StartHeldRetro). It stands below every
 	// word that speaks of the issue's tree, a Dispatch link or an ancestor, because each of those
 	// holds the issue whatever its own hold is, and above at_work and unclassified, which it read
 	// before it had a word of its own: at_work's sentence, that the issue's workers run, is false
@@ -104,6 +111,7 @@ var HeldReasons = []HeldReason{
 	HeldLabelOff,
 	HeldAncestry,
 	HeldRootAwaitingPerson,
+	HeldAwaitingChildren,
 	HeldDesignGate,
 	HeldDispatchBlocker,
 	HeldChildrenFirst,
@@ -156,8 +164,8 @@ type HeldFacts struct {
 	// is read against.
 	Live map[string]struct{}
 	// Chain is the records the accepted-ancestor walk reads, chainOf(ByKey, LineFacts.Parents):
-	// the same map Waiting walks, so the word and the hold that caused it answer alike about
-	// one chain.
+	// the pass's one chain (passChain), the same map Waiting walks, so the word and the hold that
+	// caused it answer alike about one chain.
 	Chain map[string]Issue
 	// Facts is the pass's own facts, for the gates, the Dispatch blockers, the children-first
 	// rows and the moment the pass read the record (LineFacts.Now), which the tree_closed word
@@ -211,8 +219,9 @@ func reopensAtPromotion(root Issue, facts LineFacts) bool {
 	return gate.Open() && QueuedRoot(root, facts.Lifecycles[root.Key], gate)
 }
 
-// openChildren is the keys of the open Dispatch children of one children-first wait, in the order
-// that judgement lists them (ChildWait.Open, Dispatch key order).
+// openChildren is the keys of the open Dispatch children of one wait on them — a children-first
+// wait (childWaits) or a started parent's (LineFacts.StartedParentWaits) — in the order that
+// judgement lists them (ChildWait.Open, Dispatch key order).
 func openChildren(wait ChildWait) []string {
 	children := make([]string, len(wait.Open))
 	for i, child := range wait.Open {
@@ -224,9 +233,9 @@ func openChildren(wait ChildWait) []string {
 // openBeneathIn is the issues beneath a parent held before its retro that are still in the
 // workflow (OpenBeneath), the issues the release of its hold waits for, and nothing where none
 // is. They are read over the members of its tree among the records the pass walks its chains
-// over (HeldFacts.Chain): the pass's own records and the done ones above them, so a grandchild
-// under a child already done is beneath the parent here as it is in the workflow's read of the
-// whole tree, and the word names what the hold waits for.
+// over (chainOf): the pass's own records and the done ones above them, so a grandchild under a
+// child already done is beneath the parent here as it is in the workflow's read of the whole
+// tree, and the word names what the hold waits for.
 func openBeneathIn(issue Issue, chain map[string]Issue) []string {
 	members := make([]Issue, 0, len(chain))
 	for _, member := range chain {
@@ -236,6 +245,60 @@ func openBeneathIn(issue Issue, chain map[string]Issue) []string {
 	}
 	if open := OpenBeneath(issue, members); len(open) > 0 {
 		return open
+	}
+	return nil
+}
+
+// RetroHolds is what a pass's facts show of the three holds on the acceptance of a parent held
+// before its retro (HoldForChildren), each by key: the issues beneath it still in the workflow
+// (Beneath, openBeneathIn), the roots still in the workflow that rest on its approval (Resting,
+// RestingRootsOn), and its open Dispatch children (Open, readChildWaits), the same three the
+// workflow reads to hold the parent and to release it (workflow's acceptanceHeld). ReadLineFacts
+// puts them together once for each such parent (LineFacts.RetroHolds, retroHoldsOf).
+type RetroHolds struct {
+	Beneath, Resting, Open []string
+}
+
+// None says none of the three holds the parent.
+func (h RetroHolds) None() bool {
+	return len(h.Beneath) == 0 && len(h.Resting) == 0 && len(h.Open) == 0
+}
+
+// retroHoldsOf is the RetroHolds of each parent of held, the parents among the pass's own records
+// held before their retro (RetroHeldParents), by key: the issues beneath each, read over the
+// records the pass walks its chains over (pass, passChain: the pass's own records and the records
+// above them its read leaves out, LineFacts.Parents), the roots that rest on each (resting,
+// RestingRootsOn) and its open Dispatch children (children, readChildWaits). It builds nothing
+// where no parent is held so.
+func retroHoldsOf(pass *passChain, held []string, children map[string]ChildWait, resting map[string][]RestingRoot) map[string]RetroHolds {
+	if len(held) == 0 {
+		return nil
+	}
+	own, chain := pass.own(), pass.chain()
+	holds := make(map[string]RetroHolds, len(held))
+	for _, key := range held {
+		roots := make([]string, len(resting[key]))
+		for i, root := range resting[key] {
+			roots[i] = root.Key
+		}
+		holds[key] = RetroHolds{Beneath: openBeneathIn(own[key], chain), Resting: roots, Open: openChildren(children[key])}
+	}
+	return holds
+}
+
+// retroHeldBy is what holds issue, a parent held before its retro (HoldForChildren), as heldBy
+// names it: the first of the three holds on its acceptance that holds it (LineFacts.RetroHolds),
+// in R8's order, as the workflow reads them (acceptanceHeld) — the issues beneath it, then the
+// roots that rest on its approval, then its open Dispatch children — each by key, and nothing
+// where none holds it, as in a tree that runs nothing yet.
+func retroHeldBy(issue Issue, facts LineFacts) []string {
+	switch holds := facts.RetroHolds[issue.Key]; {
+	case len(holds.Beneath) > 0:
+		return holds.Beneath
+	case len(holds.Resting) > 0:
+		return holds.Resting
+	case len(holds.Open) > 0:
+		return holds.Open
 	}
 	return nil
 }
@@ -292,6 +355,14 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	switch {
 	case recorded && root.AwaitingPerson():
 		return HeldRootAwaitingPerson, []string{issue.Tree}
+	// A parent that held a phase start because a child of it is still open stands here on its own
+	// phase (awaiting_children), not on its tree's: it reads before design_gate, since its wait is
+	// its open children and not its gate. The children that hold it are the started parents'
+	// judgement (LineFacts.StartedParentWaits), the one the admission pass moves it and brings it
+	// back by; a parent whose last open child has gone since stands with no issue beside it until
+	// the pass takes it back to the step its return takes (ReturnStep).
+	case issue.Phase == phase.AwaitingChildren:
+		return HeldAwaitingChildren, openChildren(facts.Facts.StartedParentWaits[issue.Key])
 	case recorded && !facts.Facts.Gates[issue.Tree].Open():
 		return HeldDesignGate, []string{issue.Tree}
 	}
@@ -313,7 +384,7 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	// one that holds no slot row there is the gap unclassified reports.
 	switch {
 	case HeldForChildren(issue):
-		return HeldChildrenBeforeRetro, openBeneathIn(issue, facts.Chain)
+		return HeldChildrenBeforeRetro, retroHeldBy(issue, facts.Facts)
 	case HeldFor(issue, HoldTaskStopped) && !KeepsSlot(issue):
 		return HeldTaskStopped, nil
 	}
@@ -344,22 +415,19 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 // line already hold them, and a deferral the other loop went on to place is dropped here. The
 // first row dropped holds for a key is the one kept, so an issue two loops passed over keeps the
 // word of the first site that left it behind. A candidate dropped names nowhere reads the ladder
-// here (HeldReasonOf) over the same facts the drop sites read — one chainOf, one queuedRoots and
-// one liveRoots, as Waiting makes them — which is what gives an issue the pass never saw as a
-// candidate its place, the unclassified row of C2 among them.
+// here (HeldReasonOf) over the same facts the drop sites read — the pass's one chain (passChain),
+// one queuedRoots and one liveRoots, as Waiting makes them — which is what gives an issue the pass
+// never saw as a candidate its place, the unclassified row of C2 among them.
 //
 // The rows are sorted by issue key, which gives the state's body and the tick's notice a stable
 // order.
 func HeldList(issues []Issue, slots []Slot, line []LineEntry, dropped []HeldIssue, facts LineFacts) []HeldIssue {
-	byKey := make(map[string]Issue, len(issues))
-	for _, issue := range issues {
-		byKey[issue.Key] = issue
-	}
+	pass := passOver(issues, facts)
 	queued := queuedRoots(issues, facts)
 	held := HeldFacts{
-		ByKey: byKey,
+		ByKey: pass.own(),
 		Live:  liveRoots(issues, facts, queued),
-		Chain: chainOf(byKey, facts.Parents),
+		Chain: pass.chain(),
 		Facts: facts,
 	}
 	placed := make(map[string]struct{}, len(slots)+len(line))

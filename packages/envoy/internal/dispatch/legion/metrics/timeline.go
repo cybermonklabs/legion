@@ -37,12 +37,16 @@ const (
 )
 
 // childWorkingPhases are the phases "from planning to awaiting merge": a root with a child in one
-// of them is waiting on its children (segment 4). `done` is none of them: a child in `done` before
-// its close is out of the workflow, whose hours are outside its own work time too (the spec's "Out
-// of the workflow before the close", outOfWorkflowSpans), so its root waits on it through none.
+// of them is waiting on its children (segment 4). `awaiting_children`, which
+// dispatch://INFRA-3320 added, is one of them too: a child enters it from one of planning through
+// accepting, and waits there on children of its own, which are still at work, so its root waits
+// on it. `done` is none of them: a child in `done` before its close is out of the workflow, whose
+// hours are outside its own work time too (the spec's "Out of the workflow before the close",
+// outOfWorkflowSpans), so its root waits on it through none.
 var childWorkingPhases = []string{
 	legion.PhasePlanning, legion.PhaseImplementing, legion.PhaseTesting, legion.PhaseReviewing,
 	legion.PhaseAccepting, legion.PhaseRetro, legion.PhaseMerging, legion.PhaseAwaitingMerge,
+	legion.PhaseAwaitingChildren,
 }
 
 // backlogStatuses are the statuses whose time the work time subtracts: the daemon writes
@@ -435,8 +439,8 @@ const (
 // starts the next phase, and no hour between phases is left over ... After a send-back, the
 // Dispatch status sets the phase". The three sources are therefore one list of marks and the
 // timeline is the step function they draw, with no gap between one phase and the next — which is
-// what lets the seven bars of metric 2 add up to the work time while the no-role bar holds
-// `awaiting_person` and `held` alone.
+// what lets the seven bars of metric 2 add up to the work time while the no-role bar holds the
+// phases no role works alone: `awaiting_person`, `awaiting_children` and `held`.
 func appendStepSpans(timeline []PhaseSpan, steps []phaseMark, until time.Time) []PhaseSpan {
 	for index, step := range steps {
 		span := Span{From: step.at, To: until}

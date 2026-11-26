@@ -122,6 +122,9 @@ type workflowRuntime struct {
 	// to the workflow engine (applyTerminal), which holds neither the claim nor the configuration
 	// and so has no other way to read them.
 	limits supervise.Limits
+	// dropConsumedEvent is overrides.dropConsumedEvent, taken at attach: the facts of the intake
+	// consumers the workflow's handlers skip (consumerHandlers). nil, in production, skips none.
+	dropConsumedEvent func(intake.Fact) bool
 	// bootID disambiguates this boot's synthetic Dispatch consumer position facts from another
 	// boot's, or another project's daemon: processed_events is keyed only on (source, event_id),
 	// shared by every project's daemon in the database, and a stream recreated by a later boot
@@ -678,11 +681,12 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // the record carried its repository (backfillRepositories, which leaves a record it cannot fill
 // for the refresher), then the deployment's design-gate steps queued for the project's Dispatch
 // row (queueGatedStepsPublish) and the recorded gate of every issue Dispatch has not closed queued
-// for its own (queueRecordedGatesPublish). The key proof under the App's JWT mints no token for an
-// owner. It reads GitHub for a repository only to fill a record that lacks its repository columns,
-// one read per such record bounded by the read attempt bound (repositoryReadBounds.attempt,
-// backfillRead), which mints the token that
-// read needs, a read that fails leaving the record for the refresher; the preparation of the
+// for its own, with a seed for each step that waits on an ancestor's request
+// (queueRecordedGatesPublish). The key proof under the App's JWT mints no token for an owner. It
+// reads GitHub for a repository only to fill a record that lacks its repository columns, one read
+// per such record bounded by the read attempt bound (repositoryReadBounds.attempt, backfillRead),
+// which mints the token that read needs, a read that fails leaving the record for the refresher;
+// the preparation of the
 // repositories the records name is the refresher's first job, once the API serves
 // (prepareAtStart), beside the boot, so no other read of GitHub for a repository here can stop or
 // slow the boot. The boot's one-time rename pass, which runs after this (renameAtBoot), reads
@@ -890,8 +894,24 @@ func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context) error {
 // so a boot on a `gates.design` the operator has changed since corrects what Dispatch holds, and
 // a row still pending from an older daemon, whose set says nothing of it, takes this boot's set
 // in its place (the enqueue writes a payload that differs).
+//
+// The same pass over the gates it holds queues one pending-basis seed (record.PendingBasisSeed)
+// for each step of the project that waits, closed, on an ancestor's approval request
+// (record.DesignGate.PendingOnBasis), whatever phase its root stands in, since the boot's catch-up
+// reads no root in a phase of its tree (catchesUp) and the ancestor's events may have come while
+// the daemon was down or been dropped: each seed reads Dispatch's state of the ancestor's document
+// and issue (readBasis), which the workflow judges by its one verdict (workflow's judgeBasisRead),
+// so the person's approval of the version opens the step and a changes request, a newer version,
+// the request's close or the ancestor's leave ends its wait (dispatch://INFRA-3320, R1). The seeds
+// carry their roots' generations, read in one query (IssuesOf) where any step waits so and in none
+// otherwise, and run on each root's lifecycle lane once the outbox attaches. An issue Dispatch
+// shows done is left out by the read (record.GatedIssues), as its gates are left out of the
+// publication. A restart loop that queues a second seed beside one still waiting costs one more
+// read of Dispatch: the seed's fact is the step, the request, the registration it reads for and
+// what the read found, so it applies once.
 func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 	now := time.Now().UTC()
+	queued := 0
 	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		live, err := w.records.GatedIssues(ctx, tx, w.dispatchProject)
 		if err != nil {
@@ -901,15 +921,53 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		var pending []record.DesignGate
 		for _, issue := range live {
 			publish := record.DesignGatesPublish{Issue: issue, Gates: record.GateDocuments(w.gatedSteps, gates[issue])}
 			if err := w.records.EnqueueDesignGates(ctx, tx, publish, now); err != nil {
 				return err
 			}
+			for _, gate := range gates[issue] {
+				if gate.PendingOnBasis() {
+					pending = append(pending, gate)
+				}
+			}
+		}
+		if len(pending) == 0 {
+			return nil
+		}
+		keys := make([]string, 0, len(pending))
+		for _, gate := range pending {
+			keys = append(keys, gate.Issue)
+		}
+		roots, err := w.records.IssuesOf(ctx, tx, w.dispatchProject, slices.Compact(keys))
+		if err != nil {
+			return err
+		}
+		generations := make(map[string]uint64, len(roots))
+		for _, root := range roots {
+			generations[root.Key] = root.Generation
+		}
+		for _, gate := range pending {
+			generation, recorded := generations[gate.Issue]
+			if !recorded {
+				continue
+			}
+			row, err := record.NewOutboxRow(gate.Issue, record.PendingBasisSeedOf(gate, generation), now)
+			if err != nil {
+				return err
+			}
+			if err := w.records.Enqueue(ctx, tx, row); err != nil {
+				return err
+			}
+			queued++
 		}
 		return nil
 	}); err != nil {
-		return fmt.Errorf("queue the recorded design-gates publications of %s: %w", w.dispatchProject, err)
+		return fmt.Errorf("queue the recorded design-gates publications and pending-basis seeds of %s: %w", w.dispatchProject, err)
+	}
+	if queued > 0 {
+		w.log.Info("legion workflow boot queued a pending-basis seed for each step waiting on an ancestor's request", "steps", queued)
 	}
 	return nil
 }
@@ -1300,8 +1358,12 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // stay, in the order the task named them, and the text is written again from them
 // (workflow.KeptDecisionsTask), which is the wording the start that queued the task used. An issue
 // the record does not hold is kept rather than dropped: a person's decision is never lost, and
-// this answer drops one only where the record says another tree is owed it. A task left naming
-// nothing is retired rather than sent, and its delivery's write releases whatever it still held.
+// this answer drops one only where the record says another tree is owed it. The start task names
+// the roots that rest on the root's approval apart from its decisions
+// (workflow.ArchitectStart.Resting, dispatch://INFRA-3320 R8), so a task written again names them
+// again, as the record shows them now (workflow.ArchitectStartOf, workflow.NarrowRootTask), and a
+// task left naming no decision still names them. A task left naming nothing at all is retired
+// rather than sent, and its delivery's write releases whatever it still held.
 //
 // A task that also carries news of the approved design (supervise.Delivery.News: since #3711 a
 // root architect's entry start carries the kept decisions and the news it is owed) is narrowed in
@@ -1324,11 +1386,13 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
-	// The record the rewrite reads where the task is of an entry and so carries the first-task
-	// instruction (workflow.NarrowRootTask): the tree's root as the record holds it at the
-	// narrowing, and what its first task is derived from, read by the reader every start of a
-	// root architect reads it through (workflow.ArchitectStartOf). The reads are made only where
-	// a decision was dropped, since nothing else rewrites the task.
+	// The record every rewrite of a recorded root reads (workflow.NarrowRootTask): the tree's root
+	// as the record holds it at the narrowing, and what its first task is derived from, read by the
+	// reader every start of a root architect reads it through (workflow.ArchitectStartOf). Every
+	// such rewrite names the roots that rest on the root's approval from it (its Resting), and one
+	// whose task is of an entry, and so carries the first-task instruction, takes the first task's
+	// shape from it too. The reads are made only where a decision was dropped, since nothing else
+	// rewrites the task.
 	var root *record.Issue
 	var start workflow.ArchitectStart
 	var left []record.DecisionMark
@@ -1394,8 +1458,9 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	// would hand a fresh architect the empty task that instruction exists to replace. Which task
 	// carries it is the entry the delivery is of, never the task's text (workflow.NarrowRootTask
 	// says why). A root the record now shows past admitted under its own power is served no first
-	// task, so its rewrite is the decisions' own; with no root recorded there is nothing to write
-	// one from either, so the rewrite is the decisions' own there too, as it always was.
+	// task, so its rewrite is the decisions' own and the resting roots; with no root recorded there
+	// is nothing to write one from either, so the rewrite is the decisions' own alone there, as it
+	// always was.
 	var task string
 	if root != nil {
 		task = workflow.NarrowRootTask(start, d.Entry, stays)
@@ -1845,6 +1910,8 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
+	w.outbox.hold = supervision.plan.holdOutbox
+	w.dropConsumedEvent = supervision.plan.dropConsumedEvent
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
 	w.outbox.privateNameRules = supervision.plan.privateNameRules
@@ -2175,14 +2242,8 @@ func (w *workflowRuntime) applyTerminal(ctx context.Context, c supervise.Claim, 
 		}
 		fact = ready
 	case supervise.StateFailed:
-		// Everything the claim persists about its end: the sentence the supervisor wrote when it
-		// gave up (Claim.Failure), what the runtime last said of the death and of the start that
-		// never produced an agent (Claim.LastDeathCause, Claim.LastStartFailure), and the pod end
-		// its process was last observed to have died of (Claim.PodEnd), so a notice written after
-		// a daemon restart still names the cause the role never chose — an eviction above all.
-		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure, PodEnd: c.PodEnd,
-			Death: c.LastDeathCause, StartFailure: c.LastStartFailure,
-			Cause: c.FailureCause, Budgets: c.Budgets, Limits: w.limits}
+		// Everything the claim persists about its end (intake.ClaimFailedOf).
+		fact = intake.ClaimFailedOf(c, w.limits)
 	default:
 		return fmt.Errorf("claim %s has non-terminal workflow state %s", c.Token, state)
 	}
@@ -2202,6 +2263,55 @@ func terminalEventID(c supervise.Claim, state supervise.ClaimState) string {
 	return fmt.Sprintf("supervise:%s:%d:%s", c.Token, c.Generation, state)
 }
 
+// consumerHandlers are the handlers the intake consumers apply each fact they deliver with: the
+// workflow's own, or, under a test's dropConsumedEvent, one handler that asks it once of each fact
+// and runs the workflow's own unless it drops the fact. A dropped fact is still applied as a fact —
+// acknowledged, and its processed_events row written in its transaction — with no handler acting
+// on it, which is how a test reads what the daemon does with an event it missed.
+func (w *workflowRuntime) consumerHandlers() []intake.Handler {
+	if w.dropConsumedEvent == nil {
+		return w.handlers
+	}
+	return []intake.Handler{droppingHandlers{handlers: w.handlers, drop: w.dropConsumedEvent}}
+}
+
+// droppingHandlers runs handlers on each fact drop does not drop, in order, and combines their
+// results as intake.ApplyFact combines those of the handlers it is given (intake.ApplyHandlers).
+type droppingHandlers struct {
+	handlers []intake.Handler
+	drop     func(intake.Fact) bool
+}
+
+func (h droppingHandlers) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
+	if h.drop(fact) {
+		return intake.Result{}, nil
+	}
+	return intake.ApplyHandlers(ctx, tx, fact, h.handlers)
+}
+
+// OpenFact and SettleFact are intake.Settler's: they open and settle each settler among handlers, as
+// intake.OpenSettlers does for the handlers ApplyFact is given, so the wrap hides none of them from a
+// fact, dropped or not.
+func (h droppingHandlers) OpenFact(ctx context.Context) context.Context {
+	for _, handler := range h.handlers {
+		if settler, ok := handler.(intake.Settler); ok {
+			ctx = settler.OpenFact(ctx)
+		}
+	}
+	return ctx
+}
+
+func (h droppingHandlers) SettleFact(ctx context.Context, tx pgx.Tx) error {
+	for _, handler := range h.handlers {
+		if settler, ok := handler.(intake.Settler); ok {
+			if err := settler.SettleFact(ctx, tx); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // run drains intake and the outbox until ctx ends. Intake ending, or a terminal fact that could not
 // be applied, returns its error so serve stops the daemon: a daemon that answers its API while it
 // reads no events or has lost a held or worker-died fact looks healthy and does nothing.
@@ -2214,7 +2324,7 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 	// one (store.ErrNestedAcquire). The intake marks each message it hands a loop of its own
 	// (intake's consumeMessage), and the outbox each of its lanes (outbox.runLane).
 	group.Go(func() error {
-		if err := w.consumers.Run(store.ForConcurrentWorker(running), w.handlers...); err != nil {
+		if err := w.consumers.Run(store.ForConcurrentWorker(running), w.consumerHandlers()...); err != nil {
 			// A terminal close's cause is the connection's alone (natsauth.WithLastError).
 			return fmt.Errorf("workflow intake stopped: %w", natsauth.WithLastError(err, w.conn.Load()))
 		}

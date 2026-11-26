@@ -251,6 +251,15 @@ declare module "@oh-my-pi/pi-ai" {
   ): Promise<AssistantMessage>;
 }
 
+/** The host's error classifiers (`packages/ai/src/error/` of cybermonklabs/oh-my-pi, the `./error`
+ * subpath of its package). */
+declare module "@oh-my-pi/pi-ai/error" {
+  /** Whether `error` (an error, its causes, an assistant message or a message string) is OpenAI's
+   * `cyber_policy` refusal, or a request the host held after one (`flags.ts:1044` at the pinned
+   * tag). The host sets a `prompt_result`'s `code: "cyber_policy"` from it. */
+  export function isCyberPolicyRefusal(error: unknown): boolean;
+}
+
 declare module "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader" {
   /** Where discovery found an extension: a project's own, the user's, an explicit or configured
    * path, or a host's inline factory. Oh My Pi declares it in `extensibility/extensions/types.ts`

@@ -181,7 +181,7 @@ func TestACopyStartedAsLegionRunsAsLegion(t *testing.T) {
 	cmd := exec.Command(legionCopy(t), "-h")
 	cmd.Env = append(os.Environ(), testMainEnv+"=1")
 	out, err := cmd.CombinedOutput()
-	if want := newRoot(io.Discard, io.Discard).Short + "\n"; err != nil || !strings.HasPrefix(string(out), want) {
+	if want := newRoot(io.Discard, io.Discard, processWorkspace()).Short + "\n"; err != nil || !strings.HasPrefix(string(out), want) {
 		t.Fatalf("a copy started as legion with -h: %v, want exit 0 and legion's help, which starts %q\n%s", err, want, out)
 	}
 }
@@ -621,7 +621,7 @@ func TestHelpListsEveryCommand(t *testing.T) {
 		if code != tc.code {
 			t.Fatalf("%v = %d, want %d; stderr %q", tc.argv, code, tc.code, errb.String())
 		}
-		for _, command := range newRoot(io.Discard, io.Discard).Commands() {
+		for _, command := range newRoot(io.Discard, io.Discard, processWorkspace()).Commands() {
 			if listedHere := strings.Contains(listed, "\n  "+command.Name()+" "); listedHere == command.Hidden {
 				t.Errorf("%v lists %s: %t, want %t: %q", tc.argv, command.Name(), listedHere, !command.Hidden, listed)
 			}

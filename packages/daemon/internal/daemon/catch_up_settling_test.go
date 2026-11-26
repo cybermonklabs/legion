@@ -127,10 +127,13 @@ func leaseCatchUp(t *testing.T, pool *store.Pool, records record.Store, root str
 	return leased, notice
 }
 
-// catchUpRows is every catch-up notice of root the outbox holds, oldest first.
-func catchUpRows(t *testing.T, pool *store.Pool, root string) []record.OutboxRow {
+// catchUpRows is every catch-up notice of root the outbox holds, oldest first, read through db: a
+// pool, or a transaction that reads its own writes.
+func catchUpRows(t *testing.T, db interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, root string) []record.OutboxRow {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox
+	rows, err := db.Query(context.Background(), `select id, kind, issue, payload from outbox
 		where kind = $1 and issue = $2 and payload->>'kind' = 'catch-up' order by id`, string(record.OutboxKindNotice), root)
 	if err != nil {
 		t.Fatalf("read the catch-ups of %s: %v", root, err)

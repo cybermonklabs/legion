@@ -247,6 +247,9 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 		if err := r.relaySpecDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
 			return err
 		}
+		if err := r.tellControllerOfKeptPod(ctx, row.Issue, row.ID, notice, key, architect, ended); err != nil {
+			return err
+		}
 		r.log.Info("outbox notice finished undelivered: its architect will not hold its role again",
 			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "because", ended)
 		return nil
@@ -308,7 +311,8 @@ func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, ar
 // supersededKept), the copy that would have carried its claims on never being written. Nor is
 // a notice whose architect stopped with its finished tree (stoppedWithTree): nothing of the close
 // is sent to it, and a person's spec decision such a notice reports goes to the controller instead
-// (relaySpecDecision). Those checks read the claim from memory, outside ApplyFact's lock, which the
+// (relaySpecDecision), as does a notice of the issue pod's disk (tellControllerOfKeptPod). Those checks
+// read the claim from memory, outside ApplyFact's lock, which the
 // ready handler holds, so a copy can still lose the race to a ready; the notice executor checks
 // again when it runs the row.
 func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reason, recipient string) error {
@@ -323,6 +327,9 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 		}
 		if stoppedWithTree(lingers, held) {
 			if err := r.relaySpecDecision(ctx, issue, root, notice, key, reported.row); err != nil {
+				return err
+			}
+			if err := r.tellControllerOfKeptPod(ctx, issue, reported.row, notice, key, reported.architect, "it stopped with its finished tree"); err != nil {
 				return err
 			}
 			r.log.Info("outbox notice not re-held: its architect stopped with its finished tree",

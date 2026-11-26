@@ -82,15 +82,18 @@ func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 		}
 		assertBearer(t, r)
 		writeJSON(t, w, map[string]any{
-			"key":                 "LEGION-8",
-			"project":             "LEGION",
-			"title":               "Ship Dispatch client",
-			"status":              "in_progress",
-			"rank":                "opaque-rank",
-			"labels":              []string{"repo:x", "LEGION"},
-			"parent":              "LEGION-1",
-			"primary_artifact_id": "artifact-8",
-			"last_seq":            47,
+			"key":                      "LEGION-8",
+			"project":                  "LEGION",
+			"title":                    "Ship Dispatch client",
+			"status":                   "in_progress",
+			"rank":                     "opaque-rank",
+			"labels":                   []string{"repo:x", "LEGION"},
+			"parent":                   "LEGION-1",
+			"primary_artifact_id":      "artifact-8",
+			"verification_artifact_id": "artifact-9",
+			"plan_artifact_id":         "artifact-10",
+			"decisions_artifact_id":    "artifact-11",
+			"last_seq":                 47,
 		})
 	}))
 	defer server.Close()
@@ -100,6 +103,7 @@ func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 		t.Fatalf("get issue: %v", err)
 	}
 	if issue.Key != "LEGION-8" || issue.Project != "LEGION" || issue.Title != "Ship Dispatch client" || issue.Status != "in_progress" || issue.PrimaryArtifactID != "artifact-8" || issue.LastSeq != 47 ||
+		issue.VerificationArtifactID != "artifact-9" || issue.DecisionsArtifactID != "artifact-11" ||
 		issue.Rank != "opaque-rank" || !issue.HandedOver || len(issue.Labels) != 2 || issue.Labels[0] != "repo:x" || issue.Labels[1] != "LEGION" {
 		t.Fatalf("issue = %#v, want workflow fields from Dispatch", issue)
 	}
@@ -401,7 +405,7 @@ func TestPostMessageSendsBodyWithoutAnUnsupportedIdempotencyKey(t *testing.T) {
 }
 
 // The issue's artifact list is read for each one's slug, which is what a message's link names.
-func TestArtifactSlugsReadsTheSlugOfEveryArtifactOfTheIssue(t *testing.T) {
+func TestArtifactsReadsTheSlugOfEveryArtifactOfTheIssue(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues/LEGION-5/artifacts" {
 			t.Fatalf("request = %s %s, want GET /api/v1/issues/LEGION-5/artifacts", r.Method, r.URL.Path)
@@ -414,12 +418,151 @@ func TestArtifactSlugsReadsTheSlugOfEveryArtifactOfTheIssue(t *testing.T) {
 	}))
 	defer server.Close()
 
-	slugs, err := New(server.URL, BearerTransport(dispatchToken, nil)).ArtifactSlugs(context.Background(), "LEGION-5")
+	artifacts, err := New(server.URL, BearerTransport(dispatchToken, nil)).Artifacts(context.Background(), "LEGION-5")
 	if err != nil {
 		t.Fatalf("artifact slugs: %v", err)
 	}
+	slugs := make([]string, len(artifacts))
+	for i, artifact := range artifacts {
+		slugs[i] = artifact.Slug
+	}
 	if want := []string{"plan-md", "rescue-pod-9d3f0c7a"}; !reflect.DeepEqual(slugs, want) {
 		t.Fatalf("artifact slugs = %v, want %v", slugs, want)
+	}
+}
+
+// The issue's artifact list is read for what each artifact is on the issue: its id, its slug, its
+// kind, its primary flag and its role, in the order Dispatch lists them, and its latest version,
+// the newest of the versions Dispatch lists (0 for an artifact listing none).
+func TestArtifactsReadsWhatEachArtifactIsOnTheIssueAndItsLatestVersion(t *testing.T) {
+	versions := func(numbers ...int) []map[string]any {
+		listed := make([]map[string]any, 0, len(numbers))
+		for _, number := range numbers {
+			listed = append(listed, map[string]any{"number": number, "named": false, "summary": nil, "authors": []any{}, "created_at": "2026-11-13T10:00:00Z"})
+		}
+		return listed
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues/LEGION-5/artifacts" {
+			t.Fatalf("request = %s %s, want GET /api/v1/issues/LEGION-5/artifacts", r.Method, r.URL.Path)
+		}
+		assertBearer(t, r)
+		writeJSON(t, w, []map[string]any{
+			{"id": "artifact-1", "issue_key": "LEGION-5", "slug": "spec", "name": "spec", "kind": "doc", "primary": true, "versions": versions(1, 2, 3),
+				"approval": map[string]any{"state": "approved", "latest_version": 3, "version": 3}},
+			{"id": "artifact-2", "issue_key": "LEGION-5", "slug": "verification-md", "name": "verification.md", "kind": "doc", "primary": false, "role": "verification", "versions": versions(1, 2)},
+			{"id": "artifact-3", "issue_key": "LEGION-5", "slug": "decisions-md", "name": "decisions.md", "kind": "doc", "primary": false, "role": "decisions", "versions": versions()},
+			{"id": "artifact-4", "issue_key": "LEGION-5", "slug": "screenshot-png", "name": "screenshot.png", "kind": "image", "primary": false, "versions": versions(1)},
+		})
+	}))
+	defer server.Close()
+
+	artifacts, err := New(server.URL, BearerTransport(dispatchToken, nil)).Artifacts(context.Background(), "LEGION-5")
+	if err != nil {
+		t.Fatalf("artifacts: %v", err)
+	}
+	want := []Artifact{
+		{ID: "artifact-1", Slug: "spec", Kind: "doc", Primary: true, LatestVersion: 3},
+		{ID: "artifact-2", Slug: "verification-md", Kind: "doc", Role: ArtifactRoleVerification, LatestVersion: 2},
+		{ID: "artifact-3", Slug: "decisions-md", Kind: "doc", Role: ArtifactRoleDecisions},
+		{ID: "artifact-4", Slug: "screenshot-png", Kind: "image", LatestVersion: 1},
+	}
+	if !reflect.DeepEqual(artifacts, want) {
+		t.Fatalf("artifacts = %#v, want %#v", artifacts, want)
+	}
+	if !artifacts[0].Document() || artifacts[3].Document() {
+		t.Fatalf("Document = %t, %t; want the spec a document and the image none", artifacts[0].Document(), artifacts[3].Document())
+	}
+}
+
+// A document's reviews are read as Dispatch lists them, newest first: each one's version, state,
+// actor, time and the reason it gave (none for an approval given with nothing beside it, whether
+// Dispatch sends a null or leaves the field out). The kind and the approval request Dispatch sends
+// beside them are read by nothing, so they are not decoded. A document Dispatch does not know is
+// its 404 (Missing).
+func TestReviewsReadsEveryReviewOfADocumentNewestFirst(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		if r.Method != http.MethodGet {
+			t.Fatalf("request = %s %s, want GET", r.Method, r.URL.Path)
+		}
+		if r.URL.Path != "/api/v1/artifacts/artifact-6/reviews" {
+			writeJSONStatus(t, w, http.StatusNotFound, map[string]string{"code": "ARTIFACT_NOT_FOUND", "error": "artifact not found"})
+			return
+		}
+		writeJSON(t, w, []map[string]any{
+			{"id": "review-3", "artifact_id": "artifact-6", "version": 4, "state": "approved", "kind": "person",
+				"actor": map[string]any{"kind": "user", "id": "alice"}, "reason": nil, "ask_id": "ask-approval",
+				"created_at": "2026-11-13T18:00:00.123456Z", "content_sha256": "abc", "content_sha256_source": "markdown"},
+			{"id": "review-2", "artifact_id": "artifact-6", "version": 3, "state": "changes_requested", "kind": "person",
+				"actor": map[string]any{"kind": "user", "id": "alice"}, "reason": "name the rollback path", "ask_id": nil,
+				"created_at": "2026-11-12T09:30:00Z"},
+			{"id": "review-1", "artifact_id": "artifact-6", "version": 2, "state": "approved", "kind": "person",
+				"actor": map[string]any{"kind": "session", "id": "ses_architect", "origin": map[string]any{"title": "architect"}}, "ask_id": nil,
+				"created_at": "2026-11-11T08:00:00+02:00"},
+		})
+	}))
+	defer server.Close()
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
+
+	reviews, err := client.Reviews(context.Background(), "artifact-6")
+	if err != nil {
+		t.Fatalf("reviews: %v", err)
+	}
+	want := []Review{
+		{Version: 4, State: "approved", Actor: Actor{Kind: "user", ID: "alice"}, At: time.Date(2026, 11, 13, 18, 0, 0, 123456000, time.UTC)},
+		{Version: 3, State: "changes_requested", Actor: Actor{Kind: "user", ID: "alice"}, At: time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC),
+			Reason: "name the rollback path"},
+		{Version: 2, State: "approved", Actor: Actor{Kind: "session", ID: "ses_architect"}, At: time.Date(2026, 11, 11, 6, 0, 0, 0, time.UTC)},
+	}
+	if !reflect.DeepEqual(reviews, want) {
+		t.Fatalf("reviews = %#v, want %#v", reviews, want)
+	}
+	if _, err := client.Reviews(context.Background(), "artifact-404"); !Missing(err) {
+		t.Fatalf("reviews of an unknown document = %v, want Dispatch's 404", err)
+	}
+}
+
+// One version of a document is read for the markdown Dispatch stored for it. A version the
+// document does not have is Dispatch's 404 (Missing); a version of an image, which Dispatch
+// answers with its bytes, and an answer carrying no markdown are errors, never an empty document.
+func TestDocumentVersionReadsTheMarkdownOfOneVersion(t *testing.T) {
+	const markdown = ":::requirement{#r1}\nThe requirement.\n:::\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		if r.Method != http.MethodGet {
+			t.Fatalf("request = %s %s, want GET", r.Method, r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/api/v1/artifacts/artifact-6/versions/3":
+			writeJSON(t, w, map[string]any{
+				"markdown": markdown, "number": 3, "named": true, "summary": "Name the requirement", "authors": []any{},
+				"created_at": "2026-11-13T18:00:00Z", "size": len(markdown), "sha256": "abc",
+			})
+		case "/api/v1/artifacts/artifact-7/versions/1":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("\x89PNG\r\n\x1a\n"))
+		case "/api/v1/artifacts/artifact-8/versions/1":
+			writeJSON(t, w, map[string]any{"number": 1})
+		default:
+			writeJSONStatus(t, w, http.StatusNotFound, map[string]string{"code": "NOT_FOUND", "error": "not found"})
+		}
+	}))
+	defer server.Close()
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
+
+	got, err := client.DocumentVersion(context.Background(), "artifact-6", 3)
+	if err != nil || got != markdown {
+		t.Fatalf("document version = %q, %v; want version 3's markdown %q", got, err, markdown)
+	}
+	if _, err := client.DocumentVersion(context.Background(), "artifact-6", 4); !Missing(err) {
+		t.Fatalf("a version the document does not have = %v, want Dispatch's 404", err)
+	}
+	if got, err := client.DocumentVersion(context.Background(), "artifact-7", 1); err == nil {
+		t.Fatalf("an image's version = %q, want an error", got)
+	}
+	if got, err := client.DocumentVersion(context.Background(), "artifact-8", 1); err == nil {
+		t.Fatalf("an answer with no markdown = %q, want an error", got)
 	}
 }
 
@@ -685,6 +828,57 @@ func TestHandoffReadsTheRecordAndItsAuthor(t *testing.T) {
 	}
 	if _, err := client.Handoff(context.Background(), "00000000-0000-0000-0000-000000000001"); !Missing(err) {
 		t.Fatalf("an unknown handoff = %v, want Dispatch's 404", err)
+	}
+}
+
+// An ask reads back with its state and who closed it, as GET /api/v1/asks/{id} answers it beside
+// the ask's thread, which is not the daemon's to read: a resolved ask names its resolver, an
+// answered one the person whose answer closed it, and an open one nobody. An answer that names no
+// state is an error, and an ask Dispatch does not have is Missing.
+func TestAskReadsTheStateAndWhoClosedIt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		if r.Method != http.MethodGet {
+			t.Fatalf("request = %s %s, want GET", r.Method, r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/api/v1/asks/ask-resolved":
+			writeJSON(t, w, map[string]any{"ask": map[string]any{"id": "ask-resolved", "kind": "approval", "state": "resolved",
+				"resolution": map[string]any{"kind": "resolved", "reason": "The request is withdrawn.",
+					"actor": map[string]any{"kind": "session", "id": "ses_architect", "origin": map[string]any{"title": "architect"}}, "at": "2026-11-24T18:00:00Z"}},
+				"replies": []any{}, "followers": []any{}, "claimant": nil, "route": nil})
+		case "/api/v1/asks/ask-answered":
+			writeJSON(t, w, map[string]any{"ask": map[string]any{"id": "ask-answered", "kind": "approval", "state": "answered",
+				"answer": map[string]any{"id": "b4", "user": "alice", "selected": []string{"Request changes"}, "text": "Name the rollback path.",
+					"at": "2026-11-24T18:00:00Z"}}})
+		case "/api/v1/asks/ask-open":
+			writeJSON(t, w, map[string]any{"ask": map[string]any{"id": "ask-open", "kind": "approval", "state": "open"}})
+		case "/api/v1/asks/ask-stateless":
+			writeJSON(t, w, map[string]any{"ask": map[string]any{"id": "ask-stateless"}})
+		default:
+			writeJSONStatus(t, w, http.StatusNotFound, map[string]string{"code": "NOT_FOUND", "error": "ask not found"})
+		}
+	}))
+	defer server.Close()
+
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
+	resolved, err := client.Ask(context.Background(), "ask-resolved")
+	if want := (Ask{State: "resolved", ClosedBy: Actor{Kind: "session", ID: "ses_architect"}}); err != nil || resolved != want {
+		t.Fatalf("the resolved ask = %#v, %v; want %#v", resolved, err, want)
+	}
+	answered, err := client.Ask(context.Background(), "ask-answered")
+	if want := (Ask{State: "answered", ClosedBy: Actor{Kind: "user", ID: "alice"}}); err != nil || answered != want {
+		t.Fatalf("the answered ask = %#v, %v; want %#v", answered, err, want)
+	}
+	open, err := client.Ask(context.Background(), "ask-open")
+	if want := (Ask{State: "open"}); err != nil || open != want {
+		t.Fatalf("the open ask = %#v, %v; want %#v", open, err, want)
+	}
+	if stateless, err := client.Ask(context.Background(), "ask-stateless"); err == nil {
+		t.Fatalf("an ask answered with no state = %#v, want an error", stateless)
+	}
+	if _, err := client.Ask(context.Background(), "ask-unknown"); !Missing(err) {
+		t.Fatalf("an unknown ask = %v, want Dispatch's 404", err)
 	}
 }
 

@@ -221,9 +221,11 @@ func TestAChildInDesignDoesNotMakeItsRootWaitOnChildren(t *testing.T) {
 // TestAChildInAPhaseFromPlanningToAwaitingMergeMakesItsRootWait: segment 4 holds while "the issue
 // is a root with a child in a phase from planning to awaiting merge" (the spec's metric 2), which
 // is eight phases: planning, implementing, testing, reviewing, accepting, retro, merging and
-// awaiting_merge. The child below is in one phase for the second of its root's three hours of
-// planning, all of that hour its own work time. A child in any of the eight makes that hour the
-// root's waiting on children, and a child in design or done leaves it idle.
+// awaiting_merge, and `awaiting_children`, which dispatch://INFRA-3320 added: a child stops one
+// of planning through accepting to wait in it on children of its own, which are still at work.
+// The child below is in one phase for the second of its root's three hours of planning, all of
+// that hour its own work time. A child in any of the nine makes that hour the root's waiting on
+// children, and a child in design or done leaves it idle.
 func TestAChildInAPhaseFromPlanningToAwaitingMergeMakesItsRootWait(t *testing.T) {
 	for _, each := range []struct {
 		phase   string
@@ -231,6 +233,7 @@ func TestAChildInAPhaseFromPlanningToAwaitingMergeMakesItsRootWait(t *testing.T)
 	}{
 		{"planning", 1}, {"implementing", 1}, {"testing", 1}, {"reviewing", 1},
 		{"accepting", 1}, {"retro", 1}, {"merging", 1}, {"awaiting_merge", 1},
+		{"awaiting_children", 1},
 		{"design", 0}, {"done", 0},
 	} {
 		t.Run(each.phase, func(t *testing.T) {

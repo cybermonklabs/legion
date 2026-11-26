@@ -6,6 +6,9 @@
 # the tree waits in no line, past a root of its own in backlog on its chain too, and a child
 # recorded in another tree, the child of a root held under an unreleased child among them, is
 # refused by name.
+# The tree's root gives its slot back while a child of it is open and takes one again once none is
+# (dispatch://INFRA-3320 R9, R11, R12), so the child the sweep adopts runs on the slot the root gave
+# back, and each child a release adopts waits for a slot of its own.
 # The whole daemon is booted by the function `legion start` calls, over a real PostgreSQL and a
 # real nats-server, and driven only through the Dispatch envelopes of the ENVOY_NOTIFICATIONS stream
 # and its own HTTP routes; every step of it is read back from GET /legion/v1/state,

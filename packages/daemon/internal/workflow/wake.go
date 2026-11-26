@@ -21,14 +21,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// A wake brings a released pod back. The release suspended every claim of the pod with the source
-// `released` and deleted the pod, its disk and its Sandbox; a wake resumes one of those claims,
-// which relaunches its session in a fresh pod whose launcher restores the workspace bundle the
-// release saved. Five things wake a pod, and this file holds four of them: the CI settlement, the
-// role message and the agent message the Envoy listener reports, and the stored backstop. The
-// fifth — a delivery the daemon already had for a role of the pod — needs nothing here, because a
-// delivery to a suspended claim already resumes it (supervise's deliverResuming) and the delivery
-// is its own account of why the pod came back.
+// A wake brings a released pod back. The release read the pod's workspace first and went on only
+// where it held nothing that no branch or tag on origin holds; it suspended every claim of the pod
+// with the source `released` and deleted the pod, its disk and its Sandbox, or, where the Sandbox
+// owns a kept volume, kept that Sandbox Suspended with its volume. A wake resumes one of those
+// claims, which relaunches its session in a fresh pod that provisions the workspace from the
+// issue's pushed branch, or mounts the kept volume as the roles left it. Five things wake a pod,
+// and this file holds four of them: the CI settlement, the role message and the agent message the
+// Envoy listener reports, and the stored backstop. The fifth — a delivery the daemon already had
+// for a role of the pod — needs nothing here, because a delivery to a suspended claim already
+// resumes it (supervise's deliverResuming) and the delivery is its own account of why the pod came
+// back.
 //
 // Every wake acts only on a claim that is still `released`, of an issue still in the workflow
 // whose tree is live, and a role comes back once while its pod is on its way: the role's one open
@@ -99,6 +102,16 @@ type Pods interface {
 	// cutover's repair reads it to pass over a merger something will still wake
 	// (cutoverMergerRepair).
 	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error)
+	// WaitsForItsSlot is whether issue owes a worker a start of its current phase and generation
+	// that waits for its admission slot while no slot of the issue stands
+	// (record.SuperviseRequest.NeedsSlot, which the outbox holds back until the slot comes): such
+	// an issue waits in the admission line, and the slot's start is what brings its worker back,
+	// so its backstop wakes no one (podBackstopDue). An older such start brings no one back, since
+	// admission finishes it without acting, so it silences no backstop.
+	WaitsForItsSlot(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
+	// CancelPodBackstops drops every open backstop of issue: a parent that moves into
+	// awaiting_children has no phase for one to wake a role of it into (awaitChildren).
+	CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string) error
 }
 
 // wakeRow is the outbox row a wake writes: a `start` of the woken role at the issue's current
@@ -152,7 +165,7 @@ const (
 // role reads one account of its workspace, and what they say is what the daemon knows: the
 // release's check keeps a pod whose workspace holds a commit on a working copy or a local bookmark
 // that no branch or tag on origin holds, or a working-copy change (internal/daemon's
-// checkIssueWorkspace, the shim's workspaceWorkRevset), and a pod whose disk went with it comes
+// checkIssueWorkspace, workspace.WorkRevset), and a pod whose disk went with it comes
 // back with a workspace that provisioning made from the issue's pushed branch. The read does not
 // count a commit that no working copy and no bookmark reaches, a side head a role left with
 // `jj new <base>`, so the release can take one, and the text says so: it never says that nothing
@@ -413,6 +426,14 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 // release, whatever else did or did not happen. The row is fired under a conditional update, so a
 // backstop two passes read fires once, and the row survives a restart, so one that came due while
 // the daemon was down fires at the first pass after it starts.
+//
+// A backstop of an issue that waits for its admission slot fires and wakes no one
+// (Pods.WaitsForItsSlot). The issue gave its slot back to wait on another, or had its work come
+// back, and owes its worker a start that the outbox holds until the slot comes; the idle rule
+// releases its pod meanwhile. A wake would tell that worker to take up its phase while the
+// admission cap says the issue may not run, and its pod would go idle, be released and be woken
+// again, each idle period and backstop, for the whole wait. The slot's start brings the worker
+// back, with its task.
 func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodBackstopDue) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -424,6 +445,15 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 	released, found, err := e.cfg.Pods.ReleasedClaimOfRole(ctx, tx, fact.Issue, fact.Role)
 	if err != nil || !found {
 		return intake.Result{}, err
+	}
+	waits, err := e.cfg.Pods.WaitsForItsSlot(ctx, tx, fact.Issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if waits {
+		e.logOnCommit(ctx, "wake: the backstop of an issue that waits for its admission slot wakes no one; the slot's start brings the role back",
+			"issue", fact.Issue, "role", fact.Role)
+		return intake.Result{}, nil
 	}
 	detail := fmt.Sprintf("the backstop armed for %s's %s came due", fact.Issue, fact.Role)
 	_, err = e.wakeReleased(ctx, tx, released, pods.WakeBackstop, detail, e.now())

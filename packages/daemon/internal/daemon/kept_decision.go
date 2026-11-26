@@ -111,6 +111,71 @@ func (r *outbox) relaySpecDecision(ctx context.Context, issue, root string, noti
 	return nil
 }
 
+// keptPodControllerSource is the processed-event source of the copies of workspace-kept and
+// workspace-taken notices that the outbox queues for the controller (tellControllerOfKeptPod). Its
+// event id is the dedupe key the undelivered notice went under (record.Notice.Published: a re-held
+// copy's is its original row's), so one notice queues one controller row however often its row
+// runs and however many copies carry it.
+const keptPodControllerSource = "workspace-kept-controller"
+
+// diskNotice is whether kind is a notice of an issue pod's disk that must not finish with nobody
+// told: a pod the daemon keeps for its disk (record.WorkspaceKeptNotice), or a replacement that
+// still took a disk that may hold work (record.WorkspaceTakenNotice, R7 of #5285).
+// Where its owning architect will not hold its role again, it goes to the controller
+// (tellControllerOfKeptPod).
+func diskNotice(kind record.NoticeKind) bool {
+	return kind == record.WorkspaceKeptNotice || kind == record.WorkspaceTakenNotice
+}
+
+// tellControllerOfKeptPod hands a notice of an issue pod's disk (diskNotice) whose owning
+// architect will not hold its role again, for why, to the project's controller (the Legion
+// reviewer's point 1 on R6 of #5285). The daemon counts a kept pod told when it
+// queues the notice (store's recordDecline), and keeps the pod until a read finds it clean, and a
+// workspace-taken notice is the one word of a disk that is gone, so neither must finish with
+// nobody told: the controller gets a controller notice of its own with the notice's words
+// (record.ControllerNotice, published on the controller topic by its own row, controllerNotice),
+// queued once under key in a transaction that marks key processed, so a row whose finish did not
+// commit runs again and queues nothing more. The undelivered row then finishes.
+//
+// It does nothing for a kind that is no disk notice, as relaySpecDecision does nothing for a kind
+// that is no spec decision, so every place a notice finishes undelivered because nobody will hold
+// its architect's role calls both, before its own line: an architect that will not hold its role
+// again (noticeAnswered), and one that stopped with its finished tree, found before a publish
+// (deliverNotice, the Legion reviewer's point 3 on R6's review fixes) or before a re-hold
+// (reholdNotice). Every outcome logs one line that pairs the undelivered row with what became of
+// its notice, sent or handed over before under the same key, once the transaction has committed.
+func (r *outbox) tellControllerOfKeptPod(ctx context.Context, issue string, row int64, notice record.Notice, key string,
+	architect claim.Token, why string) error {
+	if !diskNotice(notice.Kind) {
+		return nil
+	}
+	copied, err := record.NewOutboxRow(issue, record.ControllerNotice(notice), r.now().UTC())
+	if err != nil {
+		return fmt.Errorf("the controller's copy of the %s notice of %s is a row the outbox refuses: %w", notice.Kind, issue, err)
+	}
+	args := []any{"row", row, "kind", notice.Kind, "issue", issue, "architect", architect, "because", why, "key", key}
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		fresh, err := r.records.MarkProcessed(ctx, tx, keptPodControllerSource, key)
+		if err != nil {
+			return err
+		}
+		store.OnCommit(ctx, func() {
+			if !fresh {
+				r.log.Info("outbox disk notice handed to the controller before under this key", args...)
+				return
+			}
+			r.log.Info("outbox disk notice sent to the controller: no architect will hear it", args...)
+		})
+		if !fresh {
+			return nil
+		}
+		return r.records.Enqueue(ctx, tx, copied)
+	}); err != nil {
+		return fmt.Errorf("send the controller the %s notice of %s: %w", notice.Kind, issue, err)
+	}
+	return nil
+}
+
 // settleKept settles what an architect start row's task named of what its tree is owed, once the
 // row has run and whatever its generation or phase made of it. Two things say the task reached
 // the claim: gave, which the run that handed it to the claim knows, and the claim's own record of

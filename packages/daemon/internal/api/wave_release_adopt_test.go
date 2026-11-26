@@ -31,7 +31,9 @@ import (
 
 // adoptionTree is the live tree each release here releases into, and adoptionChild the issue that
 // queued in admission as a root of its own before a person made it a child of that tree.
-const adoptionTree, adoptionChild = "LEGION-168", "LEGION-214"
+// adoptionFiller is the root of another live tree, at work and holding an admission slot of its
+// own (newAdoptionHarness says why).
+const adoptionTree, adoptionChild, adoptionFiller = "LEGION-168", "LEGION-214", "LEGION-160"
 
 // adoptionHarness is the API wired to the daemon's two handlers, the workflow's and admission's,
 // with adoptionTree holding an admission slot and its design gate approved, so a todo child that
@@ -76,6 +78,21 @@ func newAdoptionHarness(t *testing.T, cap int) *adoptionHarness {
 		t.Fatalf("seed the live tree: %v", err)
 	}
 	h.openTree(t, testProject, adoptionTree)
+	// Where the cap is the root's one slot, another tree's issue at work holds a slot too. The root
+	// an adopted child joins under now waits on that open child in awaiting_children and holds no
+	// slot (dispatch://INFRA-3320 R11), so its own row would go to the child; this issue keeps the
+	// cap full for what those tests check, which is the adoption and the wait in the line. A harness
+	// of a larger cap seeds none, for the tests that read one of its slots standing free. The
+	// slot's index is one no test seeds a slot of its own at.
+	if cap == 1 {
+		h.recordIssue(record.Issue{Key: adoptionFiller, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: adoptionFiller, Project: testProject, Title: adoptionFiller, Phase: phase.Implementing, Generation: 1, Status: "in_progress", HandedOver: true, Rank: "0"})
+		if err := store.Transact(context.Background(), h.store.Pool(), func(_ context.Context, tx pgx.Tx) error {
+			return records.PutSlot(context.Background(), tx, record.Slot{Issue: adoptionFiller, Index: 9, AdmittedAt: time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)})
+		}); err != nil {
+			t.Fatalf("seed the slot of %s: %v", adoptionFiller, err)
+		}
+		h.openTree(t, testProject, adoptionFiller)
+	}
 	return &adoptionHarness{harness: h, records: records, engine: engine, admission: admission, statuses: statuses,
 		architect: newLiveClaim(t, h, adoptionTree, claim.RoleArchitect)}
 }
