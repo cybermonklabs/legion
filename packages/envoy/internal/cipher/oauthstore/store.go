@@ -70,8 +70,9 @@ var sweepBatch = 1000
 var sweepMaxBatches = 10
 
 // sweepStatements are Sweep's statements for state deleted row by row, $1 the batch. Each
-// selects its batch by primary key through 0016's, 0018's, 0021's or 0042's *_expires index on
-// the predicate it sweeps by, oldest first, so a table of mostly live rows is never read whole.
+// selects its batch by primary key through 0016's, 0018's, 0021's or 0042's *_expires index, or
+// 0046's approve_grants_expires, on the predicate it sweeps by, oldest first, so a table of mostly
+// live rows is never read whole.
 var sweepStatements = []struct{ what, sql string }{
 	{"device codes", `delete from oauth_device_codes where signature in (select signature from oauth_device_codes
 		where expires_at < now() - interval '1 hour' order by expires_at limit $1)`},
@@ -88,6 +89,11 @@ var sweepStatements = []struct{ what, sql string }{
 	{"exchanged JWT ids", `delete from oauth_exchange_jtis where jti in (select jti from oauth_exchange_jtis
 		where expires_at <= now() order by expires_at limit $1)`},
 	{"pod session registrations", `delete from oauth_pod_sessions where (pod_uid, session) in (select pod_uid, session from oauth_pod_sessions
+		where expires_at <= now() order by expires_at limit $1)`},
+	// Every review trades an approve grant of its own (ApproveGrants), which no read serves once it
+	// has ended, so an ended one goes. The proxy's own copy of its values goes at its pod's next
+	// read of a new grant, by the one rule proxy.Server's valuesFor states.
+	{"approve grants", `delete from approve_grants where id in (select id from approve_grants
 		where expires_at <= now() order by expires_at limit $1)`},
 }
 

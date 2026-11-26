@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  On Oh My Pi, `envoy_send` and `envoy_publish` show the descriptions of `expects_reply` and
+  `urgency`: every described Envoy tool field now describes last, the one order in which Oh My
+  Pi's `pi.zod` facade keeps a description on an enum or on a field widened to `unknown`. There
+  `expects_reply` is shown as `unknown`, and its description now names its values: `false`,
+  `"optional"` and `"required"`. The values each tool accepts do not change.
+time: 2026-11-26T09:26:00Z
+custom:
+    Issue: pr5656
