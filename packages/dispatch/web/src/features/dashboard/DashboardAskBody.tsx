@@ -34,9 +34,9 @@ export function DashboardAskBody({
     // The settled record the body draws in its place once the ask is answered
     // (`AskCompletionCard`), and the lines under it, carry no mark of their own: a hosted
     // surface's words, marked as a value as the margin's own cards are (`IssueMargin.tsx`). The
-    // open body's root marks its own words inside it, the nearer mark. A block and not
-    // `contents`, so a host that spaces its children by their margins (`AskThreadItem`'s
-    // `space-y-2`) still spaces the body.
+    // open body marks each of its own words inside it, the nearer mark (`AskBodyProps.marks`). A
+    // block and not `contents`, so a host that spaces its children by their margins
+    // (`AskThreadItem`'s `space-y-2`) still spaces the body.
     <div {...authorText}>
       <AskBody
         agentNames="cache"

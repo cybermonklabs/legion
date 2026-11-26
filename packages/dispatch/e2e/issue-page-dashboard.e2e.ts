@@ -66,10 +66,12 @@ import {
 import {
   CONTROL_LABELS,
   DASHBOARD_WORDS,
+  DECLARED_WORDS,
   NODE_TYPE_NAMES,
   PHASE_WORDS,
   PRESET_NAMES,
   type Preset,
+  wordsIn,
 } from "../web/src/features/issue-page/page-words";
 import { buildIssuePath } from "../web/src/features/refs/routes";
 import { PAGE_COLORS } from "../web/src/theme/classes";
@@ -901,6 +903,24 @@ function dashboardTexts(page: Page): Promise<MarkedText[]> {
   );
 }
 
+/** The text of each element Dashboard marks as the page's own words (`[data-page-chrome]`), with
+ *  each text an author wrote inside it (`[data-author-text]`) taken out and its whitespace run
+ *  together: how a reader of the page's words reads it (`page-words.ts`), whole, so two labels
+ *  or two controls in one marked element read as one run. It reads every such element inside
+ *  Dashboard's own region, drawn or hidden, as that reader does. */
+function chromeTexts(page: Page): Promise<string[]> {
+  const region = issuePage(page).locator("[data-dashboard]");
+  return region.evaluate(
+    (root, attributes) =>
+      [...root.querySelectorAll(`[${attributes.chrome}]`)].map((element) => {
+        const copy = element.cloneNode(true) as Element;
+        for (const authored of copy.querySelectorAll(`[${attributes.author}]`)) authored.remove();
+        return (copy.textContent ?? "").replace(/\s+/g, " ").trim();
+      }),
+    { author: AUTHOR_TEXT_ATTRIBUTE, chrome: PAGE_CHROME_ATTRIBUTE }
+  );
+}
+
 /** The marks each of `texts` is drawn in, over every text node that reads it whole. */
 function marksOf(
   drawn: readonly MarkedText[],
@@ -939,7 +959,9 @@ async function expectItemsDrawn(
 /** Fails unless Dashboard draws each of `texts.chrome` in the page's mark alone and each of
  *  `texts.author` in an author's alone, read until each is drawn; then unless every text it draws
  *  carries one mark, every number an author's, and every name the seed wrote
- *  (`DashboardSeed.names`) an author's. */
+ *  (`DashboardSeed.names`) an author's; then unless each element it marks as the page's own
+ *  words, read whole with an author's text taken out (`chromeTexts`), says only words the page's
+ *  list declares (`DECLARED_WORDS`). */
 async function expectMarked(
   page: Page,
   seed: DashboardSeed,
@@ -970,6 +992,15 @@ async function expectMarked(
     drawn.filter((one) => names.has(one.text) && one.mark !== "author").map(described),
     `${where} draws a name the seed wrote outside an author's mark`
   ).toEqual([]);
+  // Labels or controls that share one marked element run together into a word no list declares:
+  // Answer and Ask back read "answerask".
+  expect(
+    (await chromeTexts(page)).flatMap((text) => {
+      const undeclared = wordsIn(text).filter((word) => !DECLARED_WORDS.includes(word));
+      return undeclared.length === 0 ? [] : [`"${text}": ${undeclared.join(" ")}`];
+    }),
+    `${where} marks as the page's own words a text whose words the page's list does not declare`
+  ).toEqual([]);
 }
 
 // R21's two marks on Dashboard (`page-structure.ts`), read on the seeded issue as the new page
@@ -979,7 +1010,11 @@ async function expectMarked(
 // exactly one mark, found no higher than Dashboard's own region; Dashboard's labels and the words
 // of the ask body and the decision card carry the page's, and the count, each number, each name
 // and an author's words carry an author's. Drawn with no mark, as Dashboard was before it marked
-// its text, the labels and the values read `none` and the row fails at its first read.
+// its text, the labels and the values read `none` and the row fails at its first read. Each
+// element that carries the page's mark, read whole with an author's text taken out, says only
+// words the page's list declares: with the mark on a box that holds several labels or controls,
+// as the ask body's and the decision card's roots once held it, their words run together
+// ("answerask", "reviewkeepchange") and the row fails.
 // SLOW(>=2s): the whole Dashboard seed, then at each width one load of the bare address and one
 // press of the control under the first five, each read until the texts it names are drawn.
 test("every text Dashboard draws carries one mark, the page's on its labels and an author's on its values", async ({

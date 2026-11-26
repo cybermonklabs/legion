@@ -41,7 +41,13 @@ import { AskApprovalLink } from "./AskApprovalLink";
 import { AskOptionList } from "./AskOptionList";
 import { AskAgent, AskResolutionActor } from "./ask-agent";
 import { ASK_LINK_WORDS, ASK_RECORD_WORDS } from "./ask-body-words";
-import { type AskPalette, type AskTextRenderer, markdownText } from "./ask-text";
+import {
+  type AskPalette,
+  type AskTextRenderer,
+  markdownText,
+  ownWords,
+  type TextMarks,
+} from "./ask-text";
 
 /**
  * The colours of the settled record, and of an ask's earlier wordings and answers, by the
@@ -225,14 +231,18 @@ export function AskAnswerHistory({
 }
 
 /** The line over an anchored ask whose quoted words changed since, with the link to the version
- *  it was asked on, in the palette the ask body's host hands (`palette`). */
+ *  it was asked on, in the palette the ask body's host hands (`palette`). Where the open body's
+ *  host hands `marks` (`AskBodyProps.marks`), the line's words and its link each wear the mark of
+ *  the body's own words. */
 export function OrphanedAnchorNotice({
   artifactSlug,
   ask,
+  marks,
   palette = "main",
 }: {
   artifactSlug: string | undefined;
   ask: Ask;
+  marks?: TextMarks;
   palette?: AskPalette;
 }): ReactNode {
   const anchor = ask.anchor;
@@ -241,7 +251,7 @@ export function OrphanedAnchorNotice({
   }
   return (
     <p className={`mb-2 text-xs font-medium ${TONES[palette].warning}`}>
-      {ASK_LINK_WORDS.text_changed}{" "}
+      {ownWords(marks, ASK_LINK_WORDS.text_changed)}{" "}
       {ask.issue_key === null ? null : (
         <Link
           className="underline"
@@ -251,6 +261,7 @@ export function OrphanedAnchorNotice({
             slug: artifactSlug,
             version: anchor.version,
           })}&ask=${ask.id}`}
+          {...marks?.pageChrome}
         >
           {ASK_LINK_WORDS.view_original}
         </Link>

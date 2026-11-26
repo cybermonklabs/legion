@@ -212,13 +212,17 @@ export interface DecisionCardProps {
   /** Keep, on a decision that waits for review; none where the caller writes none. */
   readonly keep?: CardKeepAct;
   /** The two marks of a host that divides its own words from an author's (`PageWords`): with
-   *  them the card's root wears the mark of the card's own words, which are the issue page's
-   *  declared ones (`decision-card-words.ts`), and each value inside it - the author, the level
-   *  the read holds and its reason, a statement's line, the name a state holds - the mark of a
-   *  value, as the caller's renderer marks the heading and the text. The Change form's shared
-   *  box, with its hint, and the words it quotes wear the mark of a value, and its actions the
-   *  card's again. Dashboard hands them; no other host does, so every other surface draws the
-   *  elements it always drew, with no mark. */
+   *  them each element of the card that holds the card's own words - a label, a line, a control,
+   *  the dot between two parts of a line - wears the mark of those words, which are the issue
+   *  page's declared ones (`decision-card-words.ts`), and each value inside one - the author,
+   *  the level the read holds and its reason, a statement's line, the name a state holds - the
+   *  mark of a value, as the caller's renderer marks the heading and the text. The mark stands
+   *  on each such element and never on a box that holds several: a reader of the page takes each
+   *  marked element's words whole, with its values taken out, and the state and two controls in
+   *  one marked box read as one word ("Waiting for review", "Keep" and "Change" as
+   *  "reviewkeepchange"). The Change form's shared box, with its hint, and the words it quotes
+   *  wear the mark of a value, and each of its actions the card's again. Dashboard hands them;
+   *  no other host does, so every other surface draws the elements it always drew, with no mark. */
   readonly marks?: Pick<PageWords, "authorText" | "pageChrome">;
   /** The palette the card's own elements draw in (`TONES`): `main`'s unless the caller hands the
    *  page's. Dashboard on the new issue page hands `page`; no other host does, so every other
@@ -273,10 +277,14 @@ function StatementLink({
         {line}
       </Link>
       {link.changed_at != null && compareTimestamps(link.changed_at, link.created_at) > 0 ? (
-        <span className={`ml-2 text-xs ${tones.meta}`}>{DECISION_LINK_WORDS.changed_since}</span>
+        <span className={`ml-2 text-xs ${tones.meta}`} {...marks?.pageChrome}>
+          {DECISION_LINK_WORDS.changed_since}
+        </span>
       ) : null}
       {link.stale ? (
-        <span className={`ml-2 text-xs ${tones.meta}`}>{DECISION_LINK_WORDS.out_of_date}</span>
+        <span className={`ml-2 text-xs ${tones.meta}`} {...marks?.pageChrome}>
+          {DECISION_LINK_WORDS.out_of_date}
+        </span>
       ) : null}
     </li>
   );
@@ -314,14 +322,16 @@ export function DecisionCard({
   const agentText = useAgentText();
   const level = levelWord(decision, authorLine);
   // The level the read holds is a value; "Unsure" is the card's own word.
-  const levelMark = level === decision.uncertainty ? marks?.authorText : undefined;
+  const levelMark = level === decision.uncertainty ? marks?.authorText : marks?.pageChrome;
   const reason = decision.uncertainty_reason?.trim() ?? "";
   const author = !authorLine
     ? undefined
     : decision.decided_by === undefined
       ? DECISION_LINE_WORDS.author_unknown
       : agentText.author(decision.decided_by);
-  const authorMark = decision.decided_by === undefined ? undefined : marks?.authorText;
+  // The name of who decided is a value; the word for an author the read does not name is the
+  // card's own.
+  const authorMark = decision.decided_by === undefined ? marks?.pageChrome : marks?.authorText;
   // How the decision stands: the state's words, and the name of the person it holds where it
   // holds one, which a host that hands `marks` draws inside the mark of a value.
   const state = decision.replaced
@@ -338,10 +348,21 @@ export function DecisionCard({
       ? { markdown: decision.answer }
       : { markdown: decision.text, tree: decision.text_tree };
   const acts = decision.waiting_review && !decision.replaced;
+  // The dot between two parts of the line is the card's own mark, which `Dot` takes none of: a
+  // host that hands `marks` gets it inside the mark of the card's words, in an element that
+  // draws no box (`contents`), so the line is laid out as it is with no mark.
+  const dot =
+    marks === undefined ? (
+      <Dot />
+    ) : (
+      <span className="contents" {...marks.pageChrome}>
+        <Dot />
+      </span>
+    );
   return (
     // The bullet hangs left of the heading, and everything under it stands at the heading's left
     // edge: an 18 px column, its 7 px dot centred on the first line.
-    <div className="flex gap-x-2" data-decision-card="" {...marks?.pageChrome}>
+    <div className="flex gap-x-2" data-decision-card="">
       <KindBullet colour={pageKindBullet.decision} mark="data-decision-bullet" />
       <div className="min-w-0 flex-1 space-y-2">
         <div className="flex items-start justify-end gap-x-3">
@@ -358,12 +379,15 @@ export function DecisionCard({
           <p
             className={`flex min-w-0 max-w-[75%] shrink-0 items-center justify-end gap-x-1.5 text-xs leading-6 whitespace-nowrap ${tones.meta}`}
           >
-            <span className={`shrink-0 font-semibold ${pageKindTag.decision}`}>
+            <span
+              className={`shrink-0 font-semibold ${pageKindTag.decision}`}
+              {...marks?.pageChrome}
+            >
               {decision.kind === "person" ? DECISION_KIND_WORDS.person : DECISION_KIND_WORDS.agent}
             </span>
             {author === undefined ? null : (
               <>
-                <Dot />
+                {dot}
                 <span className="min-w-0 truncate" {...authorMark}>
                   {author}
                 </span>
@@ -371,7 +395,7 @@ export function DecisionCard({
             )}
             {decision.changed_at === null ? null : (
               <>
-                <Dot />
+                {dot}
                 <Timestamp at={decision.changed_at} className="shrink-0" />
               </>
             )}
@@ -409,12 +433,21 @@ export function DecisionCard({
           </ul>
         )}
         {decision.asks.map((ask) => (
-          <Link className={`block text-sm ${tones.link}`} key={ask} to={paths.ask(ask)}>
+          <Link
+            className={`block text-sm ${tones.link}`}
+            key={ask}
+            to={paths.ask(ask)}
+            {...marks?.pageChrome}
+          >
             {DECISION_LINK_WORDS.the_ask}
           </Link>
         ))}
         {state === undefined ? null : (
-          <p className={`text-xs font-semibold ${tones.meta}`} data-decision-state="">
+          <p
+            className={`text-xs font-semibold ${tones.meta}`}
+            data-decision-state=""
+            {...marks?.pageChrome}
+          >
             {state.name === undefined ? (
               state.words
             ) : marks === undefined ? (
@@ -472,6 +505,7 @@ function DecisionActs({
             disabled={keep.pending}
             onClick={keep.keep}
             type="button"
+            {...marks?.pageChrome}
           >
             {DECISION_ACT_WORDS.keep}
           </button>
@@ -482,13 +516,14 @@ function DecisionActs({
             className={tones.secondary}
             onClick={() => setChanging(!changing)}
             type="button"
+            {...marks?.pageChrome}
           >
             {DECISION_ACT_WORDS.change}
           </button>
         )}
       </div>
       {keep === undefined || keep.error === null ? null : (
-        <p className={`text-sm ${tones.failed}`} role="alert">
+        <p className={`text-sm ${tones.failed}`} role="alert" {...marks?.pageChrome}>
           {/* A Keep the reader stopped may have been made, and Keep is a press of its own,
               under a key of its own. */}
           {keep.error instanceof SendStoppedError
@@ -576,15 +611,16 @@ function ChangeForm({
             : change.error.message}
         </p>
       )}
-      <div className="flex gap-2" {...marks?.pageChrome}>
+      <div className="flex gap-2">
         <button
           className={tones.filled}
           disabled={change.pending || body.trim() === ""}
           type="submit"
+          {...marks?.pageChrome}
         >
           {DECISION_ACT_WORDS.send_change}
         </button>
-        <button className={tones.secondary} onClick={onDone} type="button">
+        <button className={tones.secondary} onClick={onDone} type="button" {...marks?.pageChrome}>
           {DECISION_ACT_WORDS.cancel}
         </button>
       </div>

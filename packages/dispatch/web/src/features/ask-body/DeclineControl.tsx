@@ -203,12 +203,13 @@ function DeclineDialog({
                 : apiErrorMessage(error, ASK_DECLINE_WORDS.failed)}
             </p>
           )}
-          <div className="flex items-center justify-end gap-2" {...marks?.pageChrome}>
+          <div className="flex items-center justify-end gap-2">
             <button
               className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${tones.cancel}`}
               disabled={saving}
               onClick={close}
               type="button"
+              {...marks?.pageChrome}
             >
               {ASK_DECLINE_WORDS.cancel}
             </button>
@@ -217,6 +218,7 @@ function DeclineDialog({
               disabled={!canSend}
               onClick={() => onSubmit(note.trim())}
               type="button"
+              {...marks?.pageChrome}
             >
               {saving ? ASK_DECLINE_WORDS.declining : ASK_DECLINE_WORDS.decline}
             </button>
@@ -248,7 +250,7 @@ interface DeclinePress extends AskPress {
  * The hold is that shared store rather than a report up to the Inbox, as `SnoozeControl` makes
  * one, for the reason the store exists: this card is drawn on surfaces that take no prop of the
  * Inbox's, a document's own decision block among them. `marks` is the ask body's
- * (`AskBodyProps.marks`), which its dialog draws its words in.
+ * (`AskBodyProps.marks`), which it draws Decline to answer and its dialog's words in.
  */
 export function DeclineControl({
   ask,
@@ -305,6 +307,7 @@ export function DeclineControl({
         disabled={write.isPending}
         onClick={() => setOpen(true)}
         type="button"
+        {...marks?.pageChrome}
       >
         {write.isPending ? ASK_DECLINE_WORDS.declining : ASK_DECLINE_WORDS.decline}
       </button>

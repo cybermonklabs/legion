@@ -81,3 +81,24 @@ export type AskPalette = "main" | "page";
 export function authored(marks: TextMarks | undefined, value: ReactNode): ReactNode {
   return marks === undefined ? value : <span {...marks.authorText}>{value}</span>;
 }
+
+/** Words of the body's own inside the mark of the body's words, where the host hands the marks,
+ *  and as they are where it hands none: for words no element of the body's holds alone, so the
+ *  mark stands on them and not on a box that holds other words beside them. */
+export function ownWords(marks: TextMarks | undefined, words: ReactNode): ReactNode {
+  return marks === undefined ? words : <span {...marks.pageChrome}>{words}</span>;
+}
+
+/** A shared element that takes no mark of its own - the dot between two parts of a line, the
+ *  disclosure toggle - inside the mark of the body's words, where the host hands the marks, and
+ *  as it is where it hands none. The mark's element draws no box (`contents`), so `part` is laid
+ *  out as it is with no mark. */
+export function ownPart(marks: TextMarks | undefined, part: ReactNode): ReactNode {
+  return marks === undefined ? (
+    part
+  ) : (
+    <span className="contents" {...marks.pageChrome}>
+      {part}
+    </span>
+  );
+}
