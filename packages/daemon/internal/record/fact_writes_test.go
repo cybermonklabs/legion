@@ -123,7 +123,7 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 			if _, err := store.PutMergeSnapshot(ctx, tx, key, Merge{Number: 1309, SHA: "m0", MergedAt: at.Add(-time.Hour)}); err != nil {
 				t.Fatal(err)
 			}
-		}, issue: true},
+		}},
 		{name: "a phase row", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutPhase(ctx, tx, phaseRow))
 		}, marks: true},

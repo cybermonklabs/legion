@@ -618,12 +618,13 @@ func utcOrNil(at *time.Time) *time.Time {
 // in one statement that reads the stored snapshot under the row's lock: a known merged_at later
 // than the stored one, or than a stored one nobody read, replaces it, and an older or an unknown
 // one never replaces a snapshot that stands. It answers whether it wrote the snapshot, and refuses
-// an issue with no record.
+// an issue with no record. Only a written snapshot keeps the issue among those the transaction
+// wrote (noteIssueWrite), and with it the mark that runs the admission pass (RecordsWritten): a
+// snapshot the stored one refuses writes nothing.
 func (s *Postgres) PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string, merge Merge) (bool, error) {
 	if !merge.Merged() {
 		return false, fmt.Errorf("record the merge of %s: a merge names the pull request that merged", issue)
 	}
-	noteIssueWrite(ctx, issue)
 	var mergedAt any
 	if !merge.MergedAt.IsZero() {
 		mergedAt = merge.MergedAt
@@ -635,8 +636,8 @@ func (s *Postgres) PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string
 	if err != nil {
 		return false, fmt.Errorf("record the merge of %s: %w", issue, err)
 	}
-	noteRowsWritten(ctx, tag)
 	if tag.RowsAffected() == 1 {
+		noteIssueWrite(ctx, issue)
 		return true, nil
 	}
 	var recorded bool
