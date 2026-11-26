@@ -49,9 +49,8 @@ export function DocumentReferences({ artifact }: { artifact: Artifact }): ReactN
       referenceRows(
         itemWords,
         (query.data?.edges ?? []).filter(drawsEdge),
-        names,
-        issueKey,
-        edited
+        { edited, names },
+        issueKey
       ),
     [edited, issueKey, itemWords, names, query.data]
   );
