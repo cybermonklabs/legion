@@ -48,10 +48,10 @@ export async function executeDispatchTool(
     serverUrls: dispatchServerUrls(input.config),
   });
   if (checked.problems.length > 0) throw new ToolInputError(input.tool, checked.problems);
-  // A dry run reaches a command only where Dispatch answers it: run as one, any other command
-  // would make its write.
+  // A dry run reaches a command only where the command answers it (`dryRunAsksDispatch`: a
+  // `dispatch result` record): run as one, any other command would make its write.
   if (input.dryRun === true && !dryRunAsksDispatch(input.tool, checked.args)) {
-    throw new Error(`dispatch ${input.tool}'s dry run asks Dispatch nothing`);
+    throw new Error(`dispatch ${input.tool}'s dry run runs no command`);
   }
   // The check reads the tool's own schema, so an unknown tool is already refused by the time this
   // runs; the table is still read as a lookup that can miss, so the name stays in the message.

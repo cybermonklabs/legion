@@ -2407,7 +2407,7 @@ func TestLoadReadsTheAccessTokenLifetime(t *testing.T) {
 // TestLoadReadsTheExchangeAccounts pins BROKER_EXCHANGE_ACCOUNTS: whitespace-separated
 // <account>=<project>=<person>[=<session>] entries in order, none when unset, a session that may
 // itself carry "=", an empty project (the shared public-session account's entry, whose named
-// tokens name no project), an empty project and person (a job's own account, whose tokens act as
+// tokens name no project), an empty project and person (an account whose tokens act as
 // the account itself), and refusals naming the entry for one that is not of that form, has a
 // blank account, names a project and no person, names a namespace's default account or lists an
 // account twice. It needs the cluster issuer and the exchange audience, whose tokens its pods
@@ -2657,6 +2657,340 @@ func TestLoadReadsTheExchangeResultWorkflows(t *testing.T) {
 	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = workflow + "=refs/heads/*=EXAMPLE=ada@example.com"
 	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), "BROKER_EXCHANGE_GITHUB_ISSUER") {
 		t.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS with no GitHub issuer: err = %v, want a refusal naming the setting and BROKER_EXCHANGE_GITHUB_ISSUER", err)
+	}
+}
+
+// The identities the job settings' tests list. This repository is public, so each is a
+// placeholder.
+const (
+	// jobAccount is a pod's account that BROKER_EXCHANGE_JOB_ACCOUNTS lists.
+	jobAccount = "system:serviceaccount:example-ns:example-job"
+	// jobWorkflow is the identity, <repository>=<workflow path>=<ref>, of the workflow
+	// BROKER_EXCHANGE_JOB_WORKFLOWS lists.
+	jobWorkflow = "example-org/example-repo=.github/workflows/sweep.yaml=refs/heads/main"
+	// secondFleet is a second Google service account, which jobFleetEnv lists as a VM service with
+	// no pins.
+	secondFleet = "second-fleet@example-project.iam.gserviceaccount.com"
+)
+
+// jobPodEnv is withK8sIssuer with the audience a pod's exchange token carries, which
+// BROKER_EXCHANGE_JOB_ACCOUNTS needs.
+func jobPodEnv() map[string]string {
+	e := withK8sIssuer()
+	e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch-exchange"
+	return e
+}
+
+// jobWorkflowEnv is validEnv with the GitHub issuer and audience a workflow run's token is
+// verified against, which BROKER_EXCHANGE_JOB_WORKFLOWS needs.
+func jobWorkflowEnv() map[string]string {
+	e := validEnv()
+	e["BROKER_EXCHANGE_GITHUB_ISSUER"] = "https://token.actions.githubusercontent.com"
+	e["BROKER_EXCHANGE_GITHUB_AUDIENCE"] = "dispatch-exchange"
+	return e
+}
+
+// jobFleetEnv is validVMEnv with secondFleet listed too, as the service example-other, so that
+// BROKER_VM_EXCHANGE_JOB_ACCOUNTS has two listed accounts to name.
+func jobFleetEnv() map[string]string {
+	e := validVMEnv()
+	e["BROKER_VM_SERVICES"] += " example-other=" + secondFleet
+	return e
+}
+
+// jobList is the job list exchange.ParseJobProjects reads from text.
+func jobList(t *testing.T, text string) exchange.JobProjects {
+	t.Helper()
+	job, err := exchange.ParseJobProjects(text)
+	if err != nil {
+		t.Fatalf("exchange.ParseJobProjects(%q): %v", text, err)
+	}
+	return job
+}
+
+// TestLoadReadsTheJobSettings pins the three job settings, one row for each identity kind: each
+// entry is read, in order, into an exchange entry that holds its identity, its projects as Job and
+// the session it fixes, if any, everything after the last separator, and that names no person and
+// no project. A VM job entry lands in its account's machine entry, beside its service and its
+// pins.
+func TestLoadReadsTheJobSettings(t *testing.T) {
+	const sweeper = "system:serviceaccount:example-ns:example-sweeper"
+	for _, row := range []struct {
+		setting string
+		env     func() map[string]string
+		value   string
+		got     func(Config) any
+		want    func(t *testing.T) any
+	}{
+		{
+			setting: "BROKER_EXCHANGE_JOB_ACCOUNTS",
+			env:     jobPodEnv,
+			value:   jobAccount + "=EXAMPLE=example-job:EXAMPLE=1\n " + sweeper + "=public,PRIVB,PRIVA",
+			got:     func(cfg Config) any { return cfg.ExchangeJobAccounts },
+			want: func(t *testing.T) any {
+				return []exchange.AccountEntry{
+					{Account: jobAccount, Job: jobList(t, "EXAMPLE"), Session: "example-job:EXAMPLE=1"},
+					{Account: sweeper, Job: jobList(t, "public,PRIVA,PRIVB")},
+				}
+			},
+		},
+		{
+			setting: "BROKER_EXCHANGE_JOB_WORKFLOWS",
+			env:     jobWorkflowEnv,
+			value:   jobWorkflow + "=public=sweep=1\texample-org/example-repo=.github/workflows/triage.yaml=refs/heads/main=ACME",
+			got:     func(cfg Config) any { return cfg.ExchangeJobWorkflows },
+			want: func(t *testing.T) any {
+				return []exchange.WorkflowEntry{
+					{Repository: "example-org/example-repo", Workflow: ".github/workflows/sweep.yaml", Ref: "refs/heads/main", Job: jobList(t, "public"), Session: "sweep=1"},
+					{Repository: "example-org/example-repo", Workflow: ".github/workflows/triage.yaml", Ref: "refs/heads/main", Job: jobList(t, "ACME")},
+				}
+			},
+		},
+		{
+			setting: "BROKER_VM_EXCHANGE_JOB_ACCOUNTS",
+			env:     jobFleetEnv,
+			value:   exampleVMServiceAccount + "=EXAMPLE=example-fleet-job " + secondFleet + "=public,PRIVA",
+			got:     func(cfg Config) any { return cfg.ExchangeGoogleAccounts },
+			want: func(t *testing.T) any {
+				return []exchange.GoogleEntry{
+					{
+						Account: exampleVMServiceAccount, Service: "example-service",
+						CloudProject: "example-project", Instance: "example-vm-*",
+						Job: jobList(t, "EXAMPLE"), Session: "example-fleet-job",
+					},
+					{Account: secondFleet, Service: "example-other", Job: jobList(t, "public,PRIVA")},
+				}
+			},
+		},
+	} {
+		t.Run(row.setting, func(t *testing.T) {
+			e := row.env()
+			e[row.setting] = row.value
+			cfg, err := Load(env(e))
+			if err != nil {
+				t.Fatalf("Load(%s=%q): %v", row.setting, row.value, err)
+			}
+			if got, want := row.got(cfg), row.want(t); !reflect.DeepEqual(got, want) {
+				t.Fatalf("Load(%s=%q) read %+v, want %+v", row.setting, row.value, got, want)
+			}
+		})
+	}
+}
+
+// TestLoadRefusesAJobEntryItCannotServe: each job setting refuses the start over an entry it
+// cannot read, and the refusal names the setting, quotes the entry and says which rule it breaks.
+// For each setting: a wrong number of fields, a blank identity, an identity no entry of its kind
+// may name, an identity named twice, and projects exchange.ParseJobProjects refuses.
+func TestLoadRefusesAJobEntryItCannotServe(t *testing.T) {
+	type refusal struct {
+		name, value string
+		// entry is the entry the refusal quotes, the value itself when empty.
+		entry string
+		// says is what the refusal says besides the setting and the entry: the words of the one
+		// refusal the row is for.
+		says string
+	}
+	seventeen := "public"
+	for i := range 17 {
+		seventeen += ",P" + strconv.Itoa(10+i)
+	}
+	// projectRefusals are the rows of projects ParseJobProjects refuses, each after prefix, the
+	// identity of an entry and its "=".
+	projectRefusals := func(prefix string) []refusal {
+		return []refusal{
+			{name: "seventeen private projects", value: prefix + seventeen, says: "17 private projects are named"},
+			{name: "a key that is no project key", value: prefix + "acme", says: strconv.Quote("acme") + " is not a project key"},
+			{name: "public after a key", value: prefix + "ACME,public", says: "public comes first"},
+			{name: "two keys without public", value: prefix + "ACME,OTHER", says: "2 projects are named without public first"},
+		}
+	}
+	for _, setting := range []struct {
+		name string
+		env  func() map[string]string
+		rows []refusal
+	}{
+		{
+			name: "BROKER_EXCHANGE_JOB_ACCOUNTS",
+			env:  jobPodEnv,
+			rows: append([]refusal{
+				{name: "an entry with no =", value: jobAccount, says: "must be <service account>=<projects>[=<session>] entries"},
+				{name: "a blank account", value: "=EXAMPLE", says: "must be <service account>=<projects>[=<session>] entries"},
+				{name: "an account that is no ServiceAccount subject", value: "example-job=EXAMPLE", says: "must name system:serviceaccount:<namespace>:<name> accounts"},
+				{name: "a namespace's default account", value: "system:serviceaccount:example-ns:default=EXAMPLE", says: "names a namespace's default service account"},
+				{name: "an account named twice", value: jobAccount + "=EXAMPLE " + jobAccount + "=public", entry: jobAccount + "=public", says: "names the service account " + jobAccount + " twice"},
+			}, projectRefusals(jobAccount+"=")...),
+		},
+		{
+			name: "BROKER_EXCHANGE_JOB_WORKFLOWS",
+			env:  jobWorkflowEnv,
+			rows: append([]refusal{
+				{name: "an entry of three fields", value: "example-org/example-repo=.github/workflows/sweep.yaml=EXAMPLE", says: "must be <repository>=<workflow path>=<ref>=<projects>[=<session>] entries"},
+				{name: "a blank ref", value: "example-org/example-repo=.github/workflows/sweep.yaml==EXAMPLE", says: "must be <repository>=<workflow path>=<ref>=<projects>[=<session>] entries"},
+				{name: "a workflow named twice", value: jobWorkflow + "=EXAMPLE " + jobWorkflow + "=public", entry: jobWorkflow + "=public", says: "names the workflow " + jobWorkflow + " twice"},
+			}, projectRefusals(jobWorkflow+"=")...),
+		},
+		{
+			name: "BROKER_VM_EXCHANGE_JOB_ACCOUNTS",
+			env:  jobFleetEnv,
+			rows: append([]refusal{
+				{name: "an entry with no =", value: exampleVMServiceAccount, says: "must be <service account email>=<projects>[=<session>] entries"},
+				{name: "a blank account", value: "=EXAMPLE", says: "must be <service account email>=<projects>[=<session>] entries"},
+				{name: "a project's default account", value: "123456789-compute@developer.gserviceaccount.com=EXAMPLE", says: "names a project's default service account"},
+				{name: "an account named twice", value: exampleVMServiceAccount + "=EXAMPLE " + exampleVMServiceAccount + "=public", entry: exampleVMServiceAccount + "=public", says: "names the service account " + exampleVMServiceAccount + " twice"},
+			}, projectRefusals(exampleVMServiceAccount+"=")...),
+		},
+	} {
+		for _, row := range setting.rows {
+			t.Run(setting.name+"/"+row.name, func(t *testing.T) {
+				e := setting.env()
+				e[setting.name] = row.value
+				cfg, err := Load(env(e))
+				if err == nil {
+					t.Fatalf("Load(%s=%q) loaded, ExchangeJobAccounts = %+v, ExchangeJobWorkflows = %+v, ExchangeGoogleAccounts = %+v; want a refusal", setting.name, row.value, cfg.ExchangeJobAccounts, cfg.ExchangeJobWorkflows, cfg.ExchangeGoogleAccounts)
+				}
+				entry := row.entry
+				if entry == "" {
+					entry = row.value
+				}
+				for _, want := range []string{setting.name, strconv.Quote(entry), row.says} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("Load(%s=%q): refusal %q does not say %s", setting.name, row.value, err, want)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestLoadRefusesAnIdentityAJobSettingAndAPersonSettingBothName: one identity has one answer, so
+// the start is refused when a job setting and a setting of the same kind that names a person, or
+// the read accounts, both list it, and when BROKER_EXCHANGE_JOB_ACCOUNTS and a
+// BROKER_EXCHANGE_ACCOUNTS entry naming neither a person nor a project (<account>==), whose token
+// writes as the account, both list one account. The refusal names both settings and the
+// identity, and where a row gives one, the reason a job's token cannot share it. Each setting
+// alone loads, so the refusal is the pair's.
+func TestLoadRefusesAnIdentityAJobSettingAndAPersonSettingBothName(t *testing.T) {
+	for _, row := range []struct {
+		name          string
+		env           func() map[string]string
+		other, value  string
+		job, jobValue string
+		identity      string
+		// says, when set, is the reason the refusal must give.
+		says string
+	}{
+		{
+			name:  "a pod's account in BROKER_EXCHANGE_ACCOUNTS",
+			env:   jobPodEnv,
+			other: "BROKER_EXCHANGE_ACCOUNTS", value: jobAccount + "=EXAMPLE=ada@example.com",
+			job: "BROKER_EXCHANGE_JOB_ACCOUNTS", jobValue: jobAccount + "=EXAMPLE",
+			identity: jobAccount,
+		},
+		{
+			name:  "a pod's account in BROKER_EXCHANGE_ACCOUNTS naming neither a person nor a project",
+			env:   jobPodEnv,
+			other: "BROKER_EXCHANGE_ACCOUNTS", value: jobAccount + "==",
+			job: "BROKER_EXCHANGE_JOB_ACCOUNTS", jobValue: jobAccount + "=EXAMPLE",
+			identity: jobAccount,
+			says:     "one account mints one kind of token, and only a job's names the account as its service and carries projects",
+		},
+		{
+			name:  "a pod's account in BROKER_EXCHANGE_READ_ACCOUNTS",
+			env:   jobPodEnv,
+			other: "BROKER_EXCHANGE_READ_ACCOUNTS", value: jobAccount + "=example-reader=example-reader-session",
+			job: "BROKER_EXCHANGE_JOB_ACCOUNTS", jobValue: jobAccount + "=public",
+			identity: jobAccount,
+		},
+		{
+			name:  "a workflow in BROKER_EXCHANGE_WORKFLOWS",
+			env:   jobWorkflowEnv,
+			other: "BROKER_EXCHANGE_WORKFLOWS", value: jobWorkflow + "=EXAMPLE=ada@example.com",
+			job: "BROKER_EXCHANGE_JOB_WORKFLOWS", jobValue: jobWorkflow + "=EXAMPLE",
+			identity: jobWorkflow,
+		},
+		{
+			name:  "a Google account in BROKER_VM_EXCHANGE_ACCOUNTS",
+			env:   jobFleetEnv,
+			other: "BROKER_VM_EXCHANGE_ACCOUNTS", value: exampleVMServiceAccount + "=EXAMPLE=ada@example.com",
+			job: "BROKER_VM_EXCHANGE_JOB_ACCOUNTS", jobValue: exampleVMServiceAccount + "=EXAMPLE",
+			identity: exampleVMServiceAccount,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			for _, alone := range []struct{ setting, value string }{{row.other, row.value}, {row.job, row.jobValue}} {
+				e := row.env()
+				e[alone.setting] = alone.value
+				if _, err := Load(env(e)); err != nil {
+					t.Fatalf("Load(%s=%q) alone: %v; want it to load, so that the refusal below is the pair's", alone.setting, alone.value, err)
+				}
+			}
+			e := row.env()
+			e[row.other] = row.value
+			e[row.job] = row.jobValue
+			_, err := Load(env(e))
+			if err == nil {
+				t.Fatalf("Load(%s=%q, %s=%q) loaded; want a refusal naming both settings", row.other, row.value, row.job, row.jobValue)
+			}
+			for _, want := range []string{row.other, row.job, row.identity} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Load(%s, %s): refusal %q does not name %s", row.other, row.job, err, want)
+				}
+			}
+			if row.says != "" && !strings.Contains(err.Error(), row.says) {
+				t.Errorf("Load(%s, %s): refusal %q does not say %s", row.other, row.job, err, row.says)
+			}
+		})
+	}
+}
+
+// TestLoadRefusesAJobSettingWithoutItsIssuer: each job setting needs the issuer whose tokens its
+// identities present, and the start is refused without it, naming the setting and what it needs:
+// the pod setting the exchange audience of the cluster, the workflow setting GitHub's issuer and
+// audience, and the VM setting the Google audience and an account BROKER_VM_SERVICES lists.
+func TestLoadRefusesAJobSettingWithoutItsIssuer(t *testing.T) {
+	for _, row := range []struct {
+		name, setting, value string
+		env                  func() map[string]string
+		names                []string
+	}{
+		{
+			name:    "a pod's account without the exchange audience",
+			setting: "BROKER_EXCHANGE_JOB_ACCOUNTS", value: jobAccount + "=EXAMPLE",
+			env:   withK8sIssuer,
+			names: []string{"BROKER_EXCHANGE_K8S_AUDIENCE"},
+		},
+		{
+			name:    "a workflow without GitHub's issuer",
+			setting: "BROKER_EXCHANGE_JOB_WORKFLOWS", value: jobWorkflow + "=EXAMPLE",
+			env:   validEnv,
+			names: []string{"BROKER_EXCHANGE_GITHUB_ISSUER", "BROKER_EXCHANGE_GITHUB_AUDIENCE"},
+		},
+		{
+			name:    "a Google account without the Google audience",
+			setting: "BROKER_VM_EXCHANGE_JOB_ACCOUNTS", value: exampleVMServiceAccount + "=EXAMPLE",
+			env:   validEnv,
+			names: []string{"BROKER_GOOGLE_OIDC_AUDIENCE"},
+		},
+		{
+			name:    "a Google account BROKER_VM_SERVICES does not list",
+			setting: "BROKER_VM_EXCHANGE_JOB_ACCOUNTS", value: secondFleet + "=EXAMPLE",
+			env:   validVMEnv,
+			names: []string{"BROKER_VM_SERVICES", secondFleet},
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			e := row.env()
+			e[row.setting] = row.value
+			_, err := Load(env(e))
+			if err == nil {
+				t.Fatalf("Load(%s=%q) loaded; want a refusal naming %v", row.setting, row.value, row.names)
+			}
+			for _, want := range append([]string{row.setting}, row.names...) {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Load(%s=%q): refusal %q does not name %s", row.setting, row.value, err, want)
+				}
+			}
+		})
 	}
 }
 

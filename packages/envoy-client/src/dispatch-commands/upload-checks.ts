@@ -3,13 +3,13 @@ import {
   ARTIFACT_NAME_EXISTS_RULE,
   artifactKindConflictRule,
   fileNameExistsRule,
-  PATH_KEEPS_BYTES,
   pathKeepsBytesOf,
+  PATH_KEEPS_BYTES,
 } from "@legion/contracts";
 import { actorText } from "../actor-text";
+import { messageFor } from "../errors";
 import { DispatchAnswerMissingError, DispatchAnswerNotKeptError } from "../dispatch-http";
 import { sniffPictureType } from "../dispatch-pictures";
-import { messageFor } from "../errors";
 import { dispatchAnswered } from "./failures";
 
 /** The document an upload under `name` would write the next version of: the owner's artifact

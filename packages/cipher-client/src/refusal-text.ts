@@ -46,6 +46,8 @@ const WORKFLOW_REF = "[A-Za-z0-9_./@-]{1,400}";
 const IDENTITY = `(?:${K8S_ACCOUNT}|${REPOSITORY}/${WORKFLOW_PATH}|${EMAIL})`;
 const FIXED_SESSION = "[A-Za-z0-9._:@/+-]{1,200}";
 const PROJECT_LIST = `${PROJECT_SLOT}(?: ${PROJECT_SLOT}){0,31}`;
+/** A job entry's list as its setting spells it: one key, or `public` and up to 16 private keys. */
+const JOB_LIST = `(?:public(?:,${PROJECT_SLOT}){0,16}|${PROJECT_SLOT})`;
 const SERVICE = "[A-Za-z0-9._-]{1,100}";
 const CLOUD_PROJECT = "[a-z][a-z0-9-]{4,29}";
 const INSTANCE = "[a-z0-9][a-z0-9-]{0,62}";
@@ -237,6 +239,15 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
     PROJECT_SLOT,
     PROJECT_LIST
   ),
+  // A job entry's list (`exchange.JobProjects`, as its setting spells it): one project key, or
+  // `public` and its private keys; the request named one key the list does not name.
+  policy(
+    "projectsFixed",
+    "%s's entry gives its token the projects %s, and the request named %s, which that list does not name",
+    IDENTITY,
+    JOB_LIST,
+    PROJECT_SLOT
+  ),
   // The broker's own audience check (`oauth/exchange.go`, `audience`), which wraps no sentinel.
   `${escapeRegExp("The subject token was refused: ")}${formatPattern("the subject token was not minted for %s, which is the audience this broker accepts from %s", [URI, URI])}\\.`,
 ];
@@ -271,12 +282,13 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   // the same person each time.
   `${PERSON_SLOT}'s credentials are held by Dispatch; they work again when \\k<person> signs in to Dispatch, or when Dispatch can confirm \\k<person> with Google again`,
   // A read trade's own refusals: the cut (`as_of`), the launcher credential a read trade never
-  // makes or moves, the holder's proof (`DPoP-Holder`), and the key a read token may not share
-  // with a launcher credential.
+  // makes or moves, the holder's proof (`DPoP-Holder`), the key a read token may not share
+  // with a launcher credential, and a job entry's read trade, whose token is minted whole.
   "The 'as_of' parameter names a cut, and only a trade that asks for the scope read may name one\\.",
   "The 'as_of' parameter is not an RFC 3339 time with at most six fractional digits\\.",
   "The 'as_of' parameter names the zero time, which is no cut: a trade that reads the present names no cut\\.",
   "The 'as_of' parameter names a time later than this trade, and a cut is a time that has passed\\.",
+  "The scope 'read' narrows a token to reading, and a job entry's token is minted whole, with no scope: ask for it without that scope\\.",
   "A read trade makes or moves no launcher credential, so it cannot send launcher_credential=true\\. Trade for read without the parameter\\.",
   `${PERSON_SLOT}'s sign-in on this machine holds no launcher credential yet, and a read trade makes none\\. Sign in with \`agent-secrets login\` first\\.`,
   `${PERSON_SLOT}'s sign-in on this machine holds a launcher credential that has lapsed, and a read trade renews none\\. One ordinary trade of the sign-in renews it, as \`agent-secrets\` makes; then trade for read again\\.`,

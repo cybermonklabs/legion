@@ -42,6 +42,7 @@ func runInSession(t *testing.T, binary, sock string, args ...string) (code int, 
 // logged in is not an agent session. identity exits 1 with the notice, where a helper still
 // enrolling with a credential gets exit 0 (TestIdentityWhileAHelperWithACredentialEnrolls).
 func TestIdentityOnAHelperWithoutALauncherCredential(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	binary := buildAgentSecrets(t)
 	sock := realHelper(t)
 	code, stdout, stderr := runInSession(t, binary, sock, "identity")
@@ -57,6 +58,7 @@ func TestIdentityOnAHelperWithoutALauncherCredential(t *testing.T) {
 // the login command. The time check rules out the 10 s wait: the command waits for nothing, timed
 // against no deadline, allowing for the time this process was held up (requireOnTime).
 func TestRegisterWaitReturnsAtOnceWithoutALauncherCredential(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireCommandOnTime, onTimeWithin at waits_test.go:245).
 	binary := buildAgentSecrets(t)
 	sock := realHelper(t)
 	cmd := exec.Command(binary, "register", "--wait", "10", "--exec", "--", "sh", "-c", "echo ran")
@@ -82,6 +84,7 @@ func TestRegisterWaitReturnsAtOnceWithoutALauncherCredential(t *testing.T) {
 // exits 0 silently. The broker here issues the machine login and refuses every enrollment, so the
 // session stays unenrolled for the whole test.
 func TestIdentityWhileAHelperWithACredentialEnrolls(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/oauth/device_authorization", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"device_code": "device-1", "user_code": "ABCD-EFGH", "verification_uri": "https://s", "expires_in": 900, "interval": 1})
@@ -119,6 +122,7 @@ func TestIdentityWhileAHelperWithACredentialEnrolls(t *testing.T) {
 // to sign, for a proof or for a request object, fails with identity's line rather than the
 // helper's raw code.
 func TestCommandsOnAHelperWithoutALauncherCredentialPrintTheNotice(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	binary := buildAgentSecrets(t)
 	sock := realHelper(t)
 	for _, args := range [][]string{
@@ -141,22 +145,27 @@ func TestCommandsOnAHelperWithoutALauncherCredentialPrintTheNotice(t *testing.T)
 // expired unapproved. login-status keeps the word the dotfiles launcher gate matches, "expired",
 // and says on stderr the cause the helper names (credential_dropped), in the words of the helper's
 // own journal line. A helper from before credential_dropped sets login_refused alone, and only for
-// a broker refusal, so that reads as one; with neither, "expired" is a login nobody approved.
+// a broker refusal, so that reads as one; with neither, "expired" is a login nobody approved, and
+// one whose last polls the broker did not answer says so (login_reason).
 func TestLoginStatusSaysWhyTheHelperDroppedItsCredential(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
+	const unreached = "the broker was unreachable or busy for the last 3 polls"
 	for _, tc := range []struct {
 		name    string
 		refused bool
 		dropped string
+		reason  string
 		want    string
 	}{
-		{"dropped at its expiry", true, "the launcher credential reached its expiry", "the launcher credential reached its expiry; run: agent-secrets machine login, and have a human approve it"},
-		{"refused, from a helper before credential_dropped", true, "", "the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); run: agent-secrets machine login, and have a human approve it"},
-		{"a login nobody approved", false, "", "the most recent machine login expired before anyone approved it; run: agent-secrets machine login, and have a human approve it"},
+		{"dropped at its expiry", true, "the launcher credential reached its expiry", "", "the launcher credential reached its expiry; run: agent-secrets machine login, and have a human approve it"},
+		{"refused, from a helper before credential_dropped", true, "", "", "the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); run: agent-secrets machine login, and have a human approve it"},
+		{"a login nobody approved", false, "", "", "the most recent machine login expired before anyone approved it; run: agent-secrets machine login, and have a human approve it"},
+		{"a login that lapsed while the broker was down", false, "", unreached, "the most recent machine login expired before anyone approved it; " + unreached + "; run: agent-secrets machine login, and have a human approve it"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sock := filepath.Join(shortTempDir(t), "h.sock")
-			fakeHelperAt(t, sock, helper.Response{OK: true, LoginState: "expired", LoginRefused: tc.refused, CredentialDropped: tc.dropped})
+			fakeHelperAt(t, sock, helper.Response{OK: true, LoginState: "expired", LoginReason: tc.reason, LoginRefused: tc.refused, CredentialDropped: tc.dropped})
 			stdout, stderr, exit := runAgentSecrets(t, binary, "http://unused", t.TempDir(),
 				[]string{"AGENT_SECRETS_HELPER_SOCK=" + sock}, "machine", "login-status")
 			want := "agent-secrets machine login-status: " + tc.want + "\n"
@@ -174,6 +183,7 @@ func TestLoginStatusSaysWhyTheHelperDroppedItsCredential(t *testing.T) {
 // machine command whose credential the broker refuses LAUNCHER_INVALID names the same cure, read
 // from the helper's sign-launcher answer (machine_identity).
 func TestAHelperInIdentityModeIsQuotedAndNamesNoMachineLogin(t *testing.T) {
+	t.Parallel()
 	const helperSays = "no machine credential; the helper's trade loop is trading this machine's identity for a new credential"
 	const none = "this machine's agent-secrets-helper holds no credential at the secrets broker"
 	answer := helper.Response{Code: helper.CodeNoCredential, Error: helperSays}

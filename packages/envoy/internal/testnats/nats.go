@@ -97,7 +97,7 @@ func Accounts(n int) MainOption { return func() { startAccounts = n } }
 // operator's NATS_NKEY_SEED or NATS_NKEY_SEED_FILE never reaches the tests' clients. A test that
 // means to pass a seed sets it itself.
 func init() {
-	os.Unsetenv("NATS_NKEY_SEED")
+	os.Unsetenv(seedVariable)
 	os.Unsetenv("NATS_NKEY_SEED_FILE")
 }
 
@@ -759,6 +759,34 @@ func (b waitEnd) pause() { time.Sleep(b.step(retryInterval)) }
 
 // String is the end, as a wait's failure names it.
 func (b waitEnd) String() string { return b.end.Format(time.RFC3339Nano) }
+
+// awaitSignal waits for a receive from signal, which its close also gives, until bound, the end of
+// the caller's wait, and reports false when that end came first: the caller fails its test naming
+// what it waited for and bound. The caller computes bound once (boundOf), before the first of its
+// rounds: testDeadline is halfway to the binary's deadline when less than twice startMargin is left,
+// so an end computed again each round moves later each round and is never reached. A signal already
+// given is taken even at the end; with no deadline (bounded false) the wait lasts a day (noDeadline).
+func awaitSignal(bound waitEnd, signal <-chan struct{}) bool {
+	select {
+	case <-signal:
+		return true
+	default:
+	}
+	wait := noDeadline
+	if bound.bounded {
+		if wait = time.Until(bound.end); wait <= 0 {
+			return false
+		}
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-signal:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
 
 // dial is the options of one connect of the wait, and what its caller runs once the connect has
 // returned a connection (retire). Each server's handshake is bounded by dialTimeout cut to what

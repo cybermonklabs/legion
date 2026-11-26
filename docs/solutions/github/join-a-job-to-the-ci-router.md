@@ -39,10 +39,11 @@ its own workflows; this page covers this repository only.
 1. **A gate in `.github/ci-gates/<job id>.py`** that says what the job reads (the section below);
    the `changes` job computes the job's filter from it.
 2. **An output of `changes`** for that filter.
-   Every output carries the dispatched term, since a dispatched run skips the filter step and selects every job:
-   `<filter>: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.<filter> }}`.
+   Every output carries the every-job term, since a run that selects every job (a dispatch of main, or one given `every-job`) skips the filter step:
+   `<filter>: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.<filter> }}`.
+   `ci-router-outputs.test.sh` fails an output without it, since a dispatch of main then leaves its job off.
    A slow suite carries the `full-ci` term too, with its own `lane:<filter>` label beside it (step 5 says why), and ends with the `'false'` that makes the skip `changes`' own:
-   `<filter>: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:<filter>')) && steps.filter.outputs.<filter> || 'false' }}`.
+   `<filter>: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:<filter>')) && steps.filter.outputs.<filter> || 'false' }}`.
    Which jobs are slow suites is `.github/ci-notes/ci.md`'s rule ("Which lane a job runs in: the pull request or the merge queue"): a test job above 10 minutes at the 90th percentile of its pull-request runs. A build, vet, format, typecheck or lint check runs on every pull request whatever its time, so it never takes this term. No job runs in part: a job that mixes such checks with slow tests is split in two, the checks in a job of their own that a pull request runs and the tests in the job that keeps the old id and takes this term, so each runs all its steps wherever it runs (step 4 says where the second job's steps go).
 3. **`needs: changes`** on the job, and
    `if: needs.changes.outputs.<filter> == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')`.

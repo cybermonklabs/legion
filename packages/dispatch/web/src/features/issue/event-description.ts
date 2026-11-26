@@ -5,13 +5,21 @@ import {
   type MessageDeliveryEventPayload,
 } from "@legion/contracts";
 import type { DispatchEvent } from "../../api/types";
+import {
+  askQuestionProse,
+  askResolvedParts,
+  eventProse,
+  type SentencePart,
+} from "../activity/SentenceParts";
 import { capabilityLabel } from "../conversation/delivery";
-import { type AgentPart, askResolutionParts } from "../refs/AgentName";
+import type { AgentPart } from "../refs/AgentName";
 import { type DeletablePost, postDeletion } from "../refs/post-marks";
+import { textSourceOf } from "../refs/text-references";
 
-/** An event's line in the Pinned tab, as `AgentPart`s: an agent it names keeps its identity
- *  until `EventBody` draws it through `AgentName`. */
-export function eventDescription(event: DispatchEvent): AgentPart[] {
+/** An event's line in the Pinned tab, as `SentencePart`s: an agent it names keeps its identity
+ *  until `EventBody` draws it through `AgentName`, and a text of the record it quotes stays a
+ *  part the one reader draws (`SentenceParts`). */
+export function eventDescription(event: DispatchEvent): SentencePart[] {
   const description = describe(event);
   return typeof description === "string" ? [description] : description;
 }
@@ -33,9 +41,12 @@ function deletedPost(payload: DeletablePost, kind: string): AgentPart[] | undefi
 /** A `block.invalid`'s line, in the Pinned tab and the Activity tab alike: a check block whose
  *  `ci_check` settlement refused, or an ask block it marked malformed. */
 export function blockInvalidDescription(payload: BlockInvalidEventPayload): string {
-  return payload.block_type === "check"
-    ? `refused check ${payload.block_id}: ${payload.reason}`
-    : `marked decision ${payload.block_id} malformed: ${payload.reason}`;
+  if (payload.block_type === "check") {
+    // The reason is the server's own words for why it refused the check.
+    return `refused check ${payload.block_id}: ${payload.reason}`;
+  }
+  // The reason is the server's own words for what is malformed in the block.
+  return `marked decision ${payload.block_id} malformed: ${payload.reason}`;
 }
 
 /**
@@ -61,7 +72,7 @@ function deliveryReceipt(
   return `${kind} ${receipt.state}: ${mode}`;
 }
 
-function describe(event: DispatchEvent): string | AgentPart[] {
+function describe(event: DispatchEvent): string | SentencePart[] {
   switch (event.type) {
     case "project.created":
       return `Project created: ${event.payload.name}`;
@@ -101,21 +112,27 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return "Kept a decision";
     case "priority.updated":
       return `Priority ${event.payload.change}: ${event.payload.id}`;
+    case "project.access_changed":
+      return `Access changed: ${event.payload.change.replace("_", " ")}`;
     case "ask.resolved":
-      return askResolutionParts(event.payload.resolution);
+      return askResolvedParts(event);
     case "ask.answered":
-      return event.payload.previous_answer === undefined
-        ? `Ask answered: ${event.payload.question}`
-        : `Answer changed: ${event.payload.question}`;
+      return [
+        event.payload.previous_answer === undefined ? "Ask answered: " : "Answer changed: ",
+        askQuestionProse(event),
+      ];
     case "ask.edited":
-      return `Ask edited: ${event.payload.question}`;
+      return ["Ask edited: ", askQuestionProse(event)];
     case "ask.handed_back":
-      return `Ask handed back: ${event.payload.question}`;
+      return ["Ask handed back: ", askQuestionProse(event)];
     case "ask.asked_of":
       // Who the ask waits on now. The payload names no login where it was handed to the
       // assignee of its own issue: an ask with no `asked_of` waits on that assignee, or on its
       // project's default assignee while the issue holds nobody.
-      return `Ask handed to ${event.payload.asked_of ?? "the issue's assignee"}: ${event.payload.question}`;
+      return [
+        `Ask handed to ${event.payload.asked_of ?? "the issue's assignee"}: `,
+        askQuestionProse(event),
+      ];
     case "comment.resolved":
       return "Comment resolved";
     case "comment.reopened":
@@ -131,13 +148,22 @@ function describe(event: DispatchEvent): string | AgentPart[] {
     case "message.created":
     case "message.answered":
       // The body is absent only on a deleted post, which deletedPost answers first.
-      return deletedPost(event.payload, "Message") ?? event.payload.body ?? "";
+      return (
+        deletedPost(event.payload, "Message") ?? [
+          eventProse(
+            event,
+            "payload.body",
+            event.payload.body ?? "",
+            textSourceOf("message", event.payload.id, event.issue_key)
+          ),
+        ]
+      );
     case "message.delivery":
       return deliveryReceipt("Message", event.payload);
     case "message.accepted":
       return "Message taken as the session's own turn";
     case "ask.opened":
-      return `Ask opened: ${event.payload.question}`;
+      return ["Ask opened: ", askQuestionProse(event)];
     case "ask.anchor_refreshed":
       return event.payload.anchor?.orphaned
         ? "Ask lost its quote"
@@ -145,7 +171,16 @@ function describe(event: DispatchEvent): string | AgentPart[] {
     case "comment.created":
     case "comment.answered":
       // The body is absent only on a deleted post, which deletedPost answers first.
-      return deletedPost(event.payload, "Comment") ?? event.payload.body ?? "";
+      return (
+        deletedPost(event.payload, "Comment") ?? [
+          eventProse(
+            event,
+            "payload.body",
+            event.payload.body ?? "",
+            textSourceOf("comment", event.payload.id, event.issue_key)
+          ),
+        ]
+      );
     case "comment.anchor_refreshed":
       return event.payload.anchor?.orphaned
         ? "Comment lost its quote"
@@ -213,6 +248,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
     case "result.recorded":
       return `Check ${event.payload.check_block_id} ${event.payload.verdict === "pass" ? "passed" : "failed"} at ${event.payload.commit_sha}, recorded by ${event.payload.role}${event.payload.issue === event.payload.check_issue ? "" : ` on ${event.payload.issue}`}`;
     case "result.retracted":
+      // The reason is shown as the characters it is, as the result it withdraws is: the reading
+      // list's `check-retraction-reason` (`DISPATCH_READING_SURFACES`).
       return `Check ${event.payload.check_block_id}'s result at ${event.payload.commit_sha} was retracted: ${event.payload.reason}`;
     case "issue.pull_request_attribution_changed":
       return `Pull request ${event.payload.repo}#${event.payload.number} moved from ${event.payload.from ?? "no issue"} to ${event.payload.to ?? "no issue"}, decided by ${event.payload.source}`;

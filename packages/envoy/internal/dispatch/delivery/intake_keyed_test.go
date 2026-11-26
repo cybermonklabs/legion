@@ -777,14 +777,19 @@ func TestAStoppedIntakeStaysStoppedAcrossAReconnectAndSubscribesAgain(t *testing
 // hand it back and be handed it again; the stop logs no failed drain, and the next process to bind
 // the durable handles the message.
 func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *testing.T) {
-	logs := captureLogs(t)
+	// The row requires that no component logged a line about a drain: the intakes, the duty leases
+	// and holds they take, and their NATS clients take the test's logger, and nothing else on the
+	// path (the store, GitHub's client) writes one. Serial: the one-second sleep after the publish,
+	// a quiet window in which the durable must deliver the stopping intake nothing, and the 5 s
+	// bound on the subscription's drop.
+	logs, logger := captureTestLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOne(fake)
 	github := fake.newTestClient()
 	t.Cleanup(held.release)
-	natsClient := intakeTestClient(t)
+	natsClient := intakeTestClient(t, bus.WithLogger(logger))
 	hooked := make(chan struct{}, 8)
 	natsClient.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		hooked <- struct{}{}
@@ -844,7 +849,7 @@ func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *test
 		}
 	}
 
-	runIntake(t, newIntake(tuningFor(t), intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	runIntake(t, newIntake(tuningFor(t), intakeTestClient(t, bus.WithLogger(logger)), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitAcknowledged(t, natsClient)
 	if events, want := held.of("2"), []string{"start 2", "end 2"}; !slices.Equal(events, want) {
 		t.Fatalf("pull request 2's events = %q, want %q: the next process handles the message published during the stop", events, want)

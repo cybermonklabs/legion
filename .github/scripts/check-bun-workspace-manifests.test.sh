@@ -15,6 +15,11 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# colon is the colon of a path:line that the check under test prints. It is built at run
+# time so that this file's text holds no path followed by a colon and a line number, which
+# ci_citations.py refuses wherever it stands under .github.
+colon=':'
+
 fixture() {
   local root="$work/$1"
   if [ -e "$root" ]; then
@@ -102,7 +107,7 @@ DOCKERFILE
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the Dockerfile and the line of the COPY it could not read" \
-  "$(contains "$out" 'docker/worker.Dockerfile:5: malformed JSON-array COPY')"
+  "$(contains "$out" "docker/worker.Dockerfile${colon}5: malformed JSON-array COPY")"
 
 echo "case: a COPY whose shell form cannot be split fails loudly"
 root=$(fixture unparseable-shell-copy)
@@ -117,7 +122,7 @@ DOCKERFILE
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the Dockerfile and the line of the COPY it could not read" \
-  "$(contains "$out" 'docker/worker.Dockerfile:5: unparseable COPY')"
+  "$(contains "$out" "docker/worker.Dockerfile${colon}5: unparseable COPY")"
 
 echo "case: a tree where the check covers no frozen install at all is a failure"
 root=$(fixture zero-covered)

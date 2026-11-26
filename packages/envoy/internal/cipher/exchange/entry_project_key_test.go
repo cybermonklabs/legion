@@ -14,7 +14,8 @@ import (
 // projectAccess's ParseProjects, with no log line naming the entry (seen against the real binary at
 // b10331eb0a with BROKER_EXCHANGE_ACCOUNTS=system:serviceaccount:agent-sessions:agent-session=priv=erin@example.com,
 // which booted and answered every pod trade 500 server_error, where the merge base minted). So the
-// set refuses it at boot, naming the entry, for each of the four settings that name a project.
+// set refuses it at boot, naming the entry, for each setting that names a project. A job entry's
+// projects are parsed before they reach the set, which refuses their key at that setting.
 func TestNewSetRefusesAnEntryWhoseProjectIsNoProjectKey(t *testing.T) {
 	for _, bad := range []string{"priv", "Acme", "A", "TOOLONGPROJ", "AC-ME", "ACME PRIV"} {
 		t.Run(bad, func(t *testing.T) {
@@ -42,6 +43,16 @@ func TestNewSetRefusesAnEntryWhoseProjectIsNoProjectKey(t *testing.T) {
 				}
 				if !strings.Contains(err.Error(), c.names) {
 					t.Errorf("NewSet refused the %s entry naming %q with %q, which does not name the entry %s", c.setting, bad, err, c.names)
+				}
+			}
+			for _, text := range []string{bad, "public," + bad, "public,ACME," + bad} {
+				job, err := exchange.ParseJobProjects(text)
+				if err == nil {
+					t.Errorf("ParseJobProjects(%q) = %v, want a refusal: every token a job entry of it minted would name a project no list holds", text, job)
+					continue
+				}
+				if !strings.Contains(err.Error(), `"`+bad+`"`) {
+					t.Errorf("ParseJobProjects(%q) refused with %q, which does not name the key %q", text, err, bad)
 				}
 			}
 		})

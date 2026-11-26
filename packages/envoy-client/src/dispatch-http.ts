@@ -33,6 +33,7 @@ import type {
   CreateProjectInput,
   CreateVersionInput,
   CredentialPendingResponse,
+  DispatchApiMethod,
   DispatchEvent,
   DispatchLimits,
   DispatchServiceErrorShape,
@@ -40,6 +41,7 @@ import type {
   EditArtifactInput,
   EditArtifactResponse,
   EditAskInput,
+  FileRoundTripInput,
   GraphEdgeKind,
   GraphReferences,
   Handoff,
@@ -57,6 +59,7 @@ import type {
   IssueSummary,
   IssueSummaryPage,
   ItemBlocks,
+  MarkdownRoundTripInput,
   MarkdownRoundTripResponse,
   Message,
   MessageRead,
@@ -72,6 +75,7 @@ import type {
   RelatedCheckInput,
   ResolveAskInput,
   SearchResponse,
+  SearchResultKind,
   SessionAnswersResponse,
   SpecCheckResult,
   SpecCheckResultInput,
@@ -102,6 +106,7 @@ import {
   retryNoRoute,
   type Sleep,
   sleep,
+  TEXT_REFUSAL_HEADER,
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
@@ -132,6 +137,25 @@ export interface ArtifactFileVersion {
   readonly bytes: Uint8Array;
 }
 
+/**
+ * What `readRoute` and `sendRoute` answer: `payload`, Dispatch's own JSON (a 2xx typed JSON whose
+ * body parses and that carries no `Content-Disposition: attachment`), or, for every other 2xx,
+ * `body`, the bytes that came, with `type`, the answer's Content-Type where it named one. A file
+ * version answers its bytes under its own MIME type, a document version read with
+ * `?download=true` its Markdown, both as an attachment, which is stored content whatever its type
+ * (JSON included) and is never parsed; a bodiless 204 or 205 answers no bytes.
+ */
+export type RouteAnswer =
+  | { readonly payload: unknown }
+  | { readonly body: Uint8Array; readonly type: string | undefined };
+
+/** The members of Dispatch's refusal beside its code and its message that `DispatchServiceError`
+ *  keeps: one list, which the refusal reader (`DispatchRefusal`) and the error's own details
+ *  both name, so a member one of them carries cannot be dropped by the other. */
+type RefusalMember = "candidates" | "changed" | "current" | "hint" | "issues" | "mismatches";
+
+type RefusalMembers = { readonly [Member in RefusalMember]: DispatchServiceErrorShape[Member] };
+
 export class DispatchServiceError extends Error {
   override readonly name = "DispatchServiceError";
   /**
@@ -146,6 +170,16 @@ export class DispatchServiceError extends Error {
   readonly issues: DispatchServiceErrorShape["issues"] | undefined;
   /** A status change's refusal: the entry of each step that wrote before it. */
   readonly changed: DispatchServiceErrorShape["changed"] | undefined;
+  /**
+   * Whether Dispatch marked the answer as its refusal of a text for the text alone
+   * (`TEXT_REFUSAL_HEADER`), whatever its status: the refusals of the two markdown round trips,
+   * inline and of a file, which are an upload's refusals of the same text. False for any other
+   * answer.
+   */
+  readonly textRefusal: boolean;
+  /** Dispatch's `hint`, where to look next, which only its answer to a path no route serves
+   *  carries (`DispatchServiceErrorShape["hint"]`); `messageFor` prints it after the message. */
+  readonly hint: string | undefined;
 
   constructor(
     readonly code: string,
@@ -153,10 +187,8 @@ export class DispatchServiceError extends Error {
     message: string,
     /** The members of Dispatch's refusal beside its message that a caller reads off the error:
      *  its answer's JSON, or another refusal whose members it keeps. */
-    details: {
-      readonly [Member in "candidates" | "changed" | "current" | "issues" | "mismatches"]?:
-        | DispatchServiceErrorShape[Member]
-        | undefined;
+    details: { readonly [Member in RefusalMember]?: RefusalMembers[Member] | undefined } & {
+      readonly textRefusal?: boolean | undefined;
     } = {},
     /** The wait the answer's `Retry-After` names, and null where it names none. */
     readonly retryAfterMs: number | null = null
@@ -167,17 +199,21 @@ export class DispatchServiceError extends Error {
     this.mismatches = details.mismatches;
     this.issues = details.issues;
     this.changed = details.changed;
+    this.textRefusal = details.textRefusal ?? false;
+    this.hint = details.hint;
   }
 }
 
 /**
  * An answer that is not Dispatch's JSON, so whatever answers in its place (a proxy, a load
  * balancer, an auth gateway, a captive portal) wrote it: a non-2xx, or a 2xx that a read, a PUT or
- * a DELETE could not read as JSON (`#response`; a POST's or a PATCH's 2xx is the write table's,
- * `answerEvent`). `answer` says what came back and `advice` what asking again can do, judged from
- * the method and the status alone; the message joins them. A caller that knows more about what
- * its own request did gives `answer` advice of its own instead. `code` is `HTTP_<status>`, as for
- * any refusal that names no code.
+ * a DELETE of a route this client reads as JSON could not read as JSON (`#response`). A keyed
+ * write's 2xx is the write table's (`answerEvent`), and `readRoute` and `sendRoute`, which send a
+ * route their caller wrote, give a 2xx's body that is not Dispatch's JSON back as it came
+ * (`#route`). `answer` says what came back and `advice` what asking again can do, judged from the
+ * method and the status alone; the message joins them. A caller that knows more about what its
+ * own request did gives `answer` advice of its own instead. `code` is `HTTP_<status>`, as for any
+ * refusal that names no code.
  */
 export class DispatchGatewayError extends DispatchServiceError {
   override readonly fromDispatch = false;
@@ -205,6 +241,25 @@ export class DispatchGatewayError extends DispatchServiceError {
     super(`HTTP_${status}`, status, message);
     this.transient = gatewayClears(status);
     this.mayHaveReachedDispatch = reachesDispatch(status);
+  }
+}
+
+/** The code of `DispatchCredentialEchoError`, in Dispatch's form: no status of its own, since any
+ *  2xx can carry such a body. */
+export const CREDENTIAL_ECHOED = "CREDENTIAL_ECHOED";
+
+/** A client refusal of a 2xx that holds a credential this command presented. `whoami` returns
+ *  identity metadata, and `POST /api/v1/me/agent-tokens` returns a newly minted token. Neither
+ *  echoes the caller's credential. Quote nothing from the request or body in this refusal. */
+export class DispatchCredentialEchoError extends DispatchServiceError {
+  override readonly fromDispatch = false;
+
+  constructor(status: number) {
+    super(
+      CREDENTIAL_ECHOED,
+      status,
+      `The answer had HTTP status ${status} (2xx), so a write may have been made. The body held a credential this command presented. It is not printed. Something in Dispatch's place appears to have echoed the request. Check whether any write took effect before sending it again.`
+    );
   }
 }
 
@@ -317,14 +372,15 @@ export class DispatchWriteLandedError extends Error {
 }
 
 /**
- * A call that writes nothing (`markdownRoundTrip`, `related`, `dryRunResult`) whose repeat under
- * its key Dispatch answered with a replayed 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT`: Dispatch
- * kept no copy of the answer, and the call made nothing, so there is nothing to read back and no
- * landing. The client asks such a call once more under a new key before it throws this
- * (`#writingNothing`); this is what reaches the caller when that ask is answered the same way. It
- * is no refusal, so it is no `DispatchServiceError`, and no `DispatchWriteLandedError`, which says
- * a write was made. Its message is the one line a session reads: the call wrote nothing, Dispatch
- * kept no copy of its answer, and to run the command again, which asks under a new key.
+ * A call that writes nothing (`markdownRoundTrip`, `fileRoundTrip`, `related`, `dryRunResult`)
+ * whose repeat under its key Dispatch answered with a replayed 2xx reading
+ * `IDEMPOTENCY_ANSWER_NOT_KEPT`: Dispatch kept no copy of the answer, and the call made nothing, so
+ * there is nothing to read back and no landing. The client asks such a call once more under a new
+ * key before it throws this (`#writingNothing`); this is what reaches the caller when that ask is
+ * answered the same way. It is no refusal, so it is no `DispatchServiceError`, and no
+ * `DispatchWriteLandedError`, which says a write was made. Its message is the one line a session
+ * reads: the call wrote nothing, Dispatch kept no copy of its answer, and to run the command
+ * again, which asks under a new key.
  */
 export class DispatchAnswerNotKeptError extends Error {
   override readonly name = "DispatchAnswerNotKeptError";
@@ -345,6 +401,9 @@ export class DispatchAnswerNotKeptError extends Error {
   }
 }
 
+/** `value`, a parsed body, as Dispatch's error shape: its members where it is an object, and none
+ *  where it is not, each read unchecked. A body is Dispatch's own refusal where its `error` is a
+ *  string (`refusalIn`). */
 function asErrorShape(value: unknown): DispatchServiceErrorShape {
   return typeof value === "object" && value !== null ? (value as DispatchServiceErrorShape) : {};
 }
@@ -361,6 +420,43 @@ function isJson(response: Response): boolean {
     mediaType === "application/json" ||
     (mediaType.length > "+json".length && mediaType.endsWith("+json"))
   );
+}
+
+/**
+ * Whether an answer's `Content-Disposition` names the disposition type `attachment`, with or
+ * without parameters and letter case aside, as RFC 6266 reads it. Dispatch sets it on every
+ * stored file version and on a document version read with `?download=true`
+ * (`attachmentDisposition`, packages/envoy/internal/dispatch/api/artifact_files.go): stored
+ * content, whatever its Content-Type says.
+ */
+function isAttachment(response: Response): boolean {
+  const [type = ""] = (response.headers.get("content-disposition") ?? "").split(";");
+  return type.trim().toLowerCase() === "attachment";
+}
+
+/** Check decoded JSON keys and strings as well: an escape in the source can hide a credential
+ *  the CLI would print after parsing. Use a stack so deeply nested JSON cannot overflow a
+ *  recursive check. */
+function jsonHoldsCredential(payload: unknown, credentials: ReadonlySet<string>): boolean {
+  const pending: unknown[] = [payload];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value === "string") {
+      for (const credential of credentials) {
+        if (value.includes(credential)) return true;
+      }
+    } else if (value !== null && typeof value === "object") {
+      const members = value as Record<string, unknown>;
+      for (const key in members) {
+        if (!Object.hasOwn(members, key)) continue;
+        for (const credential of credentials) {
+          if (key.includes(credential)) return true;
+        }
+        pending.push(members[key]);
+      }
+    }
+  }
+  return false;
 }
 
 /** Whether `error` is a Dispatch process's answer that it has no route for the request (`404
@@ -497,6 +593,9 @@ export interface SearchOptions {
   readonly project?: string;
   readonly limit?: number;
   readonly offset?: number;
+  /** The kinds to rank, count and page (`SEARCH_KINDS`): `#url` writes one `kind=` per entry,
+   *  which is how the route reads it. With none named the search reads every kind it indexes. */
+  readonly kind?: readonly SearchResultKind[];
 }
 
 /** One node's edges: `to` reads what points at it, `from` what it points to; exactly one. */
@@ -618,6 +717,13 @@ interface EncodedBody {
   readonly type: string;
 }
 
+/** A request's answer and the credential headers sent to get it, including any stale attempt. */
+interface SentRequest {
+  readonly answer: Response;
+  readonly presented: Readonly<Record<string, string>>;
+  readonly stalePresentation?: Readonly<Record<string, string>>;
+}
+
 /**
  * The size from which an attempt's body goes out as a stream read a chunk at a time
  * (`STREAMED_BODY_CHUNK`), so each read of a chunk counts as the attempt's progress.
@@ -683,10 +789,10 @@ interface WriteCall {
   readonly row: WriteRow;
   readonly request: string;
   /**
-   * Whether the call writes: false for a conversion (`markdownRoundTrip`), which Dispatch runs
-   * without storing anything. Its table state never leaves `nothing-sent` (`writeStep`), so it
-   * keeps the answers it had before the table existed: a no route to the end is the route
-   * absent, and a refusal is the refusal.
+   * Whether the call writes: false for a conversion (`markdownRoundTrip`, `fileRoundTrip`) and for
+   * a dry run (`dryRunResult`), which Dispatch runs without storing anything. Its table state
+   * never leaves `nothing-sent` (`writeStep`), so it keeps the answers it had before the table
+   * existed: a no route to the end is the route absent, and a refusal is the refusal.
    */
   readonly writes: boolean;
   readonly progress: WriteProgress;
@@ -729,6 +835,35 @@ function parsedJson(response: Response, text: string): ParsedJson {
   } catch {
     return undefined;
   }
+}
+
+/** Dispatch's own refusal, as an answer carries it: its code, where it names one, its text, and
+ *  the members some refusals carry beside them, which `DispatchServiceError` keeps. */
+interface DispatchRefusal extends RefusalMembers {
+  readonly code: string | undefined;
+  readonly error: string;
+}
+
+/**
+ * Dispatch's own refusal in `json`, an answer's body parsed (`parsedJson`), or undefined where the
+ * answer is none: its body is typed JSON (`isJson`) that parses to an object whose `error` is a
+ * string, as Dispatch writes every refusal, and its `code` counts only where it is a string. The
+ * rule `writeAnswer` and `#payloadOf` read a refusal by; `tokenNotLive` reads a 401's code alone,
+ * whatever its `error`.
+ */
+function refusalIn(json: ParsedJson): DispatchRefusal | undefined {
+  const shape = asErrorShape(json?.value);
+  if (typeof shape.error !== "string") return undefined;
+  return {
+    code: typeof shape.code === "string" ? shape.code : undefined,
+    error: shape.error,
+    candidates: shape.candidates,
+    changed: shape.changed,
+    current: shape.current,
+    hint: typeof shape.hint === "string" ? shape.hint : undefined,
+    issues: shape.issues,
+    mismatches: shape.mismatches,
+  };
 }
 
 /**
@@ -788,16 +923,15 @@ async function writeAnswer(response: Response, echoed: boolean): Promise<WriteAn
   const text = await response.text();
   const typed = isJson(response);
   const json = parsedJson(response, text);
-  const shape = response.ok ? {} : asErrorShape(json?.value);
-  const own = typeof shape.error === "string";
+  const refusal = response.ok ? undefined : refusalIn(json);
   return {
     response,
     malformed: text !== "" && typed && json === undefined,
     notJson: text === "" || !typed,
     text,
     json,
-    code: own ? shape.code : undefined,
-    error: own ? (shape.error as string) : undefined,
+    code: refusal?.code,
+    error: refusal?.error,
     replayed: response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1",
     echoed,
   };
@@ -831,6 +965,16 @@ function isStoredKeyStatus(status: number): boolean {
  *   attempt still runs.
  * After those, a non-2xx is final (`judged`) only where it names exactly this request's key back,
  * as every answer of the keyed layer does, and:
+ * The table's event for an answer (`WriteEvent`, write-outcome.ts). A 2xx is `applied` once its
+ * body was read whole, except where it is no answer of Dispatch's (`foreign-2xx`): its body is
+ * empty or not JSON-typed where its status carries one (`notJson`), or it lacks exactly this
+ * request's key after an earlier answer of the call carried it (`keyEchoed`), since Dispatch's
+ * keyed layer answers every keyed write with the key once it reads it (`keyedWrites`,
+ * request_keys.go). A 2xx whose body is not the JSON it says it is was cut short on the way
+ * (`body-malformed`). A refusal Dispatch marks as its refusal of a text for the text alone
+ * (`TEXT_REFUSAL_HEADER`) is its verdict on that text whatever its status, a 5xx among them:
+ * asking again gets the same answer, so it is never asked again. After the retries
+ * (`retriesUnderKey`, `409 KEY_IN_FLIGHT` among them), a non-2xx is final (`judged`) when:
  * - it carries `Idempotency-Replayed: ?1`, a stored replay or a recovery replay;
  * - it is `409 KEY_COMMITTED`, a write that landed (`#payloadOf` throws it as landed);
  * - it is `422 KEY_REUSED`: every attempt of a call carries the call's one key (`#writeCall`) and
@@ -863,7 +1007,9 @@ function answerEvent(answer: WriteAnswer, canTellDeadToken: boolean): WriteEvent
   }
   if (status === 401 && answer.echoed) return "uncommitted-401";
   if (tokenNotCheckedAnswer(status, answer.code)) return "try-later";
-  if (retriesUnderKey(status, answer.code)) {
+  const textRefusal =
+    answer.error !== undefined && answer.response.headers.has(TEXT_REFUSAL_HEADER);
+  if (!textRefusal && retriesUnderKey(status, answer.code)) {
     if (status === 409) return "in-flight";
     return status >= 500 ? "server-error" : "try-later";
   }
@@ -918,8 +1064,9 @@ function stoppedEvent(
 const BROKER_TOKEN_NOT_ACTIVE = "BROKER_TOKEN_NOT_ACTIVE";
 
 /**
- * Whether `response` is Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE`. Its JSON is read from a clone,
- * so the body stays whole for whoever reads the answer.
+ * Whether `response` is Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE`, read by its JSON's code alone,
+ * whatever its `error`. Its JSON is read from a clone, so the body stays whole for whoever reads
+ * the answer.
  */
 async function tokenNotLive(response: Response): Promise<boolean> {
   if (response.status !== 401 || !isJson(response)) return false;
@@ -984,10 +1131,12 @@ const GATEWAY_PAGE = "which looks like a proxy or gateway page rather than Dispa
 /**
  * What asking again can do once a gateway answered `method` with `status`. A status that cannot
  * clear answers the same request the same way. One that can (`gatewayClears`) may clear for a
- * read, and for a 2xx, which reaches here only for a read, a PUT or a DELETE (`#response`), none
- * of which writes twice. A write answered so may already have taken effect only when the request
- * reached Dispatch (`reachesDispatch`), where a blind retry could apply it twice; otherwise it did
- * not, and a retry may succeed as for a read.
+ * read, and for a 2xx, which reaches here only for a read, a PUT or a DELETE, none of which writes
+ * twice: a keyed write's 2xx is the write table's (`#endWrite` reads it, never `#payloadOf`), and
+ * `#route` gives every 2xx's body that is not Dispatch's JSON back as it came, or refuses one that
+ * holds a credential it presented (`DispatchCredentialEchoError`). A write answered so may already
+ * have taken effect only when the request reached Dispatch (`reachesDispatch`), where a blind
+ * retry could apply it twice; otherwise it did not, and a retry may succeed as for a read.
  */
 function gatewayAdvice(method: string, status: number): string {
   if (!gatewayClears(status)) {
@@ -1277,6 +1426,23 @@ function keyNamedBack(response: Response): string {
   return (response.headers.get(IDEMPOTENCY_KEY_HEADER)?.trim() ?? "").replace(/^"(.*)"$/, "$1");
 }
 
+/** What a `DispatchClient` is built with beside its URL, its credential and its fetch. */
+export interface DispatchClientOptions {
+  readonly signal?: AbortSignal | undefined;
+  /** The client's own deadline, counted from now: `DISPATCH_TOOL_DEADLINE_MS` when absent. A
+   *  maker with a budget of its own names it here rather than as a timed `signal`, so the
+   *  credential is given that budget less the request's reserve (`#credentialSignal`). */
+  readonly deadlineMs?: number | undefined;
+  readonly writeRetry?: DispatchWriteRetry | undefined;
+  readonly sleep?: Sleep | undefined;
+  /** Whether a request a Dispatch process answered with no route for it is asked again
+   *  (`#noRoute`), true by default. False runs each request once and throws that answer as it
+   *  came (a `DispatchServiceError` `isNoRoute` recognises), for a caller that has an answer
+   *  of its own to a missing route and wants it at once, rather than after the waits of
+   *  `NO_ROUTE_RETRY_DELAYS_MS`. */
+  readonly retryNoRoute?: boolean | undefined;
+}
+
 /**
  * JSON HTTP client for Dispatch's native-tool API. Every request goes through `#send`, where each
  * write (POST or PATCH) carries an `Idempotency-Key` of its own and asks again under it as
@@ -1324,21 +1490,7 @@ export class DispatchClient {
     baseUrl: string,
     credential: RequestCredential,
     readonly fetchImpl: typeof fetch = fetch,
-    options: {
-      readonly signal?: AbortSignal | undefined;
-      /** The client's own deadline, counted from now: `DISPATCH_TOOL_DEADLINE_MS` when absent. A
-       *  maker with a budget of its own names it here rather than as a timed `signal`, so the
-       *  credential is given that budget less the request's reserve (`#credentialSignal`). */
-      readonly deadlineMs?: number | undefined;
-      readonly writeRetry?: DispatchWriteRetry | undefined;
-      readonly sleep?: Sleep | undefined;
-      /** Whether a request a Dispatch process answered with no route for it is asked again
-       *  (`#noRoute`), true by default. False runs each request once and throws that answer as it
-       *  came (a `DispatchServiceError` `isNoRoute` recognises), for a caller that has an answer
-       *  of its own to a missing route and wants it at once, rather than after the waits of
-       *  `NO_ROUTE_RETRY_DELAYS_MS`. */
-      readonly retryNoRoute?: boolean | undefined;
-    } = {}
+    options: DispatchClientOptions = {}
   ) {
     this.#credential = credential;
     // Its user info held, as the Envoy client's is (`holdUrlUserinfo`).
@@ -1453,14 +1605,43 @@ export class DispatchClient {
   }
 
   /** `POST /api/v1/markdown/round-trip`: the markdown Dispatch would store for this text. The
-   *  route writes nothing: it parses the text and renders it again, as a document write does, so
-   *  a caller compares the answer with the text it holds and refuses a text the store would
-   *  change. An answer Dispatch kept no copy of is asked for again (`#writingNothing`). */
-  async markdownRoundTrip(markdown: string): Promise<string> {
+   *  route writes nothing: it checks the text as an upload checks it, parses it and renders it
+   *  again, as that upload's write does, so a caller compares the answer with the text it holds
+   *  and refuses a text the store would change. A text every upload refuses for the text alone is
+   *  refused here in the upload's own words. With `newDocument`, the request asks for the
+   *  refusals only a new document's seed makes too (`new_document`), and the answer is a new
+   *  document's; without it, which is the body every Dispatch with the route takes, Dispatch
+   *  answers as the most permissive replacement takes the text: with the rendering a replacement
+   *  over a document already holding what the text holds stores, or with a refusal every
+   *  replacement makes. */
+  async markdownRoundTrip(markdown: string, newDocument = false): Promise<string> {
+    return this.#roundTrip(["api", "v1", "markdown", "round-trip"], { markdown }, newDocument);
+  }
+
+  /** `POST /api/v1/markdown/file-round-trip`: `markdownRoundTrip` of a file's bytes, sent as
+   *  base64 in the body's `file`, with `newDocument` as `markdownRoundTrip` takes it. Dispatch
+   *  checks them as bytes, as it checks an upload's file part, so a file holding a byte that is
+   *  not UTF-8 is refused as its upload is. A Dispatch without this route answers 404 or 405. */
+  async fileRoundTrip(bytes: Uint8Array, newDocument = false): Promise<string> {
+    const file = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+    return this.#roundTrip(["api", "v1", "markdown", "file-round-trip"], { file }, newDocument);
+  }
+
+  /** The round trip at `path` of `body`, which writes nothing (`writes: false`), asking for a new
+   *  document's refusals too where `newDocument` (`new_document`). The member is left out
+   *  otherwise, so the body is the one a Dispatch before the member takes. An answer Dispatch
+   *  kept no copy of is asked for again (`#writingNothing`). */
+  async #roundTrip(
+    path: string[],
+    body: MarkdownRoundTripInput | FileRoundTripInput,
+    newDocument: boolean
+  ): Promise<string> {
     const answer: MarkdownRoundTripResponse = await this.#writingNothing(
-      ["api", "v1", "markdown", "round-trip"],
-      WRITE_ROWS.markdownRoundTrip,
-      { markdown }
+      path,
+      path[path.length - 1] === "file-round-trip"
+        ? WRITE_ROWS.fileRoundTrip
+        : WRITE_ROWS.markdownRoundTrip,
+      newDocument ? { ...body, new_document: true } : body
     );
     return answer.markdown;
   }
@@ -1589,8 +1770,12 @@ export class DispatchClient {
    *  running session, or any human, holds it; 409 CLAIM_CONTENDED when the holder changed twice
    *  while the request ran, so nothing was applied. The answer's `legion_managed_status` says
    *  whether the Legion daemon owns this issue's status — true when the issue carries the
-   *  `legion` label in any case or sits under one that does, where a status anyone else writes
-   *  is undone. */
+   *  `legion` label in any case or sits under one of its own project that does. On such an
+   *  issue, where Dispatch runs with `DISPATCH_LEGION_STATUS_SCOPE` on, it refuses a status
+   *  write from a credential that holds neither the `person` nor the `legion-status` scope
+   *  (403 `LEGION_STATUS_SCOPE_REQUIRED`), but for `done`, `backlog`, `icebox` or `triage` from
+   *  an architect of an issue above with its own broker token. Otherwise the daemon undoes a
+   *  status anyone else writes. */
   async claimIssue(issue: string, input: { readonly actor?: Actor } = {}): Promise<ClaimedIssue> {
     return this.#write(
       "POST",
@@ -1731,6 +1916,36 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "limits"]);
   }
 
+  /** `GET <path>`, for `dispatch api`: one read of a route no method here names. `path` begins
+   *  `/api/v1` and may carry a query, and the contract's rule for it (`dispatch_api`) refuses a
+   *  scheme, a host and a dot segment, so it resolves under this client's server as every other
+   *  route does (`#url`). Answers Dispatch's JSON, or any other 2xx's body as the bytes that
+   *  came, an attachment's whatever its type (`RouteAnswer`, `#route`), and refuses a 2xx whose
+   *  body holds a credential the request presented (`DispatchCredentialEchoError`).
+   *
+   *  It sends the GET through one `#send` (once, and once more only after Dispatch answers that
+   *  the token presented is not live) and throws a refusal as `#payloadOf` throws it, an answer
+   *  of no route (`404 NOT_FOUND`, "no route for …") included: unlike every other request this
+   *  client makes, it skips `#noRoute`, so it neither sends that request again nor turns the
+   *  answer into `DispatchNoRouteError`. The caller wrote this path, and a caller-written path
+   *  Dispatch has no route for is far more often a wrong path than half of a release in progress,
+   *  so Dispatch's own refusal, which names the route, is printed as it came. */
+  async readRoute(path: string): Promise<RouteAnswer> {
+    return this.#route("GET", path);
+  }
+
+  /** `<method> <path>`, for `dispatch api --method`: one write of a route no method here names,
+   *  `path` resolved as `readRoute` resolves it, with `body`, where given, sent as written as
+   *  the request's JSON body. Like `readRoute` it goes through one `#send`, skipping `#noRoute`,
+   *  and answers as `readRoute` does: Dispatch's JSON, any other 2xx's body as it came, the
+   *  refusal of a 2xx whose body holds a credential it presented, or Dispatch's refusal thrown.
+   *  It is no write of `#write`'s: it goes once, and once more only after Dispatch answers that
+   *  the token it presented is not live (Dispatch authenticated nothing, so nothing ran), with no
+   *  redirect followed and no `Idempotency-Key`, so a caller that repeats it decides that itself. */
+  async sendRoute(method: DispatchApiMethod, path: string, body?: string): Promise<RouteAnswer> {
+    return this.#route(method, path, body);
+  }
+
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
    *  own order (the owning issue's priority, then whose turn it is, then the latest activity),
    *  which no reader re-sorts. `me` is the caller, and keeps the rows waiting on them — the asks
@@ -1771,6 +1986,24 @@ export class DispatchClient {
   /** `GET /api/v1/projects`: every project, ordered by key. */
   async listProjects(): Promise<Project[]> {
     return this.#json("GET", ["api", "v1", "projects"]);
+  }
+
+  /** `PUT /api/v1/projects/{key}/proven-sessions`: turn the project's proven-sessions setting on.
+   *  A bearer names its session in `actor`. It answers the project as `listProjects` lists it. A
+   *  token scoped to another project is 403 PROJECT_SCOPE. */
+  async turnOnProvenSessions(
+    project: string,
+    input: { readonly actor?: Actor } = {}
+  ): Promise<Project> {
+    return this.#json("PUT", ["api", "v1", "projects", project, "proven-sessions"], input);
+  }
+
+  /** `DELETE /api/v1/projects/{key}/proven-sessions`: turn the project's proven-sessions setting
+   *  off. The route needs the person scope, so a credential without it is 403
+   *  OAUTH_SCOPE_REQUIRED, and its writer is the person the credential acts for. It answers the
+   *  project as `listProjects` lists it. A token scoped to another project is 403 PROJECT_SCOPE. */
+  async turnOffProvenSessions(project: string): Promise<Project> {
+    return this.#json("DELETE", ["api", "v1", "projects", project, "proven-sessions"]);
   }
 
   /** `GET /api/v1/projects/{key}/architecture-sources`: the project's architecture sources, one
@@ -2287,7 +2520,7 @@ export class DispatchClient {
   async fileVersion(id: string, version: number): Promise<ArtifactFileVersion> {
     const url = this.#url(["api", "v1", "artifacts", id, "versions", String(version)]);
     return this.#noRoute(async () => {
-      const response = await this.#send("GET", url, undefined, "*/*");
+      const { answer: response } = await this.#send("GET", url, undefined, "*/*");
       if (!response.ok) return this.#response<never>("GET", url, response);
       return {
         mime: response.headers.get("Content-Type") ?? "application/octet-stream",
@@ -2474,8 +2707,9 @@ export class DispatchClient {
   }
 
   /** `GET /api/v1/projects/{key}/plans`: each finished issue of the project, newest close first,
-   *  with its plan, each retro's rating, its time and its count of failed steps. `since` and
-   *  `until` bound the close to `[since, until)`, and a bound left out is not sent. */
+   *  with its plan, each retro's rating, its time, its count of failed steps, and the experiment
+   *  and the variant the step records of its newest run name, null where they name none. `since`
+   *  and `until` bound the close to `[since, until)`, and a bound left out is not sent. */
   async listProjectPlans(
     project: string,
     window: { readonly since?: string | undefined; readonly until?: string | undefined } = {}
@@ -2691,8 +2925,9 @@ export class DispatchClient {
 
   /** `#json` with the status Dispatch answered, for a route whose status says what it did.
    *  `signal` aborts the call beside the client's own signal. `writes: false` marks a POST that
-   *  writes nothing (a conversion, `markdownRoundTrip`): it is sent as a POST is, under one key
-   *  with its retries, but never read as a write that may have landed (`WriteCall.writes`). */
+   *  writes nothing (a conversion, `markdownRoundTrip` or `fileRoundTrip`, or a dry run,
+   *  `dryRunResult`): it is sent as a POST is, under one key with its retries, but never read as a
+   *  write that may have landed (`WriteCall.writes`). */
   async #jsonAnswer<T>(
     method: string,
     path: readonly string[],
@@ -2717,7 +2952,7 @@ export class DispatchClient {
       };
     }
     return this.#noRoute(async () => {
-      const response = await this.#send(method, url, encoded, undefined, signal);
+      const { answer: response } = await this.#send(method, url, encoded, undefined, signal);
       return { status: response.status, payload: await this.#response<T>(method, url, response) };
     }, signal);
   }
@@ -2823,7 +3058,7 @@ export class DispatchClient {
       return this.#writePayload<T>(method, url, answer, write);
     }
     return this.#noRoute(async () =>
-      this.#response<T>(method, url, await this.#send(method, url, body))
+      this.#response<T>(method, url, (await this.#send(method, url, body)).answer)
     );
   }
 
@@ -2850,10 +3085,59 @@ export class DispatchClient {
     }
   }
 
+  /** Send the caller's route once through `#send`, without `#noRoute`. Read non-2xx answers as
+   *  other commands do. For a 2xx, check its bytes for echoed credentials before returning
+   *  anything. An attachment is stored content, never JSON to parse. Without that disposition,
+   *  decode and parse typed JSON where possible. Everything else returns the original bytes,
+   *  never decoded. */
+  async #route(
+    method: "GET" | DispatchApiMethod,
+    path: string,
+    body?: string
+  ): Promise<RouteAnswer> {
+    const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
+    const encoded = body === undefined ? undefined : { content: body, type: "application/json" };
+    const {
+      answer: response,
+      presented,
+      stalePresentation,
+    } = await this.#send(method, url, encoded);
+    if (!response.ok) return { payload: await this.#response(method, url, response) };
+
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const credentials = new Set(this.#sent.with(this.token));
+    // SentTokens keeps token values, not complete headers or request-specific proofs.
+    for (const headers of [presented, stalePresentation]) {
+      if (headers === undefined) continue;
+      for (const [name, value] of Object.entries(headers)) {
+        const header = name.toLowerCase();
+        if (header !== "authorization" && header !== "dpop") continue;
+        const credential = value.trim();
+        if (credential !== "") credentials.add(credential);
+      }
+    }
+    // Every credential is ASCII, so it is in the decoded text only where it is in the bytes.
+    const raw = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (const credential of credentials) {
+      if (raw.includes(credential)) throw new DispatchCredentialEchoError(response.status);
+    }
+    if (!isAttachment(response) && isJson(response)) {
+      const text = new TextDecoder().decode(bytes);
+      const json = parsedJson(response, text);
+      if (json !== undefined) {
+        if (text.includes("\\") && jsonHoldsCredential(json.value, credentials)) {
+          throw new DispatchCredentialEchoError(response.status);
+        }
+        return { payload: this.#payloadOf(method, url, { response, text, json }) };
+      }
+    }
+    return { body: bytes, type: response.headers.get("Content-Type") ?? undefined };
+  }
+
   /**
-   * A read, a PUT or a DELETE: it presents the credential and sends the request once
-   * (`#sendOnce`), and once more where Dispatch answers that the token presented is not live
-   * (`tokenNotLive`, its `401 BROKER_TOKEN_NOT_ACTIVE`) and the credential can be told so
+   * A read, a PUT, a DELETE or `sendRoute`'s write: it presents the credential and sends the
+   * request once (`#sendOnce`), and once more where Dispatch answers that the token presented is
+   * not live (`tokenNotLive`, its `401 BROKER_TOKEN_NOT_ACTIVE`) and the credential can be told so
    * (`RequestCredential.stale`): the broker ended that token before it lapsed, as a person's
    * revoke of their sign-in does. The credential is told which presentation was dead, drops that
    * token alone, and presents the token it holds now, trading at the broker where it holds none;
@@ -2861,7 +3145,8 @@ export class DispatchClient {
    * runs (`brokerTokenActor`, packages/envoy/internal/dispatch/api/broker_token.go), so that 401
    * says it did nothing. A second such answer is returned as any other refusal is. A trade the
    * broker refuses throws out of the second presentation, so the call fails in the broker's own
-   * words, which name `agent-secrets login` after a revoke. A write (POST or PATCH) goes through
+   * words, which name `agent-secrets login` after a revoke. It returns the answer and the headers
+   * of each presentation (`SentRequest`). Every other write (POST or PATCH) goes through
    * `#write` instead.
    */
   async #send(
@@ -2870,25 +3155,29 @@ export class DispatchClient {
     body?: EncodedBody,
     accept = "application/json",
     signal?: AbortSignal
-  ): Promise<Response> {
+  ): Promise<SentRequest> {
     const sent = await this.#sendOnce(method, url, body, accept, signal);
     if (this.#credential.stale === undefined || !(await tokenNotLive(sent.answer))) {
-      return sent.answer;
+      return sent;
     }
     // The presentation the dead token went out in, so the credential drops that token alone.
     this.#credential.stale(undefined, sent.presented);
-    return (await this.#sendOnce(method, url, body, accept, signal)).answer;
+    return {
+      ...(await this.#sendOnce(method, url, body, accept, signal)),
+      stalePresentation: sent.presented,
+    };
   }
 
-  /** One request of a read, presenting the credential for it, and the headers it presented;
-   *  `signal` aborts it beside the client's own signal. */
+  /** One request of `#send`'s (a read, a PUT, a DELETE or `sendRoute`'s write), presenting the
+   *  credential for it, and the headers it presented; `signal` aborts it beside the client's own
+   *  signal. */
   async #sendOnce(
     method: string,
     url: string,
     body: EncodedBody | undefined,
     accept: string,
     signal: AbortSignal | undefined
-  ): Promise<{ readonly answer: Response; readonly presented: Readonly<Record<string, string>> }> {
+  ): Promise<SentRequest> {
     // The call's own deadline and the client's, which the credential is given too, less the
     // request's reserve (`#credentialSignal`): a broker credential waiting on a pod's missing
     // registration stops at it, naming the session, and one whose renewal goes unanswered answers
@@ -3414,9 +3703,9 @@ export class DispatchClient {
     const { response, text, json } = answer;
     const payload: unknown = json === undefined ? text : json.value;
     if (!response.ok) {
-      const error = asErrorShape(payload);
-      if (typeof error.error === "string") {
-        if (response.status === 409 && error.code === IDEMPOTENCY_KEY_COMMITTED) {
+      const refusal = refusalIn(json);
+      if (refusal !== undefined) {
+        if (response.status === 409 && refusal.code === IDEMPOTENCY_KEY_COMMITTED) {
           throw new DispatchWriteLandedError(
             IDEMPOTENCY_KEY_COMMITTED,
             response.status,
@@ -3425,10 +3714,13 @@ export class DispatchClient {
           );
         }
         throw new DispatchServiceError(
-          error.code ?? `HTTP_${response.status}`,
+          refusal.code ?? `HTTP_${response.status}`,
           response.status,
-          error.error,
-          error,
+          refusal.error,
+          {
+            ...refusal,
+            textRefusal: response.headers.has(TEXT_REFUSAL_HEADER),
+          },
           retryAfterMs(response) || null
         );
       }

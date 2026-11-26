@@ -17,19 +17,17 @@ import {
   getArtifactText,
 } from "./api";
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { navigateInApp } from "./sends";
 import { expandedState } from "./settled";
 import { expect, type Locator, type Page, type Request, type TestInfo, test } from "./test";
-
-const tinyPng =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
 
 // The files a row uploads are written in that row's own output directory, which Playwright gives
 // each row of each worker (`testInfo.outputPath`): two workers running these rows at once would
 // otherwise write one path in the checkout, and a run must leave no file changed under e2e/.
 async function diagramFile(testInfo: TestInfo): Promise<string> {
   const path = testInfo.outputPath("diagram.png");
-  await writeFile(path, Buffer.from(tinyPng, "base64"));
+  await writeFile(path, Buffer.from(ONE_PIXEL_PNG, "base64"));
   return path;
 }
 
@@ -155,12 +153,18 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
   await diagram.getByRole("link", { name: "diagram.png" }).click();
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
   // The panel names the record that cites this artifact and quotes it; its link goes to that
-  // source, not back to the artifact the reader is already on.
+  // source, not back to the artifact the reader is already on. The quote is the head of the
+  // comment's body, drawn by the renderer, so the citation in it is a reference to the artifact
+  // and no address is left as text.
   const diagramReferencedBy = page.getByRole("region", { name: "Referenced by" });
   await expect(diagramReferencedBy).toContainText(`Comment · ${issue.key}`);
-  await expect(diagramReferencedBy).toContainText(
-    `See dispatch://${issue.key}/artifact/diagram-png before deciding.`
+  const diagramExcerpt = diagramReferencedBy.locator(".dispatch-markdown");
+  await expect(diagramExcerpt).toContainText("before deciding.");
+  await expect(diagramExcerpt.locator("[data-dispatch-ref]")).toHaveAttribute(
+    "data-dispatch-ref",
+    `dispatch://${issue.key}/artifact/diagram-png`
   );
+  await expect(diagramExcerpt).not.toContainText("dispatch://");
   await diagramReferencedBy.getByRole("link", { name: `Comment · ${issue.key}` }).click();
   await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/comments/`));
 
@@ -171,9 +175,13 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/notes-md`);
   const notesReferencedBy = page.getByRole("region", { name: "Referenced by" });
   await expect(notesReferencedBy).toContainText(`Comment · ${issue.key}`);
-  await expect(notesReferencedBy).toContainText(
-    `See dispatch://${issue.key}/artifact/notes-md@v1 before deciding.`
+  const notesExcerpt = notesReferencedBy.locator(".dispatch-markdown");
+  await expect(notesExcerpt).toContainText("before deciding.");
+  await expect(notesExcerpt.locator("[data-dispatch-ref]")).toHaveAttribute(
+    "data-dispatch-ref",
+    `dispatch://${issue.key}/artifact/notes-md@v1`
   );
+  await expect(notesExcerpt).not.toContainText("dispatch://");
   await navigateInApp(page, `/issues/${issue.key}`);
   await openArtifacts(page, testInfo.project.name === "iphone");
   await page.screenshot({ path: testInfo.outputPath("artifacts-tab.png"), fullPage: true });

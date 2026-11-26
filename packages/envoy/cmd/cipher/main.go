@@ -221,11 +221,12 @@ AGENT_SECRETS_MACHINE_* / AGENT_SECRETS_POOL_* settings reads them from
                              exchange, which a person's sign-in presents as the actor token:
                              metadata (AGENT_SECRETS_MACHINE_AUDIENCE) or pool (that, with
                              AGENT_SECRETS_MACHINE_TOKEN_FILE, AGENT_SECRETS_POOL_AUDIENCE and
-                             AGENT_SECRETS_POOL_ACCOUNT); kubernetes is refused, since the broker
-                             mints no launcher credential for it; unset, it is found from the
-                             Google exchange audience the broker names: an external_account file
-                             GOOGLE_APPLICATION_CREDENTIALS names, or the Google metadata
-                             server, and kept in $XDG_STATE_HOME/agent-secrets/machine
+                             AGENT_SECRETS_POOL_ACCOUNT); kubernetes and github-actions are
+                             refused, since the broker mints no launcher credential for either;
+                             unset, it is found from the Google exchange audience the broker
+                             names: an external_account file GOOGLE_APPLICATION_CREDENTIALS
+                             names, or the Google metadata server, and kept in
+                             $XDG_STATE_HOME/agent-secrets/machine
   AGENT_SECRETS_MACHINE_TOKEN_FILE
                              the projected service-account token pool federates
   AGENT_SECRETS_MACHINE_AUDIENCE

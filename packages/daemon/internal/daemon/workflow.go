@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"slices"
 	"strconv"
@@ -42,6 +43,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -108,6 +110,7 @@ type workflowRuntime struct {
 	// then — the outbox's boot sweep finds every row written before it ran. The engine's read of a
 	// step's agent reaches the supervisor through it too (stepAgent), and reads nothing before.
 	outboxWake atomic.Pointer[outbox]
+	catchUps   *catchUpPacing
 	// pauses is the project's pause (projectPause, dispatch://INFRA-3759): the pause service the
 	// API's routes are handed, with the stop transaction, the let-out stamp and the after-commit
 	// steps the machines and the service call. run builds it once this runtime is open and before
@@ -190,7 +193,8 @@ type workflowRuntime struct {
 	// installation on a repository (prepareName). recovering is each repository,
 	// lowercased, GitHub answered for again whose issues are still to recover from Dispatch's
 	// listing (recoverRepositories): one a preparation left unread and whose reads a later
-	// preparation got answered (readAnswered), under recoveringMu. silenced is, by the same
+	// preparation got answered, or that a recovery found an entry of another name answering for
+	// (readAnswered, deferUnreadIssues), under recoveringMu. silenced is, by the same
 	// repository, each issue whose apply said nothing because the repository was unread
 	// (noteUnread), which the repository's recovery takes into its scope whatever the issue
 	// resolves to by then; releaseWaits is, by repository, each child a release_children left
@@ -684,14 +688,18 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // slow the boot. The boot's one-time rename pass, which runs after this (renameAtBoot), reads
 // GitHub for a configured pair only while a stored row still names the pair's `from`.
 //
+// dispatchTransport presents the Dispatch credential boot settled (dispatchCredential): the bearer
+// dispatch_token_file names, or the daemon's own broker token under dispatch_token_broker. Every
+// Dispatch call of the workflow goes through it.
+//
 // hookPrompts are the words boot read for every hook whose `prompt_file` names a file, by hook
 // name (readBoot): the engine is given each hook's words, never a path.
 //
-// reserve is the daemon's one wake limiter as the engine reaches it (run builds it, before this
-// and before supervision, which reserves its launches from the same one): the moment the one
-// wake the engine causes may run, the catch-up a start writes in place of a launch (workflow's
-// claimReady), and nil while the operator paces nothing, which is the engine's reading of the
-// pacing off — the catch-up is then due at once, as it always was.
+// pacer is the daemon's one wake pacer as the engine's catch-ups reach it (run builds it, before
+// this and before supervision, whose launches wait in the same two queues): the catch-up a start
+// writes in place of a launch joins its second queue (workflow's claimReady, catchUpPacing), and
+// nil while the operator paces nothing, which is the engine's reading of the pacing off — the
+// catch-up is then due at once, as it always was.
 //
 // clock is the daemon's one clock (the machines', overrides.clock), which the engine and this
 // runtime's idle, wake and stuck passes read (workflowRuntime.now); production passes the wall
@@ -703,7 +711,7 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 //
 // appCalls are the start's App-call bounds (overrides.appCalls): nil, in production, is
 // productionAppCalls.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID string, dispatchTransport http.RoundTripper, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, pacer *wakepace.Pacer, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -738,7 +746,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, fmt.Errorf("the GitHub App token source cannot drop a token GitHub refused, which a review's reads mint again")
 	}
 	w := &workflowRuntime{
-		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
+		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchTransport), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed:     make(chan error, 1),
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
@@ -766,7 +774,8 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// The rows the workflow writes through these records wake the outbox's lanes (projectRecords),
 	// through the runtime, since the outbox itself is built later (attach), and each write that can
 	// change the live records asks the refresher to read them again at its commit (wakeLive).
-	w.records = projectRecords{Store: record.NewStore(), project: cfg.Project, wake: w.wakeOutbox, live: w.wakeLive, log: log}
+	w.catchUps = &catchUpPacing{ctx: ctx, pool: st.Pool(), pacer: pacer, now: clock, wake: w.wakeOutbox, log: log}
+	w.records = projectRecords{Store: record.NewStore(), project: cfg.Project, wake: w.wakeOutbox, live: w.wakeLive, log: log, catchUps: w.catchUps}
 	w.pool = st.Pool()
 	engineCfg := engineConfig(cfg, reviewAppLogin, hookPrompts)
 	// The engine reads and writes the pod tables of the idle release through the store's own
@@ -780,10 +789,14 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.ReadBaseMergeStates = w.queueBaseMergeStates
 	engineCfg.StepAgent = w.stepAgent
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
-	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
-	// limiter run built for both lanes. A deployment that paces nothing passes no reserve at all,
-	// which is the pacing off: the engine then writes that catch-up due at once, as it always did.
-	engineCfg.Reserve = reserve
+	// (workflow's claimReady), and it is paced with the launches it stands among, in the one
+	// pacer run built for both lanes. A deployment that paces nothing gives the engine no hold at
+	// all, which is the pacing off: the engine then writes that catch-up due at once, as it
+	// always did.
+	if pacer != nil {
+		engineCfg.HoldCatchUp = w.catchUps.hold
+	}
+	engineCfg.MessageMarked = w.messageMarked
 	// The engine stamps its deadlines on the daemon's one clock, which the machines and this
 	// runtime's passes read too (dispatch://INFRA-3759).
 	engineCfg.Clock = clock
@@ -1686,6 +1699,21 @@ func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorde
 	return lease.Identity, nil
 }
 
+// knownIdentity is the bot identity role's App commits as where the token source already holds
+// it (appauth.KnownIdentities: the identity a lease of that App fetched), read with no mint and
+// no call to GitHub; false before that App's first lease, and for a token source that answers no
+// such read, a test's fake among them. A bot identity is the App's own and no owner's, so it
+// needs no repository. A launch's table of every role's identity reads it for the roles of the
+// other App than the claim's own (specs.knownIdentity), so it costs that App no mint while the
+// daemon knows its identity.
+func (w *workflowRuntime) knownIdentity(role claim.Role) (runtime.GitIdentity, bool) {
+	known, ok := w.tokens.(appauth.KnownIdentities)
+	if !ok {
+		return runtime.GitIdentity{}, false
+	}
+	return known.KnownIdentity(appauth.AppRoleFor(role))
+}
+
 // ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it
 // missing or not checked out (outbox.ensureWorkspace), through the outbox, which orders every
 // provision of the shared clones (provisionLocks). The outbox exists from attach on, and attach
@@ -1797,14 +1825,16 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // its runtime, and the deployment's budget limits, which a failed claim's fact carries to the
 // workflow engine (applyTerminal). The pace a paced catch-up's wake line names is the
 // supervisor's own (supervise.WakePace, the rate and the burst the machines are held to), which
-// the outbox reads through that supervisor where it writes the line (wakeRan); the limiter both
-// lanes reserve from was built before either of them (run). The outbox's two reads of one pull
+// the outbox reads through that supervisor where it writes the line (wakeRan); the pacer both
+// lanes wait in — the workflow's catch-up through its catchUpPacing, the machines at their gate —
+// was built before either of them (run). The outbox's two reads of one pull
 // request, the merge-queue read and the second read of a conflicting head, read GitHub through
 // this runtime's own read of a pull request, apply its answer as every read of this runtime does,
 // the base's rules read with it on a conflicting answer, and wait this runtime's wait before they
 // read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
 // attempt read no answer hands the head to this runtime's merge-state reader to follow
-// (queueMergeStateFollow). All are set before the records' wake can reach the outbox
+// (queueMergeStateFollow). The outbox's branch create runs the private-name rules boot compiled
+// (privateNameRules). All are set before the records' wake can reach the outbox
 // (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
 // unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
 // and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
@@ -1817,8 +1847,10 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
+	w.outbox.privateNameRules = supervision.plan.privateNameRules
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outbox.sweepEvery = w.outboxSweep
+	w.outbox.catchUps = w.catchUps
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)
@@ -1831,6 +1863,17 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	}
 	w.attachIdleRelease(supervision)
 	w.workspaceHeld = workspaceHeldBy(supervision.supervisor.deps.Runtime, w.stateDir)
+}
+
+// messageMarked is workflow.Config.MessageMarked: the claim token's machine is told the mark a
+// listener's report left on it in the store, so that a wake of the claim waiting in the pacing's
+// second queue moves to the message queue (supervise.MessageMarked). It reaches the supervisor
+// attach stored, and nothing before attach: a report applied before then is one the boot's own
+// read of the claim finds marked.
+func (w *workflowRuntime) messageMarked(token claim.Token, mark time.Time) {
+	if r := w.outboxWake.Load(); r != nil {
+		r.supervisor.post(token, supervise.MessageMarked{Claim: token, At: mark})
+	}
 }
 
 // workspaceHeldBy is whether an issue holds its workspace under rt: its Sandbox, where rt keeps
@@ -2487,8 +2530,8 @@ func (w *workflowRuntime) tickController(ctx context.Context) {
 // entrySweepInterval is how often the daemon converges the phase entries with no fact of its
 // project arriving (tickEntrySweep). The difference a sweep closes is a role waiting for work
 // its record already names, so a minute is short enough that no worker waits long for it, and
-// each run is one admission read of the project's issues, slots and line facts, which the same
-// pass already makes on every fact.
+// each run is one admission read of the project's issues, slots and line facts, which every pass
+// already makes (the pass rule on admit's Admission.Apply).
 const entrySweepInterval = time.Minute
 
 // entrySweepPeriod is the period tickEntrySweep runs at: override, the runtime's own entrySweep
@@ -2505,10 +2548,11 @@ func entrySweepPeriod(override time.Duration) time.Duration {
 // tickEntrySweep applies an intake.EntrySweep fact every entrySweepPeriod (entrySweepInterval,
 // or the runtime's own entrySweep, which a test shortens), so a role behind the entry its phases
 // row names is sent that entry's work, and the controller is woken for a stalled root architect,
-// even where nothing else happens in the project: an admission pass runs on a fact, and a quiet
-// project raises none. Each run's event id is its own — the word, the project, this boot and the
-// run's time — since processed_events is shared by every project's daemon. A failed apply is
-// logged, and the next run tries again, as applyControllerTick does.
+// even where nothing else happens in the project: an admission pass runs on the facts the pass
+// rule names (admit's Admission.Apply), and a quiet project raises none. Each run's event id is
+// its own — the word, the project, this boot and the run's time — since processed_events is
+// shared by every project's daemon. A failed apply is logged, and the next run tries again, as
+// applyControllerTick does.
 //
 // The same tick queues the reconcile of each tree's news of its approved design that
 // record.OwedNews owes and no queued row will reconcile (queueOwedDesignNews): the backstop for

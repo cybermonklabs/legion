@@ -109,7 +109,7 @@ func runResultGrant(t *testing.T, broker *resultBroker, extra ...string) (string
 		"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(), "XDG_RUNTIME_DIR=" + t.TempDir(),
 		"AGENT_SECRETS_URL=" + broker.URL, "AGENT_SECRETS_MACHINE_IDENTITY=github-actions",
 		"AGENT_SECRETS_MACHINE_AUDIENCE=example-broker", "ACTIONS_ID_TOKEN_REQUEST_URL=" + runner.URL,
-		cipherclient.ActionsTokenVar + "=" + runnerRequestToken, "DISPATCH_URL=https://" + resultHost,
+		cipherclient.ActionsIDTokenRequestTokenVar + "=" + runnerRequestToken, "DISPATCH_URL=https://" + resultHost,
 	}, extra...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr

@@ -214,12 +214,14 @@ const validCalls = {
   dispatch_issues: { project: "ACME" },
   dispatch_project: { key: "CORE", name: "Core" },
   dispatch_projects: {},
+  dispatch_project_update: { project: "CORE", proven_sessions: "off" },
   dispatch_priorities: { project: ["DSP"] },
   dispatch_architecture_sync: { project: "CORE" },
   dispatch_open_asks: {},
   dispatch_answers: {},
   dispatch_whoami: {},
   dispatch_limits: {},
+  dispatch_api: specFor("dispatch_api").example,
   dispatch_handoff_write: specFor("dispatch_handoff_write").example,
   dispatch_handoff_read: { issue: "DSP-1", phase: "implement", version: 2 },
   dispatch_steps: { issue: "DSP-1" },
@@ -335,12 +337,14 @@ describe("dispatchToolSpecs", () => {
       "dispatch_issues",
       "dispatch_project",
       "dispatch_projects",
+      "dispatch_project_update",
       "dispatch_priorities",
       "dispatch_architecture_sync",
       "dispatch_open_asks",
       "dispatch_answers",
       "dispatch_whoami",
       "dispatch_limits",
+      "dispatch_api",
       "dispatch_handoff_write",
       "dispatch_handoff_read",
       "dispatch_steps",
@@ -420,6 +424,28 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ project: "INFRA", since: 1 }).success).toBe(false);
     // An empty key would send `GET /api/v1/projects//plans`, so it is refused like any other.
     expectNotAProjectKey(schema, [{ project: "infra" }, { project: "" }]);
+  });
+
+  test("dispatch_project_update takes a project key and on or off, and nothing else", () => {
+    const schema = schemaFor("dispatch_project_update");
+
+    for (const proven_sessions of ["on", "off"]) {
+      expect(schema.safeParse({ project: "CORE", proven_sessions }).success, proven_sessions).toBe(
+        true
+      );
+    }
+    expect(schema.safeParse({ project: "CORE" }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: true }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: "yes" }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: "on", name: "Core" }).success).toBe(
+      false
+    );
+    // An empty key would send `PUT /api/v1/projects//proven-sessions`, so it is refused like any
+    // other.
+    expectNotAProjectKey(schema, [
+      { project: "core", proven_sessions: "on" },
+      { project: "", proven_sessions: "off" },
+    ]);
   });
 
   test("dispatch_search rejects a one-character query and a limit above 50", () => {
@@ -856,6 +882,53 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ assignee: "me" }).success).toBe(false);
     // The two tools' names differ by one word, so the description says which Inbox this reads.
     expect(specFor("dispatch_inbox").description).toContain("envoy_inbox");
+  });
+
+  test("dispatch_api takes a route under /api/v1, a write method with a body, and refuses the rest by name", () => {
+    const schema = schemaFor("dispatch_api");
+    const refusals = (args: Record<string, unknown>) =>
+      schema.safeParse(args).error?.issues.map((issue) => issue.message);
+
+    expect(schema.safeParse({ path: "/api/v1" }).success).toBe(true);
+    expect(schema.safeParse({ path: "/api/v1/issues?project=ACME" }).success).toBe(true);
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      const call = { path: "/api/v1/issues/ACME-1/comments", method };
+      expect(schema.safeParse(call).success, method).toBe(true);
+      expect(schema.safeParse({ ...call, body: '{"body":"Looks good."}' }).success, method).toBe(
+        true
+      );
+    }
+    // A call with no method is a GET, so GET is no value of method.
+    expect(schema.safeParse({ path: "/api/v1/whoami", method: "GET" }).success).toBe(false);
+    expect(refusals({ path: "/api/v1/whoami", body: "{}" })).toEqual([
+      "body goes only with method: a call that names no method is a GET, which sends no body.",
+    ]);
+    // Each character Bun's URL percent-encodes in a path is refused before the query, naming the
+    // path, and taken in the query, which the rule leaves alone and the URL parser writes
+    // (percent-encoding `"`, `'`, `<` and `>`).
+    for (const character of ['"', "<", ">", "^", "`", "{", "}"]) {
+      const path = `/api/v1/issues/a${character}b`;
+      expect(refusals({ path }), character).toEqual([
+        `path ${JSON.stringify(path)} holds before its query a character a URL parser rewrites in a path (", <, >, ^, \`, { or }): percent-encode it.`,
+      ]);
+      expect(schema.safeParse({ path: `/api/v1/issues?q=a${character}b` }).success, character).toBe(
+        true
+      );
+    }
+    for (const path of [
+      "https://dispatch.internal.example/api/v1/whoami",
+      "//dispatch.internal.example/api/v1/whoami",
+      "\\\\dispatch.internal.example/api/v1/whoami",
+      "/healthz",
+      "/api/v1x",
+      "/api/v2/whoami",
+      "/api/v1/../healthz",
+      "/api/v1/%2e%2e/healthz",
+    ]) {
+      const [refusal, ...more] = refusals({ path }) ?? [];
+      expect({ path, more }).toEqual({ path, more: [] });
+      expect(refusal, path).toStartWith(`path ${JSON.stringify(path)} `);
+    }
   });
 
   test("dispatch_handoff_write takes one JSON object body of any length, and a phase slug", () => {

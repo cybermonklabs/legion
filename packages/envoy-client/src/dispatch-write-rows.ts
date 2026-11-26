@@ -226,6 +226,7 @@ export const WRITE_ROWS = {
     advice: caughtAdvice,
   }),
   markdownRoundTrip: storesNothing(z.looseObject({ markdown: z.string() })),
+  fileRoundTrip: storesNothing(z.looseObject({ markdown: z.string() })),
   related: storesNothing(z.looseObject({ outcome: z.string() })),
   /** `issueUpdateCommand` reads the key and the status on every path, and each other member only
    *  where the call wrote it, so those are optional. */
