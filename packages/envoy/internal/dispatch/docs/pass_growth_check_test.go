@@ -210,7 +210,7 @@ func passGrowthWrite(t *testing.T, database *store.Store, service *Service, numb
 		}
 		passGrowthNamedVersion(t, service, room, document.id, document.name)
 		written += document.blocks
-		if indexed := passGrowthRoomBlocks(t, database, room.tree); indexed >= written {
+		if indexed := countRows(t, database, "document_blocks", room.tree); indexed >= written {
 			t.Fatalf("the named version of %s's %s indexed its room's %d blocks in its own request, want them left to the reconciliation", room.issue, document.name, indexed)
 		}
 	}
@@ -254,17 +254,6 @@ func passGrowthNamedVersion(t *testing.T, service *Service, room issueRoom, docu
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit the named version of %s's %s: %v", room.issue, name, err)
 	}
-}
-
-// passGrowthRoomBlocks is how many document_blocks rows the room's tree artifact keys.
-func passGrowthRoomBlocks(t *testing.T, database *store.Store, tree string) int {
-	t.Helper()
-	var blocks int
-	if err := database.Pool.QueryRow(context.Background(),
-		`select count(*) from document_blocks where artifact_id = $1`, tree).Scan(&blocks); err != nil {
-		t.Fatalf("count the blocks of room %s: %v", tree, err)
-	}
-	return blocks
 }
 
 // passGrowthLockHeld is how long the transaction of the reconciliation's pass has held the owner
@@ -346,7 +335,7 @@ func passGrowthReconcile(t *testing.T, database *store.Store, service *Service, 
 		if _, timed := held[room.tree]; !timed {
 			t.Fatalf("no pass of the reconciliation indexed the room of %s, of %d blocks, in %d ticks", room.issue, room.blocks, passGrowthTicks)
 		}
-		if indexed := passGrowthRoomBlocks(t, database, room.tree); indexed != room.blocks {
+		if indexed := countRows(t, database, "document_blocks", room.tree); indexed != room.blocks {
 			t.Fatalf("the room of %s holds %d blocks after its pass, want %d", room.issue, indexed, room.blocks)
 		}
 	}

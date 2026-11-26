@@ -1253,12 +1253,7 @@ func TestTheConversionWritesAReadingIntoAPresentAskBlockThatIsNotTheSpecsFirst(t
 	if ends, want := askedOn(), refs.BlockNodeKind+":"+issue.refKey(issue.spec)+"#"+block; !slices.Equal(ends, []string{want}) {
 		t.Errorf("after the restore ask %s states asked_on %v, want only the one to its fresh block %s", left, ends, want)
 	}
-	census := takeStoreCensus(t, issue.database)
-	found := slices.IndexFunc(census.Kinds, func(kind graphcensus.KindReport) bool { return kind.Kind == graphstore.TupleAskedOn })
-	if found < 0 {
-		t.Fatalf("the store census holds no %s kind", graphstore.TupleAskedOn)
-	}
-	if kind := census.Kinds[found]; kind.Rows != 2 || kind.Nodes != 2 || kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
+	if kind := treeCensusKind(t, takeStoreCensus(t, issue.database), graphstore.TupleAskedOn); kind.Rows != 2 || kind.Nodes != 2 || kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
 		t.Errorf("after the restore the asked_on census reads %d rows, %d tuples, %d rows no tuple states and %d tuples no row projects (%+v, %+v), want the two asks' rows and tuples and no difference",
 			kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences, kind.ReportedRows, kind.ReportedNodes)
 	}

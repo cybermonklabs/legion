@@ -58,7 +58,7 @@ func readingSupertagsFromSQL(t *testing.T, database *store.Store, document strin
 	rows, err := database.Pool.Query(context.Background(), `
 		select d.block_id, `+refs.BlockTypeSupertagSQL("d")+`
 		from document_blocks d where d.artifact_id = $1 and d.type = $2 order by d.block_id
-	`, document, refs.ReadingSupertag)
+	`, document, readingType)
 	if err != nil {
 		t.Fatalf("read the supertag the census gives each reading of %s: %v", document, err)
 	}

@@ -44,17 +44,17 @@ type graphEdgesArm struct {
 
 // movedArmsDeletedBy is the fate of the four arms over the kinds the child that built the node
 // store moved - a block's part_of its document and its links, and a comment's anchored_to and
-// owned_by - with the tuple arm's joins to the three tables they read: the boot step of this
-// branch (graphcensus.RunViewArmsStep) deletes them, once every row of those tables names its node
+// owned_by - with the tuple arm's joins to the three tables they read: INFRA-1253's boot step
+// (graphcensus.RunViewArmsStep) deletes them, once every row of those tables names its node
 // and the newest announcement of another build lists their kinds.
 const movedArmsDeletedBy = "deleted by INFRA-1253's boot step"
 
-// askArmsDeletedBy is the fate of every other arm the view holds over a column of a table: the
+// rootArmsDeletedBy is the fate of every other arm the view holds over a column of a table: the
 // pull request at the root of the tree deletes them, the three over the kinds an earlier change
 // moved - an ask's anchored_to and owned_by over asks, and followed_by over ask_followers, with the
 // tuple arm's joins to those two tables - and the arms over an issue's parent and wait, a document's
 // attachment and a component's three relations, and the rows of the arm over refs a document makes.
-const askArmsDeletedBy = "deleted by INFRA-1098"
+const rootArmsDeletedBy = "deleted by INFRA-1098"
 
 // graphEdgesArms is every arm of graph_edges, in the order the view states them. An arm the view
 // gains or loses fails this test, whichever source column it reads: the store is to answer each
@@ -62,23 +62,23 @@ const askArmsDeletedBy = "deleted by INFRA-1098"
 // twice. The fate of each is printed with the list, so a reader sees which arms are left and who
 // takes each.
 var graphEdgesArms = []graphEdgesArm{
-	{relation: "refs", fate: "a mention of any node from an item, and a document's while its row names no node or its far end is past the store's bound (the rows from an artifact: " + askArmsDeletedBy + "); the store answers a document's other mentions; no child has moved the rest"},
-	{relation: "issues", fate: "child_of over the rows that name no node; the store answers the rest; " + askArmsDeletedBy},
-	{relation: "issue_links", fate: "blocked_by over the rows that name no node; the store answers the rest as needs; " + askArmsDeletedBy},
-	{relation: "artifacts", fate: "attached_to over the rows that name no node; " + askArmsDeletedBy},
+	{relation: "refs", fate: "a mention of any node from an item, and a document's while its row names no node or its far end is past the store's bound (the rows from an artifact: " + rootArmsDeletedBy + "); the store answers a document's other mentions; no child has moved the rest"},
+	{relation: "issues", fate: "child_of over the rows that name no node; the store answers the rest; " + rootArmsDeletedBy},
+	{relation: "issue_links", fate: "blocked_by over the rows that name no node; the store answers the rest as needs; " + rootArmsDeletedBy},
+	{relation: "artifacts", fate: "attached_to over the rows that name no node; " + rootArmsDeletedBy},
 	{relation: "artifacts", fate: "attached_to of the artifacts that carry their node, from each one's part_of tuple; it stays"},
-	{relation: "asks", projects: "ask", renders: "anchored_to", fate: "an ask's anchored_to; the store answers it for a row that carries its node; " + askArmsDeletedBy},
+	{relation: "asks", projects: "ask", renders: "anchored_to", fate: "an ask's anchored_to; the store answers it for a row that carries its node; " + rootArmsDeletedBy},
 	{relation: "comments", projects: "comment", renders: "anchored_to", fate: "a comment's anchored_to; the store answers it for a row that carries its node; " + movedArmsDeletedBy},
-	{relation: "asks", projects: "ask", renders: "owned_by", fate: "an ask's owned_by; the store answers it for a row that carries its node; " + askArmsDeletedBy},
+	{relation: "asks", projects: "ask", renders: "owned_by", fate: "an ask's owned_by; the store answers it for a row that carries its node; " + rootArmsDeletedBy},
 	{relation: "comments", projects: "comment", renders: "owned_by", fate: "a comment's owned_by; the store answers it for a row that carries its node; " + movedArmsDeletedBy},
 	{relation: "comments", fate: "a reply's replies_to its thread; the child that moves the inbox, the messages and the read state writes it"},
 	{relation: "comments", fate: "a reply's answers; the child that moves the inbox, the messages and the read state writes it"},
 	{relation: "comments", fate: "a reply's replies_to an ask; the child that moves the inbox, the messages and the read state writes it"},
 	{relation: "messages", fate: "a message's replies_to; the child that moves the inbox, the messages and the read state writes it"},
-	{relation: "ask_followers", projects: "ask_follower", renders: "followed_by", fate: "followed_by; the store answers it for a row that carries its ask's node; " + askArmsDeletedBy},
-	{relation: "components", fate: "a component's part_of over the rows that name no node; the store answers the rest; " + askArmsDeletedBy},
-	{relation: "component_depends", fate: "depends_on over the rows that name no node; the store answers the rest; " + askArmsDeletedBy},
-	{relation: "issue_component_members", fate: "affects over the rows that name no node; the store answers the rest; " + askArmsDeletedBy},
+	{relation: "ask_followers", projects: "ask_follower", renders: "followed_by", fate: "followed_by; the store answers it for a row that carries its ask's node; " + rootArmsDeletedBy},
+	{relation: "components", fate: "a component's part_of over the rows that name no node; the store answers the rest; " + rootArmsDeletedBy},
+	{relation: "component_depends", fate: "depends_on over the rows that name no node; the store answers the rest; " + rootArmsDeletedBy},
+	{relation: "issue_component_members", fate: "affects over the rows that name no node; the store answers the rest; " + rootArmsDeletedBy},
 	{relation: "block_refs", projects: "block_ref", fate: "a block's links; the store answers them for a row that carries its node; " + movedArmsDeletedBy},
 	{relation: "document_blocks", projects: "block", fate: "a block's part_of its document; the store answers it for a row that carries its node; " + movedArmsDeletedBy},
 	{relation: "comment_blocks", fate: "a comment block's part_of; the child that moves the inbox, the messages and the read state writes an item's blocks"},
@@ -309,7 +309,7 @@ var switchedByKind = regexp.MustCompile(`graph_store_cutover`)
 // movedArms holds each arm over a moved kind to the per-row test over its own table and to the
 // child that deletes it, and answers, with their text for reading on their own, the want arms
 // deletedBy deletes: the four over the kinds the child that built the node store moved
-// (movedArmsDeletedBy) or the three over the kinds this change moved (askArmsDeletedBy).
+// (movedArmsDeletedBy) or the three over the kinds an earlier change moved (rootArmsDeletedBy).
 func movedArms(t *testing.T, read []graphEdgesArm, deletedBy string, want int) []movedArm {
 	t.Helper()
 	for index, arm := range read {
@@ -329,9 +329,9 @@ func movedArms(t *testing.T, read []graphEdgesArm, deletedBy string, want int) [
 			t.Errorf("arm %d (%s) over the moved kind %s carries no `node_kind is null` test, so it answers rows the store answers too:\n%s",
 				index+1, arm.relation, declared.projects, arm.text)
 		}
-		if !strings.Contains(declared.fate, movedArmsDeletedBy) && !strings.Contains(declared.fate, askArmsDeletedBy) {
+		if !strings.Contains(declared.fate, movedArmsDeletedBy) && !strings.Contains(declared.fate, rootArmsDeletedBy) {
 			t.Errorf("arm %d (%s) over the moved kind %s is declared with the fate %q, which names neither %s nor %s, the children that delete the moved arms",
-				index+1, arm.relation, declared.projects, declared.fate, movedArmsDeletedBy, askArmsDeletedBy)
+				index+1, arm.relation, declared.projects, declared.fate, movedArmsDeletedBy, rootArmsDeletedBy)
 		}
 		if !strings.Contains(declared.fate, deletedBy) {
 			continue
@@ -1543,7 +1543,7 @@ func TestTheAsksArmsAnswerEachRowOnce(t *testing.T) {
 	if want := armRelations(graphEdgesArms); !slices.Equal(armRelations(read), want) {
 		t.Fatalf("graph_edges reads %v; this test declares %v", armRelations(read), want)
 	}
-	asked := movedArms(t, read, askArmsDeletedBy, 3)
+	asked := movedArms(t, read, rootArmsDeletedBy, 3)
 	moved := append(movedArms(t, read, movedArmsDeletedBy, 4), asked...)
 	firstAsked := len(moved) - len(asked)
 	tuple := tupleArm(t, read)

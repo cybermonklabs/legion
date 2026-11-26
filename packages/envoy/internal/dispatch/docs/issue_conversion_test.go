@@ -399,9 +399,9 @@ func TestTheIssueRoomStepConvertsOnlyWhileEveryLiveProcessListsTheIssueRoom(t *t
 		ctx, database, issue, exec, step, tick, logged := issueRoomStepFixture(t)
 		second, first, done := issue(2), issue(1), issue(3)
 		exec(`update issues set status = 'done', closed_at = now() where key = $1`, done.key)
-		instance := issueRoomOldProcess(ctx, database)
-		if instance == "" {
-			t.Fatal("no earlier process was inserted")
+		instance, err := issueRoomOldProcess(ctx, database, "an-earlier-build")
+		if err != nil {
+			t.Fatalf("insert an earlier process: %v", err)
 		}
 		tick(step)
 		requireUnconverted(t, database, first)
@@ -443,10 +443,11 @@ func TestTheIssueRoomStepConvertsOnlyWhileEveryLiveProcessListsTheIssueRoom(t *t
 				// The process joins on the test's own context: the gate's holds the connection of
 				// the conversion's transaction, and the pool refuses that caller a second one
 				// (store.ErrNestedAcquire).
-				instance = issueRoomOldProcess(ctx, database)
-				if instance == "" {
-					return fmt.Errorf("insert the earlier process")
+				inserted, err := issueRoomOldProcess(ctx, database, "an-earlier-build")
+				if err != nil {
+					return fmt.Errorf("insert the earlier process: %w", err)
 				}
+				instance = inserted
 			}
 			return nil
 		}
@@ -537,16 +538,16 @@ func TestTheIssueRoomStepConvertsOnlyWhileEveryLiveProcessListsTheIssueRoom(t *t
 	})
 }
 
-func issueRoomOldProcess(ctx context.Context, database *store.Store) string {
+// issueRoomOldProcess inserts a live process of the build commit, whose heartbeat stands a day
+// ahead, and answers its instance, or the error its insert failed with.
+func issueRoomOldProcess(ctx context.Context, database *store.Store, commit string) (string, error) {
 	var instance string
-	if err := database.Pool.QueryRow(ctx, `
+	err := database.Pool.QueryRow(ctx, `
 		insert into server_processes (instance, commit, signing_keys, schema_version, schema_creatable, heartbeat_at, owner_lock_protocol)
-		values (gen_random_uuid(), 'an-earlier-build', '{fingerprint}', $1, $2, now() + interval '1 day', $3)
+		values (gen_random_uuid(), $1, '{fingerprint}', $2, $3, now() + interval '1 day', $4)
 		returning instance::text
-	`, pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), store.OwnerLockProtocol).Scan(&instance); err != nil {
-		return ""
-	}
-	return instance
+	`, commit, pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), store.OwnerLockProtocol).Scan(&instance)
+	return instance, err
 }
 
 func issueRoomStepFixture(t *testing.T) (context.Context, *store.Store, func(int) unconvertedIssue,
@@ -607,25 +608,17 @@ func TestTheBuildGateRefusesAnotherBuildAndAnotherAnnouncement(t *testing.T) {
 	}
 	refused(run(BuildGate("")), "-X main.buildCommit")
 	const own, other = "commit-of-this-conversion", "commit-of-another-build"
-	var instance string
-	if err := database.Pool.QueryRow(ctx, `
-		insert into server_processes (instance, commit, signing_keys, schema_version, schema_creatable, heartbeat_at, owner_lock_protocol)
-		values (gen_random_uuid(), $1, '{fingerprint}', $2, $3, now() + interval '1 day', $4)
-		returning instance::text
-	`, other, pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), store.OwnerLockProtocol).Scan(&instance); err != nil {
+	instance, err := issueRoomOldProcess(ctx, database, other)
+	if err != nil {
 		t.Fatalf("add a live process of another build: %v", err)
 	}
 	refused(run(BuildGate(own)), instance, other)
 	if _, err := database.Pool.Exec(ctx, `delete from server_processes where instance = $1::uuid`, instance); err != nil {
 		t.Fatalf("take the live process away: %v", err)
 	}
-	if _, err := database.Pool.Exec(ctx, `insert into server_build_announcements (commit) values ($1)`, other); err != nil {
-		t.Fatalf("announce another build: %v", err)
-	}
+	announceBuild(t, database, other)
 	refused(run(BuildGate(own)), other)
-	if _, err := database.Pool.Exec(ctx, `insert into server_build_announcements (commit) values ($1)`, own); err != nil {
-		t.Fatalf("announce the conversion's own build: %v", err)
-	}
+	announceBuild(t, database, own)
 	if err := run(BuildGate(own)); err != nil {
 		t.Fatalf("the gate refused once the fleet and the newest announcement are of %s: %v", own, err)
 	}

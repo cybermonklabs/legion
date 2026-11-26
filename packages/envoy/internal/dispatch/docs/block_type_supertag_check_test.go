@@ -5,7 +5,6 @@ package docs
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"os/exec"
 	"path/filepath"
@@ -128,16 +127,6 @@ func blockTypeSupertagRequire(t *testing.T, nodes []blockTypeSupertagNode) {
 	}
 }
 
-// blockTypeSupertagRefKey is the ref_key of document id.
-func blockTypeSupertagRefKey(t *testing.T, database *store.Store, id string) string {
-	t.Helper()
-	var refKey string
-	if err := database.Pool.QueryRow(context.Background(), `select ref_key from artifacts where id = $1::uuid`, id).Scan(&refKey); err != nil {
-		t.Fatalf("read the ref_key of %s: %v", id, err)
-	}
-	return refKey
-}
-
 // blockTypeSupertagDocument creates document slug of issue, of project, its role role where it
 // names one, its live text seeded with markdown and then edited by browser where it is not nil, a
 // browser's write (editLiveTree), and writes its first version through the real version write, as
@@ -207,9 +196,7 @@ func blockTypeSupertagBlockID(t *testing.T, service *Service, id, words string) 
 // commit is the newest one, with no live process, so the conversion's fleet gate passes.
 func blockTypeSupertagConvert(t *testing.T, database *store.Store, project string) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `insert into server_build_announcements (commit) values ($1)`, blockTypeSupertagCommit); err != nil {
-		t.Fatalf("announce the build the conversion runs as: %v", err)
-	}
+	announceBuild(t, database, blockTypeSupertagCommit)
 	binary := filepath.Join(t.TempDir(), "envoy-dispatch")
 	build := exec.Command("go", "build", "-buildvcs=false", "-ldflags", "-X main.buildCommit="+blockTypeSupertagCommit, "-o", binary, "../../../cmd/dispatch")
 	if out, err := build.CombinedOutput(); err != nil {
@@ -237,13 +224,7 @@ func blockTypeSupertagCensus(t *testing.T, database *store.Store, what string) g
 	var written bytes.Buffer
 	report.Write(&written)
 	t.Logf("the store census %s:\n%s", what, written.String())
-	for _, kind := range report.Kinds {
-		if kind.Kind == "block_type" {
-			return kind
-		}
-	}
-	t.Fatalf("the store census %s holds no kind block_type: %v", what, report.Kinds)
-	return graphcensus.KindReport{}
+	return treeCensusKind(t, report, "block_type")
 }
 
 // blockTypeSupertagDifferences is how many differences of kind block_type kind holds, and whether
@@ -281,7 +262,7 @@ func TestEveryTypedBlockNodeCarriesItsTypesSupertag(t *testing.T) {
 	refKeys := map[string]string{}
 	var written []blockTypeSupertagNode
 	for slug, id := range documents {
-		refKeys[slug] = blockTypeSupertagRefKey(t, database, id)
+		refKeys[slug] = refKeyOf(t, database, id)
 		written = append(written, blockTypeSupertagNodes(t, database, refKeys[slug])...)
 	}
 	types := map[string]bool{}
@@ -313,7 +294,7 @@ func TestEveryTypedBlockNodeCarriesItsTypesSupertag(t *testing.T) {
 	big.WriteString("\n:::check{#bc1 surface=\"api\" run=\"go test ./x\"}\nA check of the big document.\n:::\n\n")
 	big.WriteString(":::check{#bc2 surface=\"api\" run=\"go test ./x\"}\nAnother check of the big document.\n:::\n")
 	bigID, _ := blockTypeSupertagDocument(t, database, service, "BIG-1", "BIG", "verification-md", false, model.ArtifactRoleVerification, big.String(), nil, true)
-	bigKey := blockTypeSupertagRefKey(t, database, bigID)
+	bigKey := refKeyOf(t, database, bigID)
 	if blockIndexAt(t, database, bigID) != nil {
 		t.Fatalf("the Verification document of more than %d blocks is indexed by its own write, want its blocks left to the reconciliation", deferBlockIndexBlocks)
 	}
@@ -341,7 +322,7 @@ func TestEveryTypedBlockNodeCarriesItsTypesSupertag(t *testing.T) {
 	// raises on a write of a graph_nodes row whose supertag is check, so a version that adds a
 	// check and states its node fails, and neither the node nor the row of the check stands.
 	probe, _ := blockTypeSupertagDocument(t, database, service, "BIG-1", "BIG", "probe-md", false, "", "A paragraph of the probe document.\n", nil, false)
-	probeKey := blockTypeSupertagRefKey(t, database, probe)
+	probeKey := refKeyOf(t, database, probe)
 	if _, err := database.Pool.Exec(ctx, `
 		create function blocktype_supertag_probe() returns trigger language plpgsql as $$
 		begin
@@ -393,8 +374,8 @@ func TestEveryTypedBlockNodeCarriesItsTypesSupertag(t *testing.T) {
 		return state
 	}
 	untouchedBefore := untouchedState()
-	paragraph := verification
-	retypedParagraph := refKeys["verification-md"] + "#" + blockTypeSupertagBlockID(t, service, paragraph, "A paragraph of the Verification document")
+	paragraphBlock := blockTypeSupertagBlockID(t, service, verification, "A paragraph of the Verification document")
+	retypedParagraph := refKeys["verification-md"] + "#" + paragraphBlock
 	checkAttributes := map[string]any{"surface": "api", "run": "go test ./x"}
 	retypes := []struct {
 		document, address, from, to string
@@ -405,7 +386,7 @@ func TestEveryTypedBlockNodeCarriesItsTypesSupertag(t *testing.T) {
 		{spec, refKeys["spec"] + "#d2", "decision", "check", nil},
 	}
 	retypes[0].ops = []model.EditOp{
-		{Op: "retype", Block: retypedParagraph[strings.LastIndex(retypedParagraph, "#")+1:], Type: "check", Attributes: checkAttributes},
+		{Op: "retype", Block: paragraphBlock, Type: "check", Attributes: checkAttributes},
 		{Op: "retype", Block: "c2", Type: "requirement"},
 	}
 	retypes[2].ops = []model.EditOp{{Op: "retype", Block: "d2", Type: "check", Attributes: checkAttributes}}
@@ -470,7 +451,7 @@ func TestEveryTypedBlockNodeCarriesItsTypesSupertag(t *testing.T) {
 	if err := database.Pool.QueryRow(ctx, `select artifact_id::text from issue_trees where issue_key = 'CORE-1'`).Scan(&tree); err != nil {
 		t.Fatalf("read the tree CORE-1 holds after its conversion: %v", err)
 	}
-	treeKey := blockTypeSupertagRefKey(t, database, tree)
+	treeKey := refKeyOf(t, database, tree)
 	room := blockTypeSupertagNodes(t, database, treeKey)
 	if len(room) < len(written) {
 		t.Fatalf("the room of CORE-1 holds %d blocks after its conversion, want the %d its three documents held", len(room), len(written))
@@ -517,23 +498,23 @@ func TestEveryTypedBlockNodeCarriesItsTypesSupertag(t *testing.T) {
 	checkAddress := treeKey + "#c3"
 	for _, control := range []struct{ what, address, break_, mend string }{
 		{"the supertag of a check's node set to block", checkAddress,
-			fmt.Sprintf(`update graph_nodes set supertag = 'block' where kind = 'block' and id = '%s'`, checkAddress),
-			fmt.Sprintf(`update graph_nodes set supertag = 'check' where kind = 'block' and id = '%s'`, checkAddress)},
+			`update graph_nodes set supertag = 'block' where kind = 'block' and id = $1`,
+			`update graph_nodes set supertag = 'check' where kind = 'block' and id = $1`},
 		{"the supertag of a paragraph's node set to check", plainParagraph,
-			fmt.Sprintf(`update graph_nodes set supertag = 'check' where kind = 'block' and id = '%s'`, plainParagraph),
-			fmt.Sprintf(`update graph_nodes set supertag = 'block' where kind = 'block' and id = '%s'`, plainParagraph)},
+			`update graph_nodes set supertag = 'check' where kind = 'block' and id = $1`,
+			`update graph_nodes set supertag = 'block' where kind = 'block' and id = $1`},
 		{"the type of a check's row set to requirement", checkAddress,
-			fmt.Sprintf(`update document_blocks set type = 'requirement' where node_id = '%s'`, checkAddress),
-			fmt.Sprintf(`update document_blocks set type = 'check' where node_id = '%s'`, checkAddress)},
+			`update document_blocks set type = 'requirement' where node_id = $1`,
+			`update document_blocks set type = 'check' where node_id = $1`},
 	} {
-		if _, err := database.Pool.Exec(ctx, control.break_); err != nil {
+		if _, err := database.Pool.Exec(ctx, control.break_, control.address); err != nil {
 			t.Fatalf("break the census with %s: %v", control.what, err)
 		}
 		broken := blockTypeSupertagCensus(t, database, "with "+control.what)
 		if count, named := blockTypeSupertagDifferences(broken, control.address); count != 1 || !named {
 			t.Errorf("with block %s broken the census reads %d difference(s) of kind block_type, want one naming the block", control.address, count)
 		}
-		if _, err := database.Pool.Exec(ctx, control.mend); err != nil {
+		if _, err := database.Pool.Exec(ctx, control.mend, control.address); err != nil {
 			t.Fatalf("mend %s: %v", control.what, err)
 		}
 	}

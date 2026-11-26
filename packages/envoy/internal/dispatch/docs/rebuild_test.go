@@ -291,10 +291,10 @@ func TestRebuildingADocumentOfAnIssueRoomReplacesTheRoomsHistory(t *testing.T) {
 	if report.SourceVersion != 1 || report.RemovedUpdates != 2 || report.Head != 3 || written.Wrote {
 		t.Errorf("rebuild report = %#v (%#v), want source version 1, the room's 2 updates removed, head 3, no version", report, written)
 	}
-	if rows := roomUpdateCount(t, database, room.tree); rows != 1 {
+	if rows := storedUpdateCount(t, database, room.tree); rows != 1 {
 		t.Errorf("the issue room holds %d stored updates after the rebuild, want its one seed", rows)
 	}
-	if rows := roomUpdateCount(t, database, room.spec); rows != 0 {
+	if rows := storedUpdateCount(t, database, room.spec); rows != 0 {
 		t.Errorf("the spec's own id holds %d stored updates, want none: its history is the room's", rows)
 	}
 	for document, want := range map[string]string{room.spec: "The spec words.\n", room.plan: planSeed} {

@@ -744,8 +744,8 @@ func (r *docsWriterRig) queryDrain(serverURL string) docsWriter {
 			r.named++
 			room := createIssueRoom(t, r.database, 100+r.named)
 			writeRoomQueryNodes(t, r.database, room)
-			r.settleVerification(t, ctx, serverURL, room)
-			stated := newestVersionNumber(t, r.database, room.verification)
+			settleVerification(t, ctx, r.database, r.service, serverURL, room)
+			stated := savedVersion(t, r.database, room.verification)
 			requireStatedRow(t, r.database, room.issue, graphstore.QueryVerification, room.verification, stated)
 			leaveResultOwed(t, r.database, room)
 			versions := r.versionCount(t, room.verification)
@@ -767,16 +767,15 @@ func (r *docsWriterRig) queryDrain(serverURL string) docsWriter {
 }
 
 // settleVerification writes drainVerification into the Verification document of room through a
-// peer's live edit and settles the room, as the result row of TestEachCarryKindIsWrittenBeforeItsVersion
-// does, so the document's newest version holds the check c1 and the version_renders row the room's
-// pass recorded for it.
-func (r *docsWriterRig) settleVerification(t *testing.T, ctx context.Context, serverURL string, room issueRoom) {
+// peer's live edit and settles the room (settleLandedWrite), so the document's newest version holds
+// the check c1 and the version_renders row the room's pass recorded for it.
+func settleVerification(t *testing.T, ctx context.Context, database *store.Store, service *Service, serverURL string, room issueRoom) {
 	t.Helper()
 	peer := connectPeer(t, serverURL, room.verification, "alice")
 	if err := peer.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
 		t.Fatalf("a peer's copy of %s's room: %v", room.issue, err)
 	}
-	stored := roomUpdateCount(t, r.database, room.tree)
+	stored := storedUpdateCount(t, database, room.tree)
 	tree, err := pmdoc.Parse(drainVerification)
 	if err != nil {
 		t.Fatalf("parse the Verification document: %v", err)
@@ -793,13 +792,7 @@ func (r *docsWriterRig) settleVerification(t *testing.T, ctx context.Context, se
 	if err := peer.WaitForText(fragmentMarkdown(room.verification), want, roomWait(t)); err != nil {
 		t.Fatalf("a peer's copy of %s's room: %v", room.issue, err)
 	}
-	waitForStoredUpdates(t, r.database, room.tree, stored)
-	if err := r.service.waitForDurableAppends(ctx, room.tree); err != nil {
-		t.Fatalf("wait for %s's appends: %v", room.issue, err)
-	}
-	if err := r.service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
-		t.Fatalf("settle %s's room: %v", room.issue, err)
-	}
+	settleLandedWrite(t, ctx, database, service, room, stored)
 }
 
 // leaveResultOwed records a result of the check c1 of room's Verification document as the results
@@ -810,10 +803,7 @@ func (r *docsWriterRig) settleVerification(t *testing.T, ctx context.Context, se
 func leaveResultOwed(t *testing.T, database *store.Store, room issueRoom) {
 	t.Helper()
 	ctx := context.Background()
-	var treeRef string
-	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, room.tree).Scan(&treeRef); err != nil {
-		t.Fatalf("read the ref_key of %s's tree: %v", room.issue, err)
-	}
+	treeRef := refKeyOf(t, database, room.tree)
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 		var at time.Time
 		if err := tx.QueryRow(ctx, `select clock_timestamp()`).Scan(&at); err != nil {

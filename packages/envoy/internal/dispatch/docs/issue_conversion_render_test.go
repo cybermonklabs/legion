@@ -128,7 +128,7 @@ func TestAnEditOfAConvertedSpecWritesOneVersionOfIt(t *testing.T) {
 		issue.key).Scan(&decisions); err != nil {
 		t.Fatalf("read the decisions query of %s: %v", issue.key, err)
 	}
-	converted := newestVersionNumber(t, database, issue.spec)
+	converted := savedVersion(t, database, issue.spec)
 	if converted != 2 {
 		t.Fatalf("the conversion left version %d of the spec newest, want its own version 2", converted)
 	}
@@ -142,7 +142,7 @@ func TestAnEditOfAConvertedSpecWritesOneVersionOfIt(t *testing.T) {
 	}
 	written := recordRoom{database: database, service: service, peer: peer,
 		room: issueRoom{issue: issue.key, tree: tree, spec: issue.spec, verification: issue.verification, plan: issue.plan}}
-	appendBlocks := func(markdown string) func(*pmdoc.Node) (*pmdoc.Node, error) {
+	appendToSpec := func(markdown string) func(*pmdoc.Node) (*pmdoc.Node, error) {
 		return func(held *pmdoc.Node) (*pmdoc.Node, error) {
 			if held == nil {
 				return nil, errors.New("the spec's fragment of the room holds no tree")
@@ -159,7 +159,7 @@ func TestAnEditOfAConvertedSpecWritesOneVersionOfIt(t *testing.T) {
 	// of ids once, with every version of the spec that renders from the tree rendering as stored.
 	requireOneVersion := func(what string, before int, ids ...string) {
 		t.Helper()
-		number := newestVersionNumber(t, database, issue.spec)
+		number := savedVersion(t, database, issue.spec)
 		if number != before+1 {
 			t.Errorf("%s left version %d of the spec newest, want %d: the one version its settlement wrote", what, number, before+1)
 		}
@@ -172,16 +172,16 @@ func TestAnEditOfAConvertedSpecWritesOneVersionOfIt(t *testing.T) {
 		requireTreeRendersAsStored(t, database, what, issue.spec)
 	}
 
-	written.settleSpecEdit(t, ctx, appendBlocks(":::requirement{#r2}\nA second requirement.\n:::\n"))
+	written.settleSpecEdit(t, ctx, appendToSpec(":::requirement{#r2}\nA second requirement.\n:::\n"))
 	requireOneVersion("the edit that adds the requirement r2", converted, "r1", "r2")
-	if number := newestVersionNumber(t, database, decisions); number != 1 {
+	if number := savedVersion(t, database, decisions); number != 1 {
 		t.Errorf("the edit that adds the requirement r2 left version %d of the decisions query newest, want its version 1: the edit moved no answer of the query", number)
 	}
 
 	const decided = "We keep one store."
-	written.settleSpecEdit(t, ctx, appendBlocks(":::decision{#d1}\n"+decided+"\n:::\n"))
+	written.settleSpecEdit(t, ctx, appendToSpec(":::decision{#d1}\n"+decided+"\n:::\n"))
 	requireOneVersion("the edit that adds the decision d1", converted+1, "r1", "r2", "d1")
-	if number := newestVersionNumber(t, database, decisions); number != 2 {
+	if number := savedVersion(t, database, decisions); number != 2 {
 		t.Errorf("the edit that adds the decision d1 left version %d of the decisions query newest, want the version 2 the drain writes of it", number)
 	} else if stored := storedVersionMarkdown(t, database, decisions, number); !strings.Contains(stored, decided) {
 		t.Errorf("version %d of the decisions query stores %q, want the decision's words %q in it", number, stored, decided)

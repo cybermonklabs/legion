@@ -306,7 +306,7 @@ func (r *daemonThreadRig) requireMovedByTheStep(t *testing.T, node, key, fromKin
 		t.Errorf("the block %s stands under %s %s after the step ran, want it under the issue %s", node, now.ToKind, now.ToID, key)
 		return
 	}
-	if now.Who.Kind != docs.DaemonThreadStepActor.Kind || now.Who.ID != docs.DaemonThreadStepActor.ID {
+	if !now.Who.SameAs(docs.DaemonThreadStepActor) {
 		t.Errorf("the part_of of %s to the issue %s is written by %s %s, want the step %s %s",
 			node, key, now.Who.Kind, now.Who.ID, docs.DaemonThreadStepActor.Kind, docs.DaemonThreadStepActor.ID)
 	}
