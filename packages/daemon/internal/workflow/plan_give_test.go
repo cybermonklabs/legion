@@ -26,11 +26,11 @@ func settledRows(t *testing.T, pool *pgxpool.Pool, engine *Engine) map[string]st
 
 // A give of the version in force applies nothing whatever its id: under the id the release before
 // named it by (`plan:<issue>:<generation>:<document>:<version>`, api's registerPlan), which the
-// store marked when it took the version, and under an id the store never marked, one that also names
-// the giver, as a route that named a registration so would give it. Each is answered as taken with
-// no refusal, and its id is marked: a daemon of the release before, after a way back, reads each as
-// a give already applied. The mark of the id never marked is the one change of every table's rows
-// (testdb.TableRows, testdb.ChangedTables), so no row is changed in place either.
+// store marked when it took the version, and under an id the store never marked, one that also
+// names the giver, as a route that named a registration so would give it. Each is answered as
+// taken, with no refusal, and its id is marked: a daemon of the release before, after a way back,
+// reads each as a give already applied. The mark of the id never marked is the one change of every
+// table's rows (testdb.TableRows, testdb.ChangedTables), so no row is changed in place either.
 //
 // The faults it catches: the version in force judged as a later version, as main judged a give
 // under an id never marked (its control: versionRefusal's sameVersion false, under which each give
