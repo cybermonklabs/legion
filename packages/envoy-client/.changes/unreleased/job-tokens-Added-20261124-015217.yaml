@@ -1,0 +1,28 @@
+kind: Added
+body: |-
+  `dispatch api` runs with no host plugin too, as in a GitHub Actions job: it then reads Dispatch
+  from the environment alone (`DISPATCH_URL` and a credential, the token files
+  `DISPATCH_BROKER_TOKEN_FILE` and `DISPATCH_BROKER_DPOP_KEY_FILE` among them, as every `dispatch`
+  command takes them) and reads no envoy.json, and its broker trade names the session of
+  `DISPATCH_SESSION_ID`, else of `AGENT_SECRETS_SESSION`, else the session the job's broker entry
+  fixes. With no Dispatch or no credential set, it exits 2 naming the variables to set. Such a job
+  writes to Dispatch under its own token with `dispatch api --method POST` (or `PUT`, `PATCH` or
+  `DELETE`), its body read from a file or from standard input.
+
+  `AGENT_SECRETS_MACHINE_IDENTITY=github-actions` trades a GitHub Actions run's OIDC token at the
+  broker. The client asks GitHub for a new token at every trade, at `ACTIONS_ID_TOKEN_REQUEST_URL`
+  with `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, which GitHub sets in a job that holds `id-token: write`,
+  for the audience `AGENT_SECRETS_MACHINE_AUDIENCE` names. A missing variable is an error that
+  names it.
+
+  `dispatch whoami` says that a broker token that names a service and no person, and that Dispatch
+  answers `sign_in_required` false for, a job's under the project scope `named` or `public` among
+  them, runs as its service and no person and writes as that service. Where the token names one
+  project, it says of that project what it says of a person's named token for the same project,
+  and otherwise that the token may write wherever a token that names no project may write. A
+  machine's token, which Dispatch answers `sign_in_required` true for, and a broker token that
+  names a service and proves a session, from a Dispatch that answers no `sign_in_required`, keep
+  the sentence that names `agent-secrets login`. Its details carry `project_scope`.
+time: 2026-11-24T01:52:17Z
+custom:
+    Issue: job-tokens

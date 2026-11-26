@@ -24,6 +24,7 @@ const failedLooksRelease = "the release that backs a production check off a chec
 // row, so the roll-forward's Migrate applies the file again and adds the column again at 0. The
 // negative control is the store before the migration, whose table holds no such column.
 func TestTheFailedLooksComeAtZeroAndTheirWayBackLetsThemComeAgain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, failedLooksVersion-1)

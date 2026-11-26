@@ -153,8 +153,17 @@ const (
 	// (pods.IdleDecline.HoldsUnpushedWork): the second rule's (UnownedPodRelease), and the close's
 	// of a left pod with no live claim (LeftPodClose). No role runs in the pod to read it again, so
 	// the decline on record is the one word the daemon has of that disk, and the pod stays with the
-	// work until a role of the issue comes back and a read finds it gone, or the pod is replaced.
+	// work until a claim of the issue is started or runs a turn and the launcher's read after it
+	// finds the work gone, or the pod is replaced, or the issue or its tree closes or lingers.
+	// The same hold keeps such a pod after the pod's launcher read its disk and found work there
+	// (IdleDecision.Read), since that read records the same decline.
 	IdleHoldUnownedUnpushedWork
+	// IdleHoldUnownedWorkspaceUnread: the hold of a pod with no live claim whose launcher could not
+	// read its workspace (IdleDecision.Read): the second rule's and the left pod close's, as
+	// IdleHoldUnownedUnpushedWork is. A read that cannot be made cannot show the disk clean, so the
+	// pod stays, and the pass asks no new read while the decline stands (pods.IdleDecline.Stands):
+	// until a start of a claim of the issue, another pod, or pods.DeclineUnreadRetry.
+	IdleHoldUnownedWorkspaceUnread
 )
 
 var idleHoldNames = map[IdleHold]string{
@@ -194,7 +203,8 @@ var idleHoldNames = map[IdleHold]string{
 	IdleHoldPauseHeld:        "pause_held",
 	IdleHoldUnownedPauseHeld: "unowned_pause_held",
 
-	IdleHoldUnownedUnpushedWork: "unowned_unpushed_work",
+	IdleHoldUnownedUnpushedWork:    "unowned_unpushed_work",
+	IdleHoldUnownedWorkspaceUnread: "unowned_workspace_unread",
 }
 
 // String is the hold's recorded name, which a reader of the daemon's release records reads.
@@ -218,11 +228,29 @@ type IdleDecision struct {
 	Close bool
 	Hold  IdleHold
 	Roles []claim.Role
+	// Read is a release by UnownedPodRelease, or a close by LeftPodClose, of a pod in which no role
+	// process runs, whose disk the release or the close deletes and no read has shown clean: the
+	// daemon has the pod's launcher read the workspace first (runtime.PodWorkspaceReader,
+	// record.IssueWorkspaceCheck.Launcher), and deletes the disk only where that read finds
+	// nothing that origin does not hold (R6 of #5285). A release of a pod whose
+	// Sandbox keeps a volume the issue's next pod mounts deletes no disk, and reads nothing.
+	Read bool
 	// HoldKinds names the hold more closely for the one hold that has more to say:
 	// IdleHoldBackgroundWork carries the kinds the held session reported (`subagent`,
 	// `async-job`, `claude-background-task`), which is what tells an operator reading the hold
 	// whether a pod is kept by a subagent or by a background job. Every other hold leaves it nil.
 	HoldKinds []string
+}
+
+// TurnsOnKeptVolume is whether a decision UnownedPodRelease made with pods.IdleView.KeptVolume
+// false is one the kept volume changes, so the daemon asks the runtime whether the issue's Sandbox
+// keeps one and decides again (internal/daemon's releaseUnownedPod): a release that reads the disk
+// it deletes (Read), and a pod held because the read of that disk failed
+// (IdleHoldUnownedWorkspaceUnread). A kept volume the issue's next pod mounts is not deleted, so
+// the release owes it no read and a failed read holds nothing (noRoleDiskHold). No other decision
+// turns on it.
+func (d IdleDecision) TurnsOnKeptVolume() bool {
+	return d.Read || d.Hold == IdleHoldUnownedWorkspaceUnread
 }
 
 // IdleRelease decides whether an issue's pod may be released now. It is the whole rule and it is
@@ -266,7 +294,8 @@ type IdleDecision struct {
 //     yet known. Failed, retired and already suspended claims stay as they are and hold nothing;
 //
 //   - no task, notice, message or start waits for delivery to a role of the pod, but a start
-//     queued for news alone, which wakes the claim a release suspends (pods.IdleView.Waiting);
+//     queued for news alone, or a worker start that waits for an admission slot its issue does not
+//     hold, each of which wakes the claim a release suspends when it runs (pods.IdleView.Waiting);
 //
 //   - each live role's session reported, after its last turn, that it runs no background work. A
 //     claim with no report, or one whose report predates its last turn, is never released: that
@@ -427,18 +456,22 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //     (IdleHoldUnpushedWork, IdleHoldWorkspaceUnread);
 //   - no claim is live and a decline says the disk of this pod holds work that origin does not hold
 //     (pods.IdleDecline.HoldsUnpushedWork): a role read through after an operator's resume left
-//     that work, and its claim then stopped. No role runs to read the disk again, so the pod is
-//     kept as the release of a pod no claim owns keeps such a pod (IdleHoldUnownedUnpushedWork).
+//     that work, and its claim then stopped, or the pod's launcher read it. The pod is kept as the
+//     release of a pod no claim owns keeps such a pod (IdleHoldUnownedUnpushedWork), and so is a
+//     pod whose launcher could not read its disk while that decline stands
+//     (IdleHoldUnownedWorkspaceUnread, noRoleDiskHold).
 //
-// A close with a live claim deletes a disk that a role worked on, so it reads that disk first, as
-// the idle release does: the decision names the live roles, and the daemon queues the workspace
-// check alone (record.IssueWorkspaceCheck, CloseRoles), which reads through one of them and queues
-// the stops and the suspension only where it finds nothing that origin does not hold
-// (LeftPodCloseAfterCheck). A read that finds work, or that fails, records a decline instead, and
+// A close deletes a disk, so it reads that disk first, as the idle release does. With a live claim
+// the decision names the live roles, and the daemon queues the workspace check alone
+// (record.IssueWorkspaceCheck, CloseRoles), which reads through one of them and queues the stops
+// and the suspension only where it finds nothing that origin does not hold
+// (LeftPodCloseAfterCheck). With no live claim no role runs to read through, so the decision is
+// Read: the check is the pod's launcher's (record.IssueWorkspaceCheck, Launcher and Close), and
+// its clean read queues the suspension alone, fenced on the turn start the pass read (R6 of
+// #5285). A read that finds work, or that fails, records a decline instead, and
 // the pod stays with its work. While that check waits on the lane, the pod is held as this
 // daemon's own act under way (IdleHoldReleasing, pods.IdleView.WorkspaceCheckQueued), which no
-// record counts. A pod with no live claim runs no role to read through: it is closed where no
-// decline says its disk holds work, and kept where one does.
+// record counts.
 //
 // It reads nothing of the image, the plugin contract, an update round or a person's wait: each
 // of those is about the pod a release brings back, and this close brings no pod back. The issue's
@@ -454,16 +487,41 @@ func LeftPodClose(view pods.IdleView, now time.Time, idle time.Duration) IdleDec
 	if since, ok := view.QuietSince(); !ok || now.Sub(since) < idle {
 		return IdleDecision{Hold: IdleHoldNotIdle}
 	}
-	if len(decision.Roles) > 0 && view.Declined.Stands(view, now) {
-		if view.Declined.Reason == pods.DeclineWorkspaceUnread {
-			return IdleDecision{Hold: IdleHoldWorkspaceUnread}
+	if len(decision.Roles) > 0 {
+		if view.Declined.Stands(view, now) {
+			if view.Declined.Reason == pods.DeclineWorkspaceUnread {
+				return IdleDecision{Hold: IdleHoldWorkspaceUnread}
+			}
+			return IdleDecision{Hold: IdleHoldUnpushedWork}
 		}
-		return IdleDecision{Hold: IdleHoldUnpushedWork}
+		return decision
 	}
-	if len(decision.Roles) == 0 && view.Declined.HoldsUnpushedWork(view) {
-		return IdleDecision{Hold: IdleHoldUnownedUnpushedWork}
+	if hold := noRoleDiskHold(view, now); hold != IdleHoldNone {
+		return IdleDecision{Hold: hold}
 	}
+	decision.Read = true
 	return decision
+}
+
+// noRoleDiskHold is the hold the decline on record puts on a pod in which no role process runs,
+// and IdleHoldNone where it puts none: the release of a pod no claim owns and the close of a left
+// pod with no live claim read it before they ask the pod's launcher for a read of their own. A
+// decline that says this pod's disk holds work keeps the pod (pods.IdleDecline.HoldsUnpushedWork,
+// IdleHoldUnownedUnpushedWork), whether or not the act deletes the disk. Where it does, a decline
+// whose read failed keeps it while that decline stands (pods.IdleDecline.Stands,
+// IdleHoldUnownedWorkspaceUnread), so a launcher that cannot read is asked again only after a
+// start, another pod or pods.DeclineUnreadRetry, and not at every pass. The act deletes the disk
+// unless the issue's Sandbox keeps a volume the issue's next pod mounts (pods.IdleView.KeptVolume),
+// which only the release of a pod no claim owns keeps and reads: a close deletes the Sandbox with
+// any volume it holds, and its view never carries it.
+func noRoleDiskHold(view pods.IdleView, now time.Time) IdleHold {
+	if view.Declined.HoldsUnpushedWork(view) {
+		return IdleHoldUnownedUnpushedWork
+	}
+	if !view.KeptVolume && view.Declined.Reason == pods.DeclineWorkspaceUnread && view.Declined.Stands(view, now) {
+		return IdleHoldUnownedWorkspaceUnread
+	}
+	return IdleHoldNone
 }
 
 // LeftPodCloseAfterCheck decides, once the close's workspace check has read the workspace and found
@@ -561,19 +619,18 @@ func leftUnderRunningTree(view pods.IdleView) bool {
 // UnownedPodRelease decides whether an issue's pod may be released because no claim of the issue
 // can use it. It is the daemon's second pod-release rule, beside IdleRelease, and it exists
 // because an issue every claim of which has failed, been retired or been suspended still holds
-// its Kubernetes pod, 3 CPU and 19 GiB, with nobody in it: a claim in any of those three states
-// runs no process (pods.IdleClaim.Live), so no role is in that pod and none is coming back to it
-// on its own. Nothing else takes such a pod back, and it stands for as long as the record holds
-// the issue.
+// its Kubernetes pod and the pod's reservation (2 CPU and 8 GiB at the defaults), with nobody in
+// it: a claim in any of those three states runs no process (pods.IdleClaim.Live), so no role is
+// in that pod and none is coming back to it on its own. Nothing else takes such a pod back, and
+// it stands for as long as the record holds the issue.
 //
 // It is pure, as IdleRelease is, and it reads less than that rule: no image, no plugin contract,
 // no turn and no reminder. Each of those is a fact about a live role — the image a released pod
 // would come back on, the contract a live claim speaks, the turn a process is in, the reminder
 // armed in a phase worker's session — and this rule acts only where there is no live role to
-// have one. This release makes no check of its own: the workspace read is made by a role's process
-// (runtime.WorkspaceWorkReader), and a pod this rule reads runs none. It reads the idle rule's
-// decline instead, where that decline says the pod's disk holds work (below). Nor is the idle
-// rule's hold for a root waiting on a
+// have one. A role's process makes the idle release's read (runtime.WorkspaceWorkReader), and a
+// pod this rule reads runs none, so the pod's launcher makes this release's read
+// (IdleDecision.Read, below). Nor is the idle rule's hold for a root waiting on a
 // person (IdleHoldAwaitingPerson): that hold keeps the pod of a root whose architect is live and
 // idle, so the answer reaches the session it is waiting in, and a root this rule reads has no
 // live architect to answer in any pod. The answer promotes the root and the daemon queues the
@@ -618,7 +675,11 @@ func leftUnderRunningTree(view pods.IdleView) bool {
 //   - nothing waits for delivery to a role of the issue. A start queued for a stopped claim is
 //     the one delivery such an issue carries, and it is what brings a role back into this pod; a
 //     release taken under it would leave that start to find its pod gone and to provision the
-//     workspace afresh (IdleHoldUnownedDelivery);
+//     workspace afresh (IdleHoldUnownedDelivery). A worker start that waits for an admission slot
+//     its issue does not hold is not counted (pods.IdleView.Waiting): the issue waits in the
+//     admission line, which can take days, and when the slot comes the start provisions the
+//     workspace afresh from origin, as it would after any release. The release reads the disk
+//     before it deletes it, so no work that origin lacks goes with it (Read);
 //
 //   - the pod has recorded nothing for the whole idle period, read as the newest write to any
 //     claim row of the issue (view.QuietSince, compared as IdleRelease compares it)
@@ -626,27 +687,36 @@ func leftUnderRunningTree(view pods.IdleView) bool {
 //
 //   - no decline of the issue's idle release says the disk of this pod holds work that no branch
 //     or tag on origin holds (pods.IdleDecline.HoldsUnpushedWork): the last read that could read
-//     the workspace found such work, and the pod is the one that read was made in. A failed read
-//     after it keeps that work. Where the decline and the runtime both name the pod, only another
-//     pod ends it, and a start row into the same pod does not; only where either uid is unknown
-//     does a start row after the decline end it. A role whose claims all stopped after such a
-//     decline — relaunches that ran out, say — left that work on this disk, and the release would
-//     delete it (IdleHoldUnownedUnpushedWork);
+//     the workspace found such work, the pod is the one that read was made in, and no claim of
+//     the issue was started or ran a turn since that read. A failed read after it keeps that work.
+//     A role whose claims all stopped after such a decline — relaunches that ran out, say — left
+//     that work on this disk, and the release would delete it (IdleHoldUnownedUnpushedWork). A
+//     start or a turn since the read ends the hold, since the role can have pushed the work, and
+//     the release then reads the disk again before it deletes it (Read);
+//
+//   - where the release deletes the disk, no decline whose read failed stands
+//     (IdleHoldUnownedWorkspaceUnread, noRoleDiskHold): the pod's launcher could not read the disk,
+//     so nothing shows it clean, and it is asked again only after a start, another pod or
+//     pods.DeclineUnreadRetry;
 //
 //   - the daemon's project is not paused (pods.IdleView.Paused). The release's own transaction
 //     marks no release while the project is paused (store.Store.ReleaseIdleIssue, decision 12 of
 //     dispatch://INFRA-3759), so a pod this rule would otherwise release is kept, and the hold
 //     says what kept it (IdleHoldPaused).
 //
-// The quiet conjunct comes before the last two, where the idle rule's comes last but for its
+// The quiet conjunct comes before the last three, where the idle rule's comes last but for its
 // decline, so that a pass records a hold only for a pod that has already stood past the period: a
 // pod inside it is simply not this rule's yet, while every other hold names something true of a
 // pod that has stood past it. The pause's comes last, since a pause keeps only a pod this rule
 // would release.
 //
-// The decision names no roles. There is no live claim to suspend and no workspace to read through
-// one, so the release this answers changes no claim at all: it takes the Sandbox, the pod and
-// the disk, and every path that starts a claim of the issue again builds all three afresh.
+// The decision names no roles. There is no live claim to suspend, so the release this answers
+// changes no claim at all: it takes the Sandbox, the pod and the disk, and every path that starts
+// a claim of the issue again builds all three afresh. It deletes that disk only after a read shows
+// it clean (R6 of #5285): the release is Read, and its first row has the pod's
+// launcher read the workspace (record.IssueWorkspaceCheck.Launcher). Where the issue's Sandbox
+// keeps a volume the issue's next pod mounts (pods.IdleView.KeptVolume), the release keeps that
+// Sandbox and its volume, so it deletes no disk and reads nothing.
 func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sandboxPresent bool) IdleDecision {
 	if !view.Found || len(view.Claims) == 0 {
 		return IdleDecision{Hold: IdleHoldUnownedNoClaim}
@@ -684,13 +754,13 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 	if since, ok := view.QuietSince(); !ok || now.Sub(since) < idle {
 		return IdleDecision{Hold: IdleHoldUnownedNotIdle}
 	}
-	if view.Declined.HoldsUnpushedWork(view) {
-		return IdleDecision{Hold: IdleHoldUnownedUnpushedWork}
+	if hold := noRoleDiskHold(view, now); hold != IdleHoldNone {
+		return IdleDecision{Hold: hold}
 	}
 	if view.Paused {
 		return IdleDecision{Hold: IdleHoldPaused}
 	}
-	return IdleDecision{Release: true}
+	return IdleDecision{Release: true, Read: !view.KeptVolume}
 }
 
 // idleStateReleasable is whether a live claim's state is one a release may suspend: an agent that

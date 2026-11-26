@@ -112,11 +112,7 @@ import {
   natsConnectionOptions,
   natsDialBudget,
 } from "@legion/envoy-client/nats-connection";
-import {
-  type BrokerNatsCredential,
-  followNatsCredential,
-  keepNatsCredential,
-} from "@legion/envoy-client/nats-credential";
+import { followNatsCredential, keepNatsCredential } from "@legion/envoy-client/nats-credential";
 import {
   NoRelaySubjectError,
   refusedTopicsNoticeText,
@@ -211,7 +207,7 @@ import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger as hostLogger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
 import { encode } from "@toon-format/toon";
-import { connect, Events, type NatsConnection, StringCodec } from "nats";
+import { connect, Events, StringCodec } from "nats";
 import { name as packageName, version as packageVersion } from "../package.json" with {
   type: "json",
 };
@@ -628,10 +624,10 @@ const UNASKED_WAIT_REMINDER =
  * One arming period of the run-end nudge. A person's typed input or Dispatch card arms a period.
  * `check_due` is the outstanding check, in the shape of the host's own todo reminder: arming owes
  * one, a completed check spends it, the agent's next real work — a successful tool call that ran
- * anything but `dispatch` commands — owes another, and opening the ask itself spends it, since the
- * nudge has nothing left to say about that stop. A turn that only replies and stops does no work,
- * so the nudge's own continuation can never owe one, which is what keeps it from nudging itself
- * forever. `checks` counts the ones spent, capped at `ASK_CHECKS_PER_PERIOD`.
+ * anything but `dispatch` commands the ledger records — owes another, and opening the ask itself
+ * spends it, since the nudge has nothing left to say about that stop. A turn that only replies and
+ * stops does no work, so the nudge's own continuation can never owe one, which is what keeps it
+ * from nudging itself forever. `checks` counts the ones spent, capped at `ASK_CHECKS_PER_PERIOD`.
  *
  * `baseline_as_of` is the server clock the period's next Dispatch read asks from, and it moves
  * after every self-check to that snapshot's `as_of`. This keeps the check's view current while the
@@ -840,9 +836,9 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // (`requireInbound`).
   const inbound = envoy.enabled && !("off" in envoy.inbound);
   const startNotice = atStart.notice ?? "";
-  // AskGate (extensions/askgate/) reviews each Dispatch write before it posts, in a session that
-  // has Dispatch: its own envoy.json and the variables over it name one. A session or pod with no
-  // Dispatch has no write to review, so the gate binds nothing there and says nothing. A
+  // AskGate (extensions/askgate/) reviews each gated Dispatch write before it posts, in a session
+  // that has Dispatch: its own envoy.json and the variables over it name one. A session or pod
+  // with no Dispatch has no write to review, so the gate binds nothing there and says nothing. A
   // checkout's file is left out of that test: it can turn off the Dispatch of its own checkout,
   // but not the gate, which a later shell command can still pass with DISPATCH_URL. The session's
   // own envoy.json is the gate's only switch. Its one `tool_call` handler registers with this
@@ -1166,7 +1162,8 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   };
 
   // Where this instance has read the `dispatch` command's ledger to (`results.jsonl` in the
-  // session's state directory, a line per call), so the run-end check sees each call once.
+  // session's state directory, a line per call, none for `dispatch proxy` or `dispatch login`), so
+  // the run-end check sees each call once.
   let dispatchLedger: { readonly sessionID: string; offset: number } | undefined;
 
   // Names the top-level session in the environment every later shell command takes, and starts
@@ -1961,6 +1958,9 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
           sendUserInput(turn.body, {
             ...(turn.mode === "aside" && { deliverAs: "aside" as const }),
             tag: turn.messageId,
+            // The person's own turn, from outside the session: like a line typed at the terminal,
+            // it ends a cyber-policy hold the session is under (`PiApi.sendUserInput`'s `origin`).
+            origin: "outside",
           })
         )
         .then(
@@ -2436,10 +2436,11 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
             const injectionSessionID = sessionID;
             noteInjectedUserTurn(injectionSessionID, turn.body, turn.messageId);
             notedSessionIDs.add(injectionSessionID);
-            pi.sendUserMessage(
-              delivery.content,
-              turn.mode === "aside" ? { deliverAs: "aside" } : undefined
-            );
+            pi.sendUserMessage(delivery.content, {
+              ...(turn.mode === "aside" && { deliverAs: "aside" as const }),
+              // The person's own turn, from outside the session, as `runTypedInput` sends it.
+              origin: "outside",
+            });
             markPicturesShown(shownPictures(injectionSessionID), delivery.shown);
             // Done once the host writes the user message its text is found as, or at the run's
             // end, which stops that search (`endInjectedUserTurns`).
@@ -5416,9 +5417,10 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       abortSelfCheck("the agent opened the ask itself");
     } else if (!owesNoCheck) {
       // Real work: it owes the period another check, the way finishing a step re-arms the
-      // host's todo reminder. A `dispatch` command is the agent talking to the humans this
-      // nudge is about, not work, so it owes nothing — and a turn that only replies calls no
-      // tool at all, which is what stops the nudge's own continuation from re-arming itself.
+      // host's todo reminder. A `dispatch` command the ledger records is the agent talking to the
+      // humans this nudge is about, not work, so it owes nothing — and a turn that only replies
+      // calls no tool at all, which is what stops the nudge's own continuation from re-arming
+      // itself.
       askAwareness = { ...askAwareness, check_due: true };
     }
   });

@@ -176,11 +176,12 @@ func TestARaiseWhoseAnswerAndNextReadAreLostStillLands(t *testing.T) {
 }
 
 // scriptedReads answers each read of a stream as script says, in order, and as a stream with a
-// leader once the script is spent: "lost" holds the reply for RequestTimeout and then answers
-// nats.ErrTimeout, as a read the server lost does, "leaderless" answers a three-copy stream with no
-// leader yet, and "missing" answers nats.ErrStreamNotFound, as a member that has not applied a
-// create does. No server is behind it. lostAt is when the last lost read began; the counts are
-// atomic because a read the wait abandons at its limit runs on beside the next one.
+// leader that serves once the script is spent: "lost" holds the reply for RequestTimeout and then
+// answers nats.ErrTimeout, as a read the server lost does, "leaderless" answers a three-copy stream
+// with no leader yet, "unserved" one whose new leader is named and takes no write yet (no
+// LeaderSince, leaderNotServing), and "missing" answers nats.ErrStreamNotFound, as a member that
+// has not applied a create does. No server is behind it. lostAt is when the last lost read began;
+// the counts are atomic because a read the wait abandons at its limit runs on beside the next one.
 type scriptedReads struct {
 	nats.JetStreamContext
 	script []string
@@ -193,18 +194,27 @@ func (s *scriptedReads) StreamInfo(stream string, _ ...nats.JSOpt) (*nats.Stream
 	if n := int(s.reads.Add(1)) - 1; n < len(s.script) {
 		step = s.script[n]
 	}
-	info := &nats.StreamInfo{Config: nats.StreamConfig{Name: stream, Replicas: 3}, Cluster: &nats.ClusterInfo{Leader: "n1"}}
+	info := servingStreamInfo(stream)
 	switch step {
 	case "lost":
 		s.lostAt.Store(time.Now().UnixNano())
 		time.Sleep(RequestTimeout)
 		return nil, nats.ErrTimeout
 	case "leaderless":
-		info.Cluster.Leader = ""
+		info.Cluster.Leader, info.Cluster.LeaderSince = "", nil
+	case "unserved":
+		info.Cluster.LeaderSince = nil
 	case "missing":
 		return nil, nats.ErrStreamNotFound
 	}
 	return info, nil
+}
+
+// servingStreamInfo is a read of a three-copy stream led by n1, which has taken writes since a
+// second ago: the read a leader that has applied its first entry as leader answers.
+func servingStreamInfo(stream string) *nats.StreamInfo {
+	since := time.Now().Add(-time.Second)
+	return &nats.StreamInfo{Config: nats.StreamConfig{Name: stream, Replicas: 3}, Cluster: &nats.ClusterInfo{Leader: "n1", LeaderSince: &since}}
 }
 
 // A wait whose first reads are lost and then answered sets its read limit back after the answer, so
@@ -262,9 +272,9 @@ type slowReads struct {
 func (s *slowReads) StreamInfo(stream string, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
 	began := time.Now()
 	time.Sleep(s.delay)
-	info := &nats.StreamInfo{Config: nats.StreamConfig{Name: stream, Replicas: 3}, Cluster: &nats.ClusterInfo{Leader: "n1"}}
+	info := servingStreamInfo(stream)
 	if began.Before(s.leaderFrom) {
-		info.Cluster.Leader = ""
+		info.Cluster.Leader, info.Cluster.LeaderSince = "", nil
 	}
 	return info, nil
 }
@@ -278,6 +288,8 @@ func (s *slowReads) StreamInfo(stream string, _ ...nats.JSOpt) (*nats.StreamInfo
 func TestAServerThatAnswersEveryReadLateKeepsALimitAboveItsDelay(t *testing.T) {
 	start := time.Now()
 	reads := &slowReads{delay: 3 * time.Second, leaderFrom: start.Add(6 * time.Second)}
+	// The bound under test, not a wait: a limit kept above the delay finds the leader at about
+	// 10.5 s, and one set back answers at about 15 s, so 13 s tells the two apart (above).
 	ctx, cancel := context.WithTimeout(t.Context(), 13*time.Second)
 	defer cancel()
 	err := awaitStreamLeader(ctx, slog.Default(), reads, afterOpen, "KV_envoy_slow_reads_test")
@@ -298,6 +310,8 @@ func TestAServerThatAnswersEveryReadLateKeepsALimitAboveItsDelay(t *testing.T) {
 // reads and answer at about 15 s, after the wait ended.
 func TestTheStepsOfOneStartShareOneRunOfReads(t *testing.T) {
 	reads := &slowReads{delay: 3 * time.Second}
+	// The bound under test, not a wait: steps that share the run of reads find the leader inside
+	// 13 s, and a step that learnt the delay again answers at about 15 s (above).
 	ctx, cancel := context.WithTimeout(withReadLimit(t.Context()), 13*time.Second)
 	defer cancel()
 	start := time.Now()

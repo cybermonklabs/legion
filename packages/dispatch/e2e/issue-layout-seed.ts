@@ -55,7 +55,7 @@ import {
   spineDecisionsDocument,
   spineVerificationDocument,
 } from "./issue-layout-seed-text";
-import { ONE_PIXEL_PNG } from "./sends";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 
 /**
  * The whole issues the browser rows of the source's `e2e/issue-layout.e2e.ts` read, and in this

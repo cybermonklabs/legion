@@ -792,6 +792,28 @@ identity the broker can issue"), and nothing on this box does that at this relea
 box session writing under an approved machine login included, and `dispatch://INFRA-264` is where
 Dispatch accepts a broker token.
 
+A job entry of the broker is how such a token names its writer's own account and no person.
+`BROKER_EXCHANGE_JOB_ACCOUNTS` lists a pod's Kubernetes service account,
+`BROKER_EXCHANGE_JOB_WORKFLOWS` a GitHub Actions workflow of one repository on one ref, and
+`BROKER_VM_EXCHANGE_JOB_ACCOUNTS` a machine's Google service account, each with its projects (one
+project key, or `public` and at most 16 private project keys) and, where it fixes one, a session.
+The token the exchange mints for that identity names it as its service and no person, so Dispatch
+records a daemon's or a workflow's write under its session and its own account, and under no
+person. The token holds no OAuth scope, so a route that needs one refuses it with
+`403 OAUTH_SCOPE_REQUIRED` before Dispatch's project check runs. A token whose entry names one
+project writes that project. The project check judges its write to another project as it judges
+a person's `named` token's for the same project: it writes another project's objects as a token
+that names no project does, and an object of a private project that the entry does not name gets
+the answer of an object that does not exist. A write that belongs to the deployment, such as a
+project create, is refused `403 PROJECT_SCOPE_DEPLOYMENT`. A token whose entry names
+`public` writes wherever a token that names no project may, and its list limits no write at
+this release. A GitHub Actions job trades its run's token with
+`AGENT_SECRETS_MACHINE_IDENTITY=github-actions` and sends its requests with `dispatch api`
+(`packages/envoy-client/README.md`, "The `dispatch` command"). A machine's token that names a
+service under the project scope `person`, of a machine nobody has signed in on and no job entry
+lists, still reads and is refused every write `403 SIGN_IN_REQUIRED` (`docs/kubernetes.md`, "The
+Dispatch identity the broker can issue").
+
 ## Phase workers on Claude Code
 
 `worker_backends` in `legion.yaml` runs a role on another agent harness than Oh My Pi:
