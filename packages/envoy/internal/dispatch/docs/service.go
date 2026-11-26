@@ -299,6 +299,11 @@ type Service struct {
 	// before the version takes its document lock and reads it. Nil outside tests; tests use it to
 	// evict the warmed room or edit it in that window.
 	afterReadWarm func(room string)
+	// afterMarkMiss runs each time a look of VerifyMark has missed the mark and the call is about
+	// to wait for the room's next update or its wait (markTimer). Nil outside tests; tests use it
+	// to write the mark only once the call has looked and missed, so the call can find it only
+	// through the update's wake.
+	afterMarkMiss func(room string)
 	// afterReadCopy runs once a read of a room has copied the room's document (holdLive) and
 	// before that copy is offered to the room's replica (startFromRead). Nil outside tests;
 	// tests use it to commit into the room, and to leave the room's replica recovered, in the
@@ -540,6 +545,10 @@ type Service struct {
 	// between the mutation's read of it and its write, where a peer's update can land: Apply runs
 	// the mutation outside the document's lock and takes the lock for each transaction alone.
 	inServiceTransaction func(txn *crdt.Transaction)
+	// markTimer arms the wait VerifyMark gives a browser's update, markWait long: a wall timer
+	// (wallMarkTimer), set in New. Tests replace it, as they replace now, to read the duration it
+	// was armed with and to fire it themselves.
+	markTimer func(time.Duration) (<-chan time.Time, func() bool)
 	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks), and the
 	// block-index tick times its object pass by (objectPassInterval).
 	now      func() time.Time
@@ -1071,6 +1080,7 @@ func New(deps Deps) *Service {
 		markWait:          markWait,
 		now:               time.Now,
 		fleets:            fleetCache{ttl: fleetCacheTTL},
+		markTimer:         wallMarkTimer,
 		timers:            make(map[uint64]*time.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
