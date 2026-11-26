@@ -313,17 +313,22 @@ answers its URL and the agent bearer token it minted for the run. Among the test
 are `src/__tests__/design-gate-advice.live.test.ts`, which proves the design-gate clause end to
 end, and `src/__tests__/moved-approval-advice.live.test.ts`, which proves the moved-approval line
 of a document write's advice the same way; each is the real CLI entry `bin/dispatch.ts` writing to
-that server, the server's record and the client's sentence together. They share
-`@legion/envoy-client/test/dispatch-cli-live` (Bun only, not built, in `test/`), which holds the
-real CLI's `docEdit`, the person's and the machine's writes, and the issue and document a row
-writes about; each file keeps the constants and the sentences that are its own.
+that server, the server's record and the client's sentence together.
 `src/__tests__/artifact-dry-run.live.test.ts` holds `dispatch artifact --dry-run` to the call on
 the same stack: each of its rows runs `bin/dispatch.ts` as its own process, with `--dry-run` and
 without, over a text of
 `packages/envoy/internal/dispatch/api/testdata/text-refusals.json` in one combination of the way
-the text is given, `--force` and a new or a held name. A test that uses this stack runs only with
-`LEGION_E2E_DISPATCH_STACK=1`, and it needs `DISPATCH_TEST_DATABASE_URL` and `go` on `PATH`; with
-the variable set it fails rather than skips. So, to run them here:
+the text is given, `--force` and a new or a held name. These three and
+`src/__tests__/comment-mention.live.test.ts` share `@legion/envoy-client/test/dispatch-cli-live`
+(Bun only, not built, in `test/`). Its `dispatchLive` holds the person's and the machine's calls
+of the server's routes and one run of `bin/dispatch.ts` in an environment it writes out rather
+than inherits, with the `HOME`, state directory and working directory a row names and the
+standard input a row hands it, which answers how the run ended, a refusal included; the dry-run
+file runs on it alone. `dispatchCliLive` builds on it the issue and the document a row writes
+about and the CLI's `docEdit` and `read`, which fail the row on a refusal; the other three files
+run on that. Each file keeps the constants and the sentences that are its own. A test that uses
+this stack runs only with `LEGION_E2E_DISPATCH_STACK=1`, and it needs `DISPATCH_TEST_DATABASE_URL`
+and `go` on `PATH`; with the variable set it fails rather than skips. So, to run them here:
 
 ```sh
 cd packages/envoy-client

@@ -1,9 +1,16 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type {
+  ArtifactText,
+  ArtifactUploadResponse,
+  ArtifactWithTrees,
+  Issue,
+  MarkdownRoundTripResponse,
+} from "@legion/contracts";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { type CliRun, dispatchLive } from "../../test/dispatch-cli-live";
 import {
   type DispatchStack,
   dispatchStackEnabled,
@@ -52,13 +59,6 @@ import {
  * These rows drove no browser, so they left the browser suite (dispatch://INFRA-983): the claim is
  * the command's and Dispatch's together, and this package's live layer holds both halves of it.
  */
-
-// Destructured: claude-envoy's typecheck, which compiles this package's test files, forbids
-// `process.env.X`.
-const { PATH: SHELL_PATH = "" } = process.env;
-
-/** The CLI entry each row runs, as an agent's shell reaches it: this checkout's own `dispatch`. */
-const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
 
 /** The person who makes each row's project, issue and held document, as the server's header
  *  identity names them. */
@@ -154,13 +154,6 @@ function printedArguments(stdout: string): Record<string, unknown> {
   return typeof content === "string" ? { ...printed, content: digested(content) } : printed;
 }
 
-/** One run of the command: its exit code and what it printed. */
-interface CliRun {
-  readonly code: number;
-  readonly stdout: string;
-  readonly stderr: string;
-}
-
 /** One run as a failure names it, its stdout cut where a 1 MiB text would flood the report. */
 function shown(label: string, run: CliRun): string {
   const cut = (text: string) => (text.length > 2_000 ? `${text.slice(0, 2_000)}…` : text);
@@ -234,32 +227,11 @@ describe.skipIf(!dispatchStackEnabled)(
   () => {
     let stack: DispatchStack | undefined;
 
-    /** The running server, or the error that says why no row can run. */
-    function server(): DispatchStack {
-      if (stack === undefined) throw new Error("the Dispatch stack did not start");
-      return stack;
-    }
-
-    /** One call of the server's own routes, its answer's JSON, and a throw on any refusal. */
-    async function request<T>(
-      method: string,
-      route: string,
-      body: unknown,
-      headers: Readonly<Record<string, string>>
-    ): Promise<T> {
-      const response = await fetch(`${server().url}${route}`, {
-        method,
-        headers: { "Content-Type": "application/json", ...headers },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
-      const text = await response.text();
-      if (!response.ok) throw new Error(`${method} ${route}: ${response.status} ${text}`);
-      return JSON.parse(text) as T;
-    }
-
-    /** A person's own call, which the server's header identity takes as that person. */
-    const asPerson = <T>(method: string, route: string, body?: unknown): Promise<T> =>
-      request<T>(method, route, body, { "X-Dispatch-User": PERSON });
+    const { asPerson, asMachine, runDispatch } = dispatchLive({
+      stack: () => stack,
+      session: SESSION,
+      person: PERSON,
+    });
 
     /** What the issue holds: the name of each document, and the held one's text and token. A
      *  refused call leaves all three as they were, so a document made under the new name, or a
@@ -268,10 +240,13 @@ describe.skipIf(!dispatchStackEnabled)(
       issue: string,
       held: string | undefined
     ): Promise<{ names: string[]; held?: { markdown: string; token: string | undefined } }> {
-      const listed = await asPerson<{ name: string }[]>("GET", `/api/v1/issues/${issue}/artifacts`);
+      const listed = await asPerson<ArtifactWithTrees[]>(
+        "GET",
+        `/api/v1/issues/${issue}/artifacts`
+      );
       const names = listed.map((artifact) => artifact.name).sort();
       if (held === undefined) return { names };
-      const { markdown, token } = await asPerson<{ markdown: string; token?: string }>(
+      const { markdown, token } = await asPerson<ArtifactText>(
         "GET",
         `/api/v1/artifacts/${held}/text`
       );
@@ -281,75 +256,15 @@ describe.skipIf(!dispatchStackEnabled)(
     /** The markdown the most permissive replacement stores for `markdown`: the round trip's
      *  answer without `new_document`, which is what `--force` asks (requireReplacementAnswer,
      *  markdown_round_trip_test.go), asked as the command asks it, over the agent's bearer. A
-     *  refusal fails the row, since `request` throws on any answer but a rendering, so a
+     *  refusal fails the row, since `asMachine` throws on any answer but a rendering, so a
      *  replacement that came to refuse what the row's `replaced` says it takes is no pass here. */
     async function replacementRendering(markdown: string): Promise<string> {
-      const answer = await request<{ markdown: string }>(
+      const answer = await asMachine<MarkdownRoundTripResponse>(
         "POST",
         "/api/v1/markdown/round-trip",
-        { markdown },
-        { Authorization: `Bearer ${server().token}` }
+        { markdown }
       );
       return answer.markdown;
-    }
-
-    /**
-     * The real `dispatch` entry, its own process, against the stack's Dispatch, as an agent's
-     * shell runs it.
-     *
-     * The child's environment is written here rather than inherited: a Legion pane exports
-     * `DISPATCH_TOKEN_FILE`, which wins over `DISPATCH_TOKEN` in this command
-     * (`src/dispatch-config.ts`), and a `DISPATCH_URL` or `ENVOY_CONFIG_FILE` of its own, either of
-     * which would point the command at another Dispatch. `HOME` and `DISPATCH_STATE_DIR` are the
-     * row's own directory, so the command reads no developer's `envoy.json` and writes its session
-     * state nowhere but there.
-     *
-     * `stdin` is the bytes the command reads on its standard input, as a pipe hands them to a
-     * `--content-file -`, and then the end of that input; without it the command's standard input
-     * is ignored.
-     */
-    function runDispatch(
-      args: readonly string[],
-      home: string,
-      stdin: Uint8Array | undefined
-    ): Promise<CliRun> {
-      const argv = [ENTRY, ...args];
-      const options = {
-        cwd: home,
-        env: {
-          PATH: SHELL_PATH,
-          HOME: home,
-          DISPATCH_STATE_DIR: home,
-          DISPATCH_HOST: "omp",
-          DISPATCH_SESSION_ID: SESSION,
-          DISPATCH_URL: server().url,
-          DISPATCH_TOKEN: server().token,
-        },
-      };
-      const child =
-        stdin === undefined
-          ? spawn(process.execPath, argv, { ...options, stdio: ["ignore", "pipe", "pipe"] })
-          : spawn(process.execPath, argv, { ...options, stdio: ["pipe", "pipe", "pipe"] });
-      const finished = Promise.withResolvers<CliRun>();
-      if (child.stdin !== null) {
-        // A command that exits before it has read the whole input fails the row here rather than
-        // leaving the write's EPIPE unhandled.
-        child.stdin.once("error", finished.reject);
-        child.stdin.end(stdin);
-      }
-      let stdout = "";
-      let stderr = "";
-      child.stdout.setEncoding("utf8");
-      child.stdout.on("data", (chunk: string) => {
-        stdout += chunk;
-      });
-      child.stderr.setEncoding("utf8");
-      child.stderr.on("data", (chunk: string) => {
-        stderr += chunk;
-      });
-      child.once("error", finished.reject);
-      child.once("close", (code) => finished.resolve({ code: code ?? -1, stdout, stderr }));
-      return finished.promise;
     }
 
     beforeAll(async () => {
@@ -396,7 +311,7 @@ describe.skipIf(!dispatchStackEnabled)(
                 // The row's own project and issue, so the documents it reads are the ones it
                 // wrote.
                 await asPerson("POST", "/api/v1/projects", { key: project, name: "Dry runs" });
-                const issue = await asPerson<{ key: string }>("POST", "/api/v1/issues", {
+                const issue = await asPerson<Issue>("POST", "/api/v1/issues", {
                   project,
                   title: "The dry run and the call",
                 });
@@ -408,7 +323,7 @@ describe.skipIf(!dispatchStackEnabled)(
                 let held: string | undefined;
                 let base: { readonly document: string } | undefined;
                 if (target === "a held name") {
-                  const created = await asPerson<{ artifact: { id: string } }>(
+                  const created = await asPerson<ArtifactUploadResponse>(
                     "POST",
                     `/api/v1/issues/${issue.key}/artifacts`,
                     { content: heldText, name }
