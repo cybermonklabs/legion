@@ -288,6 +288,11 @@ func (e *Engine) endOffWalk(ctx context.Context, tx pgx.Tx, row record.IssueStep
 	if err != nil || !ended {
 		return err
 	}
+	if e.afterOldGenerationRunEnd != nil {
+		if err := e.afterOldGenerationRunEnd(ctx, tx, row); err != nil {
+			return err
+		}
+	}
 	e.logOnCommit(ctx, "workflow: a run on no step of the walk of its run is ended", "issue", row.Issue, "generation", row.Generation,
 		"task", row.Place.Task, "kind", row.Place.Kind, "place", row.Place.Place, "result", end.Result,
 		"reason", "no step of the walk of its run holds its place: the plan rows that named its step are gone")
