@@ -23,8 +23,23 @@ import { asUser } from "./users";
 // recording another result moves the head exactly as a push does, which is how a row below
 // leaves a result behind at a commit the head has moved past.
 const repository = "acme/widgets";
-const firstHead = "1".repeat(40);
-const secondHead = "2".repeat(40);
+
+// Each row reads its own commits, and no two rows of this file read one. The server holds the
+// moment before which a commit's pull requests are not read through again in its own memory, for
+// five minutes (delivery.CommitPullReadStaleAfter, api.server.commitPulls), and the harness
+// empties the database between rows while that server stays up: two rows sharing a commit would
+// leave the second one refused its read-through and reading rows the reset took away — no head
+// stored for the pull request it seeded, and a check whose pass stands `unknown`. A row that
+// moves a head reads `heads()` once and uses both of its commits.
+let rowsSoFar = 0;
+
+/** The two commits of the next row: its pull request's first head and the head a push moves it
+ *  to. Each is forty hex characters, and the row's own number keeps them its own. */
+function heads(): { first: string; second: string } {
+  rowsSoFar++;
+  const of = (part: number) => (rowsSoFar * 2 + part).toString(16).padStart(40, "0");
+  return { first: of(0), second: of(1) };
+}
 
 /** The spec the checks serve. A `serves` pointer is refused unless it names a block that
  *  exists, so the requirements are written with the issue, before any check points at one. */
@@ -64,6 +79,7 @@ async function seedIssue(title: string, head: string) {
 test("the Verification tab lists every check of the document, each with the results recorded against it @pr", async ({
   browser,
 }, testInfo) => {
+  const { second: secondHead } = heads();
   const issue = await seedIssue("Verification tab", secondHead);
   await createIssueArtifact(issue.key, {
     content: `How ${issue.key} is proved.
@@ -183,8 +199,8 @@ test("a result at a linked pull request's head stands at it, and one at another 
   // A second repository the issue does not resolve to, which the issue links a pull request in,
   // and two commits of it: that pull request's head, and one no pull request heads.
   const linkedRepository = "acme/widget-tools";
-  const linkedHead = "3".repeat(40);
-  const linkedOther = "4".repeat(40);
+  const { first: linkedHead, second: linkedOther } = heads();
+  const { second: secondHead } = heads();
   const issue = await seedIssue("Verification linked repository", secondHead);
   await patchIssue(issue.key, {
     external_links: [{ kind: "github_pr", url: `https://github.com/${linkedRepository}/pull/9` }],
@@ -277,6 +293,7 @@ A result at another commit of the linked repository names that repository.
 test("a result the pull request has moved past stands at no commit the check compared with", async ({
   browser,
 }) => {
+  const { first: firstHead, second: secondHead } = heads();
   const issue = await seedIssue("Verification comparison", firstHead);
   await createIssueArtifact(issue.key, {
     content: `How ${issue.key} is proved.
@@ -357,6 +374,7 @@ A result at the head is a pass that stands.
 test("a check is read over every result of it, never over its newest result alone", async ({
   browser,
 }) => {
+  const { second: secondHead } = heads();
   const issue = await seedIssue("Every result", secondHead);
   await createIssueArtifact(issue.key, {
     content: `How ${issue.key} is proved.
@@ -440,15 +458,16 @@ A retracted pass stands for nothing.
 const ciRun = "ci-ok";
 
 /** Seeds an issue whose Verification document holds one check CI proves, `c-ci`, which names
- *  the CI run `ciRun`, and the issue's open pull request 7 at `secondHead`, whose head carries
- *  the one check run `run` in the fake GitHub. The harness runs with NATS disabled and the
- *  results read only reads the heads Dispatch holds, so the head is staged as the
- *  `pull_request` envelope would have stored it: one `pull_request_heads` row, attributed to the
- *  issue by its title. */
+ *  the CI run `ciRun`, and the issue's open pull request 7 at a head of its own, whose head
+ *  carries the one check run `run` in the fake GitHub. It answers the issue and that head. The
+ *  harness runs with NATS disabled and the results read only reads the heads Dispatch holds, so
+ *  the head is staged as the `pull_request` envelope would have stored it: one
+ *  `pull_request_heads` row, attributed to the issue by its title. */
 async function seedCICheck(
   title: string,
   run: { conclusion: string; output: { title: string; summary: string } }
 ) {
+  const { second: secondHead } = heads();
   await createProject({ key: "VER", name: "Verification" });
   await putProjectDefaultRepository("VER", repository);
   const issue = await createIssue({ project: "VER", spec, title });
@@ -487,7 +506,7 @@ Every check of the document is listed.
     `INSERT INTO pull_request_heads (repo, number, head_sha, state, issue_key, attribution_source, title, checked_at)
      VALUES ('${repository}', 7, '${secondHead}', 'open', '${issue.key}', 'title_body', '${issue.key} the tab', now())`
   );
-  return issue;
+  return { head: secondHead, issue };
 }
 
 // SLOW(>=2s): 2.6 s - a project, its default repository, a Verification document, a staged pull
@@ -497,7 +516,7 @@ Every check of the document is listed.
 test("a check with ci_check shows the pass its CI run concluded at the issue's open head", async ({
   browser,
 }) => {
-  const issue = await seedCICheck("CI proves it", {
+  const { head: secondHead, issue } = await seedCICheck("CI proves it", {
     conclusion: "success",
     output: { summary: "41 passed", title: "ci-ok passed" },
   });
@@ -551,7 +570,7 @@ test("a check with ci_check shows the pass its CI run concluded at the issue's o
 test("a check with ci_check whose CI run was skipped says its run proved nothing", async ({
   browser,
 }) => {
-  const issue = await seedCICheck("CI skipped it", {
+  const { head: secondHead, issue } = await seedCICheck("CI skipped it", {
     conclusion: "skipped",
     output: { summary: "", title: "" },
   });
@@ -610,6 +629,7 @@ const brokenCIChecks = [
 test("a pasted check block whose ci_check breaks a rule loses it, and the Activity names the rule", async ({
   browser,
 }) => {
+  const { second: secondHead } = heads();
   const issue = await seedIssue("CI refusals", secondHead);
   const created = await createIssueArtifact(issue.key, {
     content: `How ${issue.key} is proved.
