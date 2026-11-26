@@ -582,7 +582,9 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, before record.PullRe
 		return err
 	}
 	if fixesCI {
-		return e.reportRuns(ctx, tx, *issue, w, before, *pr)
+		if err := e.reportRuns(ctx, tx, *issue, w, before, *pr); err != nil {
+			return err
+		}
 	}
 	if settled == "" || settled == told {
 		return nil
