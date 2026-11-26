@@ -5,82 +5,120 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// TestAKeyedRepeatOfARouteThatAddressesNoObjectIsRefusedToACallerThatMayNotSeeEveryObject: a key
-// belongs to a person whatever credential they write through (requestKeyLogin), so a repeat is held
-// to what its caller sees now (heldAnswerHidden), and that is decided from the route's own address,
-// as the first request's project check decides it (projectResolverFor). POST /api/v1/projects
-// addresses no object, and its answer, a project, names its key and none of the names a stored
-// answer was once read for. carol creates project SECR at her browser under a key; while no
-// project is private, her token that lists no project repeats the request and is answered the
-// first answer replayed, as every caller that sees every object is. SECR is then made private by
-// SQL, and the same repeat through that token, which no longer sees SECR, is refused 409
-// KEY_COMMITTED: not replayed, which would hand it SECR, and not run again, which would write a
-// second time. Its answer holds no part of SECR.
-//
-// Control: heldAnswerHidden placing a stored answer by the names project, project_key and
-// issue_key, as it did, under which the repeat replays the stored 201 with SECR in it and the test
-// fails.
-func TestAKeyedRepeatOfARouteThatAddressesNoObjectIsRefusedToACallerThatMayNotSeeEveryObject(t *testing.T) {
-	t.Parallel()
-	seed := seedPublicProjectsWith(t, testServerOptions{})
-	payload, err := json.Marshal(map[string]string{"key": "SECR", "name": "The secret project"})
+// keyedSeedRequest sends method target with body as caller of the seed, under the Idempotency-Key
+// key.
+func keyedSeedRequest(t *testing.T, seed privateSeed, caller privateCaller, method, target string, body any, key string) *httptest.ResponseRecorder {
+	t.Helper()
+	payload, err := json.Marshal(body)
 	if err != nil {
-		t.Fatalf("encode the create: %v", err)
+		t.Fatalf("encode the body of %s %s: %v", method, target, err)
 	}
-	const key = "carol-creates-secr"
-	keyed := func(caller privateCaller) *httptest.ResponseRecorder {
-		request := httptest.NewRequest(http.MethodPost, "/api/v1/projects", bytes.NewReader(payload))
-		request.Header.Set("Content-Type", "application/json")
-		if login := caller.login(); login != "" {
-			request.Header.Set("X-Dispatch-User", login)
-		} else {
-			request.Header.Set("Authorization", "Bearer "+seed.bearer(t, caller))
-		}
-		request.Header.Set(contracts.IdempotencyKeyHeader, key)
-		response := httptest.NewRecorder()
-		seed.handler.ServeHTTP(response, request)
-		return response
+	request := httptest.NewRequest(method, target, bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	if login := caller.login(); login != "" {
+		request.Header.Set("X-Dispatch-User", login)
+	} else {
+		request.Header.Set("Authorization", "Bearer "+seed.bearer(t, caller))
 	}
-	first := keyed(callerCarol)
-	if first.Code != http.StatusCreated || !strings.Contains(first.Body.String(), `"SECR"`) {
-		t.Fatalf("carol's keyed create of SECR = %d %s, want 201 with the project", first.Code, first.Body.String())
-	}
-	if again := keyed(callerCarolToken); again.Code != http.StatusCreated || again.Header().Get(contracts.IdempotencyReplayedHeader) == "" ||
-		again.Body.String() != first.Body.String() {
-		t.Fatalf("the repeat through carol's token while no project is private = %d %s (replayed %q), want the first answer replayed",
-			again.Code, again.Body.String(), again.Header().Get(contracts.IdempotencyReplayedHeader))
-	}
+	request.Header.Set(contracts.IdempotencyKeyHeader, key)
+	response := httptest.NewRecorder()
+	seed.handler.ServeHTTP(response, request)
+	return response
+}
 
-	if _, err := seed.database.Pool.Exec(t.Context(), `insert into session_projects_filled select now() where not exists (select 1 from session_projects_filled)`); err != nil {
-		t.Fatalf("write the fill marker before making SECR private: %v", err)
+// wantKeyedRefusal fails unless response is the refusal of a repeat heldAnswerHidden neither runs
+// nor replays: 409 KEY_COMMITTED, not replayed, holding none of first's answer.
+func wantKeyedRefusal(t *testing.T, what string, response *httptest.ResponseRecorder, first string) {
+	t.Helper()
+	code, _ := refusalOf(t, response)
+	if response.Code != http.StatusConflict || code != contracts.IdempotencyKeyCommitted ||
+		response.Header().Get(contracts.IdempotencyReplayedHeader) != "" || strings.Contains(response.Body.String(), first) {
+		t.Errorf("%s = %d %s (replayed %q), want 409 %s holding none of the first answer",
+			what, response.Code, response.Body.String(), response.Header().Get(contracts.IdempotencyReplayedHeader), contracts.IdempotencyKeyCommitted)
 	}
-	if _, err := seed.database.Pool.Exec(t.Context(), `update projects set visibility = 'private' where key = 'SECR'`); err != nil {
-		t.Fatalf("make SECR private: %v", err)
-	}
-	read := httptest.NewRequest(http.MethodGet, "/api/v1/issues", nil)
-	read.Header.Set("Authorization", "Bearer "+seed.bearer(t, callerCarolToken))
-	recorder := httptest.NewRecorder()
-	reader, ok := seed.server.readerOf(recorder, read)
-	if !ok || reader.Viewer == nil || seesEveryObject(reader) || slices.Contains(reader.Viewer.Sees, "SECR") {
-		t.Fatalf("carol's token reads as %+v (%t, %d %s) once SECR is private, want a viewer that does not see SECR: the comparison proves nothing",
-			reader.Viewer, ok, recorder.Code, recorder.Body.String())
-	}
-	repeat := keyed(callerCarolToken)
-	code, _ := refusalOf(t, repeat)
-	if repeat.Code != http.StatusConflict || code != contracts.IdempotencyKeyCommitted || strings.Contains(repeat.Body.String(), "SECR") ||
-		repeat.Header().Get(contracts.IdempotencyReplayedHeader) != "" {
-		t.Errorf("the repeat through carol's token once SECR is private = %d %s (replayed %q), want 409 %s holding no part of SECR",
-			repeat.Code, repeat.Body.String(), repeat.Header().Get(contracts.IdempotencyReplayedHeader), contracts.IdempotencyKeyCommitted)
-	}
-	var projects int
-	if err := seed.database.Pool.QueryRow(t.Context(), `select count(*) from projects where key = 'SECR'`).Scan(&projects); err != nil || projects != 1 {
-		t.Errorf("projects named SECR = %d (%v), want the one the first request made: the repeat writes nothing", projects, err)
-	}
+}
+
+// TestAKeyedRepeatOfACreateIsPlacedByTheProjectItsBodyNames: a key belongs to a person whatever
+// credential they write through (requestKeyLogin), so a repeat is held to what its caller sees now
+// (heldAnswerHidden), and a create, whose address names no object, is placed by the project its
+// body names, as its first request's check places it (refuseOutsideCallerProjects). PRIV is
+// private, so no caller here sees every object, and each is placed by the project alone:
+//
+//   - an agent's token retries its writes: carol's token that lists no project creates an issue of
+//     PUB, which it sees, under a key, and its retry is answered the first 201 replayed;
+//   - carol, at her browser, creates an issue of PRIV, which she sees, under a key, and her retry is
+//     answered that 201 replayed; her token that lists no project, which does not see PRIV, retries
+//     the same create under the same key and is refused 409 KEY_COMMITTED, holding none of the
+//     first answer, and no second issue is made: at this slice the create holds no caller to the
+//     project its body names, so running it again would make the issue twice;
+//   - a project create, whose body names the project it makes: carol's token creates SECR under a
+//     key, SECR is made private by SQL, which takes it from that token's sight, and the token's
+//     retry is refused the same way, never answered SECR's row.
+//
+// Control: heldAnswerHidden refusing every repeat of a route whose address names no object, under
+// which each "replays" row answers 409 KEY_COMMITTED and the test fails; and placing a stored answer
+// by the names in its JSON, under which the project create's retry replays SECR's row.
+func TestAKeyedRepeatOfACreateIsPlacedByTheProjectItsBodyNames(t *testing.T) {
+	t.Parallel()
+	seed := seedPrivateProject(t)
+	actor := map[string]string{"kind": "session", "id": "session-of-carols-token"}
+
+	t.Run("an agent token's create in a project it sees replays", func(t *testing.T) {
+		create := map[string]any{"project": seedPublic, "title": "Filed by an agent's token under a key", "force": true, "actor": actor}
+		first := keyedSeedRequest(t, seed, callerCarolToken, http.MethodPost, "/api/v1/issues", create, "token-create-pub")
+		if first.Code != http.StatusCreated {
+			t.Fatalf("the token's keyed create in %s = %d %s, want 201", seedPublic, first.Code, first.Body.String())
+		}
+		if again := keyedSeedRequest(t, seed, callerCarolToken, http.MethodPost, "/api/v1/issues", create, "token-create-pub"); again.Code != http.StatusCreated ||
+			again.Header().Get(contracts.IdempotencyReplayedHeader) == "" || again.Body.String() != first.Body.String() {
+			t.Errorf("the token's retried create = %d %s (replayed %q), want its 201 replayed",
+				again.Code, again.Body.String(), again.Header().Get(contracts.IdempotencyReplayedHeader))
+		}
+	})
+
+	t.Run("a create in a project the retrying credential does not see", func(t *testing.T) {
+		const title = "Filed by carol under a key"
+		create := map[string]any{"project": seedPrivate, "title": title, "force": true, "actor": actor}
+		first := keyedSeedRequest(t, seed, callerCarol, http.MethodPost, "/api/v1/issues", create, "carol-create-priv")
+		if first.Code != http.StatusCreated || !strings.Contains(first.Body.String(), title) {
+			t.Fatalf("carol's keyed create in %s = %d %s, want 201 with the issue", seedPrivate, first.Code, first.Body.String())
+		}
+		issueKey := decodeBody[struct {
+			Key string `json:"key"`
+		}](t, first).Key
+		if again := keyedSeedRequest(t, seed, callerCarol, http.MethodPost, "/api/v1/issues", create, "carol-create-priv"); again.Code != http.StatusCreated ||
+			again.Header().Get(contracts.IdempotencyReplayedHeader) == "" || again.Body.String() != first.Body.String() {
+			t.Errorf("carol's retried create = %d %s (replayed %q), want its 201 replayed",
+				again.Code, again.Body.String(), again.Header().Get(contracts.IdempotencyReplayedHeader))
+		}
+		wantKeyedRefusal(t, "the retry by carol's token, which does not see "+seedPrivate,
+			keyedSeedRequest(t, seed, callerCarolToken, http.MethodPost, "/api/v1/issues", create, "carol-create-priv"), issueKey)
+		var made int
+		if err := seed.database.Pool.QueryRow(t.Context(), `select count(*) from issues where title = $1`, title).Scan(&made); err != nil || made != 1 {
+			t.Errorf("issues titled %q = %d (%v), want the one the first request made", title, made, err)
+		}
+	})
+
+	t.Run("a project create", func(t *testing.T) {
+		create := map[string]any{"key": "SECR", "name": "The secret project", "actor": actor}
+		first := keyedSeedRequest(t, seed, callerCarolToken, http.MethodPost, "/api/v1/projects", create, "token-creates-secr")
+		if first.Code != http.StatusCreated || !strings.Contains(first.Body.String(), `"SECR"`) {
+			t.Fatalf("the token's keyed create of SECR = %d %s, want 201 with the project", first.Code, first.Body.String())
+		}
+		if _, err := seed.database.Pool.Exec(t.Context(), `update projects set visibility = 'private' where key = 'SECR'`); err != nil {
+			t.Fatalf("make SECR private: %v", err)
+		}
+		wantKeyedRefusal(t, "the token's retry once SECR is private",
+			keyedSeedRequest(t, seed, callerCarolToken, http.MethodPost, "/api/v1/projects", create, "token-creates-secr"), `"name":"The secret project"`)
+		var projects int
+		if err := seed.database.Pool.QueryRow(t.Context(), `select count(*) from projects where key = 'SECR'`).Scan(&projects); err != nil || projects != 1 {
+			t.Errorf("projects named SECR = %d (%v), want the one the first request made", projects, err)
+		}
+	})
 }
