@@ -133,13 +133,15 @@ const (
 // The causes a delete of the claim's value is logged under (valueDeletedLine): a task finished
 // (finishTask), a task the record dropped (dropPending: a phase the issue left, an older daemon's
 // ask of an update round, a root task that names nothing any more), a phase task a daemon
-// suspension ended (settle), and a round's ask a retirement dropped (retire). A value the record
-// owes nothing is deleted under the cause of the read that found it (valueRead).
+// suspension ended (settle), a round's ask a retirement dropped (retire), and the task of a phase
+// the workflow stopped under its worker (RetireStoppedTask). A value the record owes nothing is
+// deleted under the cause of the read that found it (valueRead).
 const (
 	valueDeletedFinished  = "finished"
 	valueDeletedDropped   = "dropped"
 	valueDeletedSuspended = "suspended"
 	valueDeletedRetired   = "retired"
+	valueDeletedStopped   = "stopped"
 )
 
 // offerPending writes the claim's value again under its pending task's number where the worker

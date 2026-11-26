@@ -29,13 +29,14 @@ func toldAs(task string) func(Standing) string {
 }
 
 // startTold is e.start of role on issue's walk with task as its whole text, as a transition's
-// start of no move back writes it.
+// start of no move back writes it, from no phase the record names (the promotion's start passes
+// the same "").
 func startTold(ctx context.Context, tx pgx.Tx, e *Engine, issue record.Issue, role claim.Role, task string) error {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
-	return e.start(ctx, tx, issue, w, role, toldAs(task), false)
+	return e.start(ctx, tx, issue, w, role, toldAs(task), "", false)
 }
 
 // Each constructor of a start that carries a task names the origin decision 7 gives it: a
@@ -69,7 +70,9 @@ func TestEveryWorkflowTaskNamesTheOriginItsValueLogCarries(t *testing.T) {
 				Entry: seededEntry, EntryTask: seededEntryTask})
 		})},
 		{"a promoted mid-phase worker", supervise.OriginPhaseStart, inLevelTester(func(ctx context.Context, tx pgx.Tx, e *Engine) error {
-			return e.StartPromotedWorker(ctx, tx, resumeRuleIssue, claim.RoleTester)
+			// A start R9 held queues no row, which the case then finds missing.
+			_, err := e.StartPromotedWorker(ctx, tx, resumeRuleIssue, claim.RoleTester, false)
+			return err
 		})},
 		{"a ready worker behind its entry", supervise.OriginPhaseStart, readyOfTester(seededEntry - 1)},
 		{"a ready worker level with its entry", supervise.OriginResume, readyOfTester(seededEntry)},

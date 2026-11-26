@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	recordpkg "github.com/sjawhar/legion/daemon/internal/record"
@@ -1008,7 +1009,7 @@ func TestRunResolvesProviderKeysAtBootAndKeepsThemThroughThePrune(t *testing.T) 
 		"  AGENT_KEY:--no-request) echo '{\"key\":\"AGENT_KEY\",\"tier\":\"agent\"}' ;;\n" +
 		"  AGENT_KEY:--value) echo 'agent-value' ;;\n" +
 		"  *) exit 9 ;;\nesac\n"
-	if err := os.WriteFile(filepath.Join(bin, "secrets"), []byte(stub), 0o755); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "secrets"), []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	o := fakeRuntime(fake.NewRuntime(), &built{})

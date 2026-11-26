@@ -256,7 +256,8 @@ func HoldsWork(pending *Delivery) bool { return HoldsTask(pending) && !pending.N
 // (workflow's readyWorkerTask), and that task takes this delivery's place while no take of it is
 // accepted, or waits behind that take (queue, replaceable). It is queued again where takeable drops
 // the task a claim held and leaves it holding nothing — its phase gone, an older daemon's ask of an
-// update round, or a root architect's held task left naming nothing (currentRootTask) — since the
+// update round, or a root architect's held task left naming nothing (currentRootTask) — and where
+// the workflow's stop of a phase retires that phase's untaken task (RetireStoppedTask), since the
 // task that would have carried the sentence is gone, and the ready that queues it for a claim
 // holding nothing ran before that drop, while the claim still held the task.
 //

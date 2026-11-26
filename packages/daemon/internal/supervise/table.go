@@ -1965,8 +1965,8 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 //
 // The persisted working state is reported to the daemon (Machine.OnDurableState), because a turn is
 // the one observation that a woken pod's role came back and took work, whether or not the wake
-// carried a task for it to take: a wake for a notice or a hook prompt carries none, and its
-// resume would otherwise never be measured (R5).
+// carried a task for it to take: a wake for a notice, a phase-ended message or a hook prompt
+// carries none, and its resume would otherwise never be measured (R5).
 //
 // One start is neither: the start of a turn whose turn-outcome report reached the daemon first and
 // already finished the take's task, or took it back for a provider error (Machine.reportedAhead,

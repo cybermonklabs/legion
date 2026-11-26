@@ -68,11 +68,9 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -146,8 +144,8 @@ type versionNewsLive struct {
 	natsURL  string
 	dispatch *scratchDispatch
 	client   *http.Client
-	// repo is the repository the run in hand maps to its project, and rt and built the stand-ins
-	// its daemon was booted with.
+	// repo is the default repository of the project of the run in hand, and rt and built the
+	// stand-ins its daemon was booted with.
 	repo  string
 	rt    *fake.Runtime
 	built *built
@@ -266,10 +264,11 @@ func newVersionNewsLive(t *testing.T) *versionNewsLive {
 }
 
 // boot readies a fresh configuration gating steps, on a database of its own, with a Dispatch
-// project of its own mapped to repo; makes fixture's trees on Dispatch and seeds them into the
-// store through the daemon's start path; boots the whole daemon; brings every claim its starts
-// launch to ready as its pane would, and waits for each to take the task its start queued; and
-// checks in SETUP that each stands at its entry (standAtTheirEntries).
+// project of its own whose default repository is repo, set through the route the Dispatch serves
+// (setDefaultRepository); makes fixture's trees on Dispatch and seeds them into the store through
+// the daemon's start path; boots the whole daemon; brings every claim its starts launch to ready as
+// its pane would, and waits for each to take the task its start queued; and checks in SETUP that
+// each stands at its entry (standAtTheirEntries).
 func (r *versionNewsLive) boot(gates string, steps []record.DesignStep, repo string, fixture func()) {
 	t := r.t
 	t.Helper()
@@ -312,13 +311,13 @@ func (r *versionNewsLive) boot(gates string, steps []record.DesignStep, repo str
 	r.rt, r.built = fake.NewRuntime(), &built{}
 	r.rt.InPod = true
 	r.dispatchAs(versionNewsPerson, http.MethodPost, "/api/v1/projects", map[string]string{"key": cfg.Project, "name": "Approved version news, " + gates}, nil)
-	r.dispatchAs(versionNewsPerson, http.MethodPut, "/api/v1/projects/"+cfg.Project+"/default-repository", map[string]any{"repo": repo}, nil)
+	route := r.setDefaultRepository(cfg.Project, repo)
 	fixture()
 	r.seed()
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	r.d = startDaemonWithin(t, cfg, o, r.log(), 2*time.Minute)
-	r.note("daemon booted under gates.design: %s, project %s mapped to %s, dispatch_url %s", gates, cfg.Project, repo, r.dispatch.base)
+	r.note("daemon booted under gates.design: %s, project %s with default repository %s, set through %s, dispatch_url %s", gates, cfg.Project, repo, route, r.dispatch.base)
 	// The boot's run of each seeded start is its claim's first launch, so none before it counts.
 	for _, tree := range r.trees {
 		for _, member := range tree.members {
@@ -337,7 +336,12 @@ func (r *versionNewsLive) boot(gates string, steps []record.DesignStep, repo str
 	r.standAtTheirEntries()
 }
 
-// rootIssuesFixture is the first run's trees, each named for the step that drives it.
+// rootIssuesFixture is the first run's trees, each named for the step that drives it. No root
+// stands in planning through accepting while a child of it is open: the first admission pass would
+// move such a root to awaiting_children and stop its worker (dispatch://INFRA-3320 R9), so a step
+// would read a phase the boot left. A root with children stands in a phase that wait does not
+// hold instead: merging (a6), retro (r6), or admitted, where its own first phase waits for its
+// children (a5-child, whose root's checks A5 changes, while a5's own root tests alone).
 func (r *versionNewsLive) rootIssuesFixture() {
 	architect, implementer, tester := claim.RoleArchitect, claim.RoleImplementer, claim.RoleTester
 	reviewer, merger := claim.RoleReviewer, claim.RoleMerger
@@ -346,21 +350,24 @@ func (r *versionNewsLive) rootIssuesFixture() {
 	r.tree("a1", true, false, versionNewsMember{phase.Admitted, []claim.Role{architect}})
 	r.tree("a3-accepting", true, false, versionNewsMember{phase.Accepting, []claim.Role{architect}})
 	r.tree("a3-implementing", true, true, versionNewsMember{phase.Implementing, []claim.Role{architect, implementer}})
-	r.tree("a5", true, false, versionNewsMember{phase.Testing, []claim.Role{architect, tester}},
+	r.tree("a5", true, false, versionNewsMember{phase.Testing, []claim.Role{architect, tester}})
+	r.tree("a5-child", true, false, versionNewsMember{phase.Admitted, []claim.Role{architect}},
 		versionNewsMember{phase.Testing, []claim.Role{tester}})
 	r.tree("a6", false, false, versionNewsMember{phase.Merging, []claim.Role{architect, merger}},
 		versionNewsMember{phase.Reviewing, []claim.Role{reviewer}})
 	r.tree("a7", true, false, versionNewsMember{phase.Retro, []claim.Role{architect, implementer}})
 	r.tree("a7-open", true, false, versionNewsMember{phase.Retro, []claim.Role{architect, implementer}})
-	r.tree("r6", true, false, versionNewsMember{phase.Implementing, []claim.Role{architect, implementer}},
+	r.tree("r6", true, false, versionNewsMember{phase.Retro, []claim.Role{architect, implementer}},
 		versionNewsMember{phase.Implementing, []claim.Role{implementer}}, versionNewsMember{phase.Testing, []claim.Role{tester}})
 }
 
 // offFixture is the second run's trees: one whose holders must hear nothing, and one whose
-// tester's pass is the delivery the same window sees.
+// tester's pass is the delivery the same window sees. The silent tree's root stands in retro, a
+// phase the wait on its open child does not hold (rootIssuesFixture), so nothing but the approved
+// version could send its holders anything.
 func (r *versionNewsLive) offFixture() {
 	architect := claim.RoleArchitect
-	r.tree("off", false, false, versionNewsMember{phase.Implementing, []claim.Role{architect, claim.RoleImplementer}},
+	r.tree("off", false, false, versionNewsMember{phase.Retro, []claim.Role{architect, claim.RoleImplementer}},
 		versionNewsMember{phase.Reviewing, []claim.Role{claim.RoleReviewer}})
 	r.tree("off-control", false, false, versionNewsMember{phase.Testing, []claim.Role{architect, claim.RoleTester}})
 }
@@ -540,7 +547,7 @@ func (r *versionNewsLive) connect(member *versionNewsIssue, role claim.Role, bef
 		return state == string(supervise.StateShimConnected), "state " + state
 	})
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl", AgentID: session, PluginContract: api.DaemonAPIVersion(),
+		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl", AgentID: session, PluginContract: versionNewsPluginContract(),
 	}, false)
 	if status != http.StatusOK {
 		r.fail("register %s = %d %s, want 200", token, status, body)
@@ -965,55 +972,4 @@ func (r *versionNewsLive) stateIssue(key string) api.Issue {
 		r.fail("GET /legion/v1/state records no issue %s", key)
 	}
 	return issue
-}
-
-// dispatchAs sends one request to Dispatch as the person login, through the trusted identity
-// header the scratch server takes, requires a 2xx answer and decodes it into into when it is not
-// nil.
-func (r *versionNewsLive) dispatchAs(login, method, path string, body, into any) {
-	r.t.Helper()
-	r.dispatchCall(method, path, body, 0, into, func(request *http.Request) { request.Header.Set("X-Dispatch-User", login) })
-}
-
-// dispatchAgent sends one request to Dispatch with the agent bearer, as a session or the daemon
-// reaches it, requires want and decodes the answer into into when it is not nil.
-func (r *versionNewsLive) dispatchAgent(method, path string, body any, want int, into any) {
-	r.t.Helper()
-	r.dispatchCall(method, path, body, want, into, func(request *http.Request) { request.Header.Set("Authorization", "Bearer "+r.dispatch.token) })
-}
-
-// dispatchCall is one request to Dispatch: want 0 takes any 2xx answer.
-func (r *versionNewsLive) dispatchCall(method, path string, body any, want int, into any, identify func(*http.Request)) {
-	r.t.Helper()
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			r.t.Fatal(err)
-		}
-		reader = bytes.NewReader(encoded)
-	}
-	request, err := http.NewRequest(method, r.dispatch.base+path, reader)
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	identify(request)
-	response, err := r.client.Do(request)
-	if err != nil {
-		r.fail("Dispatch %s %s: %v", method, path, err)
-	}
-	defer response.Body.Close()
-	answer, err := io.ReadAll(response.Body)
-	if err != nil {
-		r.fail("read Dispatch's answer to %s %s: %v", method, path, err)
-	}
-	if (want != 0 && response.StatusCode != want) || (want == 0 && response.StatusCode/100 != 2) {
-		r.fail("Dispatch %s %s = %d %s", method, path, response.StatusCode, answer)
-	}
-	if into != nil {
-		if err := json.Unmarshal(answer, into); err != nil {
-			r.fail("decode Dispatch's answer to %s %s (%s): %v", method, path, answer, err)
-		}
-	}
 }

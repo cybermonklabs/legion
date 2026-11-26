@@ -617,7 +617,8 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		carried.Generation++
 		seedIssue(t, pool, *carried)
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			return engine.StartPromotedWorker(ctx, tx, *carried, claim.RoleReviewer)
+			_, err := engine.StartPromotedWorker(ctx, tx, *carried, claim.RoleReviewer, false)
+			return err
 		})
 		after := reviewerRow(t, pool)
 		if want := resumeWant + reviewEntryPartOf(before.Entry+1); after.Entry != before.Entry+1 || after.EntryTask != want {
@@ -685,7 +686,8 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 		})
 		member := issueRecord(t, pool, "LEGION-208")
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			return engine.StartPromotedWorker(ctx, tx, *member, claim.RoleReviewer)
+			_, err := engine.StartPromotedWorker(ctx, tx, *member, claim.RoleReviewer, false)
+			return err
 		})
 		after := reviewerRow(t, pool)
 		want := "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(before.Entry+1)

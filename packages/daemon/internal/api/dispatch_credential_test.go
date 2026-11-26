@@ -99,8 +99,9 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 		t.Errorf("a caller stating %d is served no dispatchCredential: %s", dispatchCredentialContract, at)
 	}
 	// A caller stating dispatchCredentialContract stands below no frozen row and below each
-	// entry's band above it, so the lines it is written are those bands' (narrowingsExpected),
-	// whatever their number, and none is the Dispatch credential's.
+	// entry's band above it — gateBasisContract's among them, whose band writes its own line
+	// (narrowing_test.go reads it) — so the lines it is written are those bands'
+	// (narrowingsExpected), whatever their number, and none is the Dispatch credential's.
 	want := narrowingsExpected(state, dispatchCredentialContract)
 	if slices.Contains(want, "dispatchCredential") {
 		t.Fatalf("a caller stating %d expects the lines %v, want none of the Dispatch credential's", dispatchCredentialContract, want)

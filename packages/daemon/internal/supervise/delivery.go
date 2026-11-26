@@ -930,6 +930,67 @@ func (m *Machine) currentNews(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
+// RetireStoppedTask retires the task this claim holds for phase p of run generation, at an entry
+// no later than entry (0 for a stop that names no entry), deletes its value, and answers whether
+// it held one. It is the retirement of the task of a phase the workflow stopped under its worker:
+// the admission pass's move of a parent into awaiting_children, which holds that phase's start on
+// the record and gives it back later on an entry of its own (internal/workflow's StopForChildren
+// and ReturnFromChildren). Its one caller is the outbox, which runs the move's `retire_task` row
+// (internal/daemon's outbox).
+//
+// The task goes whether or not a take holds it. Untaken, every take already drops it while the
+// issue waits (takeable asks phaseHolds first), but the return puts the issue back in that same
+// phase at the same run, where phaseHolds holds it again, and a task held back the whole wait —
+// behind a suspension, an answered update round, a paced launch, a stale plugin or a turn that
+// outlives the wait — would then be taken before the return's own start is given its slot. Taken,
+// a death or a let-go that takes it back would put it in front of the worker again the same way.
+// So it goes here, through the one path a newer task retires a task a take holds by
+// (retirePending, queue), in every state of the take: accepted with its turn not started, its turn
+// running, and its turn over with its report to come. The claim keeps its state, its turn and its
+// session: the task is stale, not the agent. The turn such a take starts later, or the turn that
+// runs, and the report that ends it are then no task's: the report names a number no take holds
+// and finishes nothing (reportedTask). A take whose report came and whose finish the store refused
+// is finished by that report instead (makeOwedFinish): the report decided it, and its finish
+// deletes the value.
+//
+// A task of another phase or run, one of a later entry — the return's own start, should it reach
+// the claim before this row runs — and a task of no phase (an operator's own, an architect's, the
+// daemon's own delivery of a relaunch's record) are not this phase's work and are left where they
+// are. Nothing of the task is on its way to the worker here: a take is decided under the lock,
+// save for its adoption of the working copy, and the adoption's answer is fenced on the task's
+// number (adopted), so a take whose adoption runs while this retires the task is refused as not
+// owed.
+//
+// Work held for the take's turn or its report — a held suspension, a stale-plugin relaunch, a held
+// replacement, the operator's held stop — waits for nothing of the task any more, and runs as at
+// the report's finish (settleThenAfterTurn): at once over a ready or idle claim, and at the end of
+// the turn that runs otherwise. A record of the last let-go that the take told stays told, as where
+// a newer task retires a taken one (queue): the worker read the sentence the text carried. A
+// record that still tells is handled as at each of takeable's drops: the claim, which holds
+// nothing now, is queued the daemon's own delivery of that record and its value is written
+// (queueRelaunch), since the task that would have carried the sentence in front of itself is gone.
+// That delivery names no phase, so this row never retires it.
+func (m *Machine) RetireStoppedTask(ctx context.Context, p phase.Phase, generation uint64, entry int64) (bool, error) {
+	m.mu.Lock()
+	defer m.unlock()
+	d := m.claim.Pending
+	if d == nil || d.Phase == "" || d.Phase != p || d.Generation != generation || (entry > 0 && d.Entry > entry) {
+		return false, nil
+	}
+	m.log.Info("supervise: the workflow stopped the phase this task was queued for; it is retired rather than kept",
+		"task", d.Number, "delivery", d.ID, "issue", m.claim.Issue, "phase", p, "entry", d.Entry, "taken", d.taken(),
+		"turnStarted", d.TurnStarted)
+	return true, m.settleThenAfterTurn(ctx, func() error {
+		if owed, err := m.makeOwedFinish(ctx); owed {
+			return err
+		}
+		if err := m.dropPending(ctx, valueDeletedStopped); err != nil {
+			return err
+		}
+		return m.queueRelaunch(ctx)
+	})
+}
+
 // phaseHolds asks whether the issue is still in the phase and run this task was queued for. A delivery
 // that names no phase is nobody's to drop — an operator's own, an architect's — and is never put
 // to the answer at all, so the exemption this package documents is this package's own rather
@@ -966,11 +1027,11 @@ func (m *Machine) retirePending(ctx context.Context) error {
 // retireTask ends the pending delivery, and is the one place a delivery ends: finishTask for a
 // task whose take's turn ran, dropPending for a task the record no longer owes — the task its
 // issue's phase has left, an older daemon's ask of an update round, a root architect's task that
-// names nothing, the ask the claim retires with, and a phase task a suspension ended (settle) —
-// and retirePending for a task a newer one replaces. The claim keeps its state — the task is
-// over, not the agent. finished says the task's turn ran, so the claim records it as the last
-// task it finished (Claim.TaskFinished) and the session that finished it (TaskFinishedSession),
-// in the same write.
+// names nothing, the ask the claim retires with, a phase task a suspension ended (settle), and the
+// task of a phase the workflow stopped under its worker (RetireStoppedTask) — and retirePending
+// for a task a newer one replaces. The claim keeps its state — the task is over, not the agent.
+// finished says the task's turn ran, so the claim records it as the last task it finished
+// (Claim.TaskFinished) and the session that finished it (TaskFinishedSession), in the same write.
 //
 // A task of a run whose take's turn ran leaves the run behind it, and its phase entry and its
 // check look with it: the worker goes on working it in whatever turn comes next — one an Envoy

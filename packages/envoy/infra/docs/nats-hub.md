@@ -1752,7 +1752,13 @@ pod and its container.
 Each hub pod's `prom-exporter` container runs prometheus-nats-exporter 0.20.2 with the chart's
 arguments (`-connz -routez -subz -varz -prefix=nats -use_internal_server_id -jsz=all` and the
 server's monitoring URL), and Google Managed Prometheus scrapes it through the PodMonitoring `<n>`
-every 30 seconds. Its stream metrics, as the local cluster test logged them, are:
+every 30 seconds. The PodMonitoring's one metric relabeling rule drops each series whose name
+matches `nats_consumer_.+` before Managed Prometheus stores it, since each carries a consumer's
+`consumer_name` and `consumer_desc`, which every holder of `monitoring.timeSeries.list` in the
+project could read; `-jsz=streams` would have the exporter serve none of them, but it reads
+`/jsz?streams=true`, which carries no stream configuration, so the exporter would serve no
+`nats_stream_limit_bytes` or `nats_stream_limit_messages` either. Its stream metrics, as the
+local cluster test logged them, are:
 
 - `nats_stream_consumer_count`
 - `nats_stream_first_seq`
