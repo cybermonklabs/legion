@@ -605,14 +605,14 @@ func (l *Loop) toolPlace(ctx context.Context, q store.AnswerQuestion, o Origin) 
 }
 
 // threadComments are the ids of every comment of the thread post posts the reply to o in, as
-// Dispatch holds it now: the replies on o's ask (Dispatch.Ask, which lists every comment under
-// it), else the root and every reply of o's comment thread (Dispatch.Thread of its root, or of
-// o's own comment where that is the root, a mention nobody replied to yet).
+// Dispatch holds it now: the replies on o's ask (Dispatch.AskThread, which lists every comment
+// under it), else the root and every reply of o's comment thread (Dispatch.Thread of its root, or
+// of o's own comment where that is the root, a mention nobody replied to yet).
 func (l *Loop) threadComments(ctx context.Context, o Origin) ([]string, error) {
 	var ids []string
 	var replies []dispatch.Comment
 	if o.AskID != "" {
-		ask, err := l.cfg.Dispatch.Ask(ctx, o.AskID)
+		ask, err := l.cfg.Dispatch.AskThread(ctx, o.AskID)
 		if err != nil {
 			return nil, fmt.Errorf("read the thread of ask %s: %w", o.AskID, err)
 		}
@@ -668,7 +668,7 @@ func (l *Loop) wakeFor(ctx context.Context, q store.AnswerQuestion, text string)
 // postOnAsk comments on the ask's thread, unless the thread already holds the agent's comment
 // carrying the question's marker: a post the daemon stopped after is not made twice.
 func (l *Loop) postOnAsk(ctx context.Context, q store.AnswerQuestion, origin Origin, body string) error {
-	ask, err := l.cfg.Dispatch.Ask(ctx, origin.AskID)
+	ask, err := l.cfg.Dispatch.AskThread(ctx, origin.AskID)
 	if err != nil {
 		return err
 	}

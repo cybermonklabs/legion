@@ -151,6 +151,7 @@ on:
       - 'packages/envoy/cmd/cipher-refgen/**'
       - 'packages/envoy/cmd/cipherd/*'
       - 'packages/envoy/cmd/dispatch/*'
+      - 'packages/envoy/dispatchblocks/**'
       - 'packages/envoy/dispatchbody/**'
       - 'packages/envoy/going/*'
       - 'packages/envoy/internal/buildversion/**'

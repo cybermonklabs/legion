@@ -18,9 +18,10 @@ type Comment struct {
 	Body   string `json:"body"`
 }
 
-// Ask is an ask as GET /api/v1/asks/{id} reads it: its id, its issue (nil for a document's ask),
-// who opened it, and every reply on its thread, oldest first.
-type Ask struct {
+// AskThread is an ask as GET /api/v1/asks/{id} reads it with its thread: its id, its issue (nil
+// for a document's ask), who opened it, and every reply on its thread, oldest first. The same
+// route's state and closer are Ask's (HTTPClient.Ask), which leaves the thread undecoded.
+type AskThread struct {
 	ID       string
 	IssueKey *string
 	Author   Actor
@@ -59,8 +60,8 @@ func (c *HTTPClient) ReplyToComment(ctx context.Context, commentID, target strin
 }
 
 // ReplyOnAsk comments on the ask's thread of issue as session (POST /api/v1/issues/{key}/comments
-// with ask_id). Dispatch keeps no key for it, so a caller reads the thread first (Ask) to post it
-// once.
+// with ask_id). Dispatch keeps no key for it, so a caller reads the thread first (AskThread) to
+// post it once.
 func (c *HTTPClient) ReplyOnAsk(ctx context.Context, issue, askID, session, body string) error {
 	return c.request(ctx, http.MethodPost, "/api/v1/issues/"+url.PathEscape(issue)+"/comments", struct {
 		Actor actor  `json:"actor"`
@@ -81,8 +82,8 @@ func (c *HTTPClient) ReplyInThread(ctx context.Context, issue, commentID, sessio
 	}{Actor: sessionActor(session), Body: body, ReplyTo: commentID}, nil)
 }
 
-// Ask reads an ask with its replies (GET /api/v1/asks/{id}).
-func (c *HTTPClient) Ask(ctx context.Context, askID string) (Ask, error) {
+// AskThread reads an ask with its replies (GET /api/v1/asks/{id}).
+func (c *HTTPClient) AskThread(ctx context.Context, askID string) (AskThread, error) {
 	var response struct {
 		Ask struct {
 			ID       string  `json:"id"`
@@ -92,9 +93,9 @@ func (c *HTTPClient) Ask(ctx context.Context, askID string) (Ask, error) {
 		Replies []Comment `json:"replies"`
 	}
 	if err := c.request(ctx, http.MethodGet, "/api/v1/asks/"+url.PathEscape(askID), nil, &response); err != nil {
-		return Ask{}, err
+		return AskThread{}, err
 	}
-	return Ask{ID: response.Ask.ID, IssueKey: response.Ask.IssueKey, Author: response.Ask.Author, Replies: response.Replies}, nil
+	return AskThread{ID: response.Ask.ID, IssueKey: response.Ask.IssueKey, Author: response.Ask.Author, Replies: response.Replies}, nil
 }
 
 // Thread reads a comment with every reply in its thread (GET /api/v1/comments/{id}).

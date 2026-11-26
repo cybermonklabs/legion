@@ -3,8 +3,9 @@ name: CI job daemon-go
 # The steps of `.github/workflows/ci.yaml#daemon-go` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so no `if:` here selects the suite: the ones
-# this file carries run the steps no leg splits in plain leg 2 alone (`matrix.leg == 2`), and let
-# the jobs daemon-go and daemon-go-race report a failed leg (`!cancelled()`).
+# this file carries run the stamped shape gate in plain leg 3 alone (`matrix.leg == 3`, the leg
+# that runs internal/api) and the steps no leg splits in plain leg 2 alone (`matrix.leg == 2`),
+# and let the jobs daemon-go and daemon-go-race report a failed leg (`!cancelled()`).
 #
 # What runs here is the Go daemon's own tests — the plain step over every package of
 # packages/daemon but the five concurrent ones and the text checks, less the two pure table
@@ -95,7 +96,7 @@ jobs:
       # One leg's failure leaves the others running, so each reports its own packages.
       fail-fast: false
       matrix:
-        leg: [1, 2]
+        leg: [1, 2, 3]
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the goroutine dump that names it. A step's worst case is therefore its largest
     # measured green duration plus its own -timeout. Over the 158 green daemon-go jobs that
@@ -244,7 +245,7 @@ jobs:
 
       # The shape gate of internal/api again, stamped with HEAD's contract entries in main's merge
       # order (scripts/daemon-contract-order.sh), as every build of main that production runs is
-      # stamped: the plain step of the leg that runs internal/api (go-legs.yaml's leg 2) runs it
+      # stamped: the plain step of the leg that runs internal/api (go-legs.yaml's leg 3) runs it
       # unstamped, which numbers the entries by id, so these two steps run in that leg alone. On a
       # pull request the stamp is main's order with the branch's entries after it, the order main
       # takes if the branch merges next; in a merge group it is the order main takes. So the
@@ -259,7 +260,7 @@ jobs:
       # fetch on 2026-11-24; the 1-minute -timeout is its share of the job's timeout-minutes, and
       # the step's own duration in the job's log is how long the gate took.
       - name: Stamp HEAD's contract entries in main's merge order
-        if: matrix.leg == 2
+        if: matrix.leg == 3
         id: contract-order
         run: |
           head=$(git rev-parse HEAD)
@@ -270,7 +271,7 @@ jobs:
         working-directory: packages/daemon
 
       - name: Test the shape gate in main's merge order
-        if: matrix.leg == 2
+        if: matrix.leg == 3
         run: go test -count=1 -timeout 1m ./internal/api/ "-ldflags=-X=github.com/sjawhar/legion/daemon/internal/api.contractOrder=${{ steps.contract-order.outputs.stamp }}" -run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'
         working-directory: packages/daemon
 
@@ -279,8 +280,9 @@ jobs:
       # package list and the source, so the two cannot drift). The first is internal/launcher's
       # call-graph walk, under `//go:build !race`: it loads the launcher's whole program from source
       # and builds its call graph twice, which without the detector took about a minute at a 2.3 GB
-      # peak, and the detector multiplies both. It, the forced-order tests and the Stage 1 proof run
-      # in the last leg alone, which go-legs.yaml gives the plain packages that end soonest.
+      # peak, and the detector multiplies both. It, the forced-order tests and the Stage 1 proof
+      # run in plain leg 2 alone, internal/store's, whose packages go-legs.yaml sizes to end beside
+      # them.
       - name: Test what the race build cannot run
         if: matrix.leg == 2
         run: |

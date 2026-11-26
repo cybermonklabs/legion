@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { randomInt } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -203,6 +203,51 @@ test.skipIf(!present("/proc/self/stat"))(
   // The bounded child, then the wait for what it left to leave the table, which the short bound
   // ends.
   rowLimit("short", "short")
+);
+
+// A child that is still sleeping when its own bound passes must say what it had written and which
+// processes were live, rather than leave a later reader with only its command and elapsed time.
+// The markers are passed through the environment so a failure that prints them proves it read the
+// child's pipes; the password proves each reported line was masked before it reached the public log.
+test(
+  "a bounded child at its bound reports its last output and the processes it still runs",
+  async () => {
+    const marks = { stderr: `stderr-${randomUUID()}`, stdout: `stdout-${randomUUID()}` };
+    const password = `made-up-${randomUUID()}`;
+    const child = {
+      argv: [
+        "bash",
+        "-c",
+        `printf 'line %s\\n' {1..250}; printf '%s\\npassword=%s\\n' "$STDOUT_MARK" "$PASSWORD"; ` +
+          `printf '%s\\n' "$STDERR_MARK" >&2; exec sleep 120`,
+      ],
+      env: {
+        PASSWORD: password,
+        PATH: process.env.PATH ?? "",
+        STDERR_MARK: marks.stderr,
+        STDOUT_MARK: marks.stdout,
+      },
+      from: import.meta.url,
+    };
+    const failure = await runBounded({ ...child, bound: "stuckOnPurpose" }).then(
+      ({ code }) => `the child ended by itself, with exit ${code}`,
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
+
+    expect(failure, "the timeout did not name the child").toStartWith(
+      `the bounded child ${named(child)} did not end inside the stuckOnPurpose bound of `
+    );
+    expect(failure, "the timeout lacks the stdout marker").toContain(marks.stdout);
+    expect(failure, "the timeout lacks the stderr marker").toContain(marks.stderr);
+    expect(failure, "the timeout printed the child's password").not.toContain(password);
+    expect(failure, "the timeout printed output older than its last lines").not.toContain(
+      "line 1\n"
+    );
+    expect(failure, "the timeout names no process still running").toMatch(
+      /still running when its bound passed:\n {2}pid=\d+ ppid=\d+ name=/
+    );
+  },
+  rowLimit("stuckOnPurpose")
 );
 
 /** The pid, start and token of the child of every scripted kill below. A table lists its pid

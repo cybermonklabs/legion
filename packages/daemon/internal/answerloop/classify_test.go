@@ -19,8 +19,8 @@ type reads struct {
 	threads map[string]dispatch.Thread
 }
 
-func (r reads) Ask(_ context.Context, id string) (dispatch.Ask, error) {
-	return dispatch.Ask{ID: id, IssueKey: new("LEGION-9"), Author: dispatch.Actor{Kind: "session", ID: r.asks[id]}}, nil
+func (r reads) AskThread(_ context.Context, id string) (dispatch.AskThread, error) {
+	return dispatch.AskThread{ID: id, IssueKey: new("LEGION-9"), Author: dispatch.Actor{Kind: "session", ID: r.asks[id]}}, nil
 }
 
 func (r reads) Thread(_ context.Context, id string) (dispatch.Thread, error) {

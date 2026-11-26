@@ -111,7 +111,7 @@ func TestConformanceCaseIsTheTree(t *testing.T) {
 			walk(child, path)
 		}
 	}
-	walk(newRoot(io.Discard, io.Discard), nil)
+	walk(newRoot(io.Discard, io.Discard, processWorkspace()), nil)
 	for _, list := range []struct {
 		name         string
 		tree, listed [][]string

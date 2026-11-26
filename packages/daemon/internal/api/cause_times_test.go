@@ -291,19 +291,19 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
-	// The cause times and credential are the first two drops. Entry bands follow, including
-	// the questions-for-controller entry.
-	state = carriedState(t)
-	below := causeTimesContract - 1
-	_, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), below)
+	// A caller below causeTimesContract is below dispatchCredentialContract too, the one frozen row
+	// above it, and below each entry's band, so it is told of each of those rows, in the table's
+	// order: this band's line, the Dispatch credential's, then the line of each entry's band that
+	// found its keys on the golden (narrowingsExpected), which holds no entry to be the newest, the
+	// questions-for-controller entry's among them.
+	golden := populatedState(t)
+	_, narrowings := stateNarrowedStating(t, golden, statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
-	const droppedCredential = "dispatchCredential"
-	const droppedQuestions = "questionsForController"
-	want := narrowingsExpected(state, below)
-	if len(want) < 2 || want[0] != dropped || want[1] != droppedCredential ||
-		!slices.Contains(want[2:], droppedQuestions) {
-		t.Fatalf("a caller at %d expects narrowing lines %v, want %q and %q first, then entry bands including %q",
-			below, want, dropped, droppedCredential, droppedQuestions)
+	want := narrowingsExpected(golden, causeTimesContract-1)
+	if len(want) < 2 || want[0] != dropped || want[1] != "dispatchCredential" ||
+		!slices.Contains(want[2:], "questionsForController") {
+		t.Fatalf("a caller at %d expects the lines %v, want one that dropped %q and then one that dropped %q first, and one that dropped %q among the entries' bands",
+			causeTimesContract-1, want, dropped, "dispatchCredential", "questionsForController")
 	}
-	wantNarrowings(t, narrowings, below, want)
+	wantNarrowings(t, narrowings, causeTimesContract-1, want)
 }

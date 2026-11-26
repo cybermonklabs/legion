@@ -245,12 +245,23 @@ type execRunner struct {
 	timeout time.Duration
 	// tools maps each command's name to the executable boot resolved for it.
 	tools map[string]string
+	// environ is the environment each child's is built from (Run), or nil for this process's own
+	// (os.Environ, read at each command).
+	environ []string
 }
 
 // NewRunner returns the production process runner. The supplied timeout is applied to every
-// command separately, rather than bounding the whole provisioning sequence.
+// command separately, rather than bounding the whole provisioning sequence. Each child's
+// environment is built from this process's own.
 func NewRunner(timeout time.Duration, tools map[string]string) Runner {
 	return execRunner{timeout: timeout, tools: tools}
+}
+
+// NewRunnerIn is NewRunner whose children's environments are built from environ instead of this
+// process's: the environment `legion workspace-init` was handed, which a test of the command run
+// inside its test process hands it without changing that process's own.
+func NewRunnerIn(environ []string, timeout time.Duration, tools map[string]string) Runner {
+	return execRunner{timeout: timeout, tools: tools, environ: slices.Clone(environ)}
 }
 
 func (r execRunner) Timeout() time.Duration {
@@ -311,8 +322,13 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	// before transportEnvironment and the command's own entries are merged in, so pinGitConfig
 	// counts the command's own pairs alone (withoutGitConfigPairs). A Legion pod hands every
 	// process such a block, a role's GitHub credential helper among them, which no clone or fetch
-	// provisioning starts may read.
-	base := withoutGitConfigPairs(runtime.WithoutNATSSeeds(os.Environ()))
+	// provisioning starts may read. The environment those entries are taken from is the one the
+	// runner was made with (NewRunnerIn), or this process's own.
+	environ := r.environ
+	if environ == nil {
+		environ = os.Environ()
+	}
+	base := withoutGitConfigPairs(runtime.WithoutNATSSeeds(environ))
 	env, err := pinGitConfig(without(merge(merge(base, transportEnvironment), command.Env), "GIT_CONFIG_PARAMETERS"))
 	if err != nil {
 		return Result{}, err

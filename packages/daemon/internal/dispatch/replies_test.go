@@ -127,7 +127,7 @@ func TestAnAskReadsWithItsAuthorAndReplies(t *testing.T) {
 		_, _ = w.Write(buf.Bytes())
 	}))
 	defer server.Close()
-	ask, err := New(server.URL, BearerTransport(dispatchToken, nil)).Ask(context.Background(), "a-1")
+	ask, err := New(server.URL, BearerTransport(dispatchToken, nil)).AskThread(context.Background(), "a-1")
 	if err != nil {
 		t.Fatal(err)
 	}

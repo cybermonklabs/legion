@@ -23,8 +23,8 @@ import (
 // askBy is a Reader answering that askID was opened by session. It holds no comment's thread.
 type askBy struct{ session string }
 
-func (a askBy) Ask(_ context.Context, askID string) (dispatch.Ask, error) {
-	return dispatch.Ask{ID: askID, Author: dispatch.Actor{Kind: "session", ID: a.session}}, nil
+func (a askBy) AskThread(_ context.Context, askID string) (dispatch.AskThread, error) {
+	return dispatch.AskThread{ID: askID, Author: dispatch.Actor{Kind: "session", ID: a.session}}, nil
 }
 
 func (a askBy) Thread(_ context.Context, commentID string) (dispatch.Thread, error) {

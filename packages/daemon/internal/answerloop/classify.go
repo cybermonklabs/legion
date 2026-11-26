@@ -103,10 +103,10 @@ type Verdict struct {
 	ForAgent bool
 }
 
-// Reader reads what Classify decides a hand-off by: an ask's author (Dispatch.Ask), and the
+// Reader reads what Classify decides a hand-off by: an ask's author (Dispatch.AskThread), and the
 // thread of a comment a reply is in (Dispatch.Thread).
 type Reader interface {
-	Ask(ctx context.Context, askID string) (dispatch.Ask, error)
+	AskThread(ctx context.Context, askID string) (dispatch.AskThread, error)
 	Thread(ctx context.Context, commentID string) (dispatch.Thread, error)
 }
 
@@ -204,7 +204,7 @@ const reviewForArchitect = "a review of the agent's document, which reaches its 
 // the daemon's own post.
 func classifyDispatchEvent(ctx context.Context, h intake.Handoff, conv store.AgentConversation, reader Reader, event intake.DispatchEvent) (Verdict, error) {
 	ownAsk := func(askID string) (bool, error) {
-		ask, err := reader.Ask(ctx, askID)
+		ask, err := reader.AskThread(ctx, askID)
 		if err != nil {
 			return false, fmt.Errorf("read the author of ask %s: %w", askID, err)
 		}

@@ -150,8 +150,11 @@ default_review_app_id=5341243
 # app_key_squeezed VALUE prints VALUE with every whitespace character, one surrounding quote of
 # either kind and a leading UTF-8 byte-order mark taken out: the text the key guard below judges,
 # so that an indented paste, a quoted one and one a text editor marked are read as the value they
-# carry. It prints its argument and reads nothing else.
+# carry. It prints its argument and reads nothing else. Its argument may be a key itself, so it
+# turns the shell's xtrace off for itself (`local -`).
 app_key_squeezed() {
+  local -
+  set +x
   local value=${1//[[:space:]]/}
   value=${value#$'\xEF\xBB\xBF'}
   value=${value#[\"\']}
@@ -208,6 +211,10 @@ implement_app_key_command=
 review_app_key_command=
 implement_app_secret=
 require_app_inputs() {
+  # The key command may be a key itself, so a run under `bash -x` traces none of this function
+  # (`local -`), as lib/process-tree.sh's env_of turns the trace off for every reader of a secret.
+  local -
+  set +x
   # The checks below use bracket ranges, which bash's =~ reads in the caller's locale: under a
   # UTF-8 locale [0-9] and [A-Za-z] admit fullwidth digits and accented letters. C keeps them ASCII.
   local LC_ALL=C
@@ -547,6 +554,10 @@ app_token_stderr_bound() {
 # reason the cut before it is.
 app_token_release_limit=1048576
 app_token_mint_command() {
+  # COMMAND is a role App's key command in key mode, which may be a key itself, so a run under
+  # `bash -x` traces none of this function (`local -`).
+  local -
+  set +x
   local file=$1 command=$2 mode=${3-} tmp overflow status=0 relay=app_token_redact
   [ "$mode" != key ] || relay=app_token_redact_key
   tmp=$(umask 077 && mktemp "$(dirname -- "$file")/.mint.XXXXXXXX") || return 1
@@ -604,6 +615,10 @@ app_token_mint_file() {
 # and id, the file and what went wrong, and never a byte the command printed; the command's own
 # stderr has already reached the run's stderr, through app_token_redact_key.
 app_token_mint_key() {
+  # It hands the key command, which may be a key itself, to app_token_mint_command, so a run under
+  # `bash -x` traces none of this function (`local -`).
+  local -
+  set +x
   local role=$1 dir=$2 file=$2/$1/key.pem command=${1}_app_key_command id=${1}_app_id status=0
   app_token_mint_failed=
   app_token_dir_made "$role" "$dir/$role" || return 1

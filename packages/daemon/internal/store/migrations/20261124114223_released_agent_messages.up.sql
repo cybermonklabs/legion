@@ -6,9 +6,14 @@
 -- gives that agent everything else it does not answer through one outbox row that wakes the claim
 -- and delivers the message once the woken session holds its role (dispatch://INFRA-204). That row
 -- is the outbox kind agent_message (record.AgentMessage). The outbox's kind check is one list, so
--- it is written again whole, naming every kind the design news's 20261119203047 names, with
--- agent_message added; this migration's version stands above that one, so it is the last word of
--- the check on any database Migrate takes.
+-- it is written again whole, naming every kind the design news's 20261119203047 names and the two
+-- basis seeds main's 20261122154643 adds (pending_basis_seed and reparent_seed), with
+-- agent_message added. A database current main migrated can hold a queued row of either seed, and
+-- Migrate applies this version there, below that database's newest, before
+-- 20261126132542_outbox_kinds_with_the_basis_seeds_and_agent_messages: `ADD CONSTRAINT … CHECK`
+-- validates every row the table holds, so a list here without the seeds would fail that upgrade.
+-- 20261126132542 writes the same list again, and its version, above this one's and main's, makes
+-- it the last word of the check on any database Migrate takes.
 --
 -- answer_questions.wake marks a question whose claim was released when the loop received or
 -- decided it: a person's decision that also asks, received for a released claim, is held for the
@@ -33,4 +38,5 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'conflict_confirm', 'merge_forward', 'design_changes', 'agent_message'));
+  'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
+  'agent_message'));
