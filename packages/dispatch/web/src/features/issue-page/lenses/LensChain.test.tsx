@@ -362,7 +362,7 @@ test("only the chain that holds the lens is drawn", async () => {
   }
 });
 
-// R22 over the one reference framework: a chain entry names the row its lens stands under by that
+// Over the one reference framework: a chain entry names the row its lens stands under by that
 // row's whole words, read through the plain-text projection as every one-line view reads them,
 // so a `dispatch://` address in them reads as the name the page published for its target, never
 // as the address, and the line makes no read of its own for a target the page named.
@@ -657,7 +657,7 @@ describe("the lines under a row", () => {
   // after the reader's first act, so a second press on the same chip, after the reader went back
   // to the risk, focuses the check's row all the same. The chip names the check by its id in the
   // tree read, and the row carries the id the tree draws a typed block by. In Conversation and in
-  // Graph alike, the link is the open view's own address of the row (R7).
+  // Graph alike, the link is the open view's own address of the row.
   test("a chip focuses its row at every press", async () => {
     const user = userEvent.setup();
     const checkId = blockNodeId("verification-md", "c1");
@@ -717,7 +717,7 @@ describe("the lines under a row", () => {
   // chip a link, and one of the catalogue has no row, so its chip is words with no link. Where
   // the open view draws the issue's constraint's row, the chip links it there; where only Graph
   // draws it (`graphOnly`), as Conversation's answer and the Spec view's give it, the chip links
-  // Graph's row of it from every view (R7).
+  // Graph's row of it from every view.
   test("a statement names its constraints, the issue's linked and the catalogue's as words", () => {
     const statement = (graphOnly: boolean) =>
       node({
@@ -865,8 +865,8 @@ describe("the lines under a row", () => {
 
 // A lens's tag and the chips of its lines name a lens by its kind's words, which can run to 129
 // characters: each is drawn whole and is not held to one line, so it wraps inside its column
-// instead of widening the page. The tag keeps part T's one line for every other kind
-// (`whitespace-nowrap`), so a lens's tag draws its kind's words in a span of their own that wraps
+// instead of widening the page. The tag keeps one line (`whitespace-nowrap`) for every other kind,
+// so a lens's tag draws its kind's words in a span of their own that wraps
 // anywhere, its shape in another at the top, beside their first line (`NodeRow.tsx`'s `KindTag`).
 test("a lens's tag and its chips draw a kind of 129 characters whole, and wrap", () => {
   const kind =
@@ -1045,7 +1045,7 @@ test("a risk row draws its early warning's author's link of marked words as one 
   );
 });
 
-// R22 over the one reference framework: a risk's fact line reads a `dispatch://` address in its
+// Over the one reference framework: a risk's fact line reads a `dispatch://` address in its
 // words as every one-line view reads one, through the plain-text projection: by the name the page
 // published for its target, never as the address, and with no read of its own for a target the
 // page named. A line that names a node the tree read holds keeps that name as the chip that links
@@ -1097,7 +1097,7 @@ test("a fact line reads a dispatch:// reference the page published by its target
   }
 });
 
-// R22 over the one reference framework: a lens line's chip reads a `dispatch://` address in its
+// Over the one reference framework: a lens line's chip reads a `dispatch://` address in its
 // words as every one-line view reads one, through the plain-text projection: by the name the page
 // published for its target, never as the address, and with no read of its own for a target the
 // page named. The chip still links its own node's row, at the same `?node=`.

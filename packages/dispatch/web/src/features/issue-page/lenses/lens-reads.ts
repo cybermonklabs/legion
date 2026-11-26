@@ -120,7 +120,7 @@ export function lensPlaceOf(
 /** The address of the row of the node whose id in the tree read is `readId` in `outline` of the
  *  issue `key`, after the words filter `filter` (`?q=`) where one is given: Conversation's on the
  *  issue's own address (`outlineRowPath`), and Graph's on Graph's own (`presetPath`) with the same
- *  query, so `outlineRowPath` stays the one builder of a row's `?node=` (R7, R9). */
+ *  query, so `outlineRowPath` stays the one builder of a row's `?node=`. */
 export function rowPathIn(outline: Outline, key: string, readId: string, filter?: string): string {
   const path = outlineRowPath(key, readId, filter);
   if (outline === "conversation") return path;
@@ -137,7 +137,7 @@ export function rowPathIn(outline: Outline, key: string, readId: string, filter?
  * and an observer that holds its answer for good (`isStatic`) reads nothing either, so this
  * answers at once; and it answers as soon as the read is let go, or its last observer goes, while
  * it waits, since no read comes then. It never answers with a timer of its own. It reads no view
- * of the issue and leaves the other outline's read as it is (R6): no view draws a lens, a finding
+ * of the issue and leaves the other outline's read as it is: no view draws a lens, a finding
  * or a risk, so a lens leaves every view current.
  */
 function readTreeAgain(
@@ -273,7 +273,7 @@ export function forgetInvocations(queryClient: QueryClient, issueKey: string, on
  * A landing reads the outline's read again through the app's refresh scheduler, as the page does
  * for a write it sees, so it never calls off a read already out and keeps to one start a second:
  * the write and the event it raises read the open view's tree once or twice, never more, and the
- * other outline's not at all (R6). It reads no view of the issue and resets none, since no view
+ * other outline's not at all. It reads no view of the issue and resets none, since no view
  * draws a lens, a finding or a risk: a view read before the write is still current. It waits for
  * the outline's read (`readTreeAgain`), so the outline holds the lens's row when the address
  * names it. Then, where Dispatch answered the lens it made and the reader still stands on this
