@@ -40,10 +40,12 @@ func writable(dir string) error {
 		dir, parent, &fs.PathError{Op: "write", Path: parent, Err: err}, wayOut)
 }
 
-// sameOwner gives the directory path the owner and the group of old, the spec directory dir, when
-// they are others, through fsys. A system that refuses it, as for a process that is not the owner
-// of dir, not a member of its group and not root, gets the way out.
-func sameOwner(fsys fileSystem, path, dir string, old fs.FileInfo) error {
+// sameOwner gives the entry path, which print made, the owner and the group of old, the entry of
+// that name that it replaces, or of the spec directory dir for an entry that replaces none, when
+// they are others, through fsys. what names the entry, such as "the new directory", and of the
+// entry that old describes. A system that refuses it, as for a process that is not the owner of
+// of, not a member of its group and not root, gets the way out.
+func sameOwner(fsys fileSystem, path, what, of string, old fs.FileInfo) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err
@@ -53,8 +55,8 @@ func sameOwner(fsys fileSystem, path, dir string, old fs.FileInfo) error {
 		return nil
 	}
 	if err := fsys.lchown(path, int(want.Uid), int(want.Gid)); err != nil {
-		return fmt.Errorf("print gives the new directory the owner and the group of %s, %d:%d, and the system refused it (%w): run print as the owner of %s, as a member of its group, or as root, then run print again",
-			dir, want.Uid, want.Gid, err, dir)
+		return fmt.Errorf("print gives %s the owner and the group of %s, %d:%d, and the system refused it (%w): run print as the owner of %s, as a member of its group, or as root, then run print again",
+			what, of, want.Uid, want.Gid, err, of)
 	}
 	return nil
 }

@@ -57,7 +57,8 @@ The command takes every rule from the package `packages/envoy/internal/dispatch/
   For a spec directory that is itself a mount point (`device or resource busy`), the line says to mount a directory above it instead, such as the checkout.
   For a file system that does not exchange two directories (`invalid argument` on Linux, `operation not supported` on macOS), the line says to run print on a checkout on a local file system.
   `spec-check print` needs write permission on the directory above the spec directory, where it builds the new directory, and it refuses before any change when the process may not write there, with a line that says what to change, or, for a spec directory that is a mount point, to mount a directory above it.
-  It gives the new directory the owner and the group of the spec directory, and where the system refuses that, the line says to run print as the owner of the spec directory, as a member of its group, or as root.
+  It gives the new directory the owner and the group of the spec directory, each file that it writes the mode, the owner and the group of the file of that name that it replaces, and a new file mode 0644 and the owner and the group of the spec directory, so a run as root over a bind-mounted checkout leaves the checkout's user its files.
+  Where the system refuses an owner, the line says to run print as the owner of the spec directory or of the file, as a member of its group, or as root.
 
 - **What a killed run of `spec-check print` leaves.**
   A run that is killed can leave the directory that it built beside the spec directory, or the old spec directory, and its record, `.<name>.spec-check-print-<number>.texts`, which `git status` shows; the next run of `spec-check print` on the spec directory removes it, or moves the entries that are no spec files back into the spec directory, and says so.
@@ -69,7 +70,7 @@ The command takes every rule from the package `packages/envoy/internal/dispatch/
   The limits of `spec-check print`:
   a stop between the exchange and the last move leaves the entries that print does not own, such as a README, beside the spec directory until the next run puts them back;
   two long ids that differ only in their middle look alike in a line that cuts them;
-  in a directory with the set-group-ID bit, a file that print writes takes the writer's group;
+  print writes each file that it changes as a new file, so a hard link to the old file outside the spec directory keeps the old text;
   an id over 131,072 bytes cannot be one argument, and a top-level id over 250 bytes makes a file name that the system refuses.
 
 - **Every rule of `specgraph.Validate`.**

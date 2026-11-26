@@ -182,7 +182,7 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 	// refused with the way out. The process gives the parent one of its other groups and the
 	// set-group-ID bit, so the new directory takes that group and differs from the directory's, and
 	// print calls lchown, which the row fails as the system fails it for a user who may not.
-	t.Run("a directory whose owner and group the process may not give the new directory", func(t *testing.T) {
+	t.Run("a directory whose owner and group the process may not give the new entries", func(t *testing.T) {
 		t.Parallel()
 		other := -1
 		groups, err := os.Getgroups()
@@ -207,15 +207,32 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 		if err := os.Chmod(parent, 0o755|fs.ModeSetgid); err != nil {
 			t.Fatal(err)
 		}
-		info, err := os.Lstat(dir)
+		// The new directory takes the group of its parent, and each file in it the group of the new
+		// directory, so the first refusal is of the first file that print writes, a.yaml, which
+		// takes the owner and the group of the file a.yaml of dir.
+		info, err := os.Lstat(filepath.Join(dir, "a.yaml"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		st := info.Sys().(*syscall.Stat_t)
-		want := "print gives the new directory the owner and the group of " + dir + ", " + strconv.Itoa(int(st.Uid)) + ":" + strconv.Itoa(int(st.Gid)) + ", and the system refused it (operation not permitted): " +
-			"run print as the owner of " + dir + ", as a member of its group, or as root, then run print again"
+		of := filepath.Join(dir, "a.yaml")
+		want := "print gives the new file a.yaml the owner and the group of " + of + ", " + strconv.Itoa(int(st.Uid)) + ":" + strconv.Itoa(int(st.Gid)) + ", and the system refused it (operation not permitted): " +
+			"run print as the owner of " + of + ", as a member of its group, or as root, then run print again"
 		if _, _, err := writeDir(failing(callFault{"lchown", "", syscall.EPERM}), dir, lock, files, after); err == nil || err.Error() != want {
 			t.Fatalf("writeDir with lchown refused: %v, want %q", err, want)
+		}
+		unchanged(t, dir, before, ino)
+		// A system that gives each file its owner and refuses the new directory's gives the
+		// directory's line, and the directory is as it was.
+		held, err := os.Lstat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dirStat := held.Sys().(*syscall.Stat_t)
+		wantDir := "print gives the new directory the owner and the group of " + dir + ", " + strconv.Itoa(int(dirStat.Uid)) + ":" + strconv.Itoa(int(dirStat.Gid)) + ", and the system refused it (operation not permitted): " +
+			"run print as the owner of " + dir + ", as a member of its group, or as root, then run print again"
+		if _, _, err := writeDir(failing(callFault{"lchown", filepath.Base(stagingPath(dir, inode(held))), syscall.EPERM}), dir, lock, files, after); err == nil || err.Error() != wantDir {
+			t.Fatalf("writeDir with the new directory's lchown refused: %v, want %q", err, wantDir)
 		}
 		unchanged(t, dir, before, ino)
 	})

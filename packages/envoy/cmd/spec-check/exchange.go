@@ -60,7 +60,7 @@ func writeRecord(fsys fileSystem, staging string, files map[string][]byte) error
 	if err != nil {
 		return err
 	}
-	return writeSynced(fsys, recordPath(staging), append(data, '\n'), 0o644)
+	return writeSynced(fsys, recordPath(staging), append(data, '\n'), 0o644, nil, "")
 }
 
 // readRecord is the record of the run whose directory is staging, and nil when the run left none
@@ -182,11 +182,15 @@ func writeDir(fsys fileSystem, dir string, lock *specDirLock, files, after map[s
 		}
 	}()
 	for _, name := range slices.Sorted(maps.Keys(after)) {
-		to := filepath.Join(staging, name)
-		if slices.Contains(changed, name) {
-			err = writeSynced(fsys, to, after[name], 0o644)
+		to, from := filepath.Join(staging, name), filepath.Join(dir, name)
+		if !slices.Contains(changed, name) {
+			err = linkOrCopy(fsys, from, to, after[name])
+		} else if _, held := files[name]; !held {
+			err = writeSynced(fsys, to, after[name], 0o644, old, dir)
+		} else if was, statErr := os.Lstat(from); statErr != nil {
+			err = statErr
 		} else {
-			err = linkOrCopy(fsys, filepath.Join(dir, name), to, after[name])
+			err = writeSynced(fsys, to, after[name], specMode(was), was, from)
 		}
 		if err != nil {
 			return nil, false, err
@@ -198,7 +202,7 @@ func writeDir(fsys fileSystem, dir string, lock *specDirLock, files, after map[s
 	if err := fsys.chmod(staging, old.Mode()&(fs.ModePerm|fs.ModeSetgid|fs.ModeSticky)); err != nil {
 		return nil, false, err
 	}
-	if err := sameOwner(fsys, staging, dir, old); err != nil {
+	if err := sameOwner(fsys, staging, "the new directory", dir, old); err != nil {
 		return nil, false, err
 	}
 	built, err := os.Open(staging)
@@ -281,8 +285,8 @@ func removeRecord(fsys fileSystem, staging string) {
 // linkOrCopy puts at to the spec file from, which the run does not change and whose text is
 // content: a hard link to it, the same file, or, where the system refuses the link (another user's
 // file under fs.protected_hardlinks, a file on another file system, a file at its bound of links,
-// a file system with no hard links), a copy of content with the mode of from, which the process
-// owns.
+// a file system with no hard links), a copy of content with the mode, the owner and the group of
+// from.
 func linkOrCopy(fsys fileSystem, from, to string, content []byte) error {
 	refused := fsys.link(from, to)
 	if refused == nil {
@@ -290,7 +294,7 @@ func linkOrCopy(fsys fileSystem, from, to string, content []byte) error {
 	}
 	info, err := os.Lstat(from)
 	if err == nil {
-		err = writeSynced(fsys, to, content, info.Mode()&(fs.ModePerm|fs.ModeSetuid|fs.ModeSetgid|fs.ModeSticky))
+		err = writeSynced(fsys, to, content, specMode(info), info, from)
 	}
 	if err != nil {
 		return fmt.Errorf("%w, and print could not copy the file either: %w", refused, err)
@@ -298,9 +302,19 @@ func linkOrCopy(fsys fileSystem, from, to string, content []byte) error {
 	return nil
 }
 
-// writeSynced writes content to a new file at path, made by fsys, syncs it and gives it the mode
-// mode.
-func writeSynced(fsys fileSystem, path string, content []byte, mode fs.FileMode) error {
+// specMode is the mode of a spec file that print writes in the place of the file that info
+// describes: its permission bits and its setuid, setgid and sticky bits.
+func specMode(info fs.FileInfo) fs.FileMode {
+	return info.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
+}
+
+// writeSynced writes content to a new file at path, made by fsys, syncs it, gives it the owner
+// and the group of owner, the entry of of that it takes the place of (sameOwner; nil for a file
+// that keeps the writer's), then the mode mode, after the owner, since a change of the owner can
+// clear the setuid and setgid bits. So a file that print writes keeps the mode and the owner of
+// the file that it replaces, and a new file gets the owner of the spec directory: a run as root
+// over a checkout of another user leaves that user's files.
+func writeSynced(fsys fileSystem, path string, content []byte, mode fs.FileMode, owner fs.FileInfo, of string) error {
 	f, err := fsys.create(path)
 	if err != nil {
 		return err
@@ -311,6 +325,9 @@ func writeSynced(fsys fileSystem, path string, content []byte, mode fs.FileMode)
 	}
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
+	}
+	if err == nil && owner != nil {
+		err = sameOwner(fsys, path, "the new file "+filepath.Base(path), of, owner)
 	}
 	if err == nil {
 		err = fsys.chmod(path, mode)

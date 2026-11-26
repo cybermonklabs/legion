@@ -12,4 +12,4 @@ func inode(fs.FileInfo) uint64 { return 0 }
 func writable(string) error { return nil }
 
 // sameOwner answers nil: print takes no lock on a system that is not Unix, so it never writes.
-func sameOwner(fileSystem, string, string, fs.FileInfo) error { return nil }
+func sameOwner(fileSystem, string, string, string, fs.FileInfo) error { return nil }
