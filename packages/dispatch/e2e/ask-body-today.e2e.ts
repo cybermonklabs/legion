@@ -9,7 +9,16 @@
 // The decision card sits in its existing section or margin placement; its time is a <time>.
 
 import { readFile, writeFile } from "node:fs/promises";
-import { getAsk, getInbox, getIssueDecisions, listComments, listMyAnswers } from "./api";
+import {
+  createAsk,
+  createIssue,
+  createProject,
+  getAsk,
+  getInbox,
+  getIssueDecisions,
+  listComments,
+  listMyAnswers,
+} from "./api";
 import {
   ASK_TODAY,
   type AskTodayDecision,
@@ -330,6 +339,58 @@ test("the answer box stands in place on every surface", async ({ page }) => {
     await expect(card.locator(ANSWER), surface.name).toBeVisible();
     await expect(button(card, DISCLOSURE), surface.name).toHaveCount(0);
   }
+});
+
+/** The words of `words` that the page breaks over two lines: each word's own text rectangles,
+ *  read where it stands, sit on more than one line. A word that fits its line is one rectangle. */
+async function brokenWords(words: Locator): Promise<string[]> {
+  return words.evaluate((element) => {
+    const broken: string[] = [];
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      for (const match of (node.textContent ?? "").matchAll(/\S+/g)) {
+        const range = document.createRange();
+        range.setStart(node, match.index);
+        range.setEnd(node, match.index + match[0].length);
+        const lines = new Set([...range.getClientRects()].map((rect) => Math.round(rect.top)));
+        if (lines.size > 1) broken.push(match[0]);
+      }
+    }
+    return broken;
+  });
+}
+
+// The comments margin is a column about 384 px wide at a desktop width, where the first line's
+// end (the kind, an agent's name control and the time) stands beside the words. The words must
+// keep room to wrap at their spaces there, as they do on a phone, and never break inside a word.
+test("in today's comments margin an agent's ask keeps each word of its question whole", async ({
+  page,
+}) => {
+  test.skip(inventoryMode, "The inventory run reads the legacy layout as well");
+  const question = "Should the runbook keep its troubleshooting section?";
+  await createProject({ key: "WHOLE", name: "Whole words" });
+  const issue = await createIssue({
+    project: "WHOLE",
+    spec: "Restart, reseed, reopen the signed-in URL.",
+    title: "Whole words",
+  });
+  const asked = await createAsk(
+    issue.key,
+    { anchor: { artifact: "spec", quote: "reseed" }, question },
+    {
+      actor: { id: "whole-words-tester", kind: "session", origin: { session_title: "Tester" } },
+      as: "agent",
+    }
+  );
+  await wide(page);
+  await page.goto(`/issues/${issue.key}/spec`);
+  const body = ask(margin(page), asked.id).locator(BODY);
+  const words = body.getByText(question, { exact: true }).first();
+  await expect(words).toBeVisible();
+  expect(
+    await brokenWords(words),
+    "the margin breaks a word of the question over two lines"
+  ).toEqual([]);
 });
 
 // SLOW(>=2s): seed an approval and a pictured ask block, then open them in the reading pane.
