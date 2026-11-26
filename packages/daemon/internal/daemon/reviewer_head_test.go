@@ -321,9 +321,13 @@ func TestAMessageHeldForAReviewerAtItsHeadWaitsForItsPodOnAnotherImage(t *testin
 			t.Fatalf("attempt %d while the pod runs %s = %v, want a wait", n, reviewerPodOldImage, waited)
 		}
 	}
-	if text := waited.Error(); !routineWait(waited) || !strings.Contains(text, podUpdatePod) || !strings.Contains(text, "update round") {
-		t.Errorf("the held message waits with %q (routine: %t), want the routine wait that names the pod %s and its update round",
-			text, routineWait(waited), podUpdatePod)
+	// The row's own words come first and say what it waits for, the reviewer's issue pod; the
+	// pod's wait follows them whole. A wait the row took for a failed read of the head would carry
+	// the same pod's wait under words that name a read (reviewerAtRecordedHead).
+	prefix := held.what + " waits for its reviewer's issue pod: "
+	if text := waited.Error(); !strings.HasPrefix(text, prefix) || !routineWait(waited) || !strings.Contains(text, podUpdatePod) || !strings.Contains(text, "update round") {
+		t.Errorf("the held message waits with %q (routine: %t), want the routine wait that begins %q and names the pod %s and its update round",
+			text, routineWait(waited), prefix, podUpdatePod)
 	}
 	// The row's seventh attempt, where a wait that is not routine turns into a warning
 	// (waitWarnAttempts): the outbox settles it as it settles every attempt.
