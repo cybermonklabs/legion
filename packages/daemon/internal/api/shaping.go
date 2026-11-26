@@ -613,7 +613,6 @@ var stateNarrowings = []stateNarrowing{
 			"stranded claims, waiting wakes and pause stops of a deployment's roles"},
 	{contract: strandedTokenContract, state: withoutStrandedTokens, dropped: "the stranded claims' token"},
 	{contract: tasksContract, issue: withoutTasks, dropped: "the issues' tasks"},
-	{contract: checksContract, issue: withoutChecks, dropped: "the issues' checks"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1202,21 +1201,6 @@ func leftDeploymentRoles(state State) []string {
 	}
 	return left
 }
-
-// checksContract is the contract that added `checks` to each issue of the state and of its record
-// (version.go's 267): each open production check of the issue, oldest first, since an issue whose
-// tasks merged one after another holds a check of each merge. A plugin before it is served every
-// issue without the key (withoutChecks) and with `check`, the newest open check, as it read an
-// issue of one check before: one built before sjawhar/legion#2788 reads the state with a strict
-// schema and would refuse the whole body for a key it does not name, and one built after strips
-// the key instead. A check's fields and their values are the ones `check` already carries, so no
-// value strip is owed.
-//
-// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract this key arrived at stays where it is. It moves only with this
-// change's own number, and it is the last number of answers.go's SupportedContracts, which names
-// the constant rather than its number for that reason.
-const checksContract = 267
 
 // withoutChecks is the issue with no `checks`, the key checksContract added to the state and the
 // record; `check`, the newest open check, stays, which is what a reader before it reads. The field
