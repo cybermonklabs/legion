@@ -9,6 +9,7 @@ import { closeDetails, gotoIssue, issuePage, openDetails, phase } from "./issue-
 import { nodeRow } from "./issue-page-g";
 import { fixtureSeed, seedKeys } from "./issue-page-t";
 import {
+  architectureSettled,
   awaitIndexedCoverage,
   checksOutOfPlace,
   editNoticesSent,
@@ -72,6 +73,9 @@ test("the first load reads the tree once and a filter its view once", async ({ b
   test.setTimeout(ROW_MS);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     owedUnless(await treeReadGate(page, seeded.key));
+    // The seed's architecture source holds now what the server's own import pass would find, so
+    // that pass sends no event the page answers with reads while this row counts them.
+    await architectureSettled(page, seeded.key);
     const views = {
       plan: viewAnswerOf(page, "plan"),
       spec: viewAnswerOf(page, "spec"),
@@ -82,6 +86,11 @@ test("the first load reads the tree once and a filter its view once", async ({ b
     const live = watchLiveFrames(page);
     await page.clock.install();
     const load = await firstLoad(page, traffic, seeded.key);
+    // The load's requests, printed so what the page sent is on the record when the row passes too.
+    console.log(
+      `FIRST-LOAD [${test.info().project.name}] ${seeded.key}: ${load.length} requests: ` +
+        load.map((request) => `${request.method} ${request.path}`).join(" | ")
+    );
     await expect(headerStatus(page), "the page draws no header").toBeVisible();
     expect(
       treeReads(load, seeded.key, null),
@@ -94,16 +103,26 @@ test("the first load reads the tree once and a filter its view once", async ({ b
     ).toBeLessThanOrEqual(LOAD_BOUND);
     // The view reads R4 sends with a load of Conversation for this seed's issue, which is a child
     // (the seed files it under a parent) and a parent whose Conversation's answer holds no check
-    // of a child: Plan's always, Spec's for a child, Verification's for such a parent.
+    // of a child: Plan's always, Spec's for a child, Verification's for such a parent. The
+    // fixture's count holds the decisions read the page sent when it was recorded
+    // (`GET /api/v1/issues/{key}/decisions`), whose place the Decisions view's read takes.
     const issue = await getIssue(seeded.key);
     const answer = await heldAnswer(conversation, "Conversation's read");
     const extras = loadViews(issue, answer);
+    const recorded = fixtureSeed("seedWholeIssue").loadRequests;
+    // Every request of the load but the first page of each of those view reads, in the order sent.
+    const counted = load.filter(
+      (request) => !extras.some((view) => treeReads([request], seeded.key, view) > 0)
+    );
     expect(
-      load.length - extras.reduce((sum, view) => sum + treeReads(load, seeded.key, view), 0),
+      counted.length,
       `each request beyond the fixture's count is one of R4's view reads for the seed: ${extras
         .map((view) => `view=${view}`)
+        .join(", ")}; past the fixture's ${recorded} the load sent ${counted
+        .slice(recorded)
+        .map((request) => `${request.method} ${request.path}`)
         .join(", ")}`
-    ).toBeLessThanOrEqual(fixtureSeed("seedWholeIssue").loadRequests);
+    ).toBeLessThanOrEqual(recorded);
     await openDetails(page);
     await expectLoadSettled(traffic);
     expect(

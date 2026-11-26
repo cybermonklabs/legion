@@ -18,7 +18,14 @@ import {
   type Preset,
 } from "../web/src/features/issue-page/page-words";
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
-import { getIssue, getIssueCoverage, getIssueEvents, listComments, listIssueAsks } from "./api";
+import {
+  dashboardOrigin,
+  getIssue,
+  getIssueCoverage,
+  getIssueEvents,
+  listComments,
+  listIssueAsks,
+} from "./api";
 import { seedSpineCases, seedWholeIssue } from "./issue-layout-seed";
 import { gotoIssue, phase, presetCount, presetToggle, presetToggles } from "./issue-page";
 import { expectIssuePageDrawn } from "./issue-page-g";
@@ -895,6 +902,29 @@ export async function editNoticesSent(key: string, traffic: ApiRequests): Promis
     })
     .toEqual([]);
   await expectLoadSettled(traffic);
+}
+
+/**
+ * Imports every architecture source of issue `key`'s project now, through the signed-in page's
+ * own request context (`POST /api/v1/projects/{key}/architecture-sources/sync`), so that each
+ * holds what the server's own import pass would find, and that pass sends no event while a row
+ * counts what the page sends. The pass re-imports every enabled source about every 5 minutes,
+ * the first at a moment drawn within 5 minutes of the server's start (`SyncInterval` and
+ * `duty.RunJittered`, `packages/envoy/internal/dispatch/architecture/ticker.go`), and it sends an
+ * event only where the source's state changes: `architecture.synced` for a changed model,
+ * `architecture.sync_failed` for a new failure (`importer.go`'s `Sync`). A seed that imports its
+ * source with the App installed and then takes the App away (`seedWholeIssue`) leaves that
+ * failure for the next pass to find, and the page answers its `architecture.sync_failed` by
+ * reading the project's architecture and its sources again (`api/event-refresh.ts`): two requests
+ * in whatever window of the row the pass lands in. This import records the failure, so the pass
+ * finds the same one and sends nothing; the event this import sends is in the log before its
+ * answer, and lands before the load (`seedEventsLanded`).
+ */
+export async function architectureSettled(page: Page, key: string): Promise<void> {
+  const { project } = await getIssue(key);
+  const path = `/api/v1/projects/${encodeURIComponent(project)}/architecture-sources/sync`;
+  const response = await page.request.post(path, { headers: { Origin: dashboardOrigin } });
+  expect(response.ok(), `POST ${path} answers ${response.status()}`).toBe(true);
 }
 
 /** Turns `filter` on and waits for its rows to hold still. */
