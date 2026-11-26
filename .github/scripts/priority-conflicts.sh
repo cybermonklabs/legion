@@ -20,28 +20,28 @@
 #   * any other event, a dispatched run: nothing lands from it, so it passes and reads nothing.
 #
 # What it is checked against: every open pull request labelled `priority` that is approved
-# (reviewDecision APPROVED) or in the merge queue, read in one call of GitHub's GraphQL API, whose
-# budget is apart from the REST one the rest of CI spends. A change whose every pull request carries
-# the label passes: priority pull requests are not held to each other. One of the change's own pull
-# requests is passed over, and so is a priority pull request whose squash commit is already in the
-# change's base: it has landed, or stands in a group in front of this one, and goes first whatever
-# this change holds.
+# (reviewDecision APPROVED) or in the merge queue, read through GitHub's GraphQL API, whose budget
+# is apart from the REST one the rest of CI spends, a page of 100 at a time until the last. A
+# change whose every pull request carries the label passes: priority pull requests are not held to
+# each other. One of the change's own pull requests is passed over.
 #
-# What counts as the change's conflict with one of them:
-#   1. The files the change edits (its base to its commit) and the files the priority pull request
-#      edits (its merge base with the change's base to its head), read with no rename detection,
-#      so a rename counts as the delete of its old path. No file in both: no conflict, and nothing
-#      is merged.
-#   2. Otherwise `git merge-tree --write-tree` of the change's commit with the priority head. A clean
-#      merge: no conflict.
-#   3. Otherwise the same merge of the change's base with the priority head. A file that
-#      conflicts in the first merge and not in the second is the change's conflict. A priority pull
-#      request that has fallen behind its base conflicts with every change built on that base in
-#      the files it already conflicts on, and those are its own to resolve when it merges the base,
-#      whatever lands next: counting them would fail every pull request of the repository while one
-#      priority pull request is stale. Where the first merge conflicts, the second is clean and git
-#      names no file (a conflict of a file's place, such as one a directory rename moved), the files
-#      of step 1 are named.
+# What counts as the change's conflict with one of them, P: the conflicts of the change with P as P
+# would land on the change's base, which are two git merge-tree runs.
+#   1. P merged into the change's base: `git merge-tree --write-tree <base> <P's head>`, with the
+#      merge base git finds. Its tree is P as it would land now, conflict markers and all where P
+#      already conflicts with the base.
+#   2. The change merged with that tree, over the change's base: `git merge-tree --write-tree
+#      --merge-base=<base> <change's commit> <a commit of that tree>`. Any conflict here is the
+#      change's, and fails the check, naming P and the files.
+# So a priority pull request that has fallen behind its base does not fail every change built on
+# that base in the conflicts it already has with it, which are its own to resolve when it merges
+# the base, whatever lands next: a change that edits apart from those conflicts merges cleanly with
+# the markers, and one that edits inside one, or adds a conflict anywhere else, does not. When P is
+# up to date with the base, step 1's tree is P's own and step 2 is the plain merge of the change
+# with P. A P whose squash commit is already in a merge group's base (it stands in a group in front)
+# lands as no change in step 1. Every path of the change is merged, so file/directory, rename and
+# delete conflicts count as content ones do. The conflicted files are git's list; where git's list
+# is empty, those its conflict messages name; a conflict that names none fails all the same.
 #
 # What it fetches: one fetch, of this public repository and with no credential, of the change's
 # commit and the head of each priority pull request left after the label read, with every commit
@@ -49,12 +49,13 @@
 # history, at whatever depth it lies below a head that has not merged main for weeks, so the fetch
 # is not shallow; git merge-tree fetches the contents of the files it merges as it needs them.
 # Main's whole history read that way was 16 MB and took 1.8 s from a development machine on
-# 2026-11-26. A run with no priority pull request to check fetches nothing.
+# 2026-11-26, and the job log prints the seconds the fetch and each pull request's merges took. A
+# run with no priority pull request to check fetches nothing.
 #
 # A read it could not make fails the check rather than pass it, saying what it could not read: a
 # label read GitHub refused at every attempt gh-read.sh's gh_read made, an answer that is not the
-# shape asked for or holds more than its one page of 100 pull requests, a fetch refused at every
-# attempt, a merge git could not run.
+# shape asked for, a fetch refused at every attempt, a merge git could not run or whose answer
+# could not be read.
 #
 # Its inputs, from the step's env:
 #   GITHUB_EVENT_NAME, GITHUB_EVENT_PATH  the event and the payload Actions wrote for it.
@@ -71,7 +72,7 @@
 # Its tests are in priority-conflicts.test.sh, which ci.yaml's test job runs.
 set -euo pipefail
 shopt -s inherit_errexit
-# sort and comm compare the NUL-separated path lists byte for byte.
+# sort compares the NUL-separated path lists byte for byte.
 export LC_ALL=C
 # shellcheck source=.github/scripts/gh-read.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
@@ -124,34 +125,55 @@ fi
 unread="so this check cannot tell whether $change conflicts with a priority pull request, and fails rather than pass unread"
 
 work=$(mktemp -d "$temp/priority-conflicts.XXXXXX")
-request="$work/request.json"
-answer="$work/answer.json"
-# shellcheck disable=SC2016 # $owner and $repo are GraphQL's and jq's variables
-jq -n --arg owner "${repository%%/*}" --arg repo "${repository#*/}" '{
-  operationName: "PriorityPulls",
-  query: "query PriorityPulls($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { pullRequests(states: OPEN, labels: [\"priority\"], first: 100) { pageInfo { hasNextPage } nodes { number title headRefOid reviewDecision isInMergeQueue } } } }",
-  variables: {owner: $owner, repo: $repo}}' > "$request"
-if ! gh_read gh api graphql --input "$request" > "$answer"; then
-  fail "GitHub's GraphQL API refused the read of the open pull requests labelled priority at every attempt, $unread"
-fi
+
+# The label read, a page at a time: each page's nodes are appended to $work/nodes, one JSON
+# object a line. A page that is not the shape asked for, or that says another page follows and
+# names no new cursor, fails the check.
+read -r -d '' query <<'GRAPHQL' || true
+query PriorityPulls($owner: String!, $repo: String!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequests(states: OPEN, labels: ["priority"], first: 100, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes { number title headRefOid reviewDecision isInMergeQueue }
+    }
+  }
+}
+GRAPHQL
 shape='.data.repository.pullRequests
-  | (.pageInfo.hasNextPage == false) and (.nodes | type == "array")
+  | (.pageInfo.hasNextPage | type == "boolean") and (.nodes | type == "array")
     and all(.nodes[]; (.number | type == "number") and (.title | type == "string")
       and (.headRefOid | type == "string" and test("^[0-9a-f]{40}$"))
       and (.reviewDecision == null or (.reviewDecision | type == "string"))
       and (.isInMergeQueue | type == "boolean"))'
-if ! jq -e "$shape" "$answer" > /dev/null 2>&1; then
-  if jq -e '.data.repository.pullRequests.pageInfo.hasNextPage == true' "$answer" > /dev/null 2>&1; then
-    fail "more than 100 open pull requests carry the label priority, more than the one page this check reads, $unread"
+: > "$work/nodes"
+after=null
+while :; do
+  jq -n --arg query "$query" --arg owner "${repository%%/*}" --arg repo "${repository#*/}" \
+    --argjson after "$after" \
+    '{operationName: "PriorityPulls", query: $query, variables: {owner: $owner, repo: $repo, after: $after}}' \
+    > "$work/request.json"
+  if ! gh_read gh api graphql --input "$work/request.json" > "$work/answer.json"; then
+    fail "GitHub's GraphQL API refused the read of the open pull requests labelled priority at every attempt, $unread"
   fi
-  fail "GitHub's GraphQL API answered the read of the open pull requests labelled priority in a shape this check does not read, $unread"
-fi
-# Each priority pull request: its number, title and head, and whether it is approved or queued.
-pulls=$(jq -c '[.data.repository.pullRequests.nodes[]
-  | {number, title, head: .headRefOid, landing: (.reviewDecision == "APPROVED" or .isInMergeQueue)}]' "$answer")
+  if ! jq -e "$shape" "$work/answer.json" > /dev/null 2>&1; then
+    fail "GitHub's GraphQL API answered the read of the open pull requests labelled priority in a shape this check does not read, $unread"
+  fi
+  jq -c '.data.repository.pullRequests.nodes[]' "$work/answer.json" >> "$work/nodes"
+  [ "$(jq -r '.data.repository.pullRequests.pageInfo.hasNextPage' "$work/answer.json")" = true ] || break
+  next=$(jq -c '.data.repository.pullRequests.pageInfo.endCursor' "$work/answer.json")
+  if [ "$next" = null ] || [ "$next" = "$after" ]; then
+    fail "GitHub's GraphQL API said another page of the open pull requests labelled priority follows, and named no new cursor for it, $unread"
+  fi
+  after=$next
+done
+# Each priority pull request, once, though a page boundary that moved between two reads lists it
+# twice: its number, title and head, and whether it is approved or queued.
+pulls=$(jq -s -c 'unique_by(.number)
+  | map({number, title, head: .headRefOid, landing: (.reviewDecision == "APPROVED" or .isInMergeQueue)})' \
+  "$work/nodes")
 
 is_priority() { jq -e --argjson number "$1" 'any(.[]; .number == $number)' <<<"$pulls" > /dev/null; }
-title_of() { jq -r --argjson number "$1" '.[] | select(.number == $number) | .title' <<<"$pulls"; }
+title_of() { jq -r --argjson number "$1" 'first(.[] | select(.number == $number) | .title)' <<<"$pulls"; }
 
 if [ "$event_name" = pull_request ] && is_priority "$number"; then
   echo "#$number carries the label priority, and priority pull requests are not held to each other: nothing to check."
@@ -177,9 +199,11 @@ heads=("$head")
 for candidate in "${candidates[@]}"; do
   heads+=("${candidate#* }")
 done
+started=$SECONDS
 if ! gh_read git -C "$repo" fetch --quiet --no-tags --filter=blob:none origin "${heads[@]}"; then
   fail "git could not fetch the commit of $change and the heads of the priority pull requests it is checked against from $server/$repository.git, $unread"
 fi
+echo "Fetched the commit of $change and ${#candidates[@]} priority head(s), with their history and no file contents, in $((SECONDS - started)) s."
 
 own=("$number")
 if [ "$event_name" = pull_request ]; then
@@ -219,27 +243,46 @@ names() {
   echo "${joined%, }"
 }
 
-# merged <ours> <theirs> <file>: git merge-tree of the two commits. Writes the files it leaves
-# conflicted to <file>, NUL-separated and sorted, and returns 0 for a clean merge, 1 for a
-# conflicted one and 2 when git could not merge them, with git's words on stderr. git answers 1
-# for a revision it cannot read too, so a merge counts only when its first field is a tree.
-merged() {
-  local status=0 fields=()
-  git -C "$repo" merge-tree --write-tree --name-only --no-messages -z "$1" "$2" > "$work/merge" 2> "$work/merge.err" || status=$?
-  mapfile -d '' -t fields < "$work/merge"
+# merge <out> <argument>...: `git merge-tree --write-tree --name-only -z <argument>...`. Writes
+# <out>.tree, the tree of the result, and <out>.files, the paths left in conflict, NUL-separated
+# and sorted: git's list of conflicted files, or where that is empty the paths its CONFLICT
+# messages name, each with the `~<commit>` git adds to a path it moves aside taken off. Returns 0
+# for a clean merge, 1 for a conflicted one and 2 when git could not merge or its answer could not
+# be read, with git's words on stderr. It is called where `set -e` does not reach inside it, so
+# every step returns 2 on its own failure.
+merge() {
+  local out=$1 status=0 fields=() i count kind
+  shift
+  git -C "$repo" merge-tree --write-tree --name-only -z "$@" > "$out" 2> "$out.err" || status=$?
+  mapfile -d '' -t fields < "$out" || return 2
+  # git answers 1 for a revision it cannot read too, so a merge counts only when its first field
+  # is a tree.
   if [ "$status" -gt 1 ] || ! [[ ${fields[0]:-} =~ ^[0-9a-f]{40}$ ]]; then
-    cat "$work/merge.err" >&2
+    cat "$out.err" >&2
     return 2
   fi
-  if [ "${#fields[@]}" -gt 1 ]; then
-    printf '%s\0' "${fields[@]:1}" | sort -z > "$3"
-  else
-    : > "$3"
+  printf '%s\n' "${fields[0]}" > "$out.tree" || return 2
+  : > "$out.files" || return 2
+  [ "$status" -eq 1 ] || return 0
+  # The conflicted paths, up to the empty field that ends their section; then the messages, each
+  # <count> <path>... <type> <text>.
+  for ((i = 1; i < ${#fields[@]} && ${#fields[i]} > 0; i++)); do
+    printf '%s\0' "${fields[i]}"
+  done > "$out.names" || return 2
+  if ! [ -s "$out.names" ]; then
+    for ((i++; i < ${#fields[@]}; i += count + 3)); do
+      count=${fields[i]}
+      [[ $count =~ ^[0-9]+$ ]] || return 2
+      kind=${fields[i + count + 1]:-}
+      if [[ $kind == CONFLICT* ]] && [ "$count" -gt 0 ]; then
+        printf '%s\0' "${fields[@]:i+1:count}"
+      fi
+    done > "$out.names" || return 2
   fi
-  return "$status"
+  sed -z -E 's/~[0-9a-f]{40}$//' "$out.names" | sort -z -u > "$out.files" || return 2
+  return 1
 }
 
-git -C "$repo" diff --no-renames --name-only -z "$base" "$head" | sort -z > "$work/change"
 checked=0
 conflicts=0
 for candidate in "${candidates[@]}"; do
@@ -250,42 +293,37 @@ for candidate in "${candidates[@]}"; do
     echo "$name is a pull request of $change itself."
     continue
   fi
-  if grep -qE "\(#$pull\)\$" <<<"$(git -C "$repo" log --format=%s "$base" "^$pull_head")"; then
-    echo "$name: its squash commit is already in the base of $change, so it lands first."
-    continue
-  fi
   checked=$((checked + 1))
-  merge_base=$(git -C "$repo" merge-base "$base" "$pull_head") ||
-    fail "$name shares no history with the base $base of $change, so git cannot merge the two, $unread"
-  git -C "$repo" diff --no-renames --name-only -z "$merge_base" "$pull_head" | sort -z > "$work/priority"
-  comm -z -12 "$work/change" "$work/priority" > "$work/both"
-  if ! [ -s "$work/both" ]; then
-    echo "$name edits no file $change edits."
-    continue
-  fi
+  started=$SECONDS
+  # Step 1: the priority pull request as it would land on the change's base.
   status=0
-  merged "$head" "$pull_head" "$work/ours" || status=$?
+  merge "$work/landed" "$base" "$pull_head" || status=$?
+  [ "$status" -le 1 ] || fail "git could not merge $name into the base $base of $change, $unread"
+  if [ "$status" -eq 1 ]; then
+    echo "$name already conflicts with the base of $change in $(tr -cd '\0' < "$work/landed.files" | wc -c) file(s): those are its own to resolve, and count against $change only where $change edits them too."
+  fi
+  landed=$(GIT_AUTHOR_NAME=priority-conflicts GIT_AUTHOR_EMAIL=priority-conflicts@localhost \
+    GIT_COMMITTER_NAME=priority-conflicts GIT_COMMITTER_EMAIL=priority-conflicts@localhost \
+    git -C "$repo" commit-tree -m "#$pull as it would land on $base" "$(cat "$work/landed.tree")") ||
+    fail "git could not write a commit of $name as it would land on the base of $change, $unread"
+  # Step 2: the change merged with it, over the change's base.
+  status=0
+  merge "$work/merged" --merge-base="$base" "$head" "$landed" || status=$?
   case $status in
     0)
-      echo "$name and $change both edit $(names "$work/both"), and merge cleanly."
-      continue
+      echo "$name: no conflict with $change ($((SECONDS - started)) s)."
       ;;
-    1) ;;
+    1)
+      conflicts=$((conflicts + 1))
+      if [ -s "$work/merged.files" ]; then
+        where="in $(names "$work/merged.files")"
+      else
+        where="in a conflict git names no file for"
+      fi
+      error "$change conflicts with priority pull request $name $where. A priority pull request merges first: wait for #$pull to merge, then $remedy."
+      ;;
     *) fail "git could not merge $change with $name, $unread" ;;
   esac
-  status=0
-  merged "$base" "$pull_head" "$work/before" || status=$?
-  [ "$status" -le 1 ] || fail "git could not merge the base $base of $change with $name, $unread"
-  comm -z -23 "$work/ours" "$work/before" > "$work/caused"
-  if ! [ -s "$work/caused" ]; then
-    if [ "$status" -eq 1 ]; then
-      echo "$name conflicts with $change only where it already conflicts with the base: $(names "$work/before"). Those are its own to resolve when it merges the base."
-      continue
-    fi
-    cp "$work/both" "$work/caused"
-  fi
-  conflicts=$((conflicts + 1))
-  error "$change conflicts with priority pull request $name in $(names "$work/caused"). A priority pull request merges first: wait for #$pull to merge, then $remedy."
 done
 
 [ "$conflicts" -eq 0 ] || exit 1

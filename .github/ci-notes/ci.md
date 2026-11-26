@@ -1573,12 +1573,20 @@ asked for exactly that: a blocking check that holds every other change to the pr
 requests all the time. The script's header says what it reads, what counts as a change's
 conflict, and why a read it could not make fails the check rather than pass it.
 
-The label is read live on every run, through one GraphQL read, and the check makes no Dispatch
-call: whoever keeps the label in step with the priorities moves it on the pull requests, and the
-next run reads it. Only a priority pull request that is approved or in the merge queue is held
-against other changes: one still in review may change much before it lands, and holding every
-other pull request to a head that may not merge would block work for nothing. A priority pull
-request is never held to another one.
+The label is read live on every run, through GraphQL, a page of 100 at a time, and the check makes
+no Dispatch call: whoever keeps the label in step with the priorities moves it on the pull
+requests, and the next run reads it. Only a priority pull request that is approved or in the merge
+queue is held against other changes: one still in review may change much before it lands, and
+holding every other pull request to a head that may not merge would block work for nothing. A
+priority pull request is never held to another one.
+
+A priority pull request that has fallen behind main does not fail every other change in the
+conflicts it already has with main. The plain merge of a change with such a head carries every one
+of those conflicts, and on 2026-11-26 the one approved priority pull request, #4156, conflicted
+with main in 304 files, so a check of the plain merge would have failed every pull request of the
+repository. The script merges the change instead with the priority pull request as it would land
+on the change's base, conflict markers and all, so a conflict counts only where the change edits
+what the priority pull request edits, inside one of its conflicts with main or anywhere else.
 
 Both events, because they answer two questions. On a pull request the check tells the author at
 once, at the push. The merge group is the gate: a pull request that passed before a priority pull
@@ -1589,8 +1597,8 @@ files, and the remedy: wait for it to merge, then merge main and resolve the con
 
 What it costs: one ubuntu-24.04-arm job on every pull request push and every merge group, which
 is a standard runner of a public repository and bills nothing. Its timeout is 10 minutes; it
-fetches only when a priority pull request is approved or queued, and merges only where the two
-changes edit one file.
+fetches only when a priority pull request is approved or queued, and runs two git merge-tree
+merges for each.
 
 ## What the priority-conflicts job's scopes are for
 
