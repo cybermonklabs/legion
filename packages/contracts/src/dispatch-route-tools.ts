@@ -277,7 +277,7 @@ export const dispatchRouteToolSpecs = [
     },
     example: { markdown: "# Notes\n\n- one\n" },
     description:
-      "Show the markdown Dispatch would store for a text: the parse and the render every write of a whole document makes. It writes nothing. Use it to see whether a text keeps its spelling before you upload it as a document.",
+      "Show the markdown Dispatch would store for a text, or the refusal every upload of the text as a document makes: the checks, the parse and the render an upload of a markdown document makes of the text alone. It writes nothing. Use it to see whether a text keeps its spelling before you upload it as a document.",
     arguments: (z) => ({
       markdown: z.string().describe("The text to store as a document's markdown."),
     }),

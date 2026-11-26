@@ -697,7 +697,7 @@ var DispatchTools = []DispatchTool{
 	{
 		Name:        "dispatch_check_markdown",
 		Label:       ToolLabel{Kind: "read", Verb: "check", Present: "Checking how Dispatch stores a text", Past: "Checked how Dispatch stores a text"},
-		Description: "Show the markdown Dispatch would store for a text: the parse and the render every write of a whole document makes. It writes nothing. Use it to see whether a text keeps its spelling before you upload it as a document.",
+		Description: "Show the markdown Dispatch would store for a text, or the refusal every upload of the text as a document makes: the checks, the parse and the render an upload of a markdown document makes of the text alone. It writes nothing. Use it to see whether a text keeps its spelling before you upload it as a document.",
 		Arguments: []ToolField{
 			{Name: "markdown", Kind: ToolFieldString, Required: true, Description: "The text to store as a document's markdown."},
 		},
