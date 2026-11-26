@@ -216,9 +216,11 @@ func readOnlyPersonalTokens(t *testing.T, rig *brokerTokenRig) []readOnlyWalkTok
 // empty where the row's handler runs: READ_ONLY_TOKEN on every row that is not a read, every
 // write among them; AS_OF_TOKEN_NOT_SERVED on every read but GET /api/v1/whoami and GET
 // /api/v2/me for a token that carries a cut; OAUTH_SCOPE_REQUIRED on a read whose scopes the
-// token's credential does not hold. The class is read from readClasses and not from the row
-// (apiRoute.Read), so a table routes() stamped wrong fails the walks rather than agreeing with the
-// gate.
+// token's credential does not hold, the scopes of an authority rule the probe meets among them: the
+// probe names no query key, so a rule that holds for a key's absence (a list form that names no
+// slug) holds for it, as gateV2Authorities holds it. The class is read from readClasses and not
+// from the row (apiRoute.Read), so a table routes() stamped wrong fails the walks rather than
+// agreeing with the gate.
 func readOnlyAnswer(route apiRoute, token readOnlyWalkToken) string {
 	name := route.Method + " " + route.Pattern
 	switch {
@@ -230,6 +232,16 @@ func readOnlyAnswer(route apiRoute, token readOnlyWalkToken) string {
 	for _, scope := range route.OAuthScopes {
 		if !token.credential.Holds(scope) {
 			return readWalkScopeCode
+		}
+	}
+	for _, rule := range route.Authorities {
+		if !rule.Absent {
+			continue
+		}
+		for _, scope := range rule.Scopes {
+			if !token.credential.Holds(scope) {
+				return readWalkScopeCode
+			}
 		}
 	}
 	return ""

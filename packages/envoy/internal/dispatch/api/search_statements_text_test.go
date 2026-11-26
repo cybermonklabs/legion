@@ -7,24 +7,25 @@ import (
 	"testing"
 )
 
-// searchStatementsAtBase holds the statements base ceb11fc9 composed, by the variable that names
-// each: the text main runs since its visibility predicate (#3178) entered every search statement
-// and #3512 dated a comment and a message by their edit (coalesce(edited_at, created_at)).
-const searchStatementsAtBase = "testdata/search-statements-ceb11fc9.json"
+// searchStatementsAtBase holds the statements base 5d3e9b84 composed, by the variable that names
+// each: the text main runs since its visibility predicate (#3178) entered every search statement,
+// #3512 dated a comment and a message by their edit (coalesce(edited_at, created_at)) and #3125
+// cut each headline from the text window it selects beside it (src.text).
+const searchStatementsAtBase = "testdata/search-statements-5d3e9b84.json"
 
 // A search that binds no `to` - every /api/v1 search, of one project or of every project, and a
 // /api/v2 search naming no to - and every related-item check run the statements whose plans were
 // measured (searchProjectScope, searchMeaningCommentArmJoined): byte for byte the text base
-// ceb11fc9 composed, which testdata holds as that base's own code wrote it. The date filter's end
+// 5d3e9b84 composed, which testdata holds as that base's own code wrote it. The date filter's end
 // and the opener member that binds it are in the statements a `to` binds alone (searchWindow).
 func TestTheStatementsOfASearchWithNoToAreTheTextOfItsBase(t *testing.T) {
 	data, err := os.ReadFile(searchStatementsAtBase)
 	if err != nil {
-		t.Fatalf("read the statements of ceb11fc9: %v", err)
+		t.Fatalf("read the statements of 5d3e9b84: %v", err)
 	}
 	var atBase map[string]string
 	if err := json.Unmarshal(data, &atBase); err != nil {
-		t.Fatalf("decode the statements of ceb11fc9: %v", err)
+		t.Fatalf("decode the statements of 5d3e9b84: %v", err)
 	}
 	for name, statement := range map[string]string{
 		"searchQuery":                        searchQuery,
@@ -45,7 +46,7 @@ func TestTheStatementsOfASearchWithNoToAreTheTextOfItsBase(t *testing.T) {
 			t.Fatalf("%s holds no text of %s", searchStatementsAtBase, name)
 		}
 		if statement != base {
-			t.Errorf("%s is not the text ceb11fc9 ran (%s)", name, firstDifference(statement, base))
+			t.Errorf("%s is not the text 5d3e9b84 ran (%s)", name, firstDifference(statement, base))
 		}
 	}
 }
@@ -60,5 +61,5 @@ func firstDifference(got, want string) string {
 	excerpt := func(text string) string {
 		return text[at:min(len(text), at+80)]
 	}
-	return fmt.Sprintf("from byte %d: %q where ceb11fc9 has %q", at, excerpt(got), excerpt(want))
+	return fmt.Sprintf("from byte %d: %q where 5d3e9b84 has %q", at, excerpt(got), excerpt(want))
 }
