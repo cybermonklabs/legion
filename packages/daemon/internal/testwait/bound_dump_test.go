@@ -45,9 +45,13 @@ func TestAWaitOfItsOwnBoundedByTestwaitPrintsTheStacks(t *testing.T) {
 		return stdout.String(), err
 	}
 
-	for _, row := range []struct{ name, text, function string }{
-		{"fails", ": the fact never came within the bound Bounded gave the wait", ".awaitWithItsOwnText("},
-		{"context", ": the call under testwait.Context ended: context deadline exceeded", ".awaitUnderTheContext("},
+	for _, row := range []struct{ name, forcing, text, bound, function string }{
+		{"fails", "the wait's bound ends two seconds after the child began", ": the fact never came within the bound Bounded gave the wait",
+			"testwait.Bounded gave at bound_dump_test.go:", ".awaitWithItsOwnText("},
+		{"context", "the wait's bound ends two seconds after the child began", ": the call under testwait.Context ended: context deadline exceeded",
+			"testwait.Context gave at bound_dump_test.go:", ".awaitUnderTheContext("},
+		{"span", "the wait's own span of 10s ends before the deadline", ": the fact never came within the wait's own 10s",
+			"the bound of 10s testwait.Bounded gave at bound_dump_test.go:", ".awaitWithItsOwnSpan("},
 	} {
 		out, err := run(row.name)
 		var exit *exec.ExitError
@@ -55,20 +59,25 @@ func TestAWaitOfItsOwnBoundedByTestwaitPrintsTheStacks(t *testing.T) {
 			t.Errorf("the %s child = %v, want exit status 1", row.name, err)
 			continue
 		}
-		if !strings.Contains(out, "forcing fired: the wait's bound ends two seconds after the child began, and the fact never comes") {
+		if !strings.Contains(out, "forcing fired: "+row.forcing+", and the fact never comes") {
 			t.Errorf("the %s child logged no line that its forcing fired", row.name)
 		}
 		output := strings.Split(out, "\n")
-		failure := slices.IndexFunc(output, func(line string) bool { return strings.HasSuffix(line, row.text) })
-		header := slices.IndexFunc(output, func(line string) bool {
-			return strings.Contains(line, "testwait: TestABoundedWaitChild: the goroutine stacks 1s before the bound the test's wait took from testwait ended: ")
+		index := func(holds func(string) bool) int { return slices.IndexFunc(output, holds) }
+		failure := index(func(line string) bool { return strings.HasSuffix(line, row.text) })
+		header := index(func(line string) bool {
+			return strings.Contains(line, "testwait: TestABoundedWaitChild: the goroutine stacks read at ") && strings.Contains(line, row.bound)
 		})
-		end := slices.IndexFunc(output, func(line string) bool {
+		end := index(func(line string) bool {
 			return strings.Contains(line, "testwait: TestABoundedWaitChild: end of the goroutine stacks: ")
 		})
-		failed := slices.IndexFunc(output, func(line string) bool { return strings.HasPrefix(line, "--- FAIL: TestABoundedWaitChild (") })
-		if failure < 0 || header < failure || end < header || failed < end {
-			t.Errorf("the %s child's output holds no goroutine stacks after its wait's own failure (line %d) and before its --- FAIL line (line %d): their first line at %d, their last at %d", row.name, failure, failed, header, end)
+		ended := index(func(line string) bool {
+			return strings.Contains(line, "testwait: TestABoundedWaitChild: the test ended failed at ")
+		})
+		failed := index(func(line string) bool { return strings.HasPrefix(line, "--- FAIL: TestABoundedWaitChild (") })
+		if failure < 0 || header < failure || end < header || ended < end || failed < ended {
+			t.Errorf("the %s child's output holds no goroutine stacks naming %q after its wait's own failure (line %d) and before its --- FAIL line (line %d): their first line at %d, their last at %d, the test's end at %d",
+				row.name, row.bound, failure, failed, header, end, ended)
 			continue
 		}
 		stacks := output[header:end]
@@ -96,9 +105,10 @@ func TestAWaitOfItsOwnBoundedByTestwaitPrintsTheStacks(t *testing.T) {
 // TestABoundedWaitChild is the child of TestAWaitOfItsOwnBoundedByTestwaitPrintsTheStacks. Its
 // "fails" row starts a goroutine that holds the fact back and waits, from awaitWithItsOwnText, for
 // the bound Bounded gives to end, then fails with its own text; its "context" row does the same
-// from awaitUnderTheContext, under a context from Context whose deadline is planted. Its "passes"
-// row's fact is there at once, and it runs on past its bound's end before it passes. It runs only
-// when the parent re-executes this binary.
+// from awaitUnderTheContext, under a context from Context whose deadline is planted; its "span"
+// row does the same from awaitWithItsOwnSpan, with a span of 10 s that ends before the deadline.
+// Its "passes" row's fact is there at once, and it runs on past its bound's end before it passes.
+// It runs only when the parent re-executes this binary.
 func TestABoundedWaitChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
 		t.Skip(childEnv + " is not set: this test is the child of TestAWaitOfItsOwnBoundedByTestwaitPrintsTheStacks")
@@ -108,20 +118,23 @@ func TestABoundedWaitChild(t *testing.T) {
 		t.Fatalf("the child reads the spare its parent names in %s: %v", boundSpareEnv, err)
 	}
 	deadline, _ := t.Deadline()
-	holdBack := func() {
+	holdBack := func(forcing string) {
 		started, release := make(chan struct{}), make(chan struct{})
 		t.Cleanup(func() { close(release) })
 		go holdsTheBoundedFactBack(started, release)
 		<-started
-		t.Log("forcing fired: the wait's bound ends two seconds after the child began, and the fact never comes")
+		t.Log("forcing fired: " + forcing + ", and the fact never comes")
 	}
 	switch row := os.Getenv(boundRowEnv); row {
 	case "fails":
-		holdBack()
+		holdBack("the wait's bound ends two seconds after the child began")
 		awaitWithItsOwnText(t, spare, make(chan struct{}))
 	case "context":
-		holdBack()
+		holdBack("the wait's bound ends two seconds after the child began")
 		awaitUnderTheContext(t, Context(plantedDeadline{t, time.Now().Add(margin + 2*time.Second)}))
+	case "span":
+		holdBack("the wait's own span of 10s ends before the deadline")
+		awaitWithItsOwnSpan(t, make(chan struct{}))
 	case "passes":
 		came := make(chan struct{}, 1)
 		came <- struct{}{}
@@ -141,6 +154,18 @@ func awaitWithItsOwnText(t *testing.T, spare time.Duration, came <-chan struct{}
 	case <-came:
 	case <-time.After(Bounded(t, 1<<60, spare)):
 		t.Fatal("the fact never came within the bound Bounded gave the wait")
+	}
+}
+
+// awaitWithItsOwnSpan waits for came for a span of its own, 10 s, which Bounded clamps to the
+// deadline less a second only when that is sooner, and fails t with its own text when the span
+// ends first.
+func awaitWithItsOwnSpan(t *testing.T, came <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-came:
+	case <-time.After(Bounded(t, 10*time.Second, time.Second)):
+		t.Fatal("the fact never came within the wait's own 10s")
 	}
 }
 

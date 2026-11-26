@@ -49,6 +49,6 @@ func Remaining(t *testing.T) time.Duration {
 		printStacks(t, stacks)
 		t.FailNow()
 	}
-	watchBound(t, deadline.Add(-giveUpMargin))
+	watchBound(t, "Remaining", deadline.Add(-giveUpMargin), false)
 	return left - giveUpMargin
 }

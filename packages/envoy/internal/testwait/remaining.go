@@ -23,7 +23,7 @@ const unbounded = time.Duration(1 << 60)
 // binary has printed them.
 func Remaining(t *testing.T, spare time.Duration) time.Duration {
 	t.Helper()
-	left, err := Left(t, spare)
+	left, err := leftOf(t, spare, "Remaining")
 	if err != nil {
 		stacks := stacksFor(t.Name(), true)
 		_, _ = os.Stderr.WriteString(err.Error() + "\n")
@@ -41,6 +41,11 @@ func Remaining(t *testing.T, spare time.Duration) time.Duration {
 // deadline less spare, which is watched (watchBound): a test that fails after its wait gave up
 // there prints the goroutine stacks as that moment came.
 func Left(t *testing.T, spare time.Duration) (time.Duration, error) {
+	return leftOf(t, spare, "Left")
+}
+
+// leftOf is Left, its watched bound named as fn gave it.
+func leftOf(t *testing.T, spare time.Duration, fn string) (time.Duration, error) {
 	deadline, bounded := t.Deadline()
 	if !bounded {
 		return unbounded, nil
@@ -50,7 +55,7 @@ func Left(t *testing.T, spare time.Duration) (time.Duration, error) {
 		timeout, known := binaryTimeout()
 		return 0, errors.New(oneLine.Replace("testwait: " + t.Name() + ": " + spent(left, spare, timeout, known)))
 	}
-	watchBound(t, deadline.Add(-spare))
+	watchBound(t, fn, deadline.Add(-spare), false)
 	return left - spare, nil
 }
 

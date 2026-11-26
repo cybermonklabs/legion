@@ -4,6 +4,9 @@
 package testwait
 
 import (
+	"fmt"
+	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -14,41 +17,75 @@ import (
 )
 
 // A wait with a failure text of its own that takes its bound from Bounded, Remaining, Left or
-// Context gives up when that bound ends, at the test binary's deadline less a spare, and its
-// caller fails the test with its own text: this package never sees that give-up. So the bound
-// watches its own end (watchBound): readLead before that moment, if the test still runs, the
-// goroutine stacks are read, the goroutine that took the bound first, and when the test fails
-// they are printed after its failure, as its test ends. A test that passes prints nothing, however
-// late it ran, and a test whose own give-up of this package printed stacks (gaveUp) prints no
-// second dump. A bound that ends before the deadline less its spare, a span of the caller's own
-// (Bounded's bound when it is the shorter), is no deadline and is not watched.
+// Context gives up when that bound ends, and its caller fails the test with its own text: this
+// package never sees that give-up. So each bound watches its own end (watchBound): a little before
+// it, if the test still runs, the goroutine stacks are read, the goroutine that took the bound
+// first. When the test ends failed they are printed after its failure, with when they were read,
+// which bound they belong to, and when the test ended, so a reader can tell stacks of the failing
+// wait from those of a wait that ended earlier in a test that failed later. A test that passes
+// prints nothing, a test whose own give-up printed stacks (gaveUp) prints no second dump, and a
+// test prints one dump at most: the latest reading.
+//
+// A bound is one of two kinds. One that ends at the test binary's deadline less a spare
+// (Remaining's, Left's, Context's, and Bounded's when that clamp is the sooner) is watched at that
+// moment, once per moment. A span of the caller's own (Bounded's bound when it is the sooner) is
+// watched at its end, one span per test: a span taken later replaces one not yet ended, so a loop
+// that takes a fresh span each time round is read only once it stops taking them, and a test
+// whose waits each end in time pays for one reading at most, at the end of its last span.
 
-// readLead is how long before a watched bound ends its stacks are read: long enough that the
-// reading still finds the waiting goroutine in its wait, which ends at that moment, on a machine
-// that runs the watch's timer late; short enough that a wait that is still waiting then is all
-// but certain to give up. A test whose fact comes in that second passes, and its reading is
-// dropped.
+// readLead is how long before a bound that ends at the deadline its stacks are read, and the most
+// a span's are: long enough that the reading still finds the waiting goroutine in its wait on a
+// machine that runs the watch's timer late; short enough that a wait still waiting then is all but
+// certain to give up. A span's lead is a quarter of the span when that is less. A test whose fact
+// comes inside the lead passes, and its reading is dropped.
 const readLead = time.Second
 
-// watches is the watch of each running test that took a watched bound, by the test's name.
+// watches is the watch of each running test that took a bound, by the test's name.
 var watches sync.Map
 
-// watch is one test's: a timer for each moment its bounds end at, the stacks read at the first of
-// those to come, whether a give-up of the test printed stacks itself, and whether the test ended.
+// watch is one test's: a timer for each deadline moment its bounds end at and one for its latest
+// span, the bounds it watches, the latest reading and when it was read, whether a give-up of the
+// test printed stacks itself, and whether the test ended.
 type watch struct {
 	mu      sync.Mutex
 	timers  map[time.Time]*time.Timer
+	span    *time.Timer
 	ends    []bound
 	stacks  string
+	readAt  time.Time
 	printed bool
 	ended   bool
 }
 
-// watchBound watches the bound a wait of t took from this package, which ends at at (see the
-// comment above). A bound that ended before the wait took it, as every bound does after the
-// margin, is the side effect of what used the deadline up: its stacks are read only when no
-// give-up of the test binary has printed any (stacksPrinted).
-func watchBound(t testing.TB, at time.Time) {
+// bound is one bound a wait of the test took: the function that gave it, the line outside this
+// package that called it, when the wait took it and when it ends, whether it is a span of the
+// caller's own, and whether it had ended when the wait took it.
+type bound struct {
+	fn         string
+	site       string
+	took, at   time.Time
+	span       bool
+	spentTaken bool
+}
+
+// String names the bound for a reader of the stacks.
+func (b bound) String() string {
+	return fmt.Sprintf("the bound of %s testwait.%s gave at %s at %s, which ends at %s",
+		b.at.Sub(b.took).Round(time.Millisecond), b.fn, b.site, clockOf(b.took), clockOf(b.at))
+}
+
+// clockOf is t as a reader of a log compares it with the log's own times: UTC, to the millisecond.
+func clockOf(t time.Time) string {
+	return t.UTC().Format("15:04:05.000Z")
+}
+
+// watchBound watches the bound function fn gave a wait of t, which ends at at; span says it is a
+// span of the caller's own rather than the deadline less a spare (see the comment above). A
+// deadline bound that ended before the wait took it, as every one does after the margin, is the
+// side effect of what used the deadline up: its stacks are read only when no give-up of the test
+// binary has printed any (stacksPrinted).
+func watchBound(t testing.TB, fn string, at time.Time, span bool) {
+	took := time.Now()
 	value, loaded := watches.LoadOrStore(t.Name(), &watch{timers: map[time.Time]*time.Timer{}})
 	w := value.(*watch)
 	if !loaded {
@@ -56,66 +93,84 @@ func watchBound(t testing.TB, at time.Time) {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if _, armed := w.timers[at]; armed || w.ended {
+	if w.ended {
 		return
 	}
-	name, waiter, spent := t.Name(), goroutineID(), !time.Now().Before(at)
-	w.ends = append(w.ends, bound{at: at, spent: spent})
-	w.timers[at] = time.AfterFunc(time.Until(at.Add(-readLead)), func() {
-		w.read(name, waiter, spent, readLead.String()+" before the bound the test's wait took from testwait ended")
+	if _, armed := w.timers[at]; armed && !span {
+		return
+	}
+	b := bound{fn: fn, site: callSite(), took: took, at: at, span: span, spentTaken: !took.Before(at)}
+	lead := readLead
+	if span {
+		lead = min(readLead, at.Sub(took)/4)
+	}
+	name, waiter := t.Name(), goroutineID()
+	timer := time.AfterFunc(time.Until(at.Add(-lead)), func() {
+		w.read(name, waiter, b, lead.String()+" before the end of "+b.String())
 	})
+	if span {
+		if w.span != nil {
+			w.span.Stop()
+		}
+		w.span = timer
+		w.ends = slices.DeleteFunc(w.ends, func(e bound) bool { return e.span })
+	} else {
+		w.timers[at] = timer
+	}
+	w.ends = append(w.ends, b)
 }
 
-// bound is a moment a watched bound ends at, and whether it had ended when the wait took it.
-type bound struct {
-	at    time.Time
-	spent bool
-}
-
-// read reads the goroutine stacks, waiter's first, unless the watch has a reading already, its
-// test printed stacks itself, the test ended, or the bound was spent and a give-up of the binary
-// has printed stacks.
-func (w *watch) read(name string, waiter int, spent bool, when string) {
+// read reads the goroutine stacks, waiter's first, in place of any earlier reading, unless its
+// test printed stacks itself, the test ended, or b is a deadline bound that was spent and a
+// give-up of the binary has printed stacks. when says which moment and bound the reading is of.
+func (w *watch) read(name string, waiter int, b bound, when string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.stacks != "" || w.printed || w.ended || (spent && stacksPrinted.Load()) {
+	if w.printed || w.ended || (b.spentTaken && stacksPrinted.Load()) {
 		return
 	}
 	dump, found := tracesFrom(waiter)
 	if !found {
 		when += " (the goroutine that took the bound had returned, so the first stack is the watch's own)"
 	}
-	w.stacks = dumpStacks(name, when, dump)
+	w.readAt = time.Now()
+	w.stacks = dumpStacks(name, "read at "+clockOf(w.readAt)+", "+when, dump)
 }
 
-// end stops t's watch as t ends and, when t failed, prints the stacks it read. When a bound has
-// ended with no reading, its timer late beyond readLead, the stacks are read now, from the test's
-// own goroutine; if every bound that ended was spent, only when no give-up has printed any.
+// end stops t's watch as t ends and, when t failed, prints the latest reading, then a line with
+// when the test ended. When a bound has ended and nothing was read, its timer late beyond its
+// lead, the stacks are read now, from the test's own goroutine, as of the latest bound that ended.
 func (w *watch) end(t testing.TB) {
 	failed := t.Failed()
 	w.mu.Lock()
 	for _, timer := range w.timers {
 		timer.Stop()
 	}
-	ended, spent := false, true
-	for _, b := range w.ends {
-		if !time.Now().Before(b.at) {
-			ended, spent = true, spent && b.spent
+	if w.span != nil {
+		w.span.Stop()
+	}
+	var late *bound
+	if w.stacks == "" && !w.printed {
+		for i := range w.ends {
+			if !time.Now().Before(w.ends[i].at) && (late == nil || w.ends[i].at.After(late.at)) {
+				late = &w.ends[i]
+			}
 		}
 	}
-	late := ended && !w.printed && w.stacks == ""
 	w.mu.Unlock()
-	if failed && late {
-		w.read(t.Name(), goroutineID(), spent, "as the test ended, after the bound its wait took from testwait ended")
+	if failed && late != nil {
+		w.read(t.Name(), goroutineID(), *late, "as the test ended, after the end of "+late.String())
 	}
 	w.mu.Lock()
 	w.ended = true
-	stacks, printed := w.stacks, w.printed
+	stacks, readAt, printed := w.stacks, w.readAt, w.printed
 	w.mu.Unlock()
 	watches.CompareAndDelete(t.Name(), w)
 	if failed && stacks != "" && !printed {
 		stacksPrinted.Store(true)
-		printStacks(t, stacks)
+		now := time.Now()
+		printStacks(t, stacks+fmt.Sprintf("testwait: %s: the test ended failed at %s, %s after those stacks were read\n",
+			t.Name(), clockOf(now), now.Sub(readAt).Round(time.Millisecond)))
 	}
 }
 
@@ -127,6 +182,25 @@ func markPrinted(name string) {
 		w.mu.Lock()
 		w.printed = true
 		w.mu.Unlock()
+	}
+}
+
+// thisPackage is the prefix of this package's functions' names, read from one of them.
+var thisPackage = strings.TrimSuffix(runtime.FuncForPC(reflect.ValueOf(clockOf).Pointer()).Name(), "clockOf")
+
+// callSite is the file and line of the call that took a bound: the first frame of the caller's
+// stack outside this package's own files (its tests count as callers).
+func callSite() string {
+	pcs := make([]uintptr, 32)
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs)])
+	for {
+		frame, more := frames.Next()
+		if !strings.HasPrefix(frame.Function, thisPackage) || strings.HasSuffix(frame.File, "_test.go") {
+			return filepath.Base(frame.File) + ":" + strconv.Itoa(frame.Line)
+		}
+		if !more {
+			return "an unknown line"
+		}
 	}
 }
 

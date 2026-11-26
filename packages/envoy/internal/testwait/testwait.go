@@ -55,16 +55,17 @@ func Eventually(t *testing.T, what string, condition func() bool) {
 // Bounded is bound, or what is left of the test binary's own deadline less spare when that is
 // sooner, so a -timeout smaller than bound still reports the wait rather than the binary's panic.
 // Eventually is Bounded of a minute and a second; a wait with a span or a spare of its own takes
-// those. spare is the caller's, not this package's margin. When what is left is the sooner, the
-// bound ends at the deadline less spare and is watched (watchBound): a test that fails after its
-// wait gave up there prints the goroutine stacks as that moment came.
+// those. spare is the caller's, not this package's margin. The bound it gives is watched
+// (watchBound): a test that fails after its wait gave up at that bound's end prints the goroutine
+// stacks as that end came.
 func Bounded(t *testing.T, bound, spare time.Duration) time.Duration {
 	if testDeadline, ok := t.Deadline(); ok {
 		if left := time.Until(testDeadline) - spare; left < bound {
-			bound = left
-			watchBound(t, testDeadline.Add(-spare))
+			watchBound(t, "Bounded", testDeadline.Add(-spare), false)
+			return left
 		}
 	}
+	watchBound(t, "Bounded", time.Now().Add(bound), true)
 	return bound
 }
 
@@ -176,7 +177,7 @@ func Context(t *testing.T) context.Context {
 		t.Cleanup(cancel)
 		return ctx
 	}
-	watchBound(t, end)
+	watchBound(t, "Context", end, false)
 	ctx, cancel := context.WithDeadline(context.Background(), end)
 	t.Cleanup(cancel)
 	return ctx

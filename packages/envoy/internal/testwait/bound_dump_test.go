@@ -14,16 +14,18 @@ import (
 // boundRowEnv names, to TestABoundedWaitChild, which of its rows to run.
 const boundRowEnv = "TESTWAIT_BOUND_ROW"
 
-// A wait with a failure text of its own, whose bound is Bounded's clamp to the test binary's
-// deadline less a spare, shows a reader where it waited: after the test fails with the wait's own
-// text, the test's output carries the goroutine stacks read just before that bound ended, the
-// waiting goroutine's first, naming the function that waited, then the goroutine the test started
-// that holds the fact back. A test that passes prints none, though its bound's end came while it
-// still ran. Each child runs under the -timeout this test's deadline leaves (childTimeout), and its
-// wait asks for all but two seconds of it as spare, so its bound ends two seconds after the child
-// began its tests, whenever the machine runs it. This row's file uses only what the package had
-// before the bounds were watched, so the same row run at a commit without them fails by name. It
-// logs each child's whole output.
+// A wait with a failure text of its own, whose bound comes from Bounded, shows a reader where it
+// waited: after the test fails with the wait's own text, the test's output carries the goroutine
+// stacks read just before that bound ended, the waiting goroutine's first, naming the function that
+// waited, then the goroutine the test started that holds the fact back, under a line that names
+// the bound by the line that took it, and then a line with when the test ended. That holds for a
+// bound that is Bounded's clamp to the test binary's deadline less a spare, and for a span of the
+// wait's own, 10 s, that ends first. A test that passes prints none, though its bound's end came
+// while it still ran. Each child runs under the -timeout this test's deadline leaves
+// (childTimeout); a clamped wait asks for all but two seconds of it as spare, so its bound ends two
+// seconds after the child began its tests, whenever the machine runs it. This row's file uses only
+// what the package had before the bounds were watched, so the same row run at a commit without
+// them fails by name. It logs each child's whole output.
 func TestAWaitOfItsOwnBoundedByTestwaitPrintsTheStacks(t *testing.T) {
 	timeout := childTimeout(t)
 	spare := timeout - 2*time.Second
@@ -41,40 +43,25 @@ func TestAWaitOfItsOwnBoundedByTestwaitPrintsTheStacks(t *testing.T) {
 		return stdout.String(), err
 	}
 
-	out, err := run("fails")
-	var exit *exec.ExitError
-	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
-		t.Fatalf("the failing child = %v, want exit status 1", err)
-	}
-	if !strings.Contains(out, "forcing fired: the wait's bound ends two seconds after the child began, and the fact never comes") {
-		t.Error("the failing child logged no line that its forcing fired")
-	}
-	output := strings.Split(out, "\n")
-	failure := slices.IndexFunc(output, func(line string) bool {
-		return strings.HasSuffix(line, ": the fact never came within the bound Bounded gave the wait")
-	})
-	header := slices.IndexFunc(output, func(line string) bool {
-		return strings.Contains(line, "testwait: TestABoundedWaitChild: the goroutine stacks 1s before the bound the test's wait took from testwait ended: ")
-	})
-	end := slices.IndexFunc(output, func(line string) bool {
-		return strings.Contains(line, "testwait: TestABoundedWaitChild: end of the goroutine stacks: ")
-	})
-	failed := slices.IndexFunc(output, func(line string) bool { return strings.HasPrefix(line, "--- FAIL: TestABoundedWaitChild (") })
-	if failure < 0 || header < failure || end < header || failed < end {
-		t.Fatalf("the failing child's output holds no goroutine stacks after its wait's own failure (line %d) and before its --- FAIL line (line %d): their first line at %d, their last at %d", failure, failed, header, end)
-	}
-	stacks := output[header:end]
-	waiting, _, _ := strings.Cut(strings.Join(stacks[1:], "\n"), "\n    \n")
-	for _, frame := range []struct{ in, function, why string }{
-		{waiting, ".awaitWithItsOwnText(", "the waiting goroutine's stack, first, names the function that waited"},
-		{strings.Join(stacks, "\n"), ".holdsTheBoundedFactBack(", "the stacks name the goroutine the test started that holds the fact back"},
+	for _, row := range []struct{ name, forcing, text, bound, function string }{
+		{"fails", "the wait's bound ends two seconds after the child began", ": the fact never came within the bound Bounded gave the wait",
+			"testwait.Bounded gave at bound_dump_test.go:", ".awaitWithItsOwnText("},
+		{"span", "the wait's own span of 10s ends before the deadline", ": the fact never came within the wait's own 10s",
+			"the bound of 10s testwait.Bounded gave at bound_dump_test.go:", ".awaitWithItsOwnSpan("},
 	} {
-		if !strings.Contains(frame.in, frame.function) {
-			t.Errorf("%s: no frame %s in:\n%s", frame.why, frame.function, frame.in)
+		out, err := run(row.name)
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			t.Errorf("the %s child = %v, want exit status 1", row.name, err)
+			continue
 		}
+		if !strings.Contains(out, "forcing fired: "+row.forcing+", and the fact never comes") {
+			t.Errorf("the %s child logged no line that its forcing fired", row.name)
+		}
+		requireStacksAfter(t, row.name, out, row.text, row.bound, row.function)
 	}
 
-	out, err = run("passes")
+	out, err := run("passes")
 	if err != nil || !strings.Contains(out, "--- PASS: TestABoundedWaitChild (") {
 		t.Fatalf("the passing child = %v, want a pass", err)
 	}
@@ -86,10 +73,45 @@ func TestAWaitOfItsOwnBoundedByTestwaitPrintsTheStacks(t *testing.T) {
 	}
 }
 
+// requireStacksAfter fails t unless out, the output of TestABoundedWaitChild's row named row, holds
+// after the failure line that ends with text, and before the row's --- FAIL line, the goroutine
+// stacks: a first line naming the bound (bound), a first stack naming function, a stack of
+// holdsTheBoundedFactBack, a last line, and then the line that says when the test ended.
+func requireStacksAfter(t *testing.T, row, out, text, bound, function string) {
+	t.Helper()
+	output := strings.Split(out, "\n")
+	index := func(holds func(string) bool) int { return slices.IndexFunc(output, holds) }
+	failure := index(func(line string) bool { return strings.HasSuffix(line, text) })
+	header := index(func(line string) bool {
+		return strings.Contains(line, "testwait: TestABoundedWaitChild: the goroutine stacks read at ") && strings.Contains(line, bound)
+	})
+	end := index(func(line string) bool {
+		return strings.Contains(line, "testwait: TestABoundedWaitChild: end of the goroutine stacks: ")
+	})
+	ended := index(func(line string) bool {
+		return strings.Contains(line, "testwait: TestABoundedWaitChild: the test ended failed at ")
+	})
+	failed := index(func(line string) bool { return strings.HasPrefix(line, "--- FAIL: TestABoundedWaitChild (") })
+	if failure < 0 || header < failure || end < header || ended < end || failed < ended {
+		t.Errorf("the %s child's output holds no goroutine stacks naming %q after its wait's own failure (line %d) and before its --- FAIL line (line %d): their first line at %d, their last at %d, the test's end at %d",
+			row, bound, failure, failed, header, end, ended)
+		return
+	}
+	stacks := output[header:end]
+	waiting, _, _ := strings.Cut(strings.Join(stacks[1:], "\n"), "\n    \n")
+	if !strings.Contains(waiting, function) {
+		t.Errorf("the %s child's first stack, the waiting goroutine's, names no %s:\n%s", row, function, waiting)
+	}
+	if !strings.Contains(strings.Join(stacks, "\n"), ".holdsTheBoundedFactBack(") {
+		t.Errorf("the %s child's stacks name no goroutine the test started that holds the fact back:\n%s", row, strings.Join(stacks, "\n"))
+	}
+}
+
 // TestABoundedWaitChild is the child of TestAWaitOfItsOwnBoundedByTestwaitPrintsTheStacks. Its
 // "fails" row starts a goroutine that holds the fact back and waits, from awaitWithItsOwnText, for
-// the bound Bounded gives to end, then fails with its own text. Its "passes" row's fact is there
-// at once, and it runs on past its bound's end before it passes. It runs only when the parent
+// the bound Bounded gives to end, then fails with its own text; its "span" row does the same from
+// awaitWithItsOwnSpan, with a span of 10 s that ends before the deadline. Its "passes" row's fact is
+// there at once, and it runs on past its bound's end before it passes. It runs only when the parent
 // re-executes this binary.
 func TestABoundedWaitChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
@@ -100,14 +122,20 @@ func TestABoundedWaitChild(t *testing.T) {
 		t.Fatalf("the child reads the spare its parent names in %s: %v", spareEnv, err)
 	}
 	deadline, _ := t.Deadline()
-	switch row := os.Getenv(boundRowEnv); row {
-	case "fails":
+	holdBack := func(forcing string) {
 		started, release := make(chan struct{}), make(chan struct{})
 		t.Cleanup(func() { close(release) })
 		go holdsTheBoundedFactBack(started, release)
 		<-started
-		t.Log("forcing fired: the wait's bound ends two seconds after the child began, and the fact never comes")
+		t.Log("forcing fired: " + forcing + ", and the fact never comes")
+	}
+	switch row := os.Getenv(boundRowEnv); row {
+	case "fails":
+		holdBack("the wait's bound ends two seconds after the child began")
 		awaitWithItsOwnText(t, spare, make(chan struct{}))
+	case "span":
+		holdBack("the wait's own span of 10s ends before the deadline")
+		awaitWithItsOwnSpan(t, make(chan struct{}))
 	case "passes":
 		came := make(chan struct{}, 1)
 		came <- struct{}{}
@@ -130,7 +158,19 @@ func awaitWithItsOwnText(t *testing.T, spare time.Duration, came <-chan struct{}
 	}
 }
 
-// holdsTheBoundedFactBack is the goroutine the failing row starts, which holds the fact back until
+// awaitWithItsOwnSpan waits for came for a span of its own, 10 s, which Bounded clamps to the
+// deadline less a second only when that is sooner, and fails t with its own text when the span
+// ends first.
+func awaitWithItsOwnSpan(t *testing.T, came <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-came:
+	case <-time.After(Bounded(t, 10*time.Second, time.Second)):
+		t.Fatal("the fact never came within the wait's own 10s")
+	}
+}
+
+// holdsTheBoundedFactBack is the goroutine a failing row starts, which holds the fact back until
 // the test ends. It closes started once it runs, inside this function.
 func holdsTheBoundedFactBack(started chan<- struct{}, release <-chan struct{}) {
 	close(started)
