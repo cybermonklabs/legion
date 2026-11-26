@@ -2881,10 +2881,11 @@ test("an open question waits on the reader only where its turn is theirs", () =>
 // this build's decisions step moves it: the decision is a `decision` block of the spec, which the
 // decisions read names by that block's address and answers as that one block, and the Change is
 // anchored in the spec, in the paragraph the decision's block holds, with the spec's id
-// (`api/anchors.go`'s `resolveAnchor`). A Change newer than the decision's words sits under the
-// decision, which then reads Change requested and waits on its agent, not on the reader; one
-// older than its words is no Change, and the decision waits for the reader's review.
-test("a Change is drawn under its decision, which then waits on its agent", () => {
+// (`api/anchors.go`'s `resolveAnchor`). A Change newer than the decision's words makes the decision
+// read Change requested and wait on its agent, not on the reader; one older than its words is no
+// Change, and the decision waits for the reader's review. A comment anchored in a block is on text
+// (INFRA-5706's R1), so neither the Change nor the older comment is a row of the outline.
+test("a Change moves its decision to its agent, and is no row of the outline", () => {
   // As the reads send them: the spec as the issue read lists it, the decision as the decisions
   // read answers it, the requirements its tie names and the decision's block as the blocks read
   // and the coverage read hold them, and the Change as the comments read sends it.
@@ -3171,20 +3172,20 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
   const id = blockNodeId(spec.slug, reviewed.block_id);
 
   const changed = treeWith(change.created_at);
-  expect(placementsOf(changed, change.id).map((one) => one.parent)).toEqual([id]);
+  expect(placementsOf(changed, change.id)).toEqual([]);
   expect(nodeOf(changed, id)).toMatchObject({ state: "change_requested", waiting: false });
 
   // The same Change, made before the decision's words last changed (`changed_at`).
   const older = treeWith("2026-11-16T11:11:07.1Z");
-  expect(placementsOf(older, change.id).map((one) => one.parent)).toEqual([issue.key]);
+  expect(placementsOf(older, change.id)).toEqual([]);
   expect(nodeOf(older, id)).toMatchObject({ state: "waiting_review", waiting: true });
 });
 
 // R3, R7: a person may ask two changes of one decision before its agent edits it. Each change
-// newer than the decision's words is drawn under the decision, not only the newest, so neither
-// sits at the outline's foot with nothing tying it to what it changes; a change older than the
-// decision's words is no change and sits under the issue.
-test("every Change newer than a decision's words is drawn under it", () => {
+// newer than the decision's words makes the decision read Change requested, not only the newest;
+// a change older than the decision's words is no change. Each is a comment on text and so no row
+// of the outline (INFRA-5706's R1).
+test("every Change newer than a decision's words moves its decision, and none is a row", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const reviewed: Decision = {
     ...decision("d1", "## Keep it\n\nKeep the model pure.", ["r1"]),
@@ -3218,9 +3219,9 @@ test("every Change newer than a decision's words is drawn under it", () => {
   });
   const id = blockNodeId(SPEC, "d1");
 
-  expect(placementsOf(root, "c-first").map((one) => one.parent)).toEqual([id]);
-  expect(placementsOf(root, "c-second").map((one) => one.parent)).toEqual([id]);
-  expect(placementsOf(root, "c-older").map((one) => one.parent)).toEqual([KEY]);
+  expect(placementsOf(root, "c-first")).toEqual([]);
+  expect(placementsOf(root, "c-second")).toEqual([]);
+  expect(placementsOf(root, "c-older")).toEqual([]);
   expect(nodeOf(root, id)).toMatchObject({ state: "change_requested", waiting: false });
 });
 
