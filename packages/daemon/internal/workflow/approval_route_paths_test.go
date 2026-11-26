@@ -462,6 +462,9 @@ var noticeClasses = map[record.NoticeKind]noticeClass{
 	"checks-red": {}, "review-stuck": {}, "status-reasserted": {}, record.VolumeNearFullNotice: {},
 	record.WorkspaceKeptNotice: {}, record.WorkspaceTakenNotice: {},
 	"session-lost": {}, "session-forgotten": {}, "session-store-fault": {},
+	// main's merge holds change (the controller's merge-holds document, #4065) and a role's run of
+	// provider errors tell no approval.
+	"merge-holds-changed": {}, record.ProviderErrorsNotice: {},
 	"task-stopped": {}, "plan-not-taken": {}, "retro-held": {},
 }
 

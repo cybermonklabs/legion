@@ -69,6 +69,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"BasePush":                    BasePush{},
 		"DaemonBooted":                DaemonBooted{},
 		"CutoverMergerRepair":         CutoverMergerRepair{},
+		"MergeHoldsChanged":           MergeHoldsChanged{},
 		"ListenerWake":                ListenerWake{},
 		"WorkHoldOpened":              WorkHoldOpened{Tree: issue},
 	}

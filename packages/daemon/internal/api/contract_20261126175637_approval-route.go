@@ -1,6 +1,8 @@
 package api
 
-// 20261125163006 approval-route: the approval route. `POST /legion/v1/claims/approval` (`{claimToken, sessionId, secret}`,
+import "github.com/sjawhar/legion/daemon/internal/supervise"
+
+// 20261126175637 approval-route: the approval route. `POST /legion/v1/claims/approval` (`{claimToken, sessionId, secret}`,
 // api.ClaimApprovalRequest) answers whether a person's approval of a spec stands for the claim's
 // own issue: `{approval: null}`, or `{approval: {document, version, message}}`
 // (api.ClaimApprovalResponse). `document` is `dispatch://<KEY>/spec`, or the document's id where a
@@ -23,10 +25,11 @@ package api
 // `suspendedBy` and `suspensionHeldBy` take `hold` (`legionSuspendedBy`), a claim the work hold
 // (`gates.hold: work`) stopped, or a stop of it held for the agent's turn (supervise.SuspendedByHold,
 // added to `claims.suspended_by` by `store/migrations/20261120224328_claim_suspended_by_hold.up.sql`,
-// whose header carries its way back). As for contract 48's `released`, no session-facing body
-// carries the value: an operator reads it on the operator claim routes, which no plugin calls, and
-// `legion claims list` prints such a claim `suspended:hold`. So no record holds the value and no
-// value strip is owed for it (answers.go's EnumeratedFields).
+// whose header carries its way back). The operator claim routes are no session-facing body, and
+// `legion claims list` prints such a claim `suspended:hold`. The agent actions' answer
+// (AnswerAgentAction, the agent-actions entry) names its `suspendedBy` and `suspensionHeldBy`
+// whole, so `hold` takes a row of each here: the controller's `legion` tool hands that answer on
+// whole and reads none of it (`LEGION_ANSWER_READS`), so no value strip is owed for it.
 // The work hold also adds a fifth word to an issue's `why.state`, on `GET /legion/v1/state` and on
 // the record route: `held` (api.WhyHeld), an issue whose work is a phase worker's in a running tree
 // the work hold holds (record.WorkHold), whose `reason` names the version that closed the tree's
@@ -41,7 +44,7 @@ package api
 //
 // approvalRouteContract identifies this entry. The registry gives it a contract number in each
 // build. Code that needs the number reads entryNumber(approvalRouteContract).
-const approvalRouteContract = 20261125163006
+const approvalRouteContract = 20261126175637
 
 // workHoldContract is the same entry: the approval route and the work hold arrive together.
 const workHoldContract = approvalRouteContract
@@ -60,6 +63,14 @@ func init() {
 			answer:  AnswerState,
 			keyPath: issueKeyPath + "why.state",
 			values:  []EnumeratedValue{{Value: string(WhyHeld), Since: workHoldContract}},
+		}, {
+			answer:  AnswerAgentAction,
+			keyPath: "suspendedBy",
+			values:  []EnumeratedValue{{Value: string(supervise.SuspendedByHold), Since: workHoldContract}},
+		}, {
+			answer:  AnswerAgentAction,
+			keyPath: "suspensionHeldBy",
+			values:  []EnumeratedValue{{Value: string(supervise.SuspendedByHold), Since: workHoldContract}},
 		}},
 		valueStrips: []valueStrip{{issue: withoutUnadmittedWhy, dropped: droppedWhy}},
 	})

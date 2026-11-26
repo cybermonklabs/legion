@@ -9,7 +9,7 @@ body: |-
   message, which names that root's spec. A child's architect, the phase workers, the controller and
   a deployment that gates no `spec` step get `approval: null`. A root's re-admission now records
   the approved `spec` row that it deletes, and the carry of a gate records the root whose document
-  the gate holds, so the route answers for both. Its daemon API entry is `20261125163006`.
+  the gate holds, so the route answers for both. Its daemon API entry is `20261126175637`.
   The route answers only a person's approval of the root's own spec. A `spec` step that stands open
   on an ancestor's approval answers the person's approval of an earlier version of the root's own
   spec that the step keeps, or `approval: null`, and never the version the ancestor's approval

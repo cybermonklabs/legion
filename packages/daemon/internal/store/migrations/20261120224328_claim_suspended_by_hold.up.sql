@@ -2,27 +2,32 @@
 -- supervise.Claim.SuspendedBy: the work hold (`gates.hold: work`) stopped the claim because its
 -- tree's standing design gate closed. The claim keeps its session, its phase
 -- and its pending delivery; no rule resumes it, and the hold's end starts it again with one task.
--- 0038 wrote the check with the column and 20261101201850 wrote it again with 'released', so
--- Postgres names it claims_suspended_by_check; it is dropped and written again with the new value.
--- No row holds the value yet, so there is nothing to backfill.
+-- 0038 wrote the check with the column, 20261101201850 wrote it again with 'released', and
+-- 20261115060739_claim_suspended_by_controller, which sorts before this one and so runs before it
+-- on every database, wrote it again with 'controller', so Postgres names it
+-- claims_suspended_by_check. It is dropped and written again as 20261115060739 left it, with
+-- 'hold' added and 'controller' kept: a list without 'controller' would refuse every claim the
+-- project's controller suspended, and the check would fail to write on a database that holds one.
+-- No row holds 'hold' yet, so there is nothing to backfill.
 --
 -- The release before this one never writes 'hold'. A row this release wrote 'hold' reads back on
 -- that release as a source it does not know: its rule resumes such a claim on the triggers it
--- resumes the daemon's own suspension on (its RuleMayResume reads every source but the
--- operator's), and since it keeps the phase task through no such suspension (RetiresPhaseTask),
--- the claim's next decision retires its pending phase task. Its boot's resume by rule passes such a
--- claim over (ByRule), and its idle rule holds no pod for it, so the pod and its unpushed work can
--- be released.
+-- resumes the daemon's own suspension on (its RuleMayResume reads every source but the two that
+-- hold, the operator's and the controller's), and since it keeps the phase task through no such
+-- suspension (RetiresPhaseTask), the claim's next decision retires its pending phase task. Its
+-- boot's resume by rule passes such a claim over (ByRule), and its idle rule holds no pod for it,
+-- so the pod and its unpushed work can be released.
 --
 -- There is no down file. This directory keeps none, so the way back is the one transaction that
 -- closes this header, its last paragraph (migrations.WayBack), run with this release's daemon
 -- stopped and before the release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1.
 --
 -- The way back hands each claim the hold stopped to the operator: the one source of the release
--- before that keeps the claim's session, its phase and its pending task, that no rule resumes, and
--- whose pod its idle rule keeps, which is what the hold kept. The release before has no opening,
--- so an operator starts each such claim with `legion claims resume` once its tree's gate stands
--- open. Then the check is written as the release before wrote it, and the delete of this
+-- before that keeps the claim's session, its phase and its pending task, that no rule resumes, that
+-- only the operator lifts, and whose pod its idle rule keeps, which is what the hold kept. The
+-- release before has no opening, so an operator starts each such claim with `legion claims resume`
+-- once its tree's gate stands open. A claim the controller suspended keeps its source. Then the
+-- check is written as the release before wrote it, 'controller' included, and the delete of this
 -- migration's row makes the version the store reports (store.SchemaVersionTx) that release's own
 -- again; at the roll-forward store.apply finds no row of this version and runs this file again.
 --
@@ -30,9 +35,9 @@
 -- update claims set suspended_by = 'operator' where suspended_by = 'hold';
 -- alter table claims drop constraint if exists claims_suspended_by_check;
 -- alter table claims add constraint claims_suspended_by_check
---   check (suspended_by in ('', 'unknown', 'operator', 'daemon', 'exit', 'released'));
+--   check (suspended_by in ('', 'unknown', 'operator', 'daemon', 'exit', 'released', 'controller'));
 -- delete from schema_version where version = 20261120224328;
 -- commit;
 alter table claims drop constraint if exists claims_suspended_by_check;
 alter table claims add constraint claims_suspended_by_check
-  check (suspended_by in ('', 'unknown', 'operator', 'daemon', 'exit', 'released', 'hold'));
+  check (suspended_by in ('', 'unknown', 'operator', 'daemon', 'exit', 'released', 'controller', 'hold'));

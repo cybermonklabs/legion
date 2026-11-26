@@ -23,34 +23,104 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // workHoldWaits is the work hold's answer to ev, and nil where it has none: a claim the hold
 // suspended answers every request that could start or resume a turn of its agent a wait
 // (ErrHeldByWorkHold) — a start's resume by rule, a task, a wake, a CI settlement's or a hook's
 // task, the boot's relaunch, a pause's resume and the resume of a launch it owed, the controller
-// keeper's resume or retry, a compaction, a ready — except the operator's own resume and retry,
-// which start it (turnDoor). Each request answers it before its row is reached, so no row of the
-// table has to know the hold, and a request added later is held by the door it declares. The
-// claim is left exactly as it was: the task it kept stays kept, and the turn-starting request is
-// asked again by whoever holds it (the outbox's backoff) or is a request the hold's end makes
-// moot, since that end starts the claim itself (EndHold).
+// keeper's resume or retry, the project's controller's resume or retry, a compaction, a ready —
+// except the operator's own resume and retry, which start it (turnDoor, askedDoor). Each request
+// answers it before its row is reached, so no row of the table has to know the hold, and a request
+// added later is held by the door it declares. The claim is left exactly as it was: the task it
+// kept stays kept, and the turn-starting request is asked again by whoever holds it (the outbox's
+// backoff) or is a request the hold's end makes moot, since that end starts the claim itself
+// (EndHold).
+//
+// The project's controller's resume or retry of a phase worker is refused by the tree's hold, not
+// by the claim's source alone (workHoldRefuses): a claim the controller suspended, before the
+// close or after the hold's stop, is no claim the hold stopped, and the controller starts no phase
+// worker of a tree whose work hold stands (decision 16 of dispatch://INFRA-4528's plan).
 //
 // A claim the hold's stop is only held over — in a turn, a compaction, idle waiting for the turn
 // its message starts, or a launch held until its ready — is not answered here: its stop is held
 // (Machine.held), so nothing is sent to it (sendPending), and while the read of the tree's work
 // hold row finds the hold standing (readHoldForStop), its row runs the stop where the stop is due.
 // A start of such a claim waits all the same (StartedBy).
-func (m *Machine) workHoldWaits(ev Event) error {
-	if ev.door() != ruleDoor || !m.claim.WorkHeld() {
+func (m *Machine) workHoldWaits(ctx context.Context, ev Event) error {
+	if ev.door() != ruleDoor {
 		return nil
 	}
 	name, ok := requestName(ev)
 	if !ok {
 		name = string(kindOf(ev))
 	}
-	m.log.Info("supervise: the work hold holds the claim; the request waits for the hold's end", "request", name)
-	return &RefusedError{State: m.claim.State, Request: name, Err: ErrHeldByWorkHold}
+	if m.claim.WorkHeld() {
+		m.log.Info("supervise: the work hold holds the claim; the request waits for the hold's end", "request", name)
+		return &RefusedError{State: m.claim.State, Request: name, Err: ErrHeldByWorkHold}
+	}
+	if by, asked := askedSource(ev); asked {
+		if err := m.workHoldRefuses(ctx, m.current(), by); err != nil {
+			m.log.Info("supervise: the tree's work hold refuses the controller's start of the claim", "request", name, "error", err)
+			return &RefusedError{State: m.claim.State, Request: name, Err: err}
+		}
+	}
+	return nil
+}
+
+// askedSource is who asks ev, for a request that names its asker and can start a turn: a resume
+// (RequestResume.By) and a caller's retry (RequestAskedRetry.By).
+func askedSource(ev Event) (SuspendSource, bool) {
+	switch ev := ev.(type) {
+	case RequestResume:
+		return ev.By, true
+	case RequestAskedRetry:
+		return ev.By, true
+	}
+	return "", false
+}
+
+// WorkHoldRefusal is the work hold's refusal of a start the project's controller (by) asks of this
+// claim's agent, or nil: its resume, its retry, its fresh session, and the start of a phase its
+// retry writes (api's agent door and restartWorkedPhase). It reads the claim as the machine last
+// published it (View), so it never waits on the decision in flight, and the machine reads the same
+// rule again where the request lands (workHoldWaits, forgetSession). So a refused request changes
+// nothing of the claim: no session is forgotten and no start row is written.
+func (m *Machine) WorkHoldRefusal(ctx context.Context, by SuspendSource) error {
+	return m.workHoldRefuses(ctx, m.View().Claim, by)
+}
+
+// workHoldRefuses is the one statement of the controller's part of the work hold (decision 16 of
+// dispatch://INFRA-4528's plan): the controller is no operator, so under `gates.hold: work`, while
+// the standing design gate of the claim's tree is closed, it starts no phase worker of that tree.
+// It is decided by the tree's hold (Store.WorkHoldStands, read under the claim-write deadline as
+// readWorkHold reads it), not by the claim's source alone: a claim the controller suspended before
+// the close, which the hold's stop does not take over (suspensionRank), or after it, taking the
+// hold's stop over, is held as a claim the hold stopped is (WorkHeld, which needs no read). The
+// answer wraps ErrHeldByWorkHold and names the two ways out, the gate's opening and an operator's
+// own act. It is nil for every asker but the controller — the operator's own act overrides the
+// hold — and for an architect or the controller's own claim, which the hold never holds. A read of
+// the tree's hold that fails is an error the caller refuses with: a start the read did not clear
+// may not run.
+func (m *Machine) workHoldRefuses(ctx context.Context, c Claim, by SuspendSource) error {
+	if by != SuspendedByController || !claim.IsPhaseWorker(c.Role) {
+		return nil
+	}
+	if !c.WorkHeld() {
+		reading, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+		defer cancel()
+		stands, err := m.deps.Store.WorkHoldStands(reading, c.Tree)
+		if err != nil {
+			return fmt.Errorf("read the work hold of %s for the controller's start of %s: %w", c.Tree, c.Token, err)
+		}
+		if !stands {
+			return nil
+		}
+	}
+	return fmt.Errorf("the work hold of %s holds every phase worker of the tree while its standing design gate is closed, and the controller starts none of them; the gate's opening, or an operator's own resume or retry, starts %s: %w",
+		c.Tree, c.Token, ErrHeldByWorkHold)
 }
 
 // EndHold is the work hold's end for this claim, and the one door the hold's opening takes into

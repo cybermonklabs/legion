@@ -1,6 +1,17 @@
 {
   "answers": [
     {
+      "answer": "agent-action",
+      "addValues": {
+        "suspendedBy": [
+          "hold"
+        ],
+        "suspensionHeldBy": [
+          "hold"
+        ]
+      }
+    },
+    {
       "answer": "claim-approval",
       "change": "add",
       "noBody": false,
@@ -61,6 +72,20 @@
       "keyPath": "why.state",
       "values": [
         "held"
+      ]
+    },
+    {
+      "answer": "agent-action",
+      "keyPath": "suspendedBy",
+      "values": [
+        "hold"
+      ]
+    },
+    {
+      "answer": "agent-action",
+      "keyPath": "suspensionHeldBy",
+      "values": [
+        "hold"
       ]
     }
   ]

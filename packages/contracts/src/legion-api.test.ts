@@ -17,6 +17,7 @@ import {
   LEGION_PHASES,
   LEGION_WORKFLOW_PHASES,
   LegionActivityRequest,
+  LegionAgentActionResponse,
   LegionCapabilityReport,
   LegionChildRequest,
   LegionClaimApprovalRequest,
@@ -52,6 +53,8 @@ import {
   LegionPhaseRetryRequest,
   LegionPlanRegisterRequest,
   LegionPlanRegisterResponse,
+  LegionPodUpdateRequest,
+  LegionPodUpdateResponse,
   LegionProjectPauseRequest,
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
@@ -166,7 +169,7 @@ const schemas: Record<string, z.ZodType> = {
   // state of a paused project and carries the other key.
   "state-last-pause.json": LegionStateResponse,
   // Written by internal/api's TestStateWorkHoldGolden: the state of an issue the work hold holds
-  // (`gates.hold: work`), whose `why` is `held` (entry `20261125163006`).
+  // (`gates.hold: work`), whose `why` is `held` (entry `20261126175637`).
   "state-work-hold.json": LegionStateResponse,
   "register.json": LegionRegisterResponse,
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
@@ -181,7 +184,7 @@ const schemas: Record<string, z.ZodType> = {
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
-  // `api.ClaimApprovalResponse` (entry `20261125163006`): the standing approval for a root
+  // `api.ClaimApprovalResponse` (entry `20261126175637`): the standing approval for a root
   // architect's claim, or the answer where none stands, whose `approval` is null. Each is
   // written from what the route builds (internal/api's TestApprovalRoute…Golden).
   "claim-approval.json": LegionClaimApprovalResponse,
@@ -198,6 +201,15 @@ const schemas: Record<string, z.ZodType> = {
   "issue-status.json": LegionEmptyResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
+  // Four of the controller's six agent actions, stop, retry, suspend and resume (the agent-actions
+  // contract): the claim's state after each, and who holds a suspension over the agent.
+  "agent-stop.json": LegionAgentActionResponse,
+  "agent-retry.json": LegionAgentActionResponse,
+  "agent-suspend.json": LegionAgentActionResponse,
+  "agent-resume.json": LegionAgentActionResponse,
+  // The controller's request for the replacement of one issue's pod (the agent-actions contract):
+  // the update round over it, its reasons, and whether the request opened it.
+  "issue-pod-update.json": LegionPodUpdateResponse,
   "gate-register.json": LegionEmptyResponse,
   "wave-release.json": LegionWaveReleaseResponse,
   "phase-backward.json": LegionEmptyResponse,
@@ -475,6 +487,9 @@ const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   "issue-record": LegionIssueRecordResponse,
   register: LegionRegisterResponse,
   "intake-replay": LegionIntakeReplayResponse,
+  // Four of the controller's six agent actions, stop, retry, suspend and resume (the agent-actions
+  // contract): the claim's `state`, and who holds a suspension over it.
+  "agent-action": LegionAgentActionResponse,
 };
 
 /** The schemas this module parses each answer of the daemon's table that writes a body with, by
@@ -500,6 +515,7 @@ const RECORD_SCHEMAS: Record<string, readonly z.ZodType[]> = {
   "plan-register": [LegionPlanRegisterResponse],
   "intake-discard": [LegionIntakeDiscardResponse],
   "claim-approval": [LegionClaimApprovalResponse],
+  "pod-update": [LegionPodUpdateResponse],
 };
 
 /** The reason the refusal's `reasons` is named by no schema of this module. */
@@ -2180,6 +2196,7 @@ test("every request the plugin sends parses and names its required fields", () =
       LegionClaimRequest,
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
     ],
+    ["pod update", LegionPodUpdateRequest, { grantId: "grant-208", issue: "LEGION-209" }],
     [
       "gate register",
       LegionGateRegisterRequest,
@@ -2242,7 +2259,7 @@ test("every request the plugin sends parses and names its required fields", () =
       },
     ],
     // The read a root architect's session makes before a model call of its own conversation
-    // (entry `20261125163006`), authenticated by the claim as the activity report is.
+    // (entry `20261126175637`), authenticated by the claim as the activity report is.
     [
       "claim approval",
       LegionClaimApprovalRequest,
@@ -3272,10 +3289,26 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   ]);
 });
 
-/** The responses an operator's bearer opens, the only ones that may name a suspension. */
+/** The responses an operator's bearer opens, the only ones of the operator's that may name a
+ * suspension. */
 const operatorSchemas: Record<string, true> = {
   LegionOperatorClaimResponse: true,
   LegionOperatorClaimsResponse: true,
+};
+
+/** The one session-facing exception: four of the controller's six agent actions
+ * (`POST /legion/v1/agents/stop|retry|suspend|resume`) answer who holds a suspension,
+ * because those routes are where the caller reads whether its own resume_agent lifts it. The
+ * reason the guard exists does not reach them: they arrived with the agent-actions contract, so only a plugin at
+ * that contract or later calls them, and no reader of these bodies predates the key. The schema
+ * and the four fixtures it pins are named here, and nothing else; a new session-facing body that
+ * names a suspender still fails the walk below. */
+const agentActionSchemas: Record<string, true> = { LegionAgentActionResponse: true };
+const agentActionFixtures: Record<string, true> = {
+  "agent-stop.json": true,
+  "agent-retry.json": true,
+  "agent-suspend.json": true,
+  "agent-resume.json": true,
 };
 
 /** Every key `schema` can carry, at any depth, through objects, arrays, unions, records, optional
@@ -3311,23 +3344,46 @@ function schemaKeys(
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
 // older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
-// `suspendedBy` is served to the operator's bearer and nowhere else, and this holds that for every
+// `suspendedBy` is served to the operator's bearer and, from the agent-actions contract, to the
+// controller's four agent actions (agentActionSchemas), and nowhere else; this holds that for every
 // schema the module exports, present and future.
 test("no session-facing response carries suspendedBy", () => {
   let walked = 0;
   for (const [name, schema] of Object.entries(legionApi)) {
-    if (!isSchema(schema) || operatorSchemas[name] === true) continue;
+    if (!isSchema(schema) || operatorSchemas[name] === true || agentActionSchemas[name] === true)
+      continue;
     walked += 1;
     expect([...schemaKeys(schema)], `${name} carries suspendedBy`).not.toContain("suspendedBy");
   }
   expect(walked).toBeGreaterThan(20);
   // The walk finds the key where it does live, so an empty walk cannot pass for a clean one.
   expect([...schemaKeys(LegionOperatorClaimResponse)]).toContain("suspendedBy");
+  expect([...schemaKeys(LegionAgentActionResponse)]).toContain("suspendedBy");
 
-  // And no body the daemon writes carries it outside the operator's own.
-  for (const name of readdirSync(fixtureDir).filter((entry) => entry.endsWith(".json"))) {
-    if (name.startsWith("operator-")) continue;
+  // And no body the daemon writes carries it outside the operator's own and the four routes'.
+  // The fixtures of this directory are bodies, and main's frozen tables, none of which names it.
+  // The daemon's records of every answer's key paths and value domains are the frozen tables and
+  // then each entry's fixture under `contracts/`, composed as `daemonApiRecords` composes them: they
+  // name `suspendedBy` at the four routes' answer, `agent-action`, and must name it at no other.
+  const fixtures = readdirSync(fixtureDir);
+  for (const name of fixtures.filter((entry) => entry.endsWith(".json"))) {
+    if (name.startsWith("operator-") || agentActionFixtures[name] === true) continue;
     expect(readFileSync(path.join(fixtureDir, name), "utf8"), name).not.toContain("suspendedBy");
+  }
+  const build = daemonApiRecords(fixtureDir);
+  const naming = [...build.records, ...build.enumeratedFields].filter((row) =>
+    JSON.stringify(row).includes("suspendedBy")
+  );
+  // The composition finds the key where it does live, so an empty read cannot pass for a clean one.
+  expect(naming.length).toBeGreaterThan(0);
+  for (const row of naming) {
+    expect(row.answer, `a record names suspendedBy at the ${row.answer} answer`).toBe(
+      "agent-action"
+    );
+  }
+  // The exception is the four routes' and no wider: each of their fixtures exists.
+  for (const name of Object.keys(agentActionFixtures)) {
+    expect(fixtures, name).toContain(name);
   }
 });
 
@@ -3632,7 +3688,7 @@ test("the state goldens carry the pause that stands and the last pause, and both
   }
 });
 
-// Entry `20261125163006` adds `why.state: held` and a reason naming the version that closed the
+// Entry `20261126175637` adds `why.state: held` and a reason naming the version that closed the
 // design gate. The daemon omits that `why` for an earlier caller whose enum rejects `held`.
 test("the enum before the work hold entry refuses held, but the current enum accepts it", () => {
   const state = LegionStateResponse.parse(fixture("state-work-hold.json"));

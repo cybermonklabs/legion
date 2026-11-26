@@ -30,8 +30,8 @@ import (
 // that the daemon or its own exit suspended (supervise's ByRule) is started again. Nothing else
 // would start it: the phase's start ran before the restart, a re-admission's starts are queued
 // only when a tree is re-admitted, and the next start is the next phase's. This is the one trigger
-// main did not have, so it acts on no other source: an operator's suspension holds until the
-// operator resumes the claim, and a suspension recorded before the source existed (unknown) may be
+// main did not have, so it acts on no other source: a suspension that holds stays until a resume
+// lifts it, and a suspension recorded before the source existed (unknown) may be
 // a drain made before the upgrade, so both are left as they are. A released claim is the one ByRule
 // source the boot leaves too: the daemon released its idle pod, which held no unpushed work, and
 // what brings the pod back is the next wake for its role, not a daemon restart, so a boot that
@@ -229,8 +229,8 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 // (ResumeTask) at entry 0: that start hands the role the work it is already on rather than a
 // new entry, so it moves no phases row either. The boot's resume by rule (booted) and the
 // cutover's repair of a merger the `awaiting_merge` cutover left released (oweCutoverMerger) both
-// build their start here, so the two are built alike. Neither hands it a claim the operator
-// suspended: that suspension holds until the operator resumes the claim.
+// build their start here, so the two are built alike. Neither hands it a claim under a suspension
+// that holds: such a suspension stays until a resume lifts it.
 //
 // Neither start raises an entry (Engine.enter is called on neither): the boot hands the role no
 // number the record does not already name. The ruleResume mark is what tells the outbox to

@@ -86,11 +86,11 @@ func lastStartRow(run record.RoleRun) int64 {
 // delivered is the outbox executor's decision when the start runs: not to a claim that holds a task
 // for the same generation and phase by then (record.SuperviseRequest's ResumeTask).
 //
-// Stranded reads the same rule for a failed claim, and for a suspended one no operator suspended: a
-// claim for which StartFor is true has no queued start that will wake it. A
-// suspension that holds for the operator (supervise's RuleHolds) is woken by no start, queued or
-// not, since each waits for the operator's resume, so Stranded lists it without asking. The
-// architect's start names no phase, so its current is "".
+// Stranded reads the same rule for a failed claim, and for a suspended one that no holding
+// suspension holds: a claim for which StartFor is true has no queued start that will wake it. A
+// suspension that holds — the operator's or the controller's (supervise's
+// RuleHolds) — is woken by no start, queued or not, since each waits for a resume to lift it, so
+// Stranded lists it without asking. The architect's start names no phase, so its current is "".
 //
 // Its reading of run.Queued is queuedStartActs, which unpromptedPhaseWorker and catch_up.go's
 // queuedRowCovers share.
@@ -129,22 +129,22 @@ func startActs(queued record.QueuedSupervise, stop int64, current phase.Phase) b
 	return startsWork(queued.Request) && queued.Request.Phase == current && queued.ID > stop
 }
 
-// startsWork says whether a queued supervise row is a start that brings its role the work it
-// names: every start but one queued for news of the approved design alone
-// (record.SuperviseRequest.News). Such a start names the member's phase only so that it finishes
-// once the member has left that phase. It carries no task of the phase and no entry. It reaches
-// only a claim that was already given the phase's current entry, and it finishes without acting at
-// a claim that failed, retired or an operator suspended (the daemon's newsOnlyRefusal), and
-// wherever the record owes nothing when it runs. So every rule that asks whether a queued start
-// will bring a role its phase's work reads the role's queued rows through this: the ready worker's
-// task (queuedRowCovers), a promotion's start and the report of the claims nothing will wake
-// (StartFor), the silence repair (unpromptedPhaseWorker), the second stall arm's next move for a
-// root architect's claim (ArchitectRelaunchOf), the root's wait on its architect's work and the
-// sweep's reading of a root architect's start on its way (owed, queuedStart), and the cutover's
-// start of a stopped merger (oweCutoverMerger). Counted as a start, such a row would turn each of
-// them off for as long as it waits, and a merger's waits for the whole time its design gate stays
-// closed. An architect's would hold back the sweep's start of the entry its row names while the
-// news waits behind a turn of the architect's own.
+// startsWork says whether a queued supervise row is a start that brings its role the work it names:
+// every start but one queued for news of the approved design alone (record.SuperviseRequest.News).
+// Such a start names the member's phase only so that it finishes once the member has left that
+// phase. It carries no task of the phase and no entry. It reaches only a claim that was already
+// given the phase's current entry, and it finishes without acting at a claim that failed or
+// retired, or that a suspension that holds (the operator's or the controller's) is
+// over (the daemon's newsOnlyRefusal), and wherever the record owes nothing when it runs. So every
+// rule that asks whether a queued start will bring a role its phase's work reads the role's queued
+// rows through this: the ready worker's task (queuedRowCovers), a promotion's start and the report
+// of the claims nothing will wake (StartFor), the silence repair (unpromptedPhaseWorker), the
+// second stall arm's next move for a root architect's claim (ArchitectRelaunchOf), the root's wait
+// on its architect's work and the sweep's reading of a root architect's start on its way (owed,
+// queuedStart), and the cutover's start of a stopped merger (oweCutoverMerger). Counted as a start,
+// such a row would turn each of them off for as long as it waits, and a merger's waits for the
+// whole time its design gate stays closed. An architect's would hold back the sweep's start of the
+// entry its row names while the news waits behind a turn of the architect's own.
 func startsWork(request record.SuperviseRequest) bool {
 	return request.Op == "start" && !request.News
 }
@@ -238,7 +238,7 @@ func StartUnderWay(run record.RoleRun, root record.Issue) (underWay, running boo
 // Where StartFor asks what a re-admitted tree's promotion must start, and so weighs whether the
 // claim may already have a process, this reads nothing of the claim's state: a registered, ready
 // or idle claim holding none of entry's work is the very claim this exists to close the
-// difference for. The states no start may reach — an operator's suspension, a retirement — are
+// difference for. The states no start may reach — a suspension that holds, a retirement — are
 // the caller's own skips.
 func OwedEntry(run record.RoleRun, root record.Issue, entry int64) bool {
 	if GivenEntry(run) >= entry {

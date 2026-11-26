@@ -484,7 +484,7 @@ func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToReadTheHeldWork(t *testing
 
 	launcherReadsBefore := len(rig.rt.CallsOf("PodWorkspaceWork"))
 	rig.intoRoundPod(worker)
-	rig.handle(worker, supervise.RequestResume{Claim: rig.tokens[worker]})
+	rig.handle(worker, supervise.RequestResume{Claim: rig.tokens[worker], By: supervise.SuspendedByOperator})
 	rig.registerInto(worker, podUpdatePod)
 	if replaced := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(replaced) != 0 {
 		t.Fatalf("the tester's launch replaced the round's pod %+v, want the pod kept for the held work", replaced)

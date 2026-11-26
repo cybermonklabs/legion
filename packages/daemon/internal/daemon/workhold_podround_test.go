@@ -771,3 +771,33 @@ func (h *heldRoundRig) updateNotices(reason string) []record.ControllerNotice {
 	}
 	return notices
 }
+
+// Decision 17 (dispatch://INFRA-4528's plan) over the project's controller's pod replacement
+// (#4065, requestPodUpdate): the round the controller asks for records its own reasons
+// (requestedPodUpdateReasons), a drift no pod breaks under, so it ends as main's keep ends a
+// round, after a read of the pod's workspace before the replacement (readReplacement, roundKeeps).
+// The implementer the work hold stopped left an unpushed commit that only the pod's disk holds:
+// the read finds it, the round ends with no replacement, the pod is kept, the architect goes on
+// in it, and the held claim stays the hold's.
+func TestWorkHoldTheControllersPodReplacementKeepsThePodOfHeldWork(t *testing.T) {
+	const architect, implementer = claim.RoleArchitect, claim.RoleImplementer
+	h := newHeldRoundRig(t, phase.Implementing)
+	h.liveInPod(architect)
+	h.closeOverAWorkingImplementer()
+	h.unpushed()
+
+	answer, err := h.s.requestPodUpdate(h.ctx, h.tree.key)
+	if err != nil || answer.Round != heldRound || !answer.Opened || answer.Reasons != requestedPodUpdateReasons {
+		t.Fatalf("the controller's pod update answered %+v, %v; want the round %s opened with the controller's reasons", answer, err, heldRound)
+	}
+	h.settle()
+	h.asked(architect)
+	h.answers(architect)
+	h.until("the controller's round to end with no replacement", func() bool {
+		h.sweep()
+		h.wantNotReplaced("over the controller's round while the held work is unpushed")
+		return h.machine(architect).Claim().UpdateRound == ""
+	})
+	h.wantInPod(architect)
+	h.wantHeld(implementer, 1, "after the controller's round ended")
+}

@@ -41,16 +41,20 @@ const (
 // mergerToken is the merger's claim of the harness's issue.
 const mergerToken claim.Token = "legion-LEGION-209-merger"
 
-// holdStop is the work hold's stop of h's claim as the outbox posts it: the message that asked
-// the agent to end its turn reached the claim at after, and the stop is cut holdGrace later.
+// holdStop is the work hold's stop of h's claim as the outbox posts it, once the close has written
+// the tree's work hold row (closeHold): the message that asked the agent to end its turn reached
+// the claim at after, and the stop is cut holdGrace later.
 func holdStop(h *harness, after time.Time) RequestSuspend {
+	h.store.closeHold(h.claim().Tree)
 	return RequestSuspend{Claim: h.token, By: SuspendedByHold, Reason: "the design gate of LEGION-208 closed",
 		TurnAfter: after, Deadline: after.Add(holdGrace)}
 }
 
 // directHoldStop is the hold's stop of a claim no message is sent to, a released worker that is
-// not a merger: the close records the hold over its suspension at once, with no deadline.
+// not a merger: the close writes the tree's work hold row (closeHold) and records the hold over
+// its suspension at once, with no deadline.
 func directHoldStop(h *harness) RequestSuspend {
+	h.store.closeHold(h.claim().Tree)
 	return RequestSuspend{Claim: h.token, By: SuspendedByHold, Reason: "the design gate of LEGION-208 closed"}
 }
 
@@ -359,56 +363,74 @@ func TestWorkHoldDeadlineSurvivesARestart(t *testing.T) {
 }
 
 // M6 (I2): every request the machine lists as one that can start or resume a turn of its agent
-// (Event.door) waits on a claim the hold stopped, but an operator's own act on that claim: the
-// operator's resume, which the operator route and fresh_session post, and the operator's retry.
-// The list is the machine's own: every event type declares its door, the compiler holds each type
-// to it, and samples holds this test to every type the package declares, so a type added later is
-// in the list or fails to compile. The workflow's own task, an outbox row's, waits as the
-// operator's own task does.
+// (Event.door) waits on a claim the hold stopped, by its caller: an operator's own act on that
+// claim starts it — the operator's resume (RequestResume whose By is the operator, which the
+// operator route and its fresh session post) and the operator's retry (RequestAskedRetry whose By
+// is the operator) — and every other caller's request waits, the project's controller's included:
+// its resume, its retry and its fresh session's resume (decision 16 of dispatch://INFRA-4528's
+// plan, askedDoor). The list is the machine's own: every event type declares its door, the
+// compiler holds each type to it, and samples holds this test to every type the package declares,
+// so a type added later is in the list or fails to compile. The workflow's own task, an outbox
+// row's, waits as the operator's own task does.
 func TestWorkHoldHoldsEveryRequestThatCouldStartATurn(t *testing.T) {
-	doors := map[string]turnDoor{}
+	starts := map[string]bool{}
 	all := samples(t)
 	for name, events := range all {
 		for _, ev := range events {
-			if door := ev.door(); door != noDoor {
-				doors[name] = door
+			if ev.door() != noDoor {
+				starts[name] = true
 			}
 		}
 	}
 	for _, name := range []string{"RequestSpawn", "RequestReady", "RequestResume", "RequestRuleResume", "RequestRetry",
-		"RequestOperatorRetry", "RequestDeliver", "RequestCompact", "ResumePause"} {
-		if _, listed := doors[name]; !listed {
+		"RequestAskedRetry", "RequestDeliver", "RequestCompact", "ResumePause"} {
+		if !starts[name] {
 			t.Errorf("%s declares that it starts no turn, want it among the requests that can start or resume one", name)
 		}
 	}
-	for _, name := range []string{"RequestResume", "RequestOperatorRetry"} {
-		if doors[name] != ownerDoor {
-			t.Errorf("%s is not an operator's own door, want it to start a held claim", name)
+	for _, by := range []SuspendSource{SuspendedByOperator, SuspendedByController} {
+		want := ruleDoor
+		if by == SuspendedByOperator {
+			want = ownerDoor
+		}
+		for _, ev := range []Event{RequestResume{By: by}, RequestAskedRetry{By: by}} {
+			if got := ev.door(); got != want {
+				t.Errorf("%T asked by %s declares door %d, want %d: only the operator's own act starts a held claim", ev, by, got, want)
+			}
 		}
 	}
 	type door struct {
 		name string
 		ev   func(c Claim) Event
-		door turnDoor
 	}
 	var list []door
-	for _, name := range slices.Sorted(maps.Keys(doors)) {
+	for _, name := range slices.Sorted(maps.Keys(starts)) {
 		sample := all[name][0]
-		list = append(list, door{name: name, ev: func(c Claim) Event { return fenced(sample, c) }, door: doors[name]})
+		list = append(list, door{name: name, ev: func(c Claim) Event { return fenced(sample, c) }})
 	}
-	list = append(list, door{name: "RequestDeliver of an outbox row", door: ruleDoor, ev: func(c Claim) Event {
-		return RequestDeliver{Claim: c.Token, Task: "A CI settlement: the checks of the branch passed.", ID: "outbox:9", Row: 9,
-			Phase: phase.Implementing, Generation: 1}
-	}})
+	// fenced asks a resume and a retry as the operator; the controller asks each too, and its
+	// fresh session's resume is its resume.
+	list = append(list,
+		door{name: "RequestResume of the controller", ev: func(c Claim) Event {
+			return RequestResume{Claim: c.Token, By: SuspendedByController}
+		}},
+		door{name: "RequestAskedRetry of the controller", ev: func(c Claim) Event {
+			return RequestAskedRetry{Claim: c.Token, By: SuspendedByController}
+		}},
+		door{name: "RequestDeliver of an outbox row", ev: func(c Claim) Event {
+			return RequestDeliver{Claim: c.Token, Task: "A CI settlement: the checks of the branch passed.", ID: "outbox:9", Row: 9,
+				Phase: phase.Implementing, Generation: 1}
+		}})
 	for _, d := range list {
 		t.Run(d.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.stoppedByTheHold()
 			calls, prompts, pending := len(h.rt.Methods()), len(h.prompts()), h.pending()
+			ev := d.ev(h.claim())
 
-			err := h.handle(d.ev(h.claim()))
+			err := h.handle(ev)
 
-			if d.door == ownerDoor {
+			if ev.door() == ownerDoor {
 				if err != nil {
 					t.Fatalf("the operator's own %s answered %v, want the held claim started", d.name, err)
 				}
@@ -546,18 +568,20 @@ func TestWorkHoldReleaseLeavesAnOperatorsSuspension(t *testing.T) {
 }
 
 // M7: an operator's own resume or retry starts a held claim (spec step 5), and so does the
-// fresh session's resume, which starts it in a new session; the claim is handed the task it kept.
+// operator's fresh session's resume, which starts it in a new session; the claim is handed the
+// task it kept. The controller's are no operator's act and wait (I2,
+// TestWorkHoldRefusesTheControllersStartsWhileTheTreeIsHeld).
 func TestWorkHoldStartsOnTheOperatorsResumeOrRetry(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		start func(h *harness)
 		calls string
 	}{
-		{"the operator's resume", func(h *harness) { h.must(RequestResume{Claim: h.token}) }, "Resume"},
-		{"the operator's retry", func(h *harness) { h.must(RequestOperatorRetry{Claim: h.token}) }, "Resume"},
-		{"the fresh session's resume", func(h *harness) {
-			h.must(RequestForgetSession{Claim: h.token, Session: session})
-			h.must(RequestResume{Claim: h.token})
+		{"the operator's resume", func(h *harness) { h.must(RequestResume{Claim: h.token, By: SuspendedByOperator}) }, "Resume"},
+		{"the operator's retry", func(h *harness) { h.must(RequestAskedRetry{Claim: h.token, By: SuspendedByOperator}) }, "Resume"},
+		{"the operator's fresh session's resume", func(h *harness) {
+			h.must(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator})
+			h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 		}, "Spawn"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

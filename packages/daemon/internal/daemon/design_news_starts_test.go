@@ -52,7 +52,8 @@ func TestANewsOnlyStartIsQueuedForALiveReviewer(t *testing.T) {
 // A news-only start goes only where nothing else will carry the news, and never where the record
 // says nothing may: not to a claim owed its phase start (that start carries the news), not to a
 // retired or failed claim (the phase's own repair revives it with a start that carries the news),
-// not to a claim an operator suspended, not to a claim the work hold stopped (the start that ends
+// not to an agent a suspension that holds is over (the operator's or the controller's, which no
+// start the daemon queues gets past), not to a claim the work hold stopped (the start that ends
 // the hold carries the news, so no task of news alone ends the hold), and not into a tree that
 // lingers or to an issue not at work, which are owed nothing. The reconcile queues none for such a
 // claim, and a news-only start that meets one when it runs finishes without acting. The live claim
@@ -73,6 +74,7 @@ func TestNoNewsOnlyStartGoesWhereTheRecordSaysNoNewsMay(t *testing.T) {
 		{name: "a retired claim", state: supervise.StateRetired, given: 1},
 		{name: "a failed claim", state: supervise.StateFailed, given: 1},
 		{name: "an operator-suspended claim", state: supervise.StateSuspended, by: supervise.SuspendedByOperator, given: 1},
+		{name: "an agent the controller suspended", state: supervise.StateSuspended, by: supervise.SuspendedByController, given: 1},
 		{name: "a claim the work hold stopped", state: supervise.StateSuspended, by: supervise.SuspendedByHold, given: 1},
 		{name: "a lingering tree", state: supervise.StateIdle, given: 1, lingers: true},
 		{name: "an issue not at work", state: supervise.StateIdle, given: 1, held: true},

@@ -343,10 +343,12 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 //     attempt stops a ready or idle claim at once and cuts a turn at the deadline. A stop that
 //     finds a claim with no launch yet, queued or with a launch a restart left uncertain, waits on
 //     its row's backoff for the launch (internal/daemon's holdStop). Any other stop that finds no
-//     launch makes nothing: a claim that runs nothing is not stopped again, and an operator's or
-//     the daemon's suspension stands;
-//   - and any other claim an operator or the daemon suspended, or a failed or retired one,
-//     nothing: the operator's suspension and the daemon's stand above the hold's.
+//     launch makes nothing: a claim that runs nothing is not stopped again, and an operator's,
+//     the controller's or the daemon's suspension stands;
+//   - and any other claim an operator, the controller or the daemon suspended, or a failed or
+//     retired one, nothing: those suspensions stand above the hold's (supervise's suspensionRank),
+//     and the controller starts no phase worker of the tree while the hold stands
+//     (supervise.Machine.WorkHoldRefusal).
 //
 // Each stop names the version that closed the gate (record.SuperviseRequest.HoldVersion), and is
 // one log line naming the issue, the role and the version. The stop a message carries names the

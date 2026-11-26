@@ -1,4 +1,4 @@
 kind: Changed
 custom:
   Issue: pr4661
-body: Supports daemon API entry `20261125163006`, which adds the approval route `POST /legion/v1/claims/approval` and the work hold's `hold` suspension source and `held` issue state.
+body: Supports daemon API entry `20261126175637`, which adds the approval route `POST /legion/v1/claims/approval` and the work hold's `hold` suspension source and `held` issue state.

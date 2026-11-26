@@ -2,7 +2,8 @@ kind: Changed
 custom:
   Issue: pr4661
 body: |-
-  The daemon API mirror (`src/legion-api.ts`) and its fixtures cover entry `20261125163006`: the approval
+  The daemon API mirror (`src/legion-api.ts`) and its fixtures cover entry `20261126175637`: the approval
   route's request and answer (`LegionClaimApprovalRequest`, `LegionClaimApprovalResponse`, and the
   fixtures `claim-approval.json` and `claim-approval-none.json`), `hold` among the suspension
-  sources (`legionSuspendedBy`), and `held` in an issue's `why.state` (`state-work-hold.json`).
+  sources (`legionSuspendedBy`, which the controller's agent actions' answer reads too), and `held`
+  in an issue's `why.state` (`state-work-hold.json`).

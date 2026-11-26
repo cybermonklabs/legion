@@ -39,16 +39,27 @@ func TestTheWorkHoldSourceMigrationTakesHoldAndItsWayBackHandsTheClaimToTheOpera
 	}
 	held := suspended("legion-LEGION-209-implementer", claim.RoleImplementer, supervise.SuspendedByHold)
 	closed := suspended("legion-LEGION-209-tester", claim.RoleTester, supervise.SuspendedByDaemon)
+	steered := suspended("legion-LEGION-209-reviewer", claim.RoleReviewer, supervise.SuspendedByController)
 	refusedByTheCheck := func(err error) bool {
 		var pgErr *pgconn.PgError
 		return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "claims_suspended_by_check"
 	}
-	if _, err := store.Pool().Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
+	insert := func(c supervise.Claim) error {
+		_, err := store.Pool().Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
 		launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
 		values ($1, $2, $3, $4, $5, $6, $7, '', $8, 0, 0, 0, 0, $9)`,
-		string(held.Token), held.Project, held.Tree, held.Issue, string(held.Role), int64(held.Generation), held.Session,
-		string(held.State), string(held.SuspendedBy)); !refusedByTheCheck(err) {
+			string(c.Token), c.Project, c.Tree, c.Issue, string(c.Role), int64(c.Generation), c.Session,
+			string(c.State), string(c.SuspendedBy))
+		return err
+	}
+	if err := insert(held); !refusedByTheCheck(err) {
 		t.Fatalf("the database the release before left stored a claim suspended by the hold = %v, want its source check to refuse it (23514)", err)
+	}
+	// The release before is main's after 20261115060739, which sorts before this migration: its
+	// check takes the controller's source, and the migration keeps it, so a database that holds a
+	// claim the controller suspended takes the migration and keeps that claim's source.
+	if err := insert(steered); err != nil {
+		t.Fatalf("the database the release before left refused a claim suspended by the controller: %v", err)
 	}
 
 	if _, err := store.Migrate(ctx); err != nil {
@@ -60,7 +71,7 @@ func TestTheWorkHoldSourceMigrationTakesHoldAndItsWayBackHandsTheClaimToTheOpera
 		}
 	}
 	const sources = `select row(role, suspended_by)::text from claims order by role`
-	if got, want := rowsAsText(t, store, sources), []string{"(implementer,hold)", "(tester,daemon)"}; !reflect.DeepEqual(got, want) {
+	if got, want := rowsAsText(t, store, sources), []string{"(implementer,hold)", "(reviewer,controller)", "(tester,daemon)"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the sources after the migration = %v, want %v", got, want)
 	}
 
@@ -68,8 +79,8 @@ func TestTheWorkHoldSourceMigrationTakesHoldAndItsWayBackHandsTheClaimToTheOpera
 		t.Fatalf("run the way back: %v", err)
 	}
 
-	if got, want := rowsAsText(t, store, sources), []string{"(implementer,operator)", "(tester,daemon)"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("the sources after the way back = %v, want %v: the held claim the operator's, the daemon's as it was", got, want)
+	if got, want := rowsAsText(t, store, sources), []string{"(implementer,operator)", "(reviewer,controller)", "(tester,daemon)"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the sources after the way back = %v, want %v: the held claim the operator's, the controller's and the daemon's as they were", got, want)
 	}
 	if err := store.PutClaim(ctx, held); !refusedByTheCheck(err) {
 		t.Fatalf("after the way back a claim suspended by the hold = %v, want the release before's source check to refuse it (23514)", err)

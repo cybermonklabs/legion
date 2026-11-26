@@ -777,6 +777,14 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 		// once for a released merger, which wake readies, tells and stops after an early act.
 		woken int
 		wake  func(r *workHoldRig)
+		// afterOpening is a request of the writer's that a claim the opening does not start reaches
+		// once the gate is open, and that is taken then.
+		afterOpening func(r *workHoldRig)
+		// controllerHolds is the role whose claim the controller's suspension holds once the gate
+		// opens: a start of it the tree queued before the close, which the opening writes in place
+		// of only for a claim it starts, waits for the controller's resume (supervise's StartedBy,
+		// RuleHoldError) and runs once afterOpening has made it.
+		controllerHolds claim.Role
 	}
 	writers := []writer{
 		{name: "a transition (a move back), and the hook prompt it fires", act: func(r *workHoldRig) {
@@ -889,12 +897,42 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 					r.t.Fatalf("fired %d timers at the 2 minutes, want the woken merger's stop's one", fired)
 				}
 			}},
+		// The controller's agent actions (#4065, api's agentDoor) and claimstart's restart of a
+		// retired phase worker (restartWorkedPhase): each is refused 409 HELD_BY_WORK_HOLD while the
+		// gate is closed, whatever suspended the worker, and writes no start row; once the gate
+		// opens, the claim the opening does not start — one the controller took over from the hold,
+		// or one its stop retired — is started by the same request (decision 16).
+		{name: "the controller's resume of a held worker it took over (agent door)", held: []claim.Role{claim.RoleImplementer},
+			writesNone: claim.RoleTester, controllerHolds: claim.RoleTester, act: func(r *workHoldRig) {
+				theControllerTakesOver(r, claim.RoleTester)
+				refusedByTheHold(r, agentResume, claim.RoleTester)
+			}, afterOpening: func(r *workHoldRig) { takenOnceOpen(r, agentResume, claim.RoleTester) }},
+		{name: "the controller's fresh session of a held worker it took over (agent door)", held: []claim.Role{claim.RoleImplementer},
+			writesNone: claim.RoleTester, controllerHolds: claim.RoleTester, act: func(r *workHoldRig) {
+				theControllerTakesOver(r, claim.RoleTester)
+				refusedByTheHold(r, agentFreshSession, claim.RoleTester)
+			}, afterOpening: func(r *workHoldRig) { takenOnceOpen(r, agentFreshSession, claim.RoleTester) }},
+		{name: "the controller's resume, fresh session and retry of a worker the hold stopped (agent door)",
+			writesNone: claim.RoleTester, act: func(r *workHoldRig) {
+				refusedByTheHold(r, agentResume, claim.RoleTester)
+				refusedByTheHold(r, agentFreshSession, claim.RoleTester)
+				refusedByTheHold(r, agentRetry, claim.RoleTester)
+			}},
+		{name: "the controller's retry of a held worker its stop retired (claimstart's phase restart)", held: []claim.Role{claim.RoleImplementer},
+			writesNone: claim.RoleTester, act: func(r *workHoldRig) {
+				theControllerStops(r, claim.RoleTester)
+				refusedByTheHold(r, agentRetry, claim.RoleTester)
+				refusedByTheHold(r, agentFreshSession, claim.RoleTester)
+			}, afterOpening: func(r *workHoldRig) { takenOnceOpen(r, agentRetry, claim.RoleTester) }},
 	}
 	for _, w := range writers {
 		t.Run(w.name, func(t *testing.T) {
 			rig, held := heldAtTheClose, []claim.Role{claim.RoleTester, claim.RoleImplementer}
 			if w.rig != nil {
-				rig, held = w.rig, w.held
+				rig = w.rig
+			}
+			if w.held != nil {
+				held = w.held
 			}
 			r := rig(t)
 			act := func() {
@@ -944,8 +982,20 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 				}
 			}
 			for _, kind := range append(w.left, record.OutboxKindSupervise) {
-				if got := r.rows(kind, "", ""); got != 0 {
+				got := r.rows(kind, "", "")
+				if kind == record.OutboxKindSupervise && w.controllerHolds != "" {
+					got -= r.rows(kind, "start", w.controllerHolds)
+				}
+				if got != 0 {
 					t.Fatalf("the outbox still holds %d %s rows once the gate opened, want every one run", got, kind)
+				}
+			}
+			if w.afterOpening != nil {
+				w.afterOpening(r)
+			}
+			if w.controllerHolds != "" {
+				if got := r.rows(record.OutboxKindSupervise, "start", w.controllerHolds); got != 0 {
+					t.Fatalf("the outbox still holds %d starts of the %s after the controller's request, want every one run", got, w.controllerHolds)
 				}
 			}
 		})

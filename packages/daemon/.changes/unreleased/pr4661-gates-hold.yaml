@@ -29,7 +29,7 @@ body: |-
   next sweep reads again. Where no role process runs in the pod, nothing can read the workspace, so
   the round does not replace the pod until a role runs in it again or the hold ends. An issue at a
   phase worker's phase of a held tree reads `why.state` `held`, with
-  the version that closed the gate. A caller below the contract for entry `20261125163006` is
+  the version that closed the gate. A caller below the contract for entry `20261126175637` is
   served such an issue with no `why`. While the hold stands, no architect is told to start its own
   acceptance: the notice that an issue waits in `accepting` waits for the opening, the
   `awaiting-children` notice of an issue that comes back to `accepting` from its wait on its
