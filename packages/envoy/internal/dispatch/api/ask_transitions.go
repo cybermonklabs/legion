@@ -577,7 +577,7 @@ func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Le
 	if err := s.requireOpenOwner(ctx, tx, who, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
 		return model.Ask{}, err
 	}
-	ask, err := s.readAskForTransition(ctx, tx, who, id)
+	ask, err := s.readAskForTransition(ctx, tx, id)
 	if err != nil {
 		return model.Ask{}, err
 	}

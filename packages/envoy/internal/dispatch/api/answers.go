@@ -57,7 +57,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		       null::timestamptz as reply_edited_at, null::timestamptz as deleted_at, null::jsonb as deleted_by`,
 		// The canonical login on both halves: a row a build stored under a login before sign-in
 		// lower-cased it is the same person's (user_threads_login, as the replies half reads).
-		`user_threads_login(e.actor->>'id') = $1`, "")+`
+		`user_threads_login(e.actor->>'id') = $1`)+`
 		), mine as (
 			select * from answered
 			union all

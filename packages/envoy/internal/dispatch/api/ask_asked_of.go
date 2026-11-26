@@ -87,7 +87,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	ask, err := s.readAskForTransition(r.Context(), tx, who, askID)
+	ask, err := s.readAskForTransition(r.Context(), tx, askID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

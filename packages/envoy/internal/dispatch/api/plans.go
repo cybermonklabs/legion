@@ -77,7 +77,7 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	project, ok := s.lockRecordedIssue(w, r, tx, key, actor, "a plan")
+	project, ok := s.lockRecordedIssue(w, r, tx, key)
 	if !ok {
 		return
 	}

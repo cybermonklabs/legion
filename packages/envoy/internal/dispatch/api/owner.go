@@ -74,15 +74,17 @@ func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, who mo
 	return artifact, documentOwner(artifact.ID), nil
 }
 
-// loadProject reads the project row, every column model.Project carries but the open-ask count,
-// which only the project list reads. A project.updated event carries what this answers, so its
-// payload is the whole row a reader of the project list sees. An unknown key is 404
-// PROJECT_NOT_FOUND.
+// loadProject reads the project row as who reads it, every column model.Project carries but the
+// open-ask count, which only the project list reads: a project who does not see is a row the read
+// does not find (access.ProjectClause), and answers 404 PROJECT_NOT_FOUND as a key nobody holds. A
+// project.updated event carries what this answers, so its payload is the whole row a reader of the
+// project list sees.
 func (s *server) loadProject(ctx context.Context, q queryer, who model.Actor, key string) (model.Project, error) {
 	var project model.Project
 	if err := q.QueryRow(ctx, `
-		select key, name, gated_steps, default_repo, proven_sessions, created_at from projects where key = $1
-	`, key).Scan(
+		select key, name, gated_steps, default_repo, proven_sessions, created_at
+		from projects where key = $1 and `+access.ProjectClause("key", "$2"),
+		key, refs.VisibilityArg(who)).Scan(
 		&project.Key,
 		&project.Name,
 		&project.GatedSteps,

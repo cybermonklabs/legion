@@ -39,8 +39,7 @@ type deliveryMeasuresResponse struct {
 // request: the window's population read once (readDeliveryPopulation) and measured by
 // deliveryMeasuresCompute, the two halves the live hub calls too.
 func (s *server) getDeliveryMeasures(w http.ResponseWriter, r *http.Request) {
-	reader, ok := s.readerOf(w, r)
-	if !ok {
+	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	query := r.URL.Query()
@@ -53,7 +52,7 @@ func (s *server) getDeliveryMeasures(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	population, err := s.readDeliveryPopulation(r.Context(), reader, settings, from, to, query, false)
+	population, err := s.readDeliveryPopulation(r.Context(), settings, from, to, query, false)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

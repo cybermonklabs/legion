@@ -120,7 +120,7 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.writeIssueStep(w, r, input.write(), actor, key, false)
+	s.writeIssueStep(w, r, input.write(), actor, key)
 }
 
 // putIssueStepRating writes the rating of a retro's run, with every field of the run the body
@@ -151,7 +151,7 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 	if input.RatingReason != nil {
 		write.Rating.Reason = *input.RatingReason
 	}
-	s.writeIssueStep(w, r, write, actor, key, true)
+	s.writeIssueStep(w, r, write, actor, key)
 }
 
 // putIssueStepExperiment writes the experiment and the variant of a run's issue, with every field
@@ -184,7 +184,7 @@ func (s *server) putIssueStepExperiment(w http.ResponseWriter, r *http.Request) 
 	if input.Variant != nil {
 		write.Experiment.Variant = *input.Variant
 	}
-	s.writeIssueStep(w, r, write, actor, key, false)
+	s.writeIssueStep(w, r, write, actor, key)
 }
 
 // writeIssueStep is the one write of a step record behind the three routes, by actor to the issue
@@ -193,7 +193,7 @@ func (s *server) putIssueStepExperiment(w http.ResponseWriter, r *http.Request) 
 // answered as the read lists it. The request's reader is resolved once, before the transaction
 // opens, and handed on in the request's context (withReader), so the issue's read and the read of
 // its runs bind the one viewer.
-func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, actor model.Actor, key string, rated bool) {
+func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, actor model.Actor, key string) {
 	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
@@ -205,7 +205,7 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 		return
 	}
 	defer tx.Rollback(r.Context())
-	project, ok := s.lockRecordedIssue(w, r, tx, key, actor, "a step record")
+	project, ok := s.lockRecordedIssue(w, r, tx, key)
 	if !ok {
 		return
 	}
@@ -273,7 +273,7 @@ func (s *server) requireIssueDaemon(w http.ResponseWriter, r *http.Request, supp
 // issue from one that does not serve the route, whose router answers NOT_FOUND. The path names the
 // issue by its key alone, so the issue is read so once before the lock is asked for, and a hidden
 // one is refused without waiting behind its project's writers, as a key no issue holds is.
-func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pgx.Tx, key string, actor model.Actor, record string) (string, bool) {
+func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pgx.Tx, key string) (string, bool) {
 	who, ok := s.readerOf(w, r)
 	if !ok {
 		return "", false

@@ -265,14 +265,13 @@ type legionBoardIssue struct {
 // board before anything reads the keys (leaveOutHiddenIssues).
 func (s *server) readLegionBoard(ctx context.Context, who model.Actor, project string) (*legionBoardPopulation, error) {
 	pool := s.deps.Store.Pool
-	viewer := refs.VisibilityArg(who)
 	if _, err := legion.GetSettings(ctx, pool, project); err != nil {
 		return nil, err
 	}
 	population := &legionBoardPopulation{
 		project: project, issues: map[string]*legionBoardIssue{}, parents: map[string]string{},
 	}
-	if err := population.readSampled(ctx, pool, viewer); err != nil {
+	if err := population.readSampled(ctx, pool); err != nil {
 		return nil, err
 	}
 	if err := population.leaveOutHiddenIssues(ctx, pool, who); err != nil {
@@ -357,7 +356,7 @@ func (p *legionBoardPopulation) leaveOutHiddenIssues(ctx context.Context, q quer
 // one repeatable-read, read-only transaction, so the two answer one moment. RecordRead commits a
 // read's row and its observations together, and two reads at two moments would still let a commit
 // between them put the header of one read of the daemon over the cards of another.
-func (p *legionBoardPopulation) readSampled(ctx context.Context, pool *store.Pool, viewer any) error {
+func (p *legionBoardPopulation) readSampled(ctx context.Context, pool *store.Pool) error {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return err

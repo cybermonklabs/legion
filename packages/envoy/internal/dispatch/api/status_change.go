@@ -203,7 +203,7 @@ func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 		server: s, key: key, change: change, writer: writer, who: who, callerName: statusChangeCallerName(writer.actor),
 		callerProject: callerProject, outliving: outlivingTheClient(r), resumed: resumed, pointed: resumed != nil,
 	}
-	plan, err := s.planStatusChange(ctx, who, key, change, writer, callerProject, resumed)
+	plan, err := s.planStatusChange(ctx, key, change, writer, callerProject, resumed)
 	// A dry run answers what the call answers with the rule on, whatever the setting.
 	if err == nil && plan.conflict != nil && (change.dryRun || s.deps.ParentStatusRule.On()) {
 		err = plan.conflict
@@ -368,7 +368,7 @@ func (read statusChangeRead) steps(change statusChange) []statusChangeStep {
 // point of an earlier attempt that this attempt resumes, nil for a first attempt: it changes the
 // fence, the gate and the plan as planStatusChangeUnderLocks says.
 func (s *server) planStatusChange(
-	ctx context.Context, who model.Actor, key string, change statusChange, writer issueWriter, callerProject string, resumed *statusChangeRecovery,
+	ctx context.Context, key string, change statusChange, writer issueWriter, callerProject string, resumed *statusChangeRecovery,
 ) (statusChangePlan, error) {
 	pool, err := s.readyPool()
 	if err != nil {
@@ -379,7 +379,7 @@ func (s *server) planStatusChange(
 		return statusChangePlan{}, err
 	}
 	for range parentLockAttempts {
-		plan, moved, err := s.planStatusChangeUnderLocks(ctx, who, key, change, writer, callerProject, read, resumed)
+		plan, moved, err := s.planStatusChangeUnderLocks(ctx, key, change, writer, callerProject, read, resumed)
 		if err != nil || moved == nil {
 			return plan, err
 		}
@@ -402,7 +402,7 @@ func (s *server) planStatusChange(
 // entry, and runs no closed-issue gate on the named issue when the point holds its entry: the
 // call's own close closed it.
 func (s *server) planStatusChangeUnderLocks(
-	ctx context.Context, who model.Actor, key string, change statusChange, writer issueWriter, callerProject string, read statusChangeRead, resumed *statusChangeRecovery,
+	ctx context.Context, key string, change statusChange, writer issueWriter, callerProject string, read statusChangeRead, resumed *statusChangeRecovery,
 ) (statusChangePlan, *statusChangeRead, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -413,7 +413,7 @@ func (s *server) planStatusChangeUnderLocks(
 	if err := lockIssueWriteOwners(ctx, tx, held); err != nil {
 		return statusChangePlan{}, nil, err
 	}
-	named, err := s.loadIssue(ctx, tx, who, key)
+	named, err := s.loadIssue(ctx, tx, key)
 	if err != nil {
 		return statusChangePlan{}, nil, err
 	}
@@ -759,7 +759,7 @@ func (run *statusChangeRun) finish(issue model.Issue) error {
 	}
 	_, ledger := s.deps.Docs.Join(ctx, tx)
 	defer ledger.Discard()
-	if err := lockPatchOwners(ctx, tx, run.who, run.key); err != nil {
+	if err := lockPatchOwners(ctx, tx, run.key); err != nil {
 		return err
 	}
 	commented, stored, err := s.queueIssueComment(ctx, tx, ledger, run.key, parentStatusRuleActor, body)

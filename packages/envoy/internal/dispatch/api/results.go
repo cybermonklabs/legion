@@ -447,7 +447,7 @@ func (s *server) recordResultUnderOwnerLocks(
 	// waiting for the parent and another hold the parent while waiting for the child;
 	// lockIssueOwners is the one key order every writer of two issues takes. It is the owner
 	// lock and not the issue rows, so this read phase holds no transaction id.
-	if _, err := lockIssueOwners(ctx, tx, who, issueKey, check.IssueKey); err != nil {
+	if _, err := lockIssueOwners(ctx, tx, issueKey, check.IssueKey); err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
 	recordingOpen, checkOpen, err := issuesOpenForResult(ctx, tx, who, issueKey, check.IssueKey)
@@ -459,7 +459,7 @@ func (s *server) recordResultUnderOwnerLocks(
 	// otherwise have the result recorded against the words it replaced, and a check reworded from
 	// before_merge to after_merge would be judged by the `when` it carried before the lock. The
 	// words and the attributes are never read here, only judged (indexedCheckBlock).
-	indexed, err := indexedCheckBlock(ctx, tx, who, check, input.Check)
+	indexed, err := indexedCheckBlock(ctx, tx, check, input.Check)
 	if err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
@@ -860,7 +860,7 @@ func unknownCheck(value string) error {
 // (docs/read_cache.go), so the one case it would answer differently is the one it would answer
 // slowest in. The redo reads the words, with every lock given back
 // (recordResultWithFreshWords).
-func indexedCheckBlock(ctx context.Context, q queryer, who model.Actor, check checkBlockRef, named string) (indexedCheck, error) {
+func indexedCheckBlock(ctx context.Context, q queryer, check checkBlockRef, named string) (indexedCheck, error) {
 	var indexed indexedCheck
 	err := q.QueryRow(ctx, `
 		select changed_version, text_sha256 from document_blocks

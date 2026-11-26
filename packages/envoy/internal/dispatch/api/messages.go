@@ -822,7 +822,7 @@ func (t messageReplyThread) payload(
 // loadMessageReplyThread derives that for a stored message, for a caller that did not derive
 // it while writing the message. A reply naming a block previews that block's text, as its write
 // did, read from the message's ReplyBlock, which the caller hydrates.
-func loadMessageReplyThread(ctx context.Context, tx pgx.Tx, who model.Actor, message model.Message) (messageReplyThread, error) {
+func loadMessageReplyThread(ctx context.Context, tx pgx.Tx, message model.Message) (messageReplyThread, error) {
 	parent, err := loadMessageReplyParent(ctx, tx, message.IssueKey, message.Target, message.InReplyTo)
 	if err != nil {
 		return messageReplyThread{}, err

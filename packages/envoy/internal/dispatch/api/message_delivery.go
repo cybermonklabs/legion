@@ -663,8 +663,7 @@ func finishPendingMessageDelivery(
 		if err := hydrateMessageReplyBlocks(ctx, tx, everyReader, &message); err != nil {
 			return err
 		}
-		// The writer's path read this parent as its writer reads it; the frame reads it as everyReader.
-		derived, err := loadMessageReplyThread(ctx, tx, everyReader, message)
+		derived, err := loadMessageReplyThread(ctx, tx, message)
 		if err != nil {
 			return err
 		}
