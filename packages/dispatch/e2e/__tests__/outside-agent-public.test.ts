@@ -301,12 +301,12 @@ describe.skipIf(skipWithout("bash", "bun"))(
     );
 
     // With no close time the real stand-in's hold sleeps for the T5 window (20 minutes). The
-    // deliberate five-second child bound forces that exact wait, so its failure must name both the
-    // T5 window it reached and the processes that were still live when it was killed.
+    // 30-second publicT5Diagnostic bound covers the measured public-leg start to this hold under
+    // the row's parallel shape, so the forced hold names the T5 window and live processes.
     test(
       "a T5 relay hold that never closes leaves a named timeout diagnostic",
       async () => {
-        const failure = await publicStandInRun({ trades: [true] }, "stuckOnPurpose").then(
+        const failure = await publicStandInRun({ trades: [true] }, "publicT5Diagnostic").then(
           () => "the public leg ended before its deliberate held relay bound",
           (error: unknown) => (error instanceof Error ? error.message : String(error))
         );
@@ -317,7 +317,7 @@ describe.skipIf(skipWithout("bash", "bun"))(
           /still running when its bound passed:\n {2}pid=\d+ ppid=\d+ name=/
         );
       },
-      rowLimit("stuckOnPurpose")
+      rowLimit("publicT5Diagnostic")
     );
   }
 );

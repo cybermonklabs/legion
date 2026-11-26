@@ -110,12 +110,17 @@
  *   one to stderr, then slept, started eight at once under six busy loops on a two-CPU pod on
  *   2026-11-24. The diagnostic control below lets its bound pass after five seconds, which is
  *   more than three times that reading and keeps the suite's deliberate stuck child short.
-
+ * - `publicT5Diagnostic`, against 9.905 s: the largest of 150 starts from the public leg's child
+ *   spawn to its T5 relay hold, in 30 runs on a three-CPU gVisor build pod beside eight busy loops
+ *   on 2026-11-26. Each run used the file's parallel P6 row and its browser row; the starts read
+ *   6.018 s minimum, 9.1415 s median and 9.905 s maximum. Three times the maximum is 29.715 s,
+ *   rounded up to 30 s.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
- * laptop as in CI: a `short` child after 60 s, a stop row's driver (`stoppedLeg`) after 90 s, a
- * listing after 6 minutes, the generation after 6.5 minutes, a run of the Codex leg after 3
- * minutes, a run of the edge check after 9 minutes, and the two-stack build after 30 minutes.
+ * laptop as in CI: a `short` child after 60 s, a public T5 diagnostic child after 30 s, a stop
+ * row's driver (`stoppedLeg`) after 90 s, a listing after 6 minutes, the generation after 6.5
+ * minutes, a run of the Codex leg after 3 minutes, a run of the edge check after 9 minutes, and
+ * the two-stack build after 30 minutes.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
  * its own work, so the child's bound fires before the row's limit and the failure names the child.
  * The lane runs in the `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15
@@ -161,6 +166,8 @@ export const bounds = Object.freeze({
   stoppedLeg: 90_000,
   /** The deliberate stuck child that proves a timeout reports its output and live processes. */
   stuckOnPurpose: 5_000,
+  /** The public leg's start through its T5 hold, measured under the row's parallel shape. */
+  publicT5Diagnostic: 30_000,
 });
 
 /** The name of a bound, which is what a row and a run name rather than a number. */
