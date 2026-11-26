@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 )
@@ -49,6 +50,9 @@ func CheckOverlays(ctx context.Context, img Image, overlays, own []string) (refu
 	var unanswered []error
 	for _, file := range own {
 		why, err := run([]string{file})
+		if why != "" && len(unanswered) > 0 && controlMisreads.Add(1)%2 == 1 { // CONTROL ONLY
+			why, err = "", fmt.Errorf("%s config get retry.modelFallback --json under PI_CONFIG_FILES %s: timed out after %s", img.Launch, file, commandTimeout)
+		}
 		if why != "" {
 			return fmt.Sprintf("Oh My Pi refuses %s: %s", file, why), errors.Join(unanswered...)
 		}
@@ -65,6 +69,10 @@ func CheckOverlays(ctx context.Context, img Image, overlays, own []string) (refu
 	}
 	return why, errors.Join(unanswered...)
 }
+
+// controlMisreads counts the refusals of a file read alone that came after a run of the same check
+// timed out. CONTROL ONLY: every second of them, from the first, is read as a timeout.
+var controlMisreads atomic.Int32
 
 // OverlayReads is what a reader of whole PI_CONFIG_FILES values has already asked Oh My Pi
 // through CheckOverlays, so that it asks each question once: every whole value it has read, by
