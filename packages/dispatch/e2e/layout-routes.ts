@@ -224,6 +224,12 @@ const reviewed: readonly LayoutRoute[] = reviewRoutes
 export const layoutUnread: Readonly<Record<string, string>> = {
   credentials:
     "It draws InboxPage, the same component as / (web/src/app.tsx), which the inbox route reads.",
+  run:
+    "A command bar run's own page draws only for the reader who asked the run, and the layout " +
+    "stress seed asks no run. Every other reader gets NotFoundPage, which this layer reads at " +
+    "its not-found route. The run's page is drawn at 1440 px and at 390 px, and read to fit " +
+    "each width with nothing cut, by e2e/issue-page-z.e2e.ts's row 'the run's page is its " +
+    "asker's alone'.",
 };
 
 export const layoutRoutes: readonly LayoutRoute[] = [

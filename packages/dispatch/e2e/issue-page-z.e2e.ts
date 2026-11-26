@@ -13,7 +13,7 @@ import {
   buildRunPath,
 } from "../web/src/features/refs/routes";
 import { gotoIssue, issuePage, openDetails, phase } from "./issue-page";
-import { DESKTOP } from "./issue-page-g";
+import { DESKTOP, PHONE } from "./issue-page-g";
 import { marginSection } from "./issue-page-h";
 import { withIssuePage } from "./issue-page-option";
 import {
@@ -39,6 +39,7 @@ import {
   targetReadsNaming,
   treeReadFailure,
 } from "./issue-page-z";
+import { measureLayout } from "./layout-measure";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 import { asUser } from "./users";
@@ -251,8 +252,9 @@ test("a command bar run that changed the issue is a reference for the person who
 // two contexts of their own - bob's, and alice's on today's page - each reading the not-found
 // page.
 // The run's page draws its asker's question, its answer's one line and what it changed from one
-// read by the run's own address, and the issue's run row leads to it; to bob, and to alice on
-// today's page, the run's address is the page an unknown address draws.
+// read by the run's own address, and fits 390 px and 1440 px with nothing cut; the issue's run
+// row leads to it; to bob, and to alice on today's page, the run's address is the page an
+// unknown address draws.
 test("the run's page is its asker's alone", async ({ browser }) => {
   await phase(browser, seedRunIssue, async (page, seeded) => {
     const traffic = watchApiRequests(page);
@@ -276,6 +278,33 @@ test("the run's page is its asker's alone", async ({ browser }) => {
     const text = await run.innerText();
     for (const token of ["NO_MODEL_CONFIGURED", "error", "interaction", "changed_by_run"]) {
       expect(text, `the run's page reads "${token}"`).not.toContain(token);
+    }
+
+    // The run's page drawn at 390 px and at 1440 px. Each width is loaded afresh, as a reader who
+    // opens the address at that width loads it: the shell picks its layout by a media query
+    // (`app.tsx`'s `isCompactViewport`), whose answer a resize reaches only in a later render, so
+    // a reading taken straight after a resize could read the layout of the width before. Each
+    // drawing is read by the layout rule's own measure (`e2e/layout-measure.ts`'s
+    // `measureLayout`) once the page's reads have gone quiet and its fonts have loaded, since a
+    // name or a face that lands later changes the width of a line: nothing makes the page scroll
+    // sideways, and nothing is cut at a side without an ellipsis. The layout rows leave this page
+    // out (`e2e/layout-routes.ts`'s `layoutUnread`), so no entry of `e2e/layout-breaches.ts` can
+    // accept a breach of it. 1440 px comes last because it is the width `phase` gave the page,
+    // which the rest of the row reads the page at.
+    for (const viewport of [PHONE, DESKTOP]) {
+      const at = `at ${viewport.width} px`;
+      await page.setViewportSize(viewport);
+      await page.goto(address);
+      await expect(run, `the run's page holds its question ${at}`).toContainText(RUN_QUESTION);
+      await expect(
+        changed.getByRole("listitem").filter({ hasText: RUN_COMMENT }),
+        `the run's page draws the comment the run wrote ${at}`
+      ).toHaveCount(1);
+      await expectLoadSettled(traffic);
+      await page.evaluate(() => document.fonts.ready.then(() => undefined));
+      const reading = await page.evaluate(measureLayout);
+      expect(reading.viewport, `the run's page is read ${at}`).toBe(viewport.width);
+      expect(reading.breaches, `the run's page fits ${at} with nothing cut`).toEqual([]);
     }
 
     // The issue's run row leads to the same address.
