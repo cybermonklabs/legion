@@ -95,8 +95,8 @@ func refusedSettings(t *testing.T, response *httptest.ResponseRecorder, status i
 		t.Fatalf("status=%d body=%s, want %d %s", response.Code, response.Body.String(), status, code)
 	}
 	refusal := decodeBody[delivery.SettingsError](t, response)
-	if refusal.Code != code {
-		t.Fatalf("refusal = %+v, want %s", refusal, code)
+	if refusal.Code != code || strings.TrimSpace(refusal.Message) == "" {
+		t.Fatalf("refusal = %+v, want code %s and a nonempty error", refusal, code)
 	}
 	return refusal
 }
@@ -305,15 +305,16 @@ func TestReconciledThroughIsTheEarliestStepOfTheSourcesRepository(t *testing.T) 
 // The settings are the deployment's to write: a token the broker scoped to one project is refused
 // PROJECT_SCOPE_DEPLOYMENT on that very project, and reads them. A save is refused, writing
 // nothing, where the App cannot read a source's repository, naming the source, and where another
-// delivery-on project's source reads a repository, naming that project; a save that turns delivery
-// off proves no repository, and reads back off.
+// delivery-on project's source reads a repository, naming that project, or delivery is turned on
+// without a repository to read. A save that turns delivery off proves no repository, and reads
+// back off. A read-only token and the shared agent token read the same settings as a person.
 func TestTheProjectDeliverySettingsAreTheDeploymentsWrite(t *testing.T) {
 	rig := newDeliverySettingsRig(t, readableRepos())
 	caller := newBrokerCaller(t)
 	const token = "a-token-that-may-not-write-delivery-settings"
 	rig.broker.Says(token, liveNamedToken(caller.jkt))
 	seedProject(t, rig, brokerTestProject, "Broker")
-	createTestProject(t, rig.handler, "ALPHA")
+	createTestProject(t, rig.handler, "ALPHA", "BARE")
 	path := "/api/v1/projects/" + brokerTestProject + "/settings/delivery"
 	settings := map[string]any{
 		"delivery": true, "sources": []any{workflowSource("acme/beta-deploy", ".github/workflows/deploy.yml", "release")},
@@ -341,9 +342,55 @@ func TestTheProjectDeliverySettingsAreTheDeploymentsWrite(t *testing.T) {
 	}
 
 	savedProjectDelivery(t, rig.handler, "ALPHA", settings)
-	shared := refusedSettings(t, putProjectDelivery(t, rig.handler, brokerTestProject, settings), http.StatusConflict, delivery.CodeDeliveryRepositoryShared)
-	if shared.Project != "ALPHA" {
-		t.Fatalf("the shared refusal names %q, want ALPHA", shared.Project)
+	setDefaultRepository(t, rig.handler, brokerTestProject, "acme/beta")
+	savedProjectDelivery(t, rig.handler, brokerTestProject, map[string]any{
+		"delivery": false, "sources": []any{workflowSource("", ".github/workflows/ship.yml", "ship")},
+		"population_authors": []string{"hubot"},
+	})
+	savedProjectDelivery(t, rig.handler, "BARE", map[string]any{
+		"delivery": false, "sources": []any{workflowSource("", ".github/workflows/ship.yml", "ship")},
+		"population_authors": []string{"hubot"},
+	})
+	for _, row := range []struct {
+		name, project, code, named string
+		body                       map[string]any
+	}{
+		{"another delivery-on project reads the repository", brokerTestProject, delivery.CodeDeliveryRepositoryShared, "ALPHA", settings},
+		{"no repository to read", "BARE", delivery.CodeDeliveryNoDefaultRepository, "default repository", map[string]any{"delivery": true}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			before := readProjectDelivery(t, rig.handler, row.project)
+			owner := readProjectDelivery(t, rig.handler, "ALPHA")
+			refusal := refusedSettings(t, putProjectDelivery(t, rig.handler, row.project, row.body), http.StatusConflict, row.code)
+			if !strings.Contains(refusal.Message, row.named) || refusal.Source == nil || *refusal.Source != 0 ||
+				(row.code == delivery.CodeDeliveryRepositoryShared && refusal.Project != row.named) {
+				t.Errorf("refusal %+v does not name source 0 and %s", refusal, row.named)
+			}
+			if after := readProjectDelivery(t, rig.handler, row.project); string(after) != string(before) {
+				t.Errorf("the refused save left %s's settings %s, want %s", row.project, after, before)
+			}
+			if after := readProjectDelivery(t, rig.handler, "ALPHA"); string(after) != string(owner) {
+				t.Errorf("the refused save left ALPHA's settings %s, want %s", after, owner)
+			}
+		})
+	}
+
+	const reader = "a-read-only-token-reading-delivery-settings"
+	rig.broker.Says(reader, readOnlyToken(caller.jkt))
+	want := readProjectDelivery(t, rig.handler, brokerTestProject)
+	for _, row := range []struct {
+		name    string
+		request *http.Request
+	}{
+		{"a read-only token", caller.presenting(t, http.MethodGet, path, reader, nil)},
+		{"the shared agent token", brokerRequest(t, http.MethodGet, path, nil, "Bearer agent-token", "")},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			read := rig.serve(row.request)
+			if read.Code != http.StatusOK || read.Body.String() != string(want) {
+				t.Errorf("%s reads %d %s, want 200 %s", row.name, read.Code, read.Body.String(), want)
+			}
+		})
 	}
 
 	off := savedProjectDelivery(t, rig.handler, brokerTestProject, map[string]any{
@@ -412,5 +459,99 @@ func TestASavesJobNamesAreStoredAsTheSingletonsSaveStoresThem(t *testing.T) {
 		if refusal.Field != bad.field || refusal.Source == nil || *refusal.Source != 1 {
 			t.Errorf("%s is refused %+v, want source 1's %s named", bad.what, refusal, bad.field)
 		}
+	}
+}
+
+// A save keeps the stored value of each top-level field its body leaves out (the two-build rule,
+// store/README.md: a page of a build that does not know a field saves without it): a PUT without
+// failure_sources and without population_authors keeps both, with the day the failures count from
+// and the excluded repository it names; one naming population_authors null clears it and keeps
+// the switch and the source, its row and id included; one naming sources replaces the list; and
+// naming one target changes that target alone.
+func TestAPutThatLeavesOutAFieldKeepsItsStoredValue(t *testing.T) {
+	t.Parallel()
+	rig := newDeliverySettingsRig(t, readableRepos())
+	createTestProject(t, rig.handler, "ALPHA")
+	source := workflowSource("acme/alpha-deploy", ".github/workflows/deploy.yml", "release")
+	first := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": true, "sources": []any{source}, "population_authors": []string{"octocat"},
+		"excluded_repos": []string{"acme/dojo"}, "failure_sources": []string{delivery.FailureSourceReverts},
+		"failures_measured_since": "2026-11-01",
+	})
+
+	kept := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": true, "sources": []any{source}, "excluded_repos": []string{"acme/other"},
+	})
+	if !slices.Equal(kept.PopulationAuthors, []string{"octocat"}) || !slices.Equal(kept.FailureSources, []string{"reverts"}) ||
+		deref(kept.FailuresMeasuredSince) != "2026-11-01" || !slices.Equal(kept.ExcludedRepos, []string{"acme/other"}) {
+		t.Fatalf("a save without population_authors and failure_sources holds population %v, failure sources %v from %v and excluded %v; want octocat, reverts from 2026-11-01 kept and acme/other saved",
+			kept.PopulationAuthors, kept.FailureSources, kept.FailuresMeasuredSince, kept.ExcludedRepos)
+	}
+
+	cleared := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{"population_authors": nil})
+	if len(cleared.PopulationAuthors) != 0 || !cleared.Delivery || len(cleared.Sources) != 1 || cleared.Sources[0].ID != first.Sources[0].ID ||
+		!slices.Equal(cleared.FailureSources, []string{"reverts"}) || !slices.Equal(cleared.ExcludedRepos, []string{"acme/other"}) {
+		t.Fatalf("a save of population_authors null holds %+v; want no population author, and delivery on, source %s, reverts and acme/other kept",
+			cleared, first.Sources[0].ID)
+	}
+
+	replaced := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"sources": []any{workflowSource("acme/alpha", ".github/workflows/ship.yml", "ship")},
+	})
+	if !slices.Equal(sourceRepos(replaced), []string{"acme/alpha"}) || !replaced.Delivery {
+		t.Fatalf("a save naming a replacement source holds %v and delivery %v; want acme/alpha alone and delivery on",
+			sourceRepos(replaced), replaced.Delivery)
+	}
+
+	failVersion, failTarget := evalVersion(t, rig, "ALPHA/change-fail-rate")
+	targeted := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{"targets": map[string]any{"deploy-frequency": 9}})
+	if version, target := evalVersion(t, rig, "ALPHA/deploy-frequency"); target == nil || *target != 9 {
+		t.Fatalf("a save of one target leaves deploy-frequency at version %d target %v, want 9", version, target)
+	}
+	if version, target := evalVersion(t, rig, "ALPHA/change-fail-rate"); version != failVersion || !equalPointers(target, failTarget) {
+		t.Fatalf("a save of deploy-frequency's target moved change-fail-rate to version %d target %v, want version %d target %v", version, target, failVersion, failTarget)
+	}
+	if !slices.Equal(sourceRepos(targeted), sourceRepos(replaced)) || !targeted.Delivery || len(targeted.PopulationAuthors) != 0 {
+		t.Fatalf("a save of one target holds %+v, want the settings as the save before left them", targeted)
+	}
+
+	empty := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": false, "sources": nil, "excluded_repos": nil, "failure_sources": nil, "failures_measured_since": nil,
+	})
+	if empty.Delivery || len(empty.Sources) != 0 || len(empty.ExcludedRepos) != 0 || len(empty.FailureSources) != 0 || empty.FailuresMeasuredSince != nil {
+		t.Errorf("a save turning delivery off and clearing the optional fields left %+v, want those fields empty", empty)
+	}
+}
+
+// A workflow and an events source save and read back together; the events source names no
+// repository or workflow. A second events source is refused by name and leaves the record alone.
+func TestAnEventsSourceIsSavedAndReadBackThroughTheRoute(t *testing.T) {
+	t.Parallel()
+	rig := newDeliverySettingsRig(t, readableRepos())
+	createTestProject(t, rig.handler, "ALPHA")
+	sources := []any{workflowSource("acme/alpha", ".github/workflows/deploy.yml", "release"), map[string]any{"kind": "events"}}
+	body := map[string]any{"delivery": true, "sources": sources}
+	saved := savedProjectDelivery(t, rig.handler, "ALPHA", body)
+	before := readProjectDelivery(t, rig.handler, "ALPHA")
+	read := settingsOf(t, before)
+	if want := mustJSON(t, saved); mustJSON(t, read) != want {
+		t.Fatalf("GET reads %s, want the settings PUT answered: %s", before, want)
+	}
+	if !read.Delivery || len(read.Sources) != 2 || read.Sources[0].Kind != delivery.SourceKindGitHubWorkflow ||
+		deref(read.Sources[0].Repo) != "acme/alpha" || deref(read.Sources[0].DeployWorkflowPath) != ".github/workflows/deploy.yml" {
+		t.Fatalf("GET reads %s, want delivery on with the workflow and events sources", before)
+	}
+	event := read.Sources[1]
+	if event.Kind != delivery.SourceKindEvents || event.ID == "" || event.Repo != nil || event.ResolvedRepo != nil ||
+		event.DeployWorkflowPath != nil || event.PRChecksWorkflowPath != nil || event.ProductionJobNames != nil {
+		t.Errorf("events source = %+v, want an events source with an id and no repository or workflow", event)
+	}
+	body["sources"] = append(sources, map[string]any{"kind": "events"})
+	refusal := refusedSettings(t, putProjectDelivery(t, rig.handler, "ALPHA", body), http.StatusBadRequest, delivery.CodeDeliverySettingsInput)
+	if refusal.Source == nil || *refusal.Source != 2 || refusal.Field != "kind" || !strings.Contains(refusal.Message, "one events source at most") {
+		t.Errorf("refusal %+v does not name the second events source (index 2)", refusal)
+	}
+	if after := readProjectDelivery(t, rig.handler, "ALPHA"); string(after) != string(before) {
+		t.Errorf("the refused save left %s, want %s", after, before)
 	}
 }

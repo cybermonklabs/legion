@@ -404,9 +404,9 @@ func progressSteps(t *testing.T, database *store.Store) []string {
 }
 
 // A delivery-on project whose deploy source names no repository reads its default repository, so
-// its default may not move onto a repository another delivery-on project's source reads (409
-// DELIVERY_REPOSITORY_SHARED naming that project) and may not be cleared (409
-// DELIVERY_NEEDS_REPOSITORY), either leaving the default as it was; a project whose every source
+// its default may not move onto a repository another source of this project or another delivery-on
+// project reads (409 DELIVERY_REPOSITORY_SHARED naming that project) and may not be cleared (409
+// DELIVERY_NEEDS_REPOSITORY). Each refusal leaves the settings and defaults as they were. A project whose every source
 // names its own repository moves and clears its default freely; and a move the rules allow clears
 // the reconcile progress of the old and the new repository, and no other.
 func TestTheDefaultRepositoryOfADeliveryProjectKeepsEachRepositoryOneProjects(t *testing.T) {
@@ -414,30 +414,37 @@ func TestTheDefaultRepositoryOfADeliveryProjectKeepsEachRepositoryOneProjects(t 
 	createTestProject(t, handler, "ALPHA", "BETA")
 	setDefaultRepository(t, handler, "ALPHA", "acme/alpha")
 	setDefaultRepository(t, handler, "BETA", "acme/beta")
-	saveProjectRules(t, database, "ALPHA", deployRule("acme/alpha", "alpha / release"))
+	saveProjectRules(t, database, "ALPHA", deployRule("acme/alpha", "alpha / release"), deployRule("acme/alpha-deploy", "explicit / release"))
 	saveProjectRules(t, database, "BETA", deployRule("acme/beta-deploy", "beta / release"))
 	put := func(project string, repo any) *http.Response {
 		t.Helper()
 		return dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/"+project+"/default-repository",
 			map[string]any{"repo": repo}, "alice").Result()
 	}
-	refused := func(project string, repo any, code string) delivery.SettingsError {
-		t.Helper()
-		response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/"+project+"/default-repository",
-			map[string]any{"repo": repo}, "alice")
-		refusal := refusedSettings(t, response, http.StatusConflict, code)
-		if listed, _ := listedDefaultRepository(t, handler, project); listed != `"acme/alpha"` && project == "ALPHA" {
-			t.Fatalf("the refused write left ALPHA's default %s, want acme/alpha", listed)
-		}
-		return refusal
-	}
-
-	if shared := refused("ALPHA", "acme/beta-deploy", delivery.CodeDeliveryRepositoryShared); shared.Project != "BETA" ||
-		!strings.Contains(shared.Message, "BETA") {
-		t.Fatalf("the move onto BETA's source repository was refused %+v, want BETA named", shared)
-	}
-	if needs := refused("ALPHA", nil, delivery.CodeDeliveryNeedsRepository); needs.Source == nil || *needs.Source != 0 {
-		t.Fatalf("the clear was refused %+v, want ALPHA's source 0 named", needs)
+	for _, row := range []struct {
+		name, code, project string
+		repo                any
+		source              int
+	}{
+		{"a repository another source of ALPHA reads", delivery.CodeDeliveryRepositoryShared, "ALPHA", "acme/alpha-deploy", 1},
+		{"a repository a source of BETA reads", delivery.CodeDeliveryRepositoryShared, "BETA", "acme/beta-deploy", 0},
+		{"clearing the default", delivery.CodeDeliveryNeedsRepository, "ALPHA", nil, 0},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			alpha := readProjectDelivery(t, handler, "ALPHA")
+			beta := readProjectDelivery(t, handler, "BETA")
+			response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/ALPHA/default-repository",
+				map[string]any{"repo": row.repo}, "alice")
+			got := refusedSettings(t, response, http.StatusConflict, row.code)
+			if got.Project != row.project || got.Source == nil || *got.Source != row.source || !strings.Contains(got.Message, row.project) {
+				t.Errorf("refusal %+v, want project %s and source %d named", got, row.project, row.source)
+			}
+			for project, before := range map[string][]byte{"ALPHA": alpha, "BETA": beta} {
+				if after := readProjectDelivery(t, handler, project); string(after) != string(before) {
+					t.Errorf("refused move left %s's settings and default %s, want %s", project, after, before)
+				}
+			}
+		})
 	}
 	for _, repo := range []any{"acme/beta-two", nil} {
 		if response := put("BETA", repo); response.StatusCode != http.StatusOK {

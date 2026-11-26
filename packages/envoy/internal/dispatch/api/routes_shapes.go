@@ -847,9 +847,12 @@ var routeShapes = map[string]routeShape{
 		// (project_settings_delivery.go).
 		Nullable: true,
 	},
-	// A refused save answers its own body (delivery.SettingsError: the code, the reason, and the
-	// field, the source's index and the other project where it names them), 400 for its input and
-	// 409 for every other refusal (writeSettingsRefusal).
+	// Every top-level field of projectDeliverySettingsInput is optional (a field the body leaves
+	// out keeps its stored value; null clears a field that may be empty; sources present replaces
+	// the list; a targets key changes that target alone). A refused save answers its own body
+	// (delivery.SettingsError: the code, the reason, and the field, the source's index and the
+	// other project where it names them), 400 for its input and 409 for every other refusal
+	// (writeSettingsRefusal).
 	"PUT /api/v1/projects/{key}/settings/delivery": {
 		Status: http.StatusOK, Response: projectDeliverySettings{}, Request: projectDeliverySettingsInput{},
 		Refusals: []routeAnswer{

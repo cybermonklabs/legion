@@ -7,15 +7,18 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
@@ -484,4 +487,134 @@ func TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof(t *testing.T) {
 		t.Errorf("the tracer saw no statement matching %s among %d statements: it did not see the handler's reads", handlerRead, len(statements))
 	}
 	t.Logf("the request ran %d statements, whose writes were %v", len(statements), written)
+}
+
+// The five routes added for delivery settings and the production-event record return settings
+// and facts, not figures of the three failure measures. A new route under either path must get
+// its own row here. The settings' eval targets are goals, not observed values.
+func TestNoRouteThisChildAddsAnswersAFailureMeasure(t *testing.T) {
+	t.Parallel()
+	const settings = "/api/v1/projects/{key}/settings/delivery"
+	const events = "/api/v1/projects/{key}/production-events"
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	fixture := seedFailureHistory(t, database)
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
+	if _, err := registry.Ensure(t.Context(), "FAIL"); err != nil {
+		t.Fatalf("seed FAIL's evals and targets: %v", err)
+	}
+	refreshEvalDays(t, registry, database, failuresNow)
+
+	routes := []struct {
+		method, pattern, suffix string
+		body                    any
+		status                  int
+	}{
+		{http.MethodGet, settings, "", nil, http.StatusOK},
+		{http.MethodPut, settings, "", map[string]any{}, http.StatusOK},
+		{http.MethodGet, events, "?" + failureWindowQuery(0, 2), nil, http.StatusOK},
+		{http.MethodPost, events, "", map[string]any{"kind": "failure", "deploy_id": fixture["P2"].ID}, http.StatusCreated},
+		{http.MethodPut, events + "/{id}/state", "", map[string]any{"state": "rejected", "reason": "Not a production failure."}, http.StatusOK},
+	}
+	want := make(map[string]bool, len(routes))
+	for _, route := range routes {
+		want[route.method+" "+route.pattern] = true
+	}
+	index, err := os.ReadFile(routeIndexGolden)
+	if err != nil {
+		t.Fatalf("read the route index: %v", err)
+	}
+	for line := range strings.SplitSeq(string(index), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 {
+			continue
+		}
+		path := fields[1]
+		if path != settings && !strings.HasPrefix(path, settings+"/") && path != events && !strings.HasPrefix(path, events+"/") {
+			continue
+		}
+		key := fields[0] + " " + path
+		if !want[key] {
+			t.Errorf("%s lists %s but no test row exercises it", routeIndexGolden, key)
+		}
+		delete(want, key)
+	}
+	if len(want) != 0 {
+		t.Errorf("%s lacks the inventory routes %v", routeIndexGolden, want)
+	}
+
+	// The fixture actually has a figure that a route could accidentally include.
+	rate := getDeliveryMeasures(t, handler, failureWindowQuery(0, 2)).Measures.ChangeFailureRate
+	if rate == nil || rate.Rate == nil {
+		t.Fatal("the failure fixture must have a measured change fail rate")
+	}
+	for _, route := range routes {
+		t.Run(route.method+" "+route.pattern, func(t *testing.T) {
+			path := strings.NewReplacer("{key}", "FAIL", "{id}", fixture["FB"].ID).Replace(route.pattern)
+			response := dispatchRequest(t, handler, route.method, path+route.suffix, route.body, "alice")
+			if response.Code != route.status {
+				t.Fatalf("status=%d body=%s, want %d", response.Code, response.Body.String(), route.status)
+			}
+			answer := decodeBody[map[string]any](t, response)
+			if answer == nil {
+				t.Fatal("the route answered null, want a record or list")
+			}
+			if field := failureFigureAt(answer, ""); field != "" {
+				t.Errorf("answer carries a failure measure at %s", field)
+			}
+			if route.method != http.MethodGet || route.pattern != settings {
+				return
+			}
+			targets, _ := answer["targets"].(map[string]any)
+			for _, slug := range []string{evals.SlugChangeFailRate, evals.SlugFailedDeployRecovery} {
+				if !isDeliveryGoal(targets[slug]) {
+					t.Errorf("settings target for %s = %v, want a goal (a number or off)", slug, targets[slug])
+				}
+			}
+			// Control: the settings answer with the measured rate beside its targets is a leak.
+			withFigure := decodeBody[map[string]any](t, response)
+			withFigure[evals.SlugChangeFailRate] = map[string]any{"value": *rate.Rate}
+			if field := failureFigureAt(withFigure, ""); field != "."+evals.SlugChangeFailRate {
+				t.Errorf("control found %q, want the injected change fail rate figure", field)
+			}
+		})
+	}
+}
+
+func isDeliveryGoal(value any) bool {
+	_, number := value.(float64)
+	return number || value == deliveryTargetOff
+}
+
+// failureFigureAt walks the actual JSON, including records inside lists, so new response fields
+// cannot disappear in a typed decode. It distinguishes counts from event facts (restored_at,
+// state, and so on) and pagination's total. A top-level targets map may contain scalar goals,
+// not a measured value or series.
+func failureFigureAt(value any, path string) string {
+	switch node := value.(type) {
+	case []any:
+		for i, item := range node {
+			if field := failureFigureAt(item, fmt.Sprintf("%s[%d]", path, i)); field != "" {
+				return field
+			}
+		}
+	case map[string]any:
+		for name, member := range node {
+			field := path + "." + name
+			slug := strings.ReplaceAll(name, "_", "-")
+			switch slug {
+			case evals.SlugChangeFailRate, evals.SlugFailedDeployRecovery, evals.SlugDeploymentReworkRate:
+				if path != ".targets" || !isDeliveryGoal(member) {
+					return field
+				}
+			case "change-failure-rate", "time-to-restore", "rate", "median", "median-minutes",
+				"failure-count", "restore-count", "rework-count", "failed", "failures", "restored", "restores",
+				"restoring", "not-restored", "rework", "per-deploy", "series", "value":
+				return field
+			}
+			if nested := failureFigureAt(member, field); nested != "" {
+				return nested
+			}
+		}
+	}
+	return ""
 }

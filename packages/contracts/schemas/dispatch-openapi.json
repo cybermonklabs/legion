@@ -13572,7 +13572,7 @@
         "x-auth": "any"
       },
       "put": {
-        "description": "Replace the project's delivery settings {delivery, sources, population_authors?, excluded_repos?, failure_sources?, failures_measured_since?, targets?} and answer them as GET does. targets sets each named eval's target, a number or \"off\", as a new version of the project's eval row in the same transaction; a target the body leaves out, or one the eval holds already, writes nothing. A source whose repository and rule are unchanged keeps its id and its repository's reconcile progress; every other source's repository is imported again. 400 DELIVERY_SETTINGS_INPUT names the field, and the source's index for a source's field; with delivery on, 409 DELIVERY_SETTINGS_ACCESS names a source whose repository Dispatch's GitHub App cannot read, 409 DELIVERY_NO_DEFAULT_REPOSITORY a source naming no repository of a project with no default repository, and 409 DELIVERY_REPOSITORY_SHARED a repository another delivery-on project's source reads, naming that project; a refused save writes nothing. The settings belong to the deployment, so a project-scoped credential is refused them, the project this path names included. 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "description": "Update the project's delivery settings {delivery?, sources?, population_authors?, excluded_repos?, failure_sources?, failures_measured_since?, targets?} and answer them as GET does. Every top-level field is optional and keeps its stored value when the body leaves it out; null clears a field that may be empty; sources, when present, replaces the list; targets sets each named eval's target, a number or \"off\", as a new version of the project's eval row in the same transaction, changing that target alone (a target left out, or one the eval holds already, writes nothing). A source whose repository and rule are unchanged keeps its id and its repository's reconcile progress; every other source's repository is imported again. 400 DELIVERY_SETTINGS_INPUT names the field, and the source's index for a source's field; with delivery on, 409 DELIVERY_SETTINGS_ACCESS names a source whose repository Dispatch's GitHub App cannot read, 409 DELIVERY_NO_DEFAULT_REPOSITORY a source naming no repository of a project with no default repository, and 409 DELIVERY_REPOSITORY_SHARED a repository another delivery-on project's source reads, naming that project; a refused save writes nothing. The settings belong to the deployment, so a project-scoped credential is refused them, the project this path names included. 404 PROJECT_NOT_FOUND for a project that does not exist.",
         "operationId": "putApiV1ProjectsByKeySettingsDelivery",
         "parameters": [
           {
@@ -31418,10 +31418,6 @@
             "type": "object"
           }
         },
-        "required": [
-          "delivery",
-          "sources"
-        ],
         "type": "object"
       },
       "ProjectDeploySource": {

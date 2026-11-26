@@ -170,6 +170,57 @@ func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 		straddling.StartedAt.Format(time.RFC3339), straddling.CompletedAt.Format(time.RFC3339), straddleTo.Format(time.RFC3339))
 }
 
+// Two repositories' failed jobs of one name are two items rows, one per repository. The row
+// filter finds each alone, the job series finds both, and the Pipeline tallies them as one job.
+func TestTwoRepositoriesFailingJobsOfOneNameAreTwoRows(t *testing.T) {
+	t.Parallel()
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	const project, repoA, repoB = "TWOR", "acme/repo-a", "acme/repo-b"
+	issue := createTestIssue(t, handler, project, "Two source repositories")
+	saveProjectRules(t, database, project, deployRule(repoA, "a / release"), deployRule(repoB, "b / release"))
+	seedSourceCheck(t, database, repoA, issue, 101, 8, true)
+	seedSourceCheck(t, database, repoA, issue, 102, 9, true)
+	seedSourceCheck(t, database, repoB, issue, 201, 10, true)
+	leaveAttributionInputsUnread(t, database.Pool)
+	at := sourcesDay.Add(12 * time.Hour)
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, at)
+
+	query := url.Values{
+		"from": {measures.WindowStart(at).Format(time.RFC3339)}, "to": {at.Format(time.RFC3339)},
+		"sort": {"failures"},
+	}
+	path := evalItemsPath(project, evals.SlugPRCI)
+	items := evalGet[evalItemsResponse](t, handler, path+"?"+query.Encode())
+	if len(items.Items) != 2 || items.Total != 2 {
+		t.Fatalf("sort=failures answers %d rows of %d, want two build rows, one per repository", len(items.Items), items.Total)
+	}
+	var failures float64
+	for i, repo := range []string{repoA, repoB} {
+		row := items.Items[i]
+		key := repo + "/build"
+		n, _ := row.Cols["failures"].(float64)
+		if row.RowKey != key || row.Cols["repo"] != repo || row.Cols["name"] != "build" || n != float64(2-i) {
+			t.Errorf("row %d is %q with %v, want %q naming %s and %d failures", i, row.RowKey, row.Cols, key, repo, 2-i)
+		}
+		failures += n
+		query.Set("row", key)
+		filtered := evalGet[evalItemsResponse](t, handler, path+"?"+query.Encode())
+		if len(filtered.Items) != 1 || filtered.Total != 1 || filtered.Items[0].RowKey != key {
+			t.Errorf("row filter %q answers %d rows of %d, want that row alone", key, len(filtered.Items), filtered.Total)
+		}
+	}
+	query.Del("row")
+	query.Set("series", "job:build")
+	series := evalGet[evalItemsResponse](t, handler, path+"?"+query.Encode())
+	if len(series.Items) != 2 || series.Total != 2 || series.Items[0].RowKey != repoA+"/build" || series.Items[1].RowKey != repoB+"/build" {
+		t.Errorf("series=job:build answers %v, want both repositories' build rows", series.Items)
+	}
+	pipeline := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?at="+at.Format(time.RFC3339)).PRChecks.FailingJobs
+	if len(pipeline) != 1 || pipeline[0].Name != "build" || float64(pipeline[0].Failures) != failures {
+		t.Errorf("Pipeline failing_jobs = %+v, want one build row with %v failures (the sum of the items)", pipeline, failures)
+	}
+}
+
 // TestTheSlowestJobsItemsAreThePipelinesSlowestJobs: pr-ci's items with sort=median over the
 // seven days an `at` shows rank the jobs GET /api/v1/delivery/pipeline ranks in
 // pr_checks.slowest_jobs for that at: the Pipeline's table is the first measures.SlowestJobs of the
