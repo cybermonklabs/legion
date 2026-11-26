@@ -117,7 +117,7 @@ env:
     packages/envoy/internal/oauthrefusal/ packages/envoy/internal/redact/
     packages/envoy/internal/redirects/ packages/envoy/internal/tlsalert/ packages/envoy/listenerwire/
     packages/envoy/listenfd/
-    packages/envoy/migrationid/ packages/envoy/natsversion/ packages/envoy/poolsetting/ packages/envoy/roleholder/
+    packages/envoy/migrationid/ packages/envoy/natsversion/ packages/envoy/roleholder/
     packages/envoy/sessiontiming/ packages/envoy/steprecord/ packages/envoy/subjectforms/
     packages/envoy/go.mod packages/envoy/go.sum
     scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh .github/go-release-targets.json

@@ -27,7 +27,6 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/migrationid"
-	"github.com/sjawhar/envoy/poolsetting"
 )
 
 func testDatabaseURL(t *testing.T) string {
@@ -89,7 +88,7 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 		t.Fatalf("parse test database URL: %v", err)
 	}
 	query := withPoolSize.Query()
-	query.Set(poolsetting.Key, "4")
+	query.Set(poolSizeParam, "4")
 	withPoolSize.RawQuery = query.Encode()
 
 	// The rows that must not be refused point at a closed port: the observable is whether the
@@ -100,13 +99,13 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 		refused     bool
 	}{
 		"url query":            {withPoolSize.String(), true},
-		"keyword value":        {"host=127.0.0.1 " + poolsetting.Key + "=4", true},
-		"keyword value spaced": {"host=127.0.0.1 " + poolsetting.Key + " = 4", true},
+		"keyword value":        {"host=127.0.0.1 " + poolSizeParam + "=4", true},
+		"keyword value spaced": {"host=127.0.0.1 " + poolSizeParam + " = 4", true},
 		"quoted value containing the parameter": {
-			unreachable + "password='a " + poolsetting.Key + "=1 b'", false,
+			unreachable + "password='a " + poolSizeParam + "=1 b'", false,
 		},
 		"escaped value containing the parameter": {
-			unreachable + `password=a\ ` + poolsetting.Key + `=1`, false,
+			unreachable + `password=a\ ` + poolSizeParam + `=1`, false,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -115,7 +114,7 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 				store.Pool.Close()
 			}
 			refused := err != nil &&
-				strings.Contains(err.Error(), poolsetting.Key) &&
+				strings.Contains(err.Error(), poolSizeParam) &&
 				strings.Contains(err.Error(), strconv.Itoa(sharedPoolSize))
 			if refused != tc.refused {
 				t.Fatalf("refused = %v, want %v; open returned %v", refused, tc.refused, err)
@@ -132,7 +131,7 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 	// The refusal is specific: the same connection string without the parameter still opens.
 	store, err := Open(context.Background(), base)
 	if err != nil {
-		t.Fatalf("open without %s: %v", poolsetting.Key, err)
+		t.Fatalf("open without %s: %v", poolSizeParam, err)
 	}
 	t.Cleanup(store.Pool.Close)
 }

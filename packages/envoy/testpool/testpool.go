@@ -26,8 +26,8 @@ import (
 // these suites, so every test is already green at it, and it is pgx's own floor. It is never
 // derived from runtime.NumCPU or GOMAXPROCS: a test's pool is the same size on every machine.
 //
-// A pool a store's own Open builds is not one of these: the daemon's store, Dispatch's and the
-// broker's each fix their own size in code, and a test that opens a store keeps that store's size.
+// A pool a store's own Open builds is not one of these: it takes the size its DSN names, or
+// Dispatch's store its own sharedPoolSize, and a test that opens a store keeps that store's size.
 // A test that needs another size sets MaxConns itself.
 const PoolConns = 4
 

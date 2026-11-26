@@ -2403,14 +2403,13 @@ address answers on the pod alone), every five seconds with three failures before
 the `/livez` of `envoy-dispatch` and `envoy-listener`, which answer `204` reading nothing, this one
 reads the service's own heartbeat, which a decision that never ends stops.
 
-**One more Postgres connection per pod, on a session-mode path.** The broker's pool holds 10
-connections on every machine, or the number `BROKER_DATABASE_URL`'s `pool_max_conns` names. The
-fan-out below listens on a connection of its own, held for as long as the process runs and outside
-that pool, since a `LISTEN` ends when a pooled connection is recycled. Count the pool plus one
-connection per pod against the database's connection limit, and give the broker a session-mode
-path to Postgres: a transaction pooler (pgbouncer in transaction mode, RDS Proxy) hands each
-transaction whichever backend is free and carries no long-lived `LISTEN`. A pod that cannot hold
-the connection still boots and still serves; its listener redials for as long as it runs.
+**One more Postgres connection per pod, on a session-mode path.** The fan-out below listens on a
+connection of its own, held for as long as the process runs and outside whatever `pool_max_conns`
+sizes, since a `LISTEN` ends when a pooled connection is recycled. Count one extra connection per
+pod against the database's connection limit, and give the broker a session-mode path to Postgres:
+a transaction pooler (pgbouncer in transaction mode, RDS Proxy) hands each transaction whichever
+backend is free and carries no long-lived `LISTEN`. A pod that cannot hold the connection still
+boots and still serves; its listener redials for as long as it runs.
 
 **A reread that reaches every pod, draining ones included.** `POST /v1/secrets/{name}/reread`
 rereads the secret on the pod the load balancer picked and then, once that pod has put the tags it

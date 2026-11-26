@@ -778,18 +778,10 @@ because envoy's `internal/testpg` imports testcontainers. A test writes `testpoo
 where it would write `pgxpool.New`, and sets `config.MaxConns` to the constant on a config from
 `pgxpool.ParseConfig`; a test that needs another size sets `MaxConns` itself. A pool copied from
 another pool's `Config()` keeps that pool's size, and `testpg.ClonePool` is sized at the
-constant. A store a product opens sizes its own pool on every machine, so a test that opens one,
-or a process it starts on a test's DSN, gets that store's size: the daemon's `store.Open` holds
-32 and the broker's 10 unless the DSN names `pool_max_conns`, and Dispatch's `store.Open` holds
-its `sharedPoolSize` and refuses a DSN that names one. All three read the DSN with
-`packages/envoy/poolsetting`, as pgxpool reads the settings: Dispatch through `Lookup`, which
-returns pgx's parse error, and the other two through `Named`.
-
-A store with such a default tests it through `packages/envoy/poolsetting/poolsettingtest`, which
-the daemon's store and the broker's both call: `SameOnEveryMachine` starts the test binary again on
-one CPU and on all of them and holds both pools to the default, and `OutranksTheDefault` opens the
-store on each form of a named size, a quoted decoy and a service file. Each store's own test opens
-its store and names its default.
+constant. A store a product opens sizes its own pool from what its DSN says: the daemon's test
+pools open on DSNs that name `pool_max_conns` (`internal/testpg/testdb`'s `PoolBounded`, at
+`testdb.PoolConns`), so a daemon store a test opens holds that size, and Dispatch's `store.Open`
+holds its `sharedPoolSize` and refuses a DSN that names one.
 
 ## A Go test that opens a NATS client
 
