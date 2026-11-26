@@ -15,7 +15,8 @@ body: |-
     commands the daemon asks for, the CodeGraph warm-up) starts through one guard that this reaper
     passes over, so the shim still reports Oh My Pi's own exit status. A role process that signals
     its own process group (`kill 0`) now reaches role-init too, which takes a SIGTERM or a SIGINT
-    as a stop of the role; the same signal already ended the role through its shim.
+    as a stop of the role, and catches and drops SIGHUP, SIGQUIT and each other signal the Go
+    runtime would end it on, so the shim alone takes those and role-init still drains the role.
 time: 2026-11-23T01:44:02Z
 custom:
     Issue: pr5173

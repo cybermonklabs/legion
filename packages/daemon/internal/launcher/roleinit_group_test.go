@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // The two re-entrant helpers of this file: the stage, which builds a role layout in a mount
@@ -295,6 +297,38 @@ func TestARoleStopKeepsItsGraceAndItsSaveWithTheShimInRoleInitsGroup(t *testing.
 	}
 }
 
+// A signal a process of the role sends to its own process group, which role-init shares with the
+// shim (runRoleShim), ends only the processes that take it as theirs when the Go runtime would
+// end role-init on it: role-init catches it and drops it (roleInitDropped), and once the stand-in
+// shim has taken it as its stop and exited 0, role-init reports that status and drains the role,
+// as it does for any shim that exits on its own. A role-init that kept the Go runtime's own
+// handler died of the signal at once, as the init of the role's PID namespace, with no report
+// and no drain: the role's status then reads `none` and the stage reads role-init's end. SIGHUP
+// is the one `legion worker-shim` takes as its stop, SIGQUIT ends a Go program with a dump, and
+// SIGABRT stands for the signals of a fault, which a process can send too.
+func TestARolesGroupSignalEndsTheShimAndRoleInitReportsAndDrains(t *testing.T) {
+	t.Parallel()
+	requireRoleNamespaces(t)
+	for _, sig := range []syscall.Signal{syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGABRT} {
+		t.Run(unix.SignalName(sig), func(t *testing.T) {
+			report, output := roleGroupReport(t, roleGroupPlan{Dir: stageMountPoint(t), Case: "signal:" + strconv.Itoa(int(sig))})
+			if report["role-init"] != "" {
+				t.Errorf("role-init ended with %q: the %s its process group got ended it, with no report of the shim's status and no drain\n%s",
+					report["role-init"], unix.SignalName(sig), output)
+			}
+			if report["signalled"] != "yes" {
+				t.Errorf("the stand-in shim never got the %s it sent its group, so the case shows nothing\n%s", unix.SignalName(sig), output)
+			}
+			if report["status"] != "0" {
+				t.Errorf("the role's status = %q, want the stand-in shim's own exit 0 after it took the %s as its stop\n%s", report["status"], unix.SignalName(sig), output)
+			}
+			if ended, _ := roleDrainEnd(output); ended != roleDrainEmptied {
+				t.Errorf("role-init's drain ended with %q, want %q: role-init did not drain the role after the shim's exit\n%s", ended, roleDrainEmptied, output)
+			}
+		})
+	}
+}
+
 // roleGroupReport runs the stage of plan in user, mount and PID namespaces of its own
 // (roleStageAttr), and answers every `group <key>=<value>` line it and its role printed, with its
 // whole output for a failure's message. It waits for the stage to end with no bound of its own
@@ -475,10 +509,36 @@ func TestRoleGroupShimHelper(t *testing.T) {
 	case "leader":
 		code = groupControlLeader()
 	default:
+		if number, ok := strings.CutPrefix(mode, "signal:"); ok {
+			if sig, err := strconv.Atoi(number); err == nil {
+				code = groupShimSignal(syscall.Signal(sig))
+				break
+			}
+		}
 		fmt.Printf("group error=no stand-in mode %q\n", mode)
 		code = 2
 	}
 	os.Exit(code)
+}
+
+// groupShimSignal is a shim that sends sig to its own process group, which is role-init's
+// (kill(0, sig)), and takes it as its stop, as `legion worker-shim` takes SIGHUP: it catches sig,
+// says it got it, and exits 0.
+func groupShimSignal(sig syscall.Signal) int {
+	got := make(chan os.Signal, 1)
+	signal.Notify(got, sig)
+	if err := syscall.Kill(0, sig); err != nil {
+		fmt.Printf("group error=signal the group: %v\n", err)
+		return 1
+	}
+	select {
+	case <-got:
+		fmt.Println("group signalled=yes")
+	case <-time.After(roleGroupBound):
+		fmt.Println("group error=the signal sent to the group never reached the stand-in")
+		return 1
+	}
+	return 0
 }
 
 // groupShimOrphan reports the stand-in's process group and role-init's, leaves an orphan in its
