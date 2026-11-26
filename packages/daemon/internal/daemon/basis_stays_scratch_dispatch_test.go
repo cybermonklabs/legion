@@ -1427,12 +1427,20 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	r.approve(nested.parent.PrimaryArtifactID)
 	r.openedOnBasis(nested.root, nested.parent, 1, nested.basisVersion)
 
-	// P a Legion root on the backlog the daemon has not recorded.
+	// P a Legion root on the backlog the daemon has not recorded. The person's approval of P does
+	// two things the daemon applies apart: R's pending-basis seed reads it and opens R's step, which
+	// takes R to planning, and it is the person's handover of P, a todo write whose event re-admits
+	// P. P's admission composes its architect's start task, naming R at the phase R stands at then,
+	// and nothing writes that task again. Which of the two comes first is the machine's, so P's
+	// handover waits in the outbox until R's step has opened, and the task names R in planning
+	// whatever the load; read in the other order it named R in admitted.
 	onBacklog := r.pendingWorld([]string{"Seed vault humidity", "Agricultural heritage archive"}, pendingOptions{place: ancestorOnBacklog})
 	r.registerOn(onBacklog.basisRun)
 	r.pendingRegistered(onBacklog.basisRun, onBacklog.ask, false, phase.Admitted)
+	held.hold(onBacklog.parent.Key, record.OutboxKindDispatchStatus)
 	r.approve(onBacklog.parent.PrimaryArtifactID)
 	r.openedOnBasis(onBacklog.root, onBacklog.parent, 1, onBacklog.basisVersion)
+	held.release(onBacklog.parent.Key)
 	started := r.launchedArchitect(onBacklog.parent.Key)
 	restingTask := fmt.Sprintf("These roots rest on the approval of %s and are still in the workflow: %s (its spec step, in planning).", onBacklog.parent.Key, onBacklog.root.Key)
 	if started.Pending == nil || !strings.Contains(started.Pending.Task, restingTask) {

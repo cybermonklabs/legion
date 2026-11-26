@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -369,11 +370,21 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 		said.Wait()
 		close(hello)
 	}()
+	// The wait for the daemon's worker stream and each shim's wait for its hello's answer end on
+	// their facts, at no span of their own: their one bound is the test binary's deadline less
+	// testwait's margin (testwait.Remaining, read here on the test's goroutine). A boot a loaded
+	// machine makes slow is waited for, where a fixed 60 s left the shims unstarted and the test
+	// waiting for their answers for ever, and a fixed 45 s failed a hello answered 50 s late; a
+	// stream or an answer that never comes fails the test by name.
+	answerBy := time.Now().Add(testwait.Remaining(t))
 	go func() {
 		var address string
-		for deadline := time.Now().Add(60 * time.Second); address == ""; time.Sleep(5 * time.Millisecond) {
-			if time.Now().After(deadline) {
-				// The daemon never built its runtime; startDaemonWithin fails the test.
+		for ; address == ""; time.Sleep(5 * time.Millisecond) {
+			if time.Now().After(answerBy) {
+				for range bootTokens {
+					results <- acked{err: fmt.Errorf("the daemon built no worker stream by %s, 30s before the test binary's deadline",
+						answerBy.UTC().Format(time.RFC3339Nano))}
+				}
 				return
 			}
 			record.mu.Lock()
@@ -382,7 +393,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 		}
 		for _, bootToken := range bootTokens {
 			go func() {
-				conn, applied, err := helloCountingApplied(address, bootToken, &said, reader, events)
+				conn, applied, err := helloCountingApplied(address, bootToken, &said, reader, events, answerBy)
 				results <- acked{conn: conn, applied: applied, err: err}
 			}()
 		}
@@ -398,7 +409,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 	})
 	var early []int
 	for range n {
-		got := <-results
+		got := testwait.Receive(t, "a shim's hello answered", results)
 		if got.conn != nil {
 			conns = append(conns, got.conn)
 		}
@@ -416,9 +427,9 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 }
 
 // helloCountingApplied dials the worker stream at address as a shim does, says hello with
-// bootToken, marks said, and waits for the daemon's hello_ack; then it counts how many of events
-// the store holds as applied at that moment.
-func helloCountingApplied(address, bootToken string, said *sync.WaitGroup, reader *pgxpool.Pool, events []string) (net.Conn, int, error) {
+// bootToken, marks said, and waits for the daemon's hello_ack until answerBy; then it counts how
+// many of events the store holds as applied at that moment.
+func helloCountingApplied(address, bootToken string, said *sync.WaitGroup, reader *pgxpool.Pool, events []string, answerBy time.Time) (net.Conn, int, error) {
 	conn, err := net.Dial("unix", strings.TrimPrefix(address, "unix://"))
 	if err != nil {
 		said.Done()
@@ -429,7 +440,7 @@ func helloCountingApplied(address, bootToken string, said *sync.WaitGroup, reade
 	if err != nil {
 		return conn, 0, fmt.Errorf("say hello: %w", err)
 	}
-	if err := conn.SetReadDeadline(time.Now().Add(45 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(answerBy); err != nil {
 		return conn, 0, err
 	}
 	line, err := bufio.NewReader(conn).ReadBytes('\n')

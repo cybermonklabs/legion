@@ -156,10 +156,13 @@ func TestABootAnswersHealthzBeforeItRelaunchesAnUnfinishedLaunchAndTheRelaunchRe
 	if failed := rt.timedOut.Load(); failed != 0 {
 		t.Fatalf("the daemon answered /healthz only after %d relaunch attempts timed out waiting for it", failed)
 	}
+	// The relaunch is waited for with no span of its own (testwait.Remaining): one that never comes
+	// fails by name 30 s before the test binary's deadline, and one a loaded machine makes slow is
+	// waited for, where a fixed 10 s failed a relaunch reported 12 s late.
 	var spec runtime.SpawnSpec
 	select {
 	case spec = <-rt.started:
-	case <-time.After(2 * launcherWait):
+	case <-time.After(testwait.Remaining(t)):
 		t.Fatalf("the unfinished launch was never relaunched; the runtime saw %v", rt.Methods())
 	}
 	if spec.Claim != token || spec.Generation != 2 {
@@ -176,17 +179,20 @@ func TestABootAnswersHealthzBeforeItRelaunchesAnUnfinishedLaunchAndTheRelaunchRe
 // coldStartRuntime is the fake runtime whose launches each wait in the runtime, as an Agent Sandbox
 // relaunch waits minutes for a cold pod (the previous pod to go, workspace-init, the new pod), until
 // the test lets them through by closing warm. Each launch reports its spec on entered as its wait
-// begins, boot token included, so the test can play the worker its launcher starts.
+// begins, boot token included, so the test can play the worker its launcher starts. left counts the
+// launches that left the runtime before warm, because their context ended.
 type coldStartRuntime struct {
 	*fake.Runtime
 	entered chan runtime.SpawnSpec
 	warm    chan struct{}
+	left    atomic.Int32
 }
 
 func (r *coldStartRuntime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	r.entered <- spec
 	select {
 	case <-ctx.Done():
+		r.left.Add(1)
 		return runtime.Locator{}, fmt.Errorf("launch %s: %w", spec.Claim, ctx.Err())
 	case <-r.warm:
 	}
@@ -216,7 +222,11 @@ func TestABootWaitsForNoneOfItsUnfinishedLaunches(t *testing.T) {
 	d := startDaemonWithin(t, cfg, fakeRuntime(rt, &record), quietLogger(), 10*time.Second)
 
 	waiting := map[claim.Token]runtime.SpawnSpec{}
-	deadline := time.After(10 * time.Second)
+	// Every relaunch waits in the runtime until the test lets them through, which it does only after
+	// this wait, so the wait has no span of its own (testwait.Remaining), where a fixed 10 s failed
+	// relaunches that entered 12 s late. Relaunches run one after another still fail by name: the
+	// second enters only once the first's launch has ended and left the runtime (rt.left), or never.
+	deadline := time.After(testwait.Remaining(t))
 	for len(waiting) < len(tokens) {
 		select {
 		case spec := <-rt.entered:
@@ -225,6 +235,9 @@ func TestABootWaitsForNoneOfItsUnfinishedLaunches(t *testing.T) {
 			t.Fatalf("%d of %d relaunches wait in the runtime at once, want every one: they are run one after another",
 				len(waiting), len(tokens))
 		}
+	}
+	if left := rt.left.Load(); left != 0 {
+		t.Fatalf("%d relaunches left the runtime, their launch ended, before every relaunch waited in it: they are run one after another", left)
 	}
 	if spawns := rt.CallsOf("Spawn"); len(spawns) != 0 {
 		t.Fatalf("%d relaunches left the runtime before it let them through", len(spawns))
