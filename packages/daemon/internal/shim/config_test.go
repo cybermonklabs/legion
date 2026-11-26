@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 )
 
@@ -176,7 +177,7 @@ func TestReadAgentSecretsFlagsAreAllOrNone(t *testing.T) {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(dir, "agent-secrets")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o700); err != nil {
+	if err := execfile.Write(bin, []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	all := map[string]bool{"agent-secrets-key-dir": true, "pod-token-file": true, "agent-secrets-bin": true}

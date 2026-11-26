@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -432,7 +433,7 @@ func TestTheRealShimReadsItsProjectedTokenAgainForTheRealListener(t *testing.T) 
 	const thumbprint = "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"
 	agentSecrets := filepath.Join(work, "agent-secrets")
 	keygen := "#!/bin/sh\n[ \"$1\" = keygen ] || exit 2\nprintf 'key\\n' >\"$3/key.pem\"\necho " + thumbprint + "\n"
-	if err := os.WriteFile(agentSecrets, []byte(keygen), 0o700); err != nil {
+	if err := execfile.Write(agentSecrets, []byte(keygen), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	tokenFile := filepath.Join(work, "token")

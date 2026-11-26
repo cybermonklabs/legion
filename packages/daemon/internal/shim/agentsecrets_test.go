@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -36,7 +37,7 @@ case "$1" in
     exec sleep 300 ;;
 esac
 `
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -241,7 +242,7 @@ func TestKeygenFailureEndsTheShimBeforeAnyDial(t *testing.T) {
 	stub := listen(t, path)
 	o := newOMP(t)
 	cfg, _, _ := agentSecretsConfig(t, path, o)
-	if err := os.WriteFile(cfg.AgentSecrets.Binary, []byte("#!/bin/sh\necho 'keygen: disk full' >&2; exit 1\n"), 0o700); err != nil {
+	if err := execfile.Write(cfg.AgentSecrets.Binary, []byte("#!/bin/sh\necho 'keygen: disk full' >&2; exit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	r := run(t, cfg, newClock())
