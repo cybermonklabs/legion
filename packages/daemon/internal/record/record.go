@@ -2373,19 +2373,18 @@ type Store interface {
 	// nil where the generation has no plan rows: an issue that ran before plans, and a generation
 	// no plan reached yet.
 	Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*StoredPlan, error)
-	// OwnersNewestPlan is the newest plan in force, of any generation, generation 0 included, that
-	// an architect of issue's tree now gave (ArchitectOfTree); nil where no owner gave one in force.
-	OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue Issue) (*StoredPlan, error)
-	// PlansOfEarlierOwners is the version in force of each generation of issue whose giver is no
-	// architect of the issue's tree now (ArchitectOfTree): the plans its first step passes over.
-	PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
-	// PlansOfOwners is the version in force of each generation of issue, generation 0 included,
-	// whose giver is an architect of the issue's tree now (ArchitectOfTree), each carried copy
-	// among them: the plans a first step of an issue whose group takes none passes over.
-	PlansOfOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
-	// CarryPlan copies the plan of issue at from to to: with carried, each task where it stands;
-	// without, each task waiting at no act with its counts at 0. It writes nothing where from has
-	// no plan rows.
+	// PlansInForce is each owner's version of issue's plan that is the plan in force of its
+	// generation, generation 0 and each carried copy included, in the order they were given. It
+	// judges no giver: OwnersNewestPlan, PlansOfEarlierOwners and PlansOfOwners judge each through
+	// the store their caller hands (GivenByOwner).
+	PlansInForce(ctx context.Context, tx pgx.Tx, issue string) ([]PlanVersion, error)
+	// AddPlanGiver adds giver, at at, to the givers of version of the plan of issue at generation
+	// (PlanVersion.EarlierGivers), and answers whether it changed the row: it changes nothing where
+	// the version names that giver already.
+	AddPlanGiver(ctx context.Context, tx pgx.Tx, issue string, generation uint64, version int, giver claim.Token, at time.Time) (bool, error)
+	// CarryPlan copies the plan of issue at from to to, each version with its givers: with
+	// carried, each task where it stands; without, each task waiting at no act with its counts at
+	// 0. It writes nothing where from has no plan rows.
 	CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error
 	// DeletePlan deletes the plan of issue at generation from its three tables.
 	DeletePlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error
