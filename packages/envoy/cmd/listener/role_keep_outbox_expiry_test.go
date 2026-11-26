@@ -99,6 +99,12 @@ func TestAnOutboxCopyWhoseHourEndsIsToldToDispatch(t *testing.T) {
 		droppedAfter := before.Add(time.Hour)
 		rig.waitPassed(role, listened.sequence)
 		rig.waitDeadLetter(listened)
+		// A walk reports a copy it ended once its confirm has landed, after the cursor a test can
+		// read is past the copy (endKeptCopyWithPublish), and a sweep does not wait for the walks it
+		// starts, so the rows wait for the notice line, each report's last write.
+		waitFor(t, "both outbox copies' notice lines", func() bool {
+			return len(rig.lines(expiryNoticeLine, map[string]any{"role": role})) >= 2
+		})
 		rig.letSweepsRun()
 		droppedBy := rig.now()
 
@@ -134,6 +140,9 @@ func TestAnOutboxCopyWhoseHourEndsIsToldToDispatch(t *testing.T) {
 		rig.moveClock(3 * time.Hour)
 		rig.startSweeps()
 		rig.waitPassed(role, held.sequence)
+		waitFor(t, "the stale copy's notice line", func() bool {
+			return len(rig.lines(expiryNoticeLine, map[string]any{"role": role})) >= 1
+		})
 		rig.letSweepsRun()
 		notices := rig.expiryNotices(role)
 		if len(notices) != 1 {
@@ -238,6 +247,11 @@ func TestAnExpiryNoticeReachesDispatchWhenAListenerStopsBetweenItsWrites(t *test
 			rig.moveClock(time.Hour + time.Minute)
 			rig.startSweeps()
 			rig.waitPassed(role, held.sequence)
+			// The walk whose confirm landed reports the copy after that confirm
+			// (endKeptCopyWithPublish), so the row waits for its notice line, the report's last write.
+			waitFor(t, "the notice line of the walk whose confirm landed", func() bool {
+				return len(rig.lines(expiryNoticeLine, map[string]any{"role": role})) >= 1
+			})
 			rig.letSweepsRun()
 
 			calls := seam.assertTakenOver(t, "expiry notice", held, row.heldBefore)
