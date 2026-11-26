@@ -92,12 +92,12 @@ type DeliveryWake struct {
 }
 
 // TakeDeliveryWake takes the wake of the outbox's delivery wake (internal/daemon's
-// wakeForDelivery) in a transaction of its own: the wake for a notice, a hook prompt, a
-// merge-queue removal or a merge forward's message that found the role it is for released. While
-// a release mark of issue stands, it writes nothing and answers InRelease. While the role has no
-// open resume and a start that brings it back at generation is queued, it writes nothing and
-// answers StartQueued. Otherwise it takes the wake as PodRecords.TakePodWake does, held by the
-// pause PodRecords.PauseOfWake reads, and answers whether this call took it.
+// wakeForDelivery) in a transaction of its own: the wake for a notice, a phase-ended message, a
+// hook prompt, a merge-queue removal or a merge forward's message that found the role it is for
+// released. While a release mark of issue stands, it writes nothing and answers InRelease. While
+// the role has no open resume and a start that brings it back at generation is queued, it writes
+// nothing and answers StartQueued. Otherwise it takes the wake as PodRecords.TakePodWake does,
+// held by the pause PodRecords.PauseOfWake reads, and answers whether this call took it.
 //
 // The delivery wake waits for any release of the issue that still stands, not only for one that
 // recorded the role. Its resume runs in process (supervise.RequestRuleResume), so no `start` row

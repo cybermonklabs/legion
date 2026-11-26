@@ -604,13 +604,14 @@ func TestARoleAPauseStoppedBeforeAReleaseThatGaveUpIsToldTheReleasesWords(t *tes
 // wake of the architect came after it: its resume stands open, and the pod it waits for never came
 // back. The implementer has failed since, so no claim can use the pod, and the second release rule
 // takes it (workflow.UnownedPodRelease). That release suspends no role, so it closes no resume
-// (store.ReleaseIdleIssue). Every record of the release fails (refusePodReleaseRecords), an attempt
-// a minute before the bound among them, and the attempt at the bound gives up on the record
-// (outbox.settleGivenUp): no pod release is recorded, and the give-up is. Then a message is
-// published to the architect's role topic, and the listener's report wakes the architect
-// (workflow's listenerWake and wakeReleased). The release that gave up took the pod the open
-// resume waited for, so the wake closes that resume (store's ClosePodGoneResume) and takes its
-// own: the architect's one start is queued, and its one open resume is the wake's.
+// (store.ReleaseIdleIssue); its launcher reads the disk first and finds it clean (R6 of
+// dispatch://INFRA-3271), and its teardown runs after. Every record of the release fails
+// (refusePodReleaseRecords), an attempt a minute before the bound among them, and the attempt at
+// the bound gives up on the record (outbox.settleGivenUp): no pod release is recorded, and the
+// give-up is. Then a message is published to the architect's role topic, and the listener's report
+// wakes the architect (workflow's listenerWake and wakeReleased). The release that gave up took
+// the pod the open resume waited for, so the wake closes that resume (store's ClosePodGoneResume)
+// and takes its own: the architect's one start is queued, and its one open resume is the wake's.
 //
 // The negative control is the close without its reading of a give-up (the `exists` over
 // pod_release_give_ups in ClosePodGoneResume): the stale resume refuses the take
@@ -636,12 +637,18 @@ func TestAWakeAfterAReleaseThatGaveUpClosesTheResumeItLeftOpenAndTakesItsOwn(t *
 	}
 	rig.stoppedImplementer(t, false)
 
-	if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); len(got) != 1 || got[0] != "issue_release" {
-		t.Fatalf("queued rows = %v, want the teardown alone: no claim of the pod is live", got)
+	if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Equal(got, []string{"issue_bundle", "issue_release"}) {
+		t.Fatalf("queued rows = %v, want the launcher's workspace check and the teardown: no claim of the pod is live, and the release reads the disk it deletes (R6)", got)
 	}
 	if kind, role := rig.releaseMark(t); kind != "unowned" || role != "" {
 		t.Fatalf("the mark = kind %q for role %q, want the release of a pod no claim can use", kind, role)
 	}
+	// The launcher's check runs first, alone, and finds the disk clean: the teardown waits.
+	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
+		rig.issue.Key); err != nil {
+		t.Fatalf("hold the release's teardown back: %v", err)
+	}
+	rig.drain(t)
 	rig.teardownGivesUp(t)
 	var gaveUp int
 	if err := rig.pool.QueryRow(ctx, `select count(*) from pod_release_give_ups where issue = $1`, rig.issue.Key).Scan(&gaveUp); err != nil {

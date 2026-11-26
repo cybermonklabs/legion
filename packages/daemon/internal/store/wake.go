@@ -713,6 +713,14 @@ func (p *PodRecords) FirePodBackstop(ctx context.Context, tx pgx.Tx, id int64) (
 	return tag.RowsAffected() > 0, nil
 }
 
+// CancelPodBackstops drops every open backstop of issue inside the caller's transaction: a
+// parent that moves into awaiting_children has no phase for a backstop to wake any role of it
+// into, so the move cancels every backstop a release armed before it (workflow's awaitChildren,
+// dispatch://INFRA-3320 R11).
+func (p *PodRecords) CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string) error {
+	return CancelPodBackstops(ctx, tx, p.project, issue, "")
+}
+
 // OpenPodBackstop is whether issue's role has a backstop armed and not yet fired
 // (pod_wake_backstops, `not fired`): the release that suspended the role with its phase open
 // armed it, and it wakes the role when it comes due unless a wake takes it first (TakePodWake
