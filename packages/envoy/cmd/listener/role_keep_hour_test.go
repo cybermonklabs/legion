@@ -569,87 +569,118 @@ func assertDeadLetterOf(t *testing.T, letter contracts.Envelope, role string, he
 	}
 }
 
-// deadLetterSeam is the dead letter's publish of both listeners (cfg.publishDeadLetter): the first
-// call fails with bus.ErrStreamFull, an error that can pass, after running failed; every later
-// call publishes as main.go does, through that listener's bus.Client.PublishStoredAs. Each call
-// records role's cursor and how many messages the dead letter's subject held when it was made.
-// The cursor writes go to the stream as they do in the listener.
-type deadLetterSeam struct {
-	role   string
-	failed func()
-	mu     sync.Mutex
-	calls  []deadLetterCall
+// publishSeam is a publish both of an hourRig's listeners make through a seam of their
+// configuration - the dead letter's (cfg.publishDeadLetter, installDeadLetters) or the expiry
+// notice's (cfg.publishExpiryNotice, installExpiryNotices). Each call records which listener made
+// it, the listeners' clock, role's cursor and how many messages the publish's subject held when it
+// was made. The first call is first's to answer, given the listener that made it and the publish
+// itself; every later call, and a first one with no first, publishes as main.go does, through that
+// listener's bus.Client. The cursor writes go to the stream as they do in the listener.
+type publishSeam struct {
+	role  string
+	first func(listener int, publish func() error) error
+	mu    sync.Mutex
+	calls []publishCall
 }
 
-// deadLetterCall is what one call of a deadLetterSeam found.
-type deadLetterCall struct {
+// publishCall is what one call of a publishSeam found.
+type publishCall struct {
+	// listener is the index of the listener whose walk made the call.
+	listener int
 	// at is the listeners' clock when the call was made.
 	at time.Time
 	// cursor is the role's drain cursor when the call was made.
 	cursor bus.KeptRoleCursor
-	// held is how many messages the dead letter's subject held when the call was made.
+	// held is how many messages the publish's subject held when the call was made.
 	held int
 	// err is a read of the lane or the subject the call could not make.
 	err error
 }
 
-// install sets the seam on both of rig's listeners. A test installs it before it starts the
-// sweeps, which copy the configuration they walk with.
-func (s *deadLetterSeam) install(t *testing.T, rig *hourRig) {
+// failingOnce is a publishSeam whose first call fails with bus.ErrStreamFull, an error that can
+// pass, after running failed when it is set.
+func failingOnce(role string, failed func()) *publishSeam {
+	return &publishSeam{role: role, first: func(int, func() error) error {
+		if failed != nil {
+			failed()
+		}
+		return bus.ErrStreamFull
+	}}
+}
+
+// call records a call listener made through client of the publish to subject, then answers it.
+func (s *publishSeam) call(ctx context.Context, rig *hourRig, listener int, client *bus.Client, subject string, publish func() error) error {
+	call := publishCall{listener: listener, at: rig.now()}
+	cursor, err := client.ReadKeptRoleCursor(ctx, s.role)
+	call.cursor, call.err = cursor.Cursor, err
+	if err == nil {
+		var held []bus.StoredMessage
+		held, call.err = readStored(ctx, client, subject)
+		call.held = len(held)
+	}
+	s.mu.Lock()
+	s.calls = append(s.calls, call)
+	first := len(s.calls) == 1
+	s.mu.Unlock()
+	if first && s.first != nil {
+		return s.first(listener, publish)
+	}
+	return publish()
+}
+
+// installDeadLetters sets the seam as the dead letter's publish of both of rig's listeners. A test
+// installs it before it starts the sweeps, which copy the configuration they walk with.
+func (s *publishSeam) installDeadLetters(t *testing.T, rig *hourRig) {
 	t.Helper()
-	for _, l := range rig.listeners {
+	for i, l := range rig.listeners {
 		client := l.harness.client
 		l.cfg.publishDeadLetter = func(ctx context.Context, subject string, item contracts.Envelope, msgID string) error {
-			call := deadLetterCall{at: rig.now()}
-			cursor, err := client.ReadKeptRoleCursor(ctx, s.role)
-			call.cursor, call.err = cursor.Cursor, err
-			if err == nil {
-				var held []bus.StoredMessage
-				held, call.err = readStored(ctx, client, subject)
-				call.held = len(held)
-			}
-			s.mu.Lock()
-			s.calls = append(s.calls, call)
-			first := len(s.calls) == 1
-			s.mu.Unlock()
-			if first {
-				if s.failed != nil {
-					s.failed()
-				}
-				return bus.ErrStreamFull
-			}
-			return client.PublishStoredAs(ctx, subject, item, msgID)
+			return s.call(ctx, rig, i, client, subject, func() error { return client.PublishStoredAs(ctx, subject, item, msgID) })
+		}
+		l.rewire(t)
+	}
+}
+
+// installExpiryNotices sets the seam as the expiry notice's publish of both of rig's listeners,
+// installed before the sweeps start as installDeadLetters is.
+func (s *publishSeam) installExpiryNotices(t *testing.T, rig *hourRig) {
+	t.Helper()
+	for i, l := range rig.listeners {
+		client := l.harness.client
+		l.cfg.publishExpiryNotice = func(ctx context.Context, notice bus.KeptCopyExpiry) error {
+			return s.call(ctx, rig, i, client, bus.KeptExpiredSubject(s.role), func() error { return client.PublishKeptCopyExpiry(ctx, notice) })
 		}
 		l.rewire(t)
 	}
 }
 
 // made is every call the seam has had.
-func (s *deadLetterSeam) made() []deadLetterCall {
+func (s *publishSeam) made() []publishCall {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.calls)
 }
 
-// assertTakenOver fails unless the seam had two calls - the one that failed and the one that sent
-// the dead letter again - each made with the cursor holding a claim of held and not past it, and
-// the second made while the stream held no dead letter yet.
-func (s *deadLetterSeam) assertTakenOver(t *testing.T, held laneCopy) []deadLetterCall {
+// assertTakenOver fails unless the seam had two calls of what it publishes - the first, which
+// failed or stopped, and one walk's after it - each made with the cursor holding a claim of held
+// and not past it, and the second made while the publish's subject held heldBefore messages. It
+// answers both calls, for a test that reads more of them.
+func (s *publishSeam) assertTakenOver(t *testing.T, what string, held laneCopy, heldBefore int) []publishCall {
 	t.Helper()
 	calls := s.made()
 	if len(calls) != 2 {
-		t.Fatalf("the dead letter was published %d times, want twice: the call that failed and one walk after it: %+v", len(calls), calls)
+		t.Fatalf("the %s was published %d times, want twice: the first call and one walk's after it: %+v", what, len(calls), calls)
 	}
 	for i, call := range calls {
 		if call.err != nil {
-			t.Fatalf("call %d of the dead letter's publish could not read the lane: %v", i+1, call.err)
+			t.Fatalf("call %d of the %s's publish could not read the lane: %v", i+1, what, call.err)
 		}
 		if call.cursor.Claiming != held.sequence || call.cursor.Kept >= held.sequence {
-			t.Fatalf("call %d of the dead letter's publish found the cursor %+v, want a claim of the copy at %d with kept short of it", i+1, call.cursor, held.sequence)
+			t.Fatalf("call %d of the %s's publish found the cursor %+v, want a claim of the copy at %d with kept short of it", i+1, what, call.cursor, held.sequence)
 		}
 	}
-	if calls[1].held != 0 {
-		t.Fatalf("the stream held %d dead letters before the second publish, want none: a dead letter was stored outside cfg.publishDeadLetter", calls[1].held)
+	if calls[1].held != heldBefore {
+		t.Fatalf("the stream held %d messages on the %s's subject before the second publish, want %d", calls[1].held, what, heldBefore)
 	}
 	return calls
 }
@@ -918,8 +949,8 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			sender = "ses_hour_retried_sender"
 		)
 		held := rig.keep(role, listenerCopy(role, sender, "a copy whose dead letter fails once"))
-		seam := &deadLetterSeam{role: role}
-		seam.install(t, rig)
+		seam := failingOnce(role, nil)
+		seam.installDeadLetters(t, rig)
 		// The clock is past the copy's hour, so every claim reads older than
 		// bus.KeptRoleClaimWindow to the listeners the moment it is written: the second listener's
 		// sweep could take over the first walk's claim while that walk's publish is in flight, and
@@ -937,7 +968,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.waitPassed(role, held.sequence)
 		rig.letSweepsRun()
 
-		seam.assertTakenOver(t, held)
+		seam.assertTakenOver(t, "dead letter", held, 0)
 		if letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender)); len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
 		}
@@ -1057,8 +1088,8 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			sender = "ses_hour_late_letter_sender"
 		)
 		held := rig.keep(role, listenerCopy(role, sender, "a copy whose dead letter fails until two hours on"))
-		seam := &deadLetterSeam{role: role, failed: func() { rig.setClock(held.stored.Add(2*time.Hour + time.Minute)) }}
-		seam.install(t, rig)
+		seam := failingOnce(role, func() { rig.setClock(held.stored.Add(2*time.Hour + time.Minute)) })
+		seam.installDeadLetters(t, rig)
 		// The second listener's sweep passes the lane over, as in row (h): otherwise it can take
 		// the first walk's claim over before that walk's failed publish moves the clock on, and
 		// drop the copy at the age the clock had then.
@@ -1073,7 +1104,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.waitPassed(role, held.sequence)
 		rig.letSweepsRun()
 
-		seam.assertTakenOver(t, held)
+		seam.assertTakenOver(t, "dead letter", held, 0)
 		if letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender)); len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
 		}
@@ -1236,8 +1267,8 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		message["payload"] = `{"delivery":{"mode":"steer"}}`
 		answer := rig.kept(rig.listeners[0], message)
 		held := rig.copyOf(role, answer.EventID)
-		seam := &deadLetterSeam{role: role, failed: func() { rig.setClock(held.stored.Add(time.Hour + time.Minute)) }}
-		seam.install(t, rig)
+		seam := failingOnce(role, func() { rig.setClock(held.stored.Add(time.Hour + time.Minute)) })
+		seam.installDeadLetters(t, rig)
 		rig.startSweeps()
 		rig.claim(rig.listeners[1], holder, role,
 			session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Capabilities: []string{"btw"}})
@@ -1285,8 +1316,8 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if _, err := rig.client().PublishCursorAt(ctx, bus.KeptRoleCursorSubject(role), body, 0); err != nil {
 			t.Fatalf("write the forward's claim: %v", err)
 		}
-		seam := &deadLetterSeam{role: role}
-		seam.install(t, rig)
+		seam := failingOnce(role, nil)
+		seam.installDeadLetters(t, rig)
 		rig.moveClock(time.Hour + time.Minute)
 		rig.startSweeps()
 		rig.waitDeadLetter(held)
@@ -1338,8 +1369,8 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if _, err := rig.client().PublishCursorAt(ctx, bus.KeptRoleCursorSubject(role), body, 0); err != nil {
 			t.Fatalf("write the forward's claim: %v", err)
 		}
-		seam := &deadLetterSeam{role: role}
-		seam.install(t, rig)
+		seam := failingOnce(role, nil)
+		seam.installDeadLetters(t, rig)
 		// The clock moves 30 minutes on below, which leaves the copy inside its hour and makes
 		// every claim read older than bus.KeptRoleClaimWindow to the listeners the moment it is
 		// written. That is what lets a walk take the forward's claim over, and it would let the
@@ -1377,7 +1408,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if dropped := rig.count(hourExpired); dropped != 0 {
 			t.Fatalf("envoy_role_kept_expired_total rose by %d, want none: the copy was dropped inside its hour", dropped)
 		}
-		for i, call := range seam.assertTakenOver(t, held) {
+		for i, call := range seam.assertTakenOver(t, "dead letter", held, 0) {
 			if call.cursor.DeadLetter != "delivery_mode_unconfirmed" {
 				t.Fatalf("call %d of the dead letter's publish found the claim %+v, want its dead_letter to be delivery_mode_unconfirmed", i+1, call.cursor)
 			}

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -159,104 +158,37 @@ const (
 	stopAfterNotice
 )
 
-// noticeSeam is the expiry notice's publish of both of an hourRig's listeners
-// (cfg.publishExpiryNotice). The first call, made by the walk of listener stopping, stops that
-// walk where stop says and never returns until the test ends, as a listener stopped there would
-// never write again: its walk holds the role's guard on that listener, so that listener's sweeps
-// pass the lane over, and it makes no later write. Before it blocks, the call lets the other
-// listener walk the lane (released). Every later call publishes as main.go does, through that
-// listener's bus.Client.PublishKeptCopyExpiry. Each call records which listener made it, role's
-// cursor and how many notices role's expiry subject held when it was made.
-type noticeSeam struct {
-	role     string
-	stop     noticeStop
-	stopping int
-	released func()
-	mu       sync.Mutex
-	calls    []noticeCall
-}
-
-// noticeCall is what one call of a noticeSeam found.
-type noticeCall struct {
-	// listener is the index of the listener whose walk made the call.
-	listener int
-	// cursor is the role's drain cursor when the call was made.
-	cursor bus.KeptRoleCursor
-	// held is how many notices role's expiry subject held when the call was made.
-	held int
-	// err is a read of the lane or the subject the call could not make.
-	err error
-}
-
-// install sets the seam on both of rig's listeners. A test installs it before it starts the
-// sweeps, which copy the configuration they walk with. The stopped walk is let go when the test
-// ends, before the sweeps are stopped.
-func (s *noticeSeam) install(t *testing.T, rig *hourRig) {
+// stoppingNotices installs, on both of rig's listeners, the expiry notice's publish as a
+// publishSeam (cfg.publishExpiryNotice) whose first call, made by the walk of listener stopping,
+// stops that walk where stop says and does not return until the test ends, as a listener stopped
+// there would never write again: its walk holds the role's guard on that listener, so that
+// listener's sweeps pass the lane over, and it makes no later write. Before it blocks, the call
+// lets the other listener walk the lane (released). Every later call publishes as main.go does.
+// A test installs it before it starts the sweeps, which copy the configuration they walk with.
+//
+// Cleanups run last-in first-out, and the sweeps' (hourRig.startSweeps) is registered after this
+// one, so when the test ends the sweeps are stopped first and the stopped walk is let go after
+// them. Nothing waits on the walk the seam holds meanwhile: a sweep does not wait for the
+// handovers it starts.
+func stoppingNotices(t *testing.T, rig *hourRig, role string, stop noticeStop, stopping int, released func()) *publishSeam {
 	t.Helper()
 	stopped := make(chan struct{})
-	for i, l := range rig.listeners {
-		client := l.harness.client
-		l.cfg.publishExpiryNotice = func(ctx context.Context, notice bus.KeptCopyExpiry) error {
-			call := noticeCall{listener: i}
-			cursor, err := client.ReadKeptRoleCursor(ctx, s.role)
-			call.cursor, call.err = cursor.Cursor, err
-			if err == nil {
-				var held []bus.StoredMessage
-				held, call.err = readStored(ctx, client, bus.KeptExpiredSubject(s.role))
-				call.held = len(held)
-			}
-			s.mu.Lock()
-			s.calls = append(s.calls, call)
-			first := len(s.calls) == 1
-			s.mu.Unlock()
-			if !first || i != s.stopping {
-				return client.PublishKeptCopyExpiry(ctx, notice)
-			}
-			if s.stop == stopAfterNotice {
-				if err := client.PublishKeptCopyExpiry(ctx, notice); err != nil {
-					return err
-				}
-			}
-			s.released()
-			<-stopped
-			return bus.ErrStreamFull
-		}
-		l.rewire(t)
-	}
 	rig.t.Cleanup(func() { close(stopped) })
-}
-
-// made is every call the seam has had.
-func (s *noticeSeam) made() []noticeCall {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return slices.Clone(s.calls)
-}
-
-// assertTakenOver fails unless the seam had two calls: the stopped listener's, then the other
-// listener's, which took the stopped walk's claim over. Each was made with the cursor holding a
-// claim of held with kept short of it, and the second was made while the stream held heldBefore
-// notices of the copy: none where the walk stopped before its notice, one where it stopped after.
-func (s *noticeSeam) assertTakenOver(t *testing.T, held laneCopy, heldBefore int) {
-	t.Helper()
-	calls := s.made()
-	if len(calls) != 2 {
-		t.Fatalf("the expiry notice was published %d times, want twice: the stopped walk's and the walk that took its claim over: %+v", len(calls), calls)
-	}
-	if calls[0].listener != s.stopping || calls[1].listener == s.stopping {
-		t.Fatalf("the calls came from listeners %d and %d, want the stopped listener %d and then the other", calls[0].listener, calls[1].listener, s.stopping)
-	}
-	for i, call := range calls {
-		if call.err != nil {
-			t.Fatalf("call %d of the notice's publish could not read the lane: %v", i+1, call.err)
+	seam := &publishSeam{role: role, first: func(listener int, publish func() error) error {
+		if listener != stopping {
+			return publish()
 		}
-		if call.cursor.Claiming != held.sequence || call.cursor.Kept >= held.sequence || call.cursor.DeadLetter != string(deadLetterExpired) {
-			t.Fatalf("call %d of the notice's publish found the cursor %+v, want an expired claim of the copy at %d with kept short of it", i+1, call.cursor, held.sequence)
+		if stop == stopAfterNotice {
+			if err := publish(); err != nil {
+				return err
+			}
 		}
-	}
-	if calls[1].held != heldBefore {
-		t.Fatalf("the stream held %d notices of the copy when the other listener took the claim over, want %d", calls[1].held, heldBefore)
-	}
+		released()
+		<-stopped
+		return bus.ErrStreamFull
+	}}
+	seam.installExpiryNotices(t, rig)
+	return seam
 }
 
 // R18's two stop rows: a listener whose walk stops between two of its writes for an outbox copy
@@ -278,8 +210,8 @@ func (s *noticeSeam) assertTakenOver(t *testing.T, held laneCopy, heldBefore int
 // where it wants two, and c's notice is never stored.
 //
 // Dispatch's outbox reading that one notice and reopening the event's delivery once is the outbox's
-// own row, which stores one notice twice through bus.Client.PublishKeptCopyExpiry as these two
-// walks do (internal/dispatch/outbox,
+// own row, which stores one notice twice through bus.Client.PublishKeptCopyExpiry under the copy's
+// one message id, as these two walks do (internal/dispatch/outbox,
 // TestANoticeStoredAgainByTheWalkThatTookTheClaimOverReopensTheRowOnce).
 func TestAnExpiryNoticeReachesDispatchWhenAListenerStopsBetweenItsWrites(t *testing.T) {
 	for _, row := range []struct {
@@ -301,15 +233,22 @@ func TestAnExpiryNoticeReachesDispatchWhenAListenerStopsBetweenItsWrites(t *test
 				t.Fatalf("take role %s's handover guard on the first listener", role)
 			}
 			var once sync.Once
-			seam := &noticeSeam{role: role, stop: row.stop, stopping: 1, released: func() { once.Do(release) }}
-			seam.install(t, rig)
+			seam := stoppingNotices(t, rig, role, row.stop, 1, func() { once.Do(release) })
 			before := rig.now()
 			rig.moveClock(time.Hour + time.Minute)
 			rig.startSweeps()
 			rig.waitPassed(role, held.sequence)
 			rig.letSweepsRun()
 
-			seam.assertTakenOver(t, held, row.heldBefore)
+			calls := seam.assertTakenOver(t, "expiry notice", held, row.heldBefore)
+			if calls[0].listener != 1 || calls[1].listener == 1 {
+				t.Fatalf("the calls came from listeners %d and %d, want the stopped listener 1 and then the other", calls[0].listener, calls[1].listener)
+			}
+			for i, call := range calls {
+				if call.cursor.DeadLetter != string(deadLetterExpired) {
+					t.Fatalf("call %d of the notice's publish found the claim %+v, want an expired claim", i+1, call.cursor)
+				}
+			}
 			notices := rig.expiryNotices(role)
 			if len(notices) != 1 {
 				t.Fatalf("the stream holds %d expiry notices for the copy, want one: %+v", len(notices), notices)

@@ -306,6 +306,50 @@ func TestTheSameExpiryNoticeTwiceReopensTheRowOnce(t *testing.T) {
 	}
 }
 
+// R18's stop rows end with Dispatch's outbox reading the one notice and reopening the row once
+// (cmd/listener, TestAnExpiryNoticeReachesDispatchWhenAListenerStopsBetweenItsWrites). Their two
+// walks store one copy's notice as a listener does, through bus.Client.PublishKeptCopyExpiry
+// under the copy's own message id (bus.KeptExpiryMsgID): the stopped walk, and the walk that took
+// its claim over. Here the notice is stored twice that way before the outbox reads it, and once
+// more after, as a walk that took over late would store it. The stream holds one notice, and the
+// outbox records one expiry, at attempt 1, and keeps the event again once. With the reopen taken
+// away (recordExpiry records nothing), no row is recorded and the lane holds the scan's copy
+// alone.
+func TestANoticeStoredAgainByTheWalkThatTookTheClaimOverReopensTheRowOnce(t *testing.T) {
+	ctx := context.Background()
+	rig := newRoleRig(t)
+	const role = "expiry-stored-again"
+	rig.silent(t, contracts.RoleTopicPrefix+role)
+	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
+	outbox := holding(t, rig.deps())
+	outbox.scan(ctx, unfenced{})
+	lane := keptLane(t, rig.client, role)
+	if len(lane) != 1 {
+		t.Fatalf("role %s's kept lane holds %d copies, want the scan's one", role, len(lane))
+	}
+	expire(t, rig.client, role, lane[0])
+	expire(t, rig.client, role, lane[0])
+	if notices := storedCopies(t, rig.client, bus.KeptExpiredSubject(role)); notices != 1 {
+		t.Fatalf("the stream holds %d notices of the copy, want the one both stores make", notices)
+	}
+
+	outbox.passKeptExpiries(ctx, unfenced{})
+	expire(t, rig.client, role, lane[0])
+	outbox.passKeptExpiries(ctx, unfenced{})
+
+	rows := expiryRows(t, rig.database, event.ID, role)
+	if len(rows) != 1 || rows[0].attempt != 1 || rows[0].sequence != lane[0].Sequence || rows[0].outcome == nil || *rows[0].outcome != expiryKept {
+		t.Fatalf("the outbox recorded %+v, want the copy's expiry once, at attempt 1, kept again", rows)
+	}
+	after := keptLane(t, rig.client, role)
+	if len(after) != 2 || after[1].MsgID != bus.KeptAttemptMsgID(envelopeOf(t, lane[0]).DedupeKey, role, 2) {
+		t.Fatalf("role %s's kept lane holds %d copies (last id %q), want the scan's and one keep again under attempt 2", role, len(after), lastMsgID(after))
+	}
+	if notices := storedCopies(t, rig.client, bus.KeptExpiredSubject(role)); notices != 1 {
+		t.Fatalf("the stream holds %d notices of the copy after the late store, want one", notices)
+	}
+}
+
 // A copy that expired under an attempt already recorded for another copy of the same event - a
 // takeover's copy of a forward, which keeps the event's envelope under a key of its own, so its
 // message id names no attempt and it reads as attempt 1 - is a later expiry, not a repeat: the

@@ -111,12 +111,12 @@ type listenerDeliveryHandlerConfig struct {
 	// a reading that climbs says messages kept for roles go unread by any holder in their hour.
 	roleKeptExpired *metrics.Counter
 	// roleDeadLetters counts the dead letters a walk sent the sender of a kept copy it dropped
-	// (envoy_role_dead_letters_total, reportKeptRoleDeadLetter), under the label result: stored
+	// (envoy_role_dead_letters_total, endKeptCopyWithDeadLetter), under the label result: stored
 	// for one the stream took, refused for one it refused for good, which is not sent again.
 	roleDeadLetters *metrics.Counter
 	// roleKeptExpiryNotices counts the expiry notices a walk sent Dispatch for a copy Dispatch's
 	// outbox kept that it dropped at the end of its hour (envoy_role_kept_expiry_notices_total,
-	// reportKeptCopyExpiry), under the label result: stored for one the stream took, refused for
+	// endKeptCopyWithExpiryNotice), under the label result: stored for one the stream took, refused for
 	// one it refused for good, which is not sent again.
 	roleKeptExpiryNotices *metrics.Counter
 	// roleKeptUndecodable counts the kept copies a walk ended because no read can decode them

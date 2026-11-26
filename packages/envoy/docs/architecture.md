@@ -736,20 +736,24 @@ seconds: a stream created again numbers its notices below a cursor of the one be
 outbox sets such a cursor back to the new stream's start, with one Error line, and reads its
 notices from the first. It passes over a notice whose role is no valid role name, that was stored
 on another role's expiry subject, whose event was never routed to that role, or that does not
-name that event's copy: the notice's sequence is not below its own, or the role's kept lane holds
-another copy there than Dispatch's copy of that event under the notice's dedupe key, or the
-stream holds a message of another subject there. It records each other notice in
-`outbox_role_copy_expiries`, keyed by the event, the role and the attempt, which is the outbox's
-own next attempt for that pair (the notice's own attempt is logged), so a repeated notice reopens
-the event's delivery to that role once. It then keeps the event's copy again, read
+name that event's copy: the notice's sequence is not below its own; the role's kept lane holds a
+message there that no read can decode, or another copy than Dispatch's copy of that event under
+the notice's dedupe key; or the lane holds nothing there, and the sequence is at or past the
+first message the stream still holds, so the stream's retention did not remove a copy there. A
+passed-over notice writes no row, so nothing is kept again and nothing is recorded undelivered.
+It records each other notice in `outbox_role_copy_expiries`, keyed by the event, the role and
+the attempt, which is the outbox's own next attempt for that pair (the notice's own attempt is
+logged), so a repeated notice reopens the event's delivery to that role once. It then keeps the
+event's copy again, read
 back from the kept lane by its sequence, under the next attempt (`bus.KeptAttemptMsgID`), or
 forwards it to the session that holds the role by then (`keepExpiredCopiesAgain`); nothing else
 of the event is sent again. After the third keep (`maxRoleKeeps`) has expired, the outbox stops
 and appends a `role.undelivered` event on the event's own issue, document or project, written by
 a system actor so it reaches no role, which a person reads in that owner's history. It stops the
-same way, with fewer keeps, when a copy cannot be kept again: the stream no longer holds it, or
-holds one no read can decode or that is not the event's own, or NATS refused its keep or its
-forward for good. Where the bound
+same way, with fewer keeps, when a copy cannot be kept again: the stream's retention has removed
+it; the stream holds at its sequence a message no read can decode or another event's copy, which
+only a stream created again since the notice's record can hold there; or NATS refused its keep or
+its forward for good. Where the bound
 is reached or no other copy carries its delivery on, every expiry of the event still owed a keep
 is settled, and its one `role.undelivered` record is appended, so nothing keeps it again. A copy
 that cannot be kept again ends nothing while another copy of the event carries its delivery on,

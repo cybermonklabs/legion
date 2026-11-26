@@ -1088,9 +1088,9 @@ type KeptLaneReader interface {
 	// ReadKeptRoleCursor is role's drain cursor as the stream holds it, the zero cursor for a
 	// lane no walk has written one for (bus.Client.ReadKeptRoleCursor).
 	ReadKeptRoleCursor(ctx context.Context, role string) (bus.StoredKeptRoleCursor, error)
-	// StreamID is the stream's identity (bus.StreamIDMetadataKey), "" for a stream that carries
-	// none (bus.Client.StreamID): what tells the expiry notices' cursor to start again in a stream
-	// created again since it was written (readKeptExpiries).
+	// StreamID is the stream's identity (bus.StreamIDMetadataKey), and bus.ErrNoStreamID for a
+	// stream that carries none (bus.Client.StreamID): what tells the expiry notices' cursor to
+	// start again in a stream created again since it was written (keptExpiryStart).
 	StreamID(ctx context.Context) (string, error)
 }
 

@@ -12,7 +12,7 @@
 -- is on the lane again), forwarded (a session held the role by then and was sent it) or skipped
 -- (the holder was the event's own actor); a row at the bound is written settled with outcome
 -- undelivered, in the transaction that appends the event's role.undelivered record. A row whose
--- copy cannot be kept again - the stream no longer holds it, or holds one no read can decode, or
+-- copy cannot be kept again - the stream no longer holds it, or holds in its place a message no read can decode or another event's copy, or
 -- NATS refused its keep or its forward for good - is settled carried while another copy of the
 -- event still carries its delivery to the role, and undelivered, with that record, when none does.
 -- next_attempt_at and attempt_count are the pass's claim and backoff, as comment_fallback_copies

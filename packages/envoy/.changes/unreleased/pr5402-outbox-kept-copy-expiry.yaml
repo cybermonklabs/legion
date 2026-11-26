@@ -7,14 +7,16 @@ body: |-
   again, up to three keeps in all, or forwards it to a session that holds the role by then. After
   the third keep ends, the outbox appends a `role.undelivered` event on the event's issue,
   document or project. A keep or a forward of such a copy that NATS refuses for good, or a copy
-  the stream no longer holds, that no read can decode or that is not the event's own, ends the
-  event the same way after fewer than three keeps, with reason `expired` or `copy_gone`, unless
-  another copy of the event still carries its delivery to the role. Once an hour for each role,
-  the outbox also posts one message on the issue, or on the document's issue, that names every
-  event the role did not take. An expiry notice whose role is not a valid role name, that was
-  stored on another role's subject, whose event was never routed to that role, or whose sequence
-  holds another copy or message than that event's copy is passed over with one Error line, and
-  only the outbox's notice cursor moves past it. The cursor names the stream it counts in, so a
+  the stream's retention has removed, ends the event the same way after fewer than three keeps,
+  with reason `expired` or `copy_gone`, unless another copy of the event still carries its
+  delivery to the role. Once an hour for each role, the outbox also posts one message on the
+  issue, or on the document's issue, that names every event the role did not take. Some expiry
+  notices are passed over with one Error line, and only the outbox's notice cursor moves past
+  them: one whose role is not a valid role name, one stored on another role's subject, and one
+  whose event was never routed to that role. So is one whose sequence does not hold that event's
+  copy: another copy is there, a message no read can decode, a message of another subject, or
+  nothing at or past the first message the stream still holds. Such a notice keeps nothing again
+  and records nothing undelivered. The cursor names the stream it counts in, so a
   stream created again is read from its first notice, with one Error line. A send of the expiry
   pass that finds NATS unavailable counts on `envoy_dispatch_outbox_publish_failures_total`. A
   role forward that the stream stored after its resolution's fence and acknowledgement window no

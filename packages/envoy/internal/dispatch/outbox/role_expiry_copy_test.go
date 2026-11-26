@@ -12,13 +12,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// A notice that does not name its event's copy is passed over, and only the cursor moves past it:
-// one whose sequence is where the role's kept lane holds another event's copy, one whose sequence
-// is where the stream holds a message of another subject - the issue topic the scan published the
-// event to - and one whose sequence is not below its own, which no listener stores. The real
-// notice of the other event's copy, read in the same pass, is recorded and kept again, so the
-// check takes a copy that is the notice's. With any one of the three checks taken away
-// (noticedCopy), its notice is recorded for the first event.
+// A notice that does not name its event's copy is passed over, and only the cursor moves past it,
+// so nothing is kept again and nothing is recorded undelivered: one whose sequence is where the
+// role's kept lane holds another event's copy; one whose sequence is where it holds a message no
+// read can decode; one whose sequence is where the stream holds a message of another subject - the
+// issue topic the scan published the event to; one whose sequence no message stands at, past the
+// first message the stream holds; and one that names a copy of its own event stored after it,
+// which no listener stores, since a copy's notice follows the copy. The real notice of the other
+// event's copy, read in the same pass, is recorded and kept again, so the check takes a copy that
+// is the notice's. With any one of noticedCopy's checks taken away - the sequence below the
+// notice's own, the lane's copy, the sequence below the stream's first message - its notices are
+// recorded for the first event.
 func TestANoticeThatNamesNoCopyOfItsEventIsPassedOver(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
@@ -33,6 +37,17 @@ func TestANoticeThatNamesNoCopyOfItsEventIsPassedOver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the issue topic message the scan published: %v", err)
 	}
+	undecodable, err := rig.client.JS().Publish(bus.KeptRoleSubject(role), []byte("{not an envelope"))
+	if err != nil {
+		t.Fatalf("store a message no read can decode on role %s's kept lane: %v", role, err)
+	}
+	removed, err := rig.client.JS().Publish(bus.KeptExpiredSubject("expiry-notice-elsewhere"), []byte("removed below"))
+	if err != nil {
+		t.Fatalf("store the message the test removes: %v", err)
+	}
+	if err := rig.client.JS().DeleteMsg(bus.Stream, removed.Sequence); err != nil {
+		t.Fatalf("remove the message at %d: %v", removed.Sequence, err)
+	}
 
 	// Each forged notice is stored under an id of its own: one under the id of the copy it names
 	// (bus.KeptExpiryMsgID) would take the place of that copy's real notice in the stream's
@@ -42,8 +57,9 @@ func TestANoticeThatNamesNoCopyOfItsEventIsPassedOver(t *testing.T) {
 		sequence uint64
 	}{
 		{"another event's copy", secondCopy.Sequence},
+		{"a message no read can decode", undecodable.Sequence},
 		{"a message of another subject", published.Sequence},
-		{"a sequence not below its own", 1 << 40},
+		{"a sequence no message stands at", removed.Sequence},
 	} {
 		notice := expiryNoticeOf(t, role, firstCopy)
 		notice.Sequence = forged.sequence
@@ -54,6 +70,23 @@ func TestANoticeThatNamesNoCopyOfItsEventIsPassedOver(t *testing.T) {
 		if _, err := rig.client.JS().Publish(bus.KeptExpiredSubject(role), data, natsgo.MsgId("forged: "+forged.what)); err != nil {
 			t.Fatalf("store the notice naming %s: %v", forged.what, err)
 		}
+	}
+	// A copy of the first event, stored on the lane right after a notice that names it.
+	info, err := rig.client.JS().StreamInfo(bus.Stream)
+	if err != nil {
+		t.Fatalf("read the stream's last sequence: %v", err)
+	}
+	early := expiryNoticeOf(t, role, firstCopy)
+	early.Sequence = info.State.LastSeq + 2
+	data, err := json.Marshal(early)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rig.client.JS().Publish(bus.KeptExpiredSubject(role), data, natsgo.MsgId("forged: a copy stored after it")); err != nil {
+		t.Fatalf("store the notice naming a copy stored after it: %v", err)
+	}
+	if later, err := rig.client.JS().Publish(bus.KeptRoleSubject(role), firstCopy.Data); err != nil || later.Sequence != early.Sequence {
+		t.Fatalf("store the first event's copy after its notice: %v, want it at %d", err, early.Sequence)
 	}
 	expire(t, rig.client, role, secondCopy)
 	last, err := rig.client.LastStoredMessage(ctx, bus.KeptExpiredSubject(role))
@@ -72,8 +105,43 @@ func TestANoticeThatNamesNoCopyOfItsEventIsPassedOver(t *testing.T) {
 	if cursor := expiryCursor(t, rig.database); cursor != int64(last.Sequence) {
 		t.Fatalf("the expiry cursor is %d, want it at the last notice's sequence %d", cursor, last.Sequence)
 	}
-	if lane := keptLane(t, rig.client, role); len(lane) != 3 {
-		t.Fatalf("role %s's kept lane holds %d copies, want the scan's two and the second event's keep again", role, len(lane))
+	if lane := keptLane(t, rig.client, role); len(lane) != 5 {
+		t.Fatalf("role %s's kept lane holds %d messages, want the scan's two copies, the two the test stored and the second event's keep again", role, len(lane))
+	}
+}
+
+// A notice of a copy the stream's retention has removed - its sequence lies below the first
+// message the stream still holds - is recorded, and the expiry pass ends the event as gone: one
+// role.undelivered record with the reason copy_gone. The stream here is purged up to the notice,
+// as its age would remove the copy and keep the notice stored an hour after it. With every
+// sequence the lane holds nothing at passed over (noticedCopy), the notice records nothing and the
+// event is never ended.
+func TestANoticeOfACopyTheStreamNoLongerHoldsEndsItsEventAsGone(t *testing.T) {
+	ctx := context.Background()
+	rig := newRoleRig(t)
+	const role = "expiry-copy-retention"
+	outbox := holding(t, rig.deps())
+	event := expiredOnce(t, rig, outbox, role)
+	notice, err := rig.client.LastStoredMessage(ctx, bus.KeptExpiredSubject(role))
+	if err != nil {
+		t.Fatalf("read the notice back: %v", err)
+	}
+	if err := rig.client.JS().PurgeStream(bus.Stream, &natsgo.StreamPurgeRequest{Sequence: notice.Sequence}); err != nil {
+		t.Fatalf("purge the stream below the notice at %d: %v", notice.Sequence, err)
+	}
+	if lane := keptLane(t, rig.client, role); len(lane) != 0 {
+		t.Fatalf("role %s's kept lane holds %d copies after the purge, want none", role, len(lane))
+	}
+
+	outbox.passKeptExpiries(ctx, unfenced{})
+
+	rows := expiryRows(t, rig.database, event.ID, role)
+	if len(rows) != 1 || rows[0].outcome == nil || *rows[0].outcome != expiryUndelivered {
+		t.Fatalf("event %d's expiries are %+v, want its one row settled undelivered", event.ID, rows)
+	}
+	records := undeliveredRecords(t, rig.database, "T-1")
+	if len(records) != 1 || records[0].Payload.(model.RoleUndeliveredEventPayload).Reason != model.RoleUndeliveredCopyGone {
+		t.Fatalf("T-1 holds role.undelivered records %+v, want one with the reason %s", records, model.RoleUndeliveredCopyGone)
 	}
 }
 

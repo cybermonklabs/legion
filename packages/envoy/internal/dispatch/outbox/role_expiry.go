@@ -42,8 +42,9 @@ const keptExpiryReadEvery = 30 * time.Second
 // kept lane, forwarded to the session that held the role by then, reached with nothing sent (the
 // holder is the event's own actor), carried - the copy cannot be kept again, but another copy of
 // the event still carries its delivery to the role (recordCannotKeep) - or recorded undelivered
-// (role.undelivered). A copy cannot be kept again when the stream no longer holds it, or holds one
-// no read can decode, and when NATS refused its keep or its forward for good.
+// (role.undelivered). A copy cannot be kept again when the stream no longer holds it, or holds at
+// its sequence a message no read can decode or another event's copy (readExpiredCopy), and when
+// NATS refused its keep or its forward for good.
 const (
 	expiryKept        = "kept"
 	expiryForwarded   = "forwarded"
@@ -75,78 +76,24 @@ func (o *Outbox) passKeptExpiries(ctx context.Context, hold fence) (full, failed
 }
 
 // readKeptExpiries reads the expiry notices the stream holds past the outbox's cursor
-// (outbox_kept_expiry_cursor), batchSize of them at most, in stream order, and records each with
-// the cursor's move past it in one transaction (recordKeptExpiry), so a notice is recorded once
-// however often the read is made and whichever process makes it. It reports full when it read a
-// whole batch, so the holder reads again at once, and failed when a read or a record failed: the
-// cursor stands before that notice, and the next read takes it up again.
+// (outbox_kept_expiry_cursor, keptExpiryStart), batchSize of them at most, in stream order, and
+// records each with the cursor's move past it in one transaction (recordKeptExpiry), so a notice
+// is recorded once however often the read is made and whichever process makes it. It reports full
+// when it read a whole batch, so the holder reads again at once, and failed when a read or a
+// record failed: the cursor stands before that notice, and the next read takes it up again.
 //
 // Only the publisher hold's holder records a notice: each record's transaction reads the hold's
 // row and writes nothing - no expiry, no record, no cursor move - while instance does not hold it
 // (errNotTheHolder), and a pass past the hold's deadline reads nothing. So a process the hold has
 // left cannot record an expiry the holder's own pass is about to keep again.
-//
-// The cursor's sequence counts in one stream, whose identity (bus.StreamIDMetadataKey) the cursor
-// names beside it. A stream created again, as a hub moved without its stream's snapshot is,
-// numbers its notices from its own first message, below a cursor of the stream before it, where a
-// read from the cursor would find none of them and say nothing. So the read takes the stream's
-// identity first (keptStreamRead), and a cursor that names another stream is set back to the
-// start of this one, with one Error line: the notices are read from the first the stream holds,
-// and a notice recorded already is a repeat that records nothing (recordExpiry).
 func readKeptExpiries(ctx context.Context, deps Deps, hold fence, instance uuid.UUID, stream *keptStreamRead) (full, failed bool) {
 	if deps.KeptLanes == nil || ctx.Err() != nil || !time.Now().Before(hold.Deadline()) {
 		return false, false
 	}
-	if err := stream.refresh(ctx, deps.KeptLanes, false); err != nil {
-		if !lostToContextEnd(ctx, err) {
-			slog.Error("dispatch outbox: read the stream's identity for the expiry notices' cursor", "error", err)
-		}
-		return false, true
+	after, proceed, failed := keptExpiryStart(ctx, deps, instance, stream)
+	if !proceed {
+		return false, failed
 	}
-	var cursor int64
-	var cursorStream string
-	err := deps.Store.Pool.QueryRow(ctx, `select sequence, stream_id from outbox_kept_expiry_cursor`).Scan(&cursor, &cursorStream)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		cursor, cursorStream = 0, stream.id
-	case err != nil:
-		if !lostToContextEnd(ctx, err) {
-			slog.Error("dispatch outbox: read the expiry notices' cursor", "error", err)
-		}
-		return false, true
-	}
-	if cursorStream != stream.id {
-		// The identity this process holds may be the one taken before the stream was created
-		// again, so the cursor is set back only on an identity taken now.
-		if err := stream.refresh(ctx, deps.KeptLanes, true); err != nil {
-			if !lostToContextEnd(ctx, err) {
-				slog.Error("dispatch outbox: read the stream's identity for the expiry notices' cursor", "error", err)
-			}
-			return false, true
-		}
-	}
-	if cursorStream != stream.id {
-		tag, err := deps.Store.Pool.Exec(ctx, `
-			update outbox_kept_expiry_cursor set sequence = 0, stream_id = $3
-			where sequence = $1 and stream_id = $2
-			  and exists (select 1 from duty_holds where name = $4 and holder = $5 and expires_at > now())
-		`, cursor, cursorStream, stream.id, publisherHold, instance)
-		if err != nil {
-			if !lostToContextEnd(ctx, err) {
-				slog.Error("dispatch outbox: set the expiry notices' cursor back to the stream's start", "error", err)
-			}
-			return false, true
-		}
-		if tag.RowsAffected() == 0 {
-			// The hold is not this process's, or another write moved the cursor since this read:
-			// the next pass reads the cursor as it stands then.
-			return false, false
-		}
-		slog.Error("dispatch outbox: the expiry notices' cursor counts in a stream created again since; it is set back to this stream's start, and its notices are read from the first it holds",
-			"cursor", cursor, "cursor_stream_id", cursorStream, "stream_id", stream.id)
-		cursor = 0
-	}
-	after := uint64(cursor)
 	for range batchSize {
 		stored, err := deps.KeptLanes.NextStoredMessage(ctx, keptExpiryNotices, after+1)
 		if errors.Is(err, natsgo.ErrMsgNotFound) {
@@ -174,22 +121,76 @@ func readKeptExpiries(ctx context.Context, deps Deps, hold fence, instance uuid.
 	return true, false
 }
 
+// keptExpiryStart is the sequence the notices' read goes on past, and whether the read proceeds
+// this pass; failed reports a read or a write that failed, and the holder backs off.
+//
+// The cursor's sequence counts in one stream, whose identity (bus.StreamIDMetadataKey) the cursor
+// names beside it. A stream created again, as a hub moved without its stream's snapshot is,
+// numbers its notices from its own first message, below a cursor of the stream before it, where a
+// read from the cursor would find none of them and say nothing. So the read compares the cursor's
+// identity with the stream's (keptStreamRead), and a cursor that names another stream is set back
+// to the start of this one, with one Error line: the notices are read from the first the stream
+// holds, and a notice recorded already is a repeat that records nothing (recordExpiry). The
+// identity is taken again before the compare when it differs from the cursor's, so a cursor is
+// never set back on an identity this process took before the stream was created again. The set
+// back is fenced on the publisher hold and on the cursor's own values: a process the hold has
+// left, or one that read a cursor another write has moved since, writes nothing and does not
+// read, and the next pass reads the cursor as it stands then.
+func keptExpiryStart(ctx context.Context, deps Deps, instance uuid.UUID, stream *keptStreamRead) (after uint64, proceed, failed bool) {
+	var cursor int64
+	var cursorStream string
+	err := deps.Store.Pool.QueryRow(ctx, `select sequence, stream_id from outbox_kept_expiry_cursor`).Scan(&cursor, &cursorStream)
+	written := err == nil
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		if !lostToContextEnd(ctx, err) {
+			slog.Error("dispatch outbox: read the expiry notices' cursor", "error", err)
+		}
+		return 0, false, true
+	}
+	if err := stream.refresh(ctx, deps.KeptLanes, written && cursorStream != stream.id); err != nil {
+		if !lostToContextEnd(ctx, err) {
+			slog.Error("dispatch outbox: read the stream's identity for the expiry notices' cursor", "error", err)
+		}
+		return 0, false, true
+	}
+	if !written || cursorStream == stream.id {
+		return uint64(cursor), true, false
+	}
+	tag, err := deps.Store.Pool.Exec(ctx, `
+		update outbox_kept_expiry_cursor set sequence = 0, stream_id = $3
+		where sequence = $1 and stream_id = $2
+		  and exists (select 1 from duty_holds where name = $4 and holder = $5 and expires_at > now())
+	`, cursor, cursorStream, stream.id, publisherHold, instance)
+	if err != nil {
+		if !lostToContextEnd(ctx, err) {
+			slog.Error("dispatch outbox: set the expiry notices' cursor back to the stream's start", "error", err)
+		}
+		return 0, false, true
+	}
+	if tag.RowsAffected() == 0 {
+		return 0, false, false
+	}
+	slog.Error("dispatch outbox: the expiry notices' cursor counts in a stream created again since; it is set back to this stream's start, and its notices are read from the first it holds",
+		"cursor", cursor, "cursor_stream_id", cursorStream, "stream_id", stream.id)
+	return 0, true, false
+}
+
 // keptStreamRead is the stream's identity as the expiry notices' read last took it
-// (readKeptExpiries), and when. The identity changes only when the stream is created again, so a
+// (keptExpiryStart), and when. The identity changes only when the stream is created again, so a
 // holder takes it once every keptExpiryReadEvery rather than on every pass: the pass after each
-// scan would otherwise send a stream info each time, which the stream's leader answers. It takes
-// it again at once before it sets a cursor of another identity back, so a cursor is never set
-// back on an identity this process took before the stream was created again. A pass that reads
-// with such an identity records the notices it finds under it, and the next take sets the cursor
-// back, so those notices are read again as repeats and the ones below the old cursor are read for
-// the first time.
+// scan would otherwise send a stream info each time, which the stream's leader answers. A pass
+// that reads with an identity taken before the stream was created again records the notices it
+// finds under that identity, and the next take sets the cursor back, so those notices are read
+// again as repeats and the ones below the old cursor are read for the first time.
 type keptStreamRead struct {
 	id string
 	at time.Time
 }
 
 // refresh takes the stream's identity from reader when force is set, when none was taken, or when
-// the last take is keptExpiryReadEvery old.
+// the last take is keptExpiryReadEvery old. A stream that carries no identity is an error
+// (bus.ErrNoStreamID): no notice is read until the stream has one, which every start of a
+// program that keeps the stream gives it.
 func (r *keptStreamRead) refresh(ctx context.Context, reader KeptLaneReader, force bool) error {
 	if !force && !r.at.IsZero() && time.Since(r.at) < keptExpiryReadEvery {
 		return nil
@@ -293,13 +294,13 @@ func inHolderTransaction(ctx context.Context, deps Deps, instance uuid.UUID, wri
 // A notice is passed over with one Error line, and only the cursor moves, when it names no copy
 // this outbox kept for a role: its body does not decode; it names no source event; its role is no
 // role name (roles.Valid); it was stored on another role's expiry subject than the one its role
-// names; the event it names was never routed to that role - the event's own destinations, and
-// its comment's fallback rows, do not name the role's topic - which an event the log does not hold
-// is not either; or the stream holds something else than that event's copy at the sequence the
-// notice names (noticedCopy). No read of such a notice will ever name one. Only a NATS user on
-// the listener's grant can store a notice at all, so this guards the role that becomes a subject
-// (bus.KeptRoleSubject) and is written into a posted message, and the event whose delivery to the
-// role a notice reopens or ends, not a door. The notice's own attempt decides nothing
+// names; the stream holds something else than that event's copy at the sequence the notice names
+// (noticedCopy); or the event it names was never routed to that role - the event's own
+// destinations, and its comment's fallback rows, do not name the role's topic - which an event the
+// log does not hold is not either. No read of such a notice will ever name one. Only a NATS user
+// on the listener's grant can store a notice at all, so this guards the role that becomes a
+// subject (bus.KeptRoleSubject) and is written into a posted message, and the event whose delivery
+// to the role a notice reopens or ends, not a door. The notice's own attempt decides nothing
 // (recordExpiry).
 func recordKeptExpiry(ctx context.Context, deps Deps, instance uuid.UUID, stored bus.StoredMessage, streamID string) error {
 	ctx, cancel := context.WithTimeout(ctx, recordTimeout)
@@ -308,7 +309,6 @@ func recordKeptExpiry(ctx context.Context, deps Deps, instance uuid.UUID, stored
 	decodeErr := json.Unmarshal(stored.Data, &notice)
 	eventID, parseErr := strconv.ParseInt(notice.SourceEventID, 10, 64)
 	refusal := errors.Join(decodeErr, parseErr)
-	var copyRefusal string
 	switch {
 	case refusal != nil:
 	case !roles.Valid(notice.Role):
@@ -317,37 +317,36 @@ func recordKeptExpiry(ctx context.Context, deps Deps, instance uuid.UUID, stored
 		refusal = fmt.Errorf("it was stored on %s, not on role %s's expiry subject", stored.Subject, notice.Role)
 	default:
 		// Read before the transaction, which holds no lock across a read of NATS.
-		var err error
-		if copyRefusal, err = noticedCopy(ctx, deps.KeptLanes, stored, notice); err != nil {
+		reason, err := noticedCopy(ctx, deps.KeptLanes, stored, notice)
+		if err != nil {
 			return err
+		}
+		if reason != "" {
+			refusal = errors.New(reason)
 		}
 	}
 	return inHolderTransaction(ctx, deps, instance, func(tx pgx.Tx) (*model.Event, error) {
 		var appended *model.Event
-		refused := refusal
-		if refused == nil {
+		if refusal == nil {
 			routed, err := routedToRole(ctx, tx, eventID, notice.Role)
 			if err != nil {
 				return nil, err
 			}
-			switch {
-			case !routed:
-				refused = fmt.Errorf("event %d was never routed to role %s", eventID, notice.Role)
-			case copyRefusal != "":
-				refused = errors.New(copyRefusal)
+			if !routed {
+				refusal = fmt.Errorf("event %d was never routed to role %s", eventID, notice.Role)
 			}
 		}
-		if refused != nil {
+		if refusal != nil {
 			slog.Error("dispatch outbox: an expiry notice names no copy this outbox kept for a role; it is passed over",
 				"sequence", stored.Sequence, "subject", stored.Subject, "event_id", notice.EventID, "role", notice.Role,
-				"copy_sequence", notice.Sequence, "error", refused)
+				"copy_sequence", notice.Sequence, "error", refusal)
 		} else {
 			var err error
 			if appended, err = recordExpiry(ctx, deps, tx, eventID, notice); err != nil {
 				return nil, err
 			}
 		}
-		// The cursor names the identity readKeptExpiries read it under, which set back a cursor of
+		// The cursor names the identity keptExpiryStart read it under, which set back a cursor of
 		// another stream before this notice was read, so the two differ here only when another
 		// holder wrote the row since: the row then takes this notice's sequence and this pass's
 		// identity, and a pass that reads another identity sets it back again.
@@ -365,41 +364,100 @@ func recordKeptExpiry(ctx context.Context, deps Deps, instance uuid.UUID, stored
 }
 
 // noticedCopy reads the copy notice names back from reader, at the sequence it names on its role's
-// kept lane, and answers why that is not the copy of the notice's event a listener drops at the
-// end of its hour, or "" when it may be. A listener stores a copy's notice after it reads the
-// copy, so the copy's sequence is below the notice's own (stored). A copy the lane still holds at
-// that sequence is the notice's when it is Dispatch's copy of the notice's event under the
-// notice's dedupe key (copyOfEvent). A lane that holds nothing there either lost the copy to the
-// stream's retention - a copy that is gone, which the expiry pass ends its pair over
-// (readExpiredCopy, copy_gone) - or never held one: a sequence where the stream holds a message
-// on another subject is the second, and every other is taken for the first, since no read tells
-// them apart. A failed read is returned, and the notice is read again on the next pass.
+// kept lane (laneCopyAt), and answers why that is not the copy of the notice's event a listener
+// drops at the end of its hour, or "" when it may be. A listener stores a copy's notice after it
+// reads the copy, and it notices only a copy Dispatch's outbox kept, which decodes
+// (cmd/listener, isOutboxCopy), so:
+//
+//   - the copy's sequence is below the notice's own (stored);
+//   - a message the lane holds there is the notice's copy only when it decodes and is Dispatch's
+//     copy of the notice's event under the notice's dedupe key (copyOfEvent). One no read can
+//     decode, or another copy, is no copy the outbox kept for that event, and the notice is
+//     passed over: no row is written, so nothing is kept again and nothing is recorded
+//     undelivered;
+//   - a lane that holds nothing there lost the copy to the stream's retention only when the
+//     sequence is below the first message the stream still holds: the stream drops its oldest
+//     messages first, by its age and its limits. That copy is gone, and the expiry pass ends its
+//     pair over it (readExpiredCopy, copy_gone). A sequence at or past that first message where
+//     the lane holds nothing - a message of another subject stands there, or none does - is one no
+//     copy of the lane's expired at, and the notice is passed over.
+//
+// A failed read is returned, and the notice is read again on the next pass.
 func noticedCopy(ctx context.Context, reader KeptLaneReader, stored bus.StoredMessage, notice bus.KeptCopyExpiry) (string, error) {
 	if notice.Sequence == 0 || notice.Sequence >= stored.Sequence {
 		return fmt.Sprintf("it names the copy at sequence %d, which is not below its own %d", notice.Sequence, stored.Sequence), nil
 	}
-	held, err := reader.NextStoredMessage(ctx, bus.KeptRoleSubject(notice.Role), notice.Sequence)
-	switch {
-	case err == nil && held.Sequence == notice.Sequence:
-		var item contracts.Envelope
-		if err := json.Unmarshal(held.Data, &item); err != nil || !copyOfEvent(item, notice.SourceEventID, notice.DedupeKey) {
-			return fmt.Sprintf("role %s's kept lane holds at sequence %d another copy than event %s's under dedupe key %s (event %q, source %q, dedupe key %q)",
-				notice.Role, notice.Sequence, notice.SourceEventID, notice.DedupeKey, item.SourceEventID, item.Source, item.DedupeKey), nil
-		}
-		return "", nil
-	case err != nil && !errors.Is(err, natsgo.ErrMsgNotFound):
-		return "", fmt.Errorf("read role %s's kept lane at %d: %w", notice.Role, notice.Sequence, err)
+	held, err := laneCopyAt(ctx, reader, notice.Role, notice.Sequence, notice.SourceEventID, notice.DedupeKey)
+	if err != nil {
+		return "", err
 	}
-	other, err := reader.NextStoredMessage(ctx, ">", notice.Sequence)
+	switch held.state {
+	case laneCopyOfEvent:
+		return "", nil
+	case laneCopyUndecodable:
+		return fmt.Sprintf("role %s's kept lane holds at sequence %d a message no read can decode, which is no copy Dispatch's outbox kept: %v",
+			notice.Role, notice.Sequence, held.decodeErr), nil
+	case laneCopyOther:
+		return fmt.Sprintf("role %s's kept lane holds at sequence %d another copy than event %s's under dedupe key %s (event %q, source %q, dedupe key %q)",
+			notice.Role, notice.Sequence, notice.SourceEventID, notice.DedupeKey, held.item.SourceEventID, held.item.Source, held.item.DedupeKey), nil
+	}
+	first, err := reader.NextStoredMessage(ctx, ">", 1)
 	switch {
 	case errors.Is(err, natsgo.ErrMsgNotFound):
 		return "", nil
 	case err != nil:
-		return "", fmt.Errorf("read the stream at %d: %w", notice.Sequence, err)
-	case other.Sequence == notice.Sequence:
-		return fmt.Sprintf("the stream holds a message on %s at sequence %d, not a copy on role %s's kept lane", other.Subject, notice.Sequence, notice.Role), nil
+		return "", fmt.Errorf("read the first message the stream holds: %w", err)
+	case notice.Sequence < first.Sequence:
+		return "", nil
 	}
-	return "", nil
+	return fmt.Sprintf("role %s's kept lane holds nothing at sequence %d, which is at or past the first message the stream holds (%d), so no copy of the lane's was dropped there",
+		notice.Role, notice.Sequence, first.Sequence), nil
+}
+
+// laneCopyState is what a role's kept lane holds at one stream sequence, read against the copy of
+// one event under one dedupe key (laneCopyAt).
+type laneCopyState int
+
+const (
+	// laneCopyNone: the lane holds no message at that sequence.
+	laneCopyNone laneCopyState = iota
+	// laneCopyUndecodable: the lane holds a message there that no read can decode.
+	laneCopyUndecodable
+	// laneCopyOther: the lane holds a decoded message there that is not the event's copy under
+	// the dedupe key.
+	laneCopyOther
+	// laneCopyOfEvent: the lane holds Dispatch's copy of the event under the dedupe key there.
+	laneCopyOfEvent
+)
+
+// laneCopy is what laneCopyAt read: its state, the message's envelope where it decodes, and why it
+// does not decode where it does not.
+type laneCopy struct {
+	state     laneCopyState
+	item      contracts.Envelope
+	decodeErr error
+}
+
+// laneCopyAt reads what role's kept lane holds at seq, against Dispatch's copy of the event whose
+// id is eventID under dedupeKey (copyOfEvent). It is the one read of the copy at a sequence that
+// the notice's record (noticedCopy) and the keep it owes (readExpiredCopy) both make, so both judge
+// a copy by one rule. A failed read is returned.
+func laneCopyAt(ctx context.Context, reader KeptLaneReader, role string, seq uint64, eventID, dedupeKey string) (laneCopy, error) {
+	stored, err := reader.NextStoredMessage(ctx, bus.KeptRoleSubject(role), seq)
+	if errors.Is(err, natsgo.ErrMsgNotFound) || err == nil && stored.Sequence != seq {
+		return laneCopy{state: laneCopyNone}, nil
+	}
+	if err != nil {
+		return laneCopy{}, fmt.Errorf("read role %s's kept lane at %d: %w", role, seq, err)
+	}
+	var item contracts.Envelope
+	if err := json.Unmarshal(stored.Data, &item); err != nil {
+		return laneCopy{state: laneCopyUndecodable, decodeErr: err}, nil
+	}
+	if !copyOfEvent(item, eventID, dedupeKey) {
+		return laneCopy{state: laneCopyOther, item: item}, nil
+	}
+	return laneCopy{state: laneCopyOfEvent, item: item}, nil
 }
 
 // copyOfEvent reports whether item is Dispatch's copy of the event whose id is sourceEventID under
@@ -625,8 +683,8 @@ type expiryRecord struct {
 // holds them - and writes nothing of the event's own row: its published_at and
 // published_destinations stay as its batch left them, and no destination but the role is reached
 // again, whoever the event's route, followers or authors name by now. A copy the stream no longer
-// holds, or that no read can decode, cannot be kept again either (recordCannotKeep, reason
-// copy_gone).
+// holds, or that it holds a message no read can decode or another event's copy in place of
+// (readExpiredCopy), cannot be kept again either (recordCannotKeep, reason copy_gone).
 //
 // The pass is fenced by the publisher hold as the fallback pass is (publishFallbackCopies): it
 // claims nothing once the hold's deadline has passed, its sends go through the hold's window, and
@@ -750,44 +808,37 @@ func keepExpiredCopiesAgain(ctx context.Context, deps Deps, hold fence, instance
 
 // cannotKeep is a claimed expiry whose copy cannot be kept again, and the reason its pair ends for
 // if no other copy carries it (recordCannotKeep): copy_gone when the stream no longer holds the
-// copy, or holds one no read can decode; expired when NATS refused its keep or its forward for good,
-// after each keep stored so far ended its hour with no session taking it.
+// copy, or holds at its sequence a message no read can decode or another event's copy - a stream
+// created again since the notice was recorded (readExpiredCopy); expired when NATS refused its
+// keep or its forward for good, after each keep stored so far ended its hour with no session
+// taking it.
 type cannotKeep struct {
 	held   expiredCopy
 	reason string
 }
 
 // readExpiredCopy reads held's copy back from its role's kept lane, at the stream sequence its
-// notice named, and decodes it. It reports false with no error when the stream no longer holds a
-// copy there - the stream's retention passed it - or holds one no read can decode, or one that is
-// not Dispatch's copy of held's event under held's dedupe key (copyOfEvent), any of which the pass
-// cannot keep again. The notice's record read the same copy there (noticedCopy), so another copy
-// at that sequence is one a stream created again since then stored: held's copy is gone with the
-// stream before it, and keeping or forwarding the other one would send another event under
-// held's.
+// notice named (laneCopyAt). It reports false with no error when the stream no longer holds a copy
+// there - the stream's retention passed it - or holds a message no read can decode, or one that is
+// not Dispatch's copy of held's event under held's dedupe key, any of which the pass cannot keep
+// again. The notice's record read held's copy there (noticedCopy), so either of the last two is a
+// message a stream created again since then stored: held's copy is gone with the stream before it,
+// and keeping or forwarding the other one would send another event under held's.
 func readExpiredCopy(ctx context.Context, deps Deps, held expiredCopy) (contracts.Envelope, bool, error) {
-	stored, err := deps.KeptLanes.NextStoredMessage(ctx, bus.KeptRoleSubject(held.role), held.sequence)
-	if errors.Is(err, natsgo.ErrMsgNotFound) {
-		return contracts.Envelope{}, false, nil
-	}
+	read, err := laneCopyAt(ctx, deps.KeptLanes, held.role, held.sequence, strconv.FormatInt(held.eventID, 10), held.dedupeKey)
 	if err != nil {
 		return contracts.Envelope{}, false, err
 	}
-	var item contracts.Envelope
-	if stored.Sequence != held.sequence {
-		return contracts.Envelope{}, false, nil
-	}
-	if err := json.Unmarshal(stored.Data, &item); err != nil {
-		slog.Error("dispatch outbox: an expired copy cannot be decoded", "event_id", held.eventID, "role", held.role, "sequence", held.sequence, "error", err)
-		return contracts.Envelope{}, false, nil
-	}
-	if !copyOfEvent(item, strconv.FormatInt(held.eventID, 10), held.dedupeKey) {
+	switch read.state {
+	case laneCopyUndecodable:
+		slog.Error("dispatch outbox: an expired copy cannot be decoded; it is gone", "event_id", held.eventID, "role", held.role,
+			"sequence", held.sequence, "error", read.decodeErr)
+	case laneCopyOther:
 		slog.Error("dispatch outbox: the stream holds another copy than the expired one at its sequence; the expired copy is gone",
 			"event_id", held.eventID, "role", held.role, "sequence", held.sequence, "dedupe_key", held.dedupeKey,
-			"held_source", item.Source, "held_event_id", item.SourceEventID, "held_dedupe_key", item.DedupeKey)
-		return contracts.Envelope{}, false, nil
+			"held_source", read.item.Source, "held_event_id", read.item.SourceEventID, "held_dedupe_key", read.item.DedupeKey)
 	}
-	return item, true, nil
+	return read.item, read.state == laneCopyOfEvent, nil
 }
 
 // expiryClaimQuery is claimExpiredCopies's one statement: the due unsettled rows, oldest first,
@@ -908,10 +959,11 @@ func recordExpiredCopies(ctx context.Context, deps Deps, instance uuid.UUID, rec
 }
 
 // recordCannotKeep settles row, a claimed expiry whose copy cannot be kept again (cannotKeep: the
-// stream no longer holds it or no read can decode it, or NATS refused its keep or its forward for
-// good), and ends its event's delivery to its role only when no other copy of the event carries
-// that delivery on. Another copy carries it when another row of the pair is still owed a keep -
-// claimed in this pass or not, since its copy may still be read - or was settled kept, forwarded
+// stream no longer holds it, or holds in its place a message no read can decode or another event's
+// copy, or NATS refused its keep or its forward for good), and ends its event's delivery to its
+// role only when no other copy of the event carries that delivery on. Another copy carries it
+// when another row of the pair is still owed a keep - claimed in this pass or not, since its copy
+// may still be read - or was settled kept, forwarded
 // or skipped after row's expiry was recorded, which made a new copy or reached a session after
 // row's copy had ended. Then row is settled carried and nothing else is written: the delivery goes
 // on through that copy, which ends in its own expiry or in a session. Otherwise row is settled
