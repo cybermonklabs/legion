@@ -435,7 +435,7 @@ func (s *shim) toChild(line []byte) {
 
 func (s *shim) toDaemon(frame shimwire.Frame) {
 	if line := s.encode(frame); line != nil {
-		s.out.send(line)
+		s.out.send([][]byte{line})
 	}
 }
 
@@ -565,17 +565,16 @@ func (s *shim) spawnOnce() bool {
 //
 // The pump reads whole frames. It holds the lines of an rpc_chunk sequence until the sequence is
 // whole. Then it counts the frame (totals.go), shows it to the dedupe, and sends its lines on
-// unchanged in one write. While it holds a sequence, every frame of the shim's own waits
-// (outbox.hold). So each goes to the daemon between whole frames of the harness. One written
-// inside a sequence makes the daemon's reader drop the sequence (internal/stream's read). And no
-// part of a get_state answer of the shim's own reaches the daemon, chunked or not.
+// unchanged in one write. So a frame of the shim's own goes to the daemon before or after a whole
+// sequence, never inside one. One written inside a sequence makes the daemon's reader drop the
+// sequence (internal/stream's read). And no part of a get_state answer of the shim's own reaches
+// the daemon, chunked or not.
 func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 	defer close(done)
 	defer stdout.Close()
 	var frames harnessFrames
-	// A sequence the harness left open at the end of its stdout goes on as it came. The frames of
-	// the shim's own that waited on it follow.
-	defer func() { s.out.release(frames.take()) }()
+	// A sequence the harness left open at the end of its stdout goes on as it came.
+	defer func() { s.out.send(frames.take()) }()
 	r := shimwire.NewReader(stdout)
 	for {
 		line, err := r.ReadLine()
@@ -624,13 +623,13 @@ func (s *shim) harnessLine(h *harnessFrames, line []byte) {
 			h.held = append(h.held, line)
 			return
 		}
-		s.out.release([][]byte{line})
+		s.out.send([][]byte{line})
 		return
 	}
 	chunk, isChunk := frame.(shimwire.RPCChunk)
 	if !isChunk {
 		if h.chunks.Interrupt() != nil {
-			s.out.release(h.take())
+			s.out.send(h.take())
 		}
 		s.harnessFrame(frame, [][]byte{line}, len(line))
 		return
@@ -639,13 +638,11 @@ func (s *shim) harnessLine(h *harnessFrames, line []byte) {
 	whole, err := h.chunks.Push(chunk)
 	switch {
 	case err != nil:
-		s.out.release(h.take())
-	case whole == nil:
-		s.out.hold()
-	default:
+		s.out.send(h.take())
+	case whole != nil:
 		joined, err := shimwire.Decode(whole)
 		if err != nil {
-			s.out.release(h.take())
+			s.out.send(h.take())
 			return
 		}
 		s.harnessFrame(joined, h.take(), len(whole))
@@ -666,7 +663,6 @@ func (s *shim) harnessFrame(frame shimwire.Frame, lines [][]byte, size int) {
 		// The bridge names its launch's set model to the shim alone: the daemon reads it in the
 		// totals.
 		s.totals.bridgeNames(f)
-		s.out.release()
 		return
 	case shimwire.Raw:
 		switch f.Type {
@@ -689,7 +685,7 @@ func (s *shim) harnessFrame(frame shimwire.Frame, lines [][]byte, size int) {
 			written = append(written, [][]byte{line})
 		}
 	}
-	s.out.release(written...)
+	s.out.send(written...)
 	s.order.Unlock()
 	if summary := summarize(frame); summary != "" {
 		s.log.Print(summary)
@@ -710,7 +706,7 @@ func (s *shim) ownAnswer(response shimwire.Response, size int) {
 		}
 	}
 	s.order.Lock()
-	s.out.release(answer)
+	s.out.send(answer)
 	s.order.Unlock()
 }
 
@@ -914,12 +910,8 @@ func summarize(frame shimwire.Frame) string {
 // held in the backlog of the newest backlogLimit lines when none is, and replayed in order —
 // ahead of anything newer — when the next connection is acked (createShimBridge's forward and
 // onConnect, worker-shim.ts). A frame is the lines that carry it: one line, or a whole rpc_chunk
-// sequence, which is written, kept and dropped whole.
-//
-// The shim's own frames go between whole frames of the harness. While the pump holds part of a
-// harness sequence (hold), each waits, and the pump writes them after the sequence (release). So
-// none blocks on a harness that stops mid-sequence. The waiting frames count toward the backlog's
-// bound (trim).
+// sequence, which is written, kept and dropped whole. The pump sends a harness sequence only once
+// it is whole, so every frame goes in the order the shim sends it, and none lands inside another.
 type outbox struct {
 	mu      sync.Mutex
 	conn    net.Conn
@@ -927,42 +919,12 @@ type outbox struct {
 	backlog [][][]byte
 	dropped bool
 	log     *log.Logger
-	// held is whether the pump holds part of a harness sequence, and waiting is each frame of the
-	// shim's own that came meanwhile, in order.
-	held    bool
-	waiting [][][]byte
-	// kept is how many lines the backlog and the waiting frames hold together.
+	// kept is how many lines the backlog holds.
 	kept int
 }
 
-// send writes a frame of the shim's own, of one line.
-func (o *outbox) send(line []byte) {
-	o.sendAll([][]byte{line})
-}
-
-// sendAll writes a frame of the shim's own, of the lines that carry it. While the pump holds part
-// of a harness sequence, the frame waits for the sequence.
-func (o *outbox) sendAll(frame [][]byte) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.held {
-		o.waiting = append(o.waiting, frame)
-		o.kept += len(frame)
-		o.trim()
-		return
-	}
-	o.write(frame)
-}
-
-// hold keeps the shim's own frames back: the pump holds part of a harness sequence.
-func (o *outbox) hold() {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.held = true
-}
-
-// release writes the pump's frames in order, then each frame of the shim's own that waited.
-func (o *outbox) release(frames ...[][]byte) {
+// send writes frames in order, each the lines that carry it. A frame of no line is skipped.
+func (o *outbox) send(frames ...[][]byte) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	for _, frame := range frames {
@@ -970,13 +932,6 @@ func (o *outbox) release(frames ...[][]byte) {
 			o.write(frame)
 		}
 	}
-	o.held = false
-	for i, frame := range o.waiting {
-		o.kept -= len(frame)
-		o.write(frame)
-		o.waiting[i] = nil
-	}
-	o.waiting = o.waiting[:0]
 }
 
 // write writes one frame to the connection, or keeps it for the next. The caller holds o.mu.
@@ -995,18 +950,13 @@ func (o *outbox) write(frame [][]byte) {
 	o.trim()
 }
 
-// trim drops the oldest whole frames while the backlog and the waiting frames hold more than
-// backlogLimit lines. The backlog's frames are the older, so they go first. The newest frame
-// stays. The caller holds o.mu.
+// trim drops the oldest whole frames while the backlog holds more than backlogLimit lines. The
+// newest frame stays. The caller holds o.mu.
 func (o *outbox) trim() {
-	for o.kept > backlogLimit && len(o.backlog)+len(o.waiting) > 1 {
-		oldest := &o.backlog
-		if len(o.backlog) == 0 {
-			oldest = &o.waiting
-		}
-		o.kept -= len((*oldest)[0])
-		(*oldest)[0] = nil
-		*oldest = (*oldest)[1:]
+	for o.kept > backlogLimit && len(o.backlog) > 1 {
+		o.kept -= len(o.backlog[0])
+		o.backlog[0] = nil
+		o.backlog = o.backlog[1:]
 		if !o.dropped {
 			o.dropped = true
 			o.log.Printf("[worker-shim] the oldest frames beyond the newest %d lines that wait for the daemon are dropped", backlogLimit)
