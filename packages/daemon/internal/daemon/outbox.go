@@ -25,7 +25,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -33,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -82,6 +85,7 @@ type outbox struct {
 	records    record.Store
 	dispatch   dispatch.Client
 	notices    notify.Publisher
+	catchUps   *catchUpPacing
 	supervisor *supervisor
 	trees      outboxTrees
 	tokens     appauth.Tokens
@@ -171,6 +175,12 @@ type outbox struct {
 	// it makes (serving). Nil in a test that configures neither, where a recorded repository is
 	// served under its own name.
 	repositories *repositories
+	// privateNameRules is the deployment's private-name rule file as boot compiled it
+	// (plan.privateNameRules), which every issue branch's create runs over the ref name before it
+	// writes (ghbranch.Create), set by attach after newOutbox. Nil where the deployment names no
+	// rule file, and in a test that builds the outbox by hand: the create then runs no
+	// private-name rule.
+	privateNameRules *leakguard.RuleSet
 	// limits is every GitHub rate limit a row met, by the budget it exhausted, held until its
 	// deadline: a row that spends one of those budgets waits for the latest deadline among them
 	// (standingLimit) rather than meet a limit again. The lanes run rows on many goroutines, so
@@ -1878,27 +1888,31 @@ func (r *outbox) notice(ctx context.Context, row record.OutboxRow, payload recor
 // attempt would count one wake many times in the minute it lands in (scripts/wake-windows.py
 // counts every paced line and builds a window for each).
 //
-// How long the wake waited is the row's own record, not a clock and not its next_at: the engine
-// carried both the moment it reserved and the moment it reserved from, so PacedAt less PacedFrom
-// is what the pacing held this wake for, whatever a retry since has written into next_at
-// (record.Notice.PacedAt, PacedFrom, the store's RetryOutbox). The pair is one clock's: the row's
-// created_at is the database's now() at the start of the fact's transaction, so a wake read
-// against it would be the engine's clock less the database's, and a row the burst let straight
-// out — the first wake of a wave, reserved for the instant it was composed — would report the
-// transaction's own duration as a wait. It waited nothing and says so, as supervise's line does;
-// reading the wait from the runner's clock instead would call every such row held, by however
-// long the lane took to pick it up.
+// How long the wake waited is the row's own record, not a clock and not its next_at: the notice
+// carries both the moment the pacing let it out and the moment its hold began, so PacedAt less
+// PacedFrom is what the pacing held this wake for, whatever a retry since has written into
+// next_at (record.Notice.PacedAt, PacedFrom, the store's RetryOutbox). The pair is one clock's:
+// the row's created_at is the database's now() at the start of the fact's transaction, so a wake
+// read against it would be the engine's clock less the database's. A row the pacer let straight
+// out — the first wake of a wave, let out at the instant it joined, after the commit of the fact
+// that wrote it — has PacedAt written as PacedFrom (record.ReleaseHeldCatchUp), so it does not
+// report that transaction's or its commit's duration as a wait. It waited nothing and says so,
+// as supervise's line does; reading the wait from the runner's clock instead would call every
+// such row held, by however long the lane took to pick it up.
 //
 // The pace the line names is the one the daemon holds its machines to (supervise.WakePace, set in
-// openSupervision): the rate and the burst alone, never its Reserve — the reservation that
-// decided when this row was due is the workflow engine's (workflow.Config.Reserve), taken from
-// the same limiter. A test that builds the runner by hand over a supervisor with no pace reads
-// the pacing off, which is that line's own reading of it.
+// openSupervision), the rate and the burst alone. The queue is the pacer's second, which every
+// catch-up waits in (catchUpPacing, dispatch://INFRA-5682 R2), and the turns are the ones its
+// let-out recorded on the notice (record.Notice.PacedTurns), which a re-held copy keeps. A
+// catch-up carries no message, so the line never says it came late for one. A test that builds
+// the runner by hand over a supervisor with no pace reads the pacing off, which is that line's
+// own reading of it.
 func (r *outbox) wakeRan(row record.OutboxRow, notice record.Notice) {
 	architect, _ := claim.NewToken(r.project, row.Issue, claim.RoleArchitect)
 	pace := r.supervisor.deps.WakePace
 	fields := append([]any{"claim", string(architect)},
-		supervise.WakeRanFields(supervise.WakeCatchUp, true, notice.PacedAt.Sub(notice.PacedFrom), pace.Rate, pace.Burst)...)
+		supervise.WakeRanFields(supervise.WakeCatchUp, true, notice.PacedAt.Sub(notice.PacedFrom),
+			wakepace.Let{At: notice.PacedAt, Queue: wakepace.Second, Turns: notice.PacedTurns}, false, pace.Rate, pace.Burst)...)
 	r.log.Info(supervise.WakeRanMessage, fields...)
 }
 
@@ -1991,7 +2005,21 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	} else if waits {
 		return fmt.Errorf("%w: %s's pod was released and is coming back for notice row %d", errNoticeWaits, architect, row.ID)
 	}
-	if earlier, due := earlierNoticeFor(tree, architect, r.holdsItsRole); earlier != 0 {
+	if earlier, due, held := earlierNoticeFor(tree, architect, r.holdsItsRole); earlier != 0 {
+		// A catch-up the wake pacing still holds in its queue has no moment of its own
+		// (earlierNoticeFor's held, record.CatchUpIsHeld), so this row waits for the pacer's
+		// estimate of its place (catchUpPacing.estimate), or parkedWakeBound where that comes
+		// first (parkedWait): a change to the queues or to the pace can move the estimate earlier
+		// or later, and a held row with no place yet has none, so the row reads again within the
+		// bound.
+		if held {
+			estimate := r.catchUps.estimate(earlier)
+			if !estimate.After(r.now()) {
+				estimate = r.now().Add(parkedWakeBound)
+			}
+			return r.parkedWait(estimate, fmt.Sprintf("%s's notice row %d waits behind its catch-up, row %d, which the wake pacing holds",
+				architect, row.ID, earlier))
+		}
 		// The row the fence holds this one behind is due at a known moment when the wake pacing
 		// holds it: the moment the pacing reserved for a catch-up (record.Notice.PacedAt), or its
 		// next read of the architect's parked launch, at most parkedWakeBound out (parkedWait).
@@ -2702,6 +2730,30 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// a claim that already existed keeps one rule instead of a special case.
 		if err := machine.StartedBy(ctx, row.ID, task); err != nil {
 			return fmt.Errorf("record the start of claim %s: %w", token, err)
+		}
+		// A start whose wake carried an Envoy message marks its claim before it asks for the
+		// launch, so that launch waits in the pacing's message queue (dispatch://INFRA-5682 R1).
+		// The listener's report that raised the wake marked the claim in its own transaction
+		// (workflow's listenerWake), and that mark stands unless the role has taken a turn since,
+		// so the write here keeps it; it marks a row a daemon before this release queued. The
+		// mark is the row's own creation time, which is the moment the wake that wrote it was
+		// raised (the outbox's created_at), and not the moment this attempt runs: a row retried
+		// or held until after the role has taken a turn would otherwise write a mark later than
+		// that turn, which read the message, and the mark would stand, so the claim's next wake,
+		// whatever raised it, would take the message queue. Marked at the row's time, such a
+		// retry writes a mark that does not stand (the store's MarkClaimMessageTx). The
+		// machine is told the mark the store holds, in whatever state the claim is: a start that
+		// meets a wake already waiting asks for no launch, and that wake moves by the mark alone.
+		if payload.WakeKind == pods.WakeRoleMessage || payload.WakeKind == pods.WakeAgentMessage {
+			mark, err := store.MarkClaimMessage(ctx, r.pool, token, row.CreatedAt.UTC())
+			if err != nil {
+				return err
+			}
+			if !mark.IsZero() {
+				if err := machine.Handle(ctx, supervise.MessageMarked{Claim: token, At: mark}); err != nil {
+					return fmt.Errorf("mark claim %s for its waiting message: %w", token, err)
+				}
+			}
 		}
 		state := machine.Claim().State
 		// A phase worker's start is one row that carries its task, so the claim is brought back
@@ -4519,7 +4571,8 @@ func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload 
 // write an issue branch (appauth.AppRoleFor), and the one workspace provisioning clones with.
 // The create is a REST write, so a tree recorded before a transfer gets its branch on the
 // repository as GitHub holds it today rather than a write to an owner whose installation has
-// lost it.
+// lost it. The ref name passes the deployment's private-name rules first, the ones boot compiled
+// (privateNameRules), so the create runs the same file every role runs.
 func (r *outbox) createBranch(ctx context.Context, issue record.Issue) error {
 	ctx, cancel := context.WithTimeout(ctx, issueBranchTimeout)
 	defer cancel()
@@ -4532,7 +4585,7 @@ func (r *outbox) createBranch(ctx context.Context, issue record.Issue) error {
 	if err != nil {
 		return fmt.Errorf("mint the implement App token for %s: %w", repo, err)
 	}
-	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch)
+	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch, r.privateNameRules)
 }
 
 // removeWorkspace removes the workspace of the row's issue once its tree's linger expired. The

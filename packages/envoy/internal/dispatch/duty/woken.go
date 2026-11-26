@@ -133,7 +133,7 @@ func (l WokenLoop) attempt(ctx context.Context, exclusive ExclusiveFunc) (next t
 	if l.Lease == "" {
 		return l.Pass(ctx), true
 	}
-	ran = exclusive(ctx, l.Leases, l.Lease, time.Time{}, 0, func(ctx context.Context) {
+	ran = exclusive(ctx, nil, l.Leases, l.Lease, time.Time{}, 0, func(ctx context.Context) {
 		next = l.Pass(ctx)
 	})
 	return next, ran
