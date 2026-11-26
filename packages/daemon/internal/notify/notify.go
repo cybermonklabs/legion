@@ -24,6 +24,13 @@ import (
 
 const requestTimeout = 10 * time.Second
 
+// listenerServer is how a request's error names the Envoy listener when its address does not parse
+// (redact.RequestError). envoy_url can carry a user name and a password, and a dial's or a
+// resolver's error names the host, which is a password's tail when it holds an unencoded "@": every
+// request that got no answer is named through redact.RequestError, which unwraps to the request's
+// own error.
+const listenerServer = "the Envoy listener"
+
 // refusalBodyLimit bounds how much of a refused publish's body the error carries: the listener
 // answers `{"error": ...}` (packages/envoy/cmd/listener/api.go writeJSONError).
 const refusalBodyLimit = 4096
@@ -251,6 +258,11 @@ func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payl
 //     — the claim a released role leaves standing until the listener's reaper frees it — keeping
 //     nothing, as it answers keep: false: ErrHolderUnresponsive for a holder_state of
 //     unresponsive, and ErrNoHolder for any other state, gone among them.
+//   - 404 unclaimed or holder_lapsed is also what a listener that keeps nothing for a publish
+//     naming no source session answers a role no live session holds, since no notice of an expired
+//     copy could reach the sender; this publisher names none, so against such a listener this is
+//     the answer for every role with no live holder, read as above (ErrNoHolder or
+//     ErrHolderUnresponsive), and the caller is the message's keeper.
 //   - Every other answer is the error Publish makes of it.
 //
 // A repeat of the same dedupe key while its copy is still on the lane inside its hour is answered
@@ -281,9 +293,10 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 	if err != nil {
 		return false, fmt.Errorf("encode notice for %s: %w", topic, err)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages/publish", bytes.NewReader(body))
+	route := p.baseURL + "/v1/messages/publish"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, route, bytes.NewReader(body))
 	if err != nil {
-		return false, fmt.Errorf("build notice publish request for %s: %w", topic, err)
+		return false, fmt.Errorf("build notice publish request for %s: %w", topic, redact.RequestError(listenerServer, route, err))
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if p.token != "" {
@@ -291,7 +304,7 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return false, fmt.Errorf("publish notice to %s: %w", topic, err)
+		return false, fmt.Errorf("publish notice to %s: %w", topic, redact.RequestError(listenerServer, route, err))
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusOK {
@@ -420,14 +433,14 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 	target := fmt.Sprintf("%s/v1/registry/%s?include=unresponsive&view=registration", p.baseURL, url.PathEscape(session))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return SessionRegistration{}, fmt.Errorf("build the registration read for %s: %w", session, err)
+		return SessionRegistration{}, fmt.Errorf("build the registration read for %s: %w", session, redact.RequestError(listenerServer, target, err))
 	}
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
+		return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, redact.RequestError(listenerServer, target, err))
 	}
 	defer response.Body.Close()
 	switch response.StatusCode {
@@ -474,14 +487,14 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 	target := fmt.Sprintf("%s/v1/roles/%s", p.baseURL, url.PathEscape(role))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return "", "", fmt.Errorf("build the role lookup for %s: %w", role, err)
+		return "", "", fmt.Errorf("build the role lookup for %s: %w", role, redact.RequestError(listenerServer, target, err))
 	}
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return "", "", fmt.Errorf("look up the holder of role %s: %w", role, err)
+		return "", "", fmt.Errorf("look up the holder of role %s: %w", role, redact.RequestError(listenerServer, target, err))
 	}
 	defer response.Body.Close()
 	refused := func(reason string) error {
@@ -619,14 +632,14 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, target, nil)
 	if err != nil {
-		return SessionDeleted{}, fmt.Errorf("build the session delete for %s: %w", session, err)
+		return SessionDeleted{}, fmt.Errorf("build the session delete for %s: %w", session, redact.RequestError(listenerServer, target, err))
 	}
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return SessionDeleted{}, fmt.Errorf("delete session %s: %w", session, err)
+		return SessionDeleted{}, fmt.Errorf("delete session %s: %w", session, redact.RequestError(listenerServer, target, err))
 	}
 	defer response.Body.Close()
 	switch response.StatusCode {

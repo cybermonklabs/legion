@@ -28,8 +28,14 @@
 # with no commit named, with a commit every check is compared with instead, and again after an
 # event moves one head; and what decides a pull request's issue, where a branch, a body and a
 # person's link each decide one row and the reconcile re-judges two stored rows of the rule before
-# this build's. Three more cases run the `dispatch` command as a process against the
-# run's server and judge each step by its exit code and what it printed: `dash-refused`, where the
+# this build's.
+#
+# `after-merge-answer` records a pass, a later fail, then a conflicting pass through the real CLI.
+# It checks that the command names the deciding results and commit.
+# `deploy-recorded` records and lists a build as the run's person, then checks its writer.
+#
+# Three more cases run the `dispatch` command as a process against the run's server.
+# They judge each step by its exit code and what it printed: `dash-refused`, where the
 # reported call `dispatch result ... --run - --observed - --negative-control -`, `--run=-`,
 # `--observed -` with `--dry-run`, `dispatch comment --body -`, `dispatch message --body -` and
 # `dispatch issue --title -` each exit 2 with the spec's line for each flag and leave no result,

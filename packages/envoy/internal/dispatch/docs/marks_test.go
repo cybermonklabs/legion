@@ -1670,6 +1670,8 @@ func TestAcceptSuggestionRefusesCodeWithAPipeAfterABackslashInATableCell(t *test
 // repeat as they found it. The upload stores what the base did: the id repair every upload runs
 // keeps the id for the first block in document order.
 func TestWritesBesideALiveRepeatedBlockIDAreTaken(t *testing.T) {
+	// Not parallel: it sets pmdoc's block ID generator, which every parse in the process draws from
+	// (pmdoc.SetBlockIDGenerator in installCounterIDs).
 	const seed = ":::callout{#note}\nOriginal.\n:::\n\n:::callout{kind=\"warning\"}\nCopy.\n:::\n\nThe quick brown fox\n"
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	accept := func(quote, replacement string) func(*testing.T, *Service, string) error {

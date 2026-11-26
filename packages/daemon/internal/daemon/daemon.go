@@ -1592,7 +1592,8 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 			roleReferences: p.roleReferences,
 			log:            log,
 		}
-		image := capabilities.Image{Launch: omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), Env: environPairs(env), WorkDir: cfg.StateDir}
+		image := capabilities.Image{Launch: omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), Shown: omplaunch.WithPrefixShown(cfg.OmpLaunchPrefix, invocation),
+			Prefix: cfg.OmpLaunchPrefix, Env: environPairs(env), WorkDir: cfg.StateDir}
 		// The role overlays first: a cheap read whose refusal names the operator's file, before the
 		// plugin gate's slower load probes.
 		p.gate = func(ctx context.Context) error {
@@ -3475,26 +3476,26 @@ type source struct {
 // Its writes take the same rule from the other side: no row is written into the outbox keyed by
 // another project's issue (ownsKey, claim.KeyOfProject). Every write of record.Store that inserts,
 // upserts, expedites or deletes outbox rows by a key — Enqueue, EnqueueID, EnqueueStart,
-// ExpediteOutbox, EnqueueDesignGates, EnqueueGatedSteps, DropCatchUps, DropStatusWrites, and
-// ClearGeneration and ClearTreeGeneration, which queue the publication of the gates they empty —
-// refuses a key of another project, and EnqueueID refuses it with claim.ErrKeyOfAnotherProject.
-// The state rows that internal/record and internal/store queue inside their own writes (package
-// stateevent's comment names them) are not among them: each is keyed by the bare Dispatch project
-// key of what its write names. The boot row goes in through Enqueue
-// (workflowRuntime.queueStateBoot), and its key is the project's own.
+// NameUndeliveredHookPrompt, ExpediteOutbox, EnqueueDesignGates, EnqueueGatedSteps, DropCatchUps,
+// DropStatusWrites, and ClearGeneration and ClearTreeGeneration, which queue the publication of
+// the gates they empty — refuses a key of another project, and EnqueueID refuses it with
+// claim.ErrKeyOfAnotherProject. The state rows that internal/record and internal/store queue
+// inside their own writes (package stateevent's comment names them) are not among them: each is
+// keyed by the bare Dispatch project key of what its write names. The boot row goes in through
+// Enqueue (workflowRuntime.queueStateBoot), and its key is the project's own.
 // The rest act on a row by its id under a lease this daemon holds of a row its own scope gave it
 // (ClaimRow, RenewOutboxLease, FinishOutbox, FinishLeasedOutbox, RetryOutbox), and need no rule
 // here.
 //
-// It is also where the outbox learns of its rows: every write that makes a row due — Enqueue, and
-// ExpediteOutbox — wakes the row's lane (outbox.wake) once the transaction has committed, through
-// the transaction's commit hooks (store.OnCommit), so no lane runs a row it cannot yet read, and
-// no lane polls for one. A state row the store queues itself — the write of an issue, a slot or
-// the admission block that moved what Dispatch observes — wakes the project's state lane the same
-// way, through the call the store makes once it has queued the row (publishRecordStates). wake is
-// nil where there is no workflow to wake, or where the writer wakes its own lanes once it commits:
-// the API-only daemon, the state route's reads, the stranded report and the project's pause
-// (projectPause.stopped).
+// It is also where the outbox learns of its rows: every write that makes a row due — Enqueue,
+// NameUndeliveredHookPrompt where it opens a message, and ExpediteOutbox — wakes the row's lane
+// (outbox.wake) once the transaction has committed, through the transaction's commit hooks
+// (store.OnCommit), so no lane runs a row it cannot yet read, and no lane polls for one. A state
+// row the store queues itself — the write of an issue, a slot or the admission block that moved
+// what Dispatch observes — wakes the project's state lane the same way, through the call the store
+// makes once it has queued the row (publishRecordStates). wake is nil where there is no workflow
+// to wake, or where the writer wakes its own lanes once it commits: the API-only daemon, the state
+// route's reads, the stranded report and the project's pause (projectPause.stopped).
 //
 // And it is where the refresher learns that the live records may have changed: each write that can
 // add a record to the live set or take one out of it — PutIssue, which writes an issue's phase and
@@ -3663,6 +3664,23 @@ func (s projectRecords) EnqueueStart(ctx context.Context, tx pgx.Tx, row record.
 	}
 	s.wakeOnCommit(ctx, row)
 	return nil
+}
+
+// NameUndeliveredHookPrompt refuses a key of another project and wakes the lane of the message row
+// it opens as Enqueue does. A prompt it names in a message already open writes no new row, and that
+// row's lane already waits for it.
+func (s projectRecords) NameUndeliveredHookPrompt(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, paragraph string, now time.Time, window time.Duration) (time.Time, bool, error) {
+	if !s.ownsKey(record.OutboxKindDispatchMessage, issue) {
+		return time.Time{}, false, nil
+	}
+	posts, opened, err := s.Store.NameUndeliveredHookPrompt(ctx, tx, issue, role, paragraph, now, window)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if opened {
+		s.wakeOnCommit(ctx, record.OutboxRow{Kind: record.OutboxKindDispatchMessage, Issue: issue})
+	}
+	return posts, opened, nil
 }
 
 // EnqueueID wakes the row's lane as Enqueue does: a start or catch-up naming kept decisions is
