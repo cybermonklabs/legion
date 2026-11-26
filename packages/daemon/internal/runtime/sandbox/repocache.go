@@ -429,9 +429,11 @@ func (r *Runtime) cacheURL(name string) string {
 // reconcileCachePod makes s's pod (again) when it must be: s is Suspended (a fresh create, or one a
 // failed earlier run left Suspended), s's pod template reserves other than the configuration's
 // runtime.kubernetes.repository_cache.resources (templateResized: the operator changed them) or
-// places the pod other than cachePodTemplate places it now (templateMoved: a cache an earlier
-// release made on the retired Legion pool, or the operator changed
-// runtime.kubernetes.scheduling), or the pod it owns runs an image other than the runtime's
+// places the pod other than cachePodTemplate places it now (templateMoved: its RuntimeClass, node
+// selector or tolerations differ, as for a cache an earlier release made on the retired Legion
+// pool, or after the operator changed runtime.kubernetes.scheduling's node_selector or
+// tolerations; a change of its priority_class alone does not make the pod again), or the pod it
+// owns runs an image other than the runtime's
 // (imageDrift), runs as a ServiceAccount other than the configured
 // runtime.kubernetes.pod.service_account (accountDrift: the account is fixed for the pod's life,
 // so a cache pod reaches the new one only by being made again), or has ended (terminal: evicted,
