@@ -732,6 +732,7 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 // loaded machine lengthens neither end of it, and a subscription that skipped the retry fails
 // however long the rest took.
 func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	database.Pool.Close()
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
@@ -971,6 +972,8 @@ func liveFixtureEventFrame(t *testing.T) LiveEventFrame {
 // on a socket, so the frame never waits to be asked. The tree is the one ReadForDisplay makes of
 // that text.
 func TestALiveEventFrameCarriesItsTrees(t *testing.T) {
+	// Not parallel: it sets pmdoc's block ID generator for the whole process
+	// (pmdoc.SetBlockIDGenerator in liveFixtureEventFrame).
 	frame := liveFixtureEventFrame(t)
 	var carried struct {
 		Trees map[string]json.RawMessage `json:"trees"`

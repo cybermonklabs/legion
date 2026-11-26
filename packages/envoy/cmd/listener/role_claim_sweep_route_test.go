@@ -216,6 +216,7 @@ func seedOtherSessionsRoleClaims(t *testing.T, kv natsgo.KeyValue, count int) {
 // a sweep reading a view that had not seen them would prove nothing about a bucket that holds
 // them.
 func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFiveThousandOtherSessionsClaims(t *testing.T) {
+	t.Parallel()
 	const topic = "notifications.team.sweep-route"
 	cases := []struct {
 		name         string
