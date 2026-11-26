@@ -45,7 +45,7 @@ func TestReapingShimHelper(t *testing.T) {
 		os.Exit(0)
 	}
 	code, err := shim.Run(context.Background(), shim.Config{
-		Network: "unix", Address: plan.Address, BootToken: bootToken, Argv: []string{os.Args[0]},
+		Network: "unix", Address: plan.Address, BootToken: bootToken, Argv: []string{fakeOMPCopy(t)},
 		Env: plan.Env, Grace: grace, ReapOrphans: plan.Reap, Log: os.Stdout,
 	})
 	fmt.Printf("reap-helper code=%d error=%v\n", code, err)
@@ -101,6 +101,36 @@ func TestAReapingShimTakesInItsAgentsOrphansAndKeepsTheAgentsStatus(t *testing.T
 	}
 }
 
+// reapRefusalProbeEnv marks the copy of this test binary that
+// TestAProcessStartedAsTheFakeOMPStartsNoReapHelper starts. It is no LEGION_ variable, which
+// fixtureenv's Guard would take out of the copy before it reads it.
+const reapRefusalProbeEnv = "SHIM_REAPER_REFUSAL_PROBE"
+
+// A process started as the fake OMP that runs the tests, in a build without TestMain, starts no
+// reap helper: startReapHelper takes the binary from fakeOMPCopy, which refuses a process that
+// has fakeOMPEnv=1. The probe is this binary run with -test.run of this test alone, which runs
+// this one test with TestMain or without it; once it runs it sets fakeOMPEnv=1 in its own process,
+// as a copy started as the fake OMP has it, and calls startReapHelper, which must fail it with the
+// refusal before any helper starts. Control: a startReapHelper that took os.Args[0], as it did
+// before, starts the helper, and the probe prints its pid.
+func TestAProcessStartedAsTheFakeOMPStartsNoReapHelper(t *testing.T) {
+	if os.Getenv(reapRefusalProbeEnv) == "1" {
+		t.Setenv(fakeOMPEnv, "1")
+		h := startReapHelper(t, reapHelperPlan{})
+		fmt.Printf("probe started a reap helper, pid %d\n", h.cmd.Process.Pid)
+		return
+	}
+	probe := exec.Command(os.Args[0], "-test.run=^TestAProcessStartedAsTheFakeOMPStartsNoReapHelper$")
+	probe.Env = append(os.Environ(), reapRefusalProbeEnv+"=1")
+	out, err := probe.CombinedOutput()
+	switch {
+	case strings.Contains(string(out), "probe started a reap helper"):
+		t.Fatalf("a process with %s=1 started a reap helper, which in a build without TestMain starts copies without bound\n%s", fakeOMPEnv, out)
+	case err == nil || !strings.Contains(string(out), fakeOMPEnv+"=1"):
+		t.Fatalf("the probe ended %v with no refusal naming %s=1\n%s", err, fakeOMPEnv, out)
+	}
+}
+
 // reapHelper is one running TestReapingShimHelper: its process, its output, and its wait, which a
 // goroutine of its own makes from the start, so the test and its cleanup only ever read its end.
 type reapHelper struct {
@@ -110,14 +140,18 @@ type reapHelper struct {
 	waited error
 }
 
-// startReapHelper starts TestReapingShimHelper with plan.
+// startReapHelper starts TestReapingShimHelper with plan. It takes the binary from fakeOMPCopy, so
+// a process started as the fake OMP that runs the tests (a build without TestMain) fails here
+// before it starts a helper, which would start a fake OMP of its own (docs/testing.md, "A Go test
+// that starts a copy of its own test binary").
 func startReapHelper(t *testing.T, plan reapHelperPlan) *reapHelper {
 	t.Helper()
+	self := fakeOMPCopy(t)
 	encoded, err := json.Marshal(plan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &reapHelper{cmd: exec.Command(os.Args[0], "-test.run=^TestReapingShimHelper$"), out: newSyncBuffer(), done: make(chan struct{})}
+	h := &reapHelper{cmd: exec.Command(self, "-test.run=^TestReapingShimHelper$"), out: newSyncBuffer(), done: make(chan struct{})}
 	h.cmd.Env = append(os.Environ(), reapHelperEnv+"="+string(encoded))
 	h.cmd.Stdout, h.cmd.Stderr = h.out, h.out
 	if err := h.cmd.Start(); err != nil {
