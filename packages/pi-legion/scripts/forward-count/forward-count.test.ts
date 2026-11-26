@@ -322,10 +322,15 @@ function answersOf(lines: Line[]): Answer[] {
   return transcriptAnswers(parsed.entries, { apiHosts: API_HOSTS });
 }
 
+/** A reason that states `merge-blocked` and a defect of the role's own, as a merger writes one. */
+const BLOCK_AND_DEFECT =
+  "the head conflicts with main since the base moved, and the change itself writes the cache key before it reads the entry, so a second read of one key answers the first entry";
+
 /** The return a made session's answers give, with both sources read and an empty timeline. */
 function returnOfSession(lines: Line[]): ReturnLine {
   const answers = answersOf(lines);
   const facts = made({
+    reason: BLOCK_AND_DEFECT,
     mergeBlocked: { head: HEAD, transcript: { state: "read", answers }, timeline: { state: "read", items: [] } },
   });
   return returnOf(facts, { answers });
