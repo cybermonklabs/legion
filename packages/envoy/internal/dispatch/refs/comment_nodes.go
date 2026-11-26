@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -115,7 +116,8 @@ func LockCommentOwners(ctx context.Context, tx pgx.Tx, ids []string) error {
 }
 
 // scanCommentRows reads every row of rows, a read of commentRow's columns in its order, and
-// closes it.
+// closes it. A row whose parties graphstore.PartiesValue refuses is left out, as
+// CommentsNamingNoNode says: no writer can give that comment a node.
 func scanCommentRows(rows pgx.Rows) ([]commentRow, error) {
 	defer rows.Close()
 	var batch []commentRow
@@ -130,6 +132,9 @@ func scanCommentRows(rows pgx.Rows) ([]commentRow, error) {
 			return nil, fmt.Errorf("read the author of comment %s: %w", row.id, err)
 		}
 		row.project, row.parties = graphstore.SessionScope(row.project, session)
+		if _, err := graphstore.PartiesValue(row.parties); err != nil {
+			continue
+		}
 		batch = append(batch, row)
 	}
 	return batch, rows.Err()
