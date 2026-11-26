@@ -1008,7 +1008,7 @@ type Issue struct {
 	// has not held, one it released, and one whose streak a later pass ended. Absent from every
 	// issue of the body the route serves a caller below podHoldContract (shapeIssue,
 	// withoutPodHold).
-	PodHold *PodHoldView `json:"podHold,omitempty"`
+	PodHold *PodHoldView `json:"-"`
 }
 
 // PodHoldView is one pod's standing hold as the state shows it (store.PodHold): Reason, the idle
