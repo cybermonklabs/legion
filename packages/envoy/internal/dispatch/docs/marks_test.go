@@ -1339,9 +1339,16 @@ func waitForPersistedUpdates(t *testing.T, service *Service, artifactID string, 
 	}
 }
 
-func waitFor(t *testing.T, timeout time.Duration, description string, condition func() bool) {
+// waitFor waits until condition holds, failing the test naming description. It waits for the
+// fact, not for a span: its one bound is the test binary's deadline less testwait's margin
+// (testwait.Until), so a loaded machine slows the wait and does not fail it. The span a caller
+// passes is not read.
+func waitFor(t *testing.T, _ time.Duration, description string, condition func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, timeout, 5*time.Millisecond, description, condition)
+	testwait.Until(t, description, func() (bool, bool) {
+		held := condition()
+		return held, held
+	})
 }
 
 // askTree parses markdown and gives its ask blocks the ids named, in document order, repeats

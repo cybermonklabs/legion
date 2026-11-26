@@ -7,6 +7,7 @@ import {
   DEFAULT_THREAD_PAGE_LIMIT,
   DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
+  DISPATCH_APPROVE_ONLY_TOKEN,
   DISPATCH_AS_OF_TOKEN_NOT_SERVED,
   DISPATCH_EVENT_TYPES,
   DISPATCH_LOGIN_CHANGED,
@@ -134,6 +135,11 @@ import {
   SUBJECT_SEGMENT_REPLACED,
   uncapturedTopicRefusal,
 } from "../src/subject";
+import {
+  renderDispatchFrameSchema,
+  renderDispatchFrameSchemaGo,
+  renderDispatchFrameVerdicts,
+} from "./gen-go-dispatch-frame";
 import { renderDispatchTools } from "./gen-go-tools";
 
 type ScalarKind = "string" | "integer" | "boolean";
@@ -806,6 +812,13 @@ const DispatchSignInRequired = ${JSON.stringify(DISPATCH_SIGN_IN_REQUIRED)}
 // reading of it cannot drift apart.
 const DispatchReadOnlyToken = ${JSON.stringify(DISPATCH_READ_ONLY_TOKEN)}
 
+// DispatchApproveOnlyToken is the code of the 403 for a request by an approve-only token - the
+// token the secrets broker mints for a person's approve grant and spends through Cipher's proxy -
+// to a route the approve list does not name, or for its answer of an ask that is not an approval
+// request: nothing ran and nothing was recorded. Generated from DISPATCH_APPROVE_ONLY_TOKEN in
+// packages/contracts so the server's refusal and every client's reading of it cannot drift apart.
+const DispatchApproveOnlyToken = ${JSON.stringify(DISPATCH_APPROVE_ONLY_TOKEN)}
+
 // DispatchAsOfTokenNotServed is the code of the 403 for a request by a read-only token that
 // carries a cut (as_of) to a read route other than GET /api/v1/whoami: no build serves a read at
 // a past time yet, so the route ran nothing rather than answer with the present. Generated from
@@ -1402,6 +1415,8 @@ ${definitions.join("\n\n")}
 const envelope = (await Bun.file(envelopeFile).json()) as Schema;
 const blockSchema = (await Bun.file(blockSchemaFile).json()) as BlockSchemaDocument;
 
+const dispatchFrameSchema = renderDispatchFrameSchema();
+
 // Every generated file this script owns, each marked with the language it is written in: a Go
 // file is gofmt-formatted before it is written and before it is compared.
 const outputs = [
@@ -1430,7 +1445,22 @@ const outputs = [
     rendered: renderBlockSchemaTypes(blockSchema),
     language: "ts",
   },
-] satisfies { path: string; rendered: string; language: "go" | "ts" }[];
+  {
+    path: resolve(import.meta.dir, "../schemas/dispatch-frame.schema.json"),
+    rendered: dispatchFrameSchema,
+    language: "json",
+  },
+  {
+    path: resolve(import.meta.dir, "../fixtures/dispatch-frame-verdicts.json"),
+    rendered: renderDispatchFrameVerdicts(),
+    language: "json",
+  },
+  {
+    path: resolve(import.meta.dir, "../../envoy/internal/contracts/dispatch_frame_generated.go"),
+    rendered: renderDispatchFrameSchemaGo(dispatchFrameSchema),
+    language: "go",
+  },
+] satisfies { path: string; rendered: string; language: "go" | "ts" | "json" }[];
 const fmt = Bun.which("gofmt");
 
 // `--check` pipes each Go render through gofmt and compares every render with the committed
