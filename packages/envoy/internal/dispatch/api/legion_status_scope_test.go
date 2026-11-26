@@ -124,18 +124,7 @@ func newLegionStatusRigOn(t *testing.T, serving testServerOptions) *legionStatus
 			return rig.serve(caller.presenting(t, method, path, token, body))
 		}
 	}
-	bearer := func(token string, actor map[string]any) func(*testing.T, string, string, map[string]any) *httptest.ResponseRecorder {
-		return func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
-			named := maps.Clone(body)
-			if named == nil {
-				named = map[string]any{}
-			}
-			if _, ok := named["actor"]; !ok {
-				named["actor"] = actor
-			}
-			return rig.serve(brokerRequest(t, method, path, named, "Bearer "+token, ""))
-		}
-	}
+	bearer := rig.bearer
 	personScoped := liveNamedToken(caller.jkt)
 	personScoped.ProjectScope, personScoped.Projects = ciphertoken.ProjectScopePerson, nil
 	rig.credentials = []legionCredential{
@@ -167,6 +156,21 @@ func newLegionStatusRigOn(t *testing.T, serving testServerOptions) *legionStatus
 			send: broker("a-service-token", serviceOnlyToken(caller.jkt))},
 	}
 	return rig
+}
+
+// bearer sends a request with token as its bearer, naming actor in the body where the body names
+// no actor: a bearer that proves no session names the one it acts as.
+func (rig *legionStatusRig) bearer(token string, actor map[string]any) func(*testing.T, string, string, map[string]any) *httptest.ResponseRecorder {
+	return func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
+		named := maps.Clone(body)
+		if named == nil {
+			named = map[string]any{}
+		}
+		if _, ok := named["actor"]; !ok {
+			named["actor"] = actor
+		}
+		return rig.serve(brokerRequest(t, method, path, named, "Bearer "+token, ""))
+	}
 }
 
 // credential is the credential of the inventory named name.
@@ -968,8 +972,9 @@ func TestACascadeThatWritesALegionIssueIsRefusedWhole(t *testing.T) {
 // TestNoMintHoldsLegionStatus: no credential mints a personal token that holds legion-status,
 // alone or beside person, and no edit gives it to one, and no such call changes a token. A
 // credential that may mint (a browser sign-in, a personal token holding approve) is refused 400
-// TOKEN_SCOPES_INPUT. A broker token scoped to a person holds person alone and never approve
-// (brokerTokenActor), so the mint route's own scope refuses it first, 403 OAUTH_SCOPE_REQUIRED.
+// TOKEN_SCOPES_INPUT. A broker token a machine holds, scoped to a person, holds person alone and
+// never approve (brokerTokenActor), so the mint route's own scope refuses it first, 403
+// OAUTH_SCOPE_REQUIRED.
 // The table's own check refuses a row that holds it, so a write that passes the API cannot store
 // one either.
 func TestNoMintHoldsLegionStatus(t *testing.T) {

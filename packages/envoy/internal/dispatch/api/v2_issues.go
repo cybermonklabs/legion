@@ -71,11 +71,13 @@ var (
 
 // issueFieldRefusals are the refusals of the members an issue's create and its patch both take,
 // with more, the route's own, after them: its advances, assignee, blocked_by, components,
-// priority, labels and parent, a title past its bound, and the input either refuses whole.
+// priority (a priority of 0 among them, which needs the p0 scope), labels and parent, a title past
+// its bound, and the input either refuses whole.
 func issueFieldRefusals(more ...apicode.Refusal) []apicode.Refusal {
 	return append([]apicode.Refusal{
 		undeclaredKeyRefusal, valuePastBoundRefusal, assigneeNotSignedInRefusal, priorityInvalidRefusal,
 		labelsInvalidRefusal,
+		{Condition: apicode.PriorityZeroWithoutP0Scope, Code: apicode.OAuthScopeRequired},
 		{Condition: apicode.AdvancesInvalid, Code: apicode.AdvancesInput},
 		{Condition: apicode.BlockedByInvalid, Code: apicode.BlockedByInput},
 		{Condition: apicode.ComponentsInvalid, Code: apicode.ComponentsInput},
@@ -245,7 +247,12 @@ func (s *server) v2IssueRows() []routeRow {
 				"own project above it carries the label legion, a create under a parent by a session that is no person and "+
 				"no architect of the parent or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. A create under a "+
 				"parent of another project is judged as a root of the new issue's own project, which this check does not "+
-				"judge.", contracts.IssueTitleMax),
+				"judge. A priority of 0 needs the p0 scope: a create that names priority 0 makes the new issue's own "+
+				"priority P0, and from a credential that does not hold p0 it is 403 OAUTH_SCOPE_REQUIRED naming p0, under "+
+				"a WWW-Authenticate challenge for p0, and writes nothing. A person at a browser holds p0, a personal token "+
+				"holds it only where its maker gave it, and a create that names a priority of 1 to 3, or none, needs no "+
+				"scope; a priority that an issue above the new issue has is none of its own. A create from a ref that "+
+				"Dispatch already imported answers that issue and sets no priority.", contracts.IssueTitleMax),
 			// A new child is checked against its parent's status under the same lock as /api/v1.
 			Handler:  s.createIssueV2,
 			Resource: "issues", Kind: kindCollection, Key: "{key}",
@@ -373,7 +380,15 @@ func (s *server) v2IssueRows() []routeRow {
 				"the status-change form leaves out each issue of a private project that the credential does not name, "+
 				"and each issue that it reaches only through such an issue (a descendant below it, or an ancestor above "+
 				"it): it does not move or unlink those issues, and neither its answer nor its dry run names them, and "+
-				"the issues of a 409 PARENT_STATUS_CONFLICT leave out such an issue, so they can be empty. "+
+				"the issues of a 409 PARENT_STATUS_CONFLICT leave out such an issue, so they can be empty. A priority of "+
+				"0 needs the p0 scope when the write makes the issue's own priority 0, from none or from another value: "+
+				"from a credential that does not hold p0 it is 403 OAUTH_SCOPE_REQUIRED naming p0, under a "+
+				"WWW-Authenticate challenge for p0, before every refusal that reads the issue (409 ISSUE_CHANGED and 409 "+
+				"ISSUE_CLOSED among them), and writes no field of the issue and no event of it. For a close that names "+
+				"priority 0 from a credential without p0, the write reads the issue's own priority first, and where it "+
+				"is not 0 it refuses the close before it settles the issue's documents; a close whose own priority moves "+
+				"away from 0 between that read and the owner's lock can settle the documents and is then refused. "+
+				"Keeping P0, lowering it, clearing it and a priority of 1 to 3 need no scope. "+
 				"404 ISSUE_NOT_FOUND.", contracts.IssueTitleMax),
 			Handler:  s.patchIssueV2,
 			Resource: "issues", Kind: kindItem, Key: "{key}",

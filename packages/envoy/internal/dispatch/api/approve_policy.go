@@ -4,7 +4,8 @@ package api
 // place and none of its checks hides among the scope and session layers they run beside. An
 // approve-only token is the token the secrets broker mints for a person's approve grant, binds to
 // its own pod's key and spends through its proxy, never released (model.Credential.ApproveOnly). It
-// acts as its person with both of the person's scopes, so these checks alone keep it to approvals.
+// acts as its person with the scopes person and approve (brokerApproveOnlyScopes), never p0, so
+// these checks alone keep it to approvals.
 //
 // The approve list (approveScopeRoutes) is compiled against the route table once, as the table is
 // built (applyApprovePolicy), and the rows carry the result: ApproveOnly, ApproveStates and

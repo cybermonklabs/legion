@@ -24,7 +24,7 @@ The gate must pass before the deployment names a real person from outside on any
 | `../__tests__/outside-agent-codex.test.ts` | The test that the Codex leg's rows hold against stand-ins, each beside the change that makes it fail, and that its stand-in model answers the requests Codex sends as the rows need. |
 | `../__tests__/outside-agent-fixture.ts` | What the test files share: where the legs are, the rows each prints, and the helpers that copy a leg and read its TSV. |
 | `../__tests__/outside-agent-tailnet-stand-ins.ts` | The stand-ins the tailnet leg's tests run it against: the checkout, the deployment repository and workflow behind a stand-in `gh`, the broker's tools, Dispatch, the sweep and the public leg. |
-| `../__tests__/outside-agent-stand-in-dispatch.ts` | The stand-in Dispatch those tests run in a process of its own, so no test worker's busy event loop holds its answers. It binds a port of the kernel's choosing and writes it to its state directory, and answers `/_ready` with a nonce the test passed it, so no other process can take its port first and no other run's stand-in passes for it. The closed ports the tests name come from the reserved range of `outside-path-reach-fixtures.ts`'s `closedPort`. |
+| `../__tests__/outside-agent-stand-in-dispatch.ts` | The stand-in Dispatch those tests run in a process of its own, so no test worker's busy event loop holds its answers. It binds a port of the kernel's choosing and writes it to its state directory, and answers `/_ready` with a nonce the test passed it, so no other process can take its port first and no other run's stand-in passes for it. The closed ports the tests name are `outside-path-reach-fixtures.ts`'s `closedPort`: each held bound and never listening by the test process, so no other process can take one. |
 
 ## What each leg prints
 
@@ -106,8 +106,8 @@ the result as one comment), `OUTSIDE_LEGION_CHECKOUT` and `OUTSIDE_ALLOW_HTTP`.
 `OUTSIDE_FULL_COOKIE_FILE` holds a full member's browser session at Dispatch's private origin,
 `<name>=<value>` as the Cookie header carries it. The leg gives it to curl in a header file of mode
 0600 alone, with the origin's own `Origin` on every call, which Dispatch asks of a cookie's write.
-No broker token approves, so the positive controls of T3 and P7 read with it. The sweep's GitHub
-proxy reads use it where it is given, and else the full member's token
+No broker token a machine holds approves, so the positive controls of T3 and P7 read with it. The
+sweep's GitHub proxy reads use it where it is given, and else the full member's token
 (`OUTSIDE_SWEEP_FULL_TOKEN_FILE`): a build of Dispatch whose proxy reads a browser's person alone
 refuses that token (401 `NO_IDENTITY`, 403 `OAUTH_SCOPE_REQUIRED`), and the sweep row then reads
 UNKNOWN naming the refusal.
@@ -393,8 +393,9 @@ which says the two clocks disagree.
 A PASS of P5 reads UNKNOWN when the issue row did not pass. A PASS of P6 reads
 UNKNOWN when the peer did not start, the private listener did not list `<peer>-foreign`, or the
 edge admits that session's token, which puts it in the project. A PASS of P7 reads UNKNOWN when
-P7's control was not answered 201 and 200: no broker token approves, so the 403 the agent's token
-gets says something about that token only where a browser session is answered on the same routes.
+P7's control was not answered 201 and 200: no broker token a machine holds approves, so the 403
+the agent's token gets says something about that token only where a browser session is answered on
+the same routes.
 A FAIL of P5, P6 or P7 stands, because a missing refusal or a listed foreign session is evidence by
 itself, with one exception: where the edge admits `<peer>-foreign`'s token, P6's parts about that
 session (its listing and the send to it) are no evidence, since it is then in the project, and a

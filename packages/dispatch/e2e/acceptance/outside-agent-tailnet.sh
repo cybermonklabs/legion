@@ -581,10 +581,11 @@ EOF
 fi
 
 # --- The full member's browser session (OUTSIDE_FULL_COOKIE_FILE) at Dispatch's private origin.
-# No broker token approves, so the positive controls of T3 and P7 read with it; the browser gate's
-# owner acts are made with it where their commands are unset; and the sweep's GitHub proxy reads
-# use it where it is given and the full member's token (below) where it is not, which a build of
-# Dispatch that reads the proxy as a browser's person alone refuses. The cookie reaches curl in a
+# No broker token a machine holds approves, so the positive controls of T3 and P7 read with it; the
+# browser gate's owner acts are made with it where their commands are unset; and the sweep's GitHub
+# proxy reads use it where it is given and the full member's token (below) where it is not, which a
+# build of Dispatch that reads the proxy as a browser's person alone refuses. The cookie reaches curl
+# in a
 # header file of mode 0600 alone, never on a command line. whoami names the member, whose address
 # is the operator of the full member's helper (T3 and P7's control). The pins row has already held
 # OUTSIDE_TAILNET_DISPATCH_URL. ---
@@ -1069,10 +1070,11 @@ else
   esac
 fi
 
-# --- The full member's helper, the positive control of T3 and of P7. No broker token approves, the
-# full member's own included, so the 403 OAUTH_SCOPE_REQUIRED that P7 reads for the agent's token
-# says something about that token only where a browser session is answered on the same routes. The
-# full member's browser mints a personal agent token (201), revoked again at once, and approves a
+# --- The full member's helper, the positive control of T3 and of P7. No broker token a machine
+# holds approves, the full member's own included, so the 403 OAUTH_SCOPE_REQUIRED that P7 reads for
+# the agent's token says something about that token only where a browser session is answered on
+# the same routes. The full member's browser mints a personal agent token (201), revoked again at
+# once, and approves a
 # machine login (200) of a scratch helper whose operator is that member and whose broker is
 # OUTSIDE_TAILNET_BROKER_URL, the broker T2's scratch helper enrolls at. T3 enrolls through that
 # helper, and then its login is revoked and the helper stopped. T3 needs the helper alone

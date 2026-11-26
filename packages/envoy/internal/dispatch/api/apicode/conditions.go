@@ -238,6 +238,9 @@ var (
 	// AgentArtifactListWithoutPersonScope is the list of an agent conversation's files and images,
 	// the form that names no slug, read by a credential that does not hold the person scope.
 	AgentArtifactListWithoutPersonScope = Condition{"agent conversation's file list without the person scope"}
+	// PriorityZeroWithoutP0Scope is an issue write, a create or a change, that makes the issue's own
+	// priority 0 from a credential that does not hold the p0 scope (refuseP0WithoutScope).
+	PriorityZeroWithoutP0Scope = Condition{"issue priority 0 written without the p0 scope"}
 	// SpecWriterNotArchitect is a write of the spec or the Verification document of an issue
 	// Legion runs - a version of the document, a create or a move under a parent, a close, a
 	// reopen, or a write that takes the issue out of Legion - by a session that is no person and

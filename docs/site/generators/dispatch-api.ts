@@ -5,6 +5,7 @@
 // serve without a database or a listener. api.md is /api/v2, the API to call; api-v1.md is the
 // deprecated /api/v1, kept while clients still call it. Contract: scripts/generate.ts;
 // lib/reference.ts runs the binary.
+import type { DispatchScope } from "../../../packages/contracts/src/dispatch-api-core.ts";
 import { inline, writePage } from "./lib/markdown.ts";
 import { readTable } from "./lib/reference.ts";
 
@@ -26,14 +27,16 @@ const CALLERS: Record<string, { label: string; meaning: string }> = {
   },
 };
 
-/** What each OAuth scope a route can name lets the credential holding it do (`routeScopes` in
- *  the source, `model.ScopePerson` and `model.ScopeApprove`). */
-const SCOPES: Record<string, string> = {
+/** What each OAuth scope a Dispatch credential can hold lets it do (`routeScopes` in the source,
+ *  `model.ScopePerson`, `model.ScopeApprove` and `model.ScopeP0`). `satisfies` ties the entries to
+ *  `DISPATCH_SCOPES`: a scope added there with no entry here fails the typecheck. */
+const SCOPES = {
   person:
     "this credential acts as its person. A browser sign-in holds it, so does a personal token unless its owner took it away, and so does a token the secrets broker issued that acts for its person.",
   approve:
-    "beside `person`, this credential may do what settles work or controls a credential: a document review, keeping a decision, the answer of an ask of kind `approval`, a machine-login decision, a credential-grant, machine-login or sign-in revoke, and minting, changing or revoking a personal token. A browser sign-in holds it, and so does a personal token its owner gave it; no token the secrets broker issued holds it, and no credential holds `approve` without `person`.",
-};
+    "beside `person`, this credential may do what settles work or controls a credential: a document review, keeping a decision, the answer of an ask of kind `approval`, a machine-login decision, a credential-grant, machine-login or sign-in revoke, and minting, changing or revoking a personal token. A browser sign-in holds it, and so does a personal token its owner gave it; of the tokens the secrets broker issues, only the approve-only token holds it, which no machine holds and which calls only the approve list's routes; and no credential holds `approve` without `person`.",
+  p0: "opens no route. A priority of 0 on `POST /api/v2/issues` and `PATCH /api/v2/issues/{key}`, and on the same two routes under `/api/v1`, needs it when the write makes the issue's own priority 0. Keeping P0, lowering it, clearing it and priorities 1 to 3 need no scope. A browser sign-in holds `p0`. A personal token holds it only where its maker gave it, and may hold it alone: no mint gives it by default. No broker token, shared token or service-account token holds `p0`.",
+} satisfies Record<DispatchScope, string>;
 
 /** What a /api/v2 route serves, by its index entry's `kind` (`resourceKind` in the source,
  *  routes_versions.go). A route of the delivery pages, which keeps its /api/v1 shape, names none. */
@@ -184,13 +187,13 @@ function callerSections(): string[] {
     "",
     ...Object.values(CALLERS).map(({ label, meaning }) => `- **${label}**: ${meaning}`),
     "",
-    "## The scopes a route needs",
+    "## The scopes a route or field value needs",
     "",
-    'A route can need OAuth scopes of the credential that calls it, and the credential must hold every one it names. A credential that holds none — the shared agent token a deployment configures, a Kubernetes service-account token, a broker-issued token scoped to a project — is refused `403 OAUTH_SCOPE_REQUIRED` naming the scope, under `WWW-Authenticate: Bearer error="insufficient_scope", scope="<scope>"` (RFC 6750 section 3.1).',
+    'A route, or one value of a field on a route, can need OAuth scopes of the credential that calls it. The credential must hold every scope the route or value needs. A credential that lacks a needed scope is refused `403 OAUTH_SCOPE_REQUIRED` naming the scope, under `WWW-Authenticate: Bearer error="insufficient_scope", scope="<scope>"` (RFC 6750 section 3.1). The shared agent token a deployment configures, a Kubernetes service-account token and a broker-issued token scoped to a project hold no OAuth scope.',
     "",
     ...Object.entries(SCOPES).map(([scope, meaning]) => `- \`${scope}\`: ${meaning}`),
     "",
-    "A read-only token is any token that holds `read`: one the secrets broker minted from a read entry or narrowed because its trade asked for `read`, or a personal token minted with `read`. It holds `person` at most, never `approve`. Dispatch serves it only on the GET routes it classes as reads (`readClasses` in the source), and refuses it `403 READ_ONLY_TOKEN` on every other route, with no challenge header, before it reads the route's scopes. It refuses a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami` and `GET /api/v2/me`. The route index does not carry the read class, so this page does not mark those routes.",
+    "A read-only token is any token that holds `read`: one the secrets broker minted from a read entry or narrowed because its trade asked for `read`, or a personal token minted with `read`. It holds `person` at most, never `approve` or `p0`. Dispatch serves it only on the GET routes it classes as reads (`readClasses` in the source), and refuses it `403 READ_ONLY_TOKEN` on every other route, with no challenge header, before it reads the route's scopes. It refuses a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami` and `GET /api/v2/me`. The route index does not carry the read class, so this page does not mark those routes.",
     "",
     "Path parameters are the `{name}` segments of a path.",
     "",

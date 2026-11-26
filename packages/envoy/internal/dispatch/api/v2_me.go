@@ -136,7 +136,9 @@ func (s *server) v2MeRows() []routeRow {
 				"no person, and none for a read entry's token; a token narrowed to reading answers the word it narrows. " +
 				"scopes is the " +
 				"OAuth scopes the credential holds, [] for none: person acts as the person on every route the dashboard " +
-				"reaches, and approve settles what a person settles. Read-only credentials list read after those scopes. " +
+				"reaches, approve settles what a person settles, and p0 makes an issue's own priority 0 (a person at a " +
+				"browser holds all three, a personal token holds p0 only where its maker gave it, and no broker-issued " +
+				"token, shared token or service-account token holds it). Read-only credentials list read after those scopes. " +
 				"cut is their past read time in UTC, or null when there is no cut; this route reports the cut rather than " +
 				"reading Dispatch at that time. A Legion daemon's own broker token answers [\"legion-status\"]: with " +
 				"DISPATCH_LEGION_STATUS_SCOPE on, legion-status or person lets a credential make the three writes of a " +
@@ -167,10 +169,11 @@ func (s *server) v2MeRows() []routeRow {
 		{
 			Method: http.MethodPost, Pattern: "/me/agent-tokens", Auth: authAny, Versions: onlyV2,
 			Description: "Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting " +
-				"to the scopes the caller's own credential holds, and [] is a token that holds none. A blank name is 400 " +
+				"to every scope the caller's own credential holds but p0, which a token holds only where the body names " +
+				"it, and [] is a token that holds none. A blank name is 400 " +
 				"AGENT_TOKEN_INPUT. Read alone or with person mints a read-only token. An unknown scope, approve without " +
-				"person, or read with approve is 400 TOKEN_SCOPES_INPUT. Except for read, a scope the caller does not " +
-				"hold is 403 OAUTH_SCOPE_REQUIRED. Answers 201 the " +
+				"person, or read with approve or p0 is 400 TOKEN_SCOPES_INPUT. Except for read, a scope the caller does not " +
+				"hold itself, p0 among them, is 403 OAUTH_SCOPE_REQUIRED. Answers 201 the " +
 				"token with its plaintext in token, the one time it is shown, so an Idempotency-Key never keeps the " +
 				"answer: a repeat under the key is 409 KEY_COMMITTED and mints no second token. Needs the person and " +
 				"approve scopes.",
@@ -204,7 +207,10 @@ func (s *server) v2MeRows() []routeRow {
 			Method: http.MethodPatch, Pattern: "/me/agent-tokens/{id}", Auth: authAny, Versions: onlyV2,
 			Description: "Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to " +
 				"hold, with the mint's refusals. A change to or from read only is always 400 TOKEN_SCOPES_INPUT; mint " +
-				"a new token instead. Answers the token, with no plaintext. Needs the person and approve scopes. " +
+				"a new token instead. A set that names a scope the caller does not hold itself is 403 " +
+				"OAUTH_SCOPE_REQUIRED: only a credential that holds p0 names p0 in a set, also for a token that holds it " +
+				"already, since the set sent is the whole set. Answers the token, with no plaintext. Needs the person and " +
+				"approve scopes. " +
 				"404 AGENT_TOKEN_NOT_FOUND for an id that is no token of the caller's, another person's among them.",
 			Handler:  s.updateAgentTokenV2,
 			Resource: "agent-tokens", Kind: kindItem, Key: "{id}",

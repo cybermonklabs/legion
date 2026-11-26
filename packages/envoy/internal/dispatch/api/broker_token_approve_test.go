@@ -1,14 +1,16 @@
-// broker_token_approve_test.go holds that no token the secrets broker issued holds the approve
-// scope, whatever its project scope, so every route that needs approve refuses each of them at the
-// gate, while the browser session of the person a token names is answered there as before. A
-// broker token is made from a file on the machine that holds it (a machine login or a person's
-// sign-in), so whoever copies that file holds it; approve settles what only the person settles, so
-// it needs the person's browser or a personal token they chose to give it. The answer to an
-// approval request checks approve inside its handler, and its tests are the broker rows of
-// TestAnsweringAnApprovalAskNeedsTheApproveScope, on /api/v1 and on /api/v2, and of
-// TestTheV2NoOpAnswerOfAnApprovalAskNeedsTheApproveScope, for the same approval sent again. A job's
-// token does not hold person either, since it names no person, so every route that needs person
-// refuses it at the same gate.
+// broker_token_approve_test.go holds that no token the secrets broker issued for a machine to hold
+// holds the approve scope, whatever its project scope, so every route that needs approve refuses
+// each of them at the gate, while the browser session of the person a token names is answered
+// there as before. The one broker-issued token that holds approve, the approve-only token the
+// broker's proxy spends and no machine holds, is approve_only_token_test.go's. A broker token is
+// made from a file on the machine that holds it (a machine login or a person's sign-in), so
+// whoever copies that file holds it; approve settles what only the person settles, so it needs
+// the person's browser, a personal token they chose to give it, or that approve-only token. The
+// answer to an approval request checks approve inside its handler, and its tests are the broker
+// rows of TestAnsweringAnApprovalAskNeedsTheApproveScope, on /api/v1 and on /api/v2, and of
+// TestTheV2NoOpAnswerOfAnApprovalAskNeedsTheApproveScope, for the same approval sent again. A
+// job's token does not hold person either, since it names no person, so every route that needs
+// person refuses it at the same gate.
 package api
 
 import (

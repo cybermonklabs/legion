@@ -10,9 +10,9 @@ import (
 // TestEveryRowThatSettlesWhatAPersonSettlesNeedsApprove holds each route that settles what only
 // the person settles to the approve scope in the route table. TestNoBrokerTokenGetsApprove walks
 // whatever rows name approve, so a row that stops naming it leaves that walk and the test still
-// passes, while every broker token, which holds no approve, is then answered on it. This pins
-// the rows themselves: a review, a decision's Keep, a credential's approve, deny and machine
-// lookup, the revoke of a credential grant, a machine login and a sign-in, and a personal
+// passes, while every broker token a machine holds, which holds no approve, is then answered on
+// it. This pins the rows themselves: a review, a decision's Keep, a credential's approve, deny and
+// machine lookup, the revoke of a credential grant, a machine login and a sign-in, and a personal
 // token's mint, change and revoke. Each is pinned at /api/v1 (routeScopes) and at the /api/v2
 // route that answers it, on that row's own scopes or, for the decision a credential request's
 // state sets, on the rule of that state (its Authorities): /api/v2 grants nothing /api/v1 refuses.
