@@ -2803,6 +2803,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if hold != "" {
 		return e.holdBeforeRetro(ctx, tx, issue, w, trigger, row.To, handoff, pr, why, hold, waits)
 	}
+	// A task that passes into its retro with nothing holding it runs no step again, so the branches
+	// beside its fixes go (queueTaskEnd).
+	if row.To == phase.Retro {
+		if err := e.queueTaskEnd(ctx, tx, issue, w); err != nil {
+			return err
+		}
+	}
 	from, err := e.arrive(ctx, tx, &issue, &w, trigger, row.To, PhaseStatus(row.To), nil, handoff, pr, reason)
 	if err != nil {
 		return err

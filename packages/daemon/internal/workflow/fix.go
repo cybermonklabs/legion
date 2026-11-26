@@ -1356,6 +1356,11 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 			return err
 		}
 	}
+	if e.deletesAtWay(*fix, way) {
+		if err := e.queueBesideDelete(ctx, tx, issue, w.Task, fix.Fix); err != nil {
+			return err
+		}
+	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return err
@@ -1388,6 +1393,26 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 		return err
 	}
 	return e.mergeForwardAfterFix(ctx, tx, issue.Key)
+}
+
+// deletesAtWay says whether the way after fix, way, deletes the branches beside it
+// (queueBesideDelete): at ways 2 and 3 after the fix's own completion with commits of its own
+// (EndHead not Head), once each step beside it has ended, so the fix's one end push can hold every
+// commit it took. Way 1 keeps them, since the step the task returns to gets a report that names
+// them. A completion with no commit took nothing, and a fix whose claim failed made no completion,
+// so no end push is known to hold a take: neither deletes, and the pushed red tests stay where the
+// next step can take them. The seams: deleteAfterEveryCompletion deletes after the fix's own
+// completion with no commit too, and besideDeleteAsBefore after every way 2 or 3.
+func (e *Engine) deletesAtWay(fix record.TaskFix, way int) bool {
+	switch {
+	case way != wayAfterFix && way != wayOn:
+		return false
+	case e.besideDeleteAsBefore:
+		return true
+	case fix.ClaimFailed != "" || fix.Result != string(ResultPassed):
+		return false
+	}
+	return e.deleteAfterEveryCompletion || fix.EndHead != fix.Head
 }
 
 // moveFromHold is the one move that returns a held task, and the move of the way after a fix

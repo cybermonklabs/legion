@@ -217,6 +217,9 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 	if err != nil {
 		return err
 	}
+	// dropped is each task of an earlier generation whose fix this settle took off already
+	// (dropFixWay), so several runs of it that end here queue one deletion of its branches.
+	dropped := map[runAt]bool{}
 	for _, row := range stored {
 		if row.Run != record.RunOpen {
 			continue
@@ -246,8 +249,10 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 			return err
 		}
 		// A run of an earlier generation is over, and so is that run's fix, which takes no way
-		// (dropFixWay): the new generation judges its head again.
-		if now != nil && row.Generation != now.Generation {
+		// (dropFixWay): the new generation judges its head again. It is taken off once for its task.
+		if task := (runAt{issue: row.Issue, generation: row.Generation, place: record.StepPlace{Task: w.Task}}); now != nil &&
+			row.Generation != now.Generation && !dropped[task] {
+			dropped[task] = true
 			if err := e.dropFixWay(ctx, tx, stood, w, ""); err != nil {
 				return err
 			}

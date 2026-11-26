@@ -295,6 +295,11 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, held record.Issu
 	if reason != "" {
 		return e.rehold(ctx, tx, held, w, reason, detail)
 	}
+	// Nothing holds the task any longer, and no step of it runs again: the branches beside its
+	// fixes go (queueTaskEnd).
+	if err := e.queueTaskEnd(ctx, tx, held, w); err != nil {
+		return err
+	}
 	report, err := e.retroReport(ctx, tx, held, w)
 	if err != nil {
 		return err
