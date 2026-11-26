@@ -295,6 +295,7 @@ port: $port
 postgres_dsn: $LEGION_E2E_PG_DSN
 state_dir: $work/state
 operator_token_file: $work/operator-token
+admission_p0_bound: 3
 review_round_cap: 5
 # The wake pacing off (INFRA-976): this proof's waits are bounded, and at the default of 8 wakes a
 # minute every wake after the first would spend those waits queueing for its turn.
@@ -486,6 +487,32 @@ jq -e '.settings.review_round_cap == 5
   echo "the state does not carry the resolved settings with the fixture's review_round_cap, the masked envoy_url and no credential, credential file or App key"
   exit 1
 }
+# The configured P0 bound (INFRA-5636, C3): `legion state`'s `P0:` line names 3 as the bound in
+# force and in legion.yaml with none set while the daemon runs, and `legion project set-p0-bound
+# --bound 0` is refused by the daemon with 400 INVALID_P0_BOUND (exiting 1, not a CLI usage exit 2).
+# Stage 1's daemon has no dispatch_url, so it runs no workflow and refuses every live change
+# P0_BOUND_UNAVAILABLE; this step proves the configured bound and the floor of 1 on the real binary.
+want_p0_line="P0: 0 of the 0 issues holding a slot are P0 and hold it outside the cap of 4; P0 bound 3 in force, 3 in legion.yaml; none set while the daemon runs"
+p0_line=$("$work/legion" state --port "$port" | grep '^P0: ' || true)
+[ "$p0_line" = "$want_p0_line" ] ||
+  fail "legion state printed P0 line '$p0_line', want '$want_p0_line'"
+p0_rc=0
+"$work/legion" project set-p0-bound --port "$port" --operator-token-file "$work/operator-token" \
+  --bound 0 --reason "stage 1 floor check" >"$work/p0-bound-out.log" 2>"$work/p0-bound-err.log" || p0_rc=$?
+[ "$p0_rc" = 1 ] ||
+  fail "legion project set-p0-bound --bound 0 exited $p0_rc, want 1 (stderr: $(cat "$work/p0-bound-err.log"))"
+grep -qF 'the daemon answered 400 Bad Request: bound is how many P0 issues may hold a slot at once, a whole number of at least 1, and 0 is not; unbounded sets no bound; nothing changed' "$work/p0-bound-err.log" ||
+  fail "legion project set-p0-bound --bound 0 stderr did not carry the daemon's 400 refusal: $(cat "$work/p0-bound-err.log")"
+# The CLI prints the refusal's sentence without its code; read the code off the same operator route
+# with the bearer in a 0600 curl config file, never on curl's command line.
+(umask 077 && printf 'header = "Authorization: Bearer %s"\n' "$(<"$work/operator-token")" >"$work/p0-bound-curl.cfg")
+p0_http=$(curl -sS -K "$work/p0-bound-curl.cfg" -o "$work/p0-bound-refusal.json" -w '%{http_code}' \
+  -H 'Content-Type: application/json' -X POST \
+  -d '{"bound":0,"reason":"stage 1 floor check"}' \
+  "http://127.0.0.1:$port/legion/v1/operator/project/p0-bound")
+if [ "$p0_http" != 400 ] || ! jq -e '.code == "INVALID_P0_BOUND"' "$work/p0-bound-refusal.json" >/dev/null; then
+  fail "POST /legion/v1/operator/project/p0-bound with bound 0 answered $p0_http $(cat "$work/p0-bound-refusal.json"), want 400 INVALID_P0_BOUND"
+fi
 "$work/legion" legions --json |
   jq -e --arg p "$project" --argjson port "$port" 'map(select(.team == $p and .port == $port)) | length == 1' || {
   echo "the legions registry does not carry exactly one entry for $project on $port"

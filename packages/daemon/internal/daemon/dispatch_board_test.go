@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,7 +21,8 @@ const liveRepo = "acme/widgets"
 
 // liveDispatch is workflowConfig's Dispatch stand-in — the calls every boot makes and an empty
 // issue list — grown into the board the daemon reads and writes: it holds each issue's status, parent and
-// labels, as Dispatch's own board does, answers the issue reads the daemon makes (the outbox's
+// labels, and the priorities of an issue a test gives them (prioritize), as Dispatch's own board does,
+// answers the issue reads the daemon makes (the outbox's
 // before a status write, a release's walk up an issue's parent chain, an event's walk up its
 // Dispatch chain to the top) and 404s an issue it does not hold, records every status and message
 // the daemon posted, so a step can read back what the daemon told Dispatch and tell a write that
@@ -56,11 +58,33 @@ type liveDispatch struct {
 	plans map[string]map[string]any
 }
 
-// liveDispatchIssue is one issue as the board holds it: its status, its parent ("" for none), and
-// whether it is handed to Legion, which its labels say.
+// liveDispatchIssue is one issue as the board holds it: its status, its parent ("" for none),
+// whether it is handed to Legion, which its labels say, and its priorities, nil for an issue the
+// test gave none.
 type liveDispatchIssue struct {
 	status, parent string
 	handed         bool
+	priority       *liveDispatchPriority
+}
+
+// liveDispatchPriority is an issue's priorities as a Dispatch that resolves them serves them (J1 of
+// dispatch://INFRA-5793): own is the issue's own priority and resolved the one Dispatch resolves it
+// to, each a level from 0 for P0 to 3 for P3 or nil for null, and from the key of the issue the
+// resolved one comes from, "" for null, where it is the issue's own or none.
+type liveDispatchPriority struct {
+	own, resolved *int
+	from          string
+}
+
+// fields is the three keys a Dispatch that resolves priorities writes beside each other on an
+// issue it serves, the body of a read and the issue of an event alike: `priority`,
+// `resolved_priority` and `priority_from`, each null where it names none.
+func (p liveDispatchPriority) fields() map[string]any {
+	var from any
+	if p.from != "" {
+		from = p.from
+	}
+	return map[string]any{"priority": p.own, "resolved_priority": p.resolved, "priority_from": from}
 }
 
 // liveDispatchWrite is one write the daemon made to Dispatch: a status it set on an issue, or a
@@ -90,11 +114,26 @@ func (b *liveDispatch) show(key, status string) {
 }
 
 // place puts key on the board at status under parent ("" for none), labelled for Legion when
-// handed.
+// handed. A priority given to key before stays with it, as a move in Dispatch leaves it.
 func (b *liveDispatch) place(key, status, parent string, handed bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.issues[key] = liveDispatchIssue{status: status, parent: parent, handed: handed}
+	b.issues[key] = liveDispatchIssue{status: status, parent: parent, handed: handed, priority: b.issues[key].priority}
+}
+
+// prioritize gives key, which the board holds, the priorities its reads answer from then on. An
+// issue no test prioritizes is answered with none of the three keys, as a Dispatch before
+// INFRA-5793 answers it, so every proof that gives none reads each of them as missing, never as a
+// known none.
+func (b *liveDispatch) prioritize(key string, priority liveDispatchPriority) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	issue, held := b.issues[key]
+	if !held {
+		b.t.Fatalf("prioritize %s, an issue the Dispatch stand-in does not hold", key)
+	}
+	issue.priority = &priority
+	b.issues[key] = issue
 }
 
 // liveDispatchLabels is an issue's labels: Legion's when it is handed to Legion, none otherwise.
@@ -207,17 +246,23 @@ func (b *liveDispatch) showIssue(key string, w http.ResponseWriter) {
 	}
 }
 
-// issueBody is one issue as Dispatch answers it. The caller holds the lock.
+// issueBody is one issue as Dispatch answers it, the listing's row and the detail read alike, with
+// its three priority keys only where the test gave it priorities (prioritize). The caller holds the
+// lock.
 func (b *liveDispatch) issueBody(key string) map[string]any {
 	issue := b.issues[key]
 	var parent any
 	if issue.parent != "" {
 		parent = issue.parent
 	}
-	return map[string]any{
+	body := map[string]any{
 		"key": key, "project": b.project, "title": key, "status": issue.status, "parent": parent, "rank": "U",
 		"labels": liveDispatchLabels(issue.handed), "last_seq": 1, "resolved_repo": liveRepo,
 	}
+	if issue.priority != nil {
+		maps.Copy(body, issue.priority.fields())
+	}
+	return body
 }
 
 // showHandoff answers the handoff record read a completion makes: the seeded record, or Dispatch's
