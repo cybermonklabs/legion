@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -218,4 +219,74 @@ func TestProjectReleaseLeavesTheSuspendOfAClaimToTheOperator(t *testing.T) {
 			t.Fatalf("after the stop the claim is %s, want it retired", state)
 		}
 	})
+}
+
+// dispatch://INFRA-3583 R7, at the controller's own doors: while the daemon's project release
+// holds every start, the controller's resume of an agent it suspended, its retry of an agent its
+// stop retired, and its pod update of an issue are refused 409 PROJECT_RELEASED with a sentence
+// naming the release (releaseRefused in resumeAgent's event builder, in retryAgent and in
+// issuePodUpdate), and nothing is asked of a claim: no claim changes and the runtime is asked
+// nothing. The controller's suspend and stop start nothing and still run. With the mark clear the
+// same resume and retry start their agents, and the same pod update reaches this daemon's own
+// answer, so the refusal is the mark's and nothing else's.
+//
+// The negative control is any of the three releaseRefused calls undone: the resume and the retry
+// reach the agent and are answered 200, and the pod update is answered 404 NO_POD by this daemon,
+// which runs no pod update rounds.
+func TestProjectReleaseRefusesTheControllersResumeRetryAndPodUpdate(t *testing.T) {
+	h, released := projectReleaseHarness(t)
+	// The implementer the controller suspended, which its resume would lift, and the tester its
+	// stop retired, which its retry would start.
+	implementer := controllerSuspendedImplementer(t, h)
+	tester, _ := h.launchIn("LEGION-208", "LEGION-209", claim.RoleTester)
+	h.ready(tester, "ses_tester", 1)
+	wantAgentActionAnswer(t, askAgentAction(t, h, "/legion/v1/agents/stop", "LEGION-209", claim.RoleTester),
+		http.StatusOK, AgentActionResponse{State: "retired"})
+	reviewer, _ := h.launchIn("LEGION-208", "LEGION-209", claim.RoleReviewer)
+	h.ready(reviewer, "ses_reviewer", 1)
+	planner, _ := h.launchIn("LEGION-208", "LEGION-209", claim.RolePlanner)
+	h.ready(planner, "ses_planner", 1)
+
+	grant := controllerGrant(t, h).GrantID
+	released.Store(true)
+	before, err := h.store.Claims(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := len(h.runtime.Calls())
+	wantReleaseRefusal(t, h.request(http.MethodPost, "/legion/v1/agents/resume",
+		ClaimRequest{GrantID: grant, Issue: "LEGION-209", Role: string(claim.RoleImplementer)}, nil), "resume")
+	wantReleaseRefusal(t, h.request(http.MethodPost, "/legion/v1/agents/retry",
+		ClaimRequest{GrantID: grant, Issue: "LEGION-209", Role: string(claim.RoleTester)}, nil), "retry")
+	wantReleaseRefusal(t, askPodUpdate(h, grant, "LEGION-209"), "the pod update of LEGION-209")
+	after, err := h.store.Claims(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("the refused requests changed the claims:\nbefore %+v\nafter  %+v", before, after)
+	}
+	if got := len(h.runtime.Calls()); got != calls {
+		t.Fatalf("the refused requests reached the runtime: %v", h.runtime.Methods()[calls:])
+	}
+
+	// A suspension and a stop start nothing, and still run: the controller's suspend and stop.
+	wantAgentActionAnswer(t, askAgentAction(t, h, "/legion/v1/agents/suspend", "LEGION-209", claim.RoleReviewer),
+		http.StatusOK, AgentActionResponse{State: "suspended", SuspendedBy: "controller"})
+	wantAgentActionAnswer(t, askAgentAction(t, h, "/legion/v1/agents/stop", "LEGION-209", claim.RolePlanner),
+		http.StatusOK, AgentActionResponse{State: "retired"})
+
+	released.Store(false)
+	resumes := len(h.runtime.CallsOf("Resume"))
+	wantAgentActionAnswer(t, askAgentAction(t, h, "/legion/v1/agents/resume", "LEGION-209", claim.RoleImplementer),
+		http.StatusOK, AgentActionResponse{State: "launching"})
+	wantAgentActionAnswer(t, askAgentAction(t, h, "/legion/v1/agents/retry", "LEGION-209", claim.RoleTester),
+		http.StatusOK, AgentActionResponse{State: "launching"})
+	if got := len(h.runtime.CallsOf("Resume")) - resumes; got != 2 {
+		t.Fatalf("the resume and the retry with the mark clear made %d resumes of a session, want 2: the implementer's and the tester's", got)
+	}
+	if got := h.stored(implementer); got.State != supervise.StateLaunching {
+		t.Fatalf("after the resume with the mark clear the implementer is %s, want launching", got.State)
+	}
+	refused(t, askPodUpdate(h, grant, "LEGION-209"), http.StatusNotFound, "NO_POD")
 }
