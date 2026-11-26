@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/testexec"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
@@ -278,7 +278,7 @@ func idleRigLegionTool(t *testing.T, dir, rigURL string) string {
 	path := filepath.Join(dir, "legion")
 	script := "#!/bin/sh\n" + idleRigURLVariable + "=" + shellQuote(rigURL) + "\nexport " + idleRigURLVariable + "\n" +
 		"exec " + shellQuote(self) + " -test.run='^TestIdleRigRoleProcess$' -test.timeout=0 -test.count=1 \"$@\"\n"
-	if err := testexec.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the rig's legion stand-in: %v", err)
 	}
 	return path
@@ -294,7 +294,7 @@ func shellQuote(value string) string {
 func idleRigAgentTool(t *testing.T, dir string) []string {
 	t.Helper()
 	path := filepath.Join(dir, "omp")
-	if err := testexec.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	if err := execfile.Write(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatalf("write the rig's omp stand-in: %v", err)
 	}
 	return []string{path}

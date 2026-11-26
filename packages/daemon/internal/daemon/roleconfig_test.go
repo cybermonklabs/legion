@@ -7,10 +7,10 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
@@ -49,7 +49,7 @@ func TestTheTmuxBootGateRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
 	script := "#!/bin/sh\nIFS=:\nfor f in $PI_CONFIG_FILES; do case \"$f\" in *malformed*)\n" +
 		"  echo \"error: Failed to parse config overlay $f: SyntaxError\" >&2; exit 1;; esac; done\n" +
 		"echo '{\"value\": false}'\n"
-	if err := testexec.WriteFile(omp, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(omp, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	operator, good, malformed := filepath.Join(dir, "operator.yml"), filepath.Join(dir, "fallback.yml"), filepath.Join(dir, "malformed.yml")
@@ -91,7 +91,7 @@ func TestTheTmuxBootRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
 	script := "#!/bin/sh\nIFS=:\nfor f in $PI_CONFIG_FILES; do case \"$f\" in *malformed*)\n" +
 		"  echo \"error: Failed to parse config overlay $f: SyntaxError\" >&2; exit 1;; esac; done\n" +
 		"echo '{\"value\": false}'\n"
-	if err := testexec.WriteFile(omp, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(omp, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	malformed := filepath.Join(dir, "malformed.yml")
