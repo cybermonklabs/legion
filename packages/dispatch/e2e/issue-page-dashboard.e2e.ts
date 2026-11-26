@@ -30,6 +30,12 @@
 //   are the names part M's `FocusedNodeFacts.tsx` and `node-references/NodeReferences.tsx` give
 //   them (dispatch://INFRA-3948), so the Details row runs only where the head holds part M's file
 //   (c-dashboard-new (4)); `features/dashboard/`'s unit tests read that the item sets the focus.
+// - Dashboard at rest draws neither part L's writing box `[data-testid="issue-composer"]`
+//   (`IssueComposer.tsx`, which the foot keeps mounted and `hidden` while it is not drawn) nor the
+//   issue's read mark `[data-outline-end]` (`IssueReadMark.tsx`), and Conversation at rest draws
+//   both: `slots/foot.tsx` draws them at rest in Conversation alone. These are the names part L
+//   gives them (dispatch://INFRA-3949), so the row that reads them runs only where the head holds
+//   part L's `IssueComposer.tsx` (c-dashboard-new (2)).
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -94,6 +100,13 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
  *  the Details row reads; c-dashboard-new (4) gates that row on the file, not on part M's merge. */
 const PART_M_DETAILS = existsSync(
   fileURLToPath(new URL("../web/src/features/issue-page/FocusedNodeFacts.tsx", import.meta.url))
+);
+
+/** Whether the head holds part L's writing box (dispatch://INFRA-3949, #4246), which the foot's
+ *  row reads with the issue's read mark; c-dashboard-new (2) gates that row on the file, not on
+ *  part L's merge. */
+const PART_L_FOOT = existsSync(
+  fileURLToPath(new URL("../web/src/features/issue-page/IssueComposer.tsx", import.meta.url))
 );
 
 /** The widths the rows read, and the width from which the view row is a toolbar of toggles
@@ -692,6 +705,52 @@ test("Details on a focused ask reads that ask and its references", async ({ brow
         message: `opening the question's references sent no GET /api/v1/references?to=${reference}`,
       })
       .toBeGreaterThan(0);
+  });
+});
+
+// R2: part L's foot draws its writing box and the issue's read mark at rest in Conversation
+// alone, and `isFilter` reads Dashboard as no view, so the foot's test is the address naming
+// Conversation with no document open. The view row is one control with a menu below 1280 px, so
+// the row reads the toolbar at 1440 px and the menu at 390 px, which the `iphone` project reads
+// with its own viewport.
+// SLOW(>=2s): the whole Dashboard seed, then at each width one load of the bare address and one
+// press of Conversation, each read until the page draws the view the press or the load names.
+test("Dashboard at rest draws neither the writing box nor the read mark, and Conversation draws both @phone", async ({
+  browser,
+}) => {
+  test.skip(
+    !PART_L_FOOT,
+    "The foot draws a writing box and a read mark only with part L's IssueComposer.tsx " +
+      "(dispatch://INFRA-3949, #4246), which this head does not hold; the row runs once this " +
+      "branch holds part L"
+  );
+  test.setTimeout(120_000);
+  await phase(browser, seeded, async (page, seed) => {
+    const key = seed.key;
+    // Part L's writing box, which the foot keeps mounted and `hidden` while it does not draw it,
+    // and the issue's read mark at the end of the outline.
+    const box = page.getByTestId("issue-composer");
+    const mark = page.locator("[data-outline-end]");
+    const widths =
+      test.info().project.name === "iphone" ? [PHONE_WIDTH] : [DESKTOP_WIDTH, PHONE_WIDTH];
+    for (const width of widths) {
+      await page.setViewportSize(viewportAt(width));
+      const at = `at ${width} px`;
+
+      // The bare address draws Dashboard. The foot is drawn in the commit that draws the issue,
+      // before Dashboard's own reads answer, so once Dashboard is drawn the foot's absence holds.
+      await gotoIssue(page, `/issues/${key}`);
+      await expectDashboard(page, `the bare address ${at}`);
+      await expect(box, `Dashboard at rest draws the writing box ${at}`).toBeHidden();
+      await expect(mark, `Dashboard at rest draws the read mark ${at}`).toHaveCount(0);
+
+      // The Conversation control draws Conversation at rest, with the box and the mark.
+      await pressView(page, "conversation", width);
+      await expect(page).toHaveURL(new RegExp(`${presetPath(key, "conversation")}$`));
+      await expectConversation(page, `the Conversation control ${at}`);
+      await expect(box, `Conversation at rest draws no writing box ${at}`).toBeVisible();
+      await expect(mark, `Conversation at rest draws no read mark ${at}`).toHaveCount(1);
+    }
   });
 });
 
