@@ -87,12 +87,15 @@ the modules they need, and the plain build of the connection sizing program each
 pg-connection-ceiling.sh step runs (`go run ./internal/dispatch/store/cmd/connections`). The
 envoy-race job fills it on ubuntu-24.04-arm, the runner of all three jobs, on every push to main,
 as the other families are filled; every leg of the three jobs restores it. Before it, no cache
-held a race object of the envoy module: envoy-go-race and envoy-go-race-api restored nothing, and
-envoy-go-race-docs restored go-envoy, which holds the modules and the listener's plain objects.
+held a race object of the envoy module: envoy-go-race and envoy-go-race-api restored go-envoy-test
+(since #5626; nothing before it), which holds the modules and the plain objects of every package,
+and envoy-go-race-docs restored go-envoy, which holds the modules and the listener's plain objects.
 
-Why, measured. A race step's longest package cannot start its test binary until that binary is
-compiled and linked, so the time from the step's start to the start of that binary is the cost
-of compiling from nothing. In three green merge groups of 2026-11-26 (runs 45762627143,
+Why, measured: the time until the longest package starts, from the race step's start to the start
+of the test binary of the package that ends the step. That binary cannot start until it is
+compiled and linked, so the time holds the compile from nothing, the link, the module downloads
+and the wait for a free slot of go test's -p; it is not the compile alone. In three green merge
+groups of 2026-11-26 (runs 45762627143,
 45762613215 and 45762607670) it was 143 to 150 s of envoy-go-race's 1,069 to 1,075 s step (13 to
 14%), 108 to 113 s of envoy-go-race-api's 1,562 to 1,715 s (7%) and 50 to 51 s of
 envoy-go-race-docs' 1,370 to 1,388 s (4%). In legs it is paid once per leg, on a step that is
@@ -102,11 +105,11 @@ envoy-go-race-docs' three of 503 to 547 s (run 45735800190), 9 to 23% of each le
 runner, from an empty module and build cache, `go test -count=1 -race -run '^$'` over each job's
 packages took 106 s (envoy-go-race, 13 test binaries), 107 s (envoy-go-race-api) and 46 s
 (envoy-go-race-docs), and the same command again on the warm cache 7.3 s, 3.5 s and 1.9 s: no
-compile, only the links (probe run 45779631560). The sizing program took 15 s more from nothing,
-and the module downloads 3 to 12 s.
+compile, only the links (probe run 45779631560), so the compile is most of that time. The sizing
+program took 15 s more from nothing, and the module downloads 3 to 12 s.
 
 With the family restored (scratch run 45785768352, the fill as written, then each job whole on
-its entry): the time before the longest package starts fell to 20 s in envoy-go-race (job
+its entry): the time until the longest package starts fell to 20 s in envoy-go-race (job
 139794598025), 3 s in envoy-go-race-api (job 139794598088) and 1 s in envoy-go-race-docs (job
 139794597972), and the ceiling step to 3 s from 9 to 22 s, for a restore of 10 to 11 s. The race
 steps took 937, 1,605 and 1,341 s, within the spread of the tests' own times. A restored entry
