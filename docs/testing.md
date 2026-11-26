@@ -615,8 +615,9 @@ rather than beside the module's other Postgres-backed packages: together they sh
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-Every package of `packages/daemon` runs in CI in exactly one leg that `.github/go-legs.yaml` names
-for it (or under `elsewhere`, with the job that runs it). When you add, remove, rename or move a
+Every package of `packages/daemon` runs in CI in exactly one place that `.github/go-legs.yaml` names
+for it: one leg, or, for `internal/daemon`, a group of its tests in each of three race legs (or
+under `elsewhere`, with the job that runs it). When you add, remove, rename or move a
 daemon package, change its line there in the same change: every daemon-go leg fails, naming the
 package, while `go list ./...` and the file disagree. Put a new package in the leg its measured
 time fits, longest first; `.github/ci-notes/ci-job-daemon-go.md` says how the legs are balanced.
