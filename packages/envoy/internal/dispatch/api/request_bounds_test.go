@@ -307,12 +307,13 @@ func TestARequestOnAFullPoolAnswersDatabaseBusy(t *testing.T) {
 
 // A read whose database stops answering inside a bound of the server's own - the socket times
 // out while the read's own 20 s deadline is nowhere near - is answered 503 DATABASE_BUSY with
-// Retry-After, which its client may send again, and the line it is logged on names the pool
-// whose bound ended it. Before this it fell through every classification to 500 INTERNAL with an
-// `API handler failed` ERROR line, which told the client nothing to do and the operator nothing
-// but that a handler had failed: three requests of INFRA-592's ten-times load step were answered
-// that way, two of them on a statement-cache deallocation pgx runs before a read's first
-// statement.
+// Retry-After, which its client may send again, and the line it is logged on names what the server
+// read it as, a call the database never answered, and no value of the handler's error, whose text
+// a caller's credential may have chosen (admission's unserved). Before this it fell through every
+// classification to 500 INTERNAL with an `API handler failed` ERROR line, which told the client
+// nothing to do and the operator nothing but that a handler had failed: three requests of
+// INFRA-592's ten-times load step were answered that way, two of them on a statement-cache
+// deallocation pgx runs before a read's first statement.
 func TestAReadWhoseDatabaseStopsAnsweringIsRefusedDatabaseBusy(t *testing.T) {
 	socket := storetest.NewStalledSocket(store.RequestsPool)
 	logs := captureDebugLog(t)
@@ -332,8 +333,8 @@ func TestAReadWhoseDatabaseStopsAnsweringIsRefusedDatabaseBusy(t *testing.T) {
 		t.Fatalf("the read was logged as a fault of the server's:\n%s", failed)
 	}
 	busy := logs.Lines("request found the database busy")
-	if !strings.Contains(busy, store.RequestsPool+" pool") || !strings.Contains(busy, "stopped answering") {
-		t.Fatalf("logged %q, want a line naming the pool whose bound ended the call and what it met", busy)
+	if !strings.Contains(busy, `reason="call unanswered"`) || strings.Contains(busy, "stopped answering") {
+		t.Fatalf("logged %q, want a line naming the unanswered call the server read and none of the handler's error", busy)
 	}
 }
 
@@ -438,8 +439,8 @@ func TestAWriteWhoseBeginTheDatabaseStopsAnsweringIsRefusedDatabaseBusy(t *testi
 		t.Fatalf("the stalled BEGIN was reported as an outcome nobody knows:\n%s", unknown)
 	}
 	busy := logs.Lines("request found the database busy")
-	if !strings.Contains(busy, store.RequestsPool+" pool") || !strings.Contains(busy, "commits nothing") {
-		t.Fatalf("logged %q, want a line naming the pool and the call that committed nothing", busy)
+	if !strings.Contains(busy, `reason="database stalled"`) || strings.Contains(busy, "commits nothing") {
+		t.Fatalf("logged %q, want a line naming the stall the server read and none of the handler's error", busy)
 	}
 }
 

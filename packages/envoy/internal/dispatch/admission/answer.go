@@ -180,7 +180,7 @@ func WriteUnserved(w http.ResponseWriter, ctx context.Context, err error, wrote 
 		return true
 	}
 	if unanswered != "" {
-		writeDatabaseBusy(w, err)
+		writeDatabaseBusy(w, "call unanswered")
 		return true
 	}
 	return false
@@ -208,15 +208,17 @@ func unknownOutcome(err error) string {
 }
 
 // unserved is the refusals WriteUnserved writes for a request nothing of which can have
-// committed, in the order its documentation gives.
+// committed, in the order its documentation gives. err can carry text a caller's credential
+// header chose (a token's unverified claims, quoted by its verifier), so no value of err, nor of
+// what errors.As took out of it, is logged: each line carries only what the server itself made
+// and what picked its case.
 func unserved(w http.ResponseWriter, ctx context.Context, err error) bool {
 	var refusal *Refusal
 	switch {
 	case errors.As(context.Cause(ctx), &refusal), errors.As(err, &refusal):
-		// The class is the request's own ticket's (TicketFrom), not the refusal's: err can carry
-		// text a caller's credential header chose (a token's unverified claims, quoted by its
-		// verifier), so no value of err, nor of what errors.As took out of it, is logged. A take-back
-		// is refused by its class's queue alone (Ticket.Resume takes no lane), so no lane is named.
+		// The class is the request's own ticket's (TicketFrom), not the refusal's, which errors.As
+		// took out of err. A take-back is refused by its class's queue alone (Ticket.Resume takes
+		// no lane), so no lane is named.
 		if ticket := TicketFrom(ctx); ticket != nil {
 			slog.Debug("dispatch: request refused the units it asked back", "class", ticket.arrival.class)
 		} else {
@@ -224,24 +226,50 @@ func unserved(w http.ResponseWriter, ctx context.Context, err error) bool {
 		}
 		WriteRefused(w, refusal)
 	case DeadlinePassed(ctx):
-		slog.Debug("dispatch: read ran past its deadline", "error", err)
+		// The cause is the server's own: ErrRequestDeadline, which only WithDeadline and
+		// WithDeadlineUntilAnswer set.
+		slog.Debug("dispatch: read ran past its deadline", "cause", context.Cause(ctx))
 		writeRetryable(w, http.StatusServiceUnavailable, CodeRequestTimeout, "the read ran past its deadline; retry after Retry-After")
 	case accesslog.ClientLeft(ctx):
-		slog.Debug("dispatch: request's client went away", "error", err)
+		// The cause is net/http's plain context.Canceled (accesslog.ClientLeft), which says no
+		// more than the message does.
+		slog.Debug("dispatch: request's client went away")
 		accesslog.ClientGone(ctx)
-	case store.IsPoolBusy(err), store.IsPoolBusy(context.Cause(ctx)), store.DatabaseStalled(ctx, err), store.ConnectionLost(err):
-		writeDatabaseBusy(w, err)
 	default:
-		return false
+		busy := databaseBusy(ctx, err)
+		if busy == "" {
+			return false
+		}
+		writeDatabaseBusy(w, busy)
 	}
 	return true
 }
 
+// databaseBusy names which of the store's readings of a database that did not serve the call
+// err, or ctx's cause, is - a fixed string of the server's, the one thing of the failure the log
+// line carries (unserved) - and is empty where it is none of them: the database stopped answering
+// under a live request (store.DatabaseStalled), the connection ended under the request's
+// transaction (store.ConnectionLost), or a bound of the server's ended the call before the database
+// answered it (store.IsPoolBusy). The store names the pool only in err's text, so no pool is named.
+func databaseBusy(ctx context.Context, err error) string {
+	switch {
+	case store.DatabaseStalled(ctx, err):
+		return "database stalled"
+	case store.ConnectionLost(err):
+		return "connection lost"
+	case store.IsPoolBusy(err), store.IsPoolBusy(context.Cause(ctx)):
+		return "pool busy"
+	}
+	return ""
+}
+
 // writeDatabaseBusy answers a request 503 DATABASE_BUSY with Retry-After: a pool that could not
-// serve a call, a stall, and a connection that ended under the request's transaction, after each
-// of which nothing of the request can have committed.
-func writeDatabaseBusy(w http.ResponseWriter, err error) {
-	slog.Debug("dispatch: request found the database busy", "error", err)
+// serve a call, a stall, a connection that ended under the request's transaction, and a read's
+// call the database never answered, after each of which nothing of the request can have
+// committed. reason is which of them it was, as a fixed string of the server's (databaseBusy), and
+// its log line carries that and no value of the handler's error (unserved says why).
+func writeDatabaseBusy(w http.ResponseWriter, reason string) {
+	slog.Debug("dispatch: request found the database busy", "reason", reason)
 	writeRetryable(w, http.StatusServiceUnavailable, CodeDatabaseBusy, "the database did not answer this request in time; retry after Retry-After")
 }
 

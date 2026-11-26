@@ -20,9 +20,10 @@ body: |-
   three reads are all the edit runs at once. Measured on two CPUs, fewer reads committed more
   events at ten times the load but refused 4-6% of the reads at the everyday load. A request that
   finds no room waits in its class's queue, which holds up to its cap (616 reads, 96 writes), the
-  bound on its memory, in the order the requests arrived at the server rather than the order they
-  got round to asking for
-  room: a read waits at most 1 second there and a write at most 2, a burst of writes taking
+  bound on its memory, and while it absorbs a burst serves the requests in the order they arrived
+  at the server rather than the order they got round to asking for room (one that has stood a
+  whole wait serves its newest first instead): a read waits at most 1 second there and a write at
+  most 2, a burst of writes taking
   seconds to free a write unit while a refused write is sent again a second later anyway, so the
   longer wait serves the write where the shorter refused it. A request not admitted inside its
   wait is answered `429 OVERLOADED` with
@@ -30,7 +31,8 @@ body: |-
   of it ran, so any method may be sent again. That wait is the wait over the whole request,
   however often it waits: a read held by its heavy-read lane before it asked for units, and a
   write admitted, parked while it waits for a document's writer gate
-  and resumed, queue again where they arrived, ahead of everything that arrived after them, and
+  and resumed, queue again where they arrived, ahead of everything that arrived after them while
+  the queue absorbs a burst, and
   are refused only within what is left of that one wait, the time the write spent waiting for
   the gate counted into it as well, where a second whole wait refused writes
   the server had already admitted (at ten times the load, refusals reached a p99 of 2.1 seconds
