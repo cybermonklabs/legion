@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testgolden"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -54,10 +55,11 @@ var apiGoldenFile = filepath.Join("..", "api", "state_golden_test.go")
 // apiSettings is the legion.yaml text that apiGoldenFile declares as the constant name, read from
 // that file's source, so each state fixture is composed on the very file internal/api's settings
 // tests hold the state's settings to. The settings text stays at its public path because the leak
-// guard (leak-check/public_leak_check.py, method Reviewed.marker) honours no reviewed-lines row
-// for a line that holds a key format marker, and a copy would publish its credential-shaped lines
-// at a new path. A read that fails fails the test, naming the file and the constant
-// (stringConstant).
+// guard the pushes run, the shared public leak check, published by tag from a repository the
+// deployment names (docs/kubernetes.md), honours no reviewed-lines row for a line that holds a
+// key format marker (its leak-check/public_leak_check.py, method Reviewed.marker), and a copy
+// would publish its credential-shaped lines at a new path. A read that fails fails the test,
+// naming the file and the constant (stringConstant).
 func apiSettings(t testing.TB, name string) string {
 	t.Helper()
 	text, err := stringConstant(apiGoldenFile, name)
@@ -150,16 +152,16 @@ func TestTheStateFixturesSettingsAreReadFromInternalAPIsGoldens(t *testing.T) {
 // over the seed: a value no writer accepts fails the seed, a field the source adds, drops or
 // moves moves the fixture, and a value no rule of the daemon serves over the seed cannot reach one.
 //
-// Each fixture is the body as the route serves it to a caller at this daemon's own contract, less
-// the route's `contract` mark (api's stateFor; apifixture.WithoutContractMarks) and with 0 in
-// place of `daemon.schemaVersion` (withNoSchemaVersion), both taken off here, in the test, before
-// the fixture is compared or written. Both numbers of the mark name this daemon's own contract,
-// which is LastNumberedContract plus the build's count of entries, so a fixture that held it would
-// be an edit of every contract change. The marks taken off are held to that number instead, and
-// the plugin's schema reads the mark as optional. The served schema version is held to the newest
-// migration the store embeds, for the same reason at every migration. internal/api's populatedState
-// reads state.json back for that package's goldens, and every route that package serves the state
-// through writes the mark again.
+// Each fixture is the body as the route serves it to a caller at this daemon's own contract (what
+// served answers), with 0 in place of `daemon.schemaVersion` (withNoSchemaVersion) and less the
+// route's `contract` mark (api's stateFor; apifixture.WithoutContractMarks), both taken off here,
+// in the test, before the fixture is compared or written. Both numbers of the mark name this
+// daemon's own contract, which is LastNumberedContract plus the build's count of entries, so a
+// fixture that held it would be an edit of every contract change. The marks taken off are held to
+// that number instead, and the plugin's schema reads the mark as optional. The served schema
+// version is held to the newest migration the store embeds, for the same reason at every
+// migration. internal/api's populatedState reads state.json back for that package's goldens, and
+// every route that package serves the state through writes the mark again.
 func TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -175,11 +177,10 @@ func TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s := newSeeding(t)
-			body, taken := apifixture.WithoutContractMarks(t, s.served(tc.seed(s)), "daemon", "caller")
+			body, taken := apifixture.WithoutContractMarks(t, withNoSchemaVersion(t, s.served(tc.seed(s))), "daemon", "caller")
 			if own := api.DaemonAPIVersion(); !maps.Equal(taken, map[string]int{"daemon": own, "caller": own}) {
 				t.Fatalf("the state route marked the body %v, want the daemon and the caller mark both at %d, the marks of a caller at this daemon's own contract", taken, own)
 			}
-			body = withNoSchemaVersion(t, body)
 			testgolden.Check(t, apifixture.Path(tc.file), json.RawMessage(body), *updateStateFixtures, apifixture.StateFixturesRewrite)
 		})
 	}
@@ -357,8 +358,16 @@ type seeding struct {
 	records *record.Postgres
 }
 
+// newSeeding is a seeding over a clone of this package's template (testpg.CloneStore), which
+// skips the test where LEGION_TEST_PG_DSN names no server. Under -update it fails there instead:
+// internal/api's goldens are written from state.json after this test writes it
+// (apifixture.StateFixturesRewrite), so a skip that exits 0 would leave them written from the old
+// state.json, and the rewrite would look done.
 func newSeeding(t *testing.T) *seeding {
 	t.Helper()
+	if *updateStateFixtures && os.Getenv("LEGION_TEST_PG_DSN") == "" {
+		t.Fatal("-update composes the state fixtures over a seeded database, and none can be cloned, so it would write nothing: " + testdb.SkipMessage)
+	}
 	return &seeding{t: t, ctx: context.Background(), st: testpg.CloneStore(t, "legion_state_fixtures"), records: record.NewStore()}
 }
 

@@ -37,7 +37,8 @@ func Path(name string) string {
 // StateFixturesRewrite is the two commands, run in packages/daemon, that write the state fixtures
 // and every fixture internal/api writes from the populated one, in the order they must run:
 // internal/daemon's composition of the state fixtures over their seeds, then internal/api's
-// goldens.
+// goldens. The first seeds a database on the Postgres server LEGION_TEST_PG_DSN names, and fails
+// without one (internal/daemon's newSeeding) rather than skip and exit 0 with nothing written.
 const StateFixturesRewrite = "go test ./internal/daemon/ -run '^TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds$' -update, " +
 	"then go test ./internal/api/ -run Golden -update"
 
