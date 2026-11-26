@@ -66,6 +66,7 @@ scripts=$(dirname "$(readlink -f "$0")")
 cd "$(dirname "$0")/../.."
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$scripts" python3 - "${1:-check}" <<'PY'
+import functools
 import os
 import re
 import sys
@@ -161,7 +162,62 @@ def commands(run: str) -> list:
 
 
 def _word_start(line: str, i: int) -> bool:
-    return i == 0 or line[i - 1] in " \t;&|(){}"
+    """Whether the character at `i` of the line starts a word (_word_starts)."""
+    return i in _word_starts(line)
+
+
+@functools.lru_cache(maxsize=4096)
+def _word_starts(line: str) -> frozenset:
+    """The indexes of the line at which a word starts, as bash reads it: the line's start, and the
+    character after a blank or an unquoted operator (`;`, `&`, `|`, a subshell's `(` or `)`, a
+    group's `{` or `}`, the `(` that opens a substitution). Not the character after a quoted
+    string or after the `)` that closes a `$(…)`, `<(…)` or `>(…)`: the word goes on past it, so
+    `$(echo a)}` is one word that ends in a brace and `$(echo a)#b` one word that holds a hash, not
+    a brace or a comment."""
+    starts, opens, quote, i, at_start = set(), [], None, 0, True
+    while i < len(line):
+        if at_start:
+            starts.add(i)
+        ch, nxt = line[i], line[i + 1:i + 2]
+        after = False  # whether the character after this one starts a word
+        if quote == "'":
+            quote = None if ch == "'" else quote
+        elif quote == "$'":
+            if ch == "\\":
+                i += 1
+            elif ch == "'":
+                quote = None
+        elif quote is None and ch == "$" and nxt == "'":
+            quote = "$'"
+            i += 1
+        elif ch == "\\":
+            i += 1
+        elif ch == "$" and nxt == "(":
+            opens.append(("substitution", quote))
+            quote = None
+            i += 1
+            after = True
+        elif quote == '"':
+            quote = None if ch == '"' else quote
+        elif ch in "'\"":
+            quote = ch
+        elif ch in "<>" and nxt == "(":
+            opens.append(("substitution", None))
+            i += 1
+            after = True
+        elif ch == "(":
+            opens.append(("subshell", None))
+            after = True
+        elif ch == ")" and opens:
+            kind, quote = opens.pop()
+            after = kind == "subshell"
+        elif ch in " \t;&|(){}":
+            after = True
+        at_start = after
+        i += 1
+    if at_start:
+        starts.add(i)
+    return frozenset(starts)
 
 
 def _scan(line: str, upto: int):

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Generated shell forms, run under bash and read by this repository's two readers of shell.
+"""Generated shell forms, run under bash and read by this repository's three readers of shell.
 
 The readers are shell_commands.commands_of with `every_body` (check-release-credentials.sh's rule:
-read more than bash runs, never less) and check-log-guard.sh's reader of a step (a network client
-outside .github/scripts/ci-log-guard.sh). A form is a context crossed with a payload:
+read more than bash runs, never less), check-log-guard.sh's reader of a step's network clients
+(a client outside .github/scripts/ci-log-guard.sh), and check-log-guard.sh's reader of loose
+ci_log_guard_stderr calls (a call whose stdout reaches the log outside a block). A form is a
+context crossed with a payload:
   - a context wraps a body of shell: a trap that fires and one that never does, `bash -c`,
     `sh -c`, eval (single- and double-quoted, and an eval inside an eval), a subshell, a brace
     group, a called, an uncalled and a `local` function, `if true` and `if false`, a case pattern
@@ -14,9 +16,13 @@ outside .github/scripts/ci-log-guard.sh). A form is a context crossed with a pay
     behind a prefix assignment or a keyword, in an array assigned and expanded in the body or
     after it, an array a decoy assignment in the body might shadow, an array appended to after a
     decoy, and an alias defined and used in the body or after it, or shadowed by a decoy.
-The client is `bunx evil-package` for the release reader and `curl -sS https://example.com/x` for
-the log guard. For every form, three facts: whether bash runs the client (a recording stand-in on
-PATH), whether this tree's reader finds it, and, given --base, whether that tree's reader does.
+The client is `bunx evil-package` for the release reader, `curl -sS https://example.com/x` for the
+log guard, and `ci_log_guard_stderr curl …` for the stderr reader, whose forms source the guard.
+For every form, three facts: whether bash runs the client (a recording stand-in on PATH; for the
+stderr reader, whether the client's stdout reaches the log outside a block), whether this tree's
+reader finds it, and, given --base, whether that tree's reader does. It also counts the forms in
+which the stderr reader names a loose call where bash keeps the stdout in: that reader reads by the
+line and knows no control flow, so it over-reads some, and check-log-guard.test.sh bounds how many.
 
 It fails on:
   - a regression: a form bash runs, the base's reader finds, and this tree's reader does not;
@@ -41,8 +47,15 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 MISSES = HERE.parent / "shell-reader-misses.tsv"
-CLIENTS = {"release": "bunx evil-package", "guard": "curl -sS https://example.com/x"}
+CLIENTS = {"release": "bunx evil-package", "guard": "curl -sS https://example.com/x",
+           "stderr": "ci_log_guard_stderr curl -sS https://example.com/x"}
 HEADER = "shopt -s expand_aliases\n"
+# The stderr reader's forms source the guard, so ci_log_guard_stderr is the library's.
+HEADERS = {"release": HEADER, "guard": HEADER, "stderr": HEADER + '. "$CI_LOG_GUARD"\n'}
+GUARD_LIBRARY = HERE / "ci-log-guard.sh"
+# The stand-in client's line on stdout, which reaches the log outside a block when the stderr
+# reader's call leaks it.
+STDOUT_MARK = "CLIENT-STDOUT-LINE"
 
 
 def sq(text: str) -> str:
@@ -94,14 +107,23 @@ DERAILERS = {
 }
 for name, text in list(DERAILERS.items()):
     CONTEXTS["after-" + name] = (lambda t: lambda x: t + "\n" + x)(text)
-# The same-line forms take a one-line body.
+# The same-line forms take a one-line body. The brace forms put the body in a group whose stdout
+# goes to /dev/null, after a word that ends in a substitution's `)` and a `}` or `{` that
+# continues the word (`$(echo a)}` is the word `a}`), so the group still holds the body.
 CONTEXTS["same-line-hash-after-nested-substitution"] = lambda x: 'case x in "$(echo $(echo y)#b)") : ;; esac; ' + x
+CONTEXTS["same-line-brace-after-substitution"] = lambda x: "{ x=$(echo a)}; " + x + "; } >/dev/null"
+CONTEXTS["same-line-brace-after-process-substitution"] = lambda x: "{ x=<(echo a)}; " + x + "; } >/dev/null"
+CONTEXTS["same-line-group-redirected"] = lambda x: "{ " + x + "; } >/dev/null"
+# A `#` just after a substitution's `)` continues the word, so the redirect after it is the body's.
+CONTEXTS["same-line-hash-after-substitution-before-redirect"] = lambda x: x + " $(echo a)#b >/dev/null"
 
 
 # Each payload: (text before the context, the body the context wraps, text after it). {c} is the
 # client.
 PAYLOADS = {
     "direct": ("", "{c}", ""),
+    "stdout-redirected": ("", "{c} >/dev/null", ""),
+    "stdout-captured": ("", "v=$({c})", ""),
     "assignment-prefix": ("", "FOO=1 {c}", ""),
     "bang": ("", "! {c}", ""),
     "brace-group": ("", "{{ {c}; }}", ""),
@@ -137,29 +159,49 @@ def forms() -> dict:
             for reader, client in CLIENTS.items():
                 fill = lambda s: s.format(c=client, q=sq(client))
                 parts = [fill(before), wrap(fill(body)), fill(after)]
-                texts[reader] = HEADER + "\n".join(p for p in parts if p) + "\n"
+                texts[reader] = HEADERS[reader] + "\n".join(p for p in parts if p) + "\n"
             out[f"{context}/{payload}"] = texts
     return out
 
 
-def bash_runs(text: str, client: str) -> bool:
-    """Whether bash runs `client`'s command word when it runs `text` as a script."""
-    word = client.split()[0]
+def outside_blocks(lines: list) -> list:
+    """The lines of one stream that stand outside every ci-log-guard.sh stop-commands block."""
+    out, token = [], None
+    for line in lines:
+        if token is None and line.startswith("::stop-commands::"):
+            token = line[len("::stop-commands::"):]
+        elif token is not None and line == f"::{token}::":
+            token = None
+        elif token is None:
+            out.append(line)
+    return out
+
+
+def bash_runs(text: str, reader: str) -> bool:
+    """Whether bash runs the reader's client when it runs `text` as a script: for the stderr
+    reader, whether the client's stdout reaches the log outside a block (on the step's stdout, or
+    on its stderr outside every block), which is what a loose ci_log_guard_stderr call lets out."""
+    client = CLIENTS[reader]
+    word = client.split()[1] if reader == "stderr" else client.split()[0]
     with tempfile.TemporaryDirectory() as work:
         bin_dir = Path(work, "bin")
         bin_dir.mkdir()
         record = Path(work, "ran")
         stand_in = bin_dir / word
-        stand_in.write_text(f'#!/bin/sh\necho {word} >>"{record}"\n')
+        stand_in.write_text(f'#!/bin/sh\necho {word} >>"{record}"\necho {STDOUT_MARK}\n')
         stand_in.chmod(0o755)
         Path(work, "form.sh").write_text(text)
-        env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
+        env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", CI_LOG_GUARD=str(GUARD_LIBRARY))
         try:
-            subprocess.run(["bash", "form.sh"], cwd=work, env=env, stdin=subprocess.DEVNULL,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            done = subprocess.run(["bash", "form.sh"], cwd=work, env=env, stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, timeout=10)
+            out, err = done.stdout, done.stderr
         except subprocess.TimeoutExpired:
-            pass
-        return record.is_file() and word in record.read_text().split()
+            out = err = ""
+        ran = record.is_file() and word in record.read_text().split()
+        if reader != "stderr":
+            return ran
+        return ran and (STDOUT_MARK in out.split("\n") or STDOUT_MARK in outside_blocks(err.split("\n")))
 
 
 def read_with(directory: Path, texts: dict) -> dict:
@@ -194,6 +236,10 @@ def read_here(directory: str) -> None:
         if guard is not None:
             commands = guard["commands"](texts["guard"])
             verdicts["guard"] = any(not routed and guard["network_client"](words) == "curl" for routed, words in commands)
+            # The third reader: a ci_log_guard_stderr call whose stdout reaches the log, read as
+            # check-log-guard.sh's read() reads a text.
+            stderr_text = guard["EXPRESSION"].sub("EXPR", texts["stderr"])
+            verdicts["stderr"] = bool(guard["loose_stderr_guards"](guard["without_heredocs"](stderr_text)))
         out[form] = verdicts
     print(json.dumps(out))
 
@@ -222,16 +268,18 @@ def main() -> int:
         return 0
     base = Path(args[args.index("--base") + 1]) if "--base" in args else None
     generated = forms()
-    ran = {form: {reader: bash_runs(text, CLIENTS[reader]) for reader, text in texts.items()}
+    ran = {form: {reader: bash_runs(text, reader) for reader, text in texts.items()}
            for form, texts in generated.items()}
     head = read_with(HERE, generated)
     based = read_with(base, generated) if base else None
     rows, problems = listed_misses()
-    regressions, missed, both = [], [], []
+    regressions, missed, both, over = [], [], [], []
     used = set()
     for form in generated:
         for reader in CLIENTS:
             runs, finds = ran[form][reader], head[form].get(reader)
+            if reader == "stderr" and finds and not runs:
+                over.append(form)
             row = next((key for key in rows if key[1] == reader and fnmatch.fnmatchcase(form, key[0])), None)
             if not runs or finds:
                 continue
@@ -261,10 +309,14 @@ def main() -> int:
               f"{MISSES.name} does not list it")
     for problem in problems:
         print(problem)
+    if "--list" in args:
+        for form in over:
+            print(f"OVER {form} (stderr): this tree's reader names a loose call where bash keeps the stdout in")
     print(f"shell_reader_forms: {len(generated)} forms for each of {len(CLIENTS)} readers; bash runs the client "
-          f"in {runs['release']} (release) and {runs['guard']} (guard); {len(regressions)} regression(s)"
+          f"in {runs['release']} (release), {runs['guard']} (guard) and {runs['stderr']} (stderr, the client's stdout outside a block); {len(regressions)} regression(s)"
           + (f" against {base}" if base else "") + f"; {len(both)} missed by this tree"
-          + (" and by the base" if base else "") + f", {len(missed)} of them unlisted")
+          + (" and by the base" if base else "") + f", {len(missed)} of them unlisted; the stderr reader names a "
+          f"loose call in {len(over)} forms where bash keeps the client's stdout in (--list names them)")
     return 1 if regressions or missed or problems else 0
 
 

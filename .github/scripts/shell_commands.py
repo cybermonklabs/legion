@@ -180,8 +180,11 @@ class Scanner:
     def end_command(self) -> None:
         self.end_word()
         if self.words:
-            if self.collecting and self.words[0] == "alias":
-                for definition in self.words[1:]:
+            # `alias` past the keywords and assignments before it (`{ alias b=…; }`, `then alias …`).
+            at = next((k for k, word in enumerate(self.words) if word not in SKIP_WORDS and not ASSIGNMENT.match(word)),
+                      len(self.words))
+            if self.collecting and self.words[at:at + 1] == ["alias"]:
+                for definition in self.words[at + 1:]:
                     name, _, value = definition.partition("=")
                     if _ and name and value not in self.aliases.setdefault(name, []):
                         self.aliases[name].append(value)
