@@ -864,8 +864,8 @@ func indexedCheckBlock(ctx context.Context, q queryer, who model.Actor, check ch
 	var indexed indexedCheck
 	err := q.QueryRow(ctx, `
 		select changed_version, text_sha256 from document_blocks
-		where artifact_id = $1::uuid and block_id = $2 and type = 'check'
-	`, check.ArtifactID, check.BlockID).Scan(&indexed.Version, &indexed.SHA256)
+		where artifact_id = $1::uuid and block_id = $2 and type = 'check' and `+documentVisible("$1::uuid", "$3")+`
+	`, check.ArtifactID, check.BlockID, refs.VisibilityArg(who)).Scan(&indexed.Version, &indexed.SHA256)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return indexedCheck{}, unknownCheck(named)
 	}
@@ -1049,8 +1049,8 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, who model.Actor, 
 	indexed := make(map[string]model.CheckBlock, len(checks))
 	rows, err := q.Query(ctx, `
 		select block_id, changed_version, text_sha256
-		from document_blocks where artifact_id = $1 and type = 'check'
-	`, artifact.ID)
+		from document_blocks where artifact_id = $1 and type = 'check' and `+documentVisible("$1", "$2")+`
+	`, artifact.ID, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
 	}
