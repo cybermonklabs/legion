@@ -1,25 +1,23 @@
 package testwait
 
 import (
-	"fmt"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
-// watched is the bounds the test named name took that its watch holds, in the order taken, and
-// its latest reading.
-func watched(name string) ([]bound, string) {
-	value, ok := watches.Load(name)
+// watched is what t's watch holds: the bounds t took, in the order taken, how many readings it
+// took, and the end of the last span it finished asking about.
+func watched(t testing.TB) ([]bound, int, time.Time) {
+	value, ok := watches.Load(t)
 	if !ok {
-		return nil, ""
+		return nil, 0, time.Time{}
 	}
 	w := value.(*watch)
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return slices.Clone(w.ends), w.stacks
+	return slices.Clone(w.ends), w.reads, w.checked
 }
 
 // Every bound this package gives is watched. A bound that ends at the test binary's deadline less
@@ -39,7 +37,7 @@ func TestEveryBoundIsWatched(t *testing.T) {
 	Context(t)
 	took := time.Now()
 	Bounded(t, 2*time.Second, time.Second)
-	ends, _ := watched(t.Name())
+	ends, _, _ := watched(t)
 	var deadlines []time.Time
 	var spans []bound
 	for _, b := range ends {
@@ -58,36 +56,24 @@ func TestEveryBoundIsWatched(t *testing.T) {
 	}
 }
 
-// A test prints one dump at most, its latest reading: the stacks read as a later span ends replace
-// those read as an earlier one ended, and each reading names the bound it belongs to, by the line
-// that took it. The row waits for each reading to be taken, not for a span of time.
-func TestTheLatestReadingReplacesAnEarlierOne(t *testing.T) {
-	reads := func(site string) {
-		t.Helper()
-		Until(t, "the reading of the bound taken at "+site, func() (string, bool) {
-			_, stacks := watched(t.Name())
-			return stacks, strings.Contains(stacks, " gave at "+site+" at ")
-		})
+// A test that passes reads no stacks for its spans, however its waits end: here ten waits of a 40
+// ms span each end at 35 ms, in the last eighth of their span, and the last span ends while the
+// test still runs. The row waits until the watch has finished asking about that last span, so a
+// reading the watch would take has been taken by then.
+func TestAPassingTestReadsNoSpan(t *testing.T) {
+	for range 10 {
+		Bounded(t, 40*time.Millisecond, 0)
+		time.Sleep(35 * time.Millisecond)
 	}
-	first := takeASpan(t)
-	reads(first)
-	second := takeAnotherSpan(t)
-	reads(second)
-	if _, stacks := watched(t.Name()); strings.Contains(stacks, " gave at "+first+" at ") {
-		t.Errorf("the latest reading still names the first bound, %s:\n%.400s", first, stacks)
+	ends, _, _ := watched(t)
+	if len(ends) != 1 || !ends[0].span {
+		t.Fatalf("the watch holds %+v, want the last span alone", ends)
 	}
-}
-
-// takeASpan takes a span of 200 ms and returns the line that took it.
-func takeASpan(t *testing.T) string {
-	Bounded(t, 200*time.Millisecond, 0)
-	_, _, line, _ := runtime.Caller(0)
-	return fmt.Sprintf("watch_test.go:%d", line-1)
-}
-
-// takeAnotherSpan is takeASpan at another line.
-func takeAnotherSpan(t *testing.T) string {
-	Bounded(t, 200*time.Millisecond, 0)
-	_, _, line, _ := runtime.Caller(0)
-	return fmt.Sprintf("watch_test.go:%d", line-1)
+	Until(t, "the watch to finish asking about the last span", func() (time.Time, bool) {
+		_, _, checked := watched(t)
+		return checked, checked.Equal(ends[0].at)
+	})
+	if _, reads, _ := watched(t); reads != 0 {
+		t.Errorf("a passing test's watch took %d readings of the goroutine stacks, want none", reads)
+	}
 }

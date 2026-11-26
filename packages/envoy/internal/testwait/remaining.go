@@ -25,7 +25,7 @@ func Remaining(t *testing.T, spare time.Duration) time.Duration {
 	t.Helper()
 	left, err := leftOf(t, spare, "Remaining")
 	if err != nil {
-		stacks := stacksFor(t.Name(), true)
+		stacks := stacksFor(t, true)
 		_, _ = os.Stderr.WriteString(err.Error() + "\n")
 		t.Error(err.Error())
 		printStacks(t, stacks)

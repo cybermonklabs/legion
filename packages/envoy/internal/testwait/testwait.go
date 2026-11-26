@@ -225,7 +225,7 @@ var oneLine = strings.NewReplacer("\n", `\n`, "\r", `\r`)
 // reading, or nil for a wait that has none; spent says the wait began past the margin.
 func gaveUp(t *testing.T, what string, spent bool, reading func() string) {
 	t.Helper()
-	stacks := stacksFor(t.Name(), spent)
+	stacks := stacksFor(t, spent)
 	text := fmt.Sprintf("testwait: %s: gave up waiting for %s %s before the test binary's deadline", t.Name(), what, margin)
 	if reading != nil {
 		text += "; last read: " + reading()

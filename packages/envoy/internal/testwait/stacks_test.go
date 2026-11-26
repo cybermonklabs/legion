@@ -153,15 +153,15 @@ func TestTheStacksStopAtTheirBound(t *testing.T) {
 func TestAGiveUpBegunPastTheMarginPrintsTheStacksOnlyWhenNoneHave(t *testing.T) {
 	was := stacksPrinted.Load()
 	t.Cleanup(func() { stacksPrinted.Store(was) })
-	header := "testwait: TestWaits: the goroutine stacks as the wait gave up: "
+	header := "testwait: " + t.Name() + ": the goroutine stacks as the wait gave up: "
 	stacksPrinted.Store(false)
-	if got := stacksFor("TestWaits", true); !strings.HasPrefix(got, header) {
+	if got := stacksFor(t, true); !strings.HasPrefix(got, header) {
 		t.Errorf("the binary's first give-up, begun past the margin, printed %.200q, want the stacks", got)
 	}
-	if got, want := stacksFor("TestWaits", true), "testwait: TestWaits: no goroutine stacks for this give-up: an earlier give-up of this test binary printed them\n"; got != want {
+	if got, want := stacksFor(t, true), "testwait: "+t.Name()+": no goroutine stacks for this give-up: an earlier give-up of this test binary printed them\n"; got != want {
 		t.Errorf("a later give-up begun past the margin printed %.200q, want %q", got, want)
 	}
-	if got := stacksFor("TestWaits", false); !strings.HasPrefix(got, header) {
+	if got := stacksFor(t, false); !strings.HasPrefix(got, header) {
 		t.Errorf("a later give-up that waited until the margin printed %.200q, want the stacks", got)
 	}
 }

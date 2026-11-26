@@ -29,20 +29,20 @@ const stackBound = 64 << 10
 // stacksPrinted is whether a give-up of this test binary has printed the goroutine stacks.
 var stacksPrinted atomic.Bool
 
-// stacksFor is the text a give-up in the test named name prints after its failure: the goroutine
+// stacksFor is the text a give-up in t prints after its failure: the goroutine
 // stacks (goroutineStacks), or the one line that says why there are none. A wait that waited
 // until the margin prints them. A wait that began past the margin is the side effect of what used
 // the deadline up, as every wait after the margin is, so it asks for them once: it prints them
 // only when no give-up of this binary has, so the first give-up always carries the stacks and later
 // ones repeat no dump. Such a later give-up gets none of its own test's stacks, which the first
 // give-up, another test's, did not print; what its test was doing is the first give-up's effect.
-func stacksFor(name string, once bool) string {
+func stacksFor(t testing.TB, once bool) string {
 	if once && !stacksPrinted.CompareAndSwap(false, true) {
-		return "testwait: " + name + ": no goroutine stacks for this give-up: an earlier give-up of this test binary printed them\n"
+		return "testwait: " + t.Name() + ": no goroutine stacks for this give-up: an earlier give-up of this test binary printed them\n"
 	}
 	stacksPrinted.Store(true)
-	markPrinted(name)
-	return goroutineStacks(name, traces())
+	markPrinted(t)
+	return goroutineStacks(t.Name(), traces())
 }
 
 // traces is the trace of every goroutine, the calling one's first, from one dump of them all

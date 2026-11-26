@@ -52,6 +52,8 @@ func TestAWaitOfItsOwnBoundedByTestwaitPrintsTheStacks(t *testing.T) {
 			"testwait.Context gave at bound_dump_test.go:", ".awaitUnderTheContext("},
 		{"span", "the wait's own span of 10s ends before the deadline", ": the fact never came within the wait's own 10s",
 			"the bound of 10s testwait.Bounded gave at bound_dump_test.go:", ".awaitWithItsOwnSpan("},
+		{"two", "two spans of 200ms end in a test that has already failed", ": the fact never came within the second span",
+			"the bound of 200ms testwait.Bounded gave at bound_dump_test.go:", ".awaitTheSecondSpan("},
 	} {
 		out, err := run(row.name)
 		var exit *exec.ExitError
@@ -61,6 +63,9 @@ func TestAWaitOfItsOwnBoundedByTestwaitPrintsTheStacks(t *testing.T) {
 		}
 		if !strings.Contains(out, "forcing fired: "+row.forcing+", and the fact never comes") {
 			t.Errorf("the %s child logged no line that its forcing fired", row.name)
+		}
+		if n := strings.Count(out, "the goroutine stacks read at "); n != 1 {
+			t.Errorf("the %s child printed %d dumps of the goroutine stacks, want one, its latest reading", row.name, n)
 		}
 		output := strings.Split(out, "\n")
 		index := func(holds func(string) bool) int { return slices.IndexFunc(output, holds) }
@@ -135,6 +140,11 @@ func TestABoundedWaitChild(t *testing.T) {
 	case "span":
 		holdBack("the wait's own span of 10s ends before the deadline")
 		awaitWithItsOwnSpan(t, make(chan struct{}))
+	case "two":
+		holdBack("two spans of 200ms end in a test that has already failed")
+		t.Error("an early failure, so each span's end is read")
+		awaitTheFirstSpan(t)
+		awaitTheSecondSpan(t)
 	case "passes":
 		came := make(chan struct{}, 1)
 		came <- struct{}{}
@@ -174,6 +184,21 @@ func awaitUnderTheContext(t *testing.T, ctx context.Context) {
 	t.Helper()
 	<-ctx.Done()
 	t.Fatalf("the call under testwait.Context ended: %v", ctx.Err())
+}
+
+// awaitTheFirstSpan waits for a fact that never comes until its span of 200 ms ends, and goes on.
+func awaitTheFirstSpan(t *testing.T) {
+	t.Helper()
+	<-time.After(Bounded(t, 200*time.Millisecond, time.Second))
+	t.Log("the first span ended")
+}
+
+// awaitTheSecondSpan waits for a fact that never comes until its span of 200 ms ends, and fails t
+// with its own text then.
+func awaitTheSecondSpan(t *testing.T) {
+	t.Helper()
+	<-time.After(Bounded(t, 200*time.Millisecond, time.Second))
+	t.Fatal("the fact never came within the second span")
 }
 
 // holdsTheBoundedFactBack is the goroutine a failing row starts, which holds the fact back until

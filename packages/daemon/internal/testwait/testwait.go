@@ -200,7 +200,7 @@ func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 	if ok {
 		return value
 	}
-	stacks := stacksFor(t.Name(), bounded && !start.Before(deadline.Add(-marginOf(timeout))))
+	stacks := stacksFor(t, bounded && !start.Before(deadline.Add(-marginOf(timeout))))
 	text := oneLine.Replace(fmt.Sprintf(
 		"testwait: %s: gave up waiting for %s after %s at %s, %s before the test binary's deadline %s (-test.timeout %s)",
 		t.Name(), what, ended.Sub(start).Round(time.Millisecond), ended.UTC().Format(time.RFC3339Nano), marginOf(timeout),
@@ -398,7 +398,7 @@ func announce(name, what string, spent bool, reading func() string) string {
 // anything else is written.
 func gaveUp(t testing.TB, what string, spent bool, reading func() string) {
 	t.Helper()
-	stacks := stacksFor(t.Name(), spent)
+	stacks := stacksFor(t, spent)
 	t.Errorf("%s", announce(t.Name(), what, spent, reading))
 	printStacks(t, stacks)
 	t.FailNow()
