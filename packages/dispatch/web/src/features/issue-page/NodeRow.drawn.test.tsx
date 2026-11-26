@@ -3036,9 +3036,10 @@ function rowActs(
 }
 
 // R7 and R11: every row, focused or not, draws Reply on a comment, a message and an ask
-// in any state, and Answer on an open question; a statement, a check and a decision draw none,
-// since today's model holds no reply to a block; and with no writer above it the row draws no
-// act at all.
+// in any state, and Answer on an open question; a statement of the issue's documents draws Reply
+// too, for a comment anchored to it (part L's R11, which reads it by its node id
+// `<slug>#b-<block id>`); a check and a decision draw none, since today's model holds no reply to
+// them; and with no writer above it the row draws no act at all.
 test("Reply is drawn on each node that takes one, Answer on an open question, and no action without a writer", () => {
   const by = { id: "bob", kind: "user" };
   const turn = (type: "ask" | "comment" | "message", id: string, state?: TreeNode["state"]) =>
@@ -3056,7 +3057,13 @@ test("Reply is drawn on each node that takes one, Answer on an open question, an
   expect(rowActs(turn("ask", "ask-3", "open"), true)).toEqual(["answer", "reply"]);
   const block = (type: NodeType, id: string) =>
     node({ author: by, id, reference: `dispatch://CORE-1/spec#b-${id}`, type });
-  expect(rowActs(block("requirement", "r1"), true)).toEqual([]);
+  const statement = node({
+    id: "spec#b-r1",
+    reference: "dispatch://CORE-1/spec#b-r1",
+    statement: true,
+    type: "requirement",
+  });
+  expect(rowActs(statement, true)).toEqual(["reply"]);
   expect(rowActs(block("check", "c1"), true)).toEqual([]);
   expect(rowActs(block("decision", "d1"), true)).toEqual([]);
   expect(rowActs(turn("ask", "ask-4", "open"), false)).toEqual([]);

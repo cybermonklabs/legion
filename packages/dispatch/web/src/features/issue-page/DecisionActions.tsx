@@ -39,6 +39,7 @@ import {
   decidedByPerson,
   decisionsOfAnswer,
 } from "./decision-nodes/decision-nodes";
+import { useNoteOwnAct } from "./own-act";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { dropViews, outlineTargets, useOutlineAnswer } from "./tree-read/tree-read";
@@ -215,6 +216,7 @@ function DecisionControls({
   tabStops: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
+  const noteOwnAct = useNoteOwnAct();
   const tones = TONES[useTooltips() ? "main" : "page"];
   const drafts = useContext(ChangeDrafts);
   // A Change the reader left open on this decision opens again with the body.
@@ -261,6 +263,8 @@ function DecisionControls({
     // reader did not see.
     write: (id: string, bounds) =>
       api.keepDecision(id, decision.block_id, decision.text_sha256, bounds),
+    // The tree notes the node before the answer is drawn (`own-act.ts`).
+    onSuccess: () => noteOwnAct(decision.ref),
     // However the Keep ends - taken, or refused because the decision changed since - the tree is
     // read again and every view the page holds is dropped (`readDecisionsAgain`), the Decisions
     // view's and the Spec view's among them, since each draws how the decision stands: so every

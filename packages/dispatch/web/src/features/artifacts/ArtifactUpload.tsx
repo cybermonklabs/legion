@@ -176,6 +176,13 @@ export const UPLOAD_BASE_REQUIRED_REFUSAL =
 export const UPLOAD_BASE_UNREADABLE_REFUSAL =
   "Could not read the document this upload would replace, so nothing was uploaded.";
 
+/** What an upload's refusal says where Dispatch gave no answer of its own (`uploadErrorMessage`). */
+export const UPLOAD_FAILED_TEXT = "Could not upload the artifact.";
+
+/** What a draft's upload the reader stopped is, and what it may have been, as its refusal says
+ *  (`stoppedNote`). */
+export const STOPPED_UPLOAD_WORDS = { made: "stored", what: "the upload" } as const;
+
 // A refused upload is described by the server, which names the bound it hit: a markdown document
 // is at most 1 MiB and any other file at most 25 MiB, so a 413 is not one message. The refusals
 // about the version an upload replaces are the exception: the server writes those for the
@@ -199,7 +206,7 @@ export function uploadErrorMessage(error: unknown): string {
     }
     return error.message;
   }
-  return "Could not upload the artifact.";
+  return UPLOAD_FAILED_TEXT;
 }
 
 /** The sentence a tab with no document of its own shows about the uploads that follow the one
@@ -435,7 +442,10 @@ export function DraftUploadStatus<Draft>({
       ) : null}
       {showRefusal && upload.isError ? (
         <QueryError
-          message={stoppedNote(upload, "the upload", "stored") ?? uploadErrorMessage(upload.error)}
+          message={
+            stoppedNote(upload, STOPPED_UPLOAD_WORDS.what, STOPPED_UPLOAD_WORDS.made) ??
+            uploadErrorMessage(upload.error)
+          }
           onRetry={upload.retry}
           retrying={upload.isPending}
         />

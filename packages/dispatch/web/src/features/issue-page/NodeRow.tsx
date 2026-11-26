@@ -21,6 +21,10 @@ import {
   pageKindTag,
   pageMutedText,
   pageOwnWordsRule,
+  pagePathRing,
+  pagePathRingFolded,
+  pagePointRing,
+  pagePointRingFolded,
   pageQuietText,
   pageRowAct,
   pageRowActs,
@@ -39,6 +43,7 @@ import { parseNodeReference, referenceHref } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { openChildEntry } from "./children-section";
 import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
+import type { PointMark } from "./current-point";
 import { DecisionActions } from "./DecisionActions";
 import { standingParts } from "./decisions-filter/entry-standing";
 import { useDocumentStage } from "./document-stage";
@@ -67,6 +72,7 @@ import {
   type AuthorKind,
   BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
+  CURRENT_POINT,
   GAP_LINES,
   GAP_WORDS,
   GLYPH_TOKENS,
@@ -119,6 +125,7 @@ export function NodeRow({
   answerer,
   author,
   context,
+  current,
   document,
   editable = false,
   editing,
@@ -150,6 +157,10 @@ export function NodeRow({
   /** Whether the view draws this row only as the ancestor of a match: the row is faint and
    *  marked, and the arrow keys reach it as they reach any other row (R2). */
   context: boolean;
+  /** Whether this row carries the conversation's current point: `here` on the point's own row,
+   *  `path` on a row above it on its path while its own row is folded away (R12); undefined on
+   *  every other row. */
+  current?: PointMark;
   /** The document this row's node is a block of, which names the issue whose tree read holds
    *  the node: a decision's Keep and Change write on the decision node's own document
    *  (`decision-nodes.ts`' `DecisionNode.document`), never this one. Undefined for a node that
@@ -246,9 +257,13 @@ export function NodeRow({
   const tagTo = tagView === undefined ? undefined : presetNodePath(tagView, node);
   return (
     <div
+      // The conversation's current point (R12), named by the screen reader's own words for the
+      // current location. It is no control: it takes no focus and answers no press.
+      aria-current={current === "here" ? CURRENT_POINT : undefined}
       aria-expanded={expanded}
       aria-level={level}
       className="relative min-w-0 pl-[calc(var(--row-depth)*23px)] outline-none max-[761px]:pl-[calc(var(--row-depth)*17px)]"
+      data-current-point={current}
       data-editable={editable ? "" : undefined}
       data-folded-count={folded}
       data-node-context={context ? "" : undefined}
@@ -269,6 +284,7 @@ export function NodeRow({
       <div className={`${NODE_ROW_LAYOUT.box} ${focused ? pageFocusedRow : ""}`} data-node-card="">
         <Bullet
           collapsed={oneLine}
+          current={current}
           expanded={expanded}
           foldable={foldable}
           onToggle={onToggle}
@@ -644,9 +660,14 @@ function stateTone(node: TreeNode): keyof typeof pageStateText {
  * A press leaves the focus where it is, as an option and the acts do: the fold it makes is the
  * whole of what the reader asked for (R11). On a phone the fold control's box is 24 px square,
  * the least target WCAG 2.5.8 allows (`NODE_ROW_LAYOUT.foldControl`).
+ *
+ * A row that carries the conversation's current point rings the dot (R12, `pointRing`): quietly
+ * on the point's own row, lighter on each row above it on its path while its own row is folded
+ * away. The ring is drawn, never a control, and moves no focus.
  */
 function Bullet({
   collapsed,
+  current,
   expanded,
   foldable,
   onToggle,
@@ -654,6 +675,7 @@ function Bullet({
   tone,
 }: {
   collapsed: boolean;
+  current?: PointMark;
   expanded?: boolean;
   foldable: boolean;
   onToggle: () => void;
@@ -663,7 +685,7 @@ function Bullet({
   const dot = (
     <i
       aria-hidden="true"
-      className={`block size-[7px] rounded-full ${pageKindBullet[tone]} ${collapsed ? pageFoldedHalo : ""}`}
+      className={`block size-[7px] rounded-full ${pageKindBullet[tone]} ${collapsed ? pageFoldedHalo : ""} ${pointRing(current, collapsed)}`}
     />
   );
   if (!foldable) {
@@ -694,6 +716,15 @@ function Bullet({
       {dot}
     </button>
   );
+}
+
+/** The ring on the bullet's dot of a row that carries the conversation's current point (R12): the
+ *  quiet ring on the point's own row and the lighter one on a row above it on its path, each set
+ *  outside the halo on a folded branch's dot; nothing on every other row. */
+function pointRing(current: PointMark | undefined, collapsed: boolean): string {
+  if (current === "here") return collapsed ? pagePointRingFolded : pagePointRing;
+  if (current === "path") return collapsed ? pagePathRingFolded : pagePathRing;
+  return "";
 }
 
 /** What a row's edited mark draws its element with (`EditedMark`): `data-node-edited`, and the
@@ -930,8 +961,8 @@ function KindTag({ node }: { node: TreeNode }): ReactNode {
  * `tabStops` holds, as every other control inside a row is (R9).
  *
  * An open question's options are the choices of its answer (R16, the prototype's `button.opt`):
- * a press picks one, or lets it go, and sets the line at the foot of the outline to answer the
- * question, where the keyboard picks them too; the one picked is drawn on the waiting tint. A
+ * a press picks one, or lets it go, in the answer the writer holds (`OutlineWriter.answer`, which
+ * says what reads it), and the one picked is drawn on the waiting tint. A
  * reference inside such an option reads as a link and is none: the press is the option's.
  */
 export function NodeOptions({
@@ -1005,8 +1036,8 @@ export function NodeOptions({
             key={option.label}
           >
             {answering ? (
-              // Out of the tab order, as every control inside a row is: the line the press sets
-              // draws the same options as its own chips, which the keyboard reaches (R9). A
+              // Out of the tab order, as every control inside a row is, unless `tabStops` holds
+              // (R9); the line at the foot draws none of them (`OutlineWriter.answer`). A
               // press leaves the focus where it is until it ends, so the press ends on the option
               // it went down on, in a view whose body opens on focus as much as on the outline's
               // rows. Once the press has picked, the focus goes to the row: one press picks the

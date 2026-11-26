@@ -31,6 +31,19 @@ export const KIND_WORDS: Record<ComposerKind, string> = {
   suggestion: "a suggestion",
 };
 
+/** The reader's presses for a draft offered beside a field, which drop it or take it into the
+ *  field: for a kept draft, and for an edit that waits beside the comment. */
+export const OFFER_LABELS = {
+  dropDraft: "Discard my draft",
+  dropEdit: "Discard my edit",
+  takeEdit: "Use my edit",
+  takeHere: "Use it here",
+} as const;
+
+/** What an edit written over a body the comment no longer holds says, before the edit. */
+export const CHANGED_EDIT_LEAD =
+  "This comment changed since you wrote your edit. The field shows the comment as it reads now. Your edit is kept here:";
+
 /** One of the reader's presses for a draft offered beside a field. */
 interface OfferPress {
   readonly label: string;
@@ -203,9 +216,9 @@ export function KeptDraftOffers({
       {changed === undefined ? null : (
         <DraftOffer
           body={changed.body}
-          drop={{ label: "Discard my edit", press: onDiscardChanged }}
-          lead="This comment changed since you wrote your edit. The field shows the comment as it reads now. Your edit is kept here:"
-          take={{ label: "Use my edit", press: onTakeChanged }}
+          drop={{ label: OFFER_LABELS.dropEdit, press: onDiscardChanged }}
+          lead={CHANGED_EDIT_LEAD}
+          take={{ label: OFFER_LABELS.takeEdit, press: onTakeChanged }}
         />
       )}
       {/* A draft the margin's compose kept for other words of the document: a newer compose there
@@ -240,7 +253,7 @@ export function KeptDraftOffers({
       {gone.map((away) => (
         <DraftOffer
           body={away.draft.body}
-          drop={{ label: "Discard my draft", press: () => onDropGone(away) }}
+          drop={{ label: OFFER_LABELS.dropDraft, press: () => onDropGone(away) }}
           key={away.replyTo.id}
           lead={
             <GoneReply
@@ -253,7 +266,7 @@ export function KeptDraftOffers({
           replacement={away.draft.replacement}
           take={
             goneTakes === "here"
-              ? { label: "Use it here", press: () => onTakeGone(away) }
+              ? { label: OFFER_LABELS.takeHere, press: () => onTakeGone(away) }
               : undefined
           }
         />
