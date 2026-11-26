@@ -1214,9 +1214,10 @@ their comment blocks stood in it.
 The router: every check a pull request or the merge queue runs, in one workflow.
 Its first job, `changes`, reads the paths the change touched and selects, through one
 dorny/paths-filter filter per job, the jobs that read those paths; each job runs only when its
-filter matches (lint runs on every change, and typecheck, test, tooling-checks, daemon-go,
-plugin-pack, private-names-port, sessions-script and text-checks also run when `changes` itself
-failed). A pull request runs the fast jobs its paths select, and the merge queue runs all of
+filter matches (lint and priority-conflicts run on every change, and typecheck, test,
+tooling-checks, daemon-go, plugin-pack, private-names-port, sessions-script and text-checks also
+run when `changes` itself failed). A pull request runs the fast jobs its paths select, and the
+merge queue runs all of
 them (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 ci-ok condenses every job's result into one check: it fails when a job `changes` selected did
 not succeed.
@@ -1555,8 +1556,9 @@ ci-ok job's reconcile step reads and PATCHes check runs with it too). The token 
 downloads pinned tools, and, in `changes`, reads the pull
 request's file list, which this public repository serves without `pull-requests: read`. The
 jobs whose scopes differ declare them in blocks of their own: pr-title (what check-pr-text.sh
-and find-pr-payload.sh read, and neither of the two above, since it posts nothing), ci-images
-(the ghcr.io push its copy makes) and worker-image (the image
+and find-pr-payload.sh read, and neither of the two above, since it posts nothing),
+priority-conflicts (its read of the priority pull requests beside the ci-ok-report step's two),
+ci-images (the ghcr.io push its copy makes) and worker-image (the image
 push and its attestation's scopes). docs-pages.yaml publishes the site to GitHub Pages.
 
 ## What CI_OK_SELECTED_BY holds, and which programs read it
@@ -1575,8 +1577,10 @@ The jobs that run on every change: no `changes` output gates one, so CI_OK_SELEC
 none of them, and ci-ok passes only when each of them succeeded — a skipped, cancelled or
 absent one fails the verdict, since nothing else says the job ran. `changes` is here because
 it selects every other job, `lint` because every change is linted: it reads the whole tree, so
-it runs on every non-draft run, also when `changes` failed. ci-ok.sh reads this list
-rather than knowing those two names, and check-ci-filters.sh holds every job of ci.yaml to
+it runs on every non-draft run, also when `changes` failed, and `priority-conflicts` because any
+change can conflict with a priority pull request
+(.github/ci-notes/ci.md#why-a-change-that-conflicts-with-a-priority-pull-request-fails). ci-ok.sh
+reads this list rather than knowing those names, and check-ci-filters.sh holds every job of ci.yaml to
 exactly one of ci-ok's three classes: mapped by CI_OK_SELECTED_BY, named by ci.yaml's
 CI_OK_ALWAYS_RUN, or named by ci.yaml's CI_OK_EXEMPT. The list is a JSON array written over
 lines rather than one long one, as ci.yaml's CI_OK_SELECTED_BY, a JSON object, is.
@@ -1608,7 +1612,63 @@ CI_OK_SELECTED_BY, a JSON object, is.
 shell scripts and tools, including the Go and Bun setup in `changes`, do not need an x64
 runner. At busy hours the x64 pool queues a job for about 15 minutes where the arm64 pool
 starts one in seconds (INFRA-4222). The `# why:` link above the `changes` runner applies
-to all four jobs.
+to all four jobs. `priority-conflicts` runs there for the same reason: git, jq and gh are all
+it runs.
+
+## Why a change that conflicts with a priority pull request fails
+
+A pull request labelled `priority` merges first. No other change may land ahead of it a conflict
+with it, which would leave the priority pull request, once approved or queued, to resolve a
+conflict it did not make. The priority-conflicts job runs .github/scripts/priority-conflicts.sh on
+every pull request that is not a draft and on every merge group, and CI_OK_ALWAYS_RUN names it, so
+ci-ok fails with it and the check is required without a change to main's ruleset. A person
+asked for exactly that: a blocking check that holds every other change to the priority pull
+requests all the time. The script's header says what it reads, what counts as a change's
+conflict, and why a read it could not make fails the check rather than pass it.
+
+The label is read live on every run, through GraphQL, a page of 100 at a time and two pages at
+most, and the check makes no Dispatch call: whoever keeps the label in step with the priorities
+moves it on the pull requests, and the next run reads it. Seven open pull requests carried the
+label on 2026-11-26; more than 200 fail the check, since the check step's budget pays for two
+reads. Only a priority pull request that is approved or in the merge queue is held against other
+changes: one still in review may change much before it lands, and holding every other pull
+request to a head that may not merge would block work for nothing. A change whose every pull
+request is labelled `priority` is not held to the others; a priority pull request in a merge
+group with other pull requests is judged with them.
+
+A priority pull request that has fallen behind main does not fail every other change in the
+conflicts it already has with main. The plain merge of a change with such a head carries every one
+of those conflicts, and on 2026-11-26 the one approved priority pull request, #4156, conflicted
+with main in 304 files, so a check of the plain merge would have failed every pull request of the
+repository. Where the plain merge conflicts, the script merges the change's base with the
+priority pull request too and counts only the conflicts the change's merge adds to that one: a
+new conflict anywhere, inside a file the priority pull request already conflicts on or not, fails
+the check, and one the base's merge holds alike does not. The script's header says how it tells
+them apart.
+
+Both events, because they answer two questions. On a pull request the check tells the author at
+once, at the push, and judges the change as the queue will land it, one squash commit on its
+base, so a pull request a priority pull request is stacked on gets the verdict its merge group
+will get. The merge group is the gate: a pull request that passed before a priority pull
+request was approved is checked again when it is queued, against the priority pull requests
+approved or queued then, and the ci-ok-report step posts the failing ci-ok as soon as the job
+fails at the front of the queue. A failure names the priority pull request, its title and the
+files, and the remedy: wait for it to merge, then merge main and resolve the conflict.
+
+What it costs: one ubuntu-24.04-arm job on every pull request push and every merge group, which
+is a standard runner of a public repository and bills nothing. Its timeout is 46 minutes, the
+ci-ok report step's 43 and the 152 s measured before it, as the comment above the job's key
+derives; its check step's is 26 minutes, its four retried reads and its measured run. It
+fetches only when a priority pull request other than the event's own is approved or queued, and
+the script's header counts the git merge-tree runs it makes for each.
+
+## What the priority-conflicts job's scopes are for
+
+`pull-requests: read` is the script's one read: the open pull requests labelled priority,
+through GitHub's GraphQL API. `contents: read`, `actions: read` and `checks: write` are the
+ci-ok-report step's, the step every job ci-ok judges ends with. The script's fetch needs no
+token: this repository is public, and the script fetches it anonymously, as the ci-ok job's hold
+step reads the queue's refs.
 
 ## What the changes job selects, and the two terms every job carries
 
@@ -3202,7 +3262,7 @@ behind the front makes the queue build on the failed entry, and decides nothing 
 
 This job's `if:` is `always()` and nothing else. Every other job of this file is skipped on a
 draft pull request: `changes` carries `!github.event.pull_request.draft`, the jobs its
-outputs gate skip with it, and lint, typecheck, test, daemon-go, plugin-pack,
+outputs gate skip with it, and lint, priority-conflicts, typecheck, test, daemon-go, plugin-pack,
 private-names-port, sessions-script, text-checks and `pr-title`, whose `if:`s do not wait on
 `changes`, carry that term themselves.
 Every job but `pr-title` and this one is skipped on a re-run attempt of a merge-group run by

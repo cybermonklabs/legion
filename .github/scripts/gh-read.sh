@@ -130,8 +130,9 @@
 #
 # Its callers: every GitHub call of cancel-started-act.sh, check-pr-text.sh, find-pr-payload.sh,
 # ci-ok-report.sh, ci-ok-reconcile.sh, post-check-run.sh and runner-shutdown.sh, ci-ok-hold.sh's
-# run read and `git ls-remote` ref reads, dispatch-browser-run-reads.sh's jobs read, and the
-# steps of ci-caches.yaml, dequeued.yaml and main-bypass-check.yaml, each in the form above; and,
+# run read and `git ls-remote` ref reads, dispatch-browser-run-reads.sh's jobs read,
+# priority-conflicts.sh's label read, fetch and read of the queue's branches, and the steps of
+# ci-caches.yaml, dequeued.yaml and main-bypass-check.yaml, each in the form above; and,
 # with no ladder, the release calls of release-push.sh, which R2's exception (d) leaves unretried
 # in the credentialed publish jobs, and check-daemon-api-contract.sh's reads.
 

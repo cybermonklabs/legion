@@ -775,8 +775,10 @@
 #
 # Two verbs are deliberately outside the subject, because R1's subject is a tool, a toolchain or a
 # dependency: `git clone` and `git fetch`, which move this repository's own refs rather than
-# anything a job installs, and which no site in the tree retries. `playwright install-deps` is
-# named under the exceptions below.
+# anything a job installs; so are the objects a partial clone's later git commands fetch on
+# demand. This check requires a retry of none of them. priority-conflicts.sh's one fetch retries
+# all the same, as its gh_read did on main (dispatch://INFRA-1545, round 71).
+# `playwright install-deps` is named under the exceptions below.
 #
 # THE RULES.
 #
