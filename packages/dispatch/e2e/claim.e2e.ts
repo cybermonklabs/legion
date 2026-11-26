@@ -1,5 +1,5 @@
 import { setLiveSessions } from "./agents";
-import { claimIssue, createIssue, createProject, mintAgentToken } from "./api";
+import { claimIssue, createIssue, createProject, getIssue, mintAgentToken } from "./api";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -46,6 +46,49 @@ test("a long holder name never widens the issue page @pr", async ({ browser }, t
         path: shot,
       });
     }
+  } finally {
+    await context.close();
+  }
+});
+
+// Release sits beside the claim chip in the header's Attention group, at every width, and a
+// press of it frees the issue on the server and takes the chip and the control off the page.
+test("Release beside the claim on today's issue header frees the issue", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Claimed, then released" });
+  const token = await mintAgentToken("claim-e2e", "alice");
+  await setLiveSessions([{ session_id: "claim-e2e-session", title: "Implementer" }]);
+  await claimIssue(issue.key, {
+    actor: { id: "claim-e2e-session", kind: "session", origin: { session_title: "Implementer" } },
+    as: "agent",
+    token,
+  });
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.setViewportSize({ height: 844, width: 390 });
+    await page.goto(`/issues/${issue.key}`);
+    const attention = page.getByTestId("issue-attention");
+    const chip = attention.getByTestId("issue-claim");
+    const release = attention.getByRole("button", { name: `Release the claim on ${issue.key}` });
+    await expect(chip).toBeVisible();
+    await expect(release).toBeVisible();
+    // The chip and its Release share a line.
+    const [chipBox, releaseBox] = await Promise.all([chip.boundingBox(), release.boundingBox()]);
+    expect(
+      Math.abs(
+        (chipBox?.y ?? 0) +
+          (chipBox?.height ?? 0) / 2 -
+          (releaseBox?.y ?? 0) -
+          (releaseBox?.height ?? 0) / 2
+      )
+    ).toBeLessThan(4);
+
+    await release.click();
+    await expect.poll(async () => (await getIssue(issue.key)).claim).toBeNull();
+    await expect(chip).toHaveCount(0);
+    await expect(release).toHaveCount(0);
   } finally {
     await context.close();
   }
