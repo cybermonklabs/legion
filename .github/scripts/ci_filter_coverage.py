@@ -276,6 +276,24 @@ class TagRun:
     workflow: str = WORKFLOW
 
 
+@dataclass(frozen=True)
+class VersionArgs:
+    """A release's version argument list, which rule 25 holds to the build it versions: `key` of
+    `workflow`'s workflow-level `env:`, whose words after `--` are the paths release-bump.sh reads
+    the commits of (`git log -- <paths>`), and `runs`, the go commands that stand for the build
+    `script` runs, one per target, while `script` still holds every text of `pins`."""
+
+    workflow: str
+    key: str
+    script: str
+    pins: tuple
+    runs: tuple
+
+
+def version_args(workflow, key, script, pins, runs):
+    return VersionArgs(workflow, key, script, tuple(pins), tuple(runs))
+
+
 # Every workflow step a why cites through at(), checked to exist so a renamed step fails here.
 # Each entry is (the workflow file that holds the step, the job, the step).
 CITED: list = []
@@ -2867,6 +2885,123 @@ def check_references_lane(data, quantifier: str, problems: list[Annotation]) -> 
             f"{REFERENCES_FILTER}"]
 
 
+# ---------------------------------------------------------------- the releases' version arguments
+# The module files whose lines decide what a build compiles and with which toolchain: the go,
+# toolchain, require, replace, use and godebug lines. A go.sum or go.work.sum holds checksums, which
+# check the bytes a build reads and change none, so rule 25 neither requires one nor refuses one.
+DECIDING_MODULE_FILES = ("go.mod", "go.work")
+
+
+def covering(path: str, listed) -> list:
+    """The paths of `listed` that take in `path` as a git pathspec does: the path itself, or a
+    directory it lies under."""
+    return [p for p in listed if path == p or path.startswith(p + "/")]
+
+
+def run_platform(r: Run) -> str:
+    env = dict(r.env)
+    return f"{env['GOOS']}/{env['GOARCH']}" if "GOOS" in env and "GOARCH" in env else "the host's platform"
+
+
+def check_version_args(session: Session, data, problems: list[Annotation]) -> list:
+    """Rule 25: each VERSION_ARGS entry's list names every first-party file its build compiles
+    from, and no path inside one of the build's modules that the build compiles nothing from.
+    release-bump.sh cuts a version from the commits that touch the paths after `--`, so a package
+    directory the build compiles that no path covers is a change that releases no binary, which
+    nothing else fails on, and a path under which the build compiles nothing cuts a release for a
+    change the binary does not hold. What the build compiles from is what its `runs` list: the
+    first-party package directories `go list -deps` prints for each target, and the go.mod and
+    go.work files of the workspace it runs in. A listed path outside every module the build binds
+    (a notices script, a target list) is another input of the release and is left alone, as is
+    one under a wider path of the list. The runs stand for the build only while the script holds
+    each of `pins`, so a pin it no longer holds fails, and so does a list or a build that holds
+    nothing to compare. Returns the report lines."""
+    report = []
+    for entry in data.VERSION_ARGS:
+        held = f"so whether {entry.workflow}'s {entry.key} covers what {entry.script} builds is unknown"
+        if not entry.pins or not entry.runs:
+            problems.append(error(".github/scripts/ci_job_reads.py", f"VERSION_ARGS' entry for {entry.key} pins no "
+                                                                      f"text of {entry.script} or lists no go command, "
+                                                                      f"{held}"))
+            continue
+        if not (REPO / entry.script).is_file():
+            problems.append(error(entry.workflow, f"{entry.script}, the build {entry.workflow}'s {entry.key} versions, "
+                                                  f"is absent, {held}"))
+            continue
+        script = squash(read_repository_text(REPO / entry.script))
+        stale = [squash(pin) for pin in entry.pins if squash(pin) not in script]
+        for pin in stale:
+            problems.append(error(entry.script, f"{entry.script} no longer holds `{pin}`, which VERSION_ARGS in "
+                                                f"ci_job_reads.py pins as the build {entry.workflow}'s {entry.key} "
+                                                f"versions, {held}; make that entry's pins and go commands what the "
+                                                f"script builds"))
+        if stale:
+            continue
+        env = (load_repository_yaml(REPO / entry.workflow) or {}).get("env") if (REPO / entry.workflow).is_file() else None
+        value = env.get(entry.key) if isinstance(env, dict) else None
+        words = value.split() if isinstance(value, str) else []
+        paths = words[words.index("--") + 1:] if "--" in words else []
+        if not paths:
+            problems.append(error(entry.workflow, f"{entry.workflow}'s workflow env: has no {entry.key} that names "
+                                                  f"paths after `--`, {held}"))
+            continue
+        magic = [p for p in paths if p.startswith(":")]
+        if magic:
+            problems.append(error(entry.workflow, f"{entry.workflow}'s {entry.key} names {magic[0]}, a pathspec with "
+                                                  f"magic, which this check does not read, {held}; name plain paths"))
+            continue
+        listed = {p.rstrip("/"): p for p in paths}
+        compiled: dict = {}  # a first-party package directory: the targets whose build compiles it
+        module_files: set = set()
+        for r in entry.runs:
+            for pkg in session.listing(r):
+                d = rel(pkg["Dir"]) if pkg.get("Dir") and not pkg.get("Standard") else None
+                if d is not None:
+                    compiled.setdefault(d, []).append(run_platform(r))
+            module_files.update(read.glob for read in session.module_files(r))
+        deciding = sorted(f for f in module_files if os.path.basename(f) in DECIDING_MODULE_FILES)
+        build = "; ".join(dict.fromkeys(f"`go list -deps {' '.join(r.pkgs)}` in {r.workdir}" for r in entry.runs))
+        platforms = ", ".join(dict.fromkeys(run_platform(r) for r in entry.runs))
+        if not compiled or not deciding:
+            problems.append(error(entry.workflow, f"{build} listed {len(compiled)} first-party package directories and "
+                                                  f"{len(deciding)} go.mod or go.work files for {platforms}, {held}"))
+            continue
+        uncovered = []
+        for d in sorted(compiled):
+            if not covering(d, listed):
+                uncovered.append(d)
+                problems.append(error(entry.workflow, f"{entry.workflow}'s {entry.key} names no path that covers {d}/, "
+                                                      f"the directory of a package {entry.script} compiles ({build}, for "
+                                                      f"{', '.join(dict.fromkeys(compiled[d]))}), so a commit that "
+                                                      f"changes only that package releases no binary; add {d}/ after "
+                                                      f"its `--`"))
+        for f in deciding:
+            if not covering(f, listed):
+                uncovered.append(f)
+                problems.append(error(entry.workflow, f"{entry.workflow}'s {entry.key} names no path that covers {f}, a "
+                                                      f"module file of the workspace {entry.script} builds in, whose "
+                                                      f"lines decide the versions and the toolchain the binary is built "
+                                                      f"with, so a commit that changes only it releases no binary; add "
+                                                      f"{f} after its `--`"))
+        modules = {os.path.dirname(f) for f in module_files if os.path.basename(f) == "go.mod"}
+        idle = []
+        for p, word in listed.items():
+            if not covering(p, modules) or any(q != p and p.startswith(q + "/") for q in listed):
+                continue
+            if any(covering(d, [p]) for d in compiled) or any(covering(f, [p]) for f in module_files):
+                continue
+            idle.append(p)
+            problems.append(error(entry.workflow, f"{entry.workflow}'s {entry.key} names {word}, under which "
+                                                  f"{entry.script} compiles no package and holds no module file "
+                                                  f"({build}, for {platforms}), so a commit that changes only it "
+                                                  f"releases a binary it is not in; take it out of the list, and its "
+                                                  f"--patch-path, which release-bump.sh refuses without it"))
+        report.append(f"{entry.workflow} {entry.key}: {entry.script} compiles {len(compiled)} first-party package "
+                      f"directories and reads {len(deciding)} go.mod and go.work files for {platforms}; "
+                      f"{len(uncovered)} no listed path covers, {len(idle)} listed paths cover none")
+    return report
+
+
 def declared_reads(data) -> list:
     """Every pattern written by hand, each with the file it is in and how a refusal names it: a
     gate's reads, a //ci: line's glob, and an EXCLUDED filter's patterns but its `!` ones."""
@@ -3739,6 +3874,8 @@ def check() -> int:
     rules.check_one_merge_group_workflow(problems)
     # Rule 20: a vet for another platform passes over no file a build tag would compile.
     report += check_vet_tags(session, data, problems)
+    # Rule 25: each release's version arguments cover what its build compiles from, and no more.
+    report += check_version_args(session, data, problems)
     problems += session.problems
     report += check_push_workflows(data, filters, mode, problems)
     report += check_tag_runs(documents, data, filters, quantifiers, gate_files, Selection(filters, quantifiers, files),

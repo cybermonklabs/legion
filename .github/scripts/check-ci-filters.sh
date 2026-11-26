@@ -374,6 +374,19 @@
 #      arm, with two, or with one that lists no file, a dispatch-browser.yaml that runs the script
 #      from no step or from two directories, and no file of .github/ci-gates that declares that
 #      filter, fail too, rather than holding the filter to nothing.
+#  25. a release's version argument list - an entry of ci_job_reads.py's VERSION_ARGS, today
+#      release.yaml's LEGION_VERSION_ARGS - whose paths after `--` leave out a first-party
+#      package directory the release's build compiles for one of its targets, or a go.mod or
+#      go.work of the workspace it builds in, or that name a path inside one of the build's
+#      modules under which it compiles no package and holds no module file, naming each, the
+#      targets that compile it and the fix. release-bump.sh cuts a version from the commits
+#      that touch those paths, so a package left out is a change that releases no binary, and
+#      an idle path is a release cut for a change the binary does not hold. The build is the
+#      entry's go commands, one per target, listed as every closure here is; they stand for the
+#      release's own build only while its script holds each text the entry pins, so a pin the
+#      script no longer holds fails naming the script and the text, and so does a list the
+#      workflow does not hold, a path with pathspec magic, which this rule does not read, and a
+#      build that lists no first-party package or module file.
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to

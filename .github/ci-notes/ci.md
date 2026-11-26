@@ -2924,7 +2924,11 @@ into a committed go.work.sum among them, but those its mode writes: each workflo
 ci_job_reads.py's PUSH_WORKFLOWS names for `write`, and the filters and the .inputs file beside
 them for `generate`. It also holds every workflow file to 64,000 bytes and to what GitHub's own
 parser reads (.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml
-runs a second time, in a file small enough to start when this one is too large to.
+runs a second time, in a file small enough to start when this one is too large to. And it holds
+release.yaml's LEGION_VERSION_ARGS to the packages and module files the legion release build
+compiles from, for each of its targets (rule 25,
+.github/ci-notes/release.md#the-go-legions-version-arguments-and-the-check-that-holds-them-to-the-build),
+with the listings of ./cmd/legion it makes for the go_notices filter already.
 
 ## What the proof editor's offline proof shows
 

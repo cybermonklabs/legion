@@ -101,7 +101,7 @@ env:
     -- packages/claude-envoy/ packages/pi-shared/ packages/envoy-client/ packages/contracts/
     packages/cipher-client/ packages/pi-legion/agents/ skills/
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
-  # why: .github/ci-notes/release.md#the-go-legions-version-arguments-and-the-command-that-prints-its-envoy-packages
+  # why: .github/ci-notes/release.md#the-go-legions-version-arguments-and-the-check-that-holds-them-to-the-build
   LEGION_VERSION_ARGS: >-
     --patch-path packages/daemon/internal/prompts/roles/ --patch-path packages/daemon/internal/prompts/go/
     --patch-path scripts/go-third-party-notices.sh --patch-path scripts/assemble-third-party-notices.sh
@@ -120,7 +120,7 @@ env:
     packages/envoy/listenfd/
     packages/envoy/migrationid/ packages/envoy/natsversion/ packages/envoy/roleholder/
     packages/envoy/sessiontiming/ packages/envoy/steprecord/ packages/envoy/subjectforms/
-    packages/envoy/go.mod packages/envoy/go.sum
+    packages/envoy/go.mod packages/envoy/go.sum go.work
     scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh .github/go-release-targets.json
 
   # why: .github/ci-notes/release.md#why-goproxy-falls-through-to-direct

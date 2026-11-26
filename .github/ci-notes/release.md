@@ -94,16 +94,32 @@ commit there still releases: each is a --patch-path. Nothing has been published 
 name, so --first-npm seeds the line at npm's 0.0.0 and the first release bumps from the whole
 history.
 
-## The Go legion's version arguments and the command that prints its envoy packages
+## The Go legion's version arguments and the check that holds them to the build
 
 The Go `legion`. The binary embeds its prompts (internal/prompts/roles and go), so a docs:
 commit there still releases. The notices scripts and the target list are runtime inputs of the
 release archives and worker image, so any change to one needs a new tag rather than a CI-only
-rebuild. The envoy packages of `LEGION_VERSION_ARGS` are every package `go list -deps ./cmd/legion` reaches
-through the module's `replace` on ../envoy, public and internal, so a change to any of them
-changes the binary and must release one, and the envoy module's own go.mod and go.sum decide
-which versions of their dependencies it links. That list is written here by hand; this is the
-command that prints it, to be run from packages/daemon whenever what the binary links moves:
+rebuild. Beside packages/daemon/, `LEGION_VERSION_ARGS` names each envoy package directory the
+release build compiles, public and internal, through the daemon module's `replace` on ../envoy,
+for any legion target of .github/go-release-targets.json (one binary each, which
+.github/scripts/release-build-legion.sh builds): GOOS and GOARCH decide which files, and so
+which imports, a build compiles. A change to any of those packages changes the binary and must
+release one. The list also names the module files that decide what that build compiles and with
+which toolchain: the envoy module's go.mod, with its go.sum, and go.work, the workspace the
+build runs in, whose go line and use list move the toolchain and the module versions as a
+go.mod does.
+
+The list is written out because the version step runs before setup-go
+(.github/ci-notes/release.md#why-legion_build-reads-the-tags-before-setup-go), where no go
+command can compute it. Rule 25 of .github/scripts/check-ci-filters.sh holds it to the build
+instead, from the entry `.github/scripts/ci_job_reads.py#VERSION_ARGS` declares. The rule reads
+the packages each target's build compiles from the go list runs lint's notices step already
+asks for. It fails naming each package directory or module file that no listed path covers,
+and each listed path inside the two modules under which the build compiles nothing. The
+ci-filters job runs it on the pull request, on every change to a Go file, a module file or a
+workflow. The entry pins the loop and the `go build` line of release-build-legion.sh, so a
+change to either fails the check until the entry says what the build runs now. The envoy part
+of the list for the host's target, by hand, from packages/daemon:
   go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
     sed 's#^github.com/sjawhar/envoy#packages/envoy#' | sort
 

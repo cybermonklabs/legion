@@ -38,6 +38,10 @@ hand-kept facts from beside their owners (ci_filter_sources.py says how):
             whose untagged run of that package that -run leans on, whose filter must therefore
             cover every file the tag step reads (the read set of the gate on its filter, and that
             filter's listed block).
+  VERSION_ARGS one entry per release whose version argument list names the paths its build
+            compiles from: the workflow and its `env:` key, the script that builds, the texts of
+            it that make the entry's go commands stand for that build, and those go commands.
+            Rule 25 holds the list to their closure.
   READ_SETS the sets a //ci:reads-set line names, each computed when the table is read.
 
 A Read's glob is expanded over the repository's files; a why cites the step (at()) or the
@@ -71,7 +75,7 @@ import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
-from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, repo_files, run
+from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, repo_files, run, version_args
 from ci_filter_coverage import at as at_in, gate as gate_in
 from ci_filter_sources import excluded, load_directives, load_gate_files
 from go_build_tags import go_skips_dir, tag_sets
@@ -649,6 +653,27 @@ def go_notices_runs():
                               started_by, INFRA, ["./cmd/..."], mode="build",
                               env={"CGO_ENABLED": "0", "GOOS": goos, "GOARCH": goarch}))
     return out
+
+
+# release.yaml's legion_build job cuts legion's version from the commits since the newest legion-v*
+# tag that touch the paths after `--` in LEGION_VERSION_ARGS. Its version step runs before setup-go
+# (.github/ci-notes/release.md#why-legion_build-reads-the-tags-before-setup-go), so no go command
+# can compute those paths there, and the list is written out. Rule 25 holds it to what the build
+# compiles from: release-build-legion.sh builds ./cmd/legion once per legion target of GO_TARGETS,
+# with CGO_ENABLED=0. Those are the listings of ./cmd/legion lint's notices step asks for already
+# (go_notices_runs), so the rule starts no go command of its own.
+LEGION_RELEASE_SCRIPT = ".github/scripts/release-build-legion.sh"
+VERSION_ARGS = [version_args(
+    ".github/workflows/release.yaml", "LEGION_VERSION_ARGS", LEGION_RELEASE_SCRIPT,
+    ["for target in $(jq -r '.legion[]' .github/go-release-targets.json); do",
+     'CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go -C packages/daemon build -buildvcs=false \\\n'
+     '-ldflags "-X main.revision=$GITHUB_SHA -X main.release=v$VERSION -X main.piLegionVersion=$PI_LEGION_VERSION '
+     '-X main.piEnvoyVersion=$PI_ENVOY_VERSION '
+     '-X github.com/sjawhar/legion/daemon/internal/api.contractOrder=$LEGION_CONTRACT_ORDER" \\\n'
+     '-o "$GITHUB_WORKSPACE/out/$dir/legion" ./cmd/legion'],
+    [run(DAEMON, [LEGION_BUILD], f"{LEGION_RELEASE_SCRIPT}'s build for {target}", mode="build",
+         env={"CGO_ENABLED": "0", "GOOS": target.split("/")[0], "GOARCH": target.split("/")[1]})
+     for target in targets(GO_TARGETS, "legion")])]
 
 
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-build's
