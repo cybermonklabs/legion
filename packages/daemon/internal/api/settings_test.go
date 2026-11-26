@@ -231,7 +231,7 @@ var settingsExcluded = map[string]string{
 	"PodConfig.Env":                      "runtime.kubernetes.pod: the operator's free text, delivered to every pod's spec",
 	"PodConfig.Volumes":                  "runtime.kubernetes.pod: Kubernetes API types naming the operator's Secrets, ConfigMaps, claims and NFS exports",
 	"PodConfig.VolumeMounts":             "runtime.kubernetes.pod: Kubernetes API types",
-	"PodConfig.ServiceAccount":           "runtime.kubernetes.pod: the operator's ServiceAccount, which every pod runs as and reads from its own spec",
+	"PodConfig.ServiceAccount":           "runtime.kubernetes.pod: the operator's ServiceAccount, which the issue pods run as, and the controller's pod and a cache's pod where their own keys name none, and which each such pod reads from its own spec",
 	"PodConfig.ControllerServiceAccount": "runtime.kubernetes.pod: the operator's ServiceAccount the controller's pod runs as in place of service_account, which that pod reads from its own spec",
 	"Kubernetes.PluginsFromBinary":       "derived: where the settled plugins pair came from, not a setting",
 	"Config.Warnings":                    "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `legion config check` prints",
@@ -247,6 +247,10 @@ var settingsExcluded = map[string]string{
 	"Variant.MemoryBlock":                "derived: whether the arm is the `memory` block's rather than the `experiments` key's, set by config.Project.ExperimentsDeclared, which the settings already tell by carrying the block under `memory` and the key under `experiments`",
 	"Config.Revision":                    "not a setting: the commit this binary was built from, which `legion start` sets from cmd/legion's link-time revision and no legion.yaml key names",
 	"Config.GitHubGraphQLShare":          "not shown yet: the pace of the daemon's own GraphQL reads of GitHub, which no pod or plugin reads or acts on; carrying it on GET /legion/v1/state is a change of the daemon API contract (answers.go, packages/contracts) that the pull request adding the key does not make",
+
+	// The cache's bucket and the account holding its grant, which no pod but a cache pod reads.
+	"RepositoryCacheConfig.Bucket":         "runtime.kubernetes.repository_cache.bucket: the deployment's own Cloud Storage bucket, named by a route that authenticates nobody (GET /legion/v1/state); the cache pods alone read it, from their own environment, and an issue pod reaches its packs through the addresses its cache signs",
+	"RepositoryCacheConfig.ServiceAccount": "runtime.kubernetes.repository_cache.service_account: the ServiceAccount the cache pods alone run as, the one holding the bucket's grant, which each cache pod reads from its own spec",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly
