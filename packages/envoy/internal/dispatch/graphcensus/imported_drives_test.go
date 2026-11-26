@@ -391,7 +391,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		// send of at once: the message's node, in the issue's project, and the session's node the
 		// settle of its attempt records.
 		Name: "api/message_delivery.go#completeMessageDelivery", Database: r.database,
-		Sites: []string{"api/message_delivery.go#completeMessageDelivery",
+		Sites: []string{"api/message_delivery.go#completeMessageDelivery", "api/messages.go#createStoredMessage",
 			"graphstore/people.go#QueueReached", "graphstore/people.go#QueueSessionRecorded"},
 		Drive: func(t *testing.T) {
 			r.message = decoded[model.Message](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/messages", map[string]any{
@@ -402,32 +402,32 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				   and exists (select 1 from message_deliveries where message_id = $1::uuid and state = 'sent')
 			`, r.message)
 		},
-		// The message's node, which its own write states (createStoredMessage), comes with the
-		// slice that carries the message writers (S4).
-		Counts: sessionNodeCounted,
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindMessage)),
 	}, {
 		// The session's reply to that message, a message of the same issue's project.
 		Name: "api/message_delivery.go#insertSessionReply", Database: r.database,
-		Sites: []string{"api/server.go#appendCausingEvent"},
+		Sites: []string{"api/message_delivery.go#insertSessionReply", "api/server.go#appendCausingEvent"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/messages/"+r.message+"/reply", map[string]any{
 				"actor": sessionActor(messageSession), "attempt": 1, "body": "On it.",
 			}, "", http.StatusCreated)
 		},
-		// The reply's node (insertSessionReply) comes with S4, so the reply states nothing here.
-		Counts: nil,
+		Counts: objectNodeCounted(graphstore.KindMessage),
 	}, {
 		// A broadcast to the message's session: the copy it stores for that session, a message on
 		// no issue, between alice and the session, whose node names those parties.
 		Name: "api/broadcasts.go#writeBroadcast", Database: r.database,
-		Sites: []string{"api/server.go#appendCausingEvent"},
+		Sites: []string{"api/broadcasts.go#writeBroadcast", "api/server.go#appendCausingEvent"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/broadcasts", map[string]any{
 				"body": "To everyone.", "delivery": "btw", "session_ids": []string{messageSession},
 			}, "alice", http.StatusCreated)
 		},
-		// Each copy's node (writeBroadcast) comes with S4, so the broadcast states nothing here.
-		Counts: nil,
+		Counts: map[graphcensus.StoredKind][]string{
+			{graphstore.KindMessage, graphstore.AttributeVisibility}: {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.AttributeState}:      {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.AttributeParties}:    {graphstore.KindMessage},
+		},
 	}, {
 		Name: "api/asks.go#createAskFor", Database: r.database,
 		Sites: []string{"api/asks.go#createAskFor", "asks/followers.go#queueFollow"},
