@@ -33,8 +33,9 @@ import (
 //     each of those items was counted on before, so an item whose day or project moved rewrites
 //     the day it left as well as the day it joined. A stored Legion fact's change and a filing's
 //     name their days themselves: an issue's close day before and after the change, a filing's
-//     day before and after. A change of the delivery settings rewrites, in one transaction, every
-//     day of the delivery and CI evals it moves (settings_rewrite.go), and begins no walk; a move
+//     day before and after. A change of the delivery settings rewrites every day of the delivery
+//     and CI evals it moves, staged aside and published in one transaction with the rule
+//     (settings_rewrite.go, ruleStaging), and begins no walk; a move
 //     of the deploy repository moves none, since the evals that read it are kept for every
 //     repository that holds a delivery run and a read chooses among them (deploy_repos.go). A page
 //     whose changes move a series' first input day, or the repositories that hold a delivery run,
@@ -719,7 +720,10 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 // syncSettings, syncKept), in one transaction, which first records those rules, so the rows it
 // writes are logged and folded for the projects they name, and then writes spans: the days of each
 // family whose days the page writes in its commit, with every other day they move (writeSpans: the
-// rows, then the members, then the stored figures, ahead of the cursors and the walks). The
+// rows, then the members, then the stored figures, ahead of the cursors and the walks), those of a
+// change of the kept repositories (a repository's first rule or first runs) staged aside before the
+// transaction begins and written from their staging (stageKept), so the rule it records and the
+// rows built under it become visible together. The
 // days the page named that move no other day are written before it, so a crash between the two
 // reads the same changes again, and a walk or a rebuild the changes begin is recorded with the
 // cursor that passed them, and with the rules it builds under where none were recorded
@@ -755,6 +759,11 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 			served[key] = true
 		}
 		restarts = slices.DeleteFunc(slices.Clone(restarts), func(key walkKey) bool { return served[key] })
+	}
+	// A kept move's rows and members are staged before the commit begins, which then writes them
+	// beside the rules it records (stageKept).
+	if err := r.stageKept(ctx, work, spans); err != nil {
+		return err
 	}
 	began := time.Now()
 	tx, err := r.store.database.Pool.Begin(ctx)

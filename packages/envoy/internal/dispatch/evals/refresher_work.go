@@ -45,16 +45,17 @@ import (
 //     that is the first to complete without it, which ships the pull requests merged before the
 //     repository's history began when the run does not (shippedNeighbours: no item records the
 //     deploy of such a pull request).
-//   - settings: a change of a project's delivery settings rewrites, in one transaction, the days
-//     of the delivery and CI evals it moves of each repository whose rule it moved, and of no
-//     other repository, from their first input day on, and begins no walk (settings_rewrite.go:
-//     settingsMoves names what each field of a rule moves and movedDeliveryDays the days it can
-//     move, and the pass finds the change by comparing each repository's rule it reads with the
-//     one the rows stand built under, so one that moves no eval rewrites nothing). A source move
-//     publishes a new selection (syncSettings); the repository gains rows where it had no rule
-//     before (syncKept). A settings save rewrites that project's failure rows. Changes to
-//     published defaults or source-key readers rewrite the affected measured projects' failure
-//     rows after publication (applyFailures, failure_days.go).
+//   - settings: a change of a project's delivery settings rewrites the days of the delivery and CI
+//     evals it moves of each repository whose rule it moved, and of no other repository, from
+//     their first input day on, staged aside in short transactions and published in one with the
+//     rule, and begins no walk (settings_rewrite.go: settingsMoves names what each field of a rule
+//     moves and movedDeliveryDays the days it can move, and the pass finds the change by comparing
+//     each repository's rule it reads with the one the rows stand built under, so one that moves no
+//     eval rewrites nothing). A source move publishes a new selection (syncSettings); the
+//     repository gains rows where it had no rule before (syncKept), staged aside and published by
+//     the page's commit that records its first rule (stageKept). A settings save rewrites that
+//     project's failure rows. Changes to published defaults or source-key readers rewrite the
+//     affected measured projects' failure rows after publication (applyFailures, failure_days.go).
 //   - production_events: a posted deploy of a project whose events repository is read, its
 //     finished day before the change and after it (t_old and t_new), the merge days of the pull
 //     requests it names now and the days eval_day_members holds it and the pull requests it

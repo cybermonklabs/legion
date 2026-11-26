@@ -462,7 +462,9 @@ func rowsOf(rows []DayRow, key evalKey) []DayRow {
 // are stored (stored), as they are built (members) and the days they are built of (memberDays);
 // the repositories that hold no run any more, whose every row and member goes (goneRepos, of
 // projects); the days whose stored figures it folds again, by project and eval, each run of them
-// apart (spans); and the days it wrote, for the pass's report.
+// apart (spans); the days it wrote, for the pass's report; and, where its rows and members that
+// moved stand staged aside (stageKept), their staging, which the commit writes them from, nil
+// where it sends them itself.
 type spanWrite struct {
 	family     dayFamily
 	build      string
@@ -476,6 +478,7 @@ type spanWrite struct {
 	projects   []string
 	spans      writtenSpans
 	report     []builtDay
+	staged     *ruleStaging
 }
 
 // widen adds the days first to last of project's eval evalID to those whose figures the span write
@@ -485,19 +488,25 @@ func (b *spanWrite) widen(project, evalID string, first, last time.Time) {
 }
 
 // writeRows writes the span write's day rows in tx: the named days', as writeProjectDays writes
-// them, then the span's moved rows (upsertDays) and the keys its days no longer hold, and every row
-// of a repository that holds no run any more, of its projects (every project and owner key, which
-// grow with the history) in statements of at most statementBytes, each with the evals of its
-// projects.
+// them, then the span's moved rows (upsertDays) and the keys its days no longer hold, or both from
+// their staging (ruleStaging.writeRows), and every row of a repository that holds no run any more,
+// of its projects (every project and owner key, which grow with the history) in statements of at
+// most statementBytes, each with the evals of its projects.
 func (b *spanWrite) writeRows(ctx context.Context, tx pgx.Tx) error {
 	if err := writeDayRowsIn(ctx, tx, b.days, b.family.slugs, b.build); err != nil {
 		return err
 	}
-	if err := upsertDays(ctx, tx, b.rows, b.build); err != nil {
-		return err
-	}
-	if err := deleteDayRows(ctx, tx, b.gone); err != nil {
-		return err
+	if b.staged != nil {
+		if err := b.staged.writeRows(ctx, tx); err != nil {
+			return err
+		}
+	} else {
+		if err := upsertDays(ctx, tx, b.rows, b.build); err != nil {
+			return err
+		}
+		if err := deleteDayRows(ctx, tx, b.gone); err != nil {
+			return err
+		}
 	}
 	if len(b.goneRepos) == 0 {
 		return nil
@@ -524,13 +533,18 @@ func (b *spanWrite) writeRows(ctx context.Context, tx pgx.Tx) error {
 }
 
 // writeMembers writes the span write's members in tx, after its rows: the named days', as
-// writeProjectDays writes them, the span's that moved (writeMovedMembers), and every member of a
-// repository that holds no run any more, of its projects in statements of at most statementBytes.
+// writeProjectDays writes them, the span's that moved (writeMovedMembers, or from their staging:
+// ruleStaging.writeMembers), and every member of a repository that holds no run any more, of its
+// projects in statements of at most statementBytes.
 func (b *spanWrite) writeMembers(ctx context.Context, tx pgx.Tx) error {
 	if err := writeDayMembersIn(ctx, tx, b.days, b.family.families); err != nil {
 		return err
 	}
-	if err := writeMovedMembers(ctx, tx, b.stored, b.members, b.memberDays); err != nil {
+	if b.staged != nil {
+		if err := b.staged.writeMembers(ctx, tx); err != nil {
+			return err
+		}
+	} else if err := writeMovedMembers(ctx, tx, b.stored, b.members, b.memberDays); err != nil {
 		return err
 	}
 	if len(b.goneRepos) == 0 {
@@ -579,10 +593,11 @@ func markCause(ctx context.Context, tx pgx.Tx, cause, what string) error {
 }
 
 // writeSpans writes spans in tx, a page's commit, before the page's cursors: marked a rebuild's
-// (MarkRebuild), every one's rows, then every one's members, then the stored figures, the order
-// every writer of the three takes them in. A span that finds a repository's runs gone begins the
-// rebuild that is building again (replaceRebuild): every day of the repository goes, and building
-// them all again before the flip would be a whole rebuild in the flip's pass.
+// (MarkRebuild), each staging of a span flipped (ruleStaging.flip), every one's rows, then every
+// one's members, then the stored figures, the order every writer of the three takes them in. A
+// span that finds a repository's runs gone begins the rebuild that is building again
+// (replaceRebuild): every day of the repository goes, and building them all again before the flip
+// would be a whole rebuild in the flip's pass.
 func writeSpans(ctx context.Context, tx pgx.Tx, spans []*spanWrite) error {
 	if len(spans) == 0 {
 		return nil
@@ -593,6 +608,11 @@ func writeSpans(ctx context.Context, tx pgx.Tx, spans []*spanWrite) error {
 	}
 	if err := MarkRebuild(ctx, tx); err != nil {
 		return err
+	}
+	for _, one := range spans {
+		if err := one.staged.flip(ctx, tx); err != nil {
+			return err
+		}
 	}
 	for _, one := range spans {
 		if err := one.writeRows(ctx, tx); err != nil {
@@ -613,6 +633,34 @@ func writeSpans(ctx context.Context, tx pgx.Tx, spans []*spanWrite) error {
 	}
 	if gone {
 		return replaceRebuild(ctx, tx, "", "", nil)
+	}
+	return nil
+}
+
+// stageKept stages aside, before the page's commit, the rows and members that moved of the
+// delivery family's span write (spans) where the page's kept repositories moved (work.kept,
+// syncKept: a repository's first rule, its first runs or a start that moved), whose span builds the
+// repository's days whole (ruleStaging: stageDayRows, stageMovedMembers, short transactions that
+// no reader reads). The page's commit, which records the rule beside them, then writes them from
+// the staging (writeSpans) and sends none of them: a repository's history reaches the readers in
+// the commit that records the rule it stands built under, in no transaction before it.
+// Every other span the commit writes itself.
+func (r *refresh) stageKept(ctx context.Context, work *pageWork, spans []*spanWrite) error {
+	if work.kept == nil {
+		return nil
+	}
+	for _, one := range spans {
+		if one.family.walk != walkDelivery {
+			continue
+		}
+		staging := &ruleStaging{build: one.build}
+		if err := staging.stageDayRows(ctx, r.store, one.rows, one.gone); err != nil {
+			return err
+		}
+		if err := staging.stageMovedMembers(ctx, r.store, one.stored, one.members, one.memberDays); err != nil {
+			return err
+		}
+		one.staged = staging
 	}
 	return nil
 }

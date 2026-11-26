@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -2288,6 +2291,162 @@ func TestTheDeliveryPagesAnswerTheRecordedSettingsUntilTheRefresherCommits(t *te
 		if recomputes != 1 || rewrites != 1 {
 			t.Errorf("the rewrite began %d recomputes of the %s view, %d of them %s, want the one", recomputes, kinds[sub], rewrites, deliveryCauseSettingsRewrite)
 		}
+	}
+}
+
+// stagingPauses is a tracer (storetest.TracedStore) that, while armed, holds the traced pool's
+// commit of each transaction that staged a rule's rows or members aside (an insert into
+// eval_rebuild_days or eval_rebuild_members, evals' ruleStaging) once it has succeeded, until the
+// test has read what it reads at that moment (refreshPausedAtStagings); and holds nothing once the
+// test has ended (close), so the pool's connections go back before it closes.
+type stagingPauses struct {
+	mu      sync.Mutex
+	staging map[*pgx.Conn]bool
+	armed   atomic.Bool
+	reached chan struct{}
+	resume  chan struct{}
+	stop    chan struct{}
+}
+
+type stagingPauseAt struct{}
+
+func newStagingPauses() *stagingPauses {
+	return &stagingPauses{staging: map[*pgx.Conn]bool{}, reached: make(chan struct{}), resume: make(chan struct{}), stop: make(chan struct{})}
+}
+
+func (s *stagingPauses) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch statement := strings.TrimSpace(data.SQL); {
+	case strings.Contains(statement, "insert into eval_rebuild_days") || strings.Contains(statement, "insert into eval_rebuild_members"):
+		s.staging[conn] = true
+	case strings.EqualFold(statement, "commit") && s.staging[conn]:
+		delete(s.staging, conn)
+		return context.WithValue(ctx, stagingPauseAt{}, true)
+	case strings.EqualFold(statement, "rollback"):
+		delete(s.staging, conn)
+	}
+	return ctx
+}
+
+func (s *stagingPauses) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	if ctx.Value(stagingPauseAt{}) == nil || data.Err != nil || !s.armed.Load() {
+		return
+	}
+	select {
+	case s.reached <- struct{}{}:
+		select {
+		case <-s.resume:
+		case <-s.stop:
+		}
+	case <-s.stop:
+	}
+}
+
+// close lets every commit held go on, and holds none from then on.
+func (s *stagingPauses) close() {
+	close(s.stop)
+}
+
+// refreshPausedAtStagings runs the refresher's passes as of the page's moment until no walk has
+// days left (refresh), on a goroutine of their own, with pauses armed: at each commit of a staging
+// it calls at on the test's goroutine and then lets the passes go on. It answers how many stagings
+// it paused at.
+func (p *refreshedEvalsPage) refreshPausedAtStagings(t *testing.T, pauses *stagingPauses, at func()) int {
+	t.Helper()
+	pauses.armed.Store(true)
+	defer pauses.armed.Store(false)
+	done := make(chan error, 1)
+	go func() {
+		deps := evals.RefresherDeps{Horizon: events.NewHorizon(p.rig.database.Pool), Build: testServerBuild}
+		done <- p.registry.RefreshThrough(t.Context(), deps, p.now)
+	}()
+	paused := 0
+	for {
+		select {
+		case <-pauses.reached:
+			paused++
+			at()
+			pauses.resume <- struct{}{}
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("refresh the day rows: %v", err)
+			}
+			return paused
+		}
+	}
+}
+
+// TestARuleChangeSendsEachOpenPageOneUpdate: over the refreshed history, with the main project's
+// evals page open on a hub whose clock stands still, each save below makes the refresher build a
+// repository's rows anew: the main source's production
+// rule moved to a job no run holds, which moves every deploy of the history, and a second source
+// that reads, under its first rule, the history's second repository, which holds deploy runs of its
+// own. The refresher stages the rows each moves aside, in transactions of their own, and publishes
+// them in one: at each staging's commit the page has been sent nothing, past every quiet, and the
+// list route answers what it answered before the save; after the publication the page gets one
+// delta, at once, from the one recompute its view began, which lands on the route's body, and
+// nothing follows it. Red where the rows are written in the publishing transaction with nothing
+// staged aside: no staging's commit falls between the save and the publication.
+func TestARuleChangeSendsEachOpenPageOneUpdate(t *testing.T) {
+	t.Parallel()
+	for _, change := range []struct {
+		name string
+		save func(t *testing.T, page *refreshedEvalsPage, other string)
+	}{
+		{name: "the production rule moved", save: func(t *testing.T, page *refreshedEvalsPage, _ string) {
+			t.Helper()
+			settings := page.fixture.Settings
+			settings.ProductionJobNames = []string{"release / a job no run holds"}
+			saveProjectRules(t, page.rig.database, page.fixture.Project, settings)
+		}},
+		{name: "a repository's first rule", save: func(t *testing.T, page *refreshedEvalsPage, other string) {
+			t.Helper()
+			second := page.fixture.Settings
+			second.DeployRepo = other
+			saveProjectRules(t, page.rig.database, page.fixture.Project, page.fixture.Settings, second)
+		}},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			t.Parallel()
+			var other string
+			pauses := newStagingPauses()
+			page := newRefreshedEvalsPage(t, pauses, deployRunsInTheSecondRepository(t, &other))
+			t.Cleanup(pauses.close)
+			rig := page.rig
+			before := page.route(t)
+			change.save(t, page, other)
+			rig.hub.catchUpNow()
+			rig.clock.Advance(viewMaxWait)
+			rig.requireNothingSent(t, page.conn, "the settings save alone, before the refresher has built the rows it moves")
+
+			mark := rig.mark()
+			paused := page.refreshPausedAtStagings(t, pauses, func() {
+				rig.hub.catchUpNow()
+				rig.clock.Advance(viewMaxWait)
+				rig.requireNothingSent(t, page.conn, "a staging's commit, before the publication")
+				if got, want := withoutFreshness(t, page.route(t)), withoutFreshness(t, before); !reflect.DeepEqual(got, want) {
+					t.Errorf("at a staging's commit, before the publication, the list route answers otherwise than before the save:\ngot:  %v\nwant: %v", got, want)
+				}
+			})
+			if paused == 0 {
+				t.Errorf("the refresher staged nothing aside before it published the rows the save moves")
+			}
+			rig.hub.catchUpNow()
+			delta := page.conn.delta(t, "e")
+			page.held = applyLiveDelta(t, evalsView, page.held, delta)
+			page.requireAtRoute(t, "the one delta after the publication")
+			if reflect.DeepEqual(liveComparable(t, mustEncodeLive(t, evalsView, before)), liveComparable(t, mustEncodeLive(t, evalsView, page.held))) {
+				t.Fatal("the route answers after the publication what it answered before the save, and the check needs a save that moves it")
+			}
+			rig.clock.Advance(viewMaxWait)
+			rig.requireNothingSent(t, page.conn, "the publication's one delta, past every quiet")
+			if begun := rig.count(mark, recomputeBegin("")); begun != 1 {
+				t.Errorf("the save's rows began %d recomputes of the page's view, want one", begun)
+			}
+			t.Logf("%s: the refresher paused at %d stagings, and its publication sent the page a delta that upserts %v",
+				change.name, paused, liveUpsertIDs(t, delta, "items"))
+		})
 	}
 }
 

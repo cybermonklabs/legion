@@ -2813,8 +2813,13 @@ The foreign key to `projects` takes `SHARE ROW EXCLUSIVE` on `projects` for the 
 
 Migration `20261123020640_eval_days_rules` creates `eval_days_rules`, keyed by `repo`: the rule each source repository's rows of the evals that read the deploy repository (`eval_days.deploy_repo`) stand built under, one per repository, where `eval_days_settings` (`20261117100021`) records one rule for every repository.
 A row holds the delivery-on project whose source reads the repository (`project_key`, null once no source reads it, when the row and the repository's rows stay, so a source that reads it again under the same rule rebuilds nothing), the four fields of its rule a day row reads (the production job names, the production apply step and the two staging job names), `kept_since`, the first day its rows stand built from (null while it holds no delivery run), and `updated_at`.
-A refresher pass that reads another rule for a repository rewrites that repository's days the difference moves, and no other repository's, in one transaction that records the new row (`evals.rewriteSettings`); one that reads another project alone, or none, records it with its cursors and rewrites no day row.
-It copies the one `eval_days_settings` row to the repository it names, under the project whose default repository that is, spelled as `kept_repos` keeps the repository, with its start.
+A refresher pass that reads another rule for a repository stages the rows and members the rule moves without touching another repository's rows (`evals.rewriteSettings`, `evals.ruleStaging`).
+The staging uses its own `eval_rebuilds` record with reason `settings`, separate from the active rebuild.
+Reads use the old rule until one transaction records the new rule, writes the staged rows and members, and folds the stored figures of the days they moved.
+That transaction changes the staging record from `abandoned` to `flipped`, so a failed pass leaves only staging for cleanup.
+A repository's first rule builds its rows the same way: the page stages them aside before its commit, which records the rule and writes them from the staging (`evals.stageKept`).
+A pass that reads another project alone for a repository, or none, records it with its cursors and rewrites no day row.
+The migration copies the one `eval_days_settings` row to the repository it names, under the project whose default repository that is, spelled as `kept_repos` keeps the repository, with its start.
 A row naming no repository, or one that is the default repository of no project or of more than one, is not copied: the refresher's first pass then finds no rule recorded and rebuilds the rows aside under the rules it reads.
 The release before this one reads and writes `eval_days_settings` and neither reads nor writes the new table, so `eval_days_settings` stays as it is until the release after this one drops it with `delivery_settings`.
 A new table with no foreign key and a copy of at most one row: it reads `eval_days_settings` and `projects`, rewrites no existing row, and its census answers `0`, since nothing is refused.

@@ -22,10 +22,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// settings_rewrite.go is the refresher's answer to a change of a deploy repository's rule
-// (dispatch://INFRA-2916, R14; dispatch://INFRA-978, D1): one pass rewrites, in one transaction,
-// the days of the delivery and CI evals whose rows of that repository the change moves, and of no
-// other repository, and begins no walk. The rule each repository's stored delivery and CI rows
+// settings_rewrite.go is the refresher's answer to a change of a deploy repository's rule.
+// One pass stages the days of the delivery and CI evals whose rows of that repository
+// the change moves, then publishes them with the new rule in one transaction, without
+// starting a walk. The rule each repository's stored delivery and CI rows
 // stand built under, and the project whose source reads it, are recorded beside them
 // (eval_days_rules, migration 20261123020640), and a page compares them with the rules it reads
 // (delivery.DeployRules) before it writes a day (syncSettings): field by field, since a settings
@@ -318,8 +318,8 @@ func recordRules(ctx context.Context, q pgx.Tx, built map[string]builtRule) erro
 // recordRule records, in q, rule as the rule the stored delivery and CI rows of its repository
 // (rule.DeployRepo, as recorded) stand built under, its project null where rule names none, its
 // start left as it is, and logs in the same transaction that the rules are recorded
-// (logRulesRecorded): the rewrite of that repository's change (rewriteSettings) writes it in its own
-// transaction.
+// (logRulesRecorded): the rewrite of that repository's change (rewriteSettings) writes it in the
+// transaction that publishes the rows it staged under it.
 func recordRule(ctx context.Context, q pgx.Tx, rule delivery.DeliverySettings) error {
 	if _, err := q.Exec(ctx, `
 		update eval_days_rules
@@ -340,7 +340,7 @@ func recordRule(ctx context.Context, q pgx.Tx, rule delivery.DeliverySettings) e
 // delivery views answer under the recorded rules (BuiltSettingsIn), so the hub marks every delivery
 // view for it and recomputes it at once (delivery.EvalDaysImmediate), whether or not the commit
 // moved a day row; it marks no evals view, which names no project of it and is no SettingsApplied.
-// Its callers are the rewrite's transaction (recordRule, rewriteSettings) and the page's commit
+// Its callers are the rewrite's publication (recordRule, rewriteSettings) and the page's commit
 // that records rules whose difference moved no eval (recordRules, commitPage); a save of the same
 // values records nothing (syncSettings), and so logs nothing.
 func logRulesRecorded(ctx context.Context, q pgx.Tx) error {
@@ -358,12 +358,14 @@ func logRulesRecorded(ctx context.Context, q pgx.Tx) error {
 //   - where a repository's recorded rule (eval_days_rules, read once a pass) agrees with it on every
 //     field recorded there (sameBuiltRule), nothing;
 //   - where they differ, it rewrites that repository's days of the evals the difference moves whose
-//     rows it can move (settingsMoves, rewriteSettings), which records the rule in its own
-//     transaction, or, where the difference moves no eval (the project whose source reads it
-//     alone, which reads its source key, or no field a day row reads) or the repository holds no
-//     deploy run, has the page record it with its cursors (w.record);
+//     rows it can move (settingsMoves, rewriteSettings), which stages them aside and records the
+//     rule in the one transaction that publishes them, or, where the difference moves no eval (the
+//     project whose source reads it alone, which reads its source key, or no field a day row
+//     reads) or the repository holds no deploy run, has the page record it with its cursors
+//     (w.record);
 //   - a repository no rule is recorded for is a new source: the page records its rule, and, where it
-//     holds a delivery run, builds its rows as a repository whose first runs arrived (syncKept); a
+//     holds a delivery run, builds its rows as a repository whose first runs arrived (syncKept),
+//     staged aside and published by the page's commit that records the rule (stageKept); a
 //     recorded one no source reads any more keeps its rule, recorded with no project, and its rows
 //     (refresh.keptRepos), so a source that reads it again under the same rule rebuilds nothing;
 //   - where no rule is recorded for any repository (a database no pass of this release has brought
@@ -474,16 +476,19 @@ func (r *refresh) readBuiltOnce(ctx context.Context) error {
 // (keptUnder, the recorded rules with a start), after syncSettings, so the record exists or the
 // page's commit makes it. Where they differ the page records the new set with its cursors
 // (w.record, each repository's start on its rule), and, where the stored delivery rows are whole
-// through a day (eval_days_serving), builds in the same transaction the days of each repository
-// that differs (w.kept, w.keptWas, refresh.writeNamed): a new repository's from its start on, the
-// days between a moved one's two starts, and none of a gone one's, whose rows and members go. A
-// repository becomes new where its first runs arrive under a rule or a source begins to read it
-// under its first rule, and gone where its runs go, or an events repository's posted deploys or its
-// source; a repository's source leaving it moves no set, so its rows stay (refresh.keptRepos), and
-// a move of a source is a selection alone, recorded with the rules. Those are the rows and members
-// a whole walk over the same runs holds, where the change that brought a repository's first runs
-// names the days of its runs alone. A crash before the commit leaves the record as it was, so the
-// next page finds the same difference.
+// through a day (eval_days_serving), builds the days of each repository that differs (w.kept,
+// w.keptWas, refresh.writeNamed): a new repository's from its start on, the days between a moved
+// one's two starts, and none of a gone one's, whose rows and members go. Those rows and members
+// are staged aside before the commit (stageKept) and written by it, set-based over the staging,
+// so the commit that records a repository's first rule publishes its rows with it and sends none
+// of them. A repository becomes new where its first runs arrive under a rule or a source begins to
+// read it under its first rule, and gone where its runs go, or an events repository's posted
+// deploys or its source; a repository's source leaving it moves no set, so its rows stay
+// (refresh.keptRepos), and a move of a source is a selection alone, recorded with the rules. Those
+// are the rows and members a whole walk over the same runs holds, where the change that brought a
+// repository's first runs names the days of its runs alone. A crash before the commit leaves the
+// record as it was, and what was staged to the cleanup, so the next page finds the same
+// difference.
 func (r *refresh) syncKept(ctx context.Context, w *pageWork) error {
 	if len(r.rules) == 0 && len(r.keptUnder) == 0 {
 		return nil
@@ -671,9 +676,9 @@ func keepPushRuns(stored map[memberKey]memberAt, deploys map[string]delivery.Run
 //     walk is to begin or has days left (a family's first walk begins it), and a day it has not
 //     reached holds rows of the settings before those its walk began under, which no comparison of
 //     prev with the new settings finds;
-//   - then, in one transaction, begun before the days are built: those days in day order a chunk
-//     at a time (rewriteDays), each chunk's days built side by side, each repository's DeliveryDay
-//     as readDeliveryDays builds it from those rows and each project's rows of the day
+//   - then, aside from the rows that serve: those days in day order a chunk at a time
+//     (rewriteDays), each chunk's days built side by side, each repository's DeliveryDay as
+//     readDeliveryDays builds it from those rows and each project's rows of the day
 //     (deliveryRead.Rows); then, in day order, each project's day as the walk writes it
 //     (writeDelivery, dropUnshipped, zerosFrom and noteBuilt), by the first input days the walk
 //     builds by: those the build itself finds, day by day from the first, where it builds every
@@ -684,18 +689,22 @@ func keepPushRuns(stored map[memberKey]memberAt, deploys map[string]delivery.Run
 //     (on or after its first stored first input day), the rows of the evals slugs names and the
 //     members of families. A day built that moves a series' first input day earlier adds the days
 //     after it up to the old one, of that project alone (firstMoved). Each chunk's rows are
-//     compared at once with the stored rows of its days (diffDay): each whose stored row holds
-//     other values or is missing upserted (upsertDays, which cuts them into statements of at most
-//     statementBytes of parameters), and each stored row of a moved eval of the repositories
-//     rewritten on a day written that the day no longer holds deleted by its key (deleteDayRows),
-//     and no row that stands sent, by a writer that runs beside the build of the next chunk; the
+//     compared at once with the stored rows of its days (diffDay), and each whose stored row holds
+//     other values or is missing, and each stored row of a moved eval of the repositories
+//     rewritten on a day written that the day no longer holds, are staged (ruleStaging,
+//     stageDayRows: in statements of at most statementBytes of parameters, a short transaction a
+//     chunk), and no row that stands, by a writer that runs beside the build of the next chunk; the
 //     members of families of those repositories whose day, repository or shipping run moved, or
-//     that are new, upserted, and those of the days written that the days no longer hold deleted,
-//     and no other member sent, once the last chunk is built; the stored figures of every day whose
-//     rows moved folded again, over each eval's runs of the days whose rows moved or went and no
-//     day between two runs (foldFiguresInTx, whose quantiles read each rank across the days'
-//     sorted samples, measures.SortedSamples); and the rule recorded as the one the repository's
-//     rows stand built under, the repositories they stand built for left as they are (syncKept's).
+//     that are new, and those of the days written that the days no longer hold, are staged once
+//     the last chunk is built (stageMovedMembers), and no other member. No reader reads what is
+//     staged: every read answers the old rule's rows, members, figures and rule together;
+//   - then one transaction publishes them: it flips the staging, records the rule as the one
+//     the repository's rows stand built under (recordRule), the repositories they stand built for
+//     left as they are (syncKept's), writes the staged rows and members, set-based over the
+//     staging (stagedRowWrites, stagedMemberWrites), folds again the stored figures of every day
+//     whose rows moved, over each eval's runs of the days whose rows moved or went and no day
+//     between two runs (foldFiguresInTx, whose quantiles read each rank across the days' sorted
+//     samples, measures.SortedSamples), and begins a building rebuild again (replaceRebuild).
 //     Where the rule moves the repository's source to another project, which moves the reader of
 //     its source key, the same transaction marks the cuts that move moves rows into or out of and
 //     folds their first paints (publishDefaults, read before the rule is recorded and after the
@@ -703,12 +712,12 @@ func keepPushRuns(stored map[memberKey]memberAt, deploys map[string]delivery.Run
 //     Its eval_days changes are one per eval, as every transaction's are (migration
 //     20261117100014), each under the project that reads the eval (an owner key's under each
 //     project that reads the key), so the evals views of each project whose rows moved hear of the
-//     whole change once, and each carries the rewrite's mark (MarkSettingsRewrite), so the view is
-//     recomputed for them at once. It says no word that the rows stand at the settings
-//     (markSettingsApplied): the repository it rewrites is one a read chooses before and after, so
-//     no view of a project whose rows did not move hears of it. With no day to build it writes no
-//     row, member or figure: the rule recorded and a building rebuild begun again (replaceRebuild)
-//     alone.
+//     whole change once, at the publication and at no staging, and each carries the rewrite's mark
+//     (MarkSettingsRewrite), so the view is recomputed for them at once. It says no word that the
+//     rows stand at the settings (markSettingsApplied): the repository it rewrites is one a read
+//     chooses before and after, so no view of a project whose rows did not move hears of it. With
+//     no day to build it stages nothing and writes no row, member or figure: the rule recorded and
+//     a building rebuild begun again alone.
 //
 // A day it does not build holds the rows it would build: its inputs, its rows' first days and the
 // settings its rows read are what they were built from. It leaves eval_days_owed as it is: it
@@ -1073,49 +1082,12 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		moved.add(row.ProjectKey, row.EvalID, day, day)
 	}
 
-	began := time.Now()
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin the rewrite of a settings change: %w", err)
-	}
-	defer tx.Rollback(ctx)
-	// Each statement planned for the arrays it is sent: a connection's cached statement can turn
-	// generic after its fifth run.
-	if _, err := tx.Exec(ctx, `set local plan_cache_mode = force_custom_plan`); err != nil {
-		return fmt.Errorf("plan the rewrite of a settings change: %w", err)
-	}
-	if err := MarkSettingsRewrite(ctx, tx); err != nil {
-		return err
-	}
-	before, err := readRewriteCounts(ctx, tx)
-	if err != nil {
-		return err
-	}
-	// A rewrite that also moves the repository's source to another project moves the reader of its
-	// source key, read before the rule is recorded, and its commit marks the cuts that moves
-	// (publishDefaults), as a page's commit marks those of a move of the sources alone.
-	var owned *selectionRead
-	if prev.Project != next.Project {
-		read, err := readSelection(ctx, tx)
-		if err != nil {
-			return err
-		}
-		owned = &read
-	}
-	// The rule is recorded before any row is written: the project it names reads the repository's
-	// source key (eval_project_owners), so the change trigger logs the rows' changes, and the fold
-	// below folds them, for the project the new rule names.
-	if err := recordRule(ctx, tx, next); err != nil {
-		return err
-	}
-	times.bookkeeping = times.lap()
-
 	// Each chunk of days is built, compared with the stored rows of its days (diffDay) and handed to
-	// a goroutine that writes what moved in the transaction, beside the build of the next chunk: a
-	// transaction that waits for the whole build before its first write stands idle for it. Only
-	// the refresher writes the computation's rows, one pass at a time (RefresherLease), so the
-	// chunks' writes, in day order and not in the key order of the whole, wait for no other writer.
-	// The members are written after the last chunk, and then the figures.
+	// a goroutine that stages what moved aside, in a short transaction of its own under the rule's
+	// staging (ruleStaging), beside the build of the next chunk, while the rows the old rule built
+	// keep serving beside the rule they stand recorded under. The members are staged after the last
+	// chunk; then one short transaction publishes them all with the new rule (below).
+	staging := ruleStaging{build: r.build}
 	type dayWrite struct{ changed, gone []DayRow }
 	writes, wrote := make(chan dayWrite, 4), make(chan error, 1)
 	go func() {
@@ -1125,10 +1097,8 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 				continue
 			}
 			began := time.Now()
-			if err = upsertDays(ctx, tx, one.changed, r.build); err == nil {
-				err = deleteDayRows(ctx, tx, one.gone)
-			}
-			times.dayRows += time.Since(began)
+			err = staging.stageDayRows(ctx, r.store, one.changed, one.gone)
+			times.stagedRows += time.Since(began)
 		}
 		wrote <- err
 	}()
@@ -1255,10 +1225,60 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		return buildErr
 	}
 	times.build = times.lap()
-	if err := writeMovedMembers(ctx, tx, stored, members, written); err != nil {
+	if err := staging.stageMovedMembers(ctx, r.store, stored, members, written); err != nil {
 		return err
 	}
-	times.memberWrites = times.lap()
+	times.stagedMembers = times.lap()
+
+	// The publication: one transaction that flips the staging, records the new rule beside
+	// the rows it built, writes them and the members, set-based over the staging, and folds the
+	// stored figures of the runs of days whose rows moved.
+	began := time.Now()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin the publication of a settings change's rewrite: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	// Each statement planned for the arrays it is sent: a connection's cached statement can turn
+	// generic after its fifth run.
+	if _, err := tx.Exec(ctx, `set local plan_cache_mode = force_custom_plan`); err != nil {
+		return fmt.Errorf("plan the publication of a settings change's rewrite: %w", err)
+	}
+	if err := MarkSettingsRewrite(ctx, tx); err != nil {
+		return err
+	}
+	before, err := readRewriteCounts(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if err := staging.flip(ctx, tx); err != nil {
+		return err
+	}
+	// A rewrite that also moves the repository's source to another project moves the reader of its
+	// source key, read before the rule is recorded, and its commit marks the cuts that moves
+	// (publishDefaults), as a page's commit marks those of a move of the sources alone.
+	var owned *selectionRead
+	if prev.Project != next.Project {
+		read, err := readSelection(ctx, tx)
+		if err != nil {
+			return err
+		}
+		owned = &read
+	}
+	// The rule is recorded before any row is written: the project it names reads the repository's
+	// source key (eval_project_owners), so the change trigger logs the rows' changes, and the fold
+	// below folds them, for the project the new rule names.
+	if err := recordRule(ctx, tx, next); err != nil {
+		return err
+	}
+	times.bookkeeping = times.lap()
+	if err := staging.writeRows(ctx, tx); err != nil {
+		return err
+	}
+	if err := staging.writeMembers(ctx, tx); err != nil {
+		return err
+	}
+	times.published = times.lap()
 	// The rewrite folds on as many goroutines as it builds days on: the views that wait for its
 	// commit wait for its fold, and no view reads beside it what the fold takes CPUs from.
 	if err := foldFiguresInTx(withFoldWorkers(withFigureTimes(ctx, &times.figures), rewriteWorkers), tx, r.build, moved.sets()...); err != nil {
@@ -1284,9 +1304,10 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	}
 	times.bookkeeping += times.lap()
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit the rewrite of a settings change: %w", err)
+		return fmt.Errorf("commit the publication of a settings change's rewrite: %w", err)
 	}
 	times.commit = times.lap()
+	times.publication = time.Since(began)
 	if published != nil {
 		published.log(began, time.Now())
 	}
@@ -1348,34 +1369,40 @@ func markFailureFirstDayMoved(ctx context.Context, tx pgx.Tx, project string) er
 //     members of the CI family no day builds dropped (pushMembers, keepPushRuns);
 //   - days, the owner keys the history adds and the days to build (movedDeliveryDays, and
 //     lostFirstDays of its own, lost);
-//   - bookkeeping, the transaction begun and marked, the rule recorded, a building rebuild begun
-//     again and the two reads of what the transaction wrote (rewriteCountsStatement);
 //   - build, the days built chunk by chunk (buildDays, the chunks' days built side by side), each
-//     chunk compared with the stored rows of its days (diff) and its day rows sent upserted and
-//     the gone ones deleted by a writer beside the build of the next chunk (dayRows, the
-//     writer's own time): the wall time of the whole, which ends with the last write;
-//   - memberWrites, the members written;
-//   - the figures' refold (foldFiguresInTx): figureScope, its reads of the projects that read
-//     the owner keys written, of each project's figure scope and of its evals, and whatever it
-//     does between its timed parts, and figures, its reads of the moved days, of the rows it folds
-//     and its fold and write, and of that the statements' own time (figureTimes);
-//   - commit, and drain, the change log's outbox moved into the log once it has committed.
+//     chunk compared with the stored rows of its days (diff) and the rows that moved staged by a
+//     writer beside the build of the next chunk, a transaction a chunk (stagedRows, the writer's
+//     own time): the wall time of the whole, which ends with the last staging;
+//   - stagedMembers, the members that moved staged;
+//   - bookkeeping, the publication's transaction begun and marked, the staging flipped, the
+//     selection read where the source's project moved, the rule recorded, and then a building
+//     rebuild begun again and the two reads of what the transaction wrote
+//     (rewriteCountsStatement);
+//   - published, the staged rows and members written in it (stagedRowWrites, stagedMemberWrites);
+//   - the figures' refold in it (foldFiguresInTx): figureScope, its reads of the projects that
+//     read the owner keys written, of each project's figure scope and of its evals, and whatever
+//     it does between its timed parts, and figures, its reads of the moved days, of the rows it
+//     folds and its fold and write, and of that the statements' own time (figureTimes);
+//   - commit, and drain, the change log's outbox moved into the log once it has committed;
+//
+// and publication, how long the publication's transaction was open, from its begin to its commit.
 type rewriteTimes struct {
 	stopwatch
 	reads, containment, days, build            time.Duration
 	deploysRead, deployRunsRead                time.Duration
 	pullRequestsRead, attributionRead          time.Duration
 	firstDaysRead, rowsRead, lost, pushMembers time.Duration
-	membersRead, buildDays, diff, dayRows      time.Duration
-	bookkeeping, memberWrites                  time.Duration
+	membersRead, buildDays, diff, stagedRows   time.Duration
+	stagedMembers, bookkeeping, published      time.Duration
 	figureScope                                time.Duration
 	figures                                    figureTimes
-	commit, drain                              time.Duration
+	commit, drain, publication                 time.Duration
 }
 
 // log logs the rewrite's parts in the order it ran them, each followed by the reads of its own
-// within it, then what it wrote, how many days it built and how many day rows it built and sent:
-// the line a measurement of a settings write's way to the open pages reads.
+// within it, then how long its publication was open, what that wrote, how many days it built and
+// how many day rows it built and staged: the line a measurement of a settings write's way to the
+// open pages reads.
 func (t *rewriteTimes) log(wrote rewriteCounts, days, built, sent int) {
 	slog.Info("dispatch: the eval day-row refresher rewrote what a delivery settings change moved",
 		"reads_ms", t.reads.Milliseconds(), "deploys_read_ms", t.deploysRead.Milliseconds(), "deploy_runs_read_ms", t.deployRunsRead.Milliseconds(),
@@ -1385,14 +1412,15 @@ func (t *rewriteTimes) log(wrote rewriteCounts, days, built, sent int) {
 		"days_ms", t.days.Milliseconds(), "lost_ms", t.lost.Milliseconds(),
 		"members_read_ms", t.membersRead.Milliseconds(),
 		"build_ms", t.build.Milliseconds(), "build_days_ms", t.buildDays.Milliseconds(), "diff_ms", t.diff.Milliseconds(),
-		"day_rows_ms", t.dayRows.Milliseconds(), "member_writes_ms", t.memberWrites.Milliseconds(),
-		"figure_scope_ms", t.figureScope.Milliseconds(),
+		"staged_rows_ms", t.stagedRows.Milliseconds(), "staged_members_ms", t.stagedMembers.Milliseconds(),
+		"published_ms", t.published.Milliseconds(), "figure_scope_ms", t.figureScope.Milliseconds(),
 		"moved_figure_days_ms", t.figures.moved.Milliseconds(), "figure_plan_ms", t.figures.plan.Milliseconds(),
 		"figure_plan_reads", t.figures.reads, "figure_plan_rows", t.figures.rows, "fold_and_write_ms", t.figures.fold.Milliseconds(),
 		"figure_writes_ms", t.figures.writes.Milliseconds(), "figure_ranges_sent", t.figures.rangesSent, "figure_days_sent", t.figures.daysSent,
 		"bookkeeping_ms", t.bookkeeping.Milliseconds(),
 		"commit_ms", t.commit.Milliseconds(), "drain_ms", t.drain.Milliseconds(), "total_ms", t.total().Milliseconds(),
-		"days_built", days, "day_rows_built", built, "day_rows_sent", sent, "day_rows_written", wrote.dayRows,
+		"publication_ms", t.publication.Milliseconds(),
+		"days_built", days, "day_rows_built", built, "day_rows_staged", sent, "day_rows_written", wrote.dayRows,
 		"day_rows_deleted", wrote.dayRowsGone, "members_written", wrote.members, "evals_moved", wrote.evals,
 		"figures_written", wrote.figures)
 }
@@ -1883,16 +1911,12 @@ func zeroRowsOn(zeros []DayRow, day time.Time) []DayRow {
 	return on
 }
 
-// writeMovedMembers writes, in tx, the members built that moved from where stored holds them: each
-// that stored holds on another day, under another repository or shipping run, or not at all,
-// upserted; and each stored on a day written (by project) that built does not hold, deleted, on
-// that day alone. A member whose row stands is sent to neither statement: a production rule's
-// change moves the shipping run of some pull requests and the projects of some deploys, and leaves
-// most of a history's members where they are. The members go in the byte order of their keys, in
-// statements of at most statementBytes of parameters each (statementChunks), as the day rows do
-// (writeDayRows): a repository's first runs bring a member of every pull request merged since.
-func writeMovedMembers(ctx context.Context, tx pgx.Tx, stored, built map[memberKey]memberAt, written map[projectDay]bool) error {
-	var moved, gone []memberKey
+// movedMembers is, in the byte order of their keys, each member of built that moved from where
+// stored holds it (on another day, under another repository or shipping run, or not at all), and
+// each member stored on a day written (by project) that built does not hold. A member whose row
+// stands is in neither: a production rule's change moves the shipping run of some pull requests
+// and the projects of some deploys, and leaves most of a history's members where they are.
+func movedMembers(stored, built map[memberKey]memberAt, written map[projectDay]bool) (moved, gone []memberKey) {
 	for key, at := range built {
 		if held, found := stored[key]; !found || !held.day.Equal(at.day) || held.repo != at.repo || held.shippedBy != at.shippedBy {
 			moved = append(moved, key)
@@ -1905,6 +1929,36 @@ func writeMovedMembers(ctx context.Context, tx pgx.Tx, stored, built map[memberK
 	}
 	slices.SortFunc(moved, compareMemberKeys)
 	slices.SortFunc(gone, compareMemberKeys)
+	return moved, gone
+}
+
+// stagedMembersOf is movedMembers staged, as writeMovedMembers writes them: each that moved an op
+// `u` member at the place built holds it, from the day stored holds it on (none where it holds
+// none), and each that goes an op `d` member from the day it stands on.
+func stagedMembersOf(stored, built map[memberKey]memberAt, written map[projectDay]bool) []stagedMember {
+	moved, gone := movedMembers(stored, built, written)
+	members := make([]stagedMember, 0, len(moved)+len(gone))
+	for _, key := range moved {
+		at := built[key]
+		one := stagedMember{op: "u", key: key, at: &at}
+		if was, found := stored[key]; found {
+			one.from = &was.day
+		}
+		members = append(members, one)
+	}
+	for _, key := range gone {
+		members = append(members, stagedMember{op: "d", key: key, from: new(stored[key].day)})
+	}
+	return members
+}
+
+// writeMovedMembers writes, in tx, the members built that moved from where stored holds them
+// (movedMembers): each upserted, and each that goes deleted on the day it stands on alone. The
+// members go in the byte order of their keys, in statements of at most statementBytes of
+// parameters each (statementChunks), as the day rows do (writeDayRows): a repository's first runs
+// bring a member of every pull request merged since.
+func writeMovedMembers(ctx context.Context, tx pgx.Tx, stored, built map[memberKey]memberAt, written map[projectDay]bool) error {
+	moved, gone := movedMembers(stored, built, written)
 	movedBytes := func(key *memberKey) int {
 		at := built[*key]
 		return 7*4 + len(key.project) + len(key.family) + len(key.deployRepo) + len(key.rowKey) + 8 + len(at.repo) + len(at.shippedBy)

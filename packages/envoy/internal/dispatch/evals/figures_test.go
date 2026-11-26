@@ -2393,7 +2393,7 @@ func paramEstimate(t *testing.T, args []any) int {
 			bytes += arrayHeaderBytes + (4+8)*len(value)
 		case []*float64:
 			bytes += arrayHeaderBytes + (4+8)*len(value)
-		case time.Time:
+		case int64, time.Time:
 			bytes += 8
 		case []time.Time:
 			bytes += arrayHeaderBytes + (4+8)*len(value)

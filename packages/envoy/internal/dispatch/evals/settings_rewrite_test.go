@@ -12,10 +12,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/multitracer"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
@@ -1832,25 +1834,36 @@ func recordWrites(t *testing.T, r rig) func() map[int64][]string {
 	}
 }
 
-// storedPrint is one fingerprint of every stored day row, member and stored figure, read by one
-// statement, so of one snapshot: what a reader of that moment can see of them.
-const storedPrint = `
-	select md5(
-		coalesce((select string_agg(md5(d::text), '' order by d.project_key, d.eval_id, d.writer, d.deploy_repo, d.series, d.repo, d.day) from eval_days d), '') || '|' ||
-		coalesce((select string_agg(md5(m::text), '' order by m.project_key, m.family, m.deploy_repo, m.row_key) from eval_day_members m), '') || '|' ||
-		coalesce((select string_agg(md5(f::text), '' order by md5(f::text)) from eval_range_figures f), '') || '|' ||
-		coalesce((select string_agg(md5(f::text), '' order by md5(f::text)) from eval_day_figures f), ''))`
-
-// storedSettingsPrint is storedPrint beside the rules the rows stand built under (eval_days_rules,
-// every field a read takes of them, BuiltSettingsIn and DeployReposIn), read by one statement, so
-// of one snapshot: what a reader of the evals can see of the rows and of the rules it reads them
-// under at that moment.
-const storedSettingsPrint = `
-	select (` + storedPrint + `) || ' ' || coalesce((
+// The parts of the fingerprints below, each one table's rows or two of them, in an order of
+// their own: the day rows, the members, the stored figures and the rules the rows stand built
+// under (eval_days_rules, every field a read takes of them, BuiltSettingsIn and DeployReposIn).
+const (
+	dayRowsPrint = `coalesce((select string_agg(md5(d::text), '' order by d.project_key, d.eval_id, d.writer, d.deploy_repo, d.series, d.repo, d.day) from eval_days d), '')`
+	membersPrint = `coalesce((select string_agg(md5(m::text), '' order by m.project_key, m.family, m.deploy_repo, m.row_key) from eval_day_members m), '')`
+	figuresPrint = `coalesce((select string_agg(md5(f::text), '' order by md5(f::text)) from eval_range_figures f), '') || '|' ||
+		coalesce((select string_agg(md5(f::text), '' order by md5(f::text)) from eval_day_figures f), '')`
+	rulesPrint = `coalesce((
 		select string_agg(md5(s::text), '' order by s.repo) from (
 			select repo, project_key, production_job_names, production_apply_step_name, staging_e2e_job_name, staging_apply_job_name,
 				kept_since
 			from eval_days_rules) s), 'none')`
+)
+
+// storedPrint is one fingerprint of every stored day row, member and stored figure, read by one
+// statement, so of one snapshot: what a reader of that moment can see of them.
+const storedPrint = `select md5(` + dayRowsPrint + ` || '|' || ` + membersPrint + ` || '|' || ` + figuresPrint + `)`
+
+// storedRowsPrint is storedPrint without the stored figures: every stored day row and member.
+const storedRowsPrint = `select md5(` + dayRowsPrint + ` || '|' || ` + membersPrint + `)`
+
+// storedSettingsPrint is storedPrint beside the rules the rows stand built under, read by one
+// statement, so of one snapshot: what a reader of the evals can see of the rows and of the rules
+// it reads them under at that moment.
+const storedSettingsPrint = `select (` + storedPrint + `) || ' ' || ` + rulesPrint
+
+// storedRowsSettingsPrint is storedSettingsPrint without the stored figures: the rows and members
+// beside the rules they stand built under, of one snapshot.
+const storedRowsSettingsPrint = `select (` + storedRowsPrint + `) || ' ' || ` + rulesPrint
 
 // commitPrints is a tracer (storetest.TracedStore) that reads query (storedPrint where it is
 // empty), on the rig's own pool, after each transaction the traced pool commits: every state of
@@ -2077,20 +2090,31 @@ func TestARewoundSpanLandsInOneCommitAsAWholeWalkHoldsIt(t *testing.T) {
 	}
 }
 
-// memberWrites is a tracer that records the arguments of each statement that writes
-// eval_day_members on the pool it traces.
+// memberWrites is a tracer that records the arguments of each statement that takes members as
+// arrays on the pool it traces, and counts those of them that stage members aside (staged) and the
+// statements that write staged members, set-based over the staging (published).
 type memberWrites struct {
-	mu   sync.Mutex
-	sent [][]any
+	mu                sync.Mutex
+	sent              [][]any
+	staged, published int
 }
 
 func (m *memberWrites) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	// Every statement that takes the members of a day or of a span as arrays: the upserts and
-	// deletes of eval_day_members, and the statements that find the days their items leave.
-	if strings.Contains(data.SQL, "eval_day_members") && strings.Contains(data.SQL, "unnest(") {
-		m.mu.Lock()
-		defer m.mu.Unlock()
+	// deletes of eval_day_members, the statements that find the days their items leave, and the
+	// staging of members aside (eval_rebuild_members, ruleStaging); and apart from them, the
+	// statements that write the staged members, which send none.
+	day, staging := strings.Contains(data.SQL, "eval_day_members"), strings.Contains(data.SQL, "eval_rebuild_members")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch {
+	case (day || staging) && strings.Contains(data.SQL, "unnest("):
 		m.sent = append(m.sent, slices.Clone(data.Args))
+		if staging {
+			m.staged++
+		}
+	case day && staging:
+		m.published++
 	}
 	return ctx
 }
@@ -2099,12 +2123,14 @@ func (m *memberWrites) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryE
 
 // TestARebuiltSpansMembersPastTheBoundGoInSeveralStatements: over a settled history in which 3,000
 // pull requests of the deploy repository merged on the history's last day, a repository that is no
-// project's default gets its first deploy runs, the deploy repository's of the first three days, copied.
-// The rows of the evals that read the deploy repository are kept for the new repository from its
-// start on, and so are the members: every pull request of every day from then on, the 3,000 of the
-// last day among them, a day no change of the page names. The one pass after the runs writes those
-// members in statements of at most statementBytes of parameters each, several of them, and the
-// database then holds what a second database that held the runs before its first walk holds.
+// project's default gets its first deploy runs, the deploy repository's of the first three days,
+// copied, and a source that reads it under its first rule. The rows of the evals that read the
+// deploy repository are kept for the new repository from its start on, and so are the members:
+// every pull request of every day from then on, the 3,000 of the last day among them, a day no
+// change of the page names. The one pass after the runs stages those members aside
+// (ruleStaging, stageKept) in statements of at most statementBytes of parameters each, several of
+// them, and its commit writes them from the staging, set-based, sending none; the database then
+// holds what a second database that held the runs before its first walk holds.
 func TestARebuiltSpansMembersPastTheBoundGoInSeveralStatements(t *testing.T) {
 	t.Parallel()
 	const unmapped, copies = "acme/unmapped", 3000
@@ -2129,12 +2155,15 @@ func TestARebuiltSpansMembersPastTheBoundGoInSeveralStatements(t *testing.T) {
 		size := paramEstimate(t, args)
 		largest, total = max(largest, size), total+size
 		if size > statementBytes {
-			t.Errorf("statement %d that writes members takes %d bytes of parameters, past %d", index, size, statementBytes)
+			t.Errorf("statement %d that takes members takes %d bytes of parameters, past %d", index, size, statementBytes)
 		}
 	}
-	if total <= statementBytes || len(writes.sent) < 2 {
-		t.Errorf("the pass wrote members in %d statements of %d bytes of parameters together, and the check needs more than %d bytes in several",
-			len(writes.sent), total, statementBytes)
+	if total <= statementBytes || writes.staged < 2 {
+		t.Errorf("the pass sent members in %d statements of %d bytes of parameters together, %d of them staging them, and the check needs more than %d bytes staged in several",
+			len(writes.sent), total, writes.staged, statementBytes)
+	}
+	if writes.published == 0 {
+		t.Errorf("the pass staged %s's members and wrote none of them from the staging", unmapped)
 	}
 	held := live.count(t, `select count(*) from eval_day_members where deploy_repo = $1`, unmapped)
 	if held < copies {
@@ -2147,8 +2176,8 @@ func TestARebuiltSpansMembersPastTheBoundGoInSeveralStatements(t *testing.T) {
 	walk.copyRunsBefore(t, deliveries.DeployRepo, unmapped, delivery.DeliveryRunKindDeploy, &cutoff)
 	walk.settle(t)
 	live.expectSameAsWalk(t, unmapped+"'s first runs beside "+strconv.Itoa(copies)+" pull requests of one day", walk)
-	t.Logf("%s's %d members went in %d statements of %d bytes of parameters together, the largest %d of %d",
-		unmapped, held, len(writes.sent), total, largest, statementBytes)
+	t.Logf("%s's %d members went in %d statements of %d bytes of parameters together, %d of them staging them, the largest %d of %d, and %d statements wrote them from the staging",
+		unmapped, held, len(writes.sent), total, writes.staged, largest, statementBytes, writes.published)
 }
 
 // namesIssueOf reports whether pr names an issue of deliveries' main project, which it counts for
@@ -2708,14 +2737,19 @@ func TestAPullRequestLeavingTheDaysBeforeItsRepositorysHistoryRewritesTheDeployT
 // BuiltSettingsIn's every field eval_days_rules records of it) at the old settings until the
 // refresher's pass commits, and at the new ones once it has: the record moves in the commit that
 // brings the rows to the settings, not at the save. And no reader sees the one move without the
-// other: the fingerprint of the rows, the members, the stored figures and the recorded rules, read
-// in one snapshot after each commit of the pass (commitPrints of storedSettingsPrint), is the one
-// before the pass or the one after it. A move of the source is a selection (dispatch://INFRA-978,
-// plan T19 path 1): the repository it left keeps its rows and its rule, recorded with no project,
-// and the one it reads now holds no run, so it moves no row; the production rule is then the rule
-// of that repository alone (D1), which holds no deploy run, so its change records the rule and
-// moves no row (syncSettings); and the move back finds the old repository's rows built under the
-// rule they stand recorded with, so it moves no row either.
+// other: the fingerprint of the rows, the members and the recorded rules, read in one snapshot
+// after each commit of the pass (commitPrints of storedRowsSettingsPrint), is the one before the
+// pass or the one after it. A move of the source is a selection:
+// the repository it left keeps its rows and its rule, recorded with no project, and the one it
+// reads now holds no run, so it moves no row or member. The production rule is then the rule of
+// that repository alone, which holds no deploy run, so its change records the rule
+// and moves no row (syncSettings); and the move back finds the old repository's rows built under
+// the rule they stand recorded with, so it moves no row either. The stored figures are no part of
+// either fingerprint: the commit of a move of what a read selects marks the cuts it moves stale
+// and folds their first paints, and the pass's refold folds the rest of them again, a batch a
+// commit (plan T19 path 3, publishDefaults, refoldStaleCuts), while a read of an eval a mark names
+// folds the day rows (builtCut.serves, which the path-3 tests hold); once the pass has ended, the
+// stored figures of every cut are the fold of the rows that stand (expectTruth).
 func TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem(t *testing.T) {
 	t.Parallel()
 	r, deliveries := newSettingsRig(t, walkBatch)
@@ -2739,7 +2773,7 @@ func TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem(t *testing.T) 
 		want.Project = deliveries.Project
 		return sameBuiltRule(built, want)
 	}
-	prints, rows := &commitPrints{t: t, rig: r.rig, query: storedSettingsPrint}, &commitPrints{t: t, rig: r.rig}
+	prints, rows := &commitPrints{t: t, rig: r.rig, query: storedRowsSettingsPrint}, &commitPrints{t: t, rig: r.rig, query: storedRowsPrint}
 	r.registry = r.tracedStore(t, prints)
 	settings := deliveries.Settings
 	for _, change := range []struct {
@@ -2766,12 +2800,13 @@ func TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem(t *testing.T) 
 				change.name, repo, built.ProductionJobNames, settings.DeployRepo, settings.ProductionJobNames)
 		}
 		if moved := rows.read() != rowsBefore; moved != change.rows {
-			t.Errorf("%s: the pass moved the rows, the members or the figures is %t, want %t", change.name, moved, change.rows)
+			t.Errorf("%s: the pass moved the rows or the members is %t, want %t", change.name, moved, change.rows)
 		}
 		if states := prints.others(before, after); states > 0 {
 			t.Errorf("%s: a reader between two commits of the pass saw %d states of the rows and the settings that are neither the one before it nor the one after it",
 				change.name, states)
 		}
+		expectTruth(t, change.name+", after the pass", r.storedFigures(t), r.truthFigures(t))
 	}
 }
 
@@ -2780,7 +2815,11 @@ func TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem(t *testing.T) 
 // run 2002 is a deploy too. The pass after the save rewrites acme/alpha-ops' rows (ALPHA's
 // deploy-frequency there counts 2) and records its new rule, and leaves every row and every rule
 // of acme/alpha-app and acme/omega-app as it was, their updated_at unmoved, though acme/alpha-app's
-// rule names alphaJob too.
+// rule names alphaJob too; so does every other row of no deploy repository or of another one, and
+// every other repository's rule. Once the pass has published the rewrite, the stored figures of
+// every cut are the fold of the day rows that stand (expectTruth), and the release before's one
+// record of the settings (eval_days_settings), which this release reads and writes nowhere, stands
+// as it was, byte for byte.
 func TestARuleChangeOfOneRepositoryRewritesThatRepositorysRowsAlone(t *testing.T) {
 	r := newRefresherRig(t)
 	r.seedSources(t)
@@ -2800,10 +2839,50 @@ func TestARuleChangeOfOneRepositoryRewritesThatRepositorysRowsAlone(t *testing.T
 		held["rule"] = at
 		return held
 	}
+	// others is every day row of no deploy repository or of one other than acme/alpha-ops, by key,
+	// and every other repository's recorded rule, as `rule <repo>`, each with its updated_at.
+	others := func() map[string]time.Time {
+		t.Helper()
+		held := map[string]time.Time{}
+		for key, row := range r.dayRows(t) {
+			if row.DeployRepo != alphaOps {
+				held[key] = row.UpdatedAt
+			}
+		}
+		rows, err := r.database.Pool.Query(t.Context(), `select repo, updated_at from eval_days_rules where repo <> $1`, alphaOps)
+		if err != nil {
+			t.Fatalf("read the recorded rules: %v", err)
+		}
+		var repo string
+		var at time.Time
+		if _, err := pgx.ForEachRow(rows, []any{&repo, &at}, func() error {
+			held["rule "+repo] = at
+			return nil
+		}); err != nil {
+			t.Fatalf("read the recorded rules: %v", err)
+		}
+		return held
+	}
+	singleton := func() string {
+		t.Helper()
+		var row string
+		if err := r.database.Pool.QueryRow(t.Context(), `select coalesce((select e::text from eval_days_settings e), 'none')`).Scan(&row); err != nil {
+			t.Fatalf("read the release before's record of the settings: %v", err)
+		}
+		return row
+	}
+	r.exec(t, "record the settings as the release before records them", `
+		insert into eval_days_settings (production_job_names, deploy_repo, kept_repos, kept_since, updated_at)
+		values ($1, $2, $3, $4, $5) on conflict (singleton) do nothing
+	`, []string{alphaJob}, alphaApp, []string{alphaApp}, []time.Time{sourcesDay}, sourcesDay.Add(-time.Hour))
 	before := map[string]map[string]time.Time{alphaApp: stamps(alphaApp), omegaApp: stamps(omegaApp)}
 	if len(before[alphaApp]) < 2 || len(before[omegaApp]) < 2 {
 		t.Fatalf("the settled history holds %d rows of %s and %d of %s, want some of each", len(before[alphaApp])-1, alphaApp,
 			len(before[omegaApp])-1, omegaApp)
+	}
+	othersBefore, singletonBefore := others(), singleton()
+	if singletonBefore == "none" {
+		t.Fatal("eval_days_settings holds no row, and the check needs the release before's record")
 	}
 	if got := r.deploysOn(t, "ALPHA", sourcesDay); got.n != 2 {
 		t.Fatalf("ALPHA counts %d deploys before the change, want 2", got.n)
@@ -2832,6 +2911,271 @@ func TestARuleChangeOfOneRepositoryRewritesThatRepositorysRowsAlone(t *testing.T
 		if len(after) != len(before[repo]) {
 			t.Errorf("%s holds %d rows after the change, want the %d it held", repo, len(after)-1, len(before[repo])-1)
 		}
+	}
+	othersAfter := others()
+	for _, key := range slices.Sorted(maps.Keys(othersBefore)) {
+		if now, held := othersAfter[key]; !held || !now.Equal(othersBefore[key]) {
+			t.Errorf("%s moved from %s to %s (held %t), and no row or rule of a repository but %s moves", key, othersBefore[key], now, held, alphaOps)
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(othersAfter)) {
+		if _, held := othersBefore[key]; !held {
+			t.Errorf("%s is new after the change, and no row or rule of a repository but %s moves", key, alphaOps)
+		}
+	}
+	expectTruth(t, "once the pass published acme/alpha-ops' new rule", r.storedFigures(t), r.truthFigures(t))
+	if got := singleton(); got != singletonBefore {
+		t.Errorf("the release before's record of the settings is %s after the change, want it as it stood, %s", got, singletonBefore)
+	}
+	t.Logf("the change left %d rows and rules of other repositories and of none as they stood", len(othersBefore))
+}
+
+// stagePauses is a tracer (storetest.TracedStore) that, while armed (passPausedAtStagings), holds
+// the traced pool's commit of each transaction that staged rows or members of a rule (ruleStaging:
+// an insert into eval_rebuild_days or eval_rebuild_members) once the commit has succeeded, until
+// the test has read what it reads at that moment; and holds nothing once the test has ended
+// (close), so the pool's connections go back before it closes.
+type stagePauses struct {
+	mu      sync.Mutex
+	staging map[*pgx.Conn]bool
+	armed   atomic.Bool
+	reached chan struct{}
+	resume  chan struct{}
+	stop    chan struct{}
+}
+
+type stagePauseAt struct{}
+
+func newStagePauses() *stagePauses {
+	return &stagePauses{staging: map[*pgx.Conn]bool{}, reached: make(chan struct{}), resume: make(chan struct{}), stop: make(chan struct{})}
+}
+
+func (s *stagePauses) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch statement := strings.TrimSpace(data.SQL); {
+	case strings.Contains(statement, "insert into eval_rebuild_days") || strings.Contains(statement, "insert into eval_rebuild_members"):
+		s.staging[conn] = true
+	case strings.EqualFold(statement, "commit") && s.staging[conn]:
+		delete(s.staging, conn)
+		return context.WithValue(ctx, stagePauseAt{}, true)
+	case strings.EqualFold(statement, "rollback"):
+		delete(s.staging, conn)
+	}
+	return ctx
+}
+
+func (s *stagePauses) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	if ctx.Value(stagePauseAt{}) == nil || data.Err != nil || !s.armed.Load() {
+		return
+	}
+	select {
+	case s.reached <- struct{}{}:
+		select {
+		case <-s.resume:
+		case <-s.stop:
+		}
+	case <-s.stop:
+	}
+}
+
+// close lets every commit held go on, and holds none from then on.
+func (s *stagePauses) close() {
+	close(s.stop)
+}
+
+// passPausedAtStagings makes one refresher pass of r in ctx, as refreshIn makes it, on a goroutine
+// of its own, with pauses armed: at each commit of a staging it calls at on the test's goroutine,
+// and then lets the pass go on. It answers how many stagings it paused at and the pass's error.
+func (r *refresherRig) passPausedAtStagings(t *testing.T, ctx context.Context, pauses *stagePauses, at func()) (int, error) {
+	t.Helper()
+	if _, err := r.horizon.Await(ctx); err != nil {
+		t.Fatalf("await the event log's safe horizon: %v", err)
+	}
+	pauses.armed.Store(true)
+	defer pauses.armed.Store(false)
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := r.registry.refresh(ctx, RefresherDeps{Horizon: r.horizon, Build: r.build},
+			refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }}, r.seeds, &gapBatch{})
+		done <- err
+	}()
+	paused := 0
+	for {
+		select {
+		case <-pauses.reached:
+			paused++
+			at()
+			pauses.resume <- struct{}{}
+		case err := <-done:
+			return paused, err
+		}
+	}
+}
+
+// TestAReadDuringARuleRebuildReadsTheOldRuleWhole: over a settled history, each save below makes
+// the refresher build a repository's rows anew:
+// production apply step named, which moves the deploys whose step was skipped out of production;
+// the same rule moved to the second project's source with the main project's delivery turned off,
+// so the repository's rule and the project that reads it move together (publishDefaults in the
+// publication); and a repository that holds deploy runs, read by a second source under its first
+// rule. Each pass stages what it builds aside, in transactions of their own (ruleStaging), and
+// publishes it in one transaction with the rule it stands built under. At each staging's commit
+// (stagePauses), staged rows standing, a read of every eval of every project as the eval list
+// reads it (listValues: from the stored figures where they answer, else from the day rows)
+// answers what it answered before the save; no commit of the pass leaves a reader the rows,
+// members and rules of a state other than the one before it and the one after it (commitPrints of
+// storedRowsSettingsPrint: the stored figures of a cut the move of a project marks are folded again
+// in later commits, plan T19 path 3, while a read of the evals the mark names folds the day rows);
+// and after the pass the reads answer the new rule. A first pass that fails at its first staging,
+// its context ended there, leaves the reads, the rows and the rules as they stood and its staged
+// rows to the cleanup, which the settled refresher leaves none of, and the next pass publishes the
+// new rule whole, the stored figures then the fold of the rows that stand. Red where the rows are
+// written in the transaction that records the rule, with nothing staged aside: no read falls
+// between the save and the publication.
+func TestAReadDuringARuleRebuildReadsTheOldRuleWhole(t *testing.T) {
+	t.Parallel()
+	const unmapped = "acme/unmapped"
+	for _, change := range []struct {
+		name    string
+		prepare func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture)
+		save    func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture)
+	}{
+		{name: "the production apply step named", save: func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture) {
+			t.Helper()
+			settings := deliveries.Settings
+			settings.ProductionApplyStepName = new(settingsApplyStep)
+			r.putSettings(t, settings, alice)
+		}},
+		{name: "a rule change whose project moves too", save: func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture) {
+			t.Helper()
+			settings := deliveries.Settings
+			settings.ProductionApplyStepName = new(settingsApplyStep)
+			putProjectSettings(t, r.database.Pool, delivery.ProjectSettingsInput{
+				Project: deliveries.Project, Delivery: false, Sources: []delivery.SourceInput{eventsSource},
+			})
+			putSources(t, r.database.Pool, deliveries.SecondProject, settings.PopulationAuthors, deliverytest.SourceOf(settings, new(deliveries.DeployRepo)))
+		}},
+		{name: "a repository's first rule",
+			prepare: func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture) {
+				t.Helper()
+				r.copyRuns(t, deliveries.DeployRepo, unmapped, delivery.DeliveryRunKindDeploy)
+			},
+			save: func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture) {
+				t.Helper()
+				readAlso(t, r, deliveries, unmapped)
+			}},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			t.Parallel()
+			r, deliveries := newSettingsHistory(t, walkBatch)
+			if change.prepare != nil {
+				change.prepare(t, r, deliveries)
+			}
+			r.settle(t)
+			reader := *r
+			rows, err := r.database.Pool.Query(t.Context(), `select key from projects order by key`)
+			if err != nil {
+				t.Fatalf("read the projects: %v", err)
+			}
+			projects, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				t.Fatalf("read the projects: %v", err)
+			}
+			window := Range{From: refresherToday.AddDate(0, 0, -27), To: refresherToday.AddDate(0, 0, 1)}
+			readAll := func() map[string]string {
+				t.Helper()
+				values := map[string]string{}
+				for _, project := range projects {
+					stated, _, _ := reader.listValues(t, project, nil, window, nil)
+					maps.Copy(values, stated)
+				}
+				return values
+			}
+			staged := func() int {
+				t.Helper()
+				return r.count(t, `select (select count(*) from eval_rebuild_days s join eval_rebuilds b on b.id = s.rebuild_id and b.state = 'abandoned')
+					+ (select count(*) from eval_rebuild_members s join eval_rebuilds b on b.id = s.rebuild_id and b.state = 'abandoned')`)
+			}
+			old := readAll()
+			expectOld := func(what string) {
+				t.Helper()
+				got := readAll()
+				var moved []string
+				for _, id := range slices.Sorted(maps.Keys(old)) {
+					if got[id] != old[id] {
+						moved = append(moved, id)
+					}
+				}
+				if len(moved) > 0 || len(got) != len(old) {
+					t.Errorf("%s: a read answers %d evals otherwise than before the save (%d evals read, %d before), first ones: %v",
+						what, len(moved), len(got), len(old), moved[:min(len(moved), 8)])
+				}
+			}
+			prints, pauses := &commitPrints{t: t, rig: r.rig, query: storedRowsSettingsPrint}, newStagePauses()
+			whole := &commitPrints{t: t, rig: r.rig, query: storedSettingsPrint}
+			r.registry = r.tracedStore(t, multitracer.New(prints, pauses))
+			t.Cleanup(pauses.close)
+			before, wholeBefore := prints.read(), whole.read()
+			change.save(t, r, deliveries)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			paused, err := r.passPausedAtStagings(t, ctx, pauses, func() {
+				if staged() == 0 {
+					t.Errorf("the pass that fails paused at a staging with no staged row standing")
+				}
+				expectOld("at the first staging of the pass that fails there")
+				cancel()
+			})
+			cancel()
+			if paused != 1 || err == nil {
+				t.Errorf("the first pass paused at %d stagings and ended with error %v, want one staging, where its context ended, and its error", paused, err)
+			}
+			expectOld("after the pass that failed at its first staging")
+			if got := whole.read(); got != wholeBefore {
+				t.Errorf("the pass that failed at its first staging moved the rows, the members, the figures or the rules")
+			}
+			if building := r.count(t, `select count(*) from eval_rebuilds where state = 'building'`); building != 0 {
+				t.Errorf("the pass that failed left %d rebuilds building, want none", building)
+			}
+			left := staged()
+
+			paused, err = r.passPausedAtStagings(t, t.Context(), pauses, func() {
+				if staged() <= left {
+					t.Errorf("the pass paused at a staging with no staged row of its own standing")
+				}
+				expectOld("at a staging of the pass that publishes")
+			})
+			if err != nil {
+				t.Fatalf("the pass that publishes failed: %v", err)
+			}
+			if paused == 0 {
+				t.Errorf("the pass staged nothing aside before it published the new rule")
+			}
+			after := prints.read()
+			if after == before {
+				t.Errorf("the pass left the rows, the members and the rules as they stood, and the save moves them")
+			}
+			if states := prints.others(before, after); states > 0 {
+				t.Errorf("a reader between two commits of the passes saw %d states of the rows and the rules that are neither the one before them nor the one after them", states)
+			}
+			got, moved := readAll(), 0
+			for id, value := range got {
+				if old[id] != value {
+					moved++
+				}
+			}
+			if moved == 0 {
+				t.Errorf("after the pass a read answers every eval as before the save, and the check needs a save that moves one")
+			}
+			r.settle(t)
+			if rows := r.count(t, `select (select count(*) from eval_rebuild_days) + (select count(*) from eval_rebuild_members)`); rows != 0 {
+				t.Errorf("the settled refresher leaves %d staged rows and members, want the cleanup to have deleted them all", rows)
+			}
+			expectTruth(t, change.name+", settled", r.storedFigures(t), r.truthFigures(t))
+			t.Logf("%s: the failed pass left %d staged rows to the cleanup; the next paused at %d stagings and then moved %d evals",
+				change.name, left, paused, moved)
+		})
 	}
 }
 
