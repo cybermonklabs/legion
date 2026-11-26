@@ -91,7 +91,8 @@ env:
   CI_OK_ALWAYS_RUN: |
     [
       "changes",
-      "lint"
+      "lint",
+      "priority-conflicts"
     ]
   # why: .github/ci-notes/ci.md#the-jobs-outside-ci-oks-accounting
   CI_OK_EXEMPT: |
@@ -282,6 +283,40 @@ jobs:
       go_notices: ${{ needs.changes.outputs.go_notices }}
     secrets:
       PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+
+  # Runs on every non-draft run, also when `changes` failed, as lint does.
+  # why: .github/ci-notes/ci.md#why-a-change-that-conflicts-with-a-priority-pull-request-fails
+  priority-conflicts:
+    needs: changes
+    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    # why: .github/ci-notes/ci.md#what-the-priority-conflicts-jobs-scopes-are-for
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+      checks: write
+    steps:
+      # The job reads nothing of the tree but priority-conflicts.sh, the gh-read.sh it sources and
+      # the ci-ok-report action, so the .github cone is the whole checkout it needs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+      - name: Check this change against every approved or queued priority pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/priority-conflicts.sh
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          changes: ${{ toJSON(needs.changes) }}
+          job-status: ${{ job.status }}
 
   # why: .github/ci-notes/ci.md#what-the-ci-images-job-copies-and-why-the-order-is-the-point
   ci-images:
@@ -986,6 +1021,7 @@ jobs:
     needs:
       - changes
       - lint
+      - priority-conflicts
       - ci-images
       - tool-fallback
       - tool-fallback-arm

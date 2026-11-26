@@ -216,30 +216,6 @@ def reads(*entries):
     return [Read(glob, why) for glob, why in entries]
 
 
-def envoy_go_files_but_infra():
-    """The .go files internal/testnats/nats_test.go's dockerDriverFiles opens: every one under
-    packages/envoy but infra's, node_modules' and testdata's, test files included, as one
-    `<dir>/**/*.go` per top-level directory that holds one and packages/envoy/*.go if the root
-    does. A glob for a directory holding no .go file would name no file, which rule 9 refuses, and
-    out - where packages/dispatch/e2e/run-broker.sh builds the broker binaries the browser suite
-    starts - holds binaries alone. Only a file of repo_files() counts, so a directory a local run
-    filled with files git ignores names no glob either."""
-    known = set(repository_files())
-
-    def holds_go(directory: Path) -> bool:
-        for current, subdirs, names in os.walk(directory):
-            subdirs[:] = [s for s in subdirs if s not in {"node_modules", "testdata"}]
-            if any(n.endswith(".go") and f"{current}/{n}" in known for n in names):
-                return True
-        return False
-
-    globs = [f"{ENVOY}/*.go"] if any(p.as_posix() in known for p in Path(ENVOY).glob("*.go")) else []
-    for entry in sorted(Path(ENVOY).iterdir()):
-        if entry.is_dir() and entry.name not in {"infra", "node_modules", "testdata"} and holds_go(entry):
-            globs.append(f"{ENVOY}/{entry.name}/**/*.go")
-    return globs
-
-
 def credential_check_reads():
     """The files packages/daemon/internal/textcheck/credential_argument_test.go reads: every one
     git tracks but those under docs/plans and docs/superpowers. A glob cannot leave a tree out, so

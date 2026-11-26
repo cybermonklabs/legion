@@ -68,12 +68,14 @@ import (
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const apiTestParallelism = 8
 
-// TestMain sets the package's default -parallel (apiTestParallelism), runs the package's tests
-// through the Dispatch harness's Main, which waits for their databases to drop and drops their
-// templates, inside the broker harness's Run, which then drops the database brokerstoretest.URL
-// made the contract rows' broker schemas in, and then fails the run where a goroutine a test
-// started outlives it (goleak): the agent's loop, which the background-run checks of this package
-// run in the test process, among them.
+// TestMain sets the package's default -parallel (apiTestParallelism) and runs the package's tests
+// through the Dispatch harness's Main, which drops their databases and their templates, inside the
+// broker harness's Run, which then drops the database brokerstoretest.URL made the contract rows'
+// broker schemas in. Both waits end at the bound testdb.TeardownDeadline gives the test binary, and
+// the broker's, which begins where the Dispatch harness's may have reached that bound, still waits
+// testdb's floor for its own drop. Then it fails the run where a goroutine a test started outlives
+// it (goleak): the agent's loop, which the background-run checks of this package run in the test
+// process, among them.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
