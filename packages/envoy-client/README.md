@@ -1840,4 +1840,3 @@ answers that request and records the same verdict on every document the request 
 the version the request names. The output names the state, the version and the actor that
 Dispatch recorded, and says when the review also answered an open request. A refusal starts with
 Dispatch's code.
-

@@ -134,7 +134,7 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // entry's token naming its account name no one project, and Dispatch holds them to none: a
   // job entry's list of private projects limits none of its writes at this release. A read-only
   // credential's line names none, as it names no write.
-  const tokenProject = readOnly
+  const projectSentence = readOnly
     ? ""
     : project !== null
       ? ` Its token names project ${project}.`
@@ -142,7 +142,7 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
         ? " It names no one project, so it may write wherever a token that names no project may."
         : "";
   return {
-    text: acting + elsewhere + tokenProject,
+    text: acting + elsewhere + projectSentence,
     details: { session, owner, service, project, project_scope: projectScope },
   };
 }

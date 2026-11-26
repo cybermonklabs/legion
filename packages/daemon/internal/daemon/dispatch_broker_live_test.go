@@ -2404,6 +2404,9 @@ func TestTheProxyServesAToolRunWithOneTradeForEachRenewal(t *testing.T) {
 				firstExpiry.UTC().Format(time.RFC3339), firstExpiry.Sub(start).Seconds())
 		}
 	}
+	// R4's bound, in C2's own words. With exactly 2 tokens and T > L / 2 the bound is above 2.75,
+	// so this check fails only where one of the two checks above fails too; it stays because C2
+	// states the bound.
 	if float64(len(sessionTokens)) > bound {
 		t.Errorf("the session %s presented %d distinct tokens in a run of %.1f s, want at most 1 + T / (L - 300 s) = %.2f", role.session, len(sessionTokens), wall.Seconds(), bound)
 	}

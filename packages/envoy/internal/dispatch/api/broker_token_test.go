@@ -1534,9 +1534,9 @@ func TestAJobBrokerTokenWritesEveryClass(t *testing.T) {
 // person's. That answer is 201 for the issue made in the other project and for the comment on
 // the other project's issue, since a token that names one project writes a public project's
 // objects as a credential that names none does, and 403 PROJECT_SCOPE_DEPLOYMENT for the project
-// create (dispatch://INFRA-264). Where the answer is a refusal, the job's refused write lands
-// nothing. The job's writes into its own project are
-// TestAJobBrokerTokenWritesAsItsSessionForItsService's.
+// create (dispatch://INFRA-264). A person reads each write back: the job's write lands where the
+// answer is 201, and lands nothing where it is a refusal. The job's writes into its own project
+// are TestAJobBrokerTokenWritesAsItsSessionForItsService's.
 func TestAJobsNamedTokenIsJudgedAsAPersonsNamedTokenForTheSameProject(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
@@ -1552,7 +1552,8 @@ func TestAJobsNamedTokenIsJudgedAsAPersonsNamedTokenForTheSameProject(t *testing
 		// job and person are the write's body under each token, each with a text of its own, so
 		// the job's write is told from the person's where both land.
 		job, person any
-		// read is where a person reads the job's write back, and written the text it would show.
+		// read is where a person reads the job's write back, and written the text it shows where
+		// the write landed, and must not show where it was refused.
 		read, written string
 		// status and code are the answer both tokens get: its status, and its refusal code, which
 		// is empty for a write that lands.
@@ -1584,23 +1585,21 @@ func TestAJobsNamedTokenIsJudgedAsAPersonsNamedTokenForTheSameProject(t *testing
 		t.Run(name, func(t *testing.T) {
 			persons := rig.serve(caller.presenting(t, write.method, write.path, personToken, write.person))
 			jobs := rig.serve(caller.presenting(t, write.method, write.path, jobToken, write.job))
-			if code := decodeBody[refusalAnswer](t, persons).Code; persons.Code != write.status || code != write.code {
+			personCode := decodeBody[refusalAnswer](t, persons).Code
+			if persons.Code != write.status || personCode != write.code {
 				t.Fatalf("the person's named token for the same project: status=%d code=%q body=%s, want status=%d code=%q",
-					persons.Code, code, persons.Body.String(), write.status, write.code)
+					persons.Code, personCode, persons.Body.String(), write.status, write.code)
 			}
-			if decodeBody[refusalAnswer](t, jobs).Code != decodeBody[refusalAnswer](t, persons).Code || jobs.Code != persons.Code {
+			if decodeBody[refusalAnswer](t, jobs).Code != personCode || jobs.Code != persons.Code {
 				t.Fatalf("the job's token: status=%d body=%s, want the answer of the person's named token for the same project: status=%d body=%s",
 					jobs.Code, jobs.Body.String(), persons.Code, persons.Body.String())
-			}
-			if persons.Code < http.StatusBadRequest {
-				return
 			}
 			read := rig.asPerson(t, http.MethodGet, write.read, nil)
 			if read.Code != http.StatusOK {
 				t.Fatalf("read %s back: status=%d body=%s", write.read, read.Code, read.Body.String())
 			}
-			if strings.Contains(read.Body.String(), write.written) {
-				t.Fatalf("the job's refused write landed: %s", read.Body.String())
+			if landed, want := strings.Contains(read.Body.String(), write.written), write.status < http.StatusBadRequest; landed != want {
+				t.Fatalf("the job's write landed: %t, want %t: %s", landed, want, read.Body.String())
 			}
 		})
 	}

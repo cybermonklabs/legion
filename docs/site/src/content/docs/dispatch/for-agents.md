@@ -410,14 +410,11 @@ method, who may call it, and what it does. An agent calls the API with its token
 `Authorization: Bearer <token>`. A session under `DISPATCH_TOKEN_BROKER=1` holds no bearer: its
 tools read the API, and post a comment, through `dispatch proxy` ([The proxy](#the-proxy)).
 
-Every `POST` and `PATCH` an agent makes through a named `dispatch` command is keyed: each write that a
-command
-other than `dispatch proxy` makes carries an `Idempotency-Key` header of its own, and the command
-asks again under
-that key when an attempt fails on the way, gets no answer for 20 seconds while
-none of its body is
-going out, Dispatch answers 5xx, 408 or 429, or Dispatch is still running an
-earlier attempt
+Every `POST` and `PATCH` an agent makes through a named `dispatch` command is keyed: each write
+that a command other than `dispatch proxy` makes carries an `Idempotency-Key` header of its own,
+and the command asks again under that key when an attempt fails on the way, gets no answer for 20
+seconds while none of its body is going out, Dispatch answers 5xx, 408 or 429, or Dispatch is still
+running an earlier attempt
 (`409 KEY_IN_FLIGHT`): at most five attempts, the last starting within 30 seconds of the first, and
 the whole command within 60. Once an attempt got no answer for 20 seconds or was told
 `409 KEY_IN_FLIGHT`, Dispatch may still be running the write, and it finishes it whatever the

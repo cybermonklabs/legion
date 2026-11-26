@@ -30,8 +30,6 @@ const NO_COMMAND: Readonly<Partial<Record<ClientMethod, string>>> = {
 const SOURCES_SYNC = "/api/v1/projects/DSP/architecture-sources/sync";
 
 test("every write DispatchClient sends has a row in dispatch api's table", async () => {
-  // Every method, which is every own property of the prototype that is one: `token` is an
-  // accessor, not a call.
   const methods = clientMethodNames();
   expect(methods.sort()).toEqual(Object.keys(CALLS).sort());
 
@@ -42,10 +40,8 @@ test("every write DispatchClient sends has a row in dispatch api's table", async
     const recording = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const { pathname } = new URL(String(input));
       const method = init?.method ?? "GET";
-      // A read is answered the least each method reads on: the issue a reference resolves to.
-      if (method === "GET") {
-        return Response.json(pathname === "/api/v1/issues/resolve" ? { key: "DSP-1" } : {});
-      }
+      // A read is answered with an empty object: each method reads nothing it needs from it.
+      if (method === "GET") return Response.json({});
       writes.push({ method, path: pathname });
       // Dispatch's no-route answer, so the sync of a project's sources sends its older route too.
       if (method === "POST" && pathname === SOURCES_SYNC) {
