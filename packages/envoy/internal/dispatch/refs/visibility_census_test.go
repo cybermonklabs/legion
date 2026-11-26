@@ -197,6 +197,7 @@ var readsWithoutAViewer = map[string]string{
 	"ListOwedAfter":    serverWork + " - the forms drain walks its queue by a keyset cursor, a batch a pass",
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,
+	"OwedQueue.Count":  serverWork + " - the forms drain counts what a queue still owes an index, for the line it logs",
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
 		"resolver reads for no person",
 	"PlanBlocks":         serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
