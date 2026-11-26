@@ -24,7 +24,10 @@ const (
 // as the person reads it in the bar: rendered by chips.RenderAnswer against the seed's store, as it
 // stands before any task - the first link to each issue as its chip, a later link to that issue and
 // a link to another item with words of its own as those words - which is also what the judge reads
-// it as.
+// it as. Every label of the file was given on that rendering: the ten answers whose rendering
+// changed when a later link and a link with words of its own came to be drawn as their words
+// (answer-02, answer-04, answer-05, answer-07, find-04, find-07, find-08, find-09, find-11 and
+// find-18) were labelled again on it, and the other twenty render as they did when labelled.
 type Labels struct {
 	// Labellers are the two agents that labelled every answer, by the name each label gives, and
 	// the model family each runs on.

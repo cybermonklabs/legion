@@ -70,12 +70,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It names the document Postmortem: queue backlog of 2026-11-03 on OPS-8."
+          "why": "The answer says the postmortem, titled Postmortem: queue backlog of 2026-11-03, is on OPS-8, which states the one fact."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "The answer links the queue backlog postmortem dated 2026-11-03 as a document on OPS-8."
+          "why": "It states that the postmortem of the 2026-11-03 queue backlog is on OPS-8."
         }
       ],
       "label": "pass"
@@ -87,12 +87,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "It quotes the second-contact rule but gives only '…minutes, day or night' for the answer time, says it did not read what comes before, and opens by calling the handbook empty, so 'a page is answered within 15 minutes, day or night' is stated only in part."
+          "why": "Fact 1 is stated only in part: the answer quotes only '…minutes, day or night', says it did not read what comes before it, and opens by calling the handbook empty with no paging section, so it never states that a page is answered within 15 minutes, day or night."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "Although it states escalation to the second contact after 15 minutes, the answer omits that a page must be answered within 15 minutes, day or night."
+          "why": "It quotes the escalation after 15 minutes but leaves out the statement that a page is answered within 15 minutes, day or night."
         }
       ],
       "label": "fail"
@@ -121,12 +121,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "The fact gives six open issues for femi@example.com, but the answer says five and leaves out DEMO-13."
+          "why": "The answer gives five open issues for femi@example.com and leaves out DEMO-13, where the fact gives six."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "The answer lists five open issues rather than six and omits DEMO-13."
+          "why": "It lists five open issues assigned to femi@example.com rather than six and omits DEMO-13."
         }
       ],
       "label": "fail"
@@ -189,12 +189,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It states three open asks in OPS, on OPS-4, OPS-9 and OPS-26."
+          "why": "The answer gives OPS three open asks, on OPS-4, OPS-9 and OPS-26, which is the fact."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "The answer states that OPS has three open asks and identifies them on OPS-4, OPS-9 and OPS-26."
+          "why": "It states that OPS has three open asks and lists them on OPS-4, OPS-9 and OPS-26."
         }
       ],
       "label": "pass"
@@ -240,12 +240,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "The answer says one of the five child issues is done (DEMO-13), which contradicts 'none of them is done'; it never says chen@example.com wants to split DEMO-12 in two with femi@example.com agreeing; and it names the assignee 'Chen', not chen@example.com."
+          "why": "The answer says one of the five child issues (DEMO-13) is done, which contradicts fact 2 that none is done, and it never states fact 3, Chen's wish to split the epic into CSV export and PDF export with Femi agreeing."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "The answer incorrectly says one child is done, omits chen@example.com's proposed split and femi@example.com's agreement, and identifies the assignee only as Chen."
+          "why": "It contradicts the fact that none of the five sub-issues is done and omits chen@example.com's proposal to split CSV and PDF export and femi@example.com's agreement."
         }
       ],
       "label": "fail"
@@ -257,12 +257,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "Its rendered text, through the leaked reasoning, says the ask on DEMO-3 was answered by ana@example.com: selected \"First, above the summary\", text \"First. A reader looks for it at the top.\", which states both facts; the closing part names her only as 'Ana'."
+          "why": "Leaked reasoning fills much of the answer, but it states that ana@example.com answered the ask on DEMO-3 with First, above the summary, and gives her reason 'First. A reader looks for it at the top.', so both facts are stated."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "The rendered answer explicitly identifies ana@example.com as answering DEMO-3's ask, selects first above the summary, and gives the reason that a reader looks for it at the top."
+          "why": "It states that ana@example.com answered the ask on DEMO-3 with first above the summary and gives the reason that a reader looks for it at the top."
         }
       ],
       "label": "pass"
@@ -274,12 +274,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It says DEMO-31 is blocked by DEMO-30, 'API: rate limit headers', and that DEMO-30 is in progress and assigned to ben@example.com."
+          "why": "The answer states that DEMO-31 is blocked by DEMO-30, API: rate limit headers, and that DEMO-30 is in progress and assigned to ben@example.com."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "The answer states that DEMO-31 is blocked by DEMO-30, API: rate limit headers, and that DEMO-30 is in progress and assigned to ben@example.com."
+          "why": "It states that DEMO-31 is blocked by DEMO-30, API: rate limit headers, which is in progress and assigned to ben@example.com."
         }
       ],
       "label": "pass"
@@ -308,12 +308,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It states the 14:10 UTC deploy that doubled the retry rate, the cause (a worker image with a 0-second retry delay), 2 million messages at 15:00 drained by 18:30, and the follow-ups OPS-3 (dead-letter queue) and OPS-7 (page on-call)."
+          "why": "The answer states the 14:10 UTC deploy that doubled the retry rate, with the 0-second retry delay of the worker image as the cause, the 2 million messages at 15:00 drained by 18:30, and the follow-ups OPS-3 (dead-letter queue) and OPS-7 (page on-call)."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "The answer states the 14:10 UTC deploy, doubled retries from a zero-second worker retry delay, two million messages at 15:00, drainage by 18:30 and both OPS-3 and OPS-7 follow-ups."
+          "why": "It states the 14:10 UTC deploy doubled retries because of the worker image's zero-second retry delay, the queue size and drain times, and both follow-ups with their issue keys."
         }
       ],
       "label": "pass"
@@ -445,12 +445,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "It names upload-error.txt on DEMO-23 but says it could not read the file, and it never states that the file holds the 413 answer to a 24.1 MB upload."
+          "why": "The answer says it could not read upload-error.txt and gives only 'files over 20 MB' from a comment, so it never states that the file holds the 413 answer to an upload of 24.1 MB."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "The answer identifies upload-error.txt on DEMO-23 but does not state that the file holds the 413 response to an upload of 24.1 MB."
+          "why": "It does not state that upload-error.txt holds the 413 response to a 24.1 MB upload, instead saying the file was unread and citing a comment about uploads over 20 MB."
         }
       ],
       "label": "fail"
@@ -513,12 +513,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "The ask's chip and its two choices ('First, above the summary' and 'At the end, as now') state the question, and 'Ana (ana@example.com) answered on 2026-11-16: First, above the summary' states the answer by her login."
+          "why": "The answer states the DEMO-3 ask's question (back-link first, above the summary, or at the end) and that ana@example.com answered First, above the summary."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "The DEMO-3 ask chip and the two stated choices convey the full question, and the answer explicitly says ana@example.com answered First, above the summary."
+          "why": "It states the back-link order question on DEMO-3 and that ana@example.com answered first above the summary."
         }
       ],
       "label": "pass"
