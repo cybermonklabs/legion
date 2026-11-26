@@ -287,7 +287,7 @@ func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
 			want: []string{"statement mail-quoted person"}},
 		{name: "the stated limit: a copy to the remote home folder", spec: formRequirement("scp-home", "Legion runs `scp report.txt deploy@build.example.com:` each day."),
 			want: []string{"statement scp-home person"}},
-		{name: "the way out of the limit: a path after the colon", spec: formRequirement("scp-home-path", "Legion runs `scp report.txt deploy@build.example.com:~/` each day."),
+		{name: "the limit's other form: a path after the colon", spec: formRequirement("scp-home-path", "Legion runs `scp report.txt deploy@build.example.com:~/` each day."),
 			reads: specform.KindStatement},
 		{name: "an autolink of a record that a word joins", spec: formRequirement("record-glued", "Dispatch stores each comment, as <dispatch://ACME-1>xyz shows."),
 			want: []string{"statement record-glued dispatch-link"}},
@@ -307,11 +307,11 @@ func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
 	}
 }
 
-// A line under the heading Terms that is no term line is refused, and the refusal names both ways
-// out: a line that defines no term, such as an example or a note, moves out from under the heading,
-// and a decision block goes above it. The decision block alone is no way out for a line of prose or
-// for an example below a term.
-func TestALineUnderTermsIsRefusedWithBothWaysOut(t *testing.T) {
+// A line under the heading Terms that is no term line is refused, and the finding's detail names
+// where the other lines go: a line that defines no term, such as an example or a note, moves out
+// from under the heading, and a decision block goes above it. The decision block alone is no fix
+// for a line of prose or for an example below a term.
+func TestALineUnderTermsIsRefused(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	const moveOut = "Move a line that defines no term, such as an example or a note, out from under the heading Terms."
 	const decision = "Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading."
@@ -326,7 +326,7 @@ func TestALineUnderTermsIsRefusedWithBothWaysOut(t *testing.T) {
 		message, _ := body["error"].(string)
 		if response.Code != http.StatusConflict || !strings.Contains(message, "- line "+test.node+" in spec.md version 1:") ||
 			!strings.Contains(message, moveOut) || !strings.Contains(message, decision) {
-			t.Errorf("%s: status=%d error=%q, want 409 naming the line %s and both ways out", test.name, response.Code, message, test.node)
+			t.Errorf("%s: status=%d error=%q, want 409 naming the line %s and where the other lines go", test.name, response.Code, message, test.node)
 		}
 	}
 }
@@ -350,7 +350,8 @@ func storeUnreadableVersion(t *testing.T, database *store.Store, artifactID stri
 // settlement stores the editor's tree as it renders it, and reads nothing back. Here the editor
 // moves the text of a callout in a list item into a footnote definition in the callout. The
 // request and the person's approval of that version are refused with the finding unreadable,
-// which names the version and the way out, and the read route says that the approval is refused.
+// whose detail names the version and says to write a new one, and the read route says that the
+// approval is refused.
 func TestABrowserEditCanStoreAVersionThatDispatchCannotRead(t *testing.T) {
 	// The last peer's departure stores version 2 before the server lets its connection go
 	// (settleLastPeer), but only while the settlement timer is still armed. The default delay of
@@ -379,7 +380,7 @@ func TestABrowserEditCanStoreAVersionThatDispatchCannotRead(t *testing.T) {
 		t.Fatal("the browser edit stored a version 2 that the parser reads; the test needs one that it refuses")
 	}
 	const finding = "- document spec.md in spec.md version 2: Dispatch cannot read this version ("
-	const wayOut = "so it cannot judge its texts. Write a new version of the document."
+	const newVersion = "so it cannot judge its texts. Write a new version of the document."
 	for _, test := range []struct {
 		name     string
 		response *httptest.ResponseRecorder
@@ -389,8 +390,8 @@ func TestABrowserEditCanStoreAVersionThatDispatchCannotRead(t *testing.T) {
 	} {
 		body := decodeBody[map[string]any](t, test.response)
 		message, _ := body["error"].(string)
-		if test.response.Code != http.StatusConflict || body["code"] != "SPEC_FORM" || !strings.Contains(message, finding) || !strings.Contains(message, wayOut) {
-			t.Errorf("%s: status=%d body=%s, want 409 SPEC_FORM with %q and %q", test.name, test.response.Code, test.response.Body.String(), finding, wayOut)
+		if test.response.Code != http.StatusConflict || body["code"] != "SPEC_FORM" || !strings.Contains(message, finding) || !strings.Contains(message, newVersion) {
+			t.Errorf("%s: status=%d body=%s, want 409 SPEC_FORM with %q and %q", test.name, test.response.Code, test.response.Body.String(), finding, newVersion)
 		}
 	}
 	read := dispatchRequest(t, tree.handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/spec-form", nil, "alice")
@@ -492,15 +493,15 @@ func TestAnApprovedVersionThatDispatchCannotReadStopsNoOtherJudgment(t *testing.
 }
 
 // A version that the parser refuses, and that a judgment names, is one finding of its document,
-// which names the version and the way out: the request is refused with 409, never 500, the read
-// route says that the approval is refused, the person's approval is refused, and the carry's gate
-// answers a break, so the carry writes no approval.
+// whose detail names the version and says to write a new one: the request is refused with 409,
+// never 500, the read route says that the approval is refused, the person's approval is refused,
+// and the carry's gate answers a break, so the carry writes no approval.
 func TestAVersionThatTheJudgmentNamesAndDispatchCannotReadIsRefused(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	issue := createFormIssue(t, tree.handler, tree.root, "An unreadable spec", "# Spec\n\n"+formRequirement("clean", "Dispatch shows each record."))
 	storeUnreadableVersion(t, tree.database, issue.PrimaryArtifactID, 1)
 	const finding = "- document spec.md in spec.md version 1: Dispatch cannot read this version ("
-	const wayOut = "so it cannot judge its texts. Write a new version of the document."
+	const newVersion = "so it cannot judge its texts. Write a new version of the document."
 	for _, test := range []struct {
 		name     string
 		response func() *httptest.ResponseRecorder
@@ -515,8 +516,8 @@ func TestAVersionThatTheJudgmentNamesAndDispatchCannotReadIsRefused(t *testing.T
 		response := test.response()
 		body := decodeBody[map[string]any](t, response)
 		message, _ := body["error"].(string)
-		if response.Code != http.StatusConflict || body["code"] != "SPEC_FORM" || !strings.Contains(message, finding) || !strings.Contains(message, wayOut) {
-			t.Errorf("%s: status=%d body=%s, want 409 SPEC_FORM with %q and %q", test.name, response.Code, response.Body.String(), finding, wayOut)
+		if response.Code != http.StatusConflict || body["code"] != "SPEC_FORM" || !strings.Contains(message, finding) || !strings.Contains(message, newVersion) {
+			t.Errorf("%s: status=%d body=%s, want 409 SPEC_FORM with %q and %q", test.name, response.Code, response.Body.String(), finding, newVersion)
 		}
 	}
 	read := dispatchRequest(t, tree.handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/spec-form", nil, "alice")

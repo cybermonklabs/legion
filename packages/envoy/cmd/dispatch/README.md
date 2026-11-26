@@ -5944,39 +5944,7 @@ Each item below names a path with its method and identity, then its purpose.
       A listed verb before a clause whose verb is a plural or a past form with no -ed, as `output` in `Compare the input and output the tools write`, reads as a second instruction: write `that` before the clause.
       A listed verb before a word that starts no object, such as `tests`, `go` or a name, as in `Run tests against the server` and `Start Dispatch with a fixture issue`, starts no instruction, so its sentence has at most 25 words and no second instruction is read in it.
 
-    - How a refusal gives its ways out: a refusal of the form gives a way out only where the text that the way out makes gives no finding that the text does not give, word for word.
-      Dispatch reads each way out in the sentence that it changes, as the rules read that sentence with what its code font holds, by every rule, with the other sentences of the text in the count of a statement.
-      The sentence is the one that the text holds, white space and all, so two spaces between two words change no way out.
-      A way out keeps where its sentence ends: the code font of a name that ends its sentence puts the stops that end the word, and the closing marks after them, after the code font, as in ``Keep each record of `file1.Name`. If the run fails, read the log.``, and a mark that opens a quote or a bracket, a closing mark before the stop and a comma stay inside it, as in `` `(file1.Name)`. `` and `` `file1.Name,` ``.
-      A way out that would run the sentence on into the next one, or end it where it did not end, is no way out.
-      One finding stands for each place of its words, so Dispatch reads its way out in the sentence of each place, and gives it only where it passes at each.
-      The writer changes the words wherever they stand, so Dispatch also reads the way out in each sentence that holds the words and not the finding, such as the sentence that `Foo.Validate.` ends beside the finding of `Foo.Validate`, where the way out must give no new finding.
-      It finds those sentences by the words of the text with the marks, stops and other characters at their two ends taken away, and reads a way out there only where the finding's words stand inside one such word, so a name inside a longer word, such as `Web.Config's`, is a stated limit: the way out is not read there.
-      It reads a way out of a finding of a footnote with the sentences of the largest statement that refers to the footnote, as the count of that statement holds them.
-      It reads each rule that reads more than one sentence in the whole text that the way out writes at each place: two verbs for one action, which ste-lint reads in the whole text and beside the verbs of its footnotes, a sentence of ste-lint, which runs on past a stop before a closing quote, and a list item that ends in `and` or `or`, whose finding quotes the item whole.
-      A way out that writes a backtick in a sentence after a backtick that nothing closes is no way out, as ste-lint would pair the two and read the sentences between as code font.
-      So in `Dispatch checks Foo.Validate at boot. It validated the file.` the code font of `Foo.Validate` is no way out, as the text's finding of two verbs for one action would then quote `validated`, and in a list item that ends in `and` no way out is offered until the item ends otherwise.
-
-    - How the ways out of a footnote and of a count are read: a way out of a finding of a footnote that changes the verbs of a synonym group that the footnote uses is no way out where, after it, a text or a footnote that holds the footnote gives a finding of two verbs for one action that it did not give, word for word; two verbs of that group in other texts that do not hold the footnote change nothing.
-      Footnotes that refer to each other in a loop give that finding once, in the first of them, and not again in a footnote that refers to the loop with the same verbs.
-      In the count of a statement each stop with no space after it but the finding's own ends a sentence, as the space that its own finding asks for makes it end one, so the ways out of one finding do not change with the space after another stop: in `The parser reads file.Name and file.Size at its start.`, each finding gives the code font alone, as a space after both makes three sentences.
-      So `that` before the clause of an instruction of 20 words is no way out, as it makes 21, and nor is a space after the stop of a footnote of one sentence under a statement of one, as it makes three.
-      Dispatch reads the ways out of at most eight findings of one sentence, so its work stays in proportion to the text: a ninth stop with no space after it, or a ninth email address, of one sentence is still refused and named, and its finding says that Dispatch offers ways out for the first eight findings of a sentence only, so it offers none for this one, though one can exist.
-      A text that ste-lint reads as more than one line, at a line break other than a line feed such as `\v` or U+2028, Dispatch reads whole for each way out, and so for the ways out of its first eight findings only: a ninth finding of such a text is still refused and named, and says that Dispatch offers ways out for the first eight findings of such a text only.
-      The judge of the ways out names each sentence of a text by a number when it splits the text, and it keeps the words of each sentence where only the count of that sentence's readings gives them.
-      It reads each sentence at most 104 times in one judgment through that count: 52 times for the findings that stand in it, which the bounds above hold, and 52 times for the findings that stand elsewhere, such as a sentence that holds in code font the names that many other sentences end with.
-      It also keeps the words of each finding and of its ways out, which for a finding of two instructions are its whole sentence, and it reads those words a fixed number of times for each finding; and it keeps the detail of each finding that a reading gives, as that reading gives it, which for a finding of a dangling conjunction quotes the last line of its list item.
-      Beside the sentences that a way out changes, the way out reads, through their counts, only the sentences that a piece of ste-lint runs through between them and the next place of a verb whose first place it changes; it walks no long sentence of the rest of the text and no footnote, as it reads the verbs of the footnotes as one set for each group of verbs for one action.
-      So the work of a judgment stays in proportion to the text, and so does its reading of code font, which finds the run of backticks that closes each run in one pass over the text.
-      A finding whose way out would read a sentence past that is still refused and named, and says that Dispatch reads one sentence at most 52 times for the ways out of findings that stand elsewhere, so it offers none for this one, though one can exist.
-      The judges of the ways out of the texts of one document also read at most 1 MiB of text together, in the order of the texts, each reading counting its bytes and 64 more, so the work of a judgment has a bound that no document passes.
-      A document of 1 MB whose 7,246 statements each give eight findings with ways out, of stops with no space after them, took 25 s of CPU and 5.6 GB of allocation for one judgment before that bound, and takes 2.7 s and 0.84 GB with it, 1.4 and 1.7 times the judgment of as many clean statements (`TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork`).
-      A finding whose way out would read past that is still refused and named, and says that Dispatch reads at most 1 MiB of a document for ways out, so it offers none for this one, though one can exist.
-
-    - How the refusal of two instructions gives its ways out: each instruction in a sentence of its own and, after a condition at the start, the condition as a sentence of its own, each as the sentence it makes, and `that` before the clause after a listed verb that is no verb there; a test applies each and holds the result to every rule.
-      It writes the instructions as sentences of their own only where that keeps what the sentence means, in one pass over the sentence.
-      Where `or` joins two of them, as in `Read the diff or run the tests`, two sentences are two steps where the sentence gives a choice of one, and where a condition stands outside the first instruction, before it as in `If the run fails, read the log and send the report` or after it as in `Read the log and send the report if the run fails`, with or without a comma, the split cannot keep the scope of the condition: there the refusal says to keep the choice or the condition, and shows no split.
-      A condition word inside the first instruction, as in `Read the log before the run ends and send the report`, governs that instruction alone, so the split stays.
+    - How the rule of two verbs for one action reads a footnote: footnotes that refer to each other in a loop give that finding once, in the first of them, and not again in a footnote that refers to the loop with the same verbs.
 
     A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
 
@@ -6027,9 +5995,6 @@ Each item below names a path with its method and identity, then its purpose.
       A straight quote that a full stop follows is read as part of a path, so `the field reads "ada@example.com:".` names no person.
       An address `user@host` with no path after it reads as the address of a person, also in a command that names a machine.
       So `scp report.txt deploy@build.example.com:`, `rsync -a dist/ deploy@build.example.com:`, `ssh deploy@build.example.com` and the remote glob `deploy@build.example.com:?.log` break the form.
-      The finding gives the ways out: write the path after the colon, as in `deploy@build.example.com:~/` or `deploy@build.example.com:./?.log`.
-      Or write the user and the host apart, as in `ssh -l deploy build.example.com`.
-      It gives each only where the text that it makes breaks no rule that the text does not break, so in a sentence of 23 words, the user and the host apart, which make 26 words, are no way out.
       An email address takes letters and marks beside it into its own parts, and a digit or connector punctuation before it too.
       So `xada@example.com` is an email address too.
       A digit or connector punctuation after its domain makes it no address, as in `ada@example.com5`.
@@ -6049,7 +6014,7 @@ Each item below names a path with its method and identity, then its purpose.
       Each other paragraph, list item or table row under that heading breaks the form (rule `term-line`).
       So a decision block under that heading breaks the form at its question line.
       A decision block stands above the heading `Terms`, and after the person's answer, the chosen definition goes under the heading as a term line.
-      The finding names the line by its text, and it names two ways out.
+      The finding names the line by its text, and its detail says where the other lines go.
       A line that defines no term, such as an example or a note, moves out from under the heading `Terms`.
       A decision block goes above the heading.
 
@@ -6058,7 +6023,7 @@ Each item below names a path with its method and identity, then its purpose.
       Settlement stores the markdown of the editor's tree, and it does not read that markdown back.
       An example is a footnote that the editor moves into a callout in a list item.
       A judgment that names such a version refuses it with one finding of kind `document` and rule `unreadable`, which names the document and its version.
-      So the agent's request, the person's Approve on the page and `dispatch spec-form` each show that finding and its way out.
+      So the agent's request, the person's Approve on the page and `dispatch spec-form` each show that finding.
       Another approved document under the root whose approved version Dispatch cannot read refuses nothing, and each answer names it in `unread`, one line for each.
       Under a root, Dispatch refuses the approval of such a version.
       So such an approved version comes from an approval outside a root or from an earlier release.
@@ -6066,11 +6031,9 @@ Each item below names a path with its method and identity, then its purpose.
       No rule compares the texts of that version, so its component names are no nouns of the system.
       The way out of both is a new version of that document, and for the approved document its approval.
 
-    - What a refusal holds: a request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written, `{code, error, refusal, next_step, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, ways, excerpt}`.
+    - What a refusal holds: a request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written, `{code, error, refusal, next_step, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
       A finding is its rule and its `detail`, the rule's words at its place.
-      `ways` holds the words of the ways out that the finding gives, or is empty.
-      So a way out that changes only what another finding offers changes no finding.
-      Each line of `error` writes a finding as its `detail`, then its `ways`.
+      Each line of `error` writes a finding as its `detail`.
       `error` is `refusal`, then `next_step` on a line of its own, so a client with a next step of its own shows `refusal` beside that step.
       `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
       The first line of `error` counts the texts that break the form, and a text with more than one finding has one line for each finding.
@@ -6109,7 +6072,7 @@ Each item below names a path with its method and identity, then its purpose.
   `finding_lines` are the lines that list those findings, which `dispatch spec-form` prints as they are (`specform.Listing`).
   When `refuses_approval` is true, the first line counts the texts that break the form, as the head of a refusal counts them.
   Each finding then has the line that a refusal writes for it, and when `findings` holds fewer than `findings_total`, a last line says how many it lists.
-  The route judges a document whatever the setting names, so its judgment holds the bound of the ways out above, and it stops when the caller hangs up.
+  The route judges a document whatever the setting names, and it stops when the caller hangs up.
   `terms` is empty: Dispatch does not read the list of terms yet.
   A version that the document does not have is `404 VERSION_NOT_FOUND`.
   A `version` that is not a whole number of 1 or more is `400 INVALID_QUERY`.

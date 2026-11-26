@@ -74,7 +74,7 @@ func TestAFenceMarkerHidesNoSentenceFromTheRules(t *testing.T) {
 	said := func(findings []Finding) []string {
 		var lines []string
 		for _, each := range findings {
-			lines = append(lines, fmt.Sprintf("%s %s %s: %s | %s", each.Kind, each.Node, each.Rule, each.Detail, each.Ways))
+			lines = append(lines, fmt.Sprintf("%s %s %s: %s", each.Kind, each.Node, each.Rule, each.Detail))
 		}
 		return lines
 	}
@@ -114,8 +114,8 @@ func TestAFenceMarkerHidesNoSentenceFromTheRules(t *testing.T) {
 		want []string
 	}{
 		{"``` a``b ``` " + twentyFive, []string{
-			`claim fence sentence-words: a sentence has 26 words, and a sentence has at most 25: "ab word word word word word word word" | `,
-			`claim fence ste100-long-sentence: ASD-STE100 does not permit a sentence of more than 25 words: "26 words" | `,
+			`claim fence sentence-words: a sentence has 26 words, and a sentence has at most 25: "ab word word word word word word word"`,
+			`claim fence ste100-long-sentence: ASD-STE100 does not permit a sentence of more than 25 words: "26 words"`,
 		}},
 		{twentyFive + " ``` a``b ```", nil},
 	} {
@@ -157,7 +157,7 @@ func TestAPersonsNameIsTheNameOfOnePerson(t *testing.T) {
 	} {
 		var want []Finding
 		if test.want != "" {
-			want = []Finding{brokenFinding(test.text, personBreak(test.want, offer{ways: personWays(test.want)}))}
+			want = []Finding{brokenFinding(test.text, personBreak(test.want))}
 		}
 		if got := check(planted(test.people...), Input{Texts: []Text{test.text}}); !sameFindings(got, want) {
 			t.Errorf("%s: Check(%q) =\n%#v\nwant\n%#v", test.name, test.text.Body, got, want)
@@ -211,8 +211,8 @@ func TestOnlyAnApprovedNameIsANounOfTheSystem(t *testing.T) {
 	}
 }
 
-// The stated limits of the form, each pinned: the README says each, with its way out, and R49
-// leaves what a program cannot refuse to the reviewer of R25.
+// The stated limits of the form, each pinned: the README says each, and R49 leaves what a program
+// cannot refuse to the reviewer of R25.
 func TestTheStatedLimitsOfTheForm(t *testing.T) {
 	for _, test := range []struct {
 		name, body string

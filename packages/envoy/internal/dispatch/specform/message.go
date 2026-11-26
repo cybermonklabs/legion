@@ -115,10 +115,9 @@ func Listing(document string, version int, refuses bool, findings []Finding, tot
 	return lines
 }
 
-// findingLine is the line of one finding: its kind, its node, its place, and the finding as a
-// refusal writes it (Said).
+// findingLine is the line of one finding: its kind, its node, its place, and its detail.
 func findingLine(finding Finding) string {
-	return fmt.Sprintf("- %s %s in %s: %s.", finding.Kind, finding.Node, finding.Where, finding.Said())
+	return fmt.Sprintf("- %s %s in %s: %s.", finding.Kind, finding.Node, finding.Where, finding.Detail)
 }
 
 // textsBreak says that texts texts break the form: "1 text breaks", "2 texts break", and with

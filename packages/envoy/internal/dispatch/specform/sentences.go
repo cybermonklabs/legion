@@ -36,15 +36,6 @@ type sentence struct {
 	start, end int
 }
 
-// in is the sentence's text in line, the line that sentencesOf read it from, as the bytes that it
-// takes without the white space around them, as ste-lint reads white space (ste.Strip, which takes
-// \x1c to \x1f too): its words with what code font holds among them, from its first word to its
-// last. So a way out that changes this text changes no white space between it and the sentence
-// before it.
-func (s sentence) in(line string) string {
-	return ste.Strip(line[s.start:s.end])
-}
-
 // sentencesOf is each sentence of line, as its words, that a rule of the form counts. It is the
 // one place that says where a sentence ends: after a word that ends in ".", "!" or "?" and then
 // any closing marks (endsSentence), since white space or the end of the line follows each word.
@@ -57,8 +48,7 @@ func (s sentence) in(line string) string {
 // another language is the reviewer's to name. Each sentence takes the bytes of the line from the
 // end of the sentence before it, or the start of the line, to the end of its last word, and the
 // last one to the end of the line: so the sentences take each byte of the line once, code font
-// and white space among them, and the judge of the ways out reads a place of the line in the
-// sentence that the rules read (wayJudge).
+// and white space among them, and isInstruction reads a sentence in the bytes that it takes.
 func sentencesOf(line string) []sentence {
 	var sentences []sentence
 	from := 0
@@ -109,83 +99,15 @@ func (s sentence) stopsWithNoSpace() []string {
 	return found
 }
 
-// joinedIn is how many stops with no space after them the sentences hold, each a sentence that the
-// space its finding asks for ends (spacedStops), as the judge of the ways out counts them
-// (wayJudge).
-func joinedIn(sentences []sentence) int {
-	count := 0
-	for _, each := range sentences {
-		for _, word := range each.stopsWithNoSpace() {
-			count += len(joinedStops(word))
-		}
-	}
-	return count
-}
-
 // isAddress reports whether word, without the marks that open it, is an address (addressStart).
 func isAddress(word string) bool {
 	return addressStart.MatchString(strings.TrimLeft(word, openingMarks))
 }
 
-// stopNoSpaceWays is the two ways out of the rule stop-no-space for word: a space after each such
-// stop (spacedStops), or the name in code font, with the stops and closing marks that end its
-// sentence after the code font (nameAndEnd). So the sentence still ends where it ended: the code
-// font of "file1.Name." is "`file1.Name`.", where "`file1.Name.`" would end no sentence, as nothing
-// in code font is a word, and the sentence would run on into the next one.
-func stopNoSpaceWays(word string) [maxWays]wayOut {
-	name, end := nameAndEnd(word)
-	return [maxWays]wayOut{{word, spacedStops(word)}, {word, "`" + name + "`" + end}}
-}
-
-// nameAndEnd is word cut where the end of the sentence that it ends starts (endsSentence): the
-// name, and the stops and the closing marks after them. A word that ends no sentence is all name.
-func nameAndEnd(word string) (string, string) {
-	if !endsSentence(word) {
-		return word, ""
-	}
-	name := strings.TrimRightFunc(strings.TrimRight(word, closingMarks), isStop)
-	return name, word[len(name):]
-}
-
-// endsWithStop reports whether the last word of line, as the rules of the form read it (ste.Words,
-// with nothing in code font a word), ends a sentence (endsSentence): whether the last sentence of
-// line ends at a stop of its own, and not only where the line ends.
-func endsWithStop(line string) bool {
-	pieces := ste.Words(line)
-	if len(pieces) == 0 {
-		return false
-	}
-	last := pieces[len(pieces)-1]
-	return endsSentence(last[len(last)-1].Text)
-}
-
-// stopNoSpaceBreak is the break of the rule stop-no-space for word: the place, and the words of
-// each way out of the offer that it is given (stopNoSpaceWays, wayJudge.offered), written from them.
-func stopNoSpaceBreak(word string, given offer) broken {
-	var options []string
-	if given.ways[0] != (wayOut{}) {
-		options = append(options, "put a space after the stop")
-	}
-	if given.ways[1] != (wayOut{}) {
-		options = append(options, "put the name in code font")
-	}
-	return broken{rule: ruleStopNoSpace, ways: given.ways,
-		detail:   fmt.Sprintf("a stop in %q has no space after it, so Dispatch cannot find the end of the sentence", word),
-		waysSaid: given.said(capitalized(strings.Join(options, ", or ")))}
-}
-
-// spacedStops is word with a space at each place joinedStops names: after each joined stop and
-// its closing marks.
-func spacedStops(word string) string {
-	var spaced strings.Builder
-	from := 0
-	for _, at := range joinedStops(word) {
-		spaced.WriteString(word[from:at])
-		spaced.WriteByte(' ')
-		from = at
-	}
-	spaced.WriteString(word[from:])
-	return spaced.String()
+// stopNoSpaceBreak is the break of the rule stop-no-space for word.
+func stopNoSpaceBreak(word string) broken {
+	return broken{rule: ruleStopNoSpace,
+		detail: fmt.Sprintf("a stop in %q has no space after it, so Dispatch cannot find the end of the sentence", word)}
 }
 
 // endsSentence reports whether word ends in a stop and then any closing marks, and is no
@@ -203,8 +125,7 @@ func joinedStop(word string) bool {
 
 // joinedStops is the place of word after each stop that follows a letter or a digit and that an
 // upper-case letter follows directly, after any closing marks: the offset of that letter. It is
-// the one scan that reads such a stop, so the finding (joinedStop) and its way out (spacedStops)
-// read the same stops.
+// the one scan that reads such a stop (joinedStop).
 func joinedStops(word string) []int {
 	var places []int
 	afterLetter := false

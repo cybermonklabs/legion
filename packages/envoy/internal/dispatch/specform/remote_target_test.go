@@ -1,6 +1,8 @@
 package specform
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -8,11 +10,12 @@ import (
 // The stated limit of the email rule: an address user@host with no path after it reads as the
 // address of a person, also in an honest command that names a machine. So scp and rsync to the
 // home folder (the colon ends the address, or white space follows it), a remote glob that starts
-// with "?", and an ssh or sftp target with no path are refused as a person, and the refusal gives
-// the ways out: write the path after the colon, or write the user and the host apart. The two
-// controls, a person's address alone and before a colon and a space, are refused too. The rows are
-// the acceptance test's remote targets, which stay refused by this limit.
-func TestAnAddressOfAMachineWithNoPathIsReadAsAPersonWithItsWayOut(t *testing.T) {
+// with "?", and an ssh or sftp target with no path are refused as a person, and the refusal
+// writes the line of that finding. The two controls, a person's address alone and before a colon
+// and a space, are refused too, and the same commands with a path after the colon, or with the
+// user and the host apart, are refused by no rule. The rows are the acceptance test's remote
+// targets, which stay refused by this limit.
+func TestAnAddressOfAMachineWithNoPathIsReadAsAPerson(t *testing.T) {
 	read := func(t *testing.T, body string) []Finding {
 		t.Helper()
 		extracted, err := ExtractDocument("spec.md", 1, ":::requirement{#honest}\n"+body+"\n:::\n")
@@ -30,7 +33,6 @@ func TestAnAddressOfAMachineWithNoPathIsReadAsAPersonWithItsWayOut(t *testing.T)
 		return Finding{}, false
 	}
 	const address = "deploy@build.example.com"
-	ways := []string{address + ":~/", address + ":./?.log", "ssh -l deploy build.example.com"}
 	for _, form := range []string{
 		"scp report.txt deploy@build.example.com:",
 		"rsync -a dist/ deploy@build.example.com:",
@@ -45,10 +47,11 @@ func TestAnAddressOfAMachineWithNoPathIsReadAsAPersonWithItsWayOut(t *testing.T)
 			continue
 		}
 		refusal := Message(ActRequest, findings, len(findings), "").Refusal
-		for _, way := range ways {
-			if !strings.Contains(found.Ways, way) || !strings.Contains(refusal, way) {
-				t.Errorf("%s: the ways out %q of the finding and the refusal %q do not give the way out %q", form, found.Ways, refusal, way)
-			}
+		// The line is written here, not read from findingLine, and the refusal must hold it whole,
+		// so a line that writes more than the finding's detail fails this row.
+		line := fmt.Sprintf("- %s %s in %s: %s.", found.Kind, found.Node, found.Where, found.Detail)
+		if !slices.Contains(strings.Split(refusal, "\n"), line) {
+			t.Errorf("%s: the refusal\n%s\ndoes not hold the line %q of the finding", form, refusal, line)
 		}
 	}
 	for _, named := range []string{
@@ -59,10 +62,10 @@ func TestAnAddressOfAMachineWithNoPathIsReadAsAPersonWithItsWayOut(t *testing.T)
 			t.Errorf("control %q: %v, want a person", named, findings)
 		}
 	}
-	for _, way := range []string{"Legion runs `scp report.txt " + ways[0] + "` before each build.", "Legion runs `scp " + ways[1] + " .` before each build.",
-		"Legion runs `" + ways[2] + "` before each build."} {
-		if findings := read(t, way); len(findings) > 0 {
-			t.Errorf("the way out %q: %v, want no finding", way, findings)
+	for _, fixed := range []string{"Legion runs `scp report.txt " + address + ":~/` before each build.", "Legion runs `scp " + address + ":./?.log .` before each build.",
+		"Legion runs `ssh -l deploy build.example.com` before each build."} {
+		if findings := read(t, fixed); len(findings) > 0 {
+			t.Errorf("%q: %v, want no finding", fixed, findings)
 		}
 	}
 }

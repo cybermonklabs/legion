@@ -3,11 +3,10 @@ body: |-
   `dispatch spec-form --issue <KEY> [--artifact <document>] [--version <N>]` prints the form of The
   Spec in one version of a document, as an approval request would judge it, and writes nothing:
   each statement, check, component purpose and term that breaks the form, with its rule, or what
-  Dispatch read. Each finding is one line, `- <kind> <node> in <where>: <detail>. <ways>.`, as
-  the refusal of an approval request writes it: the rule's words at its place, then the ways out
-  that the server sends in the finding's field `ways`. Dispatch writes these lines (the read's
-  `finding_lines`), and the command prints them as they are. A document that no root of The Spec
-  covers says why Dispatch refuses nothing for it, and still lists its findings. Its first line
+  Dispatch read. Each finding is one line, `- <kind> <node> in <where>: <detail>.`, as the refusal
+  of an approval request writes it: the rule's words at its place. Dispatch writes these lines (the
+  read's `finding_lines`), and the command prints them as they are. A document that no root of The
+  Spec covers says why Dispatch refuses nothing for it, and still lists its findings. Its first line
   counts the texts that break the form. With no
   `--artifact`, the command reads the spec and the Verification document of the issue. A version
   number belongs to one document, so `--version` with an issue, or a `--ref` of an issue, and no

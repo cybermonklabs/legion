@@ -11,19 +11,8 @@ body: |-
   breaks the form with more than 20 words, a description of it with more than 25, and a sentence
   breaks it with two instructions (rule instructions), as ASD-STE100 writes a procedure. A word
   outside that list is no verb, so a plain procedure of one instruction, such as "Read the log,
-  especially the last line.", passes. The refusal of two instructions gives its ways out: the
-  instructions apart, only where that keeps what
-  the sentence means (no "or" joins them and no condition stands outside the first instruction,
-  before or after it), and after a condition the condition as a sentence of its own, each as the
-  sentence it makes, and "that" before a clause; each passes the rule. Each refusal of the form
-  gives a way out only where the text that it makes gives no finding that the text does not give,
-  read in each sentence that holds a place of the finding as the rules read it, code font and all,
-  with each other stop that no space follows counted as the end of a sentence, and for a footnote
-  with the sentences of the statement that refers to it; so "that" before the clause of an
-  instruction of 20 words, which makes 21, and a space after the stop of a statement of two
-  sentences, or of a footnote under one, or after each of two such stops of one sentence, which
-  makes three, are no way out; the ways out of at most eight findings of one sentence are read, so
-  the work stays in proportion to the text.
+  especially the last line.", passes. The finding of two instructions quotes the first words of
+  the second one.
   An address with no scheme is read against every page that draws its document, as the dashboard's
   route table lists them, as well as against the origin of the server, so a short path such as
   artifacts/notes-md, decisions or #b-x1 in a spec links to a record from the issue's page and from

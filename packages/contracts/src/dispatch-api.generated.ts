@@ -6888,7 +6888,6 @@ export interface components {
       node: string;
       rule: string;
       version: number;
-      ways: string;
       where: string;
     };
     SpecFormRead: {

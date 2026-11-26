@@ -29034,9 +29034,6 @@
           "version": {
             "type": "integer"
           },
-          "ways": {
-            "type": "string"
-          },
           "where": {
             "type": "string"
           }
@@ -29050,7 +29047,6 @@
           "where",
           "rule",
           "detail",
-          "ways",
           "excerpt"
         ],
         "type": "object"
