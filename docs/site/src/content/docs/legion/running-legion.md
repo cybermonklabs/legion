@@ -1369,8 +1369,10 @@ Closing the terminal leaves the project without one, and the daemon logs
    that left the workflow and is set back to `todo` gets its own architect and the agent of its
    first step back, on their kept sessions, at its next first phase start, and each other role at
    the start of its phase. A claim whose session supervise's `forgetSession` has dropped comes back
-   in a new session instead. The daemon suspends or ends claims only when an issue leaves the
-   workflow, when a claim moves to another tree, or for a production check after the issue is done.
+   in a new session instead. The daemon suspends or ends claims when an issue leaves the workflow,
+   when a claim moves to another tree, or for a production check after the issue is done. It also
+   suspends claims for a project pause, the stop of a task, a root agent's exit and the release of
+   an idle pod.
    A phase start gives its task to that live claim. At boot the daemon
    resumes by rule a suspended worker that still owns its issue's phase, but never a claim an
    operator suspended; a start for an operator-suspended claim waits instead. A notice for a root's

@@ -3228,7 +3228,9 @@ The record is keyed by the pod's uid, so it says nothing of a role recorded in a
 
 A route change the plugin calls adds a contract entry (`CONTRIBUTING.md`), so the release that carries it speaks a new contract number, and since LEGION-164 a new contract number is brought in place at the daemon's first boot on it, with no issue pod replaced and no runbook step:
 the boot pass ("Contract discipline" below) brings every registered claim whose recorded contract differs from the daemon's onto the current plugin, and the relaunched role loads the release's published plugins installed in its pod:
-every such claim is asked nothing and is relaunched through the moved-address relaunch path, logging `supervise: the process speaks another plugin contract; relaunching it onto the current plugin` once per claim, and the relaunch keeps an issue pod and its disk, so a worker loses only the turn it was in.
+every such claim is asked nothing and is relaunched through the moved-address relaunch path, logging `supervise: the process speaks another plugin contract; relaunching it onto the current plugin` once per claim, and the relaunch keeps an issue pod and its disk.
+A worker loses no turn, because the relaunch of a worker in a turn waits until that turn ends (below).
+Only the controller's relaunch can cut a turn, since the daemon does not wait for the controller's turn.
 What the text above keeps is the release that changes what the pod's own `legion` binary speaks (the launcher, the shim, `workspace-init`):
 an install refreshes no binary, so only a new image carries that change, and the pod's own update round is what carries it
 — each issue pod is replaced once every role the round asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound.
