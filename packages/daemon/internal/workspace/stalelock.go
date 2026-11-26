@@ -119,7 +119,7 @@ func RemoveStaleGitLocks(workspace Workspace, now time.Time, log func(string)) e
 	return nil
 }
 
-// RemoveStaleFeedLocks removes every git lock file in the bare repository gitDir, a feed: the
+// RemoveStaleCacheLocks removes every git lock file in the bare repository gitDir, a feed: the
 // `<file>.lock` a fetch killed mid-update leaves beside a ref, packed-refs, HEAD or the shallow
 // file, which blocks every later update of that file. It also removes the `tmp_pack_*` and
 // `tmp_idx_*` files a transfer killed mid-pack leaves under objects/pack: git writes a received
@@ -131,7 +131,7 @@ func RemoveStaleGitLocks(workspace Workspace, now time.Time, log func(string)) e
 // container and the one container that mounts the feed writable, or the repository cache's process
 // under its maint mutex, which also keeps its repack from running beside a fetch (repocache's
 // refresh), so no lock, transfer or repack there is live when Fetch starts.
-func RemoveStaleFeedLocks(gitDir string, now time.Time, log func(string)) error {
+func RemoveStaleCacheLocks(gitDir string, now time.Time, log func(string)) error {
 	why := "a feed's only writer is the fetch now starting"
 	if err := removeLocksUnder(gitDir, now, log, why); err != nil {
 		return err

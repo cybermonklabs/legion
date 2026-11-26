@@ -1544,7 +1544,7 @@ func TestFeedEntryIsTheRepositorysRefsAndPacksAlone(t *testing.T) {
 		{"refs/heads/main.lock", false, false},
 		{"packed-refs.lock", false, false},
 	} {
-		if got := FeedEntry(tc.name, tc.dir); got != tc.want {
+		if got := CacheEntry(tc.name, tc.dir); got != tc.want {
 			t.Errorf("FeedEntry(%q, dir %t) = %t, want %t", tc.name, tc.dir, got, tc.want)
 		}
 	}
@@ -1681,7 +1681,7 @@ func cacheTar(t *testing.T, dir string) []byte {
 			return err
 		}
 		name := filepath.ToSlash(relative)
-		if !FeedEntry(name, entry.IsDir()) {
+		if !CacheEntry(name, entry.IsDir()) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -2499,10 +2499,10 @@ func TestTheFeedsFetchMapsPacksInSmallWindows(t *testing.T) {
 		{"the repository cache's own git and its repack", func(t *testing.T, run *recordingRunner) func() error {
 			cache := cacheOf(t, run.remote)
 			return func() error {
-				if _, err := FeedGit(context.Background(), run, cache, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {
+				if _, err := CacheGit(context.Background(), run, cache, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {
 					return err
 				}
-				_, err := FeedGitWithin(context.Background(), run, cache, testTimeout, append(slices.Clone(callerPairs), "repack", "-a", "-d", "--quiet")...)
+				_, err := CacheGitWithin(context.Background(), run, cache, testTimeout, append(slices.Clone(callerPairs), "repack", "-a", "-d", "--quiet")...)
 				return err
 			}
 		}},

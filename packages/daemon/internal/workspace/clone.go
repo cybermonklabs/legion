@@ -170,12 +170,12 @@ func FromFeed(dir string) Source { return feedSource(dir) }
 type feedSource string
 
 func (dir feedSource) check(repository ghrepo.Repository) error {
-	_, err := FeedRepository(string(dir), repository)
+	_, err := CacheRepository(string(dir), repository)
 	return err
 }
 
 func (dir feedSource) open(repository ghrepo.Repository, bookmark, defaultBranch string) (remote, error) {
-	feed, err := FeedRepository(string(dir), repository)
+	feed, err := CacheRepository(string(dir), repository)
 	if err != nil {
 		return remote{}, err
 	}
@@ -222,11 +222,11 @@ func (s gitHubSource) open(_ ghrepo.Repository, bookmark, defaultBranch string) 
 	return r, nil
 }
 
-// FeedRepository is where Fetch clones repository under a feed directory, and where a feed
+// CacheRepository is where Fetch clones repository under a feed directory, and where a feed
 // Source clones and fetches it from: <feed>/<owner>/<name>.git, the layout the repository cache's
 // volume shares. The zero repository is refused, as Location refuses it: it names the feed's own
 // `.git`.
-func FeedRepository(feed string, repository ghrepo.Repository) (string, error) {
+func CacheRepository(feed string, repository ghrepo.Repository) (string, error) {
 	if repository.IsZero() {
 		return "", errors.New("workspace repository is required")
 	}
@@ -236,7 +236,7 @@ func FeedRepository(feed string, repository ghrepo.Repository) (string, error) {
 	return filepath.Join(feed, repository.Owner(), repository.Name()+".git"), nil
 }
 
-// FeedEntry is whether name — a path inside a bare repository, slash-separated and relative to it,
+// CacheEntry is whether name — a path inside a bare repository, slash-separated and relative to it,
 // a directory when dir is set — is one of the refs and packs the repository cache streams and a
 // feed takes from it: HEAD, packed-refs, what lies under refs/, and each pack of objects/pack/,
 // both its pack-<id>.pack and the pack-<id>.idx git reads it through. The index comes with the
@@ -249,7 +249,7 @@ func FeedRepository(feed string, repository ghrepo.Repository) (string, error) {
 // for itself, nor objects/info/alternates or http-alternates, which would point the feed at
 // objects elsewhere; and never a file or directory git is still writing (tmp_*, incoming-*,
 // *.lock).
-func FeedEntry(name string, dir bool) bool {
+func CacheEntry(name string, dir bool) bool {
 	base := path.Base(name)
 	if strings.HasPrefix(base, "tmp_") || strings.HasPrefix(base, "incoming-") || strings.HasSuffix(base, ".lock") {
 		return false

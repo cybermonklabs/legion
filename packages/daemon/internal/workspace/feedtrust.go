@@ -49,7 +49,7 @@ func ownFeedRepository(gitDir string, repo ghrepo.Repository, now time.Time, log
 	if why != "" {
 		return false, refuseOrRemove(gitDir, repo.String(), why, replace, log)
 	}
-	if err := RemoveStaleFeedLocks(gitDir, now, log); err != nil {
+	if err := RemoveStaleCacheLocks(gitDir, now, log); err != nil {
 		return false, err
 	}
 	return true, nil

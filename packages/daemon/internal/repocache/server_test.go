@@ -1452,7 +1452,7 @@ func TestASnapshotTakesThePacksARepackLeft(t *testing.T) {
 	}
 	var held []string
 	for _, entry := range mustReadDir(t, filepath.Join(clone, "objects", "pack")) {
-		if workspace.FeedEntry("objects/pack/"+entry, false) {
+		if workspace.CacheEntry("objects/pack/"+entry, false) {
 			held = append(held, entry)
 		}
 	}
@@ -1480,7 +1480,7 @@ func mustReadDir(t *testing.T, dir string) []string {
 // cacheOn is a cache of opts that Serve has not started, for a test that drives refresh itself.
 func cacheOn(t *testing.T, opts Options) *cache {
 	t.Helper()
-	dir, err := workspace.FeedRepository(opts.Root, opts.Repo)
+	dir, err := workspace.CacheRepository(opts.Root, opts.Repo)
 	if err != nil {
 		t.Fatal(err)
 	}

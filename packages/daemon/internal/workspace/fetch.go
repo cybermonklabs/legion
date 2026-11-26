@@ -216,7 +216,7 @@ type FetchReport struct {
 // stream that broke, and a write that failed is the volume's, whatever the stream did. Nor does
 // verifyCache's failure, or any other failure.
 func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, error) {
-	feed, err := FeedRepository(request.Feed, request.Repo)
+	feed, err := CacheRepository(request.Feed, request.Repo)
 	if err != nil {
 		return FetchReport{}, err
 	}
@@ -443,7 +443,7 @@ func pruneToGitHub(ctx context.Context, run Runner, request FetchRequest, gitDir
 	}
 	slices.Sort(gone)
 	for _, ref := range gone {
-		if _, err := FeedGit(ctx, run, gitDir, "update-ref", "--no-deref", "-d", ref); err != nil {
+		if _, err := CacheGit(ctx, run, gitDir, "update-ref", "--no-deref", "-d", ref); err != nil {
 			return err
 		}
 		why := "GitHub no longer has it"
@@ -521,7 +521,7 @@ func followHead(ctx context.Context, run Runner, request FetchRequest, gitDir st
 		request.Log(fmt.Sprintf("GitHub's default branch of %s is now %s, which this fetch did not bring: HEAD stays at %s until a fetch brings it", request.Repo, strings.TrimPrefix(target, "refs/heads/"), cmp.Or(was, "nothing")))
 		return nil
 	}
-	if _, err := FeedGit(ctx, run, gitDir, "symbolic-ref", "HEAD", target); err != nil {
+	if _, err := CacheGit(ctx, run, gitDir, "symbolic-ref", "HEAD", target); err != nil {
 		return err
 	}
 	request.Log(fmt.Sprintf("the default branch of %s is now %s (HEAD named %s)", request.Repo, strings.TrimPrefix(target, "refs/heads/"), cmp.Or(was, "nothing")))
@@ -535,7 +535,7 @@ func feedRefs(ctx context.Context, run Runner, gitDir string, held bool) (map[st
 	if !held {
 		return refs, nil
 	}
-	listed, err := FeedGit(ctx, run, gitDir, "for-each-ref", "--format=%(refname) %(objectname)")
+	listed, err := CacheGit(ctx, run, gitDir, "for-each-ref", "--format=%(refname) %(objectname)")
 	if err != nil {
 		return nil, err
 	}
@@ -811,7 +811,7 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 		if err != nil {
 			return err
 		}
-		if _, err := FeedGitWithin(ctx, run, staging, left, "index-pack", pack); err != nil {
+		if _, err := CacheGitWithin(ctx, run, staging, left, "index-pack", pack); err != nil {
 			return fmt.Errorf("the repository cache's pack %s, which does not verify: %w", filepath.Base(pack), err)
 		}
 	}
@@ -819,7 +819,7 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	if err != nil {
 		return err
 	}
-	if _, err := FeedGitWithin(ctx, run, staging, left, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"); err != nil {
+	if _, err := CacheGitWithin(ctx, run, staging, left, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"); err != nil {
 		return fmt.Errorf("the repository cache's history is not whole: %w", err)
 	}
 	return nil
@@ -832,7 +832,7 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 // sha1 (feedConfigKeys), so a SHA-256 cache is refused at its pack's checksum. The sha256 case is
 // for a git whose default format has changed, and reads the same file layout with 32-byte hashes.
 func objectHash(ctx context.Context, run Runner, gitDir string) (func() hash.Hash, error) {
-	named, err := FeedGit(ctx, run, gitDir, "rev-parse", "--show-object-format")
+	named, err := CacheGit(ctx, run, gitDir, "rev-parse", "--show-object-format")
 	if err != nil {
 		return nil, err
 	}
@@ -936,7 +936,7 @@ func unpackEntry(staging string, header *tar.Header, body io.Reader) error {
 	if !dir && header.Typeflag != tar.TypeReg {
 		return fmt.Errorf("the repository cache's tar holds %q, which is neither a regular file nor a directory", name)
 	}
-	if !FeedEntry(name, dir) {
+	if !CacheEntry(name, dir) {
 		return fmt.Errorf("the repository cache's tar holds %q, which is not one of a repository's refs or packs", name)
 	}
 	target := filepath.Join(staging, filepath.FromSlash(name))
@@ -1111,27 +1111,27 @@ const cloneSuffix = ".clone-"
 // refreshes predictable and preserves the repository cache's pack-only stream.
 func feedConfiguration(ctx context.Context, run Runner, gitDir string) error {
 	for _, pair := range [][2]string{{"gc.auto", "0"}, {"maintenance.auto", "false"}, {"fetch.unpackLimit", "1"}} {
-		if _, err := FeedGit(ctx, run, gitDir, "config", pair[0], pair[1]); err != nil {
+		if _, err := CacheGit(ctx, run, gitDir, "config", pair[0], pair[1]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// FeedGit runs git on the bare repository gitDir — a feed's, or the repository cache's — under
+// CacheGit runs git on the bare repository gitDir — a feed's, or the repository cache's — under
 // the runner's slow-command budget, holding no credential and reading no configuration but that
 // repository's own and the pack settings feedGit names: what reads or tends such a repository
 // outside Fetch's transfer. It runs in gitDir itself, which is there whenever something reads or
 // tends it, so no caller has to name a directory and no child of this package's takes the one the
 // process happens to run in.
-func FeedGit(ctx context.Context, run Runner, gitDir string, args ...string) (Result, error) {
+func CacheGit(ctx context.Context, run Runner, gitDir string, args ...string) (Result, error) {
 	return RunChecked(ctx, run, slices.Concat(feedGit, []string{"--git-dir=" + gitDir}, args), isolatedGitConfig, gitDir)
 }
 
-// FeedGitWithin is FeedGit bounded by timeout instead of the runner's slow-command budget: for a
+// CacheGitWithin is FeedGit bounded by timeout instead of the runner's slow-command budget: for a
 // command on such a repository whose duration follows the repository's size, as the cache's repack
 // does. A `-c` among args comes after feedGit's, so it wins over them for its key.
-func FeedGitWithin(ctx context.Context, run Runner, gitDir string, timeout time.Duration, args ...string) (Result, error) {
+func CacheGitWithin(ctx context.Context, run Runner, gitDir string, timeout time.Duration, args ...string) (Result, error) {
 	argv := slices.Concat(feedGit, []string{"--git-dir=" + gitDir}, args)
 	result, err := runCommandTimeout(ctx, run, argv, isolatedGitConfig, gitDir, timeout)
 	return checkedResult(argv, result, err)

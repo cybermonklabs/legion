@@ -269,7 +269,7 @@ func (r *liveRig) checkCacheLostVolume() error {
 
 // cacheHolds is whether the cache name's clone, asked inside its own pod, holds the object id.
 func (r *liveRig) cacheHolds(name, id string) (bool, error) {
-	clone, err := workspace.FeedRepository(CacheRoot, r.env.repo)
+	clone, err := workspace.CacheRepository(CacheRoot, r.env.repo)
 	if err != nil {
 		return false, err
 	}

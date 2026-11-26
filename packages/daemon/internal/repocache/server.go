@@ -183,7 +183,7 @@ func Serve(ctx context.Context, opts Options) error {
 	if _, err := config.ReadSecretPointer(CacheTokenFileEnv, opts.CacheTokenFile); err != nil {
 		return err
 	}
-	dir, err := workspace.FeedRepository(opts.Root, opts.Repo)
+	dir, err := workspace.CacheRepository(opts.Root, opts.Repo)
 	if err != nil {
 		return err
 	}
@@ -529,7 +529,7 @@ var repackMemory = []string{
 func (c *cache) repack(ctx context.Context, fetched time.Time) {
 	c.lastRepack = fetched
 	c.recordRepack(fetched)
-	if _, err := workspace.FeedGitWithin(ctx, c.opts.Run, c.dir, repackTimeout, append(slices.Clone(repackMemory), "repack", "-a", "-d", "--quiet")...); err != nil {
+	if _, err := workspace.CacheGitWithin(ctx, c.opts.Run, c.dir, repackTimeout, append(slices.Clone(repackMemory), "repack", "-a", "-d", "--quiet")...); err != nil {
 		c.opts.Log(fmt.Sprintf("repack failed; tried again in %s: %s", repackEvery, oneLine(err)))
 		failed := time.Now()
 		outOfSpace := c.outOfSpace(err)
@@ -628,7 +628,7 @@ func (c *cache) publish(ctx context.Context, fetched time.Time) error {
 }
 
 func (c *cache) publishLocked(ctx context.Context, fetched time.Time) error {
-	head, err := workspace.FeedGit(ctx, c.opts.Run, c.dir, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+	head, err := workspace.CacheGit(ctx, c.opts.Run, c.dir, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
 	if err != nil {
 		return fmt.Errorf("read the default branch's head: %w", err)
 	}
@@ -662,7 +662,7 @@ func (c *cache) walk(visit func(name string, entry fs.DirEntry, info fs.FileInfo
 			return err
 		}
 		name := filepath.ToSlash(relative)
-		if (!entry.IsDir() && !entry.Type().IsRegular()) || !workspace.FeedEntry(name, entry.IsDir()) {
+		if (!entry.IsDir() && !entry.Type().IsRegular()) || !workspace.CacheEntry(name, entry.IsDir()) {
 			if entry.IsDir() {
 				return fs.SkipDir
 			}

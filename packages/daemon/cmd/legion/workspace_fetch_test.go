@@ -569,7 +569,7 @@ func (v *issueVolume) cacheTarServer(t *testing.T, fault cacheFault) (string, in
 			return err
 		}
 		name := filepath.ToSlash(relative)
-		if !workspace.FeedEntry(name, entry.IsDir()) {
+		if !workspace.CacheEntry(name, entry.IsDir()) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
