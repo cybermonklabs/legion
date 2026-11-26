@@ -717,7 +717,11 @@ test("a shaped block's link names the block by its id and draws no text of the b
 // as a spec's block: each link opens the node its own address names, never the spec at the
 // other document's block id. A target whose address opens no page draws no link.
 test("a shaped node outside the spec links its own document at its block", async () => {
-  const target = (ref: string | undefined, blockId: string, kind = "block"): DecisionLink => ({
+  const target = (
+    ref: string | undefined,
+    blockId: string,
+    kind: DecisionLink["to"]["kind"] = "block"
+  ): DecisionLink => ({
     changed_since_tie: false,
     created_at: "2026-11-01T00:00:00Z",
     created_version: 1,

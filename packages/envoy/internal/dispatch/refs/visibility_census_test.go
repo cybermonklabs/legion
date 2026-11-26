@@ -173,6 +173,7 @@ var readsWithoutAViewer = map[string]string{
 	"CurrentBlockText":     nodeDetail,
 	"CurrentItemBlockText": nodeDetail,
 	"DecisionFacts":        serverWork + " - a version write's read phase reads what the store and the asks rows hold of the version's decisions, readings and ask blocks",
+	"DocumentCopiedFrom":   serverWork + " - a settlement's read phase reads which blocks of its document hold a copied_from, to retract it from each that is no longer an ask block",
 	"DocumentIsCited":      noNode,
 	"DocumentsOwedWindows": serverWork,
 	"DriftedExcerpts":      serverWork,
@@ -197,6 +198,7 @@ var readsWithoutAViewer = map[string]string{
 	"ListOwedAfter":    serverWork + " - the forms drain walks its queue by a keyset cursor, a batch a pass",
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,
+	"OwedQueue.Count":  serverWork + " - each pass of the forms drain counts what its queue still owes, for its log line and to end the bootstrap queue's drain",
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
 		"resolver reads for no person",
 	"PlanBlocks":         serverWork + " - a version write's read phase plans its block index against what the store holds of the document",

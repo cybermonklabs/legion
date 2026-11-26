@@ -155,14 +155,15 @@ func (s *Service) formsDrainPass(ctx context.Context, drain *formsDrain) bool {
 	return tick.Full
 }
 
-// ReconcileRefsForms runs one pass over queue, refs.RefsFormsOwed or refs.RefsDecisionsFormsOwed:
-// it lists at most blockIndexItemBatch rows of it past after, in the queue's order, oldest first
-// (refs.ListOwedAfter), and drains each in a transaction of its own. A comment, an ask or an
-// issue message goes through refs.ReindexOwed, which re-indexes its text with this build's
-// grammar and settles its row of the queue in the same transaction, and with it the row of the
-// other queue. A document is indexed here, at its latest version, by the block index's own writer
-// (drainFormsDocument), at most blockIndexDocumentBatch of them a pass, the bound the block index
-// reads documents under; the pass ends at the first document past that bound, and the next pass,
+// ReconcileRefsForms runs one pass over queue, refs.RefsFormsOwed, refs.RefsDecisionsFormsOwed
+// or refs.RefsDecisionsFormsSeedOwed: it lists at most blockIndexItemBatch rows of it past after,
+// in the queue's order, oldest first (refs.ListOwedAfter), and drains each in a transaction of its
+// own. A comment, an ask or an issue message goes through refs.ReindexOwed, which re-indexes its
+// text with this build's grammar and settles its row of the queue in the same transaction, and
+// with it the source's row of each other queue it is in. A document is indexed here, at its
+// latest version, by the block index's own writer (drainFormsDocument), at most
+// blockIndexDocumentBatch of them a pass, the bound the block index reads documents under; the
+// pass ends at the first document past that bound, and the next pass,
 // which comes after blockIndexStep, starts there.
 //
 // The rows are listed by keyset, as the block index lists its documents, so a row this drain
@@ -331,17 +332,17 @@ func (drained formsDocumentDrain) count(tick *RefsFormsTick) {
 	}
 }
 
-// drainFormsDocument drains one `artifact` row of a forms queue (refs_forms_owed or
-// refs_decisions_forms_owed), source, by indexing the document itself, at document's latest
-// version (latestDocumentVersion), through the index the block index writes a document with
-// (indexOwedDocument, indexRenderedVersion): its own mentions, the mentions its blocks hold and
-// the excerpt each shows, read with this build's grammar.
+// drainFormsDocument drains one `artifact` row of a forms queue (refs_forms_owed,
+// refs_decisions_forms_owed or refs_decisions_forms_seed_owed), source, by indexing the document
+// itself, at document's latest version (latestDocumentVersion), through the index the block index
+// writes a document with (indexOwedDocument, indexRenderedVersion): its own mentions, the mentions
+// its blocks hold and the excerpt each shows, read with this build's grammar.
 //
 // The row is settled by this drain only through its own index of the document, in that index's
-// transaction (indexOwedDocument's settle, which clears the document's row of both queues), and
-// only while it holds the enqueued_at it was listed with. It is not settled by owing the document
-// a block index, as refs_grammar_owed's drain settles its own (drainOwedDocument): any build's
-// block-index pass may take a document owed one, and a build that predates these forms would
+// transaction (indexOwedDocument's settle, which clears the document's row of each queue it is
+// in), and only while it holds the enqueued_at it was listed with. It is not settled by owing the
+// document a block index, as refs_grammar_owed's drain settles its own (drainOwedDocument): any
+// build's block-index pass may take a document owed one, and a build that predates these forms would
 // index it without them and leave nothing owed. So the document is owed a block index here
 // (oweDocumentIndex), which indexOwedDocument requires of what it indexes, and indexed in the
 // same pass. Whoever indexes it between the two leaves indexOwedDocument finding it no longer
