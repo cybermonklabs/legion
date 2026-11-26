@@ -100,6 +100,9 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   issueResults: (client) => client.issueResults(ISSUE),
   retractResult: (client) =>
     client.retractResult("result-1", { reason: "The run read a stale build.", actor }),
+  recordDeploy: (client) =>
+    client.recordDeploy({ repo: "acme/widgets", program: "worker", commit: check.commit }),
+  deploys: (client) => client.deploys("acme/widgets"),
   issueCoverage: (client) => client.issueCoverage(ISSUE),
   editAsk: (client) => client.editAsk("ask-1", { question: "Which one?", actor } as never),
   comment: (client) => client.comment(ISSUE, { body: "Shipped.", actor }),
