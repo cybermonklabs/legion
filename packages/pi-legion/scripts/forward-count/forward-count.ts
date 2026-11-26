@@ -38,6 +38,7 @@
 import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 // ---------------------------------------------------------------------------
 // The words and the shapes
@@ -701,6 +702,11 @@ class Dispatch {
  * program, which is what C7 asks of a timeline item.
  */
 class GitHub {
+  /** How many calls this run has made, which collect prints at its end. */
+  private calls = 0;
+  /** Where an answer is kept and read again, null while the run keeps none. */
+  private cacheDir: string | null = null;
+
   constructor(
     private readonly api: string,
     private readonly token: string
@@ -709,6 +715,40 @@ class GitHub {
   /** Whether the reads run `gh api`: the run named no token. */
   private viaGh(): boolean {
     return this.token === "";
+  }
+
+  /** How many calls this run made. */
+  madeCalls(): number {
+    return this.calls;
+  }
+
+  /**
+   * Keeps each answer in dir and reads it again before any call. A merged pull request's
+   * timeline and the commits of a head do not change, and the App's budget is one budget for
+   * every session of the fleet, so a second run of one window pays for no read twice. A run that
+   * must read GitHub afresh names an `--out` of its own, since the store lives under it.
+   */
+  keepAnswersIn(dir: string): void {
+    mkdirSync(dir, { recursive: true });
+    this.cacheDir = dir;
+  }
+
+  /**
+   * Reads the App's rate limit before a run that will make more than `calls` calls, and refuses
+   * to start one while fewer than 5,000 core calls are left: the budget is shared with every
+   * other session, and a count that spends it is worse than a count that waits. The probe itself
+   * costs nothing, and a run through the stand-in (a token) reads no budget at all.
+   */
+  budget(calls: number): void {
+    if (!this.viaGh() || calls <= 500) return;
+    const limit = ghApi(["api", "rate_limit"]) as { resources?: { core?: { remaining?: number; limit?: number } } };
+    const remaining = limit.resources?.core?.remaining ?? 0;
+    process.stderr.write(`github: ${remaining} of ${limit.resources?.core?.limit ?? 0} core calls left, and this run makes about ${calls}\n`);
+    if (remaining < 5000) {
+      throw new ReadFailed(
+        `GitHub's budget is shared: ${remaining} core calls are left, under the 5,000 this count holds back. Run it again after the limit resets.`
+      );
+    }
   }
 
   /** The hosts a transcript's request must name for its result to be an answer. */
@@ -722,34 +762,73 @@ class GitHub {
     return [...new Set(hosts)];
   }
 
+  /** The answer this run already holds for key, or undefined. */
+  private held(key: string): unknown | undefined {
+    if (this.cacheDir === null) return undefined;
+    const file = path.join(this.cacheDir, `${createHash("sha256").update(key).digest("hex")}.json`);
+    if (!existsSync(file)) return undefined;
+    try {
+      return JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Keeps answer for key, so a later read of the same thing makes no call. */
+  private keep(key: string, answer: unknown): void {
+    if (this.cacheDir === null) return;
+    const file = path.join(this.cacheDir, `${createHash("sha256").update(key).digest("hex")}.json`);
+    writeFileSync(file, JSON.stringify(answer), { mode: 0o644 });
+  }
+
   async graphql(query: string, variables: Record<string, unknown>): Promise<unknown> {
+    const key = `graphql ${query} ${JSON.stringify(variables)}`;
+    const already = this.held(key);
+    if (already !== undefined) return already;
+    let data: unknown;
     if (this.viaGh()) {
       const args = ["api", "graphql", "-f", `query=${query}`];
       for (const [name, value] of Object.entries(variables)) {
         args.push(typeof value === "number" ? "-F" : "-f", `${name}=${String(value)}`);
       }
+      this.calls++;
       const body = ghApi(args) as { data?: unknown; errors?: unknown };
       if (body.errors !== undefined) throw new ReadFailed(`gh api graphql: ${JSON.stringify(body.errors).slice(0, 200)}`);
-      return body.data;
+      data = body.data;
+    } else {
+      this.calls++;
+      const answer = await fetch(`${this.api.replace(/\/+$/, "")}/graphql`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ query, variables }),
+      });
+      if (!answer.ok) throw new ReadFailed(`POST /graphql: ${answer.status} ${(await answer.text()).slice(0, 200)}`);
+      const body = (await answer.json()) as { data?: unknown; errors?: unknown };
+      if (body.errors !== undefined) throw new ReadFailed(`POST /graphql: ${JSON.stringify(body.errors).slice(0, 200)}`);
+      data = body.data;
     }
-    const answer = await fetch(`${this.api.replace(/\/+$/, "")}/graphql`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ query, variables }),
-    });
-    if (!answer.ok) throw new ReadFailed(`POST /graphql: ${answer.status} ${(await answer.text()).slice(0, 200)}`);
-    const body = (await answer.json()) as { data?: unknown; errors?: unknown };
-    if (body.errors !== undefined) throw new ReadFailed(`POST /graphql: ${JSON.stringify(body.errors).slice(0, 200)}`);
-    return body.data;
+    this.keep(key, data);
+    return data;
   }
 
   async rest<T>(route: string): Promise<T> {
-    if (this.viaGh()) return ghApi(["api", route.replace(/^\/+/, "")]) as T;
-    const answer = await fetch(`${this.api.replace(/\/+$/, "")}${route}`, {
-      headers: { Authorization: `Bearer ${this.token}`, Accept: "application/vnd.github+json" },
-    });
-    if (!answer.ok) throw new ReadFailed(`GET ${route}: ${answer.status} ${(await answer.text()).slice(0, 200)}`);
-    return (await answer.json()) as T;
+    const key = `rest ${route}`;
+    const already = this.held(key);
+    if (already !== undefined) return already as T;
+    let answer: unknown;
+    if (this.viaGh()) {
+      this.calls++;
+      answer = ghApi(["api", route.replace(/^\/+/, "")]);
+    } else {
+      this.calls++;
+      const read = await fetch(`${this.api.replace(/\/+$/, "")}${route}`, {
+        headers: { Authorization: `Bearer ${this.token}`, Accept: "application/vnd.github+json" },
+      });
+      if (!read.ok) throw new ReadFailed(`GET ${route}: ${read.status} ${(await read.text()).slice(0, 200)}`);
+      answer = await read.json();
+    }
+    this.keep(key, answer);
+    return answer as T;
   }
 }
 
@@ -974,6 +1053,8 @@ interface CollectArgs {
 async function collect(args: CollectArgs): Promise<void> {
   const dispatch = new Dispatch(args.dispatchUrl, args.token);
   const github = new GitHub(args.githubApiUrl, args.githubToken);
+  mkdirSync(args.out, { recursive: true });
+  github.keepAnswersIn(path.join(args.out, "github-answers"));
   const unknown: Unknown[] = [];
   const lastStepsPassed: { project: string; count: number }[] = [];
   const lines: ReturnLine[] = [];
@@ -1023,6 +1104,9 @@ async function collect(args: CollectArgs): Promise<void> {
     }
     lastStepsPassed.push({ project, count: passed });
     process.stderr.write(`${project}: ${found.length} returns of the retro and the merge in the window\n`);
+    // Each return reads at most one head and one timeline from GitHub, whose budget every
+    // session of the fleet shares.
+    github.budget(found.length * 2);
 
     const sessions = [...new Set(found.map((row) => row.record.session).filter((session) => session !== ""))];
     let transcripts = new Map<string, TranscriptEntry[]>();
@@ -1067,7 +1151,9 @@ async function collect(args: CollectArgs): Promise<void> {
     unknown,
   };
   writeFileSync(path.join(args.out, "batch.json"), `${JSON.stringify(batch, null, 2)}\n`, { mode: 0o644 });
-  process.stdout.write(`collected ${lines.length} returns of ${args.projects.join(", ")} into ${args.out}\n`);
+  process.stdout.write(
+    `collected ${lines.length} returns of ${args.projects.join(", ")} into ${args.out}; GitHub calls: ${github.madeCalls()}\n`
+  );
 }
 
 function messageOf(error: unknown): string {

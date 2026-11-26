@@ -115,9 +115,13 @@ func newForwardCountLive(t *testing.T) *forwardCountLive {
 	fixtureenv.Live(t)
 	natsURL := workflowNATS(t)
 	standIn := newForwardCountGitHub(t)
-	dispatch := startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL, github: standIn.url})
+	// The driver runs from the directory the script ran in, not the package's, so the scratch
+	// Dispatch is told the checkout it builds and serves from, as handoff-records.sh's driver
+	// tells it (startHandoffDispatch).
+	root := liveCLICheckout(t)
+	dispatch := startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL, github: standIn.url, root: root})
 	l := &forwardCountLive{
-		t: t, control: os.Getenv(forwardCountControl), root: liveCLICheckout(t), evidence: forwardCountEvidence(t),
+		t: t, control: os.Getenv(forwardCountControl), root: root, evidence: forwardCountEvidence(t),
 		natsURL: natsURL, standIn: standIn, dispatch: dispatch, projects: map[string]*ownerStepsRig{}, number: 7100,
 	}
 	l.transcripts = filepath.Join(l.evidence, "transcripts")
