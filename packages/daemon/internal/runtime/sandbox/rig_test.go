@@ -557,6 +557,22 @@ type rigOption func(*rig, *Options)
 
 func withOptions(edit func(*Options)) rigOption { return func(_ *rig, o *Options) { edit(o) } }
 
+// withWaitsToTheDeadline sets the runtime's boot timeout to what is left of the test binary's
+// deadline when the rig is made (testwait.Remaining), in place of testOptions' 2 s. That timeout
+// bounds each wait of a launch on the wall clock — for its old pod to end, for its new pod, for its
+// role launcher's hello — and the wait for the answer to a stop, so no such wait gives up before the
+// binary's own deadline is near. It is for a test whose launches must not give up: each of those
+// waits ends there on an event the rig brings (its controller deleting or making a pod, a fake
+// launcher's hello or answer), and a loaded machine can put that event off past any fixed span. The
+// 2 s failed TestAnIssuePodOfTheEarlierLayoutIsStaleForEveryRoleAndReplacedByTheNextLaunch in CI run
+// 45752994928: its launch gave up while the controller had not yet deleted the earlier pod. A test
+// that means a launch to give up at its boot timeout sets that timeout itself. The timeout is at
+// most a day: under go test's -timeout 0, Remaining is about 36 years, and the launch's own bound
+// (launchBound), about ten boot timeouts, would wrap a time.Duration.
+func withWaitsToTheDeadline() rigOption {
+	return func(g *rig, o *Options) { o.BootTimeout = min(testwait.Remaining(g.t), 24*time.Hour) }
+}
+
 // withoutController runs no controller stand-in: the objects stay as the test wrote them.
 func withoutController() rigOption { return func(g *rig, _ *Options) { g.noController = true } }
 
