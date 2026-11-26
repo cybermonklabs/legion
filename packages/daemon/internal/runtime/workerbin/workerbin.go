@@ -60,7 +60,8 @@ func LauncherDir(root string) string { return filepath.Join(root, "bin") }
 // the script of that name an earlier run wrote. Where path holds no git, or no jj, at all, Install
 // writes that script still, and it then fails when it runs, naming the program it lacks (exit
 // 127). Its two callers pass their own executable and their own PATH: a tmux daemon's boot
-// (internal/daemon) and `legion controller start` on the operator's machine (cmd/legion).
+// (internal/daemon) and `legion controller start` on the operator's machine (cmd/legion). A
+// test's boot of the daemon may pass another legion in place of its own (overrides.paneLegion).
 func Install(root, legionExecutable, path string) error {
 	if !filepath.IsAbs(legionExecutable) {
 		return fmt.Errorf("legion launcher target %q is not an absolute path", legionExecutable)

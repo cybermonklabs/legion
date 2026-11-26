@@ -26,11 +26,11 @@ export interface AgentFilters {
  *  groups, machines and roles each as one comma-separated parameter (`?group=`, `?machine=`,
  *  `?role=`). These names are the page's own, and a link from another page reaches them
  *  through `agentsAddress`, below; the one other speller is the page a `dispatch://role/<token>`
- *  reference opens, whose `?role=` is `AGENTS_ROLE_PARAM` (`buildReferencePath`), the name the
- *  `role` field here reads. Every one of them is absent while nothing is picked, so a plain
- *  `/agents` is the page as it opens and unticking the last value does not bring the filter back
- *  on reload. A module-level constant, since its identity is what `useAddressFields` memoizes
- *  on. */
+ *  reference opens, whose `?role=` is `AGENTS_ROLE_PARAM` (`features/refs/routes.ts`,
+ *  `buildReferencePath`), the name the `role` field here reads. Every one of them is absent while
+ *  nothing is picked, so a plain `/agents` is the page as it opens and unticking the last value
+ *  does not bring the filter back on reload. A module-level constant, since its identity is what
+ *  `useAddressFields` memoizes on. */
 const AGENT_FILTER_SPEC = {
   group: commaListParam(),
   machine: commaListParam(),

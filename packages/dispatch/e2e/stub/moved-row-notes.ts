@@ -26,6 +26,12 @@
 export const unchangedByTheMove =
   "unchanged - the move renames the file, lifts the shared seeding into the fixture and adds the lane tag to the title, and touches no line of what the row asserts";
 
+/** What the map says of a row INFRA-3135 (cybermonklabs/legion#3729) wrote for the stubbed layer:
+ *  no copy of it ran before, so it has no assertions from before a move for `unchangedByTheMove`
+ *  to speak of. */
+const newInInfra3135 =
+  "new in INFRA-3135 (cybermonklabs/legion#3729): written for the stubbed layer with no copy before it, so no move touched it";
+
 const NEW_IN_THE_STUBBED_LAYER =
   "new - written in the stubbed layer from the start (dispatch://INFRA-5200), with no real-stack copy that moved";
 
@@ -34,12 +40,6 @@ export const newInTheStubbedLayer: Readonly<Record<string, string>> = {
   "layout-measure.stub.e2e.ts": NEW_IN_THE_STUBBED_LAYER,
   "layout-rule.stub.e2e.ts": NEW_IN_THE_STUBBED_LAYER,
 };
-
-/** What the map says of a row INFRA-3135 (cybermonklabs/legion#3729) wrote for the stubbed layer:
- *  no copy of it ran before, so it has no assertions from before a move for `unchangedByTheMove`
- *  to speak of. */
-const newInInfra3135 =
-  "new in INFRA-3135 (cybermonklabs/legion#3729): written for the stubbed layer with no copy before it, so no move touched it";
 
 /** The rows `unchangedByTheMove` is false for, keyed by the spec file and the title the listing
  *  gives, joined by ` › `. */

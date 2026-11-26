@@ -107,15 +107,6 @@ const ISSUE_TABLE_NAMES: DataTableNames = {
   rowAttribute: ISSUE_ROW_ATTRIBUTE,
 };
 
-/** The same words for an issue table a page draws beside its main table over the same keys - the
- *  priorities page's fault lists, and the work under an opened priority - whose `j` and `k` walk
- *  it only from one of its own rows (`moveFrom: "row"`), so they never take those keys from the
- *  main table. */
-const ISSUE_TABLE_BESIDE_NAMES: DataTableNames = {
-  ...ISSUE_TABLE_NAMES,
-  keymap: { ...ISSUE_TABLE_NAMES.keymap, moveFrom: "row" },
-};
-
 /** What the List's rows are, which its header filters count in and its pager counts: issues, in
  *  groups, over rows. */
 const ISSUE_TABLE_NOUN: RowNoun = {
@@ -137,7 +128,6 @@ export function IssuesTable({
   label,
   layout: ownLayout,
   listing,
-  moveFrom = "page",
   priorityTitles,
   stateKey,
 }: {
@@ -179,10 +169,6 @@ export function IssuesTable({
   /** What this table lists: one project's issues, or the issues advancing one priority, which
    *  belong to no project (`issues-table-data.ts`). */
   listing: IssueListing;
-  /** Where its `j` and `k` walk its rows from (`RowKeymap.moveFrom`): anywhere on the page the
-   *  focus is in no other table, for the page's one table or its main one (the default); or only
-   *  from one of its own rows, for a table drawn beside the page's main one. */
-  moveFrom?: "page" | "row";
   /** Each priority's title by its id, in the one order the priorities read answers them in.
    *  Given, the table has the Advances column, which names each priority a row advances by its
    *  place in that order and its title (`#3`, `PriorityChip`); unset, it has none
@@ -327,7 +313,7 @@ export function IssuesTable({
     columns,
     getRowId: (item) => item.issue.key,
     layout,
-    names: moveFrom === "row" ? ISSUE_TABLE_BESIDE_NAMES : ISSUE_TABLE_NAMES,
+    names: ISSUE_TABLE_NAMES,
     state: { sorting, grouping, columnFilters: filters, globalFilter: search, pagination },
     onSortingChange: setSorting,
     onGroupingChange: setGrouping,
@@ -353,6 +339,12 @@ export function IssuesTable({
   // the cells stick, and the `thead` does not (`DataTable`). Else the table's own stop, with no
   // scroll. A row the window has not drawn is out of their sight, so it is never where the focus
   // lands in the place of an issue that went.
+  // What the table's own actions say is leaving, read through a ref because they are read after
+  // this hook (`useIssueTableActions`, below) and assigned there: a row an action changed while
+  // that action and the read after it are out. The hand-off waits for each such row to leave the
+  // list by name, as the Inbox's does, so a landing never stands on a row the press is taking away
+  // however long the write and its read take.
+  const leavingNow = useRef<((key: string) => boolean) | undefined>(undefined);
   const landAtPlace = useLastMarkedPlace({
     control: (key) =>
       model.layout.scrollRef.current
@@ -360,6 +352,7 @@ export function IssuesTable({
         ?.querySelector<HTMLElement>(ROW_CHECKBOX) ?? null,
     head: () => model.layout.scrollRef.current?.querySelector("thead th") ?? null,
     lastMarked: () => lastMarked.current,
+    leaving: (key) => leavingNow.current?.(key) === true,
     list: tableStop,
     order: leaves,
     shown: Object.keys(selection).length !== 0,
@@ -371,11 +364,21 @@ export function IssuesTable({
   // A table action clears the selection only once the list read after it has settled
   // (`useIssueTableActions`), so the view read here is the one the action left.
   const returnFocus = () => {
-    if (landAtPlace()) return null;
+    // The box's height made current first: the table sizes the box to the page at a
+    // `ResizeObserver`'s read, a frame after whatever changed the page, and the bar's going is
+    // such a change. At 390x664 the box stood at 434 px when the bar went, from a read long
+    // before, and at 414 a frame later, which left a landing shown whole in the old box below the
+    // new one's edge (builds Jobs `infra-3135-infra-3135-r30q-frames` and `-r30r-frames`).
+    // `fitHeight` makes it the box the reader will see before the hand-off reads it.
+    model.layout.fitHeight();
+    if (landAtPlace.land()) return null;
     // `landAtPlace` moved nothing, so the issue marked last is listed and its row is not drawn.
     const key = lastMarked.current;
     if (key === null) return focusListStop(tableStop());
-    model.focusRow(key, ROW_CHECKBOX, "nearest");
+    // The table draws the row and lands on its checkbox once drawn, with the least scroll from
+    // where the reader stood (`focusRow`); the hand-off holds what takes that landing back, so the
+    // reader's own act ends it, and the table's own stop holds the focus until then (`own`).
+    landAtPlace.own(model.focusRow(key, ROW_CHECKBOX, "nearest"));
     return null;
   };
   // A control of the table's head - a column filter, or the list it opened in a portal of its
@@ -472,6 +475,7 @@ export function IssuesTable({
     items: allItems,
     clearSelection: () => setSelection({}),
   });
+  leavingNow.current = leaving;
 
   // How many parents the walk could not read: every one of them when the walk itself failed,
   // else the ones it named. The rest of the rows keep the epic they were read with.
@@ -572,9 +576,8 @@ export function IssuesTable({
         ) : null}
 
         <IssueTableToolbar
-          // Shift+F and Shift+V belong to the page's one table, or its main one: a table drawn
-          // beside it leaves them to that one.
-          keyScope={moveFrom === "page" ? "project" : undefined}
+          // Shift+F and Shift+V belong to the page's one table (`project` scope).
+          keyScope="project"
           selection={pickedChip}
           stateKey={stateKey}
           table={table}

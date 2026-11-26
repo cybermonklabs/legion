@@ -110,6 +110,13 @@ export interface TableLayoutModel {
   readonly attachBox: (node: HTMLDivElement | null) => void;
   readonly boxHeight: number;
   readonly boxWidth: number;
+  /** Gives the box the height the page lays out for it now (`boxHeight`), at once, as its
+   *  `ResizeObserver` does a frame after any change of the page. A host that hands the focus on
+   *  calls it right before, so the box the focus lands against is the box the reader will see
+   *  (`features/project/IssuesTable.tsx`'s `returnFocus`). The widths are left to that observer:
+   *  a change of them can draw the rows anew, which would take the focus the host is about to
+   *  hand on. */
+  readonly fitHeight: () => void;
   /** The narrowest each column is drawn at, from the caller (`LayoutColumns.minimums`). */
   readonly minimums: Readonly<Partial<Record<string, number>>>;
   readonly order: ColumnOrderState;
@@ -403,14 +410,10 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     return { sizing: widths, pinned, compact: false };
   }, [boxEdge, boxWidth, columns, measured, sizing, visibility]);
 
-  const measure = useCallback(() => {
+  const fitHeight = useCallback(() => {
     const box = scrollRef.current;
     if (!box) return;
     const bounds = box.getBoundingClientRect();
-    setBoxWidth(bounds.width);
-    // The box's border box less the room inside it that is beside any scrollbar: its borders
-    // and a classic scrollbar. Both are whole pixels, read where the page lays them out.
-    setBoxEdge(box.offsetWidth - box.clientWidth);
     const header = box.querySelector("thead")?.getBoundingClientRect().height ?? 61;
     const firstRows = [...box.querySelectorAll<HTMLElement>(`[${rowAttribute}]`)].slice(0, 3);
     const rowsHeight = firstRows.reduce(
@@ -435,8 +438,23 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     const slack =
       window.innerHeight - padding(box.parentElement) - padding(box.closest("main")) - foot;
     const available = bounds.height + slack;
-    setBoxHeight(Math.max(400, header + rowsHeight + 2, available));
+    const height = Math.max(400, header + rowsHeight + 2, available);
+    // The box takes the height at once as well as in the render its state draws next, so a host
+    // that fits it right before it hands the focus on lands against the box the reader will see
+    // (`features/project/IssuesTable.tsx`'s `returnFocus`). That render writes the same value.
+    if (box.style.maxHeight !== "") box.style.maxHeight = `${height}px`;
+    else if (box.style.height !== "") box.style.height = `${height}px`;
+    setBoxHeight(height);
   }, [rowAttribute]);
+  const measure = useCallback(() => {
+    const box = scrollRef.current;
+    if (!box) return;
+    setBoxWidth(box.getBoundingClientRect().width);
+    // The box's border box less the room inside it that is beside any scrollbar: its borders
+    // and a classic scrollbar. Both are whole pixels, read where the page lays them out.
+    setBoxEdge(box.offsetWidth - box.clientWidth);
+    fitHeight();
+  }, [fitHeight]);
   useLayoutEffect(() => {
     measure();
     window.addEventListener("resize", measure);
@@ -605,6 +623,7 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     attachBox,
     boxHeight,
     boxWidth,
+    fitHeight,
     minimums: columns.minimums ?? NO_MINIMUMS,
     order,
     pagerRef,

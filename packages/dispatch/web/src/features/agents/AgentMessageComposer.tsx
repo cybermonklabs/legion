@@ -253,8 +253,8 @@ export function AgentMessageComposer({
           }}
           onPick={commitIssue}
           open={issuePickerOpen}
-          // A list option's label is one string, so the issue's key and title stay the characters
-          // they are; the reading list's `agent-message-issue-option` says why.
+          // An issue's key and title, as the characters they are: the reading list's
+          // `agent-message-issue-option`.
           optionLabel={(key) =>
             key === ""
               ? "No issue"

@@ -566,7 +566,7 @@ export function buildMachinePath(host: string): string {
   return `/machines/${encodeURIComponent(host)}`;
 }
 
-/** The `?role=` the Agents page narrows to (`agent-search.ts`), the page a
+/** The `?role=` the Agents page narrows to (`features/agents/agent-search.ts`), the page a
  *  `dispatch://role/<token>` reference opens (`buildReferencePath`). */
 export const AGENTS_ROLE_PARAM = "role";
 

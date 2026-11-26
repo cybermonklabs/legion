@@ -23,9 +23,8 @@ import { type LayoutColumns, useTableLayout } from "./table-layout";
 
 /**
  * Two of the one table drawn together, each with its own address prefix, its own stored layout
- * key and its own columns — the case the priorities page of dispatch://INFRA-2947 meets, where
- * the two fault lists stand above the priorities themselves. The address and the stored layout
- * are this test's own: it reads what each table wrote and draws both again from it.
+ * key and its own columns — the case a page that draws two of them meets. The address and the
+ * stored layout are this test's own: it reads what each table wrote and draws both again from it.
  */
 
 /** A line of either table: what it is, where it went and how long it took. */

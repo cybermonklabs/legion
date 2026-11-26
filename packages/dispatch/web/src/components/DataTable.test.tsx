@@ -868,17 +868,17 @@ test("walks the rows by the attribute and the keymap scope the caller gives", as
   expect(rows[0]).toHaveFocus();
 });
 
-/** The same words for a table drawn beside the page's main one, as the priorities page draws its
- *  fault lists beside the priorities: the same keys under the same ids, answered only from one of
- *  this table's own rows. */
+/** The same words for a table whose next and previous answer from its own rows alone (`moveFrom:
+ *  "row"`), for keys the page answers itself everywhere else, such as the arrows, which scroll it -
+ *  the Delivery page's pull requests are walked that way (`features/delivery/PRList.tsx`): the same
+ *  keys under the same ids, answered only while the focus stands in one of this table's rows. */
 const BESIDE_NAMES: DataTableNames = {
   ...DEPLOY_NAMES,
   keymap: { ...DEPLOY_NAMES.keymap, moveFrom: "row" },
 };
 
-// INFRA-3135's review round 1, R10: a page that draws several tables over the same keys - the
-// priorities page, whose priorities table and issue tables all take `j` and `k` - answers each
-// key from the table the focus is in. A table beside the main one walks its own rows from one of
+// INFRA-3135's review round 1, R10: a page that draws several tables over the same keys answers
+// each key from the table the focus is in. A table beside the main one walks its own rows from one of
 // them; the main one walks its rows from anywhere the focus is in no table, and from its own.
 // The keymap answers a key with the first registration whose `when` holds, so this holds in
 // either order the tables register in, with rows of the same ids under the same attribute.

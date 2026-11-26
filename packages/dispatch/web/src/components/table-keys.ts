@@ -28,9 +28,8 @@ export interface RowKeymap {
    *  the focus is in no other table (`page`, the default), for keys nothing else on the page
    *  answers, such as `j` and `k`; or only while the focus is in one of this table's own rows
    *  (`row`), for keys the page answers itself everywhere else, such as the arrows, which scroll
-   *  it, and for every table a page draws beside its main one over the same keys - the
-   *  priorities page's issue tables beside its priorities - so each table answers from its own
-   *  rows and the main one from everywhere else. */
+   *  it - the Delivery page's pull requests are walked that way (`features/delivery/PRList.tsx`)
+   *  - so that table answers from its own rows and the page keeps those keys everywhere else. */
   readonly moveFrom?: "page" | "row";
   /** Opens the row in hand; the one binding the palette lists. */
   readonly open: KeymapActionId;
@@ -45,8 +44,14 @@ export interface RowKeymap {
 }
 
 /** Focuses the row whose id is `key`, or the element `selector` names inside it. The selection
- *  bar asks for `"nearest"` to show its checkbox whole without the engine's focus scroll. */
-export type FocusRow = (key: string, selector?: string, placement?: "nearest") => void;
+ *  bar asks for `"nearest"` to show its checkbox whole without the engine's focus scroll. A row
+ *  the table has not drawn is scrolled to and focused once it is drawn; the answer takes that
+ *  focus back while it is still to come, and does nothing once it has been made. */
+export type FocusRow = (key: string, selector?: string, placement?: "nearest") => () => void;
+
+/** What `FocusRow` answers when it leaves no focus to come: a drawn row is focused at once, and a
+ *  key the table does not hold focuses nothing. */
+const NOTHING_PENDING = (): void => undefined;
 
 /**
  * The keys a reader walks the table's rows with, as the actions the caller names: two keys move
@@ -103,14 +108,17 @@ export function useRowKeymap<TData>({
         if (placement === "nearest") landNearest(element);
         else element.focus();
       }
-      return;
+      return NOTHING_PENDING;
     }
     const index = displayRows.findIndex(({ row }) => row.id === key && !row.getIsGrouped());
-    if (index !== -1) {
-      const from = placement === "nearest" ? scrollRef.current?.scrollTop : undefined;
-      pendingFocus.current = { key, selector, from };
-      scrollToIndex(index);
-    }
+    if (index === -1) return NOTHING_PENDING;
+    const from = placement === "nearest" ? scrollRef.current?.scrollTop : undefined;
+    const pending = { from, key, selector };
+    pendingFocus.current = pending;
+    scrollToIndex(index);
+    return () => {
+      if (pendingFocus.current === pending) pendingFocus.current = null;
+    };
   };
   const moveFocus = (direction: 1 | -1) => {
     const leaves = displayRows.filter(({ row }) => !row.getIsGrouped());
@@ -145,8 +153,9 @@ export function useRowKeymap<TData>({
   // focus for keys the page answers itself everywhere else; for the others the table need only
   // hold a row, and the focus be in no other table, whose own keys are its to answer. Another
   // table is its box, or the frame its page draws around its control row, box and pager
-  // (`TABLE_FRAME_ATTRIBUTE`), so a key pressed on an issue table's Columns menu or its Next ›
-  // on the Priorities page walks no priority. This table's own frame holds its box.
+  // (`TABLE_FRAME_ATTRIBUTE`), so a key pressed on a table's Columns menu or its Next › is that
+  // table's own and reaches the rows of no other table on the page. This table's own frame holds
+  // its box.
   const canMove =
     keymap.moveFrom === "row"
       ? () => focusedRow() !== null

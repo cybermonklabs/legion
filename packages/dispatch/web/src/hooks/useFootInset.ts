@@ -721,6 +721,24 @@ function clearScrollers(): void {
   }
   for (const [scroller, taken] of next) if (!kept.has(scroller)) mark(scroller, taken);
   listenWhileNeeded();
+  for (const waiting of afterPass.splice(0)) waiting();
+}
+
+/** What waits for the end of the pass that is asked for (`afterFootPass`). */
+const afterPass: (() => void)[] = [];
+
+/**
+ * Runs `settled` once the pass that is asked for now has given every marked scroller its end room,
+ * or at once where no pass is pending. The selection bar's hand-off waits on this before it lands:
+ * the bar's going gives the room its foot had back to the list in that pass, so the box a landing
+ * is measured against is the one the pass leaves (`components/SelectionBar.tsx`).
+ */
+export function afterFootPass(settled: () => void): void {
+  if (clearFrame === 0) {
+    settled();
+    return;
+  }
+  afterPass.push(settled);
 }
 
 /** Asks for a pass at the next animation frame, once however often it is asked. */

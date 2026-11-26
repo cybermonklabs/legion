@@ -28,9 +28,10 @@ export function controlIn(root: ParentNode, name: ControlName): HTMLElement | nu
 }
 
 /** How much room a control takes in its row. `compact` is for a toolbar that holds more controls
- *  than a phone's width fits at the comfortable size: the Delivery page's, and a table's own
- *  header filters, pager and selection bar. `toolbar` is the compact size of a table toolbar whose
- *  controls stand at one height from 1280 px up: the project List's control row and the
+ *  than a phone's width fits at the comfortable size: the Delivery page's, a table's own header
+ *  filters, pager and selection bar, and the chips inside the project List's filter panel
+ *  (`features/project/issues-table-page.tsx`). `toolbar` is the compact size of a table toolbar
+ *  whose controls stand at one height from 1280 px up: the project List's control row and the
  *  priorities pages' toolbars (dispatch://INFRA-2947, R15). */
 export type ControlSize = "comfortable" | "compact" | "toolbar";
 
