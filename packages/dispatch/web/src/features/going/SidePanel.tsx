@@ -172,6 +172,14 @@ export function SidePanel({ wideInset }: { readonly wideInset?: string }): React
   }, [login, side]);
 
   if (!side) {
+    // This component stays mounted while the panel is elsewhere and draws nothing, so its state
+    // outlives the panel's leaving the side: Open over the page, the bar taking the conversation
+    // back, or the panel's ×. History closes as the panel leaves, in this render, so each return
+    // to the side - a run the bar hands over (`handOffToPanel`) among them - shows the
+    // conversation and the box that takes the focus.
+    if (history) {
+      setHistory(false);
+    }
     return null;
   }
   // What the box says it does now (design v2, rule 5).

@@ -16,6 +16,7 @@ import {
   resetGoingStore,
   setPlace,
   setWide,
+  startRun,
 } from "./going-store";
 import { SidePanel } from "./SidePanel";
 
@@ -591,6 +592,48 @@ test("a handoff from the bar puts the focus in the panel's box, and the request 
   expect(screen.getByRole("textbox", { name: "Ask the command bar" })).toHaveFocus();
   expect(goingState().panelFocus).toBe(false);
   expect(goingState().place).toBe("side");
+});
+
+// History is what the panel shows at the side, and it closes as the panel leaves the side: a run
+// the bar hands to the panel later is drawn as its conversation, with the cursor in the box under
+// it, not hidden behind the History the person left open there.
+test("History open in the panel closes as the panel leaves the side, so a run handed to it later shows its conversation, with the focus in its box", async () => {
+  const user = userEvent.setup();
+  const starts = answerStarts();
+  const history = spyOn(api, "myGoingRuns").mockResolvedValue({
+    limit: 50,
+    offset: 0,
+    rows: [],
+    total: 0,
+  });
+  try {
+    renderPanel();
+    await user.click(screen.getByTestId("going-history-button"));
+    expect(await screen.findByTestId("going-history")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open over the page" }));
+    expect(goingState().place).toBe("over");
+    expect(screen.queryByTestId("going-side-panel")).toBeNull();
+
+    // The bar's Ask: a run of the words in the bar, handed to the panel at the side.
+    act(() => {
+      void startRun(
+        started.words,
+        { block: "", issue: "CORE-1", path: PAGE, project: "CORE" },
+        "alice",
+        { line: "ask" }
+      );
+      handOffToPanel();
+    });
+    expect(screen.getByRole("textbox", { name: "Ask the command bar" })).toHaveFocus();
+    expect(screen.queryByTestId("going-history")).toBeNull();
+    expect(screen.getByTestId("going-history-button")).toHaveAttribute("aria-pressed", "false");
+    const run = await screen.findByTestId("going-run");
+    expect(within(run).getByTestId("going-run-words")).toHaveTextContent(started.words);
+    expect(starts.start).toHaveBeenCalledTimes(1);
+  } finally {
+    history.mockRestore();
+    starts.restore();
+  }
 });
 
 // The 420 px panel cut "Ask a follow-up…" to "Ask a follow-u" beside a long chip and Stop: the box
