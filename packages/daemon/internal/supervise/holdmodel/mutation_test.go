@@ -124,6 +124,15 @@ var plantOn = map[string]bool{
 	"d.forceFatalFailure": true, "d.intentDropsPause": true, "d.load != nil": true, "d.store != nil": true,
 }
 
+// oracleFuncs are the oracles and the driver's step around a transition. A
+// local they write is the oracle's own reading, not transition state.
+var oracleFuncs = map[string]bool{
+	"execute": true, "fatalClose": true, "fatalCloseBad": true, "recoveryMutation": true,
+	"recoveryAuthorized": true, "appliedInput": true, "attemptBoundBad": true, "settleOne": true,
+	"settleBad": true, "checkServed": true, "checkCommit": true, "Check": true,
+	"creditedOpen": true, "creditPromptOpen": true, "bootMemoryBad": true,
+}
+
 func collectStateMutations(pkg string) ([]stateMutation, int, error) {
 	var all []stateMutation
 	excluded := 0
@@ -171,6 +180,9 @@ func collectStateMutations(pkg string) ([]stateMutation, int, error) {
 				continue
 			}
 			fn := fd.Name.Name
+			if oracleFuncs[fn] {
+				continue // the oracles and the driver's step, not transitions
+			}
 			if name == "state.go" {
 				// Only the scheduler's selection lives here; the rest of
 				// state.go is reading, not writing.
@@ -188,7 +200,7 @@ func collectStateMutations(pkg string) ([]stateMutation, int, error) {
 				case *ast.IncDecStmt:
 					if writesState(n.X, text) {
 						target := text(n.X)
-						add(fn, n, target, "drop", "/* mutant */")
+						add(fn, n, target, "drop", "_ = "+target)
 						add(fn, n, target, "zero", target+" = mutationZero("+target+")")
 					}
 				case *ast.BinaryExpr:
@@ -225,7 +237,13 @@ func assignmentMutants(n *ast.AssignStmt, text func(ast.Node) string, add func(a
 	if len(targets) == 0 {
 		return
 	}
-	add(n, strings.Join(targets, ", "), "drop", "/* mutant */")
+	// A dropped write still evaluates its operands, so no variable that only
+	// the write used is left unused and the mutant compiles.
+	var operands []string
+	for _, e := range append(append([]ast.Expr{}, n.Lhs...), n.Rhs...) {
+		operands = append(operands, text(e))
+	}
+	add(n, strings.Join(targets, ", "), "drop", "_ = []any{"+strings.Join(operands, ", ")+"}")
 	if len(n.Lhs) > 1 && len(n.Lhs) == len(n.Rhs) {
 		for skip := range n.Lhs {
 			if !writesState(n.Lhs[skip], text) {
@@ -246,7 +264,9 @@ func assignmentMutants(n *ast.AssignStmt, text func(ast.Node) string, add func(a
 	}
 	lhs := text(n.Lhs[0])
 	if n.Tok == token.ASSIGN && !isZeroLiteral(n.Rhs[0]) {
-		add(n, lhs, "zero", lhs+" = mutationZero("+lhs+")")
+		// The old value is passed and ignored, so a variable only it used
+		// stays used and the mutant compiles.
+		add(n, lhs, "zero", lhs+" = mutationZero("+lhs+", "+text(n.Rhs[0])+")")
 	}
 	if lit, ok := n.Rhs[0].(*ast.CompositeLit); ok && len(lit.Elts) > 1 {
 		for skip, elt := range lit.Elts {
@@ -266,7 +286,7 @@ func assignmentMutants(n *ast.AssignStmt, text func(ast.Node) string, add func(a
 }
 
 func writesState(e ast.Expr, text func(ast.Node) string) bool {
-	if strings.Contains(text(e), "H.Bad") {
+	if t := text(e); strings.Contains(t, "H.Bad") || strings.HasPrefix(t, "h.Bad") {
 		return false // oracle accounting, not transition state
 	}
 	return stateRoots[rootName(e)]
@@ -337,7 +357,7 @@ func runStateMutation(pkg, base string, m stateMutation) mutationResult {
 	}
 	mutated := append(append(append([]byte{}, src[:m.Start]...), m.Replace...), src[m.End:]...)
 	if strings.Contains(m.Replace, "mutationZero(") {
-		mutated = append(mutated, "\nfunc mutationZero[T any](T) T { var zero T; return zero }\n"...)
+		mutated = append(mutated, "\nfunc mutationZero[T any](T, ...any) T { var zero T; return zero }\n"...)
 	}
 	variant := filepath.Join(dir, m.File)
 	overlay := filepath.Join(dir, "overlay.json")
