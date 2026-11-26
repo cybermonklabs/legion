@@ -3904,6 +3904,53 @@ func (s *Postgres) FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, 
 	return nil
 }
 
+func (s *Postgres) NameUndeliveredHookPrompt(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, paragraph string, now time.Time, window time.Duration) (time.Time, bool, error) {
+	// The window's lock first, held to the end of tx: a transaction that finds no window and
+	// opens one commits before the next look at the same window runs, so two finishes never both
+	// find none.
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended($1, 0))`, "hook-prompts-message:"+issue+":"+string(role)); err != nil {
+		return time.Time{}, false, fmt.Errorf("lock the message of %s's undelivered hook prompts on %s: %w", role, issue, err)
+	}
+	// The lease test is read again once the row's lock is held (READ COMMITTED), so a run that
+	// leased the row while this waited for it leaves it out.
+	row, err := scanOutbox(tx.QueryRow(ctx, `select `+outboxColumns+` from outbox
+		where kind = $1 and issue = $2 and payload->'hook_prompts'->>'role' = $3
+			and attempts = 0 and created_at > $5
+			and next_at > $4 and (lease_until is null or lease_until <= $4)
+		order by id limit 1 for update`,
+		string(OutboxKindDispatchMessage), issue, string(role), now, now.Add(-window)))
+	if errors.Is(err, pgx.ErrNoRows) {
+		opened, err := NewOutboxRow(issue, UndeliveredHookPrompts{Role: role, Paragraphs: []string{paragraph}}.Message(issue), now.Add(window))
+		if err != nil {
+			return time.Time{}, false, fmt.Errorf("open the message of %s's undelivered hook prompts on %s: %w", role, issue, err)
+		}
+		opened.CreatedAt = now
+		if err := s.Enqueue(ctx, tx, opened); err != nil {
+			return time.Time{}, false, err
+		}
+		return opened.NextAt, true, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("read the message of %s's undelivered hook prompts on %s: %w", role, issue, err)
+	}
+	payload, err := DecodeOutboxPayload(row)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("read the message of %s's undelivered hook prompts on %s: %w", role, issue, err)
+	}
+	// The query took a message row whose payload names role's undelivered prompts, so the payload
+	// is such a message.
+	prompts := *payload.(MessagePost).HookPrompts
+	prompts.Paragraphs = append(prompts.Paragraphs, paragraph)
+	joined, err := NewOutboxRow(issue, prompts.Message(issue), row.NextAt)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("name a prompt in the message of %s's undelivered hook prompts on %s, outbox row %d: %w", role, issue, row.ID, err)
+	}
+	if _, err := tx.Exec(ctx, `update outbox set payload = $2 where id = $1`, row.ID, string(joined.Payload)); err != nil {
+		return time.Time{}, false, fmt.Errorf("name a prompt in the message of %s's undelivered hook prompts on %s, outbox row %d: %w", role, issue, row.ID, err)
+	}
+	return row.NextAt, false, nil
+}
+
 // RetryOutbox returns row id to the outbox, due again at nextAt, while leaseToken holds it: one
 // more attempt, its lease cleared, and lastErr as its last error. lastErr is a far side's error
 // text, so the row holds storetext.FarSideError of it, and the caller logs the whole text
