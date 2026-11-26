@@ -46,9 +46,8 @@ func LingerEventID(root string, generation uint64) string {
 }
 
 // retroAgentRole is the role whose agent does issue's retro after its close: the one place that
-// chooses it, so the close, the start and the claim the close keeps all name the same agent. On
-// main it is the role that works the retro phase, the implementer (phase.RoleFor); INFRA-5602's
-// task t9 makes it the agent record.PlaceWorker names.
+// chooses it, so the close, the start and the claim the close keeps all name the same agent. It is
+// the role that works the retro phase (phase.RoleFor), the implementer.
 func (e *Engine) retroAgentRole(issue record.Issue) claim.Role {
 	return phase.RoleFor(phase.Retro)
 }
@@ -64,10 +63,10 @@ const (
 	// it.
 	retroCloseOwed
 	// retroCloseRunning: the issue stands in its retro, delivered to its agent, which keeps its
-	// turn, its step row and its claim (P4).
+	// turn, its step row and its claim.
 	retroCloseRunning
 	// retroCloseQueued: the issue stands in its retro whose start is queued and not delivered; the
-	// task goes out with no phase on the step row the move into retro started (c20).
+	// task goes out with no phase on the step row the move into retro started.
 	retroCloseQueued
 )
 
@@ -84,27 +83,33 @@ type retroClosePlan struct {
 	retroStart time.Time
 }
 
+// handsTask is whether the close hands the retro's agent the task of the retro plan names: a retro
+// owed, or one whose start was queued and not delivered. A running retro's turn goes on.
+func (p retroClosePlan) handsTask() bool {
+	return p.kind == retroCloseOwed || p.kind == retroCloseQueued
+}
+
 // retroAtClose is the one answer to whether the close of issue at status owes the retro of its
-// newest run (INFRA-5602's P1), read before the close writes the issue done, so an issue standing
-// in its retro is still read there. Only a done owes one, so a move to backlog, icebox or triage
-// starts nothing and the later done does (c4). An issue whose key is no issue key records no
-// steps, and one with no row in run_retros never started (c17, c19). The newest run that started
-// owes its retro unless a retro row of it started before the close, of any result: one that
-// passed, one that moved the work back, one stopped, and a retro after an earlier close of the
-// same run, whether it ended or is still open. An issue in its retro (not held for its children,
-// whose retro has not started) has that retro, and the close keeps it rather than owing another:
-// running, or queued and not yet delivered, as the agent's queued start of the retro phase says.
-// Its bound counts from the start of the retro's row that runs now (P5), which, in a run whose
-// work went back from an earlier retro, is later than the run's first retro start.
+// newest run, read before the close writes the issue done, so an issue standing in its retro is
+// still read there. Only a done owes one, so a move to backlog, icebox or triage starts nothing
+// and the later done does. An issue whose key is no issue key records no steps, and one with no
+// row in run_retros never started. The newest run that started owes its retro unless a retro row
+// of it started before the close, of any result: one that passed, one that moved the work back,
+// one stopped, and a retro after an earlier close of the same run, whether it ended or is still
+// open. An issue in its retro (not held for its children, whose retro has not started) has that
+// retro, and the close keeps it rather than owing another: running, or queued and not yet
+// delivered, as a start of the agent queued for the retro phase's work says (queuedStartActs: a
+// start queued for news alone brings it none). Its bound counts from the start of the retro's row
+// that runs now, which, in a run whose work went back from an earlier retro, is later than the
+// run's first retro start.
 func (e *Engine) retroAtClose(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) (retroClosePlan, error) {
 	if status != record.DoneStatus || !recordsSteps(issue) {
 		return retroClosePlan{}, nil
 	}
-	runs, err := e.store.RunRetros(ctx, tx, issue.Key)
-	if err != nil || len(runs) == 0 {
+	newest, err := e.store.NewestRunRetro(ctx, tx, issue.Key)
+	if err != nil || newest == nil {
 		return retroClosePlan{}, err
 	}
-	newest := runs[0]
 	role := e.retroAgentRole(issue)
 	agent, err := stepClaim(issue, issue.Key, role)
 	if err != nil {
@@ -136,9 +141,7 @@ func (e *Engine) retroAtClose(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if err != nil {
 		return retroClosePlan{}, err
 	}
-	if slices.ContainsFunc(run.Queued, func(queued record.QueuedSupervise) bool {
-		return queued.Request.Op == "start" && queued.Request.Phase == phase.Retro
-	}) {
+	if queuedStartActs(run, 0, phase.Retro) {
 		plan.kind = retroCloseQueued
 		return plan, nil
 	}
@@ -156,19 +159,24 @@ func (e *Engine) retroAtClose(ctx context.Context, tx pgx.Tx, issue record.Issue
 // running or queued at the close keeps the row it has. The run's record opens the retro with its
 // bound, RetroAfterCloseBound after that row's start, the agent and the entry of a running retro,
 // and a retro_bound row due at the bound ends it should nobody report it (retroBoundEnded). A
-// retro owed or queued is handed its task (retroAfterCloseTask) by a start of its agent that names
-// the run and no phase, at the issue's generation, as a production check's look names its check:
-// the outbox fences it on the run's open retro, resumes a suspended claim, relaunches a retired one
-// in its kept session and creates one that never launched. A running retro gets no task: its turn
-// goes on, and its completion is taken on its entry.
-func (e *Engine) openRetroAfterClose(ctx context.Context, tx pgx.Tx, issue record.Issue, plan retroClosePlan) error {
+// retro owed or queued is handed its task (retroAfterCloseTask, which names pr, the issue's pull
+// request row as the close read it, nil for none) by a start of its agent that names the run and
+// no phase, at the issue's generation, as a production check's look names its check: the outbox
+// fences it on the run's open retro, resumes a suspended claim, relaunches a retired one in its
+// kept session and creates one that never launched. A running retro gets no task: its turn goes
+// on, and its completion is taken on its entry. The walk of the run is read for a retro handed its
+// task alone, whose step row and task stand on it.
+func (e *Engine) openRetroAfterClose(ctx context.Context, tx pgx.Tx, issue record.Issue, plan retroClosePlan, pr *record.PullRequest) error {
 	if plan.kind == retroCloseNone {
 		return nil
 	}
 	stood := retroStood(issue, plan.run)
-	w, err := e.walk(ctx, tx, stood)
-	if err != nil {
-		return err
+	var w Walk
+	if plan.handsTask() {
+		var err error
+		if w, err = e.walk(ctx, tx, stood); err != nil {
+			return err
+		}
 	}
 	retroStart := plan.retroStart
 	if plan.kind == retroCloseOwed {
@@ -191,7 +199,7 @@ func (e *Engine) openRetroAfterClose(ctx context.Context, tx pgx.Tx, issue recor
 		retroStart = *run.RetroStartedAt
 	}
 	bound := retroStart.Add(RetroAfterCloseBound).Truncate(time.Microsecond)
-	if _, err := e.store.OpenRetroAfterClose(ctx, tx, issue.Key, plan.run, issue.Tree, e.now().Truncate(time.Microsecond), bound, plan.agent, plan.entry); err != nil {
+	if err := e.store.OpenRetroAfterClose(ctx, tx, issue.Key, plan.run, issue.Tree, e.now().Truncate(time.Microsecond), bound, plan.agent, plan.entry); err != nil {
 		return err
 	}
 	if err := e.enqueueAt(ctx, tx, issue.Key, record.RetroBound{Generation: plan.run}, bound); err != nil {
@@ -199,14 +207,10 @@ func (e *Engine) openRetroAfterClose(ctx context.Context, tx pgx.Tx, issue recor
 	}
 	e.logOnCommit(ctx, "workflow: the retro after the close opened", "issue", issue.Key, "run", plan.run, "agent", plan.agent,
 		"bound", bound, "running", plan.kind == retroCloseRunning)
-	if plan.kind == retroCloseRunning {
+	if !plan.handsTask() {
 		return nil
 	}
 	at, err := e.standingPart(ctx, tx, stood, w)
-	if err != nil {
-		return err
-	}
-	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
 		return err
 	}
@@ -218,9 +222,19 @@ func (e *Engine) openRetroAfterClose(ctx context.Context, tx pgx.Tx, issue recor
 		RetroRun: plan.run, Task: retroAfterCloseTask(stood, at, pr, topic)})
 }
 
+// taskPullRequest is issue's pull request row, nil for none, where plan hands the retro's agent its
+// task, which names it, and nil otherwise: what a root's leave, which reads no pull request of its
+// own, hands openRetroAfterClose.
+func (e *Engine) taskPullRequest(ctx context.Context, tx pgx.Tx, issue record.Issue, plan retroClosePlan) (*record.PullRequest, error) {
+	if !plan.handsTask() {
+		return nil, nil
+	}
+	return e.store.PullRequestRow(ctx, tx, issue.Key)
+}
+
 // retroStood is issue as it stood in the retro of run: at that generation, in phase.Retro, with no
 // hold and no wait on a person. The retro's step row, its walk, its task and its rating are all
-// of that run, whichever generation the issue has reached since (a todo, c18).
+// of that run, whichever generation the issue has reached since (a todo).
 func retroStood(issue record.Issue, run uint64) record.Issue {
 	issue.Generation, issue.Phase, issue.Hold, issue.Awaiting = run, phase.Retro, nil, nil
 	return issue
@@ -246,7 +260,7 @@ func findingsClause(topic string) string {
 		", and that architect puts it to the person as one decision. A requirement that another open child of the same parent carries is pending and goes to no one."
 }
 
-// retroAfterCloseTask is the task of the retro after the close of stood's issue (P11): the retro's
+// retroAfterCloseTask is the task of the retro after the close of stood's issue: the retro's
 // first line and the standing of its run's retro, as every retro task opens (the working copy,
 // and for a run with plan rows its task and its `Steps:` line), the pull request where the issue
 // has one, then what R2 says: the issue is closed, the retro moves it nowhere and the retro
@@ -266,7 +280,7 @@ func retroAfterCloseTask(stood record.Issue, at Standing, pr *record.PullRequest
 
 // spareRetroAgent adds to spared the role of the agent of issue's open retro after a close, where
 // it has one: a done issue moved to backlog, icebox or triage, or closed again, keeps that retro's
-// agent and its pod while the retro is open (P3).
+// agent and its pod while the retro is open.
 func (e *Engine) spareRetroAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, spared []claim.Role) ([]claim.Role, error) {
 	open, err := e.store.OpenRetroOfIssue(ctx, tx, issue.Key)
 	if err != nil || open == nil {
@@ -349,14 +363,7 @@ func retroNotOpen(issue string, generation uint64, run *record.RunRetro) string 
 	if run == nil || !run.AfterClose() {
 		return fmt.Sprintf("%s run %d has no retro after its close; this report changed nothing", issue, generation)
 	}
-	why := "by its report"
-	switch run.EndedBy {
-	case record.RetroEndBound:
-		why = fmt.Sprintf("at its bound, %s, with no report", run.BoundAt.Format(time.RFC3339))
-	case record.RetroEndTodo:
-		why = "when the issue was set back to todo"
-	}
-	return fmt.Sprintf("the retro after the close of %s run %d ended %s %s; this report changed nothing", issue, generation, run.Outcome, why)
+	return fmt.Sprintf("the retro after the close of %s run %d ended %s %s; this report changed nothing", issue, generation, run.Outcome, run.EndedHow())
 }
 
 // retroBoundEnded is the bound of the retro after a close coming due (intake.RetroBoundEnded, the
@@ -389,7 +396,7 @@ func (e *Engine) retroBoundEnded(ctx context.Context, tx pgx.Tx, fact intake.Ret
 }
 
 // EndOpenRetro ends issue's open retro after a close, where it has one, as stopped by a todo with
-// no rating (P10): the todo takes the issue into a new run, as a child's re-entry
+// no rating: the todo takes the issue into a new run, as a child's re-entry
 // (ReenterChild) and admission's re-admission (admit's readmit) each do, and the closed run's
 // retro ends there, as the re-entry ends an open production check as not run. Its step row ends
 // stopped at the fact's settle. It stops no claim and takes no pod: those are the new run's.
@@ -431,8 +438,8 @@ func (e *Engine) nameRetroEnd(ctx context.Context, tx pgx.Tx, issue record.Issue
 // pod are the new run's.
 //
 // The tree's root architect, which a message to its role topic woke while a retro after a close
-// of the tree was open (P6), is the daemon's to suspend again once no such retro is open and the
-// root has left the workflow or lingers (P7), and the root's pod goes with it where no check of
+// of the tree was open, is the daemon's to suspend again once no such retro is open and the
+// root has left the workflow or lingers, and the root's pod goes with it where no check of
 // the root is open. A tree past its linger closes again (closeTreeAfterRetros).
 func (e *Engine) finishRetroAfterClose(ctx context.Context, tx pgx.Tx, issue record.Issue, ended record.RunRetro) error {
 	if InWorkflow(issue) {
@@ -486,7 +493,7 @@ func (e *Engine) finishRetroAfterClose(ctx context.Context, tx pgx.Tx, issue rec
 }
 
 // closeTreeAfterRetros closes root's tree again once the last open retro after a close of a tree
-// past its linger has ended, open being the tree's retros still open (P8): the retro reopened the
+// past its linger has ended, open being the tree's retros still open: the retro reopened the
 // tree's lifecycle for its agent, and nothing else would close it. Where the linger's expiry has
 // not applied — it waited for the retro (lingerExpired) — a linger_close row due now applies it,
 // as the close of the tree's last production check re-arms it (closeCheck). Where it applied
@@ -525,15 +532,15 @@ func (e *Engine) closeTreeAfterRetros(ctx context.Context, tx pgx.Tx, root recor
 
 // retroWake wakes the architect of a tree root whose claim the tree's close suspended, or the
 // linger's end retired, on a message somebody published to its role topic while no live session
-// held it (P6, a listener's role_message report naming held, a claim that is not released, as the
+// held it (a listener's role_message report naming held, a claim that is not released, as the
 // listener's report read it: Pods.ClaimByToken): while a retro after a close of the tree is open,
 // the retro's agent publishes its findings there, and the woken architect gets the message Envoy
-// kept. It wakes nothing for a claim that is no tree root architect's of this daemon's record, for
-// a claim in any other state (a release's is wakeReleased's, a live one hears the message itself),
-// for a tree with no retro open, and where such a wake is already queued. The wake is a start of
-// the architect with the wake's kind, no phase and no run, marked as a retro's wake
-// (record.SuperviseRequest.RetroWake), which the outbox lets past the guard that drops a wake of a
-// claim the daemon suspended.
+// kept. It wakes nothing for a claim that is no tree root's own architect while a retro after a
+// close of its tree is open (RetroWakeOf), for a claim in any other state (a release's is
+// wakeReleased's, a live one hears the message itself), and where such a wake is already queued.
+// The wake is a start of the architect with the wake's kind, no phase and no run, marked as a
+// retro's wake (record.SuperviseRequest.RetroWake), which the outbox lets past the guard that
+// drops a wake of a claim the daemon suspended.
 func (e *Engine) retroWake(ctx context.Context, tx pgx.Tx, held supervise.Claim) error {
 	if held.Role != claim.RoleArchitect ||
 		!(held.State == supervise.StateSuspended && held.SuspendedBy == supervise.SuspendedByDaemon || held.State == supervise.StateRetired) {
@@ -541,14 +548,10 @@ func (e *Engine) retroWake(ctx context.Context, tx pgx.Tx, held supervise.Claim)
 	}
 	token := held.Token
 	root, err := e.store.Issue(ctx, tx, held.Tree)
-	if err != nil || root == nil || !claim.IsTreeRoot(root.Key, root.Tree) {
+	if err != nil || root == nil {
 		return err
 	}
-	if own, err := stepClaim(*root, root.Key, claim.RoleArchitect); err != nil || own != token {
-		return err
-	}
-	open, err := e.store.OpenRetrosOfTree(ctx, tx, root.Tree)
-	if err != nil || len(open) == 0 {
+	if _, architect, err := RetroWakeOf(ctx, e.store, tx, *root, token); err != nil || !architect {
 		return err
 	}
 	run, err := e.store.RoleRun(ctx, tx, token, root.Key, claim.RoleArchitect, root.Generation)
@@ -563,7 +566,7 @@ func (e *Engine) retroWake(ctx context.Context, tx pgx.Tx, held supervise.Claim)
 	wake := wakeRow(*root, claim.RoleArchitect, pods.WakeRoleMessage, 0, retroArchitectWakeTask(string(token)))
 	wake.RetroWake = true
 	e.logOnCommit(ctx, "wake: a message to the root architect of a closed tree wakes it while a retro after a close of the tree is open",
-		"tree", root.Key, "architect", token, "state", held.State, "retros", len(open))
+		"tree", root.Key, "architect", token, "state", held.State)
 	return e.enqueue(ctx, tx, root.Key, wake)
 }
 

@@ -45,12 +45,12 @@ func newWorkflowHarness(t *testing.T, cfg workflow.Config) (*harness, *workflow.
 	return h, engine, facts
 }
 
-// worksLook hands c's claim the task of look of the production check opened at openedAt and starts
-// its turn, as the look's own start row does (workflow's startLook: a task of no phase carrying
-// the look and the check instance). The turn the claim is in ends first, which retires the task it
-// held: a machine refuses a second delivery while one is pending, so the outbox's delivery waits
-// for that anyway.
-func (c liveClaim) worksLook(t *testing.T, look int, openedAt time.Time) {
+// worksTask hands c's claim the task deliver names (its Claim is c's) and starts its turn on that
+// task, as a start row's delivery and the turn the agent takes on it do: worksLook's look of a
+// production check and worksRetro's retro after a close. The turn the claim is in ends first,
+// which retires the task it held: a machine refuses a second delivery while one is pending, so
+// the outbox's delivery waits for that anyway. It answers the claim's machine.
+func (c liveClaim) worksTask(t *testing.T, deliver supervise.RequestDeliver) *supervise.Machine {
 	t.Helper()
 	machine, ok := c.h.supervisor.Machine(c.token)
 	if !ok {
@@ -62,14 +62,24 @@ func (c liveClaim) worksLook(t *testing.T, look int, openedAt time.Time) {
 			t.Fatalf("end the turn of %s: %v", c.token, err)
 		}
 	}
-	id := fmt.Sprintf("outbox:look:%s:%d:%d", c.token, openedAt.UnixMicro(), look)
-	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: c.token, Task: "Production check of " + c.issue + ".", ID: id,
-		Generation: issueGeneration(t, c.h, c.issue), CheckLook: supervise.CheckLook{Look: look, OpenedAt: openedAt}}); err != nil {
-		t.Fatalf("deliver look %d to %s: %v", look, c.token, err)
+	deliver.Claim = c.token
+	if err := machine.Handle(ctx, deliver); err != nil {
+		t.Fatalf("deliver %s to %s: %v", deliver.ID, c.token, err)
 	}
-	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: c.token, DeliveryID: id}); err != nil {
-		t.Fatalf("start look %d's turn on %s: %v", look, c.token, err)
+	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: c.token, DeliveryID: deliver.ID}); err != nil {
+		t.Fatalf("start the turn of %s on %s: %v", deliver.ID, c.token, err)
 	}
+	return machine
+}
+
+// worksLook hands c's claim the task of look of the production check opened at openedAt and starts
+// its turn, as the look's own start row does (workflow's startLook: a task of no phase carrying
+// the look and the check instance), by worksTask.
+func (c liveClaim) worksLook(t *testing.T, look int, openedAt time.Time) {
+	t.Helper()
+	machine := c.worksTask(t, supervise.RequestDeliver{Task: "Production check of " + c.issue + ".",
+		ID: fmt.Sprintf("outbox:look:%s:%d:%d", c.token, openedAt.UnixMicro(), look), Generation: issueGeneration(t, c.h, c.issue),
+		CheckLook: supervise.CheckLook{Look: look, OpenedAt: openedAt}})
 	if got := machine.Claim().ServingCheck(); got.Look != look {
 		t.Fatalf("the claim serves look %+v, want look %d of the check opened %s", got, look, openedAt)
 	}
@@ -249,7 +259,7 @@ func TestACompletionOfADoneIssueFromASessionWorkingNoRetroOrLookIsRefused(t *tes
 			req:   retroReport,
 			wants: []string{"LEGION-208 is done", "recorded nothing", "retro", "implementer"},
 			never: []string{"nothing here for any role to report"}},
-		{name: "a look's report where the retro after the close is served", retro: true, role: claim.RoleTester,
+		{name: "a look's report where the retro after the close is open", retro: true, role: claim.RoleTester,
 			req:   HandoffCompleteRequest{Summary: "production carries it", Verdict: "pass"},
 			wants: []string{"LEGION-208 is done", "recorded nothing", "retro", "implementer"},
 			never: []string{"nothing here for any role to report"}},
@@ -340,7 +350,7 @@ func TestACompletionOfADoneIssueFromASessionWorkingNoRetroOrLookIsRefused(t *tes
 			t.Fatalf("start the retro's turn: %v", err)
 		}
 		completion(t, h.complete(retroReportBy(implementer.grant(t))))
-		want := intake.RetroReport{Issue: "LEGION-208", Claim: implementer.token, Generation: 1, Summary: "the retro of the closed run",
+		want := intake.RetroReport{Issue: "LEGION-208", Claim: implementer.token, Generation: 1,
 			PlanRating: record.PlanRating{Rating: retroRating, Reason: retroReason}}
 		if got := since(); len(got) != 1 || got[0] != want {
 			t.Fatalf("facts after the retro's own turn = %#v, want the one report %#v", got, want)

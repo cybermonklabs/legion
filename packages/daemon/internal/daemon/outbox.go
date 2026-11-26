@@ -2572,7 +2572,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// A wake of the retro after a close (retroStart: its agent's, or the tree root's architect
 		// for a finding of it) is the one wake of a claim the daemon took over: the close or the
 		// linger suspended that claim, and the retro's open record, which fenced the row above, is
-		// what says it is wanted back (P6 and P7 of dispatch://INFRA-5602).
+		// what says it is wanted back.
 		if payload.WakeKind != "" && !retroStart && found {
 			if held := machine.Claim(); held.State == supervise.StateSuspended && held.SuspendedBy == supervise.SuspendedByDaemon {
 				r.log.Info("outbox wake start of a role the daemon took over; finished without acting", "row", row.ID,
@@ -2688,7 +2688,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// A retro's start in a tree past its linger reopens the tree's lifecycle first, once the
 		// linger's cleanup is confirmed, so the claim it resumes, relaunches or creates below binds
-		// the reopened epoch (P8 of dispatch://INFRA-5602, reopenTreeForRetro).
+		// the reopened epoch (reopenTreeForRetro).
 		if retroStart {
 			if err := r.reopenTreeForRetro(ctx, row, issue); err != nil {
 				return err
@@ -4419,12 +4419,11 @@ func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, paylo
 // RetroRun) still has that retro to start: the run's record (record.RunRetro) holds a retro after
 // the close open, its agent is the claim the row starts, and the issue is out of the workflow. It
 // fences the start of the retro's task, which the close queues, and the wake of the retro's agent
-// an idle release released (P7 of dispatch://INFRA-5602), which carries the run too. A run with no
-// record (an earlier run's row, whose record the later run's replaced), a retro its report or its
-// bound ended, an issue back in the workflow (the todo that took it back ended the retro in the
-// same transaction) or a start of a role that is not the retro's agent leave the row nothing to
-// start, and it finishes without acting, logged with why, as a check start whose look is gone does
-// (checkLookHolds).
+// an idle release released, which carries the run too. A run with no record (an earlier run's
+// row, whose record the later run's replaced), a retro its report or its bound ended, an issue
+// back in the workflow (the todo that took it back ended the retro in the same transaction) or a
+// start of a role that is not the retro's agent leave the row nothing to start, and it finishes
+// without acting, logged with why, as a check start whose look is gone does (checkLookHolds).
 func (r *outbox) retroHolds(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) (bool, error) {
 	agent, err := claim.NewToken(r.project, row.Issue, payload.Role)
 	if err != nil {
@@ -4455,12 +4454,12 @@ func (r *outbox) retroHolds(ctx context.Context, row record.OutboxRow, payload r
 }
 
 // retroWakeHolds is whether the wake of a tree root's architect for a finding of a retro after a
-// close (record.SuperviseRequest.RetroWake, P6 of dispatch://INFRA-5602) still has that retro to be
-// woken for: the row's issue is its tree's root, at the generation the row names, the tree has
-// left the workflow or lingers (record.Stopped), and a retro after the close of an issue of the
-// tree is open. A tree re-admitted since (its root running again, at a later generation) starts
-// its architect itself, and a tree whose last such retro ended has nothing more for it to hear:
-// either leaves the row nothing to start, and it finishes without acting, logged with why.
+// close (record.SuperviseRequest.RetroWake) still has that retro to be woken for: the row's issue
+// is its tree's root, at the generation the row names, the tree has left the workflow or lingers
+// (record.Stopped), and a retro after the close of an issue of the tree is open. A tree
+// re-admitted since (its root running again, at a later generation) starts its architect itself,
+// and a tree whose last such retro ended has nothing more for it to hear: either leaves the row
+// nothing to start, and it finishes without acting, logged with why.
 func (r *outbox) retroWakeHolds(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) (bool, error) {
 	var why string
 	switch {
@@ -4488,8 +4487,8 @@ func (r *outbox) retroWakeHolds(ctx context.Context, row record.OutboxRow, paylo
 // reopenTreeForRetro reopens the lifecycle of issue's tree for a start of a retro after a close
 // that a fence let through (retroHolds, retroWakeHolds), where the tree is past its linger: the
 // linger's end retired every claim of the tree and confirmed its cleanup, so no claim launches
-// there until a lifecycle is open again (P8 of dispatch://INFRA-5602, store.Store.ReopenTreeForRetro).
-// A tree still open changes nothing, and a cleanup reserved and not yet confirmed is a wait
+// there until a lifecycle is open again (store.Store.ReopenTreeForRetro). A tree still open
+// changes nothing, and a cleanup reserved and not yet confirmed is a wait
 // (treelifecycle.ErrCleanupReserved): the row runs again once the release confirms, and reopens
 // then. The workflow closes the tree again when the last retro after a close of it ends.
 func (r *outbox) reopenTreeForRetro(ctx context.Context, row record.OutboxRow, issue record.Issue) error {

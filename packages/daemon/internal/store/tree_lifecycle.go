@@ -80,17 +80,17 @@ func runNothing(context.Context, pgx.Tx) error { return nil }
 // the operator holds is refused (treelifecycle.ErrAuthorityHeld): the workflow records nothing
 // that acts on such a tree's claims.
 //
-// It runs under the shared serializer (treelifecycle.Serialize), the lock every other writer of a
-// lifecycle takes, so it orders against the cleanup's reservation and confirmation and against a
-// re-admission's open.
+// A tree whose cleanup has started reopens under the shared serializer (treelifecycle.Serialize),
+// the lock every other writer of a lifecycle takes, so it orders against the cleanup's
+// reservation and confirmation and against a re-admission's open: the lifecycle is read again
+// under the lock, and treelifecycle.Open decides it, as it decides a re-admission's. The read
+// before the lock answers the common start, whose tree is still open, without taking the lock
+// every fact takes.
 func (s *Store) ReopenTreeForRetro(ctx context.Context, project, tree string) (treelifecycle.Lifecycle, bool, error) {
 	var lifecycle treelifecycle.Lifecycle
 	var reopened bool
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		lifecycle, reopened = treelifecycle.Lifecycle{}, false
-		if err := treelifecycle.Serialize(ctx, tx); err != nil {
-			return err
-		}
 		current, found, err := treelifecycle.Read(ctx, tx, project, tree)
 		if err != nil || !found {
 			return err
@@ -102,13 +102,16 @@ func (s *Store) ReopenTreeForRetro(ctx context.Context, project, tree string) (t
 			lifecycle = current
 			return nil
 		}
-		if current.CleanupConfirmedAt.IsZero() {
-			return fmt.Errorf("reopen tree lifecycle %s for a retro after a close: %w", tree, treelifecycle.ErrCleanupReserved)
-		}
-		if lifecycle, err = treelifecycle.Open(ctx, tx, project, tree, treelifecycle.AuthorityWorkflow); err != nil {
+		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
-		reopened = true
+		if current, found, err = treelifecycle.Read(ctx, tx, project, tree); err != nil || !found {
+			return err
+		}
+		if lifecycle, err = treelifecycle.Open(ctx, tx, project, tree, treelifecycle.AuthorityWorkflow); err != nil {
+			return fmt.Errorf("reopen tree lifecycle %s for a retro after a close: %w", tree, err)
+		}
+		reopened = current.CleanupStarted
 		return nil
 	})
 	if err != nil {

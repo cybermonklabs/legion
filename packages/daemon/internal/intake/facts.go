@@ -1705,14 +1705,13 @@ func (f CheckBound) namedIssue() (string, bool) { return f.Issue, true }
 // tool's `handoff_complete` on a `done` issue, from the claim that serves the retro, carrying a
 // plan rating and its reason and no verdict and no commit (api/handoff.go). Generation is the
 // run the route read the claim as serving, so a report of a retro that a later run replaced is
-// refused rather than recorded against the newer one. Summary is what the agent says it found.
-// The workflow ends the retro's row as passed and writes the rating onto the retro's step record,
-// and writes no status (workflow's retroReported).
+// refused rather than recorded against the newer one. The workflow ends the retro's row as passed
+// and writes the rating onto the retro's step record, and writes no status (workflow's
+// retroReported).
 type RetroReport struct {
 	Issue      string
 	Claim      claim.Token
 	Generation uint64
-	Summary    string
 	PlanRating record.PlanRating
 }
 

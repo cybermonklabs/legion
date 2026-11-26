@@ -84,7 +84,7 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 		if err != nil {
 			return err
 		}
-		retro, err := retroAfterClose(ctx, s.records, tx, key)
+		retro, err := s.records.NewestRetroAfterClose(ctx, tx, key)
 		if err != nil {
 			return err
 		}
@@ -94,20 +94,4 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 		return nil
 	})
 	return position, err
-}
-
-// retroAfterClose is the record of key's newest run that holds a retro Legion opened after the
-// issue's close (record.RunRetro.AfterClose), nil for none: the retro whose report the issue takes
-// while it is open, and whose end a later completion is told of.
-func retroAfterClose(ctx context.Context, records record.Store, tx pgx.Tx, key string) (*record.RunRetro, error) {
-	runs, err := records.RunRetros(ctx, tx, key)
-	if err != nil {
-		return nil, err
-	}
-	for _, run := range runs {
-		if run.AfterClose() {
-			return &run, nil
-		}
-	}
-	return nil, nil
 }

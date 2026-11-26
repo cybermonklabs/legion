@@ -5,9 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -44,6 +41,12 @@ func TestIssueSuspensionFencesReadmissionAndWaitsForAllStoredRoles(t *testing.T)
 		// refuses a checkLook on any other), where the declined row above it is a plain start of
 		// the architect; the fence reads the look and not the role.
 		{name: "a queued check look start", state: supervise.StateSuspended, change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values (11,'supervise','LEGION-208','{"op":"start","tree":"LEGION-208","role":"implementer","generation":1,"checkLook":1}',0,now(),'')`},
+		// The two starts of the retro Legion runs after a close run on an issue out of the workflow
+		// too, as a look does: the retro's own start of its agent, which resumes or launches in the
+		// pod the close would delete, and the root architect's wake for the finding that retro
+		// publishes to its role topic. The retro's own end queues the next close.
+		{name: "a queued retro start of the implementer", state: supervise.StateSuspended, change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values (11,'supervise','LEGION-208','{"op":"start","tree":"LEGION-208","role":"implementer","generation":1,"retroRun":1}',0,now(),'')`},
+		{name: "a queued wake of the root architect for an open retro", state: supervise.StateSuspended, change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values (11,'supervise','LEGION-208','{"op":"start","tree":"LEGION-208","role":"architect","generation":1,"retroWake":true,"wakeKind":"role_message"}',0,now(),'')`},
 		{name: "role stop still pending", state: supervise.StateSuspended, change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values (9,'supervise','LEGION-208','{"op":"suspend","tree":"LEGION-208","role":"architect","generation":1}',0,now(),'')`, wantWait: "role stop effects"},
 		{name: "issue close still pending", state: supervise.StateRetired, change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values (9,'supervise','LEGION-208','{"op":"issue_close","tree":"LEGION-208","role":"architect","generation":1}',0,now(),'')`, wantWait: "role stop effects"},
 		// A stopped task's step stop is a role stop like a suspend (workflow's stopTask), so a close
@@ -117,59 +120,16 @@ func cleanupStarted(t *testing.T, st *Store) bool {
 	return started
 }
 
-// A start of the retro Legion runs after a close is one more start an issue's Sandbox is kept
-// for, as a production check's look is: the retro's agent resumes or launches in the pod the
-// close would delete (INFRA-5602). So a suspension that finds such a start queued after its own
-// row finishes without acting, which is what a look's start does, and the retro's own end queues
-// the next close. The retro start is the implementer's own, and the wake is the root
-// architect's, for the finding the retro's agent publishes to its role topic while the tree's
-// close holds the architect suspended. A start that names neither is the one the outbox declines,
-// which the suspension must not wait on: the control row, which acts.
-func TestAnIssueSuspensionWaitsForAQueuedRetroStart(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		payload string
-		wantAct bool
-	}{
-		{name: "a queued retro start of the implementer", payload: `{"op":"start","tree":"LEGION-208","role":"implementer","generation":1,"retroRun":1}`},
-		{name: "a queued wake of the root architect for an open retro", payload: `{"op":"start","tree":"LEGION-208","role":"architect","generation":1,"retroWake":true,"wakeKind":"role_message"}`},
-		{name: "a queued start that is no retro's", payload: `{"op":"start","tree":"LEGION-208","role":"architect","generation":1}`, wantAct: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			st := migratedStore(t)
-			ctx := context.Background()
-			openLingeringTree(t, st)
-			token, err := claim.NewToken("legion", rootIssue, claim.RoleArchitect)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := st.PutClaim(ctx, supervise.Claim{Token: token, Project: "legion", Tree: rootIssue, Issue: rootIssue,
-				Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, State: supervise.StateSuspended}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := st.Pool().Exec(ctx, `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error)
-				values (11,'supervise','LEGION-208',$1::jsonb,0,now(),'')`, tc.payload); err != nil {
-				t.Fatal(err)
-			}
-
-			act, err := st.IssueSuspension(ctx, "legion", IssueClose{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: 10}, record.OutOfWorkflow)
-			if err != nil || act != tc.wantAct {
-				t.Fatalf("suspension with %s queued after it = %t, %v; want act %t", tc.name, act, err, tc.wantAct)
-			}
-		})
-	}
-}
-
 // The tester's production check and the implementer's retro after the close are open together
 // (the child's pull request merged before its `done`, and its architect's `done` spared both
-// roles: INFRA-5602's c12). When the check closes first, its close queues an issue_suspend for the
-// child, and the retro's agent still holds the pod: the suspension waits on that agent's claim for
-// as long as the claim may run, the working turn and the idle one after it alike, and acts once
-// the retro's end closed the claim or the idle pass released the agent, as it acts on any
-// issue's claims that all stand stopped. The tester's claim is retired where the check closed
-// (the row "the check closes first") and suspended where a look ended pending and left the check
-// waiting for its next look (the row "a pending look", whose endLookPending queues the same
-// suspension): neither holds the pod, and neither changes what the retro's agent does.
+// roles). When the check closes first, its close queues an issue_suspend for the child, and the
+// retro's agent still holds the pod: the suspension reads no retro, only the claims of the issue,
+// so it waits on the agent's claim for as long as that claim may run, working or idle, and acts
+// once the idle pass released the agent or the retro's end retired its claim, as it acts on any
+// issue whose claims all stand stopped. The tester's claim is retired where the check closed (the
+// row "the check closes first", INFRA-5602's s22) and suspended where a look ended pending and left
+// the check waiting for its next look (the row "a pending look", s23, whose endLookPending queues
+// the same suspension): neither holds the pod, and neither changes what the agent's claim decides.
 func TestAnIssueSuspensionWaitsForAnOpenRetroAfterItsCheckCloses(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -205,50 +165,22 @@ func TestAnIssueSuspensionWaitsForAnOpenRetroAfterItsCheckCloses(t *testing.T) {
 			checker := tc.checker
 			checker.Token, checker.Role = tester, claim.RoleTester
 			put(checker)
-			put(supervise.Claim{Token: implementer, Role: claim.RoleImplementer, State: supervise.StateWorking})
 
-			opened := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
-			records := record.NewStore()
-			if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
-				if err := records.MarkRunStarted(ctx, tx, childIssue, 1, rootIssue, opened.Add(-2*time.Hour)); err != nil {
-					return err
-				}
-				if err := records.MarkRetroStarted(ctx, tx, childIssue, 1, rootIssue, opened); err != nil {
-					return err
-				}
-				_, err := records.OpenRetroAfterClose(ctx, tx, childIssue, 1, rootIssue, opened, opened.Add(24*time.Hour), implementer, 0)
-				return err
-			}); err != nil {
-				t.Fatalf("open the retro after the close of %s: %v", childIssue, err)
-			}
-
-			suspension := func() (bool, error) {
-				return st.IssueSuspension(ctx, "legion", IssueClose{Issue: childIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: 10}, record.OutOfWorkflow)
-			}
 			for _, step := range []struct {
 				name     string
 				agent    supervise.Claim
-				ends     bool
 				wantWait bool
 			}{
-				{name: "while the retro's turn works", agent: supervise.Claim{State: supervise.StateWorking}, wantWait: true},
-				{name: "while the turn has ended and the retro is open", agent: supervise.Claim{State: supervise.StateIdle}, wantWait: true},
-				{name: "once the idle pass released the agent", agent: supervise.Claim{State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased}},
-				{name: "once the retro ended and its claim closed", agent: supervise.Claim{State: supervise.StateRetired}, ends: true},
+				{name: "the retro's agent working", agent: supervise.Claim{State: supervise.StateWorking}, wantWait: true},
+				{name: "the retro's agent idle", agent: supervise.Claim{State: supervise.StateIdle}, wantWait: true},
+				{name: "the retro's agent released by the idle pass", agent: supervise.Claim{State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased}},
+				{name: "the retro's agent retired", agent: supervise.Claim{State: supervise.StateRetired}},
 			} {
 				t.Run(step.name, func(t *testing.T) {
 					agent := step.agent
 					agent.Token, agent.Role = implementer, claim.RoleImplementer
 					put(agent)
-					if step.ends {
-						if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
-							_, _, err := records.EndRetroAfterClose(ctx, tx, childIssue, 1, opened.Add(time.Hour), record.RetroOutcomePassed, record.RetroEndReport)
-							return err
-						}); err != nil {
-							t.Fatalf("end the retro after the close of %s: %v", childIssue, err)
-						}
-					}
-					act, err := suspension()
+					act, err := st.IssueSuspension(ctx, "legion", IssueClose{Issue: childIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: 10}, record.OutOfWorkflow)
 					if step.wantWait {
 						if !errors.Is(err, wait.ErrWaiting) || !strings.Contains(err.Error(), string(implementer)) || act {
 							t.Fatalf("suspension = %t, %v; want the wait on the retro's agent, claim %s", act, err, implementer)

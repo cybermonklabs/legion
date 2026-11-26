@@ -976,7 +976,7 @@ func idleRigExpiredTreesArchitectRelaunched(t *testing.T, rig *idleWakeRig) {
 		c := rig.api.claim(token)
 		return c.State == string(supervise.StateSuspended) && c.SuspendedBy == string(supervise.SuspendedByDaemon)
 	})
-	rig.endLinger(issue)
+	endLinger(t, rig.pool, issue.key, func(what string, cond func() bool) { idleRigEventually(t, idleRigRecordWait, what, cond) })
 	idleRigEventually(t, idleRigRecordWait, "every claim of "+issue.key+" retired by its linger's end", func() bool {
 		return rig.api.claim(token).State == string(supervise.StateRetired) &&
 			rig.api.claim(rig.token(issue)).State == string(supervise.StateRetired)
@@ -1057,24 +1057,25 @@ func (r *idleWakeRig) startArchitect(issue idleRigIssue) idleRigIssue {
 	return architect
 }
 
-// endLinger brings the end of issue's linger forward to now, as step 13 of INFRA-5602's live proof
-// does: the moment the record says the linger runs to, and then the linger_close row its park
-// queued, so the linger's end runs at the outbox's next sweep rather than at the rig's configured
-// linger.
-func (r *idleWakeRig) endLinger(issue idleRigIssue) {
-	r.t.Helper()
+// endLinger brings the end of root's linger forward to now, as step 13 of INFRA-5602's live proof
+// does: once the park has queued its linger_close row, which await waits for as its caller's waits
+// are bounded, the moment the record says the linger runs to, and then that row, so the linger's
+// end runs at the outbox's next sweep rather than at the configured linger. Another root's linger
+// keeps its own. The idle rig and the live proof's driver both call it.
+func endLinger(t *testing.T, pool *store.Pool, root string, await func(what string, cond func() bool)) {
+	t.Helper()
 	ctx := context.Background()
-	idleRigEventually(r.t, idleRigRecordWait, "the park of "+issue.key+" queueing its linger's end", func() bool {
+	await("the park of "+root+" queueing its linger's end", func() bool {
 		var queued int
-		if err := r.pool.QueryRow(ctx, "select count(*) from outbox where issue = $1 and kind = 'linger_close'", issue.key).Scan(&queued); err != nil {
-			r.t.Fatalf("read the linger_close row of %s: %v", issue.key, err)
+		if err := pool.QueryRow(ctx, "select count(*) from outbox where issue = $1 and kind = 'linger_close'", root).Scan(&queued); err != nil {
+			t.Fatalf("read the linger_close row of %s: %v", root, err)
 		}
 		return queued > 0
 	})
-	if _, err := r.pool.Exec(ctx, "update issues set linger_until = now() - interval '1 minute' where key = $1", issue.key); err != nil {
-		r.t.Fatalf("end the linger of %s: %v", issue.key, err)
+	if _, err := pool.Exec(ctx, "update issues set linger_until = now() - interval '1 minute' where key = $1", root); err != nil {
+		t.Fatalf("end the linger of %s: %v", root, err)
 	}
-	if _, err := r.pool.Exec(ctx, "update outbox set next_at = now() where issue = $1 and kind = 'linger_close'", issue.key); err != nil {
-		r.t.Fatalf("bring the linger_close row of %s due: %v", issue.key, err)
+	if _, err := pool.Exec(ctx, "update outbox set next_at = now() where issue = $1 and kind = 'linger_close'", root); err != nil {
+		t.Fatalf("bring the linger_close row of %s due: %v", root, err)
 	}
 }

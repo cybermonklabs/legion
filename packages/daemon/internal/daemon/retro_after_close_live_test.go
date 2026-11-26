@@ -35,8 +35,11 @@
 //
 // The driver names no symbol of this change: it reads what the daemon records of a retro through
 // the Dispatch stand-in's step rows, the daemon's HTTP routes, the prompts the agents were given
-// and the claims the runtime launched, and reads run_retros through SQL where it says so, so the
-// same file builds on main. That is what the script's negative control needs.
+// and the claims the runtime launched, and three tables through SQL: run_retros, for an issue's
+// retros after a close (retrosAfterClose, which reads none where the table does not exist, as on
+// main), tree_lifecycles, for a lifecycle's epoch (lifecycleEpoch), and outbox, for the
+// linger_close row a park queues, which it brings due with the issue's linger_until (endLinger).
+// So the same file builds and runs on main. That is what the script's negative control needs.
 //
 // Each step runs on its own and prints `== <step>`, then `ok <step>` or `FAIL <step> at
 // <assertion>`; a step that fails does not stop the next, and the test fails at the end if any
@@ -546,7 +549,7 @@ func (r *retroLive) mergedEarly() {
 	r.note("read back: the retro passed, %s closed by its merge, and over %s no retro task followed the close", c, liveSettle)
 }
 
-// sent-back-then-closed (step 17): an eleventh child runs to its retro, which moves the work back; a
+// sent-back-then-closed (step 17): another child runs to its retro, which moves the work back; a
 // move back takes no rating, so the retro's row ends failed with none. A person's done then gets no
 // task: a retro row of that run started before the close.
 func (r *retroLive) sentBackThenClosed() {
@@ -574,7 +577,7 @@ func (r *retroLive) sentBackThenClosed() {
 	r.note("read back: a person closed %s, and over %s no retro task, row or launch followed: a retro row of its run began before the close", c, liveSettle)
 }
 
-// todo-ends-retro: an eighth child is closed: one task after the close and its retro row's start.
+// todo-ends-retro: another child is closed: one task after the close and its retro row's start.
 // The retro is left open, and the child is set back to todo while T is in the workflow: the row ends
 // stopped with no rating. The re-entered child, held before its second run's first phase, is closed
 // again: no retro task follows, since a retro row of its first run began before it.
@@ -705,7 +708,7 @@ func (r *retroLive) parkedRootClosed(root, status string, expired bool) {
 	implementer.end()
 	epoch := r.lifecycleEpoch(root)
 	if expired {
-		r.endLinger(root)
+		endLinger(r.t, r.st.Pool(), root, func(what string, cond func() bool) { r.until(what, retroWait, cond) })
 		r.until("every claim of "+root+" retired by its linger's end", retroWait*3, func() bool {
 			return r.d.claim(implementer.token).State == string(supervise.StateRetired)
 		})
@@ -746,7 +749,6 @@ type retroAgent struct {
 	session string
 	file    string
 	boot    string
-	launch  uint64
 	secret  string
 	sh      *shim
 	n       int
@@ -757,7 +759,6 @@ type retroAgent struct {
 	open    []string
 	inTurn  bool
 	taken   int
-	ended   bool
 }
 
 // register brings the launched claim of role on issue to ready, as its pane's shim and its agent
@@ -799,7 +800,7 @@ func (r *retroLive) bring(issue, tree string, role claim.Role, session string, s
 	n := r.registrations
 	r.mu.Unlock()
 	a := &retroAgent{r: r, token: token, issue: issue, tree: tree, role: role, session: session, file: "/sessions/" + session + ".jsonl",
-		boot: spec.BootToken, launch: spec.Generation, n: n}
+		boot: spec.BootToken, n: n}
 	a.sh = dialShim(t, address, spec.BootToken)
 	r.until(string(token)+" with its shim connected", retroWait, func() bool {
 		return r.d.claim(token).State == string(supervise.StateShimConnected)
@@ -914,9 +915,6 @@ func (a *retroAgent) endTurn() {
 // end is the agent's process ending: its shim's connection closes with it, which frees the claim's
 // worker stream for the hello of the process that replaces it.
 func (a *retroAgent) end() {
-	a.mu.Lock()
-	a.ended = true
-	a.mu.Unlock()
 	_ = a.sh.conn.Close()
 }
 
@@ -1273,7 +1271,9 @@ func (r *retroLive) walkTo(key string, to phase.Phase) {
 		next phase.Phase
 		do   func()
 	}{
-		{phase.Planning, phase.Implementing, func() { r.complete(key, tree, claim.RolePlanner, "plan", api.HandoffCompleteRequest{Summary: "planned"}) }},
+		{phase.Planning, phase.Implementing, func() {
+			r.complete(key, tree, claim.RolePlanner, "plan", api.HandoffCompleteRequest{Summary: "planned"})
+		}},
 		{phase.Implementing, phase.Testing, func() {
 			r.openPullRequest(key)
 			r.complete(key, tree, claim.RoleImplementer, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: stepRecordsHead})
@@ -1408,26 +1408,50 @@ func (r *retroLive) mergeOf(key string) {
 
 // taskMark is what the driver held of a claim's process when an issue closed, so that what came after
 // the close is told from what came before it: the process the claim had (nil for none), how many
-// prompts it held, how many launches the claim had had, and how many processes the driver had played.
+// prompts it held, how many launches the claim had had, how many processes the driver had played,
+// how many status writes Dispatch's stand-in held, and how many of the issue's run_retros rows held
+// a retro after a close (retrosAfterClose).
 type taskMark struct {
 	agent         *retroAgent
 	prompts       int
 	launches      int
 	registrations int
 	writes        int
+	retros        int
 }
 
 // markOf is the mark of role's claim on issue now.
 func (r *retroLive) markOf(issue string, role claim.Role) taskMark {
 	r.t.Helper()
 	token := r.token(issue, role)
+	retros, _ := r.retrosAfterClose(issue)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	mark := taskMark{agent: r.agents[token], launches: len(launchesSince(r.rt, token, 0)), registrations: r.registrations, writes: len(r.board.writes())}
+	mark := taskMark{agent: r.agents[token], launches: len(launchesSince(r.rt, token, 0)), registrations: r.registrations, writes: len(r.board.writes()),
+		retros: retros}
 	if mark.agent != nil {
 		mark.prompts = len(mark.agent.promptsFrom(0))
 	}
 	return mark
+}
+
+// retrosAfterClose is how many of issue's run_retros rows hold a retro after a close, and how many
+// of those are open, read through SQL. A database with no run_retros table, main's, holds none.
+func (r *retroLive) retrosAfterClose(issue string) (opened, open int) {
+	r.t.Helper()
+	ctx := context.Background()
+	var table bool
+	if err := r.st.Pool().QueryRow(ctx, "select to_regclass('run_retros') is not null").Scan(&table); err != nil {
+		r.fail("look for the run_retros table: %v", err)
+	}
+	if !table {
+		return 0, 0
+	}
+	if err := r.st.Pool().QueryRow(ctx, `select count(*) filter (where opened_at is not null),
+		count(*) filter (where opened_at is not null and ended_at is null) from run_retros where issue = $1`, issue).Scan(&opened, &open); err != nil {
+		r.fail("read the run_retros rows of %s: %v", issue, err)
+	}
+	return opened, open
 }
 
 // retroTasksSince is how many retro tasks role's claim on issue was given after mark: a prompt
@@ -1513,17 +1537,25 @@ func (r *retroLive) retroTask(issue, tree string, mark taskMark) (*retroAgent, s
 }
 
 // requireTaskOnce holds that, after the settle, the implementer of issue was given exactly one retro
-// task after mark.
+// task after mark (requireOneRetroTask).
 func (r *retroLive) requireTaskOnce(issue string, mark taskMark) {
 	r.t.Helper()
 	time.Sleep(liveSettle)
+	r.requireOneRetroTask(issue, mark)
+}
+
+// requireOneRetroTask holds that the implementer of issue has been given exactly one retro task
+// after mark, now.
+func (r *retroLive) requireOneRetroTask(issue string, mark taskMark) {
+	r.t.Helper()
 	if got := r.retroTasksSince(issue, claim.RoleImplementer, mark, true); got != 1 {
 		r.fail("the implementer of %s was given %d retro tasks after the close, want exactly one", issue, got)
 	}
 }
 
 // requireNoRetro holds that nothing of a retro came to issue after mark: no retro task to its
-// implementer, no launch of it, and no retro row the daemon wrote since (what is the cause names).
+// implementer, no launch of it, and no retro row: its run_retros rows hold no retro after a close
+// that they did not hold at mark, and none open (what is the cause names).
 func (r *retroLive) requireNoRetro(issue string, mark taskMark, cause string) {
 	r.t.Helper()
 	token := r.token(issue, claim.RoleImplementer)
@@ -1532,6 +1564,10 @@ func (r *retroLive) requireNoRetro(issue string, mark taskMark, cause string) {
 	}
 	if launches := len(launchesSince(r.rt, token, 0)); launches != mark.launches {
 		r.fail("the runtime was asked for %d launches of %s's implementer after %s, want none", launches-mark.launches, issue, cause)
+	}
+	if opened, open := r.retrosAfterClose(issue); opened != mark.retros || open != 0 {
+		r.fail("%s's run_retros rows hold %d retros after a close, %d of them open, after %s; want the %d they held before and none open",
+			issue, opened, open, cause, mark.retros)
 	}
 }
 
@@ -1676,8 +1712,10 @@ func (r *retroLive) requireRetroStarted(issue string, from int) {
 
 // completesRetro is the retro of issue completing, as its agent's report: the completion with a plan
 // rating and its reason, from the process that was given the task, answered 200; the retro's row
-// ending passed with the rating the daemon recorded for it; and the retro's task, once, counted from
-// mark, the one the agent was given.
+// ending passed with the rating the daemon recorded for it; and then the retro's task, once,
+// counted from mark, the one the agent was given (requireOneRetroTask). The count is read once the
+// retro has ended, so no settle of its own is spent on it: a second task would have come while
+// the completion and the row were waited for, and none comes after the end.
 func (r *retroLive) completesRetro(issue string, agent *retroAgent, mark taskMark, rating int) {
 	r.t.Helper()
 	before := len(r.retroRows(issue))
@@ -1687,7 +1725,8 @@ func (r *retroLive) completesRetro(issue string, agent *retroAgent, mark taskMar
 	}
 	agent.endTurn()
 	r.awaitRetroRow(issue, max(before-1, 0), retroRowWant{result: "passed", rating: rating})
-	r.note("read back: the retro's completion by %s was answered 200; Dispatch's retro row of %s shows its start and its end passed, rated %d", agent.token, issue, rating)
+	r.requireOneRetroTask(issue, mark)
+	r.note("read back: the retro's completion by %s was answered 200; Dispatch's retro row of %s shows its start and its end passed, rated %d; it was given the one retro task", agent.token, issue, rating)
 }
 
 // lifecycleEpoch is the epoch of root's tree lifecycle now.
@@ -1698,25 +1737,4 @@ func (r *retroLive) lifecycleEpoch(root string) int64 {
 		r.fail("read the lifecycle of %s: %v", root, err)
 	}
 	return epoch
-}
-
-// endLinger brings the end of root's linger forward to now, as step 13 does: the moment the record
-// says the linger runs to, and then the linger_close row its park queued, so the linger's end runs at
-// the outbox's next sweep. Another root's linger keeps its default.
-func (r *retroLive) endLinger(root string) {
-	r.t.Helper()
-	ctx := context.Background()
-	r.until("the park of "+root+" queueing its linger's end", retroWait, func() bool {
-		var queued int
-		if err := r.st.Pool().QueryRow(ctx, "select count(*) from outbox where issue = $1 and kind = 'linger_close'", root).Scan(&queued); err != nil {
-			r.t.Fatalf("read the linger_close row of %s: %v", root, err)
-		}
-		return queued > 0
-	})
-	if _, err := r.st.Pool().Exec(ctx, "update issues set linger_until = now() - interval '1 minute' where key = $1", root); err != nil {
-		r.t.Fatalf("end the linger of %s: %v", root, err)
-	}
-	if _, err := r.st.Pool().Exec(ctx, "update outbox set next_at = now() where issue = $1 and kind = 'linger_close'", root); err != nil {
-		r.t.Fatalf("bring the linger_close row of %s due: %v", root, err)
-	}
 }

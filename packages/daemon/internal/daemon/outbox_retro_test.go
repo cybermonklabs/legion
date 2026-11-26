@@ -142,8 +142,7 @@ func (r *retroOutboxRig) openRetroAfterClose(issue record.Issue, agent claim.Tok
 		if err := r.records.MarkRetroStarted(ctx, tx, issue.Key, run, issue.Tree, started); err != nil {
 			return err
 		}
-		_, err := r.records.OpenRetroAfterClose(ctx, tx, issue.Key, run, issue.Tree, started, started.Add(workflow.RetroAfterCloseBound), agent, 0)
-		return err
+		return r.records.OpenRetroAfterClose(ctx, tx, issue.Key, run, issue.Tree, started, started.Add(workflow.RetroAfterCloseBound), agent, 0)
 	}); err != nil {
 		r.t.Fatalf("open the retro after the close of %s: %v", issue.Key, err)
 	}
@@ -212,8 +211,8 @@ func retroTaskLine(issue record.Issue) string {
 
 // heldRetroTask fails unless machine's claim holds the task start row id delivers: the row's own
 // delivery, of no phase, at the issue's generation, carrying run, opening as every retro task
-// does. It answers that delivery.
-func heldRetroTask(t *testing.T, machine *supervise.Machine, id int64, issue record.Issue, run uint64) supervise.Delivery {
+// does.
+func heldRetroTask(t *testing.T, machine *supervise.Machine, id int64, issue record.Issue, run uint64) {
 	t.Helper()
 	p := machine.Claim().Pending
 	if p == nil || p.ID != fmt.Sprintf("outbox:%d", id) || p.Phase != "" || p.Generation != issue.Generation ||
@@ -221,7 +220,6 @@ func heldRetroTask(t *testing.T, machine *supervise.Machine, id int64, issue rec
 		t.Fatalf("the agent's pending delivery = %+v, want the retro's task under outbox:%d with no phase at generation %d, carrying run %d",
 			p, id, issue.Generation, run)
 	}
-	return *p
 }
 
 // relaunchedInItsSession fails unless the runtime launched the claim of token exactly once, by
@@ -566,7 +564,7 @@ func TestARetroAfterACloseSurvivesARestart(t *testing.T) {
 	if status, body := complete(again, retroReport()); status != http.StatusOK {
 		t.Fatalf("the retro's report after the restart = %d %s, want 200", status, body)
 	}
-	want := intake.RetroReport{Issue: closed.Key, Claim: token, Generation: run, Summary: "the retro of the closed run",
+	want := intake.RetroReport{Issue: closed.Key, Claim: token, Generation: run,
 		PlanRating: record.PlanRating{Rating: 4, Reason: "The plan named the tests the change needed."}}
 	if got := r.facts.facts(); len(got) != 1 || got[0] != want {
 		t.Fatalf("facts after the report = %+v, want the one report %+v", got, want)
@@ -712,7 +710,7 @@ func TestARetroAfterTheLingerReopensAndClosesTheTree(t *testing.T) {
 
 	// The retro's report ends it, and the tree, past its linger, closes again.
 	applyFact(t, r.pool, "api", fmt.Sprintf("retro-after-close:%s:%d", root.Key, run), intake.RetroReport{Issue: root.Key, Claim: token,
-		Generation: run, Summary: "the retro of the closed run", PlanRating: record.PlanRating{Rating: 4, Reason: "The plan fit the work."}}, engine)
+		Generation: run, PlanRating: record.PlanRating{Rating: 4, Reason: "The plan fit the work."}}, engine)
 	for range 2 {
 		if err := r.runner.RunOnce(r.ctx); err != nil {
 			t.Fatalf("run the retro's end: %v", err)
@@ -841,7 +839,7 @@ func TestARetroTaskFollowsTheRunningTurnOfTheSparedAgent(t *testing.T) {
 	}
 	p := held.Pending
 	if p == nil || p.ID == implementing.ID || p.RetroRun != 1 || p.Phase != "" || !p.ConfirmedAt.IsZero() ||
-		!strings.HasPrefix(p.Task, "Continue Workflow. Issue: LEGION-208. Phase: retro.") {
+		!strings.HasPrefix(p.Task, retroTaskLine(issue)) {
 		t.Fatalf("the implementer's pending delivery after the close = %+v, want the retro's task of run 1, of no phase, queued unconfirmed behind the running turn", p)
 	}
 

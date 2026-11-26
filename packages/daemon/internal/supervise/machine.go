@@ -2521,15 +2521,14 @@ func (c Claim) ServingCheck() CheckLook {
 // anything the claim has served at all (servedAnything), since the agent of a retro after a close
 // is the issue's own worker, which served the run's phases before it.
 //
-// Two tasks take the retro back (INFRA-5602's s12, where one claim owes a look and a retro). A
-// task of a phase: a worker handed phase work again is back in the workflow. And the task of a
-// look once a turn has confirmed it, so a report from that look's turn that names no check is no
-// retro's report either. A look's task that no turn has confirmed yet takes nothing back: it is
-// queued behind the running retro turn (Machine.queue retired that turn's delivery onto the
-// claim), and until its own turn starts, what the worker reports is still that turn's. A retro's
-// task takes no look back (ServingCheck), since only a completion's checkOpenedAt makes it a
-// report on a look. A task that carries neither, an operator's own or a resume, leaves the retro
-// the claim is serving alone.
+// Two tasks take the retro back. A task of a phase: a worker handed phase work again is back in
+// the workflow. And the task of a look once a turn has confirmed it, so a report from that look's
+// turn that names no check is no retro's report either. A look's task that no turn has confirmed
+// yet takes nothing back: it is queued behind the running retro turn (Machine.queue retired that
+// turn's delivery onto the claim), and until its own turn starts, what the worker reports is still
+// that turn's. A retro's task takes no look back (ServingCheck), since only a completion's
+// checkOpenedAt makes it a report on a look. A task that carries neither, an operator's own or a
+// resume, leaves the retro the claim is serving alone.
 func (c Claim) ServingRetro() RetroRun {
 	retired := c.ServingRetroRun
 	if c.Pending != nil && (c.Pending.Phase != "" || c.Pending.takenAsLook()) {

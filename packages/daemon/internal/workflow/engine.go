@@ -2705,13 +2705,14 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 
 // markRunStarted records that issue's run started now, at its own first phase: the run of issue
 // and the run each issue above it in its tree stands in (record.Above), since a run is started by
-// its own first phase or by the first phase of an issue beneath it (INFRA-5602's P1, P2). A run the
-// record already holds as started keeps its first moment (record.Store.MarkRunStarted), so a parent
-// started by its child keeps that start at its own first phase. It is what the close reads to
-// decide that the run owes its retro (retroAtClose).
+// its own first phase or by the first phase of an issue beneath it. A tree's root has none above
+// it, so its tree's members are not read. A run the record already holds as started keeps its
+// first moment (record.Store.MarkRunStarted), so a parent started by its child keeps that start at
+// its own first phase. It is what the close reads to decide that the run owes its retro
+// (retroAtClose).
 func (e *Engine) markRunStarted(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	now := e.now()
-	if err := e.store.MarkRunStarted(ctx, tx, issue.Key, issue.Generation, issue.Tree, now); err != nil {
+	if err := e.store.MarkRunStarted(ctx, tx, issue.Key, issue.Generation, issue.Tree, now); err != nil || claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return err
 	}
 	members, err := e.treeMembers(ctx, tx, issue)

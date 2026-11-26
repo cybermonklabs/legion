@@ -236,10 +236,9 @@ type IdleDecision struct {
 //   - the issue is in the workflow and its tree is live: neither the issue nor its root has left
 //     the workflow, and neither lingers (pods.InWorkflowNotLingering), or a retro after the
 //     issue's close holds its pod (pods.IdleView.RetroHolds), whose agent is released once its
-//     turn ends, for a message to its role to wake it (P7 of dispatch://INFRA-5602). A pod in any
-//     other state is a close's to stop, and LeftPodClose decides it: it is held while that close
-//     is still to come or still running (IdleHoldTreeNotLive), and closed where nothing else will
-//     close it;
+//     turn ends, for a message to its role to wake it. A pod in any other state is a close's to
+//     stop, and LeftPodClose decides it: it is held while that close is still to come or still
+//     running (IdleHoldTreeNotLive), and closed where nothing else will close it;
 //
 //   - the daemon's project is not paused (IdleHoldPaused), and no pause holds the pod
 //     (IdleHoldPauseHeld). A pause keeps every pod of its project and starts no release, and a

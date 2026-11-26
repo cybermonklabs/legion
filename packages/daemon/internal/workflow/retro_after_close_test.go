@@ -105,9 +105,7 @@ func (r *retroRig) walkTo(t *testing.T, key string, at phase.Phase) {
 			t.Fatalf("the %s of %s left it in %s, want %s", step.trigger, key, got, step.to)
 		}
 	}
-	if got := issueAt(t, r.pool, key); got != at {
-		t.Fatalf("%s stands in %s, want %s", key, got, at)
-	}
+	issueStandsIn(t, r.pool, key, at)
 }
 
 // moved is a Dispatch event of key moving it to status, as the record's own copy of the issue
@@ -162,7 +160,7 @@ func (r *retroRig) seedOwner(t *testing.T) {
 func (r *retroRig) report(t *testing.T, key string, generation uint64) intake.Result {
 	t.Helper()
 	return r.apply(fmt.Sprintf("retro-after-close:%s:%d", key, generation), intake.RetroReport{Issue: key,
-		Claim: claim.Token(treeRoleToken(t, key, claim.RoleImplementer)), Generation: generation, Summary: "the retro of the run",
+		Claim: claim.Token(treeRoleToken(t, key, claim.RoleImplementer)), Generation: generation,
 		PlanRating: record.PlanRating{Rating: 4, Reason: "The plan put the tests first."}})
 }
 
@@ -336,7 +334,9 @@ type runRetroRow struct {
 	startedAt                                time.Time
 	retroStartedAt, openedAt, boundAt, ended *time.Time
 	agent                                    string
-	outcome, endedBy                         string
+	entry                                    int64
+	outcome                                  record.RetroOutcome
+	endedBy                                  record.RetroEndCause
 }
 
 // open is whether the row holds a retro after a close that has not ended.
@@ -346,7 +346,7 @@ func (row runRetroRow) open() bool { return row.openedAt != nil && row.ended == 
 // not through the record's methods, so a row is judged by what the database holds.
 func runRetrosOf(t *testing.T, pool *pgxpool.Pool, issue string) []runRetroRow {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select generation, tree, started_at, retro_started_at, opened_at, bound_at, agent, ended_at, outcome, ended_by
+	rows, err := pool.Query(t.Context(), `select generation, tree, started_at, retro_started_at, opened_at, bound_at, agent, entry, ended_at, outcome, ended_by
 		from run_retros where issue = $1 order by generation desc`, issue)
 	if err != nil {
 		t.Fatalf("read the run_retros rows of %s: %v", issue, err)
@@ -356,7 +356,7 @@ func runRetrosOf(t *testing.T, pool *pgxpool.Pool, issue string) []runRetroRow {
 	for rows.Next() {
 		var row runRetroRow
 		var generation int64
-		if err := rows.Scan(&generation, &row.tree, &row.startedAt, &row.retroStartedAt, &row.openedAt, &row.boundAt, &row.agent, &row.ended,
+		if err := rows.Scan(&generation, &row.tree, &row.startedAt, &row.retroStartedAt, &row.openedAt, &row.boundAt, &row.agent, &row.entry, &row.ended,
 			&row.outcome, &row.endedBy); err != nil {
 			t.Fatalf("scan a run_retros row of %s: %v", issue, err)
 		}
@@ -506,6 +506,47 @@ func assertNeverStarted(t *testing.T, pool *pgxpool.Pool, key string) {
 	t.Helper()
 	if rows := runRetrosOf(t, pool, key); len(rows) != 0 {
 		t.Fatalf("the run_retros rows of %s = %+v, want none: no run of it started", key, rows)
+	}
+}
+
+// closedInItsRetro is row c13: a child closed by a person while its retro runs keeps that retro's
+// turn, its step row and its claim, the close starts nothing of the retro, and the run's record
+// opens on the running retro with the implementer's retro entry, on which its completion is taken.
+// newsQueued first queues a start of the implementer for news alone at the retro, as the news of
+// an approved design queues one (design_news.go): that start brings the claim no work of the
+// retro, so the close still reads the retro as running rather than queued, and opens no second.
+func closedInItsRetro(t *testing.T, newsQueued bool) {
+	t.Helper()
+	r := newRetroRig(t)
+	r.root(t, phase.Implementing)
+	r.member(t, "LEGION-209", "LEGION-208", phase.Admitted, 43)
+	r.runTo(t, "LEGION-209", phase.Retro)
+	deliverRetro(t, r.pool, "LEGION-209", 3)
+	if newsQueued {
+		seedOutboxRow(t, r.pool, "LEGION-209", record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer,
+			Generation: 3, Phase: phase.Retro, News: true})
+	}
+	started := retroStartedAt(t, r.pool, "LEGION-209")
+	r.at(2 * time.Hour)
+	mark := r.mark(t)
+	r.person(t, "LEGION-209", "done")
+	issueStandsIn(t, r.pool, "LEGION-209", phase.Done)
+	supervises := supervisesSince(t, r.pool, "LEGION-209", mark)
+	if starts := append(retroStartsOf(supervises), phaseStartsOf(supervises, phase.Retro)...); len(starts) != 0 {
+		t.Fatalf("starts of the child's retro since its close = %+v, want none: the running retro keeps its turn", starts)
+	}
+	if starts, ends, _ := retroStepsSince(t, r.pool, "LEGION-209", mark); len(starts) != 0 || len(ends) != 0 {
+		t.Fatalf("the running retro's step row at the close: starts %+v, ends %+v; want neither: the retro keeps its turn and its row", starts, ends)
+	}
+	assertSpared(t, r.pool, "LEGION-209", mark, claim.RoleImplementer)
+	assertRunRetroOpen(t, r.pool, "LEGION-209", 3, treeRoleToken(t, "LEGION-209", claim.RoleImplementer), started.Add(RetroAfterCloseBound), mark)
+	var entry int64
+	if err := r.pool.QueryRow(t.Context(), `select entry from phases where issue = 'LEGION-209' and role = 'implementer'`).Scan(&entry); err != nil {
+		t.Fatalf("read the implementer's phases row of the child: %v", err)
+	}
+	if row, _ := runRetroOf(t, r.pool, "LEGION-209", 3); entry == 0 || row.entry != entry {
+		t.Fatalf("the run_retros row of the child names entry %d, want the implementer's retro entry %d: the running retro's completion is taken on it",
+			row.entry, entry)
 	}
 }
 
@@ -716,26 +757,9 @@ func TestEveryCloseOfAStartedRunWithNoRetroStartsItsRetro(t *testing.T) {
 			}
 			assertSpared(t, r.pool, "LEGION-209", mark, claim.RoleTester, claim.RoleImplementer)
 		}},
-		row{"c13 an issue in retro, a person's done", func(t *testing.T) {
-			r := newRetroRig(t)
-			r.root(t, phase.Implementing)
-			r.member(t, "LEGION-209", "LEGION-208", phase.Admitted, 43)
-			r.runTo(t, "LEGION-209", phase.Retro)
-			deliverRetro(t, r.pool, "LEGION-209", 3)
-			started := retroStartedAt(t, r.pool, "LEGION-209")
-			r.at(2 * time.Hour)
-			mark := r.mark(t)
-			r.person(t, "LEGION-209", "done")
-			issueStandsIn(t, r.pool, "LEGION-209", phase.Done)
-			supervises := supervisesSince(t, r.pool, "LEGION-209", mark)
-			if starts := append(retroStartsOf(supervises), phaseStartsOf(supervises, phase.Retro)...); len(starts) != 0 {
-				t.Fatalf("starts of the child's retro since its close = %+v, want none: the running retro keeps its turn", starts)
-			}
-			if starts, ends, _ := retroStepsSince(t, r.pool, "LEGION-209", mark); len(starts) != 0 || len(ends) != 0 {
-				t.Fatalf("the running retro's step row at the close: starts %+v, ends %+v; want neither: the retro keeps its turn and its row", starts, ends)
-			}
-			assertSpared(t, r.pool, "LEGION-209", mark, claim.RoleImplementer)
-			assertRunRetroOpen(t, r.pool, "LEGION-209", 3, treeRoleToken(t, "LEGION-209", claim.RoleImplementer), started.Add(RetroAfterCloseBound), mark)
+		row{"c13 an issue in retro, a person's done", func(t *testing.T) { closedInItsRetro(t, false) }},
+		row{"c13 an issue in retro with a start of the implementer queued for news alone, a person's done", func(t *testing.T) {
+			closedInItsRetro(t, true)
 		}},
 		row{"c14 an issue closed by its merge from merging", func(t *testing.T) {
 			r := newRetroRig(t)
@@ -925,11 +949,15 @@ func TestEveryCloseOfAStartedRunWithNoRetroStartsItsRetro(t *testing.T) {
 	)
 	for _, end := range []struct {
 		name    string
-		outcome string
+		outcome record.RetroOutcome
 		end     func(t *testing.T, r *retroRig)
 	}{
-		{"passed", "passed", func(t *testing.T, r *retroRig) { r.report(t, "LEGION-209", 3) }},
-		{"stopped at its bound", "stopped", func(t *testing.T, r *retroRig) {
+		{"passed", record.RetroOutcomePassed, func(t *testing.T, r *retroRig) {
+			if result := r.report(t, "LEGION-209", 3); result.Refusal != nil {
+				t.Fatalf("the retro's report was refused: %+v", result.Refusal)
+			}
+		}},
+		{"stopped at its bound", record.RetroOutcomeStopped, func(t *testing.T, r *retroRig) {
 			r.at(RetroAfterCloseBound + time.Hour)
 			r.apply("retro-bound:LEGION-209:3", intake.RetroBoundEnded{Issue: "LEGION-209", Generation: 3})
 		}},
@@ -966,7 +994,7 @@ func TestEveryCloseOfAStartedRunWithNoRetroStartsItsRetro(t *testing.T) {
 // reads every row through it), and whose task opens as the retro's; and the retro's step row has
 // its start, under that claim, written with it. The delivery itself is the outbox's
 // (internal/daemon).
-func TestARetroAfterACloseIsDeliveredToItsAgentWithNoPhase(t *testing.T) {
+func TestTheStartOfARetroAfterACloseNamesNoPhaseAndItsRun(t *testing.T) {
 	t.Parallel()
 	r := newRetroRig(t)
 	r.root(t, phase.Implementing)
@@ -1068,7 +1096,7 @@ func TestTheReportOfARetroAfterACloseEndsItsRowAndRatesThePlan(t *testing.T) {
 				t.Fatalf("issue_suspend rows at the report = %d, want %d", len(got), tc.suspensions)
 			}
 			row, found := runRetroOf(t, r.pool, "LEGION-209", 3)
-			if !found || row.ended == nil || row.outcome != "passed" || row.endedBy != "report" {
+			if !found || row.ended == nil || row.outcome != record.RetroOutcomePassed || row.endedBy != record.RetroEndReport {
 				t.Fatalf("the run_retros row after the report = %+v (found %t), want it ended passed by the report", row, found)
 			}
 		})
@@ -1147,7 +1175,7 @@ func TestARetroAfterACloseThatNobodyReportsEndsAtItsBound(t *testing.T) {
 	if got := rowsSince(t, r.pool, "LEGION-209", string(record.OutboxKindIssueSuspend), mark); len(got) != 1 {
 		t.Fatalf("issue_suspend rows at the bound = %d, want the one that takes the pod", len(got))
 	}
-	if row, found := runRetroOf(t, r.pool, "LEGION-209", 3); !found || row.ended == nil || row.outcome != "stopped" || row.endedBy != "bound" {
+	if row, found := runRetroOf(t, r.pool, "LEGION-209", 3); !found || row.ended == nil || row.outcome != record.RetroOutcomeStopped || row.endedBy != record.RetroEndBound {
 		t.Fatalf("the run_retros row at the bound = %+v (found %t), want it ended stopped by the bound", row, found)
 	}
 
@@ -1180,7 +1208,7 @@ func TestATodoOnAClosedIssueEndsItsOpenRetro(t *testing.T) {
 	if len(ends) != 1 || resultOf(ends[0]) != string(ResultStopped) || ends[0].Generation != 3 || len(rated) != 0 {
 		t.Fatalf("the retro's step row at the todo: ends %+v, ratings %+v; want one end of run 3, stopped, and no rating", ends, rated)
 	}
-	if row, found := runRetroOf(t, r.pool, "LEGION-209", 3); !found || row.ended == nil || row.outcome != "stopped" || row.endedBy != "todo" {
+	if row, found := runRetroOf(t, r.pool, "LEGION-209", 3); !found || row.ended == nil || row.outcome != record.RetroOutcomeStopped || row.endedBy != record.RetroEndTodo {
 		t.Fatalf("the run_retros row at the todo = %+v (found %t), want it ended stopped by the todo", row, found)
 	}
 }
@@ -1320,20 +1348,24 @@ func TestAWokenRootArchitectIsSuspendedOnceNoRetroOfItsTreeIsOpen(t *testing.T) 
 	r.person(t, "LEGION-210", "done")
 	r.person(t, "LEGION-208", "done")
 	lingering(t, r.pool, "LEGION-208")
-	seedRunClaim(t, r.pool, "LEGION-208", claim.RoleArchitect, 1, "idle", "", "ses-root-architect")
+	seedRunClaim(t, r.pool, "LEGION-208", claim.RoleArchitect, 1, "idle", "", ownerSession)
 
 	for _, open := range []struct {
 		key        string
 		generation uint64
 	}{{"LEGION-208", 1}, {"LEGION-209", 3}} {
 		mark := r.mark(t)
-		r.report(t, open.key, open.generation)
+		if result := r.report(t, open.key, open.generation); result.Refusal != nil {
+			t.Fatalf("the report of %s's retro was refused: %+v", open.key, result.Refusal)
+		}
 		if stops := stopsOf(supervisesSince(t, r.pool, "LEGION-208", mark), claim.RoleArchitect); len(stops) != 0 {
 			t.Fatalf("stops of the root architect at the end of %s's retro, LEGION-210's still open = %+v, want none", open.key, stops)
 		}
 	}
 	last := r.mark(t)
-	r.report(t, "LEGION-210", 3)
+	if result := r.report(t, "LEGION-210", 3); result.Refusal != nil {
+		t.Fatalf("the report of LEGION-210's retro was refused: %+v", result.Refusal)
+	}
 	if stops := stopsOf(supervisesSince(t, r.pool, "LEGION-208", last), claim.RoleArchitect); len(stops) != 1 || stops[0].Op != "suspend" {
 		t.Fatalf("stops of the root architect once the tree's last retro ended = %+v, want one suspend", stops)
 	}

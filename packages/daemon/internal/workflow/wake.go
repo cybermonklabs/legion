@@ -439,11 +439,11 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // read: the claim is still released, its issue is one this daemon records, and its tree is live —
 // neither the issue nor its root has left the workflow and neither lingers
 // (pods.InWorkflowNotLingering). A pod in any other state is a close's to stop or an operator's to
-// resume, never a wake's — but one: a retro after a close holds the pod (pods.Standing.RetroHolds)
-// of its own agent, released once its turn ended (P7), and of the tree root's architect while a
-// retro after a close of its tree is open (P6). Such a wake's start is marked as the retro's
+// resume, never a wake's — but one: a retro after a close holds the pod of its own agent, released
+// once its turn ended, and of the tree root's architect while a retro after a close of its tree is
+// open (RetroWakeOf). Such a wake's start is marked as the retro's
 // (record.SuperviseRequest.RetroRun for its agent, RetroWake for the architect), which the outbox
-// fences on the open retro rather than on the issue's standing (retroWakeOf).
+// fences on the open retro rather than on the issue's standing.
 //
 // A claim of another project's issue, which the operator's spawn makes under this daemon's token
 // and a project's pause stops as released, finds no record here, even where the database it shares
@@ -489,17 +489,12 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	if err != nil || root == nil {
 		return false, err
 	}
-	standing := issue.Standing()
 	var retroRun uint64
 	var retroWake bool
-	if !pods.InWorkflowNotLingering(standing, root.Standing(), record.OutOfWorkflow) {
-		if retroRun, retroWake, err = e.retroWakeOf(ctx, tx, *issue, released.Token); err != nil {
+	if !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
+		if retroRun, retroWake, err = RetroWakeOf(ctx, e.store, tx, *issue, released.Token); err != nil || retroRun == 0 && !retroWake {
 			return false, err
 		}
-		standing.RetroHolds = retroRun != 0 || retroWake
-	}
-	if !pods.InWorkflowNotLingering(standing, root.Standing(), record.OutOfWorkflow) {
-		return false, nil
 	}
 	pause, stopping, err := e.cfg.Pods.PauseOfWake(ctx, tx, issue.Key, released.Token, 0)
 	if err != nil {
@@ -528,12 +523,16 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	return true, e.enqueue(ctx, tx, issue.Key, row)
 }
 
-// retroWakeOf is the retro after a close a wake of the released claim token of issue is for, where
-// the issue has left the workflow or its tree lingers: the run of the issue's open retro after its
-// close where token is that retro's agent, or, for the tree root's own architect, true while a
-// retro after a close of its tree is open; neither where the claim serves no such retro.
-func (e *Engine) retroWakeOf(ctx context.Context, tx pgx.Tx, issue record.Issue, token claim.Token) (uint64, bool, error) {
-	open, err := e.store.OpenRetroOfIssue(ctx, tx, issue.Key)
+// RetroWakeOf is the retro after a close that a wake of issue's claim token is for: run is the run
+// of the issue's open retro after its close where token is that retro's agent, and architect is
+// true where issue is its tree's root, token is that root's own architect and a retro after a
+// close of an issue of the tree is open; neither where the claim serves no such retro. It is the
+// one rule of which claims a retro after a close holds the pod for (pods.Standing.RetroHolds),
+// which the workflow's wake of a released claim (wakeReleased), its wake of a root architect a
+// role message names (retroWake) and the outbox's wake for a delivery it holds (internal/daemon's
+// retroHoldsClaim) each read in their own transaction, so they bring the same claims back.
+func RetroWakeOf(ctx context.Context, records record.Store, tx pgx.Tx, issue record.Issue, token claim.Token) (run uint64, architect bool, err error) {
+	open, err := records.OpenRetroOfIssue(ctx, tx, issue.Key)
 	if err != nil {
 		return 0, false, err
 	}
@@ -543,11 +542,11 @@ func (e *Engine) retroWakeOf(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return 0, false, nil
 	}
-	architect, err := stepClaim(issue, issue.Key, claim.RoleArchitect)
-	if err != nil || architect != token {
+	own, err := stepClaim(issue, issue.Key, claim.RoleArchitect)
+	if err != nil || own != token {
 		return 0, false, err
 	}
-	tree, err := e.store.OpenRetrosOfTree(ctx, tx, issue.Tree)
+	tree, err := records.OpenRetrosOfTree(ctx, tx, issue.Tree)
 	return 0, len(tree) > 0, err
 }
 

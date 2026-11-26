@@ -47,9 +47,8 @@ func seedRetroAfterClose(t *testing.T, h *harness, key string, agent claim.Token
 		if err := records.MarkRetroStarted(ctx, tx, key, run, key, retroStepStartedAt); err != nil {
 			return err
 		}
-		_, err := records.OpenRetroAfterClose(ctx, tx, key, run, key, retroStepStartedAt.Add(time.Minute),
+		return records.OpenRetroAfterClose(ctx, tx, key, run, key, retroStepStartedAt.Add(time.Minute),
 			retroStepStartedAt.Add(workflow.RetroAfterCloseBound), agent, 0)
-		return err
 	}); err != nil {
 		t.Fatalf("open the retro after the close of %s: %v", key, err)
 	}
@@ -58,29 +57,11 @@ func seedRetroAfterClose(t *testing.T, h *harness, key string, agent claim.Token
 
 // worksRetro hands c's claim the task of the retro after its issue's close of run and starts its
 // turn, as the retro's own start row does (a task of no phase carrying the run,
-// record.SuperviseRequest.RetroRun). The turn the claim is in ends first, which retires the task
-// it held: a machine refuses a second delivery while one is pending, so the outbox's delivery
-// waits for that anyway.
+// record.SuperviseRequest.RetroRun), by worksTask.
 func (c liveClaim) worksRetro(t *testing.T, run uint64) {
 	t.Helper()
-	machine, ok := c.h.supervisor.Machine(c.token)
-	if !ok {
-		t.Fatalf("no machine for %s", c.token)
-	}
-	ctx := context.Background()
-	if machine.Claim().State == supervise.StateWorking {
-		if err := machine.Handle(ctx, supervise.StreamTurnEnd{Claim: c.token}); err != nil {
-			t.Fatalf("end the turn of %s: %v", c.token, err)
-		}
-	}
-	id := fmt.Sprintf("outbox:retro:%s:%d", c.token, run)
-	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: c.token, Task: retroTaskOf(c.issue), ID: id,
-		Generation: issueGeneration(t, c.h, c.issue), RetroRun: supervise.RetroRun(run)}); err != nil {
-		t.Fatalf("deliver the retro of run %d to %s: %v", run, c.token, err)
-	}
-	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: c.token, DeliveryID: id}); err != nil {
-		t.Fatalf("start the retro's turn on %s: %v", c.token, err)
-	}
+	machine := c.worksTask(t, supervise.RequestDeliver{Task: retroTaskOf(c.issue), ID: fmt.Sprintf("outbox:retro:%s:%d", c.token, run),
+		Generation: issueGeneration(t, c.h, c.issue), RetroRun: supervise.RetroRun(run)})
 	if got := machine.Claim().ServingRetro(); got != supervise.RetroRun(run) {
 		t.Fatalf("the claim serves retro run %d, want run %d", got, run)
 	}
@@ -129,7 +110,7 @@ func TestACompletionOfADoneIssuesRetroAfterItsCloseIsTakenWithItsRating(t *testi
 		implementer, run := newRetroAfterCloseClaim(t, h)
 
 		completion(t, h.complete(retroReportBy(implementer.grant(t))))
-		want := intake.RetroReport{Issue: "LEGION-208", Claim: implementer.token, Generation: run, Summary: "the retro of the closed run",
+		want := intake.RetroReport{Issue: "LEGION-208", Claim: implementer.token, Generation: run,
 			PlanRating: record.PlanRating{Rating: retroRating, Reason: retroReason}}
 		if got := facts.recorded(); len(got) != 1 || got[0] != want {
 			t.Fatalf("facts = %#v, want the one report %#v", got, want)

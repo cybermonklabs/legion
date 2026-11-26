@@ -26,9 +26,9 @@
 #      200 with rating, claim and session kept with no suspend/resume/spawn, no second retro task.
 #   9. merged-early: a seventh child whose PR merges before merging -> open retro task names T's
 #      architect and the pending-sibling clause, completes, then merges closed with no second retro.
-#  17. sent-back-then-closed: an eleventh child whose retro moves work back to implementing (row
+#  17. sent-back-then-closed: another child whose retro moves work back to implementing (row
 #      ends failed, no rating), then closed done -> no retro after close.
-#  14. todo-ends-retro: an eighth child closed (retro row starts), set back to todo (row ends
+#  14. todo-ends-retro: another child closed (retro row starts), set back to todo (row ends
 #      stopped, no rating), then closed again before run 2's first phase -> no retro after close.
 #  11. root-closed: once all children close, T starts its own first phase and a person closes T ->
 #      one retro task to T's retro agent; a finding published through the real Envoy listener wakes

@@ -5,8 +5,6 @@ import (
 	"reflect"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
 // runRetrosVersion is the version of the migration this file tests, so the test can migrate
@@ -16,28 +14,6 @@ const runRetrosVersion = 20261125213821
 // runRetrosRelease names the release whose way back the migration's header carries, as a failure
 // to read that block names it.
 const runRetrosRelease = "the release that runs no retro after an issue's close"
-
-// applyRunRetros applies the run retros migration alone to store, which stands at the release
-// before. The migration is a file task t2 of INFRA-5602 adds, so until then this stops the test by
-// name: a test that went on would assert a table nobody created.
-func applyRunRetros(t *testing.T, store *Store) {
-	t.Helper()
-	all, err := migrations.All()
-	if err != nil {
-		t.Fatalf("read the embedded migrations: %v", err)
-	}
-	for _, migration := range all {
-		if migration.Version != runRetrosVersion {
-			continue
-		}
-		if _, err := store.apply(context.Background(), migration); err != nil {
-			t.Fatalf("apply %s: %v", migration.Name, err)
-		}
-		return
-	}
-	t.Fatalf("migration version %d is not embedded: INFRA-5602's task t2 adds packages/daemon/internal/store/migrations/%d_run_retros.up.sql, which this test applies and whose way back it reads",
-		runRetrosVersion, runRetrosVersion)
-}
 
 // runRetroSeed is a database at the release before the run retros migration, on which a test
 // seeds the issues, the step starts and the phases rows the migration fills run_retros from.
@@ -160,9 +136,9 @@ func TestTheRunRetroMigrationFillsTheCurrentRuns(t *testing.T) {
 	migrateThrough(t, store, runRetrosVersion-1)
 	seedRunRetroIssues(t, store)
 
-	applyRunRetros(t, store)
+	migrateThrough(t, store, runRetrosVersion)
 
-	rowOf := func(issue string) string {
+	rowOf := func(t *testing.T, issue string) string {
 		t.Helper()
 		var row string
 		if err := store.Pool().QueryRow(t.Context(), `select coalesce((select row(generation, tree, retro_started_at is not null)::text
@@ -193,7 +169,7 @@ func TestTheRunRetroMigrationFillsTheCurrentRuns(t *testing.T) {
 		{"a merger row of an earlier run, its task cleared, says nothing of this one", "LEGION-5036", "(2,LEGION-5036,f)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := rowOf(tc.issue); got != tc.want {
+			if got := rowOf(t, tc.issue); got != tc.want {
 				t.Fatalf("run_retros of %s (generation, tree, retro started) = %s, want %s", tc.issue, got, tc.want)
 			}
 		})
@@ -234,7 +210,7 @@ func TestTheRunRetroMigrationsWayBackRemovesWhatTheReleaseBeforeCannotRead(t *te
 	seed := runRetroSeed{t: t, store: store}
 	seed.issue("LEGION-5101", "LEGION-5101", "", "implementing", "", "", 1, false)
 	seed.stepStart("LEGION-5101", "step", 2, 1, time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC))
-	applyRunRetros(t, store)
+	migrateThrough(t, store, runRetrosVersion)
 
 	seed.exec(`insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
 			launch_failures, prompt_failures, prompt_retires, uncertain_streak, serving_retro_run)

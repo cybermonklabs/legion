@@ -156,8 +156,11 @@ func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// approved versions of a gated document (dispatch.Client's ArtifactChanges). This board keeps
 	// no document, so it answers as Dispatch answers for a document it does not hold, which the
 	// reconcile records unreadable at once (dispatch.ErrDocumentNotFound): the news then names the
-	// two versions and says why it lists no change.
-	case req.Method == http.MethodGet && strings.HasPrefix(path, "/api/v1/artifacts/") && strings.HasSuffix(path, "/changes"):
+	// two versions and says why it lists no change. The same reconcile reads a document's reviews
+	// to find the version a holder worked from (dispatch.Client's ApprovedVersionBefore), which a
+	// whole-daemon proof reaches once its design_changes rows run, and is answered the same way.
+	case req.Method == http.MethodGet && strings.HasPrefix(path, "/api/v1/artifacts/") &&
+		(strings.HasSuffix(path, "/changes") || strings.HasSuffix(path, "/reviews")):
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"code":"`+dispatch.ArtifactNotFound+`","error":"artifact not found"}`)
 	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/") && strings.HasSuffix(path, "/rating"):

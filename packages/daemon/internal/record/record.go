@@ -2178,23 +2178,24 @@ type Store interface {
 	// earliest start the row holds: the one write of RunRetro.StartedAt, made where an issue's
 	// first phase starts and for each issue above it. MarkRetroStarted records the start of a
 	// retro step of the run in the transaction that writes the step's start, keeping the first
-	// (RunRetro.RetroStartedAt). Both are what the close reads to decide whether a retro is owed
-	// (INFRA-5602's P1).
+	// (RunRetro.RetroStartedAt). Both are what the close reads to decide whether a retro is owed.
 	MarkRunStarted(ctx context.Context, tx pgx.Tx, issue string, generation uint64, tree string, at time.Time) error
 	MarkRetroStarted(ctx context.Context, tx pgx.Tx, issue string, generation uint64, tree string, at time.Time) error
 	// OpenRetroAfterClose opens the retro Legion runs after the issue's close on the run's row
 	// (openedAt, the bound it ends at, its agent's claim token, and the entry of a retro already
-	// running at the close), and answers the row it wrote. EndRetroAfterClose ends it with an
-	// outcome and its cause, and answers the row and true, or the zero row and false where the
-	// retro is not open.
+	// running at the close), and refuses a run with no row or one whose retro after a close was
+	// opened already. EndRetroAfterClose ends it with an outcome and its cause, and answers the row
+	// and true, or the zero row and false where the retro is not open.
 	OpenRetroAfterClose(ctx context.Context, tx pgx.Tx, issue string, generation uint64, tree string,
-		openedAt, boundAt time.Time, agent claim.Token, entry int64) (RunRetro, error)
+		openedAt, boundAt time.Time, agent claim.Token, entry int64) error
 	EndRetroAfterClose(ctx context.Context, tx pgx.Tx, issue string, generation uint64,
 		endedAt time.Time, outcome RetroOutcome, cause RetroEndCause) (RunRetro, bool, error)
-	// RunRetro is the row of the issue's run generation, nil for none; RunRetros every row of the
-	// issue, newest run first.
+	// RunRetro is the row of the issue's run generation, NewestRunRetro the row of its newest run,
+	// and NewestRetroAfterClose the row of its newest run that holds a retro after a close; each
+	// nil for none.
 	RunRetro(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*RunRetro, error)
-	RunRetros(ctx context.Context, tx pgx.Tx, issue string) ([]RunRetro, error)
+	NewestRunRetro(ctx context.Context, tx pgx.Tx, issue string) (*RunRetro, error)
+	NewestRetroAfterClose(ctx context.Context, tx pgx.Tx, issue string) (*RunRetro, error)
 	// OpenRetroOfIssue is the issue's open retro after a close, nil for none; OpenRetrosOfTree
 	// those of tree's issues, by bound, then by issue.
 	OpenRetroOfIssue(ctx context.Context, tx pgx.Tx, issue string) (*RunRetro, error)

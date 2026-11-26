@@ -75,12 +75,13 @@ func TestAReadmissionEndsAnOpenRetroAfterAClose(t *testing.T) {
 		t.Fatalf("the retro's step row at the re-admission: ends %+v, ratings %+v; want one end of run 1, stopped, and no rating", ends, rated)
 	}
 	var ended bool
-	var outcome, endedBy string
+	var outcome record.RetroOutcome
+	var endedBy record.RetroEndCause
 	if err := pool.QueryRow(context.Background(), `select ended_at is not null, outcome, ended_by from run_retros where issue = $1 and generation = 1`,
 		root).Scan(&ended, &outcome, &endedBy); err != nil {
 		t.Fatalf("read the run_retros row of %s run 1: %v", root, err)
 	}
-	if !ended || outcome != "stopped" || endedBy != "todo" {
+	if !ended || outcome != record.RetroOutcomeStopped || endedBy != record.RetroEndTodo {
 		t.Fatalf("the run_retros row of %s run 1 = ended %t, outcome %q, by %q; want it ended stopped by the todo", root, ended, outcome, endedBy)
 	}
 }

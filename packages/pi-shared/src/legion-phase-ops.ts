@@ -936,9 +936,9 @@ async function completeHandoff(
   }
   const record = await recordFrom(daemon, claim.issue);
   // A completion on a done issue carrying a rating of the plan and no verdict is the report of the
-  // retro Legion runs after the close (P12 of dispatch://INFRA-5602): a retro after a close writes
-  // no handoff and pushes nothing, so no record or commit is looked up, and the daemon decides
-  // from the claim's own assignment whether it serves that retro.
+  // retro Legion runs after the close: a retro after a close writes no handoff and pushes nothing,
+  // so no record or commit is looked up, and the daemon decides from the claim's own assignment
+  // whether it serves that retro.
   if (record.phase === "done" && rating !== undefined && args.verdict === undefined) {
     return daemon.handoffComplete({
       grantId: await mintClaimGrant(daemon, claim),

@@ -1463,9 +1463,9 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 // arriving.
 //
 // A re-admission is a todo, and it ends the issue's open retro after its close as stopped, with no
-// rating (workflow's EndOpenRetro, P10 of dispatch://INFRA-5602), as a child's re-entry does; a
-// carried orphan's run goes on in the tree it roots, so the record of that run's start and its
-// retro goes with it to the new generation (record.Store.CarryRunRetro).
+// rating (workflow's EndOpenRetro), as a child's re-entry does; a carried orphan's run goes on in
+// the tree it roots, so the record of that run's start and its retro goes with it to the new
+// generation (record.Store.CarryRunRetro).
 func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue, o observed, carry bool) error {
 	if stored.Generation == ^uint64(0) {
 		return fmt.Errorf("re-admit %s: generation overflows", stored.Key)

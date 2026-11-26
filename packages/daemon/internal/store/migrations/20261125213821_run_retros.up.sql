@@ -6,7 +6,7 @@
 -- started_at is when the run started, at its own first phase or at the first phase of an issue
 -- beneath it; retro_started_at is when a retro step of the run first started, whatever its result,
 -- and null while none has. The rest is the retro Legion runs after the issue's close, which the
--- close opens on the newest run that started where that run had no retro (INFRA-5602's P1):
+-- close opens on the newest run that started where that run had no retro:
 -- opened_at; bound_at, when it ends if nobody reported it (workflow.RetroAfterCloseBound after its
 -- retro's start); agent, the claim token of the agent that does it; entry, the phase entry of a
 -- retro already running at the close and 0 otherwise; and ended_at, outcome and ended_by once it
@@ -18,16 +18,17 @@
 --
 -- The fill writes a row for the current run of each recorded issue that started, from what the
 -- database holds, and none for an older run, which no close reads again. A run started where its
--- issue stands in a phase that carries a run (neither admitted, nor awaiting_person, nor done, nor
--- held from one of the first two) or holds a step start of the run's generation (step_starts,
--- whose record names the generation of each place's latest start). Each issue above such an issue
--- in its tree started its own current run too, where that start came after every step start the
--- issue above holds of an earlier run of its own: a parent held at admitted for its children
--- (admit's waitsForChildren) above a child that started is started, and a root re-admitted after
--- its tree finished is not started by the children of its earlier run, which started before that
--- run's own phases. issues.taken_back is not read: it survives a root's re-admission, so it says
--- nothing of the current run. started_at is the run's earliest step start, else the issue's last
--- movement (issues.moved_at), and above an issue the earliest of those beneath it and its own.
+-- issue stands in a phase that carries a run (not admitted, awaiting_person or done, and not held
+-- from admitted, awaiting_person or done) or holds a step start of the run's generation
+-- (step_starts, whose record names the generation of each place's latest start). Each issue above
+-- such an issue in its tree started its own current run too, where that start came after every
+-- step start the issue above holds of an earlier run of its own: a parent held at admitted for its
+-- children (admit's waitsForChildren) above a child that started is started, and a root
+-- re-admitted after its tree finished is not started by the children of its earlier run, which
+-- started before that run's own phases. issues.taken_back is not read: it survives a root's
+-- re-admission, so it says nothing of the current run. started_at is the run's earliest step
+-- start, else the issue's last movement (issues.moved_at), and above an issue the earliest of
+-- those beneath it and its own.
 -- A run had its retro where a retro or a merge step start of its generation stands, whatever its
 -- result, or its issue stands in retro or merging, or is held from merging, or from retro for a
 -- reason other than its children (a hold for its children stands in place of the retro), or the

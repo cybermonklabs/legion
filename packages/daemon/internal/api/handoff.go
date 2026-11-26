@@ -997,12 +997,12 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 
 // servedRetroRun is the run of the retro Legion runs after an issue's close that a completion from
 // claim c, whose token is caller, reports, and 0 for none. It is the retro whose task the claim's
-// worker took (supervise.Claim.ServingRetro), or the retro's own turn that was running at the close
-// (P4 of dispatch://INFRA-5602): that turn took the task of the retro phase before the close,
-// which names no retro after a close, and the record of the retro the close kept names its phase
-// entry (record.RunRetro.Entry), so a completion of the claim of the retro's agent serving that
-// run and that entry is that retro's report. Without it, the close of an issue in its retro
-// would refuse the very report the close kept the turn for.
+// worker took (supervise.Claim.ServingRetro), or the retro's own turn that was running at the
+// close: that turn took the task of the retro phase before the close, which names no retro after
+// a close, and the record of the retro the close kept names its phase entry
+// (record.RunRetro.Entry), so a completion of the claim of the retro's agent serving that run and
+// that entry is that retro's report. Without it, the close of an issue in its retro would refuse
+// the very report the close kept the turn for.
 func servedRetroRun(c supervise.Claim, caller claim.Token, retro *record.RunRetro) uint64 {
 	if run := c.ServingRetro(); run > 0 {
 		return uint64(run)
@@ -1015,11 +1015,11 @@ func servedRetroRun(c supervise.Claim, caller claim.Token, retro *record.RunRetr
 }
 
 // retroReport records the report of the retro Legion runs after the close of the issue's run, the
-// retro the caller's own live assignment is (servedRetroRun), as intake.RetroReport (P2, s2 and s3
-// of dispatch://INFRA-5602): the summary of what the retro found and the rating of the plan the run
-// ran, and nothing else. Every refusal below is written before the fact is applied — the apply
-// marks the event processed before any handler runs (intake.ApplyFact) — so a refused report
-// changes nothing, leaves the retro open, and the report sent again, corrected, is recorded:
+// retro the caller's own live assignment is (servedRetroRun), as intake.RetroReport: the rating of
+// the plan the run ran, and nothing else. Every refusal below is written before the fact is
+// applied — the apply marks the event processed before any handler runs (intake.ApplyFact) — so a
+// refused report changes nothing, leaves the retro open, and the report sent again, corrected, is
+// recorded:
 //
 //   - RETRO_NOT_OPEN: the issue holds no retro after a close of that run — none was opened, or a
 //     later run's replaced it — or that retro ended at its 24-hour bound
@@ -1089,7 +1089,7 @@ func (s *server) retroReport(w http.ResponseWriter, r *http.Request, grant crede
 		return
 	}
 	result, err := s.apply(r.Context(), "api", fmt.Sprintf("retro-after-close:%s:%d", grant.Issue, run), intake.RetroReport{Issue: grant.Issue,
-		Claim: grant.Claim, Generation: run, Summary: req.Summary, PlanRating: *rating})
+		Claim: grant.Claim, Generation: run, PlanRating: *rating})
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return
@@ -1116,14 +1116,7 @@ func retroNotOpen(key string, run uint64, retro *record.RunRetro) string {
 	case retro.Generation != run:
 		return fmt.Sprintf("the retro after the close of %s is run %d's, and this report is of run %d's; nothing was recorded", key, retro.Generation, run)
 	}
-	how := "by its report"
-	switch retro.EndedBy {
-	case record.RetroEndBound:
-		how = fmt.Sprintf("at its bound, %s, with no report", retro.BoundAt.UTC().Format(time.RFC3339))
-	case record.RetroEndTodo:
-		how = "when the issue was set back to todo"
-	}
-	return fmt.Sprintf("the retro after the close of %s run %d ended %s %s, and takes no report now; nothing was recorded", key, run, retro.Outcome, how)
+	return fmt.Sprintf("the retro after the close of %s run %d ended %s %s, and takes no report now; nothing was recorded", key, run, retro.Outcome, retro.EndedHow())
 }
 
 // doneNotServed is the refusal of a completion of key, a done issue, that names no check with
@@ -1131,9 +1124,9 @@ func retroNotOpen(key string, run uint64, retro *record.RunRetro) string {
 // (CHECK_LOOK_NOT_SERVED). It says nothing was recorded and whose report the issue takes, so a
 // report of either from any other session says who has one to make: the check's role, which
 // reports on a look with a verdict and checkOpenedAt, and the retro's agent, which reports the
-// retro with a rating of the plan (s4 and s20 of dispatch://INFRA-5602). A retro that ended at its
-// bound is named as ended, so its agent's late report reads as late rather than as one nobody
-// asked for. An issue with neither has nothing for any role to report.
+// retro with a rating of the plan. A retro that ended at its bound is named as ended, so its
+// agent's late report reads as late rather than as one nobody asked for. An issue with neither has
+// nothing for any role to report.
 func doneNotServed(key string, check *record.ProductionCheck, retro *record.RunRetro) string {
 	var whose []string
 	if check != nil && check.Open() {
@@ -1150,8 +1143,8 @@ func doneNotServed(key string, check *record.ProductionCheck, retro *record.RunR
 	if len(whose) == 0 {
 		says = "it has no open production check and no open retro after its close, so there is nothing here for any role to report"
 		if retro != nil && retro.EndedBy == record.RetroEndBound {
-			says = fmt.Sprintf("it has no open production check, and the retro Legion ran after its close (of run %d) ended at its bound, %s, with no report, so there is nothing here for any role to report",
-				retro.Generation, retro.BoundAt.UTC().Format(time.RFC3339))
+			says = fmt.Sprintf("it has no open production check, and the retro Legion ran after its close (of run %d) ended %s, so there is nothing here for any role to report",
+				retro.Generation, retro.EndedHow())
 		}
 	}
 	return fmt.Sprintf("%s is done: no phase of it is open, this completion names no check with checkOpenedAt, and this session works no retro after its close. This completion reported on nothing and recorded nothing: %s.",

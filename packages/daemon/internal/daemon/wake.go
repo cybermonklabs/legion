@@ -380,42 +380,28 @@ func (r *outbox) wakeableIssue(ctx context.Context, key string, token claim.Toke
 	if root == nil {
 		return issue, false, nil
 	}
-	standing := issue.Standing()
-	if !pods.InWorkflowNotLingering(standing, root.Standing(), record.OutOfWorkflow) {
-		if standing.RetroHolds, err = r.retroHoldsClaim(ctx, issue, token); err != nil {
+	live := pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow)
+	if !live {
+		if live, err = r.retroHoldsClaim(ctx, issue, token); err != nil {
 			return record.Issue{}, false, err
 		}
 	}
-	return issue, pods.InWorkflowNotLingering(standing, root.Standing(), record.OutOfWorkflow), nil
+	return issue, live, nil
 }
 
 // retroHoldsClaim is whether a retro after a close holds issue's pod for its released claim token
 // (pods.Standing.RetroHolds): token is the agent of the issue's open retro after its close, which
-// an idle release took once its turn ended (P7 of dispatch://INFRA-5602), or the architect of a
-// tree root while a retro after the close of an issue of its tree is open, for the finding that
-// retro sends it (P6). It is the rule the workflow's wake of a released claim reads (workflow's
-// wakeReleased), so the wake of a delivery the daemon holds and a listener's wake bring the same
-// claims back. Any other released claim of a closed issue, or of a lingering tree, is not held.
+// an idle release took once its turn ended, or the architect of a tree root while a retro after
+// the close of an issue of its tree is open, for the finding that retro sends it. It is the rule
+// the workflow's wake of a released claim reads (workflow.RetroWakeOf), read here in a
+// transaction of its own, so the wake of a delivery the daemon holds and a listener's wake bring
+// the same claims back. Any other released claim of a closed issue, or of a lingering tree, is not
+// held.
 func (r *outbox) retroHoldsClaim(ctx context.Context, issue record.Issue, token claim.Token) (bool, error) {
 	var holds bool
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		holds = false
-		open, err := r.records.OpenRetroOfIssue(ctx, tx, issue.Key)
-		if err != nil {
-			return err
-		}
-		if open != nil && open.Agent == token {
-			holds = true
-			return nil
-		}
-		if !claim.IsTreeRoot(issue.Key, issue.Tree) {
-			return nil
-		}
-		if architect, err := claim.NewToken(r.project, issue.Key, claim.RoleArchitect); err != nil || architect != token {
-			return err
-		}
-		tree, err := r.records.OpenRetrosOfTree(ctx, tx, issue.Tree)
-		holds = len(tree) > 0
+		run, architect, err := workflow.RetroWakeOf(ctx, r.records, tx, issue, token)
+		holds = run != 0 || architect
 		return err
 	}); err != nil {
 		return false, fmt.Errorf("read whether a retro after a close holds the pod of %s for %s: %w", issue.Key, token, err)

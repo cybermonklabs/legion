@@ -97,7 +97,11 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			if err != nil {
 				return err
 			}
-			return e.openRetroAfterClose(ctx, tx, issue, plan)
+			pr, err := e.taskPullRequest(ctx, tx, issue, plan)
+			if err != nil {
+				return err
+			}
+			return e.openRetroAfterClose(ctx, tx, issue, plan, pr)
 		}
 		if held, err := record.OperatorHoldsTree(ctx, e.store, tx, issue); err != nil || held {
 			if err != nil {
@@ -123,7 +127,11 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		if status != "done" {
 			return nil
 		}
-		if err := e.openRetroAfterClose(ctx, tx, issue, plan); err != nil {
+		pr, err := e.taskPullRequest(ctx, tx, issue, plan)
+		if err != nil {
+			return err
+		}
+		if err := e.openRetroAfterClose(ctx, tx, issue, plan, pr); err != nil {
 			return err
 		}
 		return e.openCheckIfMerged(ctx, tx, issue, false)
@@ -222,7 +230,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		}
 	}
 	// The retro opens after the close, as the check does, so its start follows the stops above.
-	if err := e.openRetroAfterClose(ctx, tx, issue, plan); err != nil {
+	if err := e.openRetroAfterClose(ctx, tx, issue, plan, pr); err != nil {
 		return err
 	}
 	if !merged {
@@ -428,8 +436,8 @@ func indexIssues(issues []record.Issue, slots []record.Slot) (map[string]record.
 // (leaveState). Its one caller (leave) calls it once per close: a root that already lingers leaves
 // no second time. The suspension spares the agent of every retro after a close open in the tree,
 // and rootRetro, the agent of the retro the root's own close starts or keeps ("" for none): each
-// keeps its turn, its session and its issue's pod (P3, P4), so no IssueSuspend is written for an
-// issue with a spared claim, and the retro's end writes it (finishRetroAfterClose).
+// keeps its turn, its session and its issue's pod, so no IssueSuspend is written for an issue with
+// a spared claim, and the retro's end writes it (finishRetroAfterClose).
 func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, status string, rootRetro claim.Token) error {
 	until := e.lingerAt()
 	members, err := e.treeMembers(ctx, tx, root)

@@ -435,7 +435,10 @@ func TestIdlePodsListsOnlyIssuesWithALiveClaim(t *testing.T) {
 // would be one, and each candidate costs a transaction that takes the daemon's global fact
 // serializer — so the workflow filter is read here beside them: the member of a lingering tree,
 // the issue whose own phase is done and the one closed long ago all hold claims that have
-// stopped and are no candidates, and the pod with a live claim is the idle rule's.
+// stopped and are no candidates, and the pod with a live claim is the idle rule's. The one
+// exception to the filter is a pod a retro after a close holds: a closed child whose retro after
+// its close is open, and its lingering tree's root, whose architect that retro's finding wakes,
+// are candidates, and a closed issue whose retro after its close has ended is not.
 func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
 	t.Parallel()
 	const (
@@ -445,6 +448,9 @@ func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
 		phaseDone     = "LEGION-303"
 		closedLongAgo = "LEGION-304"
 		stillLive     = "LEGION-305"
+		retroRoot     = "LEGION-306"
+		retroOpen     = "LEGION-307"
+		retroEnded    = "LEGION-308"
 	)
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -455,9 +461,21 @@ func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
 		($3, $1, 'LEGION', 'a member of the lingering tree', 'implementing', 1, 'in_progress', 'C', null, 1),
 		($4, $4, 'LEGION', 'an issue whose own phase is done', 'done', 1, 'in_progress', 'D', null, 1),
 		($5, $5, 'LEGION', 'an issue closed long ago', 'done', 1, 'done', 'E', null, 1),
-		($6, $6, 'LEGION', 'a pod a live claim still holds', 'implementing', 1, 'in_progress', 'F', null, 1)`,
-		lingeringRoot, unowned, underLinger, phaseDone, closedLongAgo, stillLive); err != nil {
+		($6, $6, 'LEGION', 'a pod a live claim still holds', 'implementing', 1, 'in_progress', 'F', null, 1),
+		($7, $7, 'LEGION', 'a lingering root whose child''s retro after its close is open', 'done', 1, 'done', 'G', now() + interval '1 hour', 1),
+		($8, $7, 'LEGION', 'a closed child whose retro after its close is open', 'done', 1, 'done', 'H', null, 1),
+		($9, $9, 'LEGION', 'an issue whose retro after its close ended', 'done', 1, 'done', 'I', null, 1)`,
+		lingeringRoot, unowned, underLinger, phaseDone, closedLongAgo, stillLive, retroRoot, retroOpen, retroEnded); err != nil {
 		t.Fatalf("seed the project's issues: %v", err)
+	}
+	if _, err := st.Pool().Exec(ctx, `insert into run_retros
+		(issue, generation, tree, started_at, retro_started_at, opened_at, bound_at, agent, ended_at, outcome, ended_by) values
+		($1, 1, $2, now() - interval '2 hours', now() - interval '1 hour', now() - interval '1 hour', now() + interval '23 hours',
+			'legion-legion-legion-307-implementer', null, '', ''),
+		($3, 1, $3, now() - interval '2 hours', now() - interval '1 hour', now() - interval '1 hour', now() + interval '23 hours',
+			'legion-legion-legion-308-implementer', now(), 'passed', 'report')`,
+		retroOpen, retroRoot, retroEnded); err != nil {
+		t.Fatalf("seed the retros after a close: %v", err)
 	}
 	for _, c := range []supervise.Claim{
 		{Token: claim.Token("legion-legion-legion-301-implementer"), Issue: unowned, Tree: unowned, Role: claim.RoleImplementer, State: supervise.StateFailed},
@@ -466,6 +484,9 @@ func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
 		{Token: claim.Token("legion-legion-legion-303-implementer"), Issue: phaseDone, Tree: phaseDone, Role: claim.RoleImplementer, State: supervise.StateRetired},
 		{Token: claim.Token("legion-legion-legion-304-implementer"), Issue: closedLongAgo, Tree: closedLongAgo, Role: claim.RoleImplementer, State: supervise.StateSuspended},
 		{Token: claim.Token("legion-legion-legion-305-implementer"), Issue: stillLive, Tree: stillLive, Role: claim.RoleImplementer, State: supervise.StateIdle},
+		{Token: claim.Token("legion-legion-legion-306-architect"), Issue: retroRoot, Tree: retroRoot, Role: claim.RoleArchitect, State: supervise.StateSuspended},
+		{Token: claim.Token("legion-legion-legion-307-implementer"), Issue: retroOpen, Tree: retroRoot, Role: claim.RoleImplementer, State: supervise.StateSuspended},
+		{Token: claim.Token("legion-legion-legion-308-implementer"), Issue: retroEnded, Tree: retroEnded, Role: claim.RoleImplementer, State: supervise.StateRetired},
 	} {
 		c.Project, c.TreeEpoch, c.Generation = "legion", 1, 1
 		if err := st.PutClaim(ctx, c); err != nil {
@@ -476,8 +497,8 @@ func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candidates) != 1 || candidates[0] != unowned {
-		t.Fatalf("the candidates = %v, want %s alone: the pod no claim owns under a tree the workflow still runs", candidates, unowned)
+	if want := []string{unowned, retroRoot, retroOpen}; !slices.Equal(candidates, want) {
+		t.Fatalf("the candidates = %v, want %v: the pod no claim owns under a tree the workflow still runs, and the two pods an open retro after a close holds", candidates, want)
 	}
 }
 

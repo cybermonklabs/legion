@@ -116,14 +116,12 @@ func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 
 // named is the key of each issue the fact named the end of a run of (nameEnd), in key order.
 func (runs *factRuns) named() []string {
-	var keys []string
+	keys := make([]string, 0, len(runs.ends))
 	for run := range runs.ends {
-		if !slices.Contains(keys, run.issue) {
-			keys = append(keys, run.issue)
-		}
+		keys = append(keys, run.issue)
 	}
 	slices.Sort(keys)
-	return keys
+	return slices.Compact(keys)
 }
 
 // nameMoveEnd names the end of the run issue stands in on w, the walk of its run, that a move on
@@ -314,31 +312,37 @@ type issueReader func(key string) (*record.Issue, error)
 // run is none of these whatever the issue's standing: the retro of a run whose retro after the
 // close is open (record.RunRetro.Open), which runs after the issue left its phases, at the run it
 // is of, while the tree lingers, and ends by its report, its bound or a todo, each of which ends
-// the record first.
+// the record first. The record is read only where the rule of the standing answers over.
 func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run runAt, now *record.Issue, restarted bool, read issueReader) (bool, error) {
 	if restarted || now == nil {
 		return true, nil
 	}
-	if run.place.Kind == record.PlaceRetro {
-		retro, err := e.store.RunRetro(ctx, tx, run.issue, run.generation)
-		if err != nil {
-			return false, err
-		}
-		if retro != nil && retro.Open() {
-			return false, nil
-		}
+	over, err := e.runOverByStanding(ctx, tx, runs, run, *now, read)
+	if err != nil || !over || run.place.Kind != record.PlaceRetro {
+		return over, err
 	}
-	if now.Generation != run.generation {
-		return true, nil
-	}
-	w, err := e.walk(ctx, tx, *now)
+	retro, err := e.store.RunRetro(ctx, tx, run.issue, run.generation)
 	if err != nil {
 		return false, err
 	}
-	if step, ok := standingStep(w, *now); !ok || step.place != run.place {
+	return retro == nil || !retro.Open(), nil
+}
+
+// runOverByStanding is runOver's rule of now, run's issue as it stands: it stands in another
+// generation, or at another place on the walk of its run, or its tree's root lingers and run is no
+// merge that can still land in that linger.
+func (e *Engine) runOverByStanding(ctx context.Context, tx pgx.Tx, runs *factRuns, run runAt, now record.Issue, read issueReader) (bool, error) {
+	if now.Generation != run.generation {
 		return true, nil
 	}
-	root := now
+	w, err := e.walk(ctx, tx, now)
+	if err != nil {
+		return false, err
+	}
+	if step, ok := standingStep(w, now); !ok || step.place != run.place {
+		return true, nil
+	}
+	root := &now
 	if now.Tree != now.Key {
 		if root, err = read(now.Tree); err != nil {
 			return false, err
@@ -347,10 +351,10 @@ func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run run
 	if root == nil || !root.Lingers() {
 		return false, nil
 	}
-	if !awaitsMerge(*now) {
+	if !awaitsMerge(now) {
 		return true, nil
 	}
-	canLand, err := e.mergeCanLand(ctx, tx, runs, *now, *root)
+	canLand, err := e.mergeCanLand(ctx, tx, runs, now, *root)
 	return !canLand, err
 }
 
