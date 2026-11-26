@@ -44,11 +44,16 @@ func readSuccessors(t *testing.T, handler http.Handler, session string) (listene
 }
 
 // registerAs records each of sessionIDs as having last registered as principal, none for "", as
-// the registration route records a session (session.KnownSessions.RecordRegistrationWithin).
+// the registration route records a session: admitted first, then written at the admission's
+// revision (session.KnownSessions.AdmitRegistration, RecordRegistrationWithin).
 func registerAs(t *testing.T, known *session.KnownSessions, principal string, sessionIDs ...string) {
 	t.Helper()
 	for _, sessionID := range sessionIDs {
-		if err := known.RecordRegistrationWithin(t.Context(), session.KnownSession{SessionID: sessionID, Principal: principal}); err != nil {
+		admission, err := known.AdmitRegistration(t.Context(), sessionID, principal)
+		if err != nil {
+			t.Fatalf("admit %s's registration as %q: %v", sessionID, principal, err)
+		}
+		if err := known.RecordRegistrationWithin(t.Context(), admission, session.KnownSession{SessionID: sessionID, Principal: principal}); err != nil {
 			t.Fatalf("record %s's registration as %q: %v", sessionID, principal, err)
 		}
 	}

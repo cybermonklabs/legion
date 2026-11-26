@@ -705,26 +705,33 @@ listener whose copy has not applied another listener's registration yet never wr
 principal that registration replaced back over it; where the leader does not answer they write
 nothing. Before a registration changes anything of the session (its entry, its consumer, its
 relay, a role claim it releases or renews), the listener reads the session's record from the
-bucket's leader, and deletes a record that names another principal, recorded, at the revision
-the read found (`session.KnownSessions.AdmitRegistration`): from then on the gate reads no record
-for the session and refuses every handover to or from it, until the registration's own write
-records the new principal. A leader that does not answer, a delete the bucket refuses, and a
-listener whose known-session bucket is not open answer the registration `503` with
-`Retry-After: 1` (`session.ErrPrincipalUnrecorded`) with nothing of it admitted; such a listener
-refuses every registration, heartbeats included, until its bucket opens. A registration whose
-record a listener's copy holds unchanged inside the refresh age is skipped only where the leader
-confirms it holds its principal too. The registration's own write is fenced at the leader too: it
-writes over the revision the leader holds only while that revision names its principal, none
-recorded, or nothing, and a record naming another principal - one a registration of the session
-as that principal wrote since this one was admitted, through any listener - is deleted at its
-revision instead and the registration answered the same `503`, so of two registrations of one
-session as two principals the later write leaves no record, and the gate refuses every handover
-of the session until one registers again. A registration whose write failed is answered the same
-`503` unless the leader confirms the record names its principal, none recorded, or nothing; so
-the session registers again until the record names the principal it registers as. What no step
-fences is a registration whose listener stops between the session entry's write and the record's
-write: the record another registration wrote since stands beside its entry until its client
-registers again. The claim
+bucket's leader, and where it names another principal, recorded, writes it again with no
+principal recorded over the revision the read found, keeping its topics, title, capabilities and
+last_seen (`session.KnownSessions.AdmitRegistration`): from then on the gate refuses every
+handover to or from the session until the registration's own write records the new principal,
+while a send to the session and a publish's count still find the record if that write never
+comes, as for a stopped session whose registration is refused after its admission. A record
+stored in chunks is joined and written again with every topic it held, and one whose chunks are
+gone is written whole from its manifest's view. A leader that does not answer, a clear the
+bucket refuses, and a listener whose known-session bucket is not open answer the registration
+`503` with `Retry-After: 1` (`session.ErrPrincipalUnrecorded`) with nothing of it admitted; such
+a listener refuses every registration, heartbeats included, until its bucket opens. The
+admission answers the revision it read or wrote (`session.Admission`), and the registration's
+own write is a compare-and-swap at exactly that revision: a record written since - by another
+registration of the session, through any listener, whose admission cleared this principal or
+whose write recorded its own, or by an interest change or a stop - is left as it is, and the
+registration writes nothing and is answered the same `503`, so a registration whose write is
+delayed past another one's admission never puts back a principal that admission cleared. Of two
+registrations of one session admitted before either writes, the one that writes first stands,
+and the other registers again at once; until it does, its session entry can stand beside a
+record naming the first one's principal. A registration whose record a listener's copy holds
+unchanged inside the refresh age is skipped only where its admission found the leader's record
+naming its principal.
+A registration whose write failed is answered the same `503` unless the leader confirms the
+record names its principal, none recorded, or nothing; so the session registers again until the
+record names the principal it registers as. What no step fences is a registration whose listener
+stops between the session entry's write and the record's write: the record another registration
+wrote since stands beside its entry until its client registers again. The claim
 route writes the handover record
 only when the claim's credential, the claimant's last registration and the replaced session's
 last registration name one principal, none equal to none, each registration read from the

@@ -365,11 +365,7 @@ func TestTheHandoverGateRefusesWhatNoRegistrationAttests(t *testing.T) {
 	}
 	register := func(t *testing.T, sessionIDs ...string) {
 		t.Helper()
-		for _, sessionID := range sessionIDs {
-			if err := known.RecordRegistrationWithin(t.Context(), session.KnownSession{SessionID: sessionID}); err != nil {
-				t.Fatalf("record %s's registration: %v", sessionID, err)
-			}
-		}
+		registerAs(t, known, "", sessionIDs...)
 	}
 	writtenByAnEarlierBuild := func(t *testing.T, sessionID string) {
 		t.Helper()
