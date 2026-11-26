@@ -120,6 +120,8 @@ func isDrain(hold storetest.AdvisoryHold) bool {
 // each write is the write's drain, whose hold is logged. Before the outbox each write took the lock
 // first and held it to its commit.
 func TestAnEvalWriteHoldsNoChangeLogLock(t *testing.T) {
+	// Not parallel: it samples who holds the change log's lock every millisecond
+	// (storetest.SampleAdvisoryHolds), which other tests' writes on the same server would hold.
 	r := newRig(t)
 	ctx := t.Context()
 	commits := recordCommitHolds(t, r)
@@ -297,6 +299,8 @@ func median(durations []time.Duration) time.Duration {
 // measure (k20), which a busy runner would fail here. Before the outbox every run write sent
 // during a correction waited behind that correction's transaction until it committed.
 func TestNoIntakeStatementWaitsOnAnEvalCorrection(t *testing.T) {
+	// Not parallel: it times the intake's statements behind a correction (intakeBlockers), a
+	// bound that other tests' load on the same server would move.
 	r := newRig(t)
 	ctx := t.Context()
 	intake := intakePool(t, r, 48)
@@ -394,6 +398,8 @@ func TestNoIntakeStatementWaitsOnAnEvalCorrection(t *testing.T) {
 // release to the write's answer, which bounds the drain's hold from above, is logged. Before the
 // outbox the write waited for the lock before it wrote anything, and held it for the whole write.
 func TestACorrectionCommitsWhileTheChangeLogLockIsHeldElsewhere(t *testing.T) {
+	// Not parallel: it samples who holds the change log's lock every millisecond
+	// (storetest.SampleAdvisoryHolds), which other tests' writes on the same server would hold.
 	r := newRig(t)
 	ctx := t.Context()
 	readings := readingIDs(r.write(t, "build-minutes", alice, readingsOverDays(t, correctionSize, nil)...))

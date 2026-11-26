@@ -275,6 +275,7 @@ func showMinN(minN *int) string {
 // holding the release's unit and alice's min_n. Alice's method text stands, and a second seed
 // writes nothing.
 func TestAReleaseThatChangesAnEvalCarriesForwardWhatOthersSet(t *testing.T) {
+	// Not parallel: it changes the catalogue the whole process reads (withCatalogue).
 	r := newRig(t)
 	ctx := t.Context()
 	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
@@ -644,6 +645,7 @@ func (r rig) seedPass(t *testing.T, seeds *seeding) []string {
 // pass seeds EVAL alone, which then holds the release; a pass after it seeds nothing, and one
 // after a project is made by SQL seeds that project alone.
 func TestTheRefreshersFirstPassSeedsEveryProjectAndLaterPassesTheOwed(t *testing.T) {
+	// Not parallel: it changes the catalogue the whole process reads (withCatalogue).
 	r := newRig(t)
 	ctx := t.Context()
 	exec := func(what, statement string) {

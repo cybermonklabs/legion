@@ -292,6 +292,8 @@ func TestTheUnownedP0RowOfEachDayIsWrittenWithNoDeliverySettings(t *testing.T) {
 // 250 ms, 500 ms and 1 s after the one before. Once the lower write commits, the next pass writes
 // today's row with EVAL-50 counted.
 func TestAnEventAboveTheSafeHorizonAsksForAPassSoon(t *testing.T) {
+	// Not parallel: its loop logs through the process's default logger (startLoop), which the
+	// test reads.
 	r := newRefresherRig(t)
 	ctx := t.Context()
 	r.settle(t)

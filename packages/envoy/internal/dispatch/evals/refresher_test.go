@@ -804,6 +804,8 @@ func (r *refresherRig) storeFacts(t *testing.T, history *legionEval, through int
 // EVAL-2's close, moved after that pass with no event, reaches the day rows by the wake of its own
 // commit: no gap holds a pass a change woke, which a gap of an hour would hold past any wait.
 func TestTheFactsAnEventMovesReachTheDayRowsAtTheirCommit(t *testing.T) {
+	// Not parallel: its loop logs through the process's default logger (startLoop), which the
+	// test reads.
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)
@@ -858,6 +860,8 @@ func TestTheFactsAnEventMovesReachTheDayRowsAtTheirCommit(t *testing.T) {
 // began with the boot pass holds a pass a change woke. Before, both waited for RefresherGap after
 // the boot pass began.
 func TestAChangeInsideWhatWasTheGapReachesTheDayRowsAtOnce(t *testing.T) {
+	// Not parallel: its loop logs through the process's default logger (startLoop), which the
+	// test reads.
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)
@@ -897,6 +901,8 @@ func TestAChangeInsideWhatWasTheGapReachesTheDayRowsAtOnce(t *testing.T) {
 // five moves, and no other pass runs in the 2 s after it, since the wakes are by hand and no echo
 // comes. Before, that pass waited for RefresherGap after the held pass began.
 func TestABurstDuringAPassMakesOneOwedPass(t *testing.T) {
+	// Not parallel: its loop logs through the process's default logger (startLoop), which the
+	// test reads.
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)
@@ -953,6 +959,8 @@ func TestABurstDuringAPassMakesOneOwedPass(t *testing.T) {
 // pass begins a batch. Once the loop's own clock has moved a gap on, the next wake's pass builds
 // the walk's next day. Before, each change waited for the gap.
 func TestTheWalkKeepsItsGapWhileChangesRunAtOnce(t *testing.T) {
+	// Not parallel: its loop logs through the process's default logger (startLoop), which the
+	// test reads.
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)
@@ -1087,6 +1095,8 @@ func TestAWalkStopsBetweenDaysWhenAWakeIsOwed(t *testing.T) {
 // the walk has reached a batch's last day finds it still there. Before, the change waited for the
 // batch and for the gap after its start.
 func TestAWalkBatchThatStopsForAWakeKeepsItsDaysForTheNextPass(t *testing.T) {
+	// Not parallel: its loop logs through the process's default logger (startLoop), which the
+	// test reads.
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.batch = 3
