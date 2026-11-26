@@ -63,7 +63,7 @@ export function useAsk(context: GoingContextInput): Asking {
   const queryClient = useQueryClient();
   const login = useQuery(whoAmIQuery()).data?.login;
   const answering = useOpenPlan();
-  const waits = answering.plan !== undefined && planWaits(answering.plan);
+  const waits = planWaits(answering.plan);
   const runWaits = useGoingValue((of) => {
     const run = of.place === "closed" ? undefined : newestRun(of);
     return run !== undefined && shownState(run) === "waiting";

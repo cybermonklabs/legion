@@ -182,7 +182,7 @@ export function usePlan(run: string | undefined, planReads: number): PlanAnsweri
     target: ({ plan: answered }) => planTarget(answered.run),
   });
   const shown = plan.data;
-  const waiting = shown !== undefined && planWaits(shown) ? shown : undefined;
+  const waiting = planWaits(shown) ? shown : undefined;
   const refusal =
     refused !== undefined &&
     shown !== undefined &&

@@ -297,20 +297,17 @@ test("a bound is a grey card with what the run did so far, Continue and Continue
     "tool",
     { items: [`DEMO-${step}`], kind: "read", label: `Read DEMO-${step}`, step, tool: "read" },
   ];
-  const restore = await showRun(
-    "stopped",
+  const restore = await showRun("stopped", [
+    ...[2, 3, 4, 5, 6].map(read),
     [
-      ...[2, 3, 4, 5, 6].map(read),
-      [
-        "end",
-        {
-          offers: ["continue"],
-          reason: "TIME_BUDGET: this run worked the 5m0s a standard run may",
-          state: "stopped",
-        },
-      ],
-    ]
-  );
+      "end",
+      {
+        offers: ["continue"],
+        reason: "TIME_BUDGET: this run worked the 5m0s a standard run may",
+        state: "stopped",
+      },
+    ],
+  ]);
   try {
     const bound = await screen.findByTestId("going-run-bound");
     expect(within(bound).getByTestId("going-run-state").textContent).toBe(
@@ -1367,6 +1364,32 @@ test("Retry under an older answer while the newest run's plan waits revises that
   }
 });
 
+/** Lays the conversation out as a browser does: the view stands 100 px down the window and the
+ *  turn of `run` 700 px down the conversation, moving up as it scrolls; every other box stands at
+ *  the window's top. Answers the spy on `getBoundingClientRect`, which the test restores. */
+function layOutConversation(run: string): { readonly mockRestore: () => void } {
+  const box = (top: number): DOMRect => ({
+    bottom: top + 100,
+    height: 100,
+    left: 0,
+    right: 700,
+    toJSON: () => ({}),
+    top,
+    width: 700,
+    x: 0,
+    y: top,
+  });
+  return spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    if (this.dataset.testid === "going-conversation-view") return box(100);
+    const scrolled =
+      document.querySelector<HTMLElement>('[data-testid="going-conversation-view"]')?.scrollTop ??
+      0;
+    return box(this.dataset.run === run ? 700 - scrolled : 0);
+  });
+}
+
 // Design v3, state 6: while the newest run's plan waits, the conversation follows no further than
 // that run's question, so its card reads from the top, with Approve and Discard pinned at the foot
 // of the view - in the bar and the panel alike - rather than from its middle, the line its steps
@@ -1390,29 +1413,7 @@ test("while the newest run's plan waits, the conversation follows no further tha
     return new Promise<void>(() => {});
   });
   const read = spyOn(api, "goingPlan").mockImplementation(async () => waiting);
-  // The view stands 100 px down the window and the waiting run's turn 700 px down the
-  // conversation, moving up as it scrolls, as a browser lays them out; every other box at the
-  // window's top.
-  const box = (top: number): DOMRect => ({
-    bottom: top + 100,
-    height: 100,
-    left: 0,
-    right: 700,
-    toJSON: () => ({}),
-    top,
-    width: 700,
-    x: 0,
-    y: top,
-  });
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
-    if (this.dataset.testid === "going-conversation-view") return box(100);
-    const scrolled =
-      document.querySelector<HTMLElement>('[data-testid="going-conversation-view"]')?.scrollTop ??
-      0;
-    return box(this.dataset.run === "r-2" ? 700 - scrolled : 0);
-  });
+  const boxes = layOutConversation("r-2");
   openConversation({
     id: "c-1",
     newest_at: new Date().toISOString(),
@@ -1466,28 +1467,7 @@ test("a plan read withdrawn holds the conversation's scroll at no question: it f
     return new Promise<void>(() => {});
   });
   const read = spyOn(api, "goingPlan").mockImplementation(async () => withdrawn);
-  // The view stands 100 px down the window and the run's turn 700 px down the conversation,
-  // moving up as it scrolls, as a browser lays them out; every other box at the window's top.
-  const box = (top: number): DOMRect => ({
-    bottom: top + 100,
-    height: 100,
-    left: 0,
-    right: 700,
-    toJSON: () => ({}),
-    top,
-    width: 700,
-    x: 0,
-    y: top,
-  });
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
-    if (this.dataset.testid === "going-conversation-view") return box(100);
-    const scrolled =
-      document.querySelector<HTMLElement>('[data-testid="going-conversation-view"]')?.scrollTop ??
-      0;
-    return box(this.dataset.run === "r-1" ? 700 - scrolled : 0);
-  });
+  const boxes = layOutConversation("r-1");
   openConversation({
     id: "c-1",
     newest_at: new Date().toISOString(),

@@ -389,17 +389,18 @@ export function boxWords({
  *  while a plan waits, Enter in the empty box approves it, which the hint says so the card's
  *  Approve need not be in view, and with words in the box it sends them instead of approving;
  *  before the plan is read, Enter does nothing yet, and once its read failed the hint says why,
- *  as the card does above its Retry, rather than that the plan is still being read. */
+ *  as the card does above its Retry, rather than that the plan is still being read. A plan read
+ *  that waits for nobody, as a withdrawn run's does, has no hint: the card above shows it. */
 export function boxHint(
   asking: Pick<Asking, "planWaits" | "runWaits"> & {
-    readonly answering: Pick<PlanAnswering, "unreadable">;
+    readonly answering: Pick<PlanAnswering, "plan" | "unreadable">;
   },
   words: string
 ): string | undefined {
   if (asking.planWaits) {
     return words.trim() === "" ? "↵ Approve" : "↵ sends your words instead of approving";
   }
-  if (!asking.runWaits) {
+  if (!asking.runWaits || asking.answering.plan !== undefined) {
     return undefined;
   }
   return asking.answering.unreadable?.message ?? "Reading the plan…";

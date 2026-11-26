@@ -2,6 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import type { GoingPlanAnswer } from "../../api/types";
 import { goingState } from "./going-store";
 import { BoxFrame, BoxRow, boxHint, ConversationHeader } from "./RunControls";
 
@@ -145,9 +146,11 @@ test("the mode button keeps one width, and the menu's focused mode wears the pag
 // While a plan waits, the hint under the box says what Enter does (design v3, Keys; review N1):
 // in the empty box it approves, which the hint says wherever the card's Approve has scrolled to,
 // and with words in the box it sends them instead; before the plan is read it does nothing yet,
-// and once that read failed the hint says why, as the card does, not that it is being read.
+// and once that read failed the hint says why, as the card does, not that it is being read. A
+// plan read that waits for nobody, a withdrawn run's, has no hint while the run's frames still
+// say it waits: the card above shows the plan.
 test("the hint under the box says Enter approves a plan that waits, and sends words instead of approving", () => {
-  const read = { answering: { unreadable: undefined } };
+  const read = { answering: { plan: undefined, unreadable: undefined } };
   const waits = { ...read, planWaits: true, runWaits: true };
   expect(boxHint(waits, "")).toBe("↵ Approve");
   expect(boxHint(waits, "  ")).toBe("↵ Approve");
@@ -156,13 +159,31 @@ test("the hint under the box says Enter approves a plan that waits, and sends wo
   expect(boxHint({ ...read, planWaits: false, runWaits: false }, "")).toBeUndefined();
   const failed = {
     answering: {
-      unreadable: { message: "The run's plan could not be read.", retry: () => {}, retrying: false },
+      plan: undefined,
+      unreadable: {
+        message: "The run's plan could not be read.",
+        retry: () => {},
+        retrying: false,
+      },
     },
   };
   expect(boxHint({ ...failed, planWaits: false, runWaits: true }, "")).toBe(
     "The run's plan could not be read."
   );
   expect(boxHint({ ...failed, planWaits: false, runWaits: false }, "")).toBeUndefined();
+  const withdrawn: GoingPlanAnswer = {
+    mode: "ask",
+    plan: 1,
+    rows: [],
+    run: "r-1",
+    state: "waiting",
+    summary: "Page the on-call.",
+    version: "v1",
+    withdrawn: true,
+  };
+  const shown = { answering: { plan: withdrawn, unreadable: undefined } };
+  expect(boxHint({ ...shown, planWaits: false, runWaits: true }, "")).toBeUndefined();
+  expect(boxHint({ ...shown, planWaits: false, runWaits: true }, "keep it")).toBeUndefined();
 });
 
 // The hint stands under the box, from the box's left edge (design v3, Keys: "the hint under the

@@ -1548,7 +1548,7 @@ export function PlanCard({
   const [open, setOpen] = useState(false);
   const list = useRef<HTMLUListElement>(null);
   const actions = useRef<HTMLDivElement>(null);
-  const waiting = plan !== undefined && planWaits(plan);
+  const waiting = planWaits(plan);
   const hidden = useHiddenRows(list, actions, waiting);
   useEffect(() => {
     if (!waiting) return undefined;

@@ -1722,11 +1722,11 @@ export function tickedCount(plan: GoingPlanAnswer, draft: PlanDraft): number {
   return (plan.rows ?? []).filter((row) => rowWaits(row) && !unticked.has(row.row)).length;
 }
 
-/** Whether `plan` waits for its person's answer: it waits, and its run is not withdrawn - a run
- *  that read a comment or an issue message deleted since, whose plan Dispatch approves and revises
- *  for nobody (`409 GOING_RUN_WITHDRAWN`). */
-export function planWaits(plan: GoingPlanAnswer): boolean {
-  return plan.state === "waiting" && plan.withdrawn !== true;
+/** Whether `plan` waits for its person's answer: it is read, it waits, and its run is not
+ *  withdrawn - a run that read a comment or an issue message deleted since, whose plan Dispatch
+ *  approves and revises for nobody (`409 GOING_RUN_WITHDRAWN`). */
+export function planWaits(plan: GoingPlanAnswer | undefined): boolean {
+  return plan !== undefined && plan.state === "waiting" && plan.withdrawn !== true;
 }
 
 /** Whether the person can approve `plan` with `draft` now, by Approve or by Enter in the box,

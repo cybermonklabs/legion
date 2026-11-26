@@ -437,9 +437,7 @@ function RunTurn({
       data-run={run.id}
       data-state={state}
       data-testid="going-run"
-      {...(newest && shownPlan !== undefined && planWaits(shownPlan)
-        ? { [FOLLOW_ANCHOR]: "" }
-        : {})}
+      {...(newest && planWaits(shownPlan) ? { [FOLLOW_ANCHOR]: "" } : {})}
     >
       <Words testId="going-run-words" words={run.record.words} />
       {waitsForSteps ? <Thinking since={run.since} /> : null}
@@ -727,8 +725,7 @@ export function ConversationView({
     going.queued !== undefined && going.queued.run === newestRun(going)?.id
       ? going.queued
       : undefined;
-  const shownPlan = answering.plan;
-  const waiting = shownPlan !== undefined && planWaits(shownPlan) ? shownPlan : undefined;
+  const waiting = planWaits(answering.plan) ? answering.plan : undefined;
   const scroll = useFollow(
     runs[0]?.record.conversation ?? "",
     runs.reduce((sum, run) => sum + run.read + 1, 0) +
