@@ -248,6 +248,12 @@ export function DecisionsFilterBody({
   const agentText = useAgentText();
   // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
   const threads = useMemo(() => threadMarks(root), [root]);
+  // Every entry the list draws, in the order it draws them, whether its page is drawn or not
+  // and whether the foot is folded or not: the entries an address may name.
+  const every = useMemo(
+    () => DECISIONS_PART_ORDER.flatMap<DecisionsEntry | NamedEntry>((part) => parts[part]),
+    [parts]
+  );
   // The name each statement takes on a decision's "informs" line, as every chip of the page
   // names a block (`chipName`), so a statement reads here as the outline's chip for it reads: by
   // the line the names store projects beside its name from the reading the page published for
@@ -263,33 +269,31 @@ export function DecisionsFilterBody({
   const covered = useMemo(() => {
     const readings = new Map<string, ReferenceNameReading>();
     const references = new Map<string, string>();
-    for (const part of DECISIONS_PART_ORDER) {
-      for (const entry of parts[part]) {
-        for (const { id, node, reading } of entry.shapes) {
-          if (reading === undefined || node.reference === undefined) continue;
-          readings.set(node.reference, reading);
-          references.set(id, node.reference);
-        }
+    for (const entry of every) {
+      for (const { id, node, reading } of entry.shapes) {
+        if (reading === undefined || node.reference === undefined) continue;
+        readings.set(node.reference, reading);
+        references.set(id, node.reference);
       }
     }
     return { readings, references };
-  }, [parts]);
+  }, [every]);
   usePublishViewReadings(covered.readings);
-  const statementNames = useMemo<ReadonlyMap<string, string>>(() => {
+  const treeNames = useMemo<ReadonlyMap<string, string>>(() => {
     const names = new Map<string, string>();
-    const name = (id: string, reference: string): void => {
-      if (names.has(id)) return;
-      const line = lines.get(reference);
-      if (line !== undefined) names.set(id, chipName(parseNodeReference(reference), line));
-    };
     for (const node of nodesInOrder(root)) {
       if (node.type === "requirement" && node.reference !== undefined) {
-        name(node.id, node.reference);
+        nameStatement(names, lines, node.id, node.reference);
       }
     }
-    for (const [id, reference] of covered.references) name(id, reference);
     return names;
-  }, [covered, lines, root]);
+  }, [lines, root]);
+  const statementNames = useMemo<ReadonlyMap<string, string>>(() => {
+    if (covered.references.size === 0) return treeNames;
+    const names = new Map(treeNames);
+    for (const [id, reference] of covered.references) nameStatement(names, lines, id, reference);
+    return names;
+  }, [covered.references, lines, treeNames]);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const body = useRef<HTMLElement | null>(null);
@@ -374,12 +378,6 @@ export function DecisionsFilterBody({
       ...(footShown ? shown.agents : []),
     ],
     [footShown, parts.named, shown]
-  );
-  // Every entry the list draws, in the order it draws them, whether its page is drawn or not
-  // and whether the foot is folded or not: the entries an address may name.
-  const every = useMemo(
-    () => DECISIONS_PART_ORDER.flatMap<DecisionsEntry | NamedEntry>((part) => parts[part]),
-    [parts]
   );
   // The rows as the outline's keys read them: the nth node row is the nth row drawn. Each sits
   // at the list's one level, under the root the keys are given, which is the view (`keyOrder`),
@@ -1211,6 +1209,20 @@ function NextEntries({
 /** The first `pages` pages of `entries`, `PAGE` entries each. */
 function pagesOf<Entry>(entries: readonly Entry[], pages: number): readonly Entry[] {
   return entries.slice(0, PAGE * pages);
+}
+
+/** Names statement `id`, at address `reference`, in `names` by the line the names store holds
+ *  for it (`lines`), as a chip names it (`chipName`), where `names` names it not yet and the
+ *  store holds a line for it. */
+function nameStatement(
+  names: Map<string, string>,
+  lines: ReadonlyMap<string, string>,
+  id: string,
+  reference: string
+): void {
+  if (names.has(id)) return;
+  const line = lines.get(reference);
+  if (line !== undefined) names.set(id, chipName(parseNodeReference(reference), line));
 }
 
 /** The page of `entries` that holds the entry of node `id`, counted from 1, or 0 where none

@@ -81,9 +81,18 @@ export function waitingOnReader(
   issue: Pick<IssueDetails, "artifacts" | "key" | "open_asks" | "primary_artifact_id">,
   viewer: string | undefined,
   isCoverageStatement: (reference: string) => boolean,
-  tree: TreeAnswer | undefined,
-  comments?: readonly Pick<Comment, "deleted_at" | "id">[],
-  decisions?: TreeAnswer
+  {
+    comments,
+    decisions,
+    tree,
+  }: {
+    /** The page's comments read, which says which Changes their author deleted. */
+    readonly comments?: readonly Pick<Comment, "deleted_at" | "id">[];
+    /** The decisions view read, where the page holds it. */
+    readonly decisions?: TreeAnswer;
+    /** Conversation's read, which hangs each Change under its decision. */
+    readonly tree: TreeAnswer | undefined;
+  }
 ): WaitingOnReader {
   // The decisions and the questions are the decisions view's where the page holds it, and the
   // tree read's until then; the Changes are the tree read's, which hangs each under its decision.

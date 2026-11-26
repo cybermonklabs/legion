@@ -1758,11 +1758,13 @@ test("every decision of a paged issue is in its part, the header's count and the
     // read from the parts the page draws - the decisions that wait in the review list, the
     // question alice answered under Your decisions, and the decision under it in the review list.
     await readFilter(page, traffic, "decisions");
-    owedUnless(
-      decisionNodesGate(await readTree(key, null), await heldDecisionsRead(key, decisions))
-    );
-    const view = await readTree(key, "decisions");
-    const spec = await readTree(key, "spec");
+    const [whole, held, view, spec] = await Promise.all([
+      readTree(key, null),
+      heldDecisionsRead(key, decisions),
+      readTree(key, "decisions"),
+      readTree(key, "spec"),
+    ]);
+    owedUnless(decisionNodesGate(whole, held));
     const entries = viewEntries(view, spec, reads);
     expect(
       paged.flatMap(({ name, of }) => (entries.some(({ node }) => of(node)) ? [] : [name])),
