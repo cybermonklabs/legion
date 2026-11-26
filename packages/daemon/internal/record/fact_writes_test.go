@@ -58,9 +58,10 @@ func TestEachWriterOfAnEndInputKeepsItsIssue(t *testing.T) {
 // the writers of an issue's record, pull request and hand-over fence name the issue among
 // IssuesWritten, which the end of a step's run reads: the movement and the phase rows a late
 // handoff writes keep the mark and name no issue. The controls are a statement that matches no
-// row (a fence that refuses it, a key that names none), the repository backfill, which runs
-// outside any fact, and a ctx that keeps no writes. Each case runs in a transaction of its own,
-// rolled back, after a seed of its own made without the mark.
+// row (a fence that refuses it, a key that names none, the branch a task holds already), the
+// repository backfill, which runs outside any fact, a name among those a generation gave, which
+// decides no pass (RecordBranchGiven), and a ctx that keeps no writes. Each case runs in a
+// transaction of its own, rolled back, after a seed of its own made without the mark.
 func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 	st := migratedStore(t)
 	store := NewStore()
@@ -78,6 +79,12 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		v, tasks, steps := ownersPlan(key, generation, 1, "architect-310", planGivenAt)
 		must(t, store.PutPlan(ctx, tx, v, tasks, steps))
 	}
+	seedRunning := func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+		seedPlan(t, ctx, tx)
+		must(t, store.MoveTask(ctx, tx, key, generation, "a", TaskPlace{Kind: PlaceStep, Position: 1}, TaskRunning))
+	}
+	pr := PullRequest{Issue: key, Repo: "acme/widgets", Number: 1310, Branch: "legion/" + key,
+		HeadSHA: "b1", State: PullRequestOpen, Failing: []string{}, Cancelled: []string{}}
 	sql := func(statement string) step {
 		return func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			_, err := tx.Exec(ctx, statement)
@@ -238,6 +245,9 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		{name: "a plan carried to the next generation", seed: seedPlan, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.CarryPlan(ctx, tx, key, generation, generation+1, false))
 		}, marks: true},
+		{name: "a plan carried with its run", seed: seedPlan, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.CarryPlan(ctx, tx, key, generation, generation+1, true))
+		}, marks: true},
 		{name: "a plan deleted", seed: seedPlan, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.DeletePlan(ctx, tx, key, generation))
 		}, marks: true},
@@ -256,6 +266,47 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		{name: "a plan's task's counts", seed: seedPlan, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutReturnCounts(ctx, tx, key, generation, "a", ReturnCounts{Pass: 1}))
 		}, marks: true},
+		{name: "a plan's task given its branch", seed: seedPlan, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			_, err := store.AssignTaskBranch(ctx, tx, key, generation, "a")
+			must(t, err)
+		}, marks: true},
+		{name: "control: a plan's task that holds its branch already", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			seedPlan(t, ctx, tx)
+			_, err := store.AssignTaskBranch(ctx, tx, key, generation, "a")
+			must(t, err)
+		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			_, err := store.AssignTaskBranch(ctx, tx, key, generation, "a")
+			must(t, err)
+		}},
+		{name: "control: a name the generation gave, which decides no pass", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.RecordBranchGiven(ctx, tx, key, generation, "legion/"+key+".widget"))
+		}},
+		{name: "a plan's task's needs whose join conflicted", seed: seedPlan, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.SetJoinConflicts(ctx, tx, key, generation, "a", []string{"b"}))
+		}, marks: true},
+		{name: "a plan's task's join unmerged", seed: seedPlan, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.SetJoinUnmerged(ctx, tx, key, generation, "a", true))
+		}, marks: true},
+		{name: "why a plan's task's step started", seed: seedRunning, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.SetStartReason(ctx, tx, key, generation, "a", "the reviewer sent the work back"))
+		}, marks: true},
+		{name: "a plan's task held", seed: seedRunning, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.HoldTask(ctx, tx, key, generation, "a", ""))
+		}, marks: true},
+		{name: "a plan's task released", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			seedRunning(t, ctx, tx)
+			must(t, store.HoldTask(ctx, tx, key, generation, "a", ""))
+		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.ReleaseTask(ctx, tx, key, generation, "a"))
+		}, marks: true},
+		{name: "what a plan's task's step waits for", seed: seedRunning, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.SetStepWait(ctx, tx, key, generation, "a", StepWaitAgent, &at))
+		}, marks: true},
+		{name: "a pull request deleted", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.PutPullRequest(ctx, tx, pr))
+		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.DeletePullRequest(ctx, tx, key, pr.Branch))
+		}, marks: true, issue: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			inRolledBackTx(t, st, func(ctx context.Context, tx pgx.Tx) {

@@ -115,14 +115,14 @@ func (s *Postgres) AssignTaskBranch(ctx context.Context, tx pgx.Tx, issue string
 // AssignTaskBranch never gives it to a task of the issue again: the branch of a pull request of an
 // earlier run whose row the first step of a run started again deletes (the workflow's
 // closeEarlierPullRequests), which GitHub keeps with its commits while no row of the record names
-// it any longer. A name recorded already is left as it is.
+// it any longer. A name recorded already is left as it is. It keeps no mark (RecordsWritten): a
+// name given decides which branch a later start gives (AssignTaskBranch) and whose a pull request
+// opened on it is (BranchGiven), never whether the admission pass starts anything.
 func (s *Postgres) RecordBranchGiven(ctx context.Context, tx pgx.Tx, issue string, generation uint64, branch string) error {
-	tag, err := tx.Exec(ctx, `insert into plan_branches (issue, generation, branch) values ($1, $2, $3) on conflict do nothing`,
-		issue, int64(generation), branch)
-	if err != nil {
+	if _, err := tx.Exec(ctx, `insert into plan_branches (issue, generation, branch) values ($1, $2, $3) on conflict do nothing`,
+		issue, int64(generation), branch); err != nil {
 		return fmt.Errorf("record %s among the names %s gave at generation %d: %w", branch, issue, generation, err)
 	}
-	noteRowsWritten(ctx, tag)
 	return nil
 }
 
