@@ -196,11 +196,15 @@ func tellingRead(took []store.PodReplacement) (read recordedRead, tells bool) {
 // the two records, oldest first, as the store holds them. The two are of one act, so the one record
 // left holds the read the act's notice would tell of the two, by the rule every such notice is told
 // by (tellingRecord): onto holds the yielding record's read in place of its own where that record
-// tells, and answers nil, onto as it is, where onto tells or neither does. So the launch's finish
-// tells the same read whichever commits first, the yield or that finish; where the launch's act is
-// not made, its record is forgotten and nothing is told (the Legion reviewer's Medium 1 on #5285 at
-// 18d81dad, and its finding on podreplace.go:191 at aae2c628). A record this daemon cannot read
-// moves nothing, as it tells nothing.
+// tells, and answers nil, onto as it is, where onto tells or neither does. So of these two records
+// the launch's finish tells the same read whichever commits first, the yield or that finish. The
+// yield weighs these two alone, and the launch's later finish every record it takes: with a third
+// record of the same act, a tie between reads of one weight can go to another of the tied reads
+// than it would had that finish come first, so another read's commits are named. The read told has
+// the highest weight either way, so no work a read found goes untold. Where the launch's act is not
+// made, its record is forgotten and nothing is told (the Legion reviewer's Medium 1 on #5285 at
+// 18d81dad, and its findings on podreplace.go:191 at aae2c628 and :200 at 75afee8b). A record this
+// daemon cannot read moves nothing, as it tells nothing.
 func movedRead(onto store.PodReplacement, both []store.PodReplacement) ([]byte, error) {
 	at, _ := tellingRecord(both)
 	if at < 0 || both[at].Operation == onto.Operation {

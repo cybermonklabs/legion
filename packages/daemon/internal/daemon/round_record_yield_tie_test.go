@@ -3,12 +3,14 @@ package daemon
 // The Legion reviewer's finding on podreplace.go:191 on #5285 at aae2c628: a round's call that
 // yields to a launch's record moves its read onto that record by the one rule every notice of an
 // act is told by (tellingRead): a read that found work over one that failed, a read that failed
-// over one that found nothing, and of two reads of one weight the read of the newest record. So the
-// one notice of the act names the same commits whichever commits first, the yield or the launch's
-// finish. Each row writes the launch's record of its delete of the issue's Sandbox over the round's
-// pod and the round's record of its replacement by issue, each over a read that found a commit of
-// its own, in the row's order, yields the round's record to the launch's, and finishes the launch's
-// record: its one notice names the commit of the newer record, and not the other's.
+// over one that found nothing, and of two reads of one weight the read of the newest record. So, of
+// these two records, the one notice of the act names the same commits whichever commits first, the
+// yield or the launch's finish; with a third record of the act, a tie can go to another read of the
+// same weight (movedRead). Each row writes the launch's record of its delete of the issue's Sandbox
+// over the round's pod and the round's record of its replacement by issue, each over a read that
+// found a commit of its own, in the row's order, yields the round's record to the launch's, and
+// finishes the launch's record: its one notice names the commit of the newer record, and not the
+// other's.
 
 import (
 	"encoding/json"
