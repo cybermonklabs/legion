@@ -46,7 +46,7 @@ const advancesPerIssue = 2
 // are the lifecycle's own words and never a value from outside the binary.
 var (
 	priorityInFlightStatuses = store.QuoteLiterals(model.IssueStatusesInFlight)
-	priorityParkedStatuses   = store.QuoteLiterals(model.IssueStatusesParked)
+	priorityBacklogStatuses  = store.QuoteLiterals(model.IssueStatusesParked)
 )
 
 // priorityMemberTerms are the issues that advance each priority, as the route resolves them: the

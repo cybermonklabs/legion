@@ -15,6 +15,7 @@ import {
 import { ApiError, api } from "../../../api/client";
 import type { Artifact, Comment, IssueDetails } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
+import { ReferenceNamesProvider } from "../../refs/reference-names";
 import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
@@ -30,10 +31,12 @@ import { type SlotsFilled, StageSlot, type ViewSlots } from "./stage";
  * What the stage's unit tests share (`stage.test.tsx`, `view-decisions-slot.test.tsx`,
  * `view-address.test.tsx`): the page's stage drawn at an address under the page's own providers,
  * the reads it is drawn from, which slot it drew, and where the focus landed. What the app
- * provides above the page (`AppProviders`) is what the stage's tests and the Decisions body's
- * drawn test (`DecisionsFilterBody.drawn.test.tsx`) draw in; the outline's own tests and the
- * Plan view's (`IssueTree.test.tsx`, `outline-reads.test.tsx`, `PlanFilterBody.test.tsx`) draw
- * that stack by hand.
+ * provides above the page (`AppProviders`) is what the stage's tests, the Decisions body's
+ * drawn test (`DecisionsFilterBody.drawn.test.tsx`) and the outline's reads test
+ * (`outline-reads.test.tsx`) draw in; the outline's own tests and the Plan view's
+ * (`IssueTree.test.tsx`, `PlanFilterBody.test.tsx`) draw that stack by hand. Details' tests
+ * (`details-more.test.tsx`) draw what they test under the location the browser makes for an
+ * address (`renderAtBrowserEntry`), as the stage's tests do.
  */
 
 /** A navigator that goes nowhere, for a router whose location the case sets itself. */
@@ -75,7 +78,9 @@ function AddressedStage({ filled, held, issue, views }: StageProps): ReactNode {
 }
 
 /** What the app provides above the page, around `children`: the query client, here `client`,
- *  the keymap and the margin. Each caller puts its own router around it. */
+ *  the keymap, the margin and the names store the page publishes its references' names to, as
+ *  the app's shell holds it (`app.tsx`'s `ShellProviders`). Each caller puts its own router
+ *  around it. */
 export function AppProviders({
   children,
   client,
@@ -86,7 +91,9 @@ export function AppProviders({
   return (
     <QueryClientProvider client={client}>
       <KeymapProvider>
-        <MarginProvider>{children}</MarginProvider>
+        <MarginProvider>
+          <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+        </MarginProvider>
       </KeymapProvider>
     </QueryClientProvider>
   );
@@ -131,24 +138,37 @@ export function drawStage(
   );
 }
 
-/** The page's stage at `address` under the location the browser makes for it, as a load does or
+/** Draws `children` at `address` under the location the browser makes for it, as a load does or
  *  a fragment typed in the address bar: its key is "default", the one key the router gives every
- *  entry it did not make itself. `follow` draws the stage at another address under that same key,
- *  as the browser changes the fragment alone, with no load. `stage` gives the stage its own slots
- *  (`AddressedStage`). */
+ *  entry it did not make itself. `follow` draws them at another address under that same key, as
+ *  the browser changes the fragment alone, with no load. */
+export function renderAtBrowserEntry(
+  address: string,
+  children: ReactNode
+): RenderResult & { readonly follow: (to: string) => void } {
+  const draw = (at: string): ReactNode => (
+    <Router location={at} navigator={NO_NAVIGATION}>
+      {children}
+    </Router>
+  );
+  const view = render(draw(address));
+  return { ...view, follow: (to) => view.rerender(draw(to)) };
+}
+
+/** The page's stage at `address` under the location the browser makes for it, as a load does or
+ *  a fragment typed in the address bar (`renderAtBrowserEntry`): `follow` draws the stage at
+ *  another address under the same key, as the browser changes the fragment alone, with no load.
+ *  `stage` gives the stage its own slots (`AddressedStage`). */
 export function drawAtBrowserEntry(
   address: string,
   issue: IssueDetails,
   stage: StageViews = {}
 ): RenderResult & { readonly follow: (to: string) => void } {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const draw = (at: string): ReactNode => (
-    <Router location={at} navigator={NO_NAVIGATION}>
-      <ProvidedStage {...stage} client={client} held={{}} issue={issue} />
-    </Router>
+  return renderAtBrowserEntry(
+    address,
+    <ProvidedStage {...stage} client={client} held={{}} issue={issue} />
   );
-  const view = render(draw(address));
-  return { ...view, follow: (to) => view.rerender(draw(to)) };
 }
 
 /** Which slot the stage drew, by each slot's own mark: a view's body - the Decisions view's, the

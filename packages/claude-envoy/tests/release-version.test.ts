@@ -5,11 +5,18 @@ import { dirname, join, resolve } from "node:path"
 
 // release.yaml's claude_envoy_build runs .github/scripts/release-claude-envoy-version.sh at its
 // step "Set release version", which writes the version the run releases into all five manifests
-// of this package and its Codex package. It names them by their paths from the repository root, so
-// it runs here from a root of its own, which holds the script and five manifests, as
-// packed-skills.test.ts runs the release's check of the packed tarball.
+// of this package and its Codex package, and the tree's daemon API contract
+// (scripts/daemon-contract.sh) into package.json. It names them by their paths from the
+// repository root, so it runs here from a root of its own, which holds the two scripts, the five
+// manifests and the contract fixtures, as packed-skills.test.ts runs the release's check of the
+// packed tarball.
 const repoRoot = resolve(import.meta.dir, "..", "..", "..")
 const script = join(".github", "scripts", "release-claude-envoy-version.sh")
+const contractScript = join("scripts", "daemon-contract.sh")
+const daemonApiFixtures = join("packages", "contracts", "fixtures", "daemon-api")
+/** The root's contract: L, the greatest number of its `released-contracts.json`, 232, plus its one
+ *  entry fixture. */
+const contract = 233
 /** The manifest the script rewrites first. */
 const packageJson = "packages/claude-envoy/package.json"
 const manifests = [
@@ -34,12 +41,18 @@ afterAll(async () => {
   await rm(scratch, { recursive: true, force: true })
 })
 
-/** A root at <scratch>/<name> holding the script and the five manifests, each with the text
- *  `texts` gives it, or the committed one. */
+/** A root at <scratch>/<name> holding the two scripts, the contract fixtures of a tree of one
+ *  entry over L, and the five manifests, each with the text `texts` gives it, or the committed
+ *  one. */
 async function releaseRoot(name: string, texts: Record<string, string>): Promise<string> {
   const root = join(scratch, name)
-  await mkdir(join(root, dirname(script)), { recursive: true })
-  await cp(join(repoRoot, script), join(root, script))
+  for (const file of [script, contractScript]) {
+    await mkdir(join(root, dirname(file)), { recursive: true })
+    await cp(join(repoRoot, file), join(root, file))
+  }
+  await mkdir(join(root, daemonApiFixtures, "contracts"), { recursive: true })
+  await Bun.write(join(root, daemonApiFixtures, "released-contracts.json"), "[46, 48, 232]\n")
+  await Bun.write(join(root, daemonApiFixtures, "contracts", "20261125010101_probe.json"), "{}\n")
   for (const manifest of manifests) {
     await mkdir(join(root, dirname(manifest)), { recursive: true })
     await Bun.write(join(root, manifest), texts[manifest] ?? committedText)
@@ -73,7 +86,9 @@ test("the release's version is written into all five manifests", async () => {
   expect({ exitCode, stderr, written }).toEqual({
     exitCode: 0,
     stderr: "",
-    written: manifests.map(() => released),
+    written: manifests.map((manifest) =>
+      manifest === packageJson ? { ...released, legion: { daemonApiVersion: contract } } : released,
+    ),
   })
 })
 

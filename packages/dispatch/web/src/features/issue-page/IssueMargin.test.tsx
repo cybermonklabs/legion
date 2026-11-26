@@ -21,6 +21,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { holdNotifications } from "../../__tests__/commits";
+import { displayTree } from "../../__tests__/display-trees";
 import { realClock } from "../../__tests__/fake-clock";
 import { nextFrame } from "../../__tests__/frames";
 import { graphNode } from "../../__tests__/graph-fixture";
@@ -51,23 +52,28 @@ import type {
 } from "../../api/types";
 import { linkText, pageFailedText, pageHeaderControl, pageInkText } from "../../theme/classes";
 import { assigneeControlName } from "../issue/AssigneeControl";
-import { componentsControlName } from "../issue/IssueComponentsLine";
+import { COMPONENT_CHIP, componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
 import { conversationItemId, eventItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
 import { repoControlName, repoTextControlName } from "../issue/RepoControl";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
 import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
-import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
+import {
+  addPriorityControlName,
+  IssuePriorityLine,
+  priorityTriggerName,
+} from "../priorities/IssuePriorityLine";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferencedBy } from "../refs/ReferencedBy";
+import { ReferenceNamesProvider } from "../refs/reference-names";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
-import { FOLD_AFTER } from "./details-leaves";
-import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { blockedByControlName, referencedByControlName } from "./details-names";
+import { emptyDetailsReads } from "./details-reads-fixture";
 import {
   DETAILS_OPENER_ATTRIBUTE,
   DETAILS_ROW_ATTRIBUTE,
@@ -100,8 +106,11 @@ import {
   CONTROL_LABELS,
   issueStatusWord,
   NODE_TYPE_NAMES,
+  STATE_LINES,
 } from "./page-words";
+import { Publisher, publishedNames } from "./projection-fixture";
 import { architecture, offPageColours } from "./shared-controls-fixture";
+import { PAGE_SIZE, SHOW_MORE, showMoreName } from "./show-more-fixture";
 import { DetailsSlot } from "./slots/details";
 import { firstUsableIn, usableControl } from "./usable-control";
 import { blockedByRefusal } from "./useIssueBlockedBy";
@@ -185,6 +194,13 @@ function keysFrom2(count: number): string[] {
   return Array.from({ length: count }, (_, index) => `CORE-${index + 2}`);
 }
 
+/** The row of Details' Files and documents, whose label carries the count of its entries. */
+function filesRow(): HTMLElement {
+  const row = screen.getByTestId("issue-files").closest(".grid");
+  if (!(row instanceof HTMLElement)) throw new Error("Details draws no Files and documents row");
+  return row;
+}
+
 /** An open Details drawer, whose `setOpen` and `setPage` do nothing. */
 const OPEN_DRAWER: MarginDrawer = {
   open: true,
@@ -211,11 +227,12 @@ function detailsQueryClient(): QueryClient {
 
 /** Details as the details slot draws it (`slots/details.tsx`), alone and inside `NoTooltips`:
  *  the panel over its own set of the issue's writes, on the cached issue, so a write's landing
- *  is what the panel draws next. `beside` is drawn above it, over writes of its own. `drawer` is
- *  the Details drawer it is drawn in; with none, Details makes none of the reads it makes only
- *  while open. `redraw` draws the same Details in the drawer it is handed, as a drawer that
- *  opens or closes does. `queryClient` is the client every read goes through, by default a new
- *  `detailsQueryClient()`. */
+ *  is what the panel draws next. `beside` is drawn above it, over writes of its own. It is drawn
+ *  under the names store, as the app draws the margin's slot (`app.tsx`), which nothing
+ *  publishes to unless `beside` does. `drawer` is the Details drawer it is drawn in; with none,
+ *  Details makes none of the reads it makes only while open. `redraw` draws the same Details in
+ *  the drawer it is handed, as a drawer that opens or closes does. `queryClient` is the client
+ *  every read goes through, by default a new `detailsQueryClient()`. */
 function renderDetails(
   beside?: (issue: IssueDetails) => ReactNode,
   drawer?: MarginDrawer,
@@ -225,18 +242,20 @@ function renderDetails(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
       <QueryClientProvider client={queryClient}>
         <MarginProvider>
-          <MarginSlotProvider drawer={inDrawer}>
-            <NoTooltips>
-              <CachedIssue>
-                {(details, state) => (
-                  <>
-                    {beside?.(details)}
-                    <Details issue={details} state={state} />
-                  </>
-                )}
-              </CachedIssue>
-            </NoTooltips>
-          </MarginSlotProvider>
+          <ReferenceNamesProvider>
+            <MarginSlotProvider drawer={inDrawer}>
+              <NoTooltips>
+                <CachedIssue>
+                  {(details, state) => (
+                    <>
+                      {beside?.(details)}
+                      <Details issue={details} state={state} />
+                    </>
+                  )}
+                </CachedIssue>
+              </NoTooltips>
+            </MarginSlotProvider>
+          </ReferenceNamesProvider>
         </MarginProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -275,42 +294,25 @@ function Details({ issue, state }: { issue: IssueDetails; state: UserState | und
   );
 }
 
-/** The reads Details makes of a fixture's issue, each answering the API's empty shape, and the
- *  issue's PATCH answered as the server does, with the narrow `Issue`. A read that reached the
- *  network would fail the file (`__tests__/network-guard.ts`). */
+/** The reads Details makes of the fixture's issue: the issue's own, answered with `issue`, and
+ *  every other read as `emptyDetailsReads` answers it, the reader's state holding the issue
+ *  unread and unpinned; and the issue's PATCH answered as the server does, with the narrow
+ *  `Issue`. */
 function stubIssueApi() {
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
-  const getMyState = spyOn(api, "getMyState").mockResolvedValue({
-    "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
-  });
-  const reads = [
-    spyOn(api, "whoAmI").mockResolvedValue({ login: "alice" } as Awaited<
-      ReturnType<typeof api.whoAmI>
-    >),
-    spyOn(api, "listProjects").mockResolvedValue([]),
-    spyOn(api, "listAgents").mockResolvedValue([]),
-    spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
-    spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
-  ];
-  const pinReads = {
-    asks: spyOn(api, "listIssueAsks").mockResolvedValue([]),
-    comments: spyOn(api, "listComments").mockResolvedValue([]),
-    messages: spyOn(api, "listIssueMessages").mockResolvedValue([]),
-  };
+  const reads = emptyDetailsReads();
   const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
     patchAnswer(issue, input)
   );
 
   return {
     getIssue,
-    getMyState,
+    getMyState: reads.getMyState,
     patchIssue,
-    pinReads,
+    pinReads: reads.pinReads,
     restore: () => {
       getIssue.mockRestore();
-      getMyState.mockRestore();
-      for (const spy of reads) spy.mockRestore();
-      for (const spy of Object.values(pinReads)) spy.mockRestore();
+      reads.restore();
       patchIssue.mockRestore();
     },
   };
@@ -1223,9 +1225,9 @@ test("a blocked-by list that would make a loop is the page's sentence about the 
   }
 });
 
-// Only a list of unbounded length folds after its first ten. An issue waits on at most
-// `MAX_ISSUE_BLOCKERS` issues, so the Blocked by row draws every one of them and no Show all.
-test("the blockers never fold", async () => {
+// Only a list of unbounded length draws 20 entries at a time under Show more. An issue waits on at
+// most `MAX_ISSUE_BLOCKERS` issues, so the Blocked by row draws every one of them and no Show more.
+test("Blocked by draws every issue this one waits on whole, with no Show more", async () => {
   const { getIssue, restore } = stubIssueApi();
   const blockers = keysFrom2(MAX_ISSUE_BLOCKERS);
   getIssue.mockResolvedValue({ ...issue, blocked_by: blockers });
@@ -1238,12 +1240,10 @@ test("the blockers never fold", async () => {
       within(row)
         .getAllByRole("link")
         .map((link) => link.textContent),
-      "the Blocked by row folds the issues this one waits on"
+      "the Blocked by row does not draw every issue this one waits on"
     ).toEqual(blockers);
     expect(
-      within(row).queryByRole("button", {
-        name: (name) => name.startsWith(CONTROL_LABELS.show_all),
-      }),
+      within(row).queryByRole("button", { name: SHOW_MORE }),
       "the Blocked by row offers to show a list it already draws whole"
     ).not.toBeInTheDocument();
   } finally {
@@ -2768,47 +2768,173 @@ test("Blocks' titles Retry taken away by what waits on the issue changed back el
   }
 });
 
-// A folded list's Show all goes with its press, so the focus goes on to the first entry it
-// opened, the eleventh, rather than falling to the page: in Files and documents, and in Blocks.
-test("Show all gives the focus to the first entry it opens", async () => {
-  const user = userEvent.setup();
-  const { getIssue, restore } = stubIssueApi();
-  const withTwelve = withNotes(12);
-  getIssue.mockResolvedValue(withTwelve);
+/** How many entries each list of `MANY_ENTRIES` holds: two pages of 20 and five entries more. */
+const MANY = 2 * PAGE_SIZE + 5;
+
+/** `count` names, `stem` and a number from 1, padded so that they sort as they are numbered. */
+function numbered(stem: string, count: number): string[] {
+  return Array.from(
+    { length: count },
+    (_, index) => `${stem}${String(index + 1).padStart(2, "0")}`
+  );
+}
+
+/** The fixture's issue with `MANY` entries in each list of unbounded length its rows of Details
+ *  draw: its pull requests, its other links, its components (25 live and the rest retired, which
+ *  the row draws after them as one list), and its documents. */
+const MANY_ENTRIES: IssueDetails = {
+  ...withNotes(MANY - 1),
+  components: {
+    ids: numbered("panel-", 25),
+    inherited_from: null,
+    mode: "explicit",
+    reason: null,
+    unknown: numbered("retired-", MANY - 25),
+  },
+  external_links: [
+    ...numbered("", MANY).map((number) => ({
+      kind: "github_pr" as const,
+      url: `https://github.com/acme/web/pull/${number}`,
+    })),
+    ...numbered("", MANY).map((number) => ({
+      url: `https://github.com/acme/web/issues/${number}`,
+    })),
+  ],
+};
+
+/** `MANY` pins of the reader's: comments of CORE-1, and lines of its history after them, which
+ *  Pinned lists as one list. */
+const MANY_PINS = [
+  ...numbered("00000000-0000-4000-8000-0000000000", PAGE_SIZE + 5).map((id) =>
+    conversationItemId("comment", id)
+  ),
+  ...Array.from({ length: MANY - PAGE_SIZE - 5 }, (_, index) => eventItemId({ id: 900 + index })),
+];
+
+/** The reads of Details of `MANY_ENTRIES`, with the reader's `MANY_PINS` and `MANY` issues waiting
+ *  on it, each link's read of GitHub answered, and the project's architecture read; the call that
+ *  puts every read back. */
+function stubManyEntries(): () => void {
+  const { getIssue, getMyState, restore } = stubIssueApi();
+  getIssue.mockResolvedValue(MANY_ENTRIES);
+  getMyState.mockResolvedValue(pinnedState(...MANY_PINS));
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
-  const waiting = keysFrom2(12);
-  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: waiting.map((key) => waitingEdge(key, `Waits for ${key}`)),
-    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
-  });
+  const stubs = [
+    spyOn(api, "getReferences").mockResolvedValue({
+      edges: keysFrom2(MANY).map((key) => waitingEdge(key, `Waits for ${key}`)),
+      node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+    }),
+    // A reference with no head, so a pull request's read reads no checks after it.
+    spyOn(api, "githubRest").mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ state: "open", title: "Ship the web app" }), {
+          headers: { "Content-Type": "application/json" },
+        })
+    ),
+    spyOn(api, "getArchitecture").mockResolvedValue(architecture),
+  ];
+  return () => {
+    for (const stub of stubs) stub.mockRestore();
+    restore();
+  };
+}
+
+/** The chips drawn of the box of chips with the test id `testId`, the components', each by the
+ *  mark the line gives a chip where Details pages them (`data-component-chip`). */
+function drawnChips(testId: string): HTMLElement[] {
+  return [...screen.getByTestId(testId).querySelectorAll<HTMLElement>(COMPONENT_CHIP)].filter(
+    (chip) => !chip.hidden
+  );
+}
+
+/** One list of Details that `MANY_ENTRIES` fills: the box it and its Show more are drawn in, and
+ *  each entry it draws, in order. */
+interface PagedList {
+  readonly box: () => HTMLElement;
+  readonly entries: () => readonly Element[];
+}
+
+/** Each link a row of Details draws, by the row's name. */
+function linksOfRow(name: string): PagedList {
+  return {
+    box: () => detailsRow(name),
+    entries: () => within(detailsRow(name)).getAllByRole("link"),
+  };
+}
+
+/** Every list of unbounded length that Details' own rows and Pinned draw. */
+const PAGED_LISTS: readonly (readonly [string, PagedList])[] = [
+  ["Blocks", linksOfRow(PROPERTY_LABELS.blocks)],
+  ["Pull request", linksOfRow(PROPERTY_LABELS.pull_request)],
+  ["Links", linksOfRow(PROPERTY_LABELS.external_links)],
+  [
+    "Components, the retired ones after the live ones",
+    {
+      box: () => detailsRow(PROPERTY_LABELS.components),
+      entries: () => drawnChips("issue-components"),
+    },
+  ],
+  [
+    "Files and documents",
+    {
+      box: () => filesRow(),
+      entries: () => within(screen.getByTestId("issue-files")).getAllByRole("listitem"),
+    },
+  ],
+  [
+    "Pinned, the history's lines after the comments",
+    {
+      box: () => screen.getByRole("region", { name: CONTROL_LABELS.pinned }),
+      entries: () =>
+        within(screen.getByRole("region", { name: CONTROL_LABELS.pinned })).getAllByRole(
+          "listitem"
+        ),
+    },
+  ],
+];
+
+// Each list of unbounded length draws its first 20 entries and, under them, Show more, which says
+// how many entries are left. A press keeps the entries drawn, draws the next 20 and moves the focus
+// to the first of them, whether the control stays or goes, rather than let it fall to the page; the
+// control goes once every entry is drawn. A list drawn from two sources - a component and a
+// retired one, a pinned comment and a pinned line of the history - is one list, whose pages run
+// on from one source into the other and whose count is of both.
+test.each(
+  PAGED_LISTS
+)("%s: 20 entries at a time under Show more, which says how many are left, moves the focus to the first entry it drew and goes at the end", async (_name, list) => {
+  const user = userEvent.setup();
+  const restoreReads = stubManyEntries();
   const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
-    // Files and documents: the spec and twelve notes, so the eleventh entry is notes-10.md.
-    const showFiles = await screen.findByRole("button", {
-      name: `${CONTROL_LABELS.show_all} ${withTwelve.artifacts?.length ?? 0}`,
-    });
-    act(() => showFiles.focus());
-    await user.keyboard("{Enter}");
-    expect(
-      document.activeElement,
-      "Show all of Files and documents left the focus off the first entry it opened"
-    ).toBe(within(screen.getByTestId("issue-files")).getByRole("link", { name: /notes-10\.md/ }));
+    await waitFor(() =>
+      expect(list.entries(), "the list does not draw its first 20 entries").toHaveLength(PAGE_SIZE)
+    );
+    const more = within(list.box()).getByRole("button", { name: SHOW_MORE });
+    expect(more.textContent).toBe(showMoreName(MANY - PAGE_SIZE));
 
-    const blocks = detailsRow(PROPERTY_LABELS.blocks);
-    const showBlocks = await within(blocks).findByRole("button", {
-      name: `${CONTROL_LABELS.show_all} ${waiting.length}`,
-    });
-    act(() => showBlocks.focus());
+    act(() => more.focus());
     await user.keyboard("{Enter}");
+    expect(list.entries(), "Show more did not draw the next 20 entries").toHaveLength(
+      2 * PAGE_SIZE
+    );
+    expect(more.textContent).toBe(showMoreName(MANY - 2 * PAGE_SIZE));
     expect(
-      document.activeElement,
-      "Show all of Blocks left the focus off the first entry it opened"
-    ).toBe(within(blocks).getByRole("link", { name: "CORE-12" }));
+      list.entries()[PAGE_SIZE]?.contains(document.activeElement),
+      "Show more did not move the focus to the first entry it drew"
+    ).toBe(true);
+
+    act(() => more.focus());
+    await user.keyboard("{Enter}");
+    expect(list.entries()).toHaveLength(MANY);
+    expect(more.isConnected, "Show more stayed once every entry was drawn").toBe(false);
+    expect(
+      list.entries()[2 * PAGE_SIZE]?.contains(document.activeElement),
+      "Show more went with the last entries and did not move the focus to the first it drew"
+    ).toBe(true);
   } finally {
     unmount();
-    getReferences.mockRestore();
-    restore();
+    restoreReads();
   }
 });
 
@@ -2826,7 +2952,7 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
   const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
-    const toggle = await screen.findByRole("button", { name: referencedByControlName(3) });
+    const toggle = await screen.findByRole("button", { name: referencedByControlName(undefined) });
     expect(toggle, "Referenced by's control is not in the page's ink").toHaveClass(pageInkText);
     for (const token of linkText.split(" ")) {
       expect(toggle, "Referenced by's control is in the application's link blue").not.toHaveClass(
@@ -2844,6 +2970,10 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
       "aria-controls",
       list.id
     );
+    expect(
+      await screen.findByRole("button", { name: referencedByControlName(0) }),
+      "Referenced by's control does not read the rows of the list it opened"
+    ).toBe(toggle);
   } finally {
     unmount();
     getReferences.mockRestore();
@@ -2872,7 +3002,9 @@ test("in Details, Referenced by's Retry keeps the focus while the read it sent i
   const stopBlurring = emulateChromiumFocusFixup();
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
     const list = await screen.findByRole("region", { name: "Referenced by" });
     const retry = await within(list).findByRole("button", { name: "Retry" });
 
@@ -2991,7 +3123,9 @@ function referencedByDetails() {
     answerList,
     listKey,
     open: async () => {
-      const control = await screen.findByRole("button", { name: referencedByControlName(3) });
+      const control = await screen.findByRole("button", {
+        name: referencedByControlName(undefined),
+      });
       await user.click(control);
       const list = await screen.findByRole("region", { name: "Referenced by" });
       return { control, list, retry: await within(list).findByRole("button", { name: "Retry" }) };
@@ -3179,7 +3313,7 @@ test("in Details, a refresh that fails over the list Referenced by holds keeps t
   try {
     details.answerList(() => Promise.resolve(WAITER_REFERENCES));
     await details.user.click(
-      await screen.findByRole("button", { name: referencedByControlName(3) })
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
     );
     const list = await screen.findByRole("region", { name: "Referenced by" });
     await within(list).findAllByRole("link");
@@ -3224,7 +3358,9 @@ test("in Details, Referenced by's Retry pressed at a count of 0 hands its focus 
   const stopBlurring = emulateChromiumFocusFixup();
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
     const list = await screen.findByRole("region", { name: "Referenced by" });
     const retry = await within(list).findByRole("button", { name: "Retry" });
     drawIssue(getIssue, queryClient, { ...issue, referenced_by_count: 0 });
@@ -3301,15 +3437,18 @@ test("closing References or Details takes an open Referenced by list, and its re
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
   const { queryClient, redraw, unmount } = renderDetails(undefined, OPEN_DRAWER);
-  // What observes the list's read (`ReferencedBy`'s `referencesQuery`).
+  // What reads the list (`ReferencedBy`'s `referencesQuery`). The control's own watch of that
+  // read's cache, which counts the rows it lists, is `enabled: false` and reads nothing.
   const listReaders = () =>
-    queryClient
-      .getQueryCache()
-      .find({ exact: true, queryKey: ["references", "to", reference] })
-      ?.getObserversCount() ?? 0;
+    (
+      queryClient.getQueryCache().find({ exact: true, queryKey: ["references", "to", reference] })
+        ?.observers ?? []
+    ).filter((observer) => observer.options.enabled !== false).length;
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
     const list = await screen.findByRole("region", { name: "Referenced by" });
     expect(listReaders(), "the open Referenced by list does not read what references it").toBe(1);
 
@@ -3374,7 +3513,9 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blo
   const { unmount } = renderDetails(undefined, OPEN_DRAWER, client);
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
     await waitFor(() => {
       expect(titleReads(titles, blocker)).toBe(1);
       expect(blocksReads(getReferences, reference)).toBe(1);
@@ -3752,15 +3893,13 @@ test("removing the last label draws Add, whose Labels the row's control now answ
   }
 });
 
-// Add is drawn again when a control it reaches comes back in a commit of the component that
-// draws it. On an issue with a value for every property but the priorities it advances, Add
-// lists Advances alone. Picking it presses "Add a priority to CORE-1", whose form replaces that
-// control in the same commit, so Add, finding no control, went; Cancel drew the control again in
-// a commit of the priority line alone, which Add never read, so Add stayed gone beside the
-// control it reaches.
-test("Add is drawn again after the Advances form it opened is cancelled", async () => {
+// On an issue with a value for every property but the priorities it advances, Add lists Advances
+// alone. Picking it presses "Add a priority to CORE-1", which opens the priorities' picker with
+// the focus in its search box; Escape closes the picker, gives the focus back to that control and
+// writes nothing.
+test("Advances opens the priorities' picker with the focus in its search box, and Escape gives the focus back and writes nothing", async () => {
   const user = userEvent.setup();
-  const { getIssue, restore } = stubIssueApi();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
   getIssue.mockResolvedValue({
     ...issue,
@@ -3785,18 +3924,16 @@ test("Add is drawn again after the Advances form it opened is cancelled", async 
     await screen.findByRole("link", { name: "CORE-3" });
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
     await user.click(await screen.findByRole("menuitem", { name: PROPERTY_LABELS.advances }));
-    const cancel = await screen.findByRole("button", { name: CONTROL_LABELS.cancel });
-    await user.click(cancel);
+    expect(
+      await screen.findByRole("combobox", { name: CONTROL_LABELS.priority_to_advance }),
+      "the menu's Advances opened no priorities' picker"
+    ).toHaveFocus();
+    await user.keyboard("{Escape}");
     expect(
       await screen.findByRole("button", { name: addPriorityControlName("CORE-1") }),
-      "the priority's add control is not back"
-    ).toBeInTheDocument();
-    await waitFor(() =>
-      expect(
-        screen.queryByRole("button", { name: CONTROL_LABELS.add }),
-        "Advances has no value and its control is drawn, but Details draws no Add"
-      ).toBeInTheDocument()
-    );
+      "the priority's add control did not take the focus back as the picker closed"
+    ).toHaveFocus();
+    expect(patchIssue, "a picker closed with nothing ticked wrote").not.toHaveBeenCalled();
   } finally {
     view.unmount();
     priorities.mockRestore();
@@ -3804,8 +3941,38 @@ test("Add is drawn again after the Advances form it opened is cancelled", async 
   }
 });
 
-/** Add's own control, found whether or not it is drawn on the screen, and never the priority
- *  form's own Add button: only Add's control opens a menu. */
+/** "Evals collecting data now" in the priorities' picker, once the picker is open and the read of
+ *  the priorities has answered. The picker's list is portalled to the page's body, and is found
+ *  there by its name, which no other control carries. */
+async function evalsOption(): Promise<HTMLElement> {
+  const listbox = await screen.findByRole("listbox", { name: "Priorities options" });
+  return within(listbox).findByRole("option", { name: /Evals collecting data now$/ });
+}
+
+/**
+ * Ticks or unticks "Evals collecting data now" in the priorities' picker whose trigger is
+ * `trigger`, by the keyboard: Enter on the trigger opens the picker with the focus in its search
+ * box, Enter there toggles its first row, the one priority the case offers, once the read of the
+ * priorities has answered, and Escape closes it, which gives the focus back to the trigger and
+ * sends the line's one write of the set it holds then (`IssuePriorityLine`).
+ */
+async function toggleEvals(user: UserEvent, trigger: HTMLElement): Promise<void> {
+  act(() => trigger.focus());
+  await user.keyboard("{Enter}");
+  await evalsOption();
+  await user.keyboard("{Enter}{Escape}");
+}
+
+/** The Advances row's picker trigger, "Edit priorities" (`priorityTriggerName`); throws while
+ *  Details draws no such row, so `waitFor` waits for it. */
+function advancesRowTrigger(): HTMLElement {
+  return within(detailsRow(PROPERTY_LABELS.advances)).getByRole("button", {
+    name: priorityTriggerName("CORE-1", false),
+  });
+}
+
+/** Add's own control, found whether or not it is drawn on the screen, and never another button
+ *  named Add: only Add's control opens a menu. */
 function addMenuControl(): Element | null {
   return document.querySelector(
     `[aria-haspopup="menu"][aria-label="${CSS.escape(CONTROL_LABELS.add)}"]`
@@ -3814,9 +3981,9 @@ function addMenuControl(): Element | null {
 
 // A press on an entry of Add opens that property's control. While the priorities' save is out,
 // "Add a priority to CORE-1" takes no press, so a press on Add's Advances opened nothing: with
-// the save held out, Add listed Advances, and pressing it left the menu closed, the form shut and
-// the focus on the body. Add lists an entry only while its control can be pressed, and lists it
-// again once a refused save gives that control back.
+// the save held out, Add listed Advances, and pressing it left the menu closed, the picker shut
+// and the focus on the body. Add lists an entry only while its control can be pressed, and lists
+// it again once a refused save gives that control back.
 test("Add lists no entry whose control is disabled, and lists it again once it is enabled", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
@@ -3846,9 +4013,11 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
     await screen.findByRole("link", { name: "CORE-3" });
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
     await user.click(await screen.findByRole("menuitem", { name: PROPERTY_LABELS.advances }));
-    const form = await screen.findByTestId("issue-advances");
-    await user.selectOptions(await within(form).findByRole("combobox"), "evals-now");
-    await user.click(within(form).getByRole("button", { name: CONTROL_LABELS.add }));
+    // The menu's Advances opened the picker: the priority ticked, and the picker closed, which
+    // sends the write the case holds out.
+    await user.click(await evalsOption());
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
     // Refused while its write is out, by the rule Add reads (`usableControl`): `disabled`, or
     // `aria-disabled` where the shared control stays focusable while it is busy.
@@ -4026,12 +4195,13 @@ test.each(
 
 // Details draws the priority's line in one of two places: beside Add while the issue advances
 // none, and in the Advances row once it advances one. The first priority added moves it, and the
-// focus its add control held as the add landed went with the place the line left, to the page's
-// body. It goes on in the Advances row: to the line's add control, named as the control it was on,
-// whose next press adds another; or, where the read after the add also draws the issue closed, as
-// another session closed it while the add was out, which disables that control, to the link of the
-// priority the reader added. Each row is the issue read back after the add, whether that read
-// disables the add control, and the element the focus goes to in the Advances row.
+// focus its add control held as the add landed - the picker gives it back to its trigger as it
+// closes - went with the place the line left, to the page's body. It goes on in the Advances row:
+// to the line's picker trigger there, "Edit priorities", whose next press adds another or takes
+// one off; or, where the read after the add also draws the issue closed, as another session
+// closed it while the add was out, which disables that trigger, to the link of the priority the
+// reader added. Each row is the issue read back after the add, whether that read disables the
+// trigger, and the element the focus goes to in the Advances row.
 const FIRST_ADDED: readonly (readonly [
   string,
   IssueDetails,
@@ -4039,10 +4209,10 @@ const FIRST_ADDED: readonly (readonly [
   (row: HTMLElement) => HTMLElement,
 ])[] = [
   [
-    "the Advances row's add control",
+    "the Advances row's picker trigger",
     { ...advancesOnly, advances: [{ id: "evals-now", inherited: false }] },
     false,
-    (row) => within(row).getByRole("button", { name: addPriorityControlName("CORE-1") }),
+    (row) => within(row).getByRole("button", { name: priorityTriggerName("CORE-1", false) }),
   ],
   [
     "the link of the priority added, on an issue closed meanwhile",
@@ -4067,24 +4237,11 @@ test.each(
   const view = renderDetails();
   try {
     const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
-    act(() => control.focus());
-    await user.keyboard("{Enter}");
-    const picker = await screen.findByRole("combobox", {
-      name: CONTROL_LABELS.priority_to_advance,
-    });
-    await within(picker).findByRole("option", { name: /Evals collecting data now$/ });
-    await user.selectOptions(picker, "evals-now");
-    const form = picker.closest("form");
-    if (form === null) throw new Error("the picker is in no form");
-    // The issue's read after the write is held, so the write lands, and the line gives the focus
-    // back to its add control beside Add, before the line moves.
+    // The issue's read after the write is held, so the write lands, and the picker has given the
+    // focus back to its trigger beside Add, before the line moves.
     const reread = Promise.withResolvers<IssueDetails>();
     getIssue.mockImplementation(() => reread.promise);
-    await user.tab();
-    expect(document.activeElement, "Tab from the picker did not reach the form's Add").toBe(
-      within(form).getByRole("button", { name: CONTROL_LABELS.add })
-    );
-    await user.keyboard("{Enter}");
+    await toggleEvals(user, control);
     await waitFor(() =>
       expect(
         document.activeElement,
@@ -4094,10 +4251,10 @@ test.each(
     await act(async () => reread.resolve(readBack));
     const row = await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
     expect(
-      within(row).getByRole("button", { name: addPriorityControlName("CORE-1") }),
+      within(row).getByRole("button", { name: priorityTriggerName("CORE-1", false) }),
       disabled
-        ? "the Advances row's add control is not disabled on a closed issue"
-        : "the Advances row's add control is disabled on an open issue"
+        ? "the Advances row's picker trigger is not disabled on a closed issue"
+        : "the Advances row's picker trigger is disabled on an open issue"
     ).toHaveProperty("disabled", disabled);
     expect(
       document.activeElement,
@@ -4111,14 +4268,14 @@ test.each(
   }
 });
 
-// The last priority removed moves the line back beside Add, and the focus its Remove held went
-// with the Advances row to the page's body. It goes on to the add control beside Add, the one
-// control the line draws there; or, where the read after the removal also draws the issue closed,
-// as another session closed it while the removal was out, which disables that control, to
-// Development's heading, the button that opens and closes the section. Remove holds the focus
-// until the line moves: while its write is out it is `aria-disabled`, never `disabled`. Each row
-// is the issue read back after the removal, whether that read disables the add control, and the
-// element the focus goes to.
+// The last priority removed moves the line back beside Add, and the focus its picker's trigger
+// held went with the Advances row to the page's body. It goes on to the add control beside Add,
+// the one control the line draws there; or, where the read after the removal also draws the issue
+// closed, as another session closed it while the removal was out, which disables that control, to
+// Development's heading, the button that opens and closes the section. The trigger holds the focus
+// until the line moves: the picker gives it back as it closes, and while its write is out the
+// trigger is `aria-disabled`, never `disabled`. Each row is the issue read back after the
+// removal, whether that read disables the add control, and the element the focus goes to.
 const LAST_REMOVED: readonly (readonly [string, IssueDetails, boolean, () => HTMLElement])[] = [
   [
     "the add control beside Add",
@@ -4136,7 +4293,7 @@ const LAST_REMOVED: readonly (readonly [string, IssueDetails, boolean, () => HTM
 
 test.each(
   LAST_REMOVED
-)("removing the last priority hands the focus from its Remove to %s", async (name, readBack, disabled, focused) => {
+)("removing the last priority hands the focus from its picker's trigger to %s", async (name, readBack, disabled, focused) => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
@@ -4146,27 +4303,26 @@ test.each(
   });
   const view = renderDetails();
   try {
-    const remove = await waitFor(() =>
-      within(detailsRow(PROPERTY_LABELS.advances)).getByRole("button", { name: /^Remove / })
-    );
+    const trigger = await waitFor(advancesRowTrigger);
     // The issue's read after the write is held, so the removal lands before the line moves.
     const reread = Promise.withResolvers<IssueDetails>();
     getIssue.mockImplementation(() => reread.promise);
     const reads = getIssue.mock.calls.length;
-    act(() => remove.focus());
-    await user.keyboard("{Enter}");
+    await toggleEvals(user, trigger);
     await waitFor(() =>
       expect(
         getIssue.mock.calls.length,
         "the removal landed, and the issue was not read again"
       ).toBeGreaterThan(reads)
     );
-    // The shared Remove stays refused, and keeps the focus, until the new read is drawn.
-    expect(remove, "Remove took a press again before the new read was drawn").toHaveAttribute(
+    // The shared trigger stays refused, and keeps the focus, until the new read is drawn.
+    expect(trigger, "the trigger took a press again before the new read was drawn").toHaveAttribute(
       "aria-disabled",
       "true"
     );
-    expect(document.activeElement, "Remove lost the focus before the line moved").toBe(remove);
+    expect(document.activeElement, "the trigger lost the focus before the line moved").toBe(
+      trigger
+    );
     await act(async () => reread.resolve(readBack));
     await waitFor(() =>
       expect(
@@ -4207,10 +4363,11 @@ function advancingEvals(revision: number): IssueDetails {
 
 // The reader's removal of the last priority, and the read of the issue it sets off as it settles,
 // can both end while Details still draws the issue before it, so the Advances row leaves only
-// later, with Remove no longer `aria-disabled`. The move is still the reader's own: the issue now
-// drawn holds the set their write sent, at the revision Dispatch answered that write with, so the
-// focus Remove held goes on to the add control beside Add rather than to the page's body.
-test("the last priority removed hands the focus from its Remove to the add control beside Add when the row leaves after the write settled", async () => {
+// later, with the picker's trigger no longer `aria-disabled`. The move is still the reader's own:
+// the issue now drawn holds the set their write sent, at the revision Dispatch answered that write
+// with, so the focus the trigger held goes on to the add control beside Add rather than to the
+// page's body.
+test("the last priority removed hands the focus from its picker's trigger to the add control beside Add when the row leaves after the write settled", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
@@ -4221,18 +4378,16 @@ test("the last priority removed hands the focus from its Remove to the add contr
   patchIssue.mockImplementationOnce(async (_key, input) => patchAnswer(removed, input));
   const { queryClient, unmount } = renderDetails();
   try {
-    const remove = await waitFor(() =>
-      within(detailsRow(PROPERTY_LABELS.advances)).getByRole("button", { name: /^Remove / })
-    );
-    act(() => remove.focus());
-    await user.keyboard("{Enter}");
+    const trigger = await waitFor(advancesRowTrigger);
+    await toggleEvals(user, trigger);
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     await waitFor(() =>
-      expect(remove, "Remove still refuses a press after its write settled").not.toHaveAttribute(
-        "aria-disabled"
-      )
+      expect(
+        trigger,
+        "the trigger still refuses a press after its write settled"
+      ).not.toHaveAttribute("aria-disabled")
     );
-    expect(document.activeElement, "Remove lost the focus before the row left").toBe(remove);
+    expect(document.activeElement, "the trigger lost the focus before the row left").toBe(trigger);
 
     drawIssue(getIssue, queryClient, removed);
     await waitFor(() =>
@@ -4260,9 +4415,9 @@ test("the last priority removed hands the focus from its Remove to the add contr
 // `KEY_COMMITTED`), and the write and the read of the issue it sets off as it settles both end
 // while Details still draws the issue before it, so the Advances row leaves only later. With no
 // answer there is no revision to match, so the set the write sent, which the issue now drawn
-// holds, tells the move is the reader's own: the focus Remove held goes on to the add control
-// beside Add rather than to the page's body.
-test("the last priority removed with no answer hands the focus from its Remove to the add control beside Add when the row leaves after the write settled", async () => {
+// holds, tells the move is the reader's own: the focus the picker's trigger held goes on to the
+// add control beside Add rather than to the page's body.
+test("the last priority removed with no answer hands the focus from its picker's trigger to the add control beside Add when the row leaves after the write settled", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
@@ -4272,21 +4427,19 @@ test("the last priority removed with no answer hands the focus from its Remove t
   );
   const { queryClient, unmount } = renderDetails();
   try {
-    const remove = await waitFor(() =>
-      within(detailsRow(PROPERTY_LABELS.advances)).getByRole("button", { name: /^Remove / })
-    );
-    act(() => remove.focus());
-    await user.keyboard("{Enter}");
+    const trigger = await waitFor(advancesRowTrigger);
+    await toggleEvals(user, trigger);
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     await waitFor(() =>
-      expect(remove, "Remove still refuses a press after its write settled").not.toHaveAttribute(
-        "aria-disabled"
-      )
+      expect(
+        trigger,
+        "the trigger still refuses a press after its write settled"
+      ).not.toHaveAttribute("aria-disabled")
     );
     const write = queryClient.getMutationCache().getAll().at(-1)?.state;
     expect(write?.status, "the removal answered KEY_COMMITTED did not land").toBe("success");
     expect(write?.data, "the removal answered KEY_COMMITTED landed with an answer").toBeNull();
-    expect(document.activeElement, "Remove lost the focus before the row left").toBe(remove);
+    expect(document.activeElement, "the trigger lost the focus before the row left").toBe(trigger);
 
     drawIssue(getIssue, queryClient, { ...advancesOnly, advances_revision: 5 });
     await waitFor(() =>
@@ -4311,9 +4464,9 @@ test("the last priority removed with no answer hands the focus from its Remove t
 });
 
 // After the reader's removal of the last priority has landed, other sessions add a priority and
-// take it away again, with the focus on its Remove: the row leaves, and the issue holds the set the
-// reader's write sent, but at a newer revision than Dispatch answered that write with. That move is
-// another session's, so the focus stays on the page's body.
+// take it away again, with the focus on the Advances row's picker trigger: the row leaves, and the
+// issue holds the set the reader's write sent, but at a newer revision than Dispatch answered that
+// write with. That move is another session's, so the focus stays on the page's body.
 test("the last priority taken away elsewhere after the reader's own removal landed leaves the focus on the page's body", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
@@ -4323,12 +4476,9 @@ test("the last priority taken away elsewhere after the reader's own removal land
   patchIssue.mockImplementationOnce(async (_key, input) => patchAnswer(removed, input));
   const { queryClient, unmount } = renderDetails();
   try {
-    const remove = await waitFor(() =>
-      within(detailsRow(PROPERTY_LABELS.advances)).getByRole("button", { name: /^Remove / })
-    );
+    const trigger = await waitFor(advancesRowTrigger);
     getIssue.mockResolvedValue(removed);
-    act(() => remove.focus());
-    await user.keyboard("{Enter}");
+    await toggleEvals(user, trigger);
     await waitFor(() =>
       expect(
         document.activeElement,
@@ -4337,9 +4487,7 @@ test("the last priority taken away elsewhere after the reader's own removal land
     );
 
     drawIssue(getIssue, queryClient, advancingEvals(6));
-    const again = await waitFor(() =>
-      within(detailsRow(PROPERTY_LABELS.advances)).getByRole("button", { name: /^Remove / })
-    );
+    const again = await waitFor(advancesRowTrigger);
     act(() => again.focus());
     drawIssue(getIssue, queryClient, { ...advancesOnly, advances_revision: 7 });
     await waitFor(() =>
@@ -4367,7 +4515,7 @@ test("the last priority taken away elsewhere after the reader's own removal land
 // focus on its add control. An issue above this one then gains a priority, which the issue draws as
 // inherited, with its own set and that set's revision as the reader's write left them: the line
 // moves into the Advances row. No press of the reader's moved it, so the focus stays on the page's
-// body rather than going to the row's add control.
+// body rather than going to the row's picker trigger.
 test("the line moved into the Advances row by a priority an issue above gains after the reader's own removal landed leaves the focus on the page's body", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
@@ -4377,12 +4525,9 @@ test("the line moved into the Advances row by a priority an issue above gains af
   patchIssue.mockImplementationOnce(async (_key, input) => patchAnswer(removed, input));
   const { queryClient, unmount } = renderDetails();
   try {
-    const remove = await waitFor(() =>
-      within(detailsRow(PROPERTY_LABELS.advances)).getByRole("button", { name: /^Remove / })
-    );
+    const trigger = await waitFor(advancesRowTrigger);
     getIssue.mockResolvedValue(removed);
-    act(() => remove.focus());
-    await user.keyboard("{Enter}");
+    await toggleEvals(user, trigger);
     const control = await waitFor(() => {
       const beside = screen.getByRole("button", { name: addPriorityControlName("CORE-1") });
       expect(
@@ -4430,7 +4575,8 @@ test("the line moved into the Advances row elsewhere after the reader's own add 
     patchAnswer({ ...advancingEvals(5), key: "CORE-9" }, input)
   );
   const queryClient = detailsQueryClient();
-  // The other issue's page, whose priority line is the one the page draws.
+  // The other issue's page, whose priority line is the one the page draws: a line in no row of
+  // Details, so its picker's trigger is "Edit priorities" (`priorityTriggerName`).
   const otherPage = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
@@ -4442,13 +4588,10 @@ test("the line moved into the Advances row elsewhere after the reader's own add 
   );
   let unmount = otherPage.unmount;
   try {
-    await user.click(await screen.findByRole("button", { name: addPriorityControlName("CORE-9") }));
-    const picker = await screen.findByRole("combobox", {
-      name: CONTROL_LABELS.priority_to_advance,
-    });
-    await within(picker).findByRole("option", { name: /Evals collecting data now$/ });
-    await user.selectOptions(picker, "evals-now");
-    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.add }));
+    await toggleEvals(
+      user,
+      await screen.findByRole("button", { name: priorityTriggerName("CORE-9", false) })
+    );
     await waitFor(() =>
       expect(
         queryClient.getMutationCache().getAll().at(-1)?.state.status,
@@ -4475,20 +4618,14 @@ test("the line moved into the Advances row elsewhere after the reader's own add 
   }
 });
 
-/** Adds the priority "Evals collecting data now" from the add control beside Add, by keyboard,
- *  and returns once the form's Add is pressed: the line gives the focus back to its add control
- *  beside Add while the write is out. */
+/** Adds the priority "Evals collecting data now" from the add control beside Add, by keyboard
+ *  (`toggleEvals`), and returns once the picker has closed, which sends the write and gives the
+ *  focus back to the add control beside Add while the write is out. */
 async function addFirstPriority(user: UserEvent): Promise<void> {
-  const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
-  act(() => control.focus());
-  await user.keyboard("{Enter}");
-  const picker = await screen.findByRole("combobox", {
-    name: CONTROL_LABELS.priority_to_advance,
-  });
-  await within(picker).findByRole("option", { name: /Evals collecting data now$/ });
-  await user.selectOptions(picker, "evals-now");
-  await user.tab();
-  await user.keyboard("{Enter}");
+  await toggleEvals(
+    user,
+    await screen.findByRole("button", { name: addPriorityControlName("CORE-1") })
+  );
 }
 
 // The reader's first priority is refused (409 ADVANCES_REVISION, another session having moved the
@@ -4655,11 +4792,15 @@ test("on a closed issue, the last priority taken away elsewhere leaves the focus
   }
 });
 
-// Another session's write moves the priority's line into an Advances row at the cap, which draws
-// no add control, with the focus on the add control beside Add. The reader pressed nothing, so the
-// focus stays on the page's body rather than going to the row's first priority.
+// Another session's write moves the priority's line into an Advances row at the cap, with the
+// focus on the add control beside Add. The reader pressed nothing, so the focus stays on the
+// page's body rather than going to the row's picker trigger. That trigger is drawn at the cap
+// too, since it takes a priority off as well as adding one; what the cap changes is the picker,
+// which refuses one priority more: it ticks none past the cap, says why, and closing it writes
+// nothing.
 test("the line moved by a write elsewhere into an Advances row at the cap leaves the focus of the add control beside Add on the page's body", async () => {
-  const { getIssue, restore } = stubIssueApi();
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
   getIssue.mockResolvedValue(advancesOnly);
   const { queryClient, unmount } = renderDetails();
@@ -4677,15 +4818,27 @@ test("the line moved by a write elsewhere into an Advances row at the cap leaves
       })
     );
     const row = await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
-    expect(
-      within(row).queryByRole("button", { name: addPriorityControlName("CORE-1") }),
-      "the Advances row at the cap draws an add control"
-    ).toBeNull();
     await settleFocus();
     expect(
       document.activeElement,
       "the line moved into the Advances row at the cap, and the focus left the page's body though the reader pressed nothing"
     ).toBe(document.body);
+
+    await user.click(
+      within(row).getByRole("button", { name: priorityTriggerName("CORE-1", false) })
+    );
+    const evals = await evalsOption();
+    await user.click(evals);
+    expect(evals, "the picker at the cap ticked one priority more").toHaveAttribute(
+      "aria-selected",
+      "false"
+    );
+    expect(
+      screen.getByText(STATE_LINES.advances_at_cap),
+      "the picker at the cap refused one priority more and said nothing of why"
+    ).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(patchIssue, "the picker at the cap wrote").not.toHaveBeenCalled();
   } finally {
     unmount();
     priorities.mockRestore();
@@ -7136,6 +7289,36 @@ test("a pinned comment written in markdown is drawn by its words, without the ma
   }
 });
 
+// R5 and R8 over a pin: its line is its record's one line as the outline draws a node's
+// (`useNodeLine`), so a bare address in the record reads as its target's name - the name the
+// page published for it, an issue's key and then its title - and never as the address. Drawn
+// from the words of the record's reading alone, the line spelled the address out.
+test("a pin's line reads a reference as its target's name", async () => {
+  await warmMarkdownRenderer();
+  const id = "7a1c3e5f-9b2d-4e6a-8c0f-1d3b5a7c9e20";
+  const address = buildDispatchReference({ key: "CORE-2", kind: "issue" });
+  const body = `Wait on ${address} first. Then ship.`;
+  const { getMyState, pinReads, restore } = stubIssueApi();
+  getMyState.mockResolvedValue(pinnedState(conversationItemId("comment", id)));
+  pinReads.comments.mockResolvedValue([commentOf(id, body, displayTree(body))]);
+  const published = publishedNames(new Map([[address, "Ship the release"]]));
+  const { unmount } = renderDetails(() => <Publisher published={published} />);
+
+  try {
+    const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    await waitFor(() =>
+      expect(
+        within(pins).getByRole("link").textContent,
+        "the pin does not read its reference as its target's name"
+      ).toBe("Wait on CORE-2 Ship the release first.")
+    );
+    expect(within(pins).getByRole("link").textContent).not.toContain("dispatch://");
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
 /** When the pinned posts below were edited, and when deleted. */
 const PIN_EDITED_AT = "2026-09-09T01:00:00Z";
 const PIN_DELETED_AT = "2026-09-09T02:00:00Z";
@@ -7156,8 +7339,8 @@ function pinLink(id: string): HTMLElement {
 }
 
 // R2 of dispatch://INFRA-1523: a pinned comment or message its author edited is drawn by its first
-// line, then ` · edited`, inside its link, as a parent line in the outline says it (`NodeRow.tsx`'s
-// `ParentLink`). The mark is the page's own word, marked as its chrome.
+// line, then ` · edited`, inside its link, as a parent line in the outline says it
+// (`node-line.tsx`'s `ParentLink`). The mark is the page's own word, marked as its chrome.
 test("a pinned comment and a pinned message their authors edited say edited after their lines", async () => {
   const comment = "6a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
   const message = "7b2c3d4e-5f6a-4b7c-9d8e-0f1a2b3c4d5e";
@@ -7411,6 +7594,48 @@ test("Unpin gives the focus to the next pin, else the one before, else the Pinne
   }
 });
 
+// Pinned draws its first 20 pins. Unpin on the 20th, the last pin drawn, takes its row away,
+// and the 21st pin, which no row drew, is drawn in its place: the focus goes to that pin's link,
+// at the place of the row the Unpin took away, and not to the 19th pin before it. A choice made
+// before the list is drawn again finds no pin after the 20th, and takes the one before.
+test("Unpin of the last pin drawn gives the focus to the pin drawn in its place", async () => {
+  const user = userEvent.setup();
+  const { getMyState, pinReads, restore } = stubIssueApi();
+  const ids = numbered("6d9f3a4b-8c5e-4fa0-9b2c-3d4e5f6a7b", PAGE_SIZE + 5);
+  const words = (index: number) => `Pin ${String(index + 1).padStart(2, "0")}.`;
+  getMyState.mockResolvedValue(pinnedState(...ids.map((id) => conversationItemId("comment", id))));
+  pinReads.comments.mockResolvedValue(ids.map((id, index) => commentOf(id, words(index))));
+  // The unpin is held out, so the page shows its own state of the pins throughout.
+  const putIssueState = spyOn(api, "putIssueState").mockReturnValue(new Promise(() => undefined));
+  const { unmount } = renderDetails();
+
+  try {
+    const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    await within(pins).findByRole("link", { name: words(PAGE_SIZE - 1) });
+    const rows = () => within(pins).getAllByRole("listitem");
+    expect(rows(), "Pinned does not draw its first 20 pins").toHaveLength(PAGE_SIZE);
+    const last = rows()[PAGE_SIZE - 1];
+    if (last === undefined) throw new Error("Pinned draws no 20th pin");
+    act(() => within(last).getByRole("button", { name: CONTROL_LABELS.unpin }).focus());
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(last.isConnected, "the 20th pin's row stayed").toBe(false));
+    expect(rows(), "Pinned does not draw 20 pins after the Unpin").toHaveLength(PAGE_SIZE);
+    const inItsPlace = within(pins).getByRole("link", { name: words(PAGE_SIZE) });
+    expect(rows()[PAGE_SIZE - 1]?.contains(inItsPlace), "the 21st pin is not drawn 20th").toBe(
+      true
+    );
+    expect(
+      document.activeElement,
+      `Unpin of the last pin drawn did not give the focus to the pin drawn in its place (focus: ${document.activeElement?.textContent})`
+    ).toBe(inItsPlace);
+  } finally {
+    unmount();
+    putIssueState.mockRestore();
+    restore();
+  }
+});
+
 // The two comments of CORE-1 the table below pins, each drawn by its words.
 const FIRST_PIN = "4b7d1e2f-6a3c-4d8e-9f0a-1b2c3d4e5f60";
 const SECOND_PIN = "5c8e2f3a-7b4d-4e9f-8a1b-2c3d4e5f6a71";
@@ -7496,10 +7721,11 @@ const advancingOne: IssueDetails = { ...issue, advances: [{ id: "PRI-7", inherit
  * The elements of Details below, each of which a change made elsewhere takes off the page, or
  * disables, while it holds the focus, and which one case can drive through the query cache: a
  * pin, a blocker, a reference, a file or a priority taken away, a route moved, a claim made,
- * released or taken again, the lists that fold falling to ten, a value set for an entry of Add's
- * open menu or for its only one, the repository's None and its text drawn in each other's place,
- * the priority's line moved by another session's write, and the issue closed while the focus is
- * on a control of Development. None of these is a press of the reader's.
+ * released or taken again, a list's Show more as the list falls to the 20 entries it draws, a
+ * value set for an entry of Add's open menu or for its only one, the repository's None and its
+ * text drawn in each other's place, the priority's line moved by another session's write, and
+ * the issue closed while the focus is on a control of Development. None of these is a press of
+ * the reader's.
  */
 const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
   [
@@ -7552,14 +7778,12 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     },
   ],
   [
-    "Blocks' Show all, the issues that wait falling to ten",
+    "Blocks' Show more, the issues that wait falling to 20",
     {
-      after: { waiting: keysFrom2(FOLD_AFTER) },
-      before: { waiting: keysFrom2(FOLD_AFTER + 1) },
+      after: { waiting: keysFrom2(PAGE_SIZE) },
+      before: { waiting: keysFrom2(PAGE_SIZE + 1) },
       focused: async () =>
-        within(await drawnRow(PROPERTY_LABELS.blocks)).findByRole("button", {
-          name: `${CONTROL_LABELS.show_all} ${FOLD_AFTER + 1}`,
-        }),
+        within(await drawnRow(PROPERTY_LABELS.blocks)).findByRole("button", { name: SHOW_MORE }),
     },
   ],
   [
@@ -7585,7 +7809,7 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     {
       after: { issue: { ...issue, referenced_by_count: 0 } },
       before: { issue: { ...issue, referenced_by_count: 3 } },
-      focused: () => screen.findByRole("button", { name: referencedByControlName(3) }),
+      focused: () => screen.findByRole("button", { name: referencedByControlName(undefined) }),
     },
   ],
   [
@@ -7704,12 +7928,14 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     },
   ],
   [
-    "Files' Show all, the files falling to ten",
+    "Files' Show more, the files falling to 20",
     {
-      after: { issue: withNotes(FOLD_AFTER - 1) },
-      before: { issue: withNotes(FOLD_AFTER) },
-      focused: () =>
-        screen.findByRole("button", { name: `${CONTROL_LABELS.show_all} ${FOLD_AFTER + 1}` }),
+      after: { issue: withNotes(PAGE_SIZE - 1) },
+      before: { issue: withNotes(PAGE_SIZE) },
+      focused: async () => {
+        await screen.findByTestId("issue-files");
+        return within(filesRow()).getByRole("button", { name: SHOW_MORE });
+      },
     },
   ],
   [
@@ -7738,13 +7964,13 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     },
   ],
   [
-    "the last priority's Remove, that priority taken away in another session",
+    "the Advances row's picker trigger, the last priority taken away in another session",
     {
       after: { issue },
       before: { issue: advancingOne },
       focused: async () =>
         within(await screen.findByTestId("issue-advances")).findByRole("button", {
-          name: /^Remove /,
+          name: priorityTriggerName("CORE-1", false),
         }),
     },
   ],
@@ -7949,15 +8175,5 @@ test.each(
     priorities.mockRestore();
     getReferences.mockRestore();
     restore();
-  }
-});
-
-// Details keeps three places nothing fills yet (`details-more.tsx`): the people, the focused
-// row's facts and the history. Until something fills them, each draws nothing.
-test("Details' places for the people, the focused row's facts and the history draw nothing", () => {
-  for (const Place of [DetailsPeople, DetailsFocusedNode, DetailsHistory]) {
-    const view = render(<Place issue={issue} state={undefined} />);
-    expect(view.container.innerHTML, `${Place.name} drew something`).toBe("");
-    view.unmount();
   }
 });

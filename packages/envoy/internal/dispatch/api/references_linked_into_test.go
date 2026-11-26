@@ -49,13 +49,11 @@ const referencesGrowthBound = 6.5
 // The seed stands for production, where 17 issues never got a 200 from the route and 57 of its 65
 // statement timeouts were in its in statement (refs' linksInQuery). The issue holds its spec and
 // 40 documents of 50 blocks, so its own targets are 2,042 - the issue, its 41 documents and their
-// 2,000 blocks - one more than the 2,041 of the issue measured on a copy of a dispatch:local
-// database seeded at production's size (block_refs 876,018 rows). There the in statement read
-// 5,000 links into it in 3.44-3.48 s while it left the issue's own targets out by a test against
-// an array, and in 0.27-0.36 s by the anti-join it reads now (refs' oneRowPerNode). Here 500
-// documents of 20 blocks link into the issue's documents, each block mentioning one of their 2,000
-// blocks: 10,000 links, 5 into each block. The server's sessions run with JIT off, as production's
-// Cloud SQL runs every statement: it does not support PostgreSQL's LLVM JIT.
+// 2,000 blocks - about the size of the issue measured on a copy seeded at production's size; refs'
+// oneRowPerNode's comment gives the read's times there and on this seed. Here 500 documents of 20
+// blocks link into the issue's documents, each block mentioning one of their 2,000 blocks: 10,000
+// links, 5 into each block. The server's sessions run with JIT off, as production's Cloud SQL runs
+// every statement: it does not support PostgreSQL's LLVM JIT.
 //
 // The budget alone measures the machine as much as the query: the negative control below reads that
 // issue in 0.9 s on the build farm, inside it, and in about 6 s in the implementer's pod. So the
@@ -81,6 +79,8 @@ const referencesGrowthBound = 6.5
 // fails at the budget, every route read answering 503 REFERENCES_TIMEOUT, and from 13.21 to 16.33
 // on the build farm (2026-11-22 to 2026-11-24), where every route read answers 200 inside the
 // budget: the runs referencesGrowthBound's comment names.
+// TestTheReferencesInStatementLeavesTheIssuesOwnNodesOutByAnAntiJoin holds the in statement's plan
+// to the anti-join, so it fails on the array whatever the machine's speed.
 func TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks(t *testing.T) {
 	// Not parallel: it holds the route's reads to their 2 s budget (referencesClosureBound) and
 	// refs.Closure's read times to a ratio (referencesGrowthBound), wall clock that the load of the
@@ -182,7 +182,7 @@ func closureRead(t *testing.T, issue linkedIntoIssue) time.Duration {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	started := time.Now()
-	references, err := refs.Closure(ctx, tx, linkedIntoReader, issue.key)
+	references, err := refs.Closure(ctx, tx, linkedIntoReader, issue.key, "")
 	took := time.Since(started)
 	if err != nil {
 		t.Fatalf("refs.Closure's read of the references of %s: %v", issue.key, err)
@@ -223,17 +223,10 @@ type linkedIntoIssue struct {
 func seedLinkedIntoIssue(t *testing.T, ownDocuments, linkingDocuments int) linkedIntoIssue {
 	t.Helper()
 	ctx := context.Background()
-	// JIT is off for the test database, and the pool the server reads through opens its first
-	// session after that, so every session of the server reads it.
 	database := storetest.Open(t)
-	var name string
-	if err := database.Pool.QueryRow(ctx, `select current_database()`).Scan(&name); err != nil {
-		t.Fatalf("read the test database's name: %v", err)
-	}
-	if _, err := database.Pool.Exec(ctx, `alter database `+pgx.Identifier{name}.Sanitize()+` set jit = off`); err != nil {
-		t.Fatalf("turn JIT off for the test database: %v", err)
-	}
-	served := storetest.Reopened(t, database, func(*pgxpool.Config) {})
+	served := storetest.Reopened(t, database, func(config *pgxpool.Config) {
+		config.ConnConfig.RuntimeParams["jit"] = "off"
+	})
 	handler, _, _, registered := newRegisteredTestServer(t, testServerOptions{store: served})
 	var jit string
 	if err := served.Pool.QueryRow(ctx, `select current_setting('jit')`).Scan(&jit); err != nil || jit != "off" {

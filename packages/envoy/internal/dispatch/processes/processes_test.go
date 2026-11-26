@@ -238,7 +238,7 @@ func TestARowAtTheDefaultsPredatesTheFleetColumns(t *testing.T) {
 
 // Register writes this build's capabilities into the process's row, issue_room among them, and a
 // row written again after a prune carries them too; a row a build before the column wrote holds
-// null there and lists nothing (decision 7 of dispatch://INFRA-1253's plan), so an issue is born
+// null there and lists nothing (decision 7 of the issue-tree plan), so an issue is born
 // converted only while every live row lists issue_room.
 func TestRegisterWritesTheBuildsCapabilitiesAndARowWithoutThemListsNone(t *testing.T) {
 	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)

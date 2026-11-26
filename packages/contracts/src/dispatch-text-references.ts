@@ -1,3 +1,7 @@
+import { CODE_CONTEXT } from "./dispatch-text-references-code";
+import { IN_CODE } from "./dispatch-text-references-in-code";
+import { PLAIN_ISSUE_TABS } from "./dispatch-text-rules";
+
 /** The questions the `#id` rows below belong to, each block id to its ask's reference. */
 const QUESTIONS = {
   q2: "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333",
@@ -30,19 +34,33 @@ export interface DispatchTextReferenceRow {
   questions?: Readonly<Record<string, string>>;
   /** The ask, comment, message and document block ids that exist, each to its reference. */
   items?: Readonly<Record<string, string>>;
-  /** What the server indexes. */
+  /** What a reader of the text extracts, in order of first appearance. Not what the server
+   *  indexes: a party - an agent's session, a role or a person - is extracted and never stored,
+   *  the graph holding no node for one (Go's `refs.TargetOf`). */
   refs: readonly string[];
   /** What a renderer links, which is none inside code or a link; omitted, it is `refs`. */
   links?: readonly string[];
+  /** The `refs` of this row that sit in a code context - a fenced code block, an indented code
+   *  block or a code span - in the order `refs` names them; omitted, none of them does. It
+   *  decides delivery and nothing else: a party reference written there names nobody, so no
+   *  agent, role or person is delivered to for it, while the reference is extracted and indexed
+   *  exactly as one outside code is. */
+  inCode?: readonly string[];
   /** Only a reader of the bare key, `#id` and prefix grammar writes this row's `refs`. */
   grammar?: true;
 }
 
-/** The rows written out, which are every row but the code twins `IN_CODE` builds below. */
+/** The rows written out, which are every row but the code-context ones (`CODE_CONTEXT`) and the
+ *  code twins built below from `IN_CODE` (`dispatch-text-references-in-code.ts`). */
 const WRITTEN: readonly DispatchTextReferenceRow[] = [
   { body: "Tied to dispatch://CORE-1 here.", refs: ["dispatch://CORE-1"] },
   { body: "Tied to **dispatch://CORE-1** here.", refs: ["dispatch://CORE-1"] },
-  { body: "Tied to `dispatch://CORE-1` here.", refs: ["dispatch://CORE-1"], links: [] },
+  {
+    body: "Tied to `dispatch://CORE-1` here.",
+    refs: ["dispatch://CORE-1"],
+    links: [],
+    inCode: ["dispatch://CORE-1"],
+  },
   {
     body: "_dispatch://CORE-1/spec_, ~~dispatch://CORE-2~~ and __dispatch://CORE-3/ask/22222222-2222-4222-8222-222222222222__.",
     refs: [
@@ -55,6 +73,7 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
     body: "`dispatch://CORE-5`/`dispatch://CORE-6`",
     refs: ["dispatch://CORE-5", "dispatch://CORE-6"],
     links: [],
+    inCode: ["dispatch://CORE-5", "dispatch://CORE-6"],
   },
   // How a document stores the autolink `<dispatch://CORE-7/spec>`.
   {
@@ -62,6 +81,18 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
     refs: ["dispatch://CORE-7/spec"],
   },
   { body: "See [**dispatch://CORE-8**](dispatch://CORE-8).", refs: ["dispatch://CORE-8"] },
+  // A link whose words its author wrote. Both readers cite the same reference as a bare address
+  // does - nothing here changes what a text holds - and the words stay the author's wherever
+  // the link is painted: an address standing on its own, and the autolink above whose words are
+  // that same address, read as the target's current name; this one reads as what it says.
+  {
+    body: "See [the rollout plan](dispatch://CORE-22/spec) first.",
+    refs: ["dispatch://CORE-22/spec"],
+  },
+  {
+    body: "See [**the rollout plan**](https://dispatch.test/issues/CORE-23) first.",
+    refs: ["dispatch://CORE-23"],
+  },
   { body: "(**https://dispatch.test/issues/CORE-4**)", refs: ["dispatch://CORE-4"] },
   {
     body: "See [https://dispatch.test/issues/CORE-9](https://dispatch.test/issues/CORE-9).",
@@ -72,6 +103,60 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
     refs: ["dispatch://CORE-9/spec"],
   },
   { body: "(see dispatch://CORE-10).", refs: ["dispatch://CORE-10"] },
+  // An issue's address with nothing after its trailing slash is the issue, the sentence's stop
+  // after the slash dropped as after any reference. Anything else after the slash that the
+  // grammar does not name - a second slash, a word, an empty `artifact/` or `ask/` - names
+  // nothing, and neither does the issue's page with a trailing slash.
+  {
+    body: "Filed as dispatch://CORE-40/ and dispatch://CORE-41/.",
+    refs: ["dispatch://CORE-40", "dispatch://CORE-41"],
+  },
+  {
+    body: "Nothing: dispatch://CORE-42//, dispatch://CORE-42/notes, dispatch://CORE-42/artifact/, dispatch://CORE-42/ask/ and https://dispatch.test/issues/CORE-42/.",
+    refs: [],
+  },
+  // A link's address in angle brackets may hold a space: the reference before the space names
+  // nothing, and a head cut inside such a link, ending at the address's trailing slash, names the
+  // issue.
+  { body: "See [the notes](<dispatch://CORE-43/a b>) now.", refs: [] },
+  { body: "Cut at [the notes](<dispatch://CORE-44/", refs: ["dispatch://CORE-44"] },
+  // A tab of an issue's page whose route is the tab itself (`PLAIN_ISSUE_TABS`) reads as the
+  // issue, as a reference and as the dashboard's page, and so does the conversation, written
+  // `log` in a reference too. One row per tab, so a tab the list gains is read by both readers or
+  // fails here.
+  ...PLAIN_ISSUE_TABS.map((tab) => ({
+    body: `The ${tab} tab: dispatch://CORE-45/${tab} and https://dispatch.test/issues/CORE-46/${tab}.`,
+    refs: ["dispatch://CORE-45", "dispatch://CORE-46"],
+  })),
+  {
+    body: "The conversation: dispatch://CORE-47/conversation, dispatch://CORE-48/log and https://dispatch.test/issues/CORE-54/conversation.",
+    refs: ["dispatch://CORE-47", "dispatch://CORE-48", "dispatch://CORE-54"],
+  },
+  // The Decisions tab reads the issue's decision nodes, so its address reads as the issue, as a
+  // reference and as the dashboard's page alike.
+  {
+    body: "The decisions: dispatch://CORE-55/decisions and https://dispatch.test/issues/CORE-56/decisions.",
+    refs: ["dispatch://CORE-55", "dispatch://CORE-56"],
+  },
+  {
+    body: "No tab: https://dispatch.test/issues/CORE-49/log, dispatch://CORE-49/plan/, dispatch://CORE-49/Plan and https://dispatch.test/issues/CORE-49/plan/.",
+    refs: [],
+  },
+  // A document's page at `artifact/<slug>` is its page at `artifacts/<slug>`, which the issue
+  // page opens as the same document: a version, a block and a trailing slash read as they do
+  // there.
+  {
+    body: "https://dispatch.test/issues/CORE-50/artifact/notes-md, https://dispatch.test/issues/CORE-51/artifact/notes-md?v=2 and https://dispatch.test/issues/CORE-52/artifact/notes-md#b-ship-it",
+    refs: [
+      "dispatch://CORE-50/artifact/notes-md",
+      "dispatch://CORE-51/artifact/notes-md@v2",
+      "dispatch://CORE-52/artifact/notes-md#b-ship-it",
+    ],
+  },
+  {
+    body: "No page: https://dispatch.test/issues/CORE-53/artifact/notes-md/ and https://dispatch.test/issues/CORE-53/artifact/notes-md?v=02",
+    refs: [],
+  },
   {
     body: "Quoted \"dispatch://CORE-11\", 'dispatch://CORE-12' and <dispatch://CORE-13>.",
     refs: ["dispatch://CORE-11", "dispatch://CORE-12", "dispatch://CORE-13"],
@@ -101,6 +186,7 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
     body: "`https://dispatch.test/issues/CORE-1/spec?comment=44444444-4444-4444-8444-444444444444`;",
     refs: ["dispatch://CORE-1/comment/44444444-4444-4444-8444-444444444444"],
     links: [],
+    inCode: ["dispatch://CORE-1/comment/44444444-4444-4444-8444-444444444444"],
   },
   // A query is read as the browser reads it, pairs parted at `&` alone, so an id holding a `;`
   // keeps it (and is written escaped), a version holding one is no version, and an `ask` holding
@@ -164,11 +250,89 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
   // A page whose session id decodes to a character that ends a reference names nothing: no
   // reference could carry that id, and Dispatch refuses it as an owner.
   { body: "See https://dispatch.test/agents/a%7Cb/artifacts/shot-png here.", refs: [] },
+  // The three parties a text names: the agent at a session id, the role at its token and the
+  // person at their login. Each is read and shown, and the graph stores none of them, so a
+  // party reference is cited and never indexed. The agent's own address is the session alone;
+  // the longer form under it is still the document its conversation owns.
+  {
+    body: "Both dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551 and its dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png here.",
+    refs: [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551",
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png",
+    ],
+  },
+  {
+    body: "See [the agent](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551).",
+    refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
+  },
+  // A mention, as the reference picker writes one (`[@<name>](<address>)`), is that same
+  // address: neither reader reads a link's words, which a renderer draws as `@` and the party's
+  // current name. An `@` and a word with no link around it is no reference at all.
+  {
+    body: "Ask [@Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) today.",
+    refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
+  },
+  { body: "Ask @Planner and @legion/contracts about it.", refs: [] },
+  // A role is its token, the charset a `role:` delivery route takes (`model.ParseRoute`).
+  { body: "Waiting on dispatch://role/reviewer today.", refs: ["dispatch://role/reviewer"] },
+  { body: "See [the reviewer](dispatch://role/reviewer).", refs: ["dispatch://role/reviewer"] },
+  { body: "Ask [@reviewer](dispatch://role/reviewer).", refs: ["dispatch://role/reviewer"] },
+  // A person is their login, the lowercased email `model.CanonicalLogin` stores. No page shows
+  // a person, so a renderer links none of these forms.
+  {
+    body: "Asked dispatch://person/alice@example.com today.",
+    refs: ["dispatch://person/alice@example.com"],
+    links: [],
+  },
+  {
+    body: "See [the owner](dispatch://person/alice@example.com).",
+    refs: ["dispatch://person/alice@example.com"],
+    links: [],
+  },
+  {
+    body: "Ask [@alice@example.com](dispatch://person/alice@example.com).",
+    refs: ["dispatch://person/alice@example.com"],
+    links: [],
+  },
+  // A party written another way names nobody: a role token or a login holding an upper-case
+  // letter is no token and no login as they are stored, a login is an email, and a party with
+  // no name at all is nothing.
+  {
+    body: "Neither dispatch://role/Reviewer nor dispatch://role/sre_oncall names a role.",
+    refs: [],
+  },
+  {
+    body: "Neither dispatch://person/Alice@example.com nor dispatch://person/alice names a person.",
+    refs: [],
+  },
+  { body: "No party: dispatch://agent, dispatch://role and dispatch://person here.", refs: [] },
+  // A component of a project's architecture, the one node a project owns beside its documents.
+  {
+    body: "Owned by dispatch://CORE/component/dispatch-server here.",
+    refs: ["dispatch://CORE/component/dispatch-server"],
+  },
+  { body: "No component: dispatch://CORE/component/Dispatch_Server here.", refs: [] },
   // A picture's address is read through the image syntax that shows it.
   {
     body: "![shot.png](dispatch://LEGION-1/artifact/shot-png@v1)",
     refs: ["dispatch://LEGION-1/artifact/shot-png@v1"],
   },
+  // A link's or a picture's address ends at the link's own `)`, the first that no `(` in the
+  // address opened, as CommonMark reads it: a word typed straight after the link is the link's
+  // next word, as every renderer draws it, and never more of its address. So a mention followed
+  // by a word names its party, a worded link and a picture name their targets, and a pair of
+  // parentheses the address balances stays in it.
+  { body: "[@Bob](dispatch://agent/abc)hello", refs: ["dispatch://agent/abc"] },
+  { body: "[w](dispatch://CORE-24)word", refs: ["dispatch://CORE-24"] },
+  {
+    body: "![shot](dispatch://LEGION-1/artifact/shot-png)word",
+    refs: ["dispatch://LEGION-1/artifact/shot-png"],
+  },
+  { body: "[w](dispatch://agent/a(b)c)tail", refs: ["dispatch://agent/a(b)c"] },
+  // A bare address keeps its own reading: a `)` it ends in that opens nowhere in it is dropped,
+  // and one a word follows is part of the address, which then names nothing.
+  { body: "(see dispatch://CORE-1)", refs: ["dispatch://CORE-1"] },
+  { body: "dispatch://CORE-1)word", refs: [] },
   // A block of a document: its id is read with any percent-encoding and written as
   // `encodeBlockId` writes it.
   {
@@ -267,6 +431,7 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
     body: "See `dispatch://lens/7c1e0000-0000-4000-8000-000000000002` here.",
     refs: ["dispatch://lens/7c1e0000-0000-4000-8000-000000000002"],
     links: [],
+    inCode: ["dispatch://lens/7c1e0000-0000-4000-8000-000000000002"],
   },
   // None of these: a pinned finding, a uuid in capitals or written short, anything after the
   // uuid, a lens kind written in capitals or with an underscore, a block of a risk, an issue key
@@ -350,8 +515,8 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
   // Every other kind of target is bounded the same way, at MAX_REFERENCE_TARGET_BYTES (2048) bytes
   // and one byte past it: an issue's key (its number counted in groups `9NNNN`), an issue's spec
   // (`<key>/spec`), a project's document (`<project>/<slug>`), an agent's upload
-  // (`agent/<session id>/<slug>`), an ask's id and a message's. A component's `<project>/<id>` is
-  // bounded so too (Go's `text` tests it); the dashboard reads no component reference.
+  // (`agent/<session id>/<slug>`), an ask's id and a message's. A component's `<project>/<id>`
+  // and a party's own name are bounded so too (Go's `text` tests the lengths).
   {
     body: "dispatch://CORE-190001900029000390004900059000690007900089000990010900119001290013900149001590016900179001890019900209002190022900239002490025900269002790028900299003090031900329003390034900359003690037900389003990040900419004290043900449004590046900479004890049900509005190052900539005490055900569005790058900599006090061900629006390064900659006690067900689006990070900719007290073900749007590076900779007890079900809008190082900839008490085900869008790088900899009090091900929009390094900959009690097900989009990100901019010290103901049010590106901079010890109901109011190112901139011490115901169011790118901199012090121901229012390124901259012690127901289012990130901319013290133901349013590136901379013890139901409014190142901439014490145901469014790148901499015090151901529015390154901559015690157901589015990160901619016290163901649016590166901679016890169901709017190172901739017490175901769017790178901799018090181901829018390184901859018690187901889018990190901919019290193901949019590196901979019890199902009020190202902039020490205902069020790208902099021090211902129021390214902159021690217902189021990220902219022290223902249022590226902279022890229902309023190232902339023490235902369023790238902399024090241902429024390244902459024690247902489024990250902519025290253902549025590256902579025890259902609026190262902639026490265902669026790268902699027090271902729027390274902759027690277902789027990280902819028290283902849028590286902879028890289902909029190292902939029490295902969029790298902999030090301903029030390304903059030690307903089030990310903119031290313903149031590316903179031890319903209032190322903239032490325903269032790328903299033090331903329033390334903359033690337903389033990340903419034290343903449034590346903479034890349903509035190352903539035490355903569035790358903599036090361903629036390364903659036690367903689036990370903719037290373903749037590376903779037890379903809038190382903839038490385903869038790388903899039090391903929039390394903959039690397903989039990400904019040290403904049040590406904079040800",
     refs: [
@@ -793,82 +958,10 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
   },
 ];
 
-/**
- * Every form the server reads bare, again in code: the body that writes it inside a code span or
- * a code block, beside the body of the row above it repeats. The server indexes each one there,
- * as it indexes a `dispatch://` reference in code, so a twin cites exactly what its row cites,
- * and no renderer links inside a code span or a code block, so a twin links nothing. A form
- * added above is twinned by one line here; its facts are never written a second time.
- */
-const IN_CODE: readonly (readonly [written: string, inCode: string])[] = [
-  ["CORE-1 is blocked.", "`CORE-1` is blocked."],
-  ["Blocked on CORE-1 today.", "Blocked on `CORE-1` today."],
-  ["Blocked (CORE-1) today.", "Blocked `(CORE-1)` today."],
-  ["Blocked [CORE-1] today.", "Blocked `[CORE-1]` today."],
-  ['Blocked on "CORE-1" today.', 'Blocked on `"CORE-1"` today.'],
-  ["Blocked on 'CORE-1' today.", "Blocked on `'CORE-1'` today."],
-  ["Blocked on **CORE-1** today.", "Blocked on `**CORE-1**` today."],
-  ["Blocked on _CORE-1_ today.", "Blocked on `_CORE-1_` today."],
-  [">CORE-1 is blocked.", "`>CORE-1` is blocked."],
-  ["Blocked on ~~CORE-1~~ today.", "Blocked on `~~CORE-1~~` today."],
-  ["|issue|state|\n|---|---|\n|CORE-1|open|", "Cells are written `|CORE-1|open|`."],
-  ["Blocked on&#32;CORE-1 today.", "Blocked on `&#32;CORE-1` today."],
-  ["Blocked on&#x20;CORE-1 today.", "Blocked on `&#x20;CORE-1` today."],
-  ["Blocked on&#9;CORE-1 today.", "Blocked on `&#9;CORE-1` today."],
-  ["Blocked on&#10;CORE-1 today.", "Blocked on `&#10;CORE-1` today."],
-  ["See XCORE-1 here.", "See `XCORE-1` here."],
-  ["Both CORE-1 and ACME-12 are blocked.", "Both `CORE-1` and `ACME-12` are blocked."],
-  ["CORE-1's spec is done.", "`CORE-1's` spec is done."],
-  ["Done in CORE-1.", "Done in `CORE-1.`"],
-  ["Blocked on CORE-1, then shipped.", "Blocked on `CORE-1,` then shipped."],
-  ["See [the blocker](CORE-1).", "See `[the blocker](CORE-1)`."],
-  // The same key again, in a fenced code block rather than a span.
-  ["CORE-1 is blocked.", "```\nCORE-1 is blocked.\n```"],
-  ["See #q2 for the rollout.", "See `#q2` for the rollout."],
-  ["As agreed, _see #q2_.", "As agreed, `_see #q2_`."],
-  ["Answered in #q2.", "Answered in `#q2.`"],
-  ["See [the question](#q2).", "See `[the question](#q2)`."],
-  ["See #7b2c9d04 for the rollout.", "See `#7b2c9d04` for the rollout."],
-  ["See dispatch://CORE-1/ask/2a7f1c90 here.", "See `dispatch://CORE-1/ask/2a7f1c90` here."],
-  [
-    "See dispatch://CORE-1/ask/2a7f1c90-1f4e here.",
-    "See `dispatch://CORE-1/ask/2a7f1c90-1f4e` here.",
-  ],
-  ["See dispatch://CORE-1/ask/2A7F1C90 here.", "See `dispatch://CORE-1/ask/2A7F1C90` here."],
-  [
-    "See dispatch://CORE-1/comment/3b8e2d01 here.",
-    "See `dispatch://CORE-1/comment/3b8e2d01` here.",
-  ],
-  [
-    "See dispatch://CORE-1/comment/3b8e2d01-2a5f here.",
-    "See `dispatch://CORE-1/comment/3b8e2d01-2a5f` here.",
-  ],
-  [
-    "See dispatch://CORE-1/comment/3B8E2D01 here.",
-    "See `dispatch://CORE-1/comment/3B8E2D01` here.",
-  ],
-  [
-    "See dispatch://CORE-1/message/4c9f3e12 here.",
-    "See `dispatch://CORE-1/message/4c9f3e12` here.",
-  ],
-  [
-    "See dispatch://CORE-1/message/4c9f3e12-3b60 here.",
-    "See `dispatch://CORE-1/message/4c9f3e12-3b60` here.",
-  ],
-  [
-    "See dispatch://CORE-1/message/4C9F3E12 here.",
-    "See `dispatch://CORE-1/message/4C9F3E12` here.",
-  ],
-  ["See dispatch://CORE-1/spec#b-5da04f23 here.", "See `dispatch://CORE-1/spec#b-5da04f23` here."],
-  [
-    "See dispatch://CORE-1/spec#b-5da04f23-4c71 here.",
-    "See `dispatch://CORE-1/spec#b-5da04f23-4c71` here.",
-  ],
-  ["See dispatch://CORE-1/spec#b-5DA04F23 here.", "See `dispatch://CORE-1/spec#b-5DA04F23` here."],
-];
-
-/** The row that writes `written` in code: its own facts, its own `refs`, and no links. The
- *  fields are written in the order a row writes them, so the JSON copy the Go reader walks
+/** The row that writes `written` in code, for a pair of `IN_CODE`: its own facts, its own `refs`,
+ *  no links, and every one of those `refs` in code - a twin's whole body is the row's text
+ *  inside a code span or a code block, so no reference of it is written outside one. The fields
+ *  are written in the order a row writes them, so the JSON copy the Go reader walks
  *  (`testdata/dispatch-text-references.json`) reads the same whether a row was written out or
  *  built here. */
 function inCodeRow(written: string, body: string): DispatchTextReferenceRow {
@@ -884,6 +977,7 @@ function inCodeRow(written: string, body: string): DispatchTextReferenceRow {
     ...(row.items === undefined ? {} : { items: row.items }),
     refs: row.refs,
     links: [],
+    inCode: row.refs,
     ...(row.grammar === undefined ? {} : { grammar: row.grammar }),
   };
 }
@@ -891,25 +985,31 @@ function inCodeRow(written: string, body: string): DispatchTextReferenceRow {
 /**
  * Markdown bodies with the references each one cites, in order of first appearance, as read
  * against the server origin `https://dispatch.test`, or the row's `origin` where it names one.
- * Four readers are tested against it - the dashboard's `composerReferences` (its composer's
- * reference pills, which read `dispatch://` references and dashboard addresses alone), the
- * dashboard's reader and resolver for text (what its rendered markdown, its unfurl cards and its
- * document editors share), those renderers (what they link), and the Go reader `text.Mentions`,
+ * Three readers are tested against it - the dashboard's one reader and resolver for text (what
+ * its composer's reference pills, its rendered markdown, its unfurl cards and its document
+ * editors share), those renderers (what they link), and the Go reader `text.Mentions`,
  * which writes the reference graph, through its JSON copy in
  * `packages/envoy/internal/dispatch/text/testdata` - so neither where a reference ends nor what
  * it names can change on one side only.
  *
  * A reference ends at whitespace (Unicode space separators included, a vertical tab and U+FEFF
- * not), an angle or square bracket, a quote, a backtick or a pipe; the sentence punctuation,
- * emphasis and strikethrough delimiters and unbalanced closing parenthesis after it are dropped.
- * External URLs cite nothing, and neither does a reference whose target id, as the server stores
- * the edge to it, is past MAX_REFERENCE_TARGET_BYTES. A block reference is its document's, ask's,
- * comment's, issue message's or lens's reference, `#b-` and the block id as `encodeBlockId` writes
- * it (readers take any percent-encoding; an id past MAX_BLOCK_ID_BYTES names nothing), optionally
- * pinned to version N of the document, or to revision N of the comment or of the ask's parts, by
- * a trailing `@v<N>` (a message records no revisions and a lens records no revision of its
- * findings, so a pinned block of either names nothing); each `refs` entry for one is written that
- * canonical way. A node the store addresses by its own id carries no issue key:
+ * not), an angle or square bracket, a quote, a backtick or a pipe, and one that stands as a
+ * link's or a picture's address, right after `](`, ends at the first `)` in it that no `(` in it
+ * opened; the sentence punctuation, emphasis and strikethrough delimiters and unbalanced closing
+ * parenthesis after it are dropped. External URLs cite nothing, and neither does a reference whose
+ * target id, as the server stores the edge to it, is past MAX_REFERENCE_TARGET_BYTES. A block
+ * reference is its document's, ask's, comment's, issue message's or lens's reference, `#b-` and
+ * the block id as `encodeBlockId` writes it (readers take any percent-encoding; an id past
+ * MAX_BLOCK_ID_BYTES names nothing), optionally pinned to version N of the document, or to
+ * revision N of the comment or of the ask's parts, by a trailing `@v<N>` (a message records no
+ * revisions and a lens records no revision of its findings, so a pinned block of either names
+ * nothing); each `refs` entry for one is written that canonical way. An issue's address reads as
+ * the issue with nothing after its key, with a trailing slash and nothing after it, and with a tab
+ * of its page whose route is the tab itself after it (`PLAIN_ISSUE_TABS`, and the conversation:
+ * `log` or `conversation` in a reference, `conversation` in the dashboard's path), so
+ * `dispatch://CORE-1/`, `dispatch://CORE-1/plan` and `https://dispatch.test/issues/CORE-1/plan`
+ * each cite `dispatch://CORE-1`; a document's page reads the same at `artifacts/<slug>` and at
+ * `artifact/<slug>`. A node the store addresses by its own id carries no issue key:
  * `dispatch://<kind>/<uuid>` for an interaction, a lens, a risk and a constraint, the uuid in
  * lowercase as the store writes it, and `dispatch://lens_kind/<slug>` for a lens kind.
  *
@@ -933,9 +1033,18 @@ function inCodeRow(written: string, body: string): DispatchTextReferenceRow {
  *
  * The server reads a key, a `#id` and a prefix inside a code span, a code block and a link's
  * destination, as it reads a `dispatch://` reference in code today; a renderer links none of
- * them there.
+ * them there. A reference a code context holds - a fenced code block, an indented code block or
+ * a code span, the three `inCode` names - is read and indexed as every other is and names
+ * nobody: a party written there is delivered to no one, where the same party written as a
+ * worded link's address is the ordinary mention and is delivered to. Each of the three is read
+ * inside the containers the body holds, as CommonMark reads it: a fence or an indented block
+ * written in a block quote or a list item is code there, and the indentation an ordinary nested
+ * item carries is that item's own text. Those rows, and the edges of each of the three rules,
+ * are `CODE_CONTEXT` (`dispatch-text-references-code.ts`): the two deciders of where code
+ * begins and ends are held to them, and to nothing either language keeps on its own.
  */
 export const DISPATCH_TEXT_REFERENCES: readonly DispatchTextReferenceRow[] = [
   ...WRITTEN,
+  ...CODE_CONTEXT,
   ...IN_CODE.map(([written, body]) => inCodeRow(written, body)),
 ];

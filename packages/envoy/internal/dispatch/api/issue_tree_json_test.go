@@ -153,7 +153,8 @@ func randomTreeRead(random *rand.Rand) model.IssueTreeRead {
 		}
 		if random.IntN(4) == 0 {
 			changed := when()
-			node.Decision = &model.Decision{BlockID: text(), Text: text(), TextTree: model.DisplayTree(treeDisplayTrees[0]), Asks: []string{text()}, ChangedAt: &changed}
+			node.Decision = &model.IssueTreeDecision{Decision: model.Decision{BlockID: text(), Text: text(), TextTree: model.DisplayTree(treeDisplayTrees[0]), Asks: []string{text()}, ChangedAt: &changed},
+				Uncertainty: held(), UncertaintyReason: held()}
 		}
 		if random.IntN(4) == 0 {
 			node.Result = &model.IssueTreeResult{Verdict: text(), CheckVersion: random.IntN(9), CheckSHA256: text()}

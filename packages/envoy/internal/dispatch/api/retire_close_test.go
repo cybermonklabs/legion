@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
 
-// INFRA-1150, test round 6: the decisions step retires every issue's decisions.md, and a retired
+// Test round 6 of this change: the decisions step retires every issue's decisions.md, and a retired
 // document takes no live write (docs' joinLiveWrite refuses it under the owner's lock). An issue's
 // close and reopen write the state they give its asks into every document of the issue
 // (docs.WriteIssueAskStates, over issueDocumentIDs), the retired one included, so once an issue's

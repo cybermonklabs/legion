@@ -1,19 +1,23 @@
 /** the rows count the tree and view reads the page sends the server and draw each filter from
  *  the view it answers */
 
-import { PRESET_NAMES } from "../web/src/features/issue-page/page-words";
+import { coverageNotes, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
-import { seedWholeIssue } from "./issue-layout-seed";
-import { closeDetails, openDetails, phase, presetCount } from "./issue-page";
+import { createIssueArtifact, getIssue, getIssueCoverage } from "./api";
+import { seedNoChildren, seedWholeIssue } from "./issue-layout-seed";
+import { closeDetails, gotoIssue, issuePage, openDetails, phase, presetCount } from "./issue-page";
 import { nodeRow } from "./issue-page-g";
 import { decisionsFoot } from "./issue-page-q";
 import { fixtureSeed, seedKeys, steadily } from "./issue-page-t";
 import {
+  awaitIndexedCoverage,
   checksOutOfPlace,
   editNoticesSent,
   firstLoad,
   idSet,
   idsOfType,
+  LOAD_BOUND,
+  loadViews,
   pastStaleTime,
   pressFilter,
   ROW_MS,
@@ -26,6 +30,7 @@ import {
 import {
   besideViewRead,
   blocksReads,
+  coverageIndexEventGate,
   decisionsReadOf,
   drawnNodes,
   headerStatus,
@@ -74,6 +79,7 @@ test("the first load reads the tree once and a filter its view once", async ({ b
       spec: viewAnswerOf(page, "spec"),
       verification: viewAnswerOf(page, "verification"),
     } satisfies Record<(typeof VIEW_FILTERS)[number], TreeAnswerWatch>;
+    const conversation = treeAnswerOf(page);
     const traffic = watchApiRequests(page);
     const live = watchLiveFrames(page);
     await page.clock.install();
@@ -86,7 +92,19 @@ test("the first load reads the tree once and a filter its view once", async ({ b
     expect(blocksReads(load), "the first load sends no blocks read").toEqual([]);
     expect(
       load.length,
-      "the first load sends no more requests under /api/ than the reads did"
+      `the first load sends at most ${LOAD_BOUND} requests under /api/`
+    ).toBeLessThanOrEqual(LOAD_BOUND);
+    // The view reads R4 sends with a load of Conversation for this seed's issue, which is a child
+    // (the seed files it under a parent) and a parent whose Conversation's answer holds no check
+    // of a child: Plan's always, Spec's for a child, Verification's for such a parent.
+    const issue = await getIssue(seeded.key);
+    const answer = await heldAnswer(conversation, "Conversation's read");
+    const extras = loadViews(issue, answer);
+    expect(
+      load.length - extras.reduce((sum, view) => sum + treeReads(load, seeded.key, view), 0),
+      `each request beyond the fixture's count is one of R4's view reads for the seed: ${extras
+        .map((view) => `view=${view}`)
+        .join(", ")}`
     ).toBeLessThanOrEqual(fixtureSeed("seedWholeIssue").loadRequests);
     await openDetails(page);
     await expectLoadSettled(traffic);
@@ -104,13 +122,18 @@ test("the first load reads the tree once and a filter its view once", async ({ b
     for (const filter of VIEW_FILTERS) {
       const name = PRESET_NAMES[filter];
       const late = filter === "plan";
+      // A view R4 sent with the load is held, and its filter turned on sends no second read.
+      const withLoad = extras.includes(filter);
       if (late) await pastStaleTime(page, traffic, live);
       const first = traffic.requests.length;
       await pressFilter(page, traffic, filter);
       await heldAnswer(views[filter], `the ${name} view read`);
       await expectLoadSettled(traffic);
       const pressed = traffic.requests.slice(first);
-      expect(treeReads(pressed, seeded.key, filter), `${name} sends one view read`).toBe(1);
+      expect(
+        treeReads(pressed, seeded.key, filter),
+        withLoad ? `${name}, read with the load, sends no view read` : `${name} sends one view read`
+      ).toBe(withLoad ? 0 : 1);
       expect(blocksReads(pressed), `${name} sends no blocks read`).toEqual([]);
       if (late) {
         expect(
@@ -166,6 +189,36 @@ test("the first load reads the tree once and a filter its view once, and Decisio
       expect(blocksReads(pressed), "Decisions reads no document's blocks").toEqual([]);
       await releaseFilter(page, "decisions");
     }
+  });
+});
+
+// SLOW(>=2s): the page opens over deferred coverage and waits for the next block-index pass.
+test("the line that says a version is still being indexed goes without a reload @owed", async ({
+  browser,
+}) => {
+  owedUnless(coverageIndexEventGate);
+  test.setTimeout(ROW_MS);
+  await phase(browser, seedNoChildren, async (page, seeded) => {
+    // An upload beyond the server's block bound defers indexing to the reconciliation.
+    const name = "index-sample.md";
+    const content = Array.from({ length: 2_001 }, (_, index) => `- Item ${index + 1}`).join("\n");
+    await createIssueArtifact(seeded.key, { content, name });
+    const [pending] = coverageNotes(await getIssueCoverage(seeded.key)).filter((line) =>
+      line.startsWith(`${name} version `)
+    );
+    expect(pending, "the uploaded document's coverage did not defer").toBeDefined();
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    const notices = issuePage(page)
+      .locator("[data-coverage-note]")
+      .filter({ hasText: pending ?? "" });
+    await expect(notices.first(), "the page does not show the pending coverage line").toBeVisible();
+    let navigated = false;
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) navigated = true;
+    });
+    await awaitIndexedCoverage(seeded.key);
+    await expect(notices, "the indexed document still draws its coverage line").toHaveCount(0);
+    expect(navigated, "the page reloaded to clear the coverage line").toBe(false);
   });
 });
 

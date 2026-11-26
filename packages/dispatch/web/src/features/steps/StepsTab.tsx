@@ -19,7 +19,7 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { type StepRow, stepTasks } from "./steps-model";
+import { type StepRow, stepTasks, stepVariant } from "./steps-model";
 
 const COLUMNS = [
   "Step",
@@ -55,7 +55,7 @@ const dayOfAnotherYear = new Intl.DateTimeFormat(undefined, {
 });
 const timeOfDay = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 
-function Time({ at }: { at: string | null }): ReactNode {
+export function Time({ at }: { at: string | null }): ReactNode {
   if (at === null) return NONE;
   const date = new Date(at);
   if (Number.isNaN(date.getTime())) return <time>{at}</time>;
@@ -94,7 +94,7 @@ function HyphenGroups({ piece }: { piece: string }): ReactNode {
  *  its hyphens; a model id (`anthropic/claude-opus-5`) is also offered a break after each slash,
  *  so neither forces its column wider than its longest part. A number or a single letter keeps
  *  to the part before it, so no line holds it alone (`legion-core-core-2-…` never leaves `2-`). */
-function Identifier({ value }: { value: string }): ReactNode {
+export function Identifier({ value }: { value: string }): ReactNode {
   if (value === "") return NONE;
   const pieces = value.split("/");
   // Each piece is keyed by the text up to and including it, which no other piece of the id shares.
@@ -235,7 +235,7 @@ const CATCH_UP_READS_MS = [2_000, 5_000, 15_000, 45_000, 120_000, 300_000] as co
  * `api/query-refresh.ts`): a read never cancels one already out, and the tab reads at most once a
  * second, however its starts and the feed's batches fall.
  */
-function useCatchUp(issueKey: string, shown: boolean): void {
+export function useCatchUp(issueKey: string, shown: boolean): void {
   const queryClient = useQueryClient();
   // Whether the page is shown, as TanStack reads `visibilitychange` for its own refetch on focus.
   const visible = useSyncExternalStore(focusManager.subscribe, () => focusManager.isFocused());
@@ -266,13 +266,14 @@ function useCatchUp(issueKey: string, shown: boolean): void {
 /**
  * The steps Legion ran on the issue (`GET /issues/{key}/steps`): one table per task, in the order
  * of each task's first step, and one row per run of a step - its role, type, agent, model,
- * attempt, start, end and result. The records are the Legion daemon's; this tab only reads them,
- * and only through its catch-up (`useCatchUp`) and Retry, so the query fetches nothing on its
- * own: it is never enabled, and a read that failed is asked again by the catch-up's next read,
- * not by the app's retry policy, whose retries no cleanup of the tab could stop. A failed read
- * shows alone only while the tab has drawn nothing; after a read that answered, the failure and
- * its Retry stand above the rows that read drew, since nothing may read again until the next
- * start or Retry.
+ * attempt, start, end and result. Where the records of the issue's newest run name an experiment,
+ * the tab shows `Experiment <experiment>: variant <variant>` once above its tables. The records
+ * are the Legion daemon's; this tab only reads them, and only through its catch-up (`useCatchUp`)
+ * and Retry, so the query fetches nothing on its own: it is never enabled, and a read that failed
+ * is asked again by the catch-up's next read, not by the app's retry policy, whose retries no
+ * cleanup of the tab could stop. A failed read shows alone only while the tab has drawn nothing;
+ * after a read that answered, the failure and its Retry stand above the rows that read drew,
+ * since nothing may read again until the next start or Retry.
  */
 export function StepsTab({ active, issueKey }: { active: boolean; issueKey: string }): ReactNode {
   const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });
@@ -288,9 +289,12 @@ export function StepsTab({ active, issueKey }: { active: boolean; issueKey: stri
     return failure ?? <p className={textMutedOnCanvas}>Loading steps…</p>;
   }
   const tasks = stepTasks(query.data);
+  // The experiment a draw put the issue in, with the variant it drew, once above the tasks.
+  const variant = stepVariant(query.data);
   return (
     <div className="min-w-0 space-y-6">
       {failure}
+      {variant === null ? null : <p className={`text-sm ${textSecondaryOnCanvas}`}>{variant}</p>}
       {tasks.length === 0 ? (
         <EmptyState label="Steps empty state" message="No step of this issue has run in Legion." />
       ) : (

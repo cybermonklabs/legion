@@ -14,10 +14,11 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { type PlanFailedRead, PlanFilterBody, type PlanReads } from "../plan-filter/PlanFilterBody";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { useTreeReadRunning } from "../tree-read/tree-read";
+import { useBlocksRunning } from "../tree-read/tree-read";
 import { NextViewPage } from "../tree-read/view-read";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
+import { usePublishViewParents } from "./view-parents";
 
 /**
  * The Plan view: the plan's tasks as a chart of time, with one control in the view's first line
@@ -38,14 +39,26 @@ export function ViewPlanSlot({
   const address = issueAddress(route, search, hash, spec?.slug);
   // The tree, the line of each read it is built from that stands refused, and whether every one
   // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
-  // tree reads it by, so they cost no request of their own.
-  const { blocksOf, readsSettled, refused: refusedLines, root } = useOutlineReads(issue);
+  // tree reads it by, so they cost no request of their own; what the page publishes of its
+  // batched names read, which the body hands its rows in the render that draws them
+  // (`published`), so none of them reads a reference the page asks for; and the outline's names
+  // line while those reads stand failed (`names`), which the body draws over its tree, since
+  // every reference its bars and steps draw waits on those names.
+  const {
+    blocksOf,
+    names,
+    published,
+    readsSettled: outlineSettled,
+    refused: refusedLines,
+    root,
+  } = useOutlineReads(issue);
   // The view waits on the reads of the two documents it draws from, and on no other: the plan's
   // blocks, which are its tasks, and the spec's, which are the statements a task serves.
   //
   // Every read the view watches - these two, and the plan's blocks again for the order they are
   // written in (`PlanFilterBody`) - is watched under the key `useIssueTree` fills, by an observer
-  // that `useIssueTree` mounts (`useOutlineReads`' `blocksOf`): all three are the one tree read,
+  // that `useIssueTree` mounts (`useOutlineReads`' `blocksOf`): under the Plan filter the plan's
+  // blocks are Plan's own view read and the spec's the outline read, each a read of the tree
   // kept fresh by its own rule (`TREE_FRESH`). So the view sends no request of its own and sees
   // whatever the tree's observer fetches; `refetch` still fetches, which is what Retry asks. A
   // document the issue does not name needs no read.
@@ -57,33 +70,43 @@ export function ViewPlanSlot({
   // failure again (`failure`). The view draws its tasks, its switch and its empty line once both
   // reads hold data, so it never says the issue has no plan tasks before they are in; until then
   // its tree holds nothing, and the read that failed is one line over the tree, with a Retry that
-  // asks that read alone again (`PlanFilterBody`), one line for both documents. The view
+  // reads again each refused read (`PlanFilterBody`), one line for both documents. The view
   // stays mounted through all of it, as the outline does (`slots/body.tsx`), so no read takes
   // from the reader the press of "Steps", the focused row and its mark, a step being edited, or
   // the address's step having taken the focus, which it takes once.
   const planId = roleDocument(issue, "plan")?.id;
-  const planBlocks = blocksOf("plan");
+  // Each with whether the read that holds it runs (`useBlocksRunning`): the plan's own view read
+  // and the outline read, each from an observer of its own.
+  const planBlocks = { ...blocksOf("plan"), isFetching: useBlocksRunning(issue.key, "plan") };
   const specId = spec?.id;
-  const specBlocks = blocksOf("spec");
-  // Whether the tree read runs, from an observer of its own (`useTreeReadRunning`).
-  const running = useTreeReadRunning(issue.key);
+  const specBlocks = { ...blocksOf("spec"), isFetching: useBlocksRunning(issue.key, "spec") };
   const answered =
     (planId === undefined || planBlocks.data !== undefined) &&
     (specId === undefined || specBlocks.data !== undefined);
-  // Both are the one tree read, so its refusal is one line with one Retry: the statements' where
+  // The stage acts on the first answer about the address. An outline that has settled cannot
+  // tell whether Plan draws the task while Plan's own answer is still out.
+  const readsSettled =
+    outlineSettled &&
+    (planId === undefined || planBlocks.data !== undefined || standsFailed(planBlocks));
+  // The two reads' refusals are one line with one Retry (`retry`): the statements' where
   // the issue names a spec, else the plan's.
   const watched = [
     { id: specId === undefined ? planId : undefined, query: planBlocks, read: "plan" },
     { id: specId, query: specBlocks, read: "statements" },
   ] as const;
+  // The one line's Retry reads again each of the two reads that stands refused, and is busy while
+  // either runs.
+  const retry = (): void => {
+    for (const query of [planBlocks, specBlocks]) if (standsFailed(query)) void query.refetch();
+  };
   const failed = watched.flatMap(({ id, query, read }): PlanFailedRead[] =>
     id !== undefined && standsFailed(query)
       ? [
           {
             failure: query.errorUpdateCount,
             read,
-            retry: query.refetch,
-            retrying: running,
+            retry,
+            retrying: planBlocks.isFetching || specBlocks.isFetching,
           },
         ]
       : []
@@ -93,7 +116,7 @@ export function ViewPlanSlot({
   // the network (paused), is not out.
   const out = watched.some(
     ({ id, query }) =>
-      id !== undefined && query.data === undefined && (running || !standsFailed(query))
+      id !== undefined && query.data === undefined && (query.isFetching || !standsFailed(query))
   );
   const reads: PlanReads =
     failed.length > 0
@@ -103,7 +126,7 @@ export function ViewPlanSlot({
         : { state: "waiting" };
   // The address's own node, resolved against the whole tree as the outline resolves it
   // (`useAddressTarget`, `slots/body.tsx`): a step it names takes the focus.
-  const found = useAddressTarget(root, address).reveal;
+  const found = useAddressTarget(root.views?.trees?.plan ?? root, address).reveal;
   // Plan draws no node but a task, so the address's node is kept in the view, and given the
   // focus, only where it is a task. `presetView` keeps a named node of any kind (`presets.ts`'s
   // `filterView`), as `AddressedNode.named` names it: handed every node, `/plan?comment=<id>`
@@ -123,6 +146,9 @@ export function ViewPlanSlot({
     () => (address.filter === "" ? whole : presetView(root, "plan", address.filter, named)),
     [address.filter, named, root, whole]
   );
+  // The other statements a step serves are named by the page's names, which the whole plan's view
+  // names where only its own tree holds them (`PresetView.parents`).
+  usePublishViewParents(whole.parents);
   // Whether the view draws a row of the node the address names, which the stage is told by the
   // rule for refused reads (`useTellsAddressDrawn`). The view draws a line of its own for the
   // plan's blocks and the spec's (`watched`). It draws a row for a task alone - a step of the
@@ -158,9 +184,11 @@ export function ViewPlanSlot({
           // The words filter's Escape comes before the view is left.
           holdsEscape={address.filter !== ""}
           isClosed={isClosed}
+          namesLine={names}
           onEditing={onEditing}
           plan={plan}
           planBlocks={planBlocks.data}
+          published={published}
           reads={reads}
           {...(request === undefined ? {} : { request })}
           reveal={reveal}

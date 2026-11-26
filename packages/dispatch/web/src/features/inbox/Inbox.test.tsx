@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -34,6 +34,7 @@ import type {
 import { QUIET_MS } from "../doc/refocus-when-settled";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { InboxRoute } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
@@ -49,6 +50,12 @@ import {
   withWaitingOnPerson,
 } from "./inbox-fixture";
 import { SnoozeControl } from "./SnoozeControl";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const mocks = installInboxApiMocks();
 
@@ -1095,7 +1102,9 @@ test("the reader's own Ask back keeps the row under Waiting on you, unscrolled, 
     await user.click(draft);
     await user.paste("Ship what, exactly?");
     const askBack = within(card).getByRole("button", { name: "Ask back" });
-    askBack.focus();
+    act(() => {
+      askBack.focus();
+    });
     await user.click(askBack);
 
     // The reply lands in the card's thread and the card says whose turn it is; Ask back, its
@@ -1559,14 +1568,18 @@ test("after the reader's own answer fails, an answer from elsewhere still holds 
     await user.click(field);
     await user.paste("JSON");
     const answer = within(card).getByRole("button", { name: "Answer" });
-    answer.focus();
+    act(() => {
+      answer.focus();
+    });
     await user.click(answer);
     // The optimistic removal does not take the row from under the reader: it stays, and the
     // failure shows on it.
     await waitFor(() => expect(within(card).getByRole("alert")).toBeTruthy());
     expect(answerAsk).toHaveBeenCalledTimes(1);
     expect(within(card).getByLabelText<HTMLTextAreaElement>("Your answer").value).toBe("JSON");
-    field.focus();
+    act(() => {
+      field.focus();
+    });
 
     // Bob answers it meanwhile: the reader is still in the row, so it stays.
     threadB = {
@@ -2741,12 +2754,13 @@ test("from 1280 px the Inbox is two columns: short rows in the list, the questio
     // The pane is the column to the right of the list: one row, the list first.
     expect(list.parentElement).toBe(pane.parentElement?.parentElement ?? null);
     expect(list.compareDocumentPosition(pane) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // The card is the pane's, never the row's; the row is the question's first line, its kind
-    // and its age.
+    // The card is the pane's, never the row's; the row is the question drawn by the one
+    // renderer on one line - the heading's words and the detail after them, clamped by CSS,
+    // with no syntax left and no stripper of its own - beside its kind and its age.
     expect(within(list).queryByTestId("ask-ask-a")).not.toBeInTheDocument();
     expect(within(pane).getByTestId("ask-ask-a")).toBeTruthy();
     const row = shortRow("ask-a");
-    expect(within(row).getByText("Which approach?")).toBeTruthy();
+    expect(within(row).getByText("Which approach? The detail.")).toBeTruthy();
     expect(within(row).getByRole("img", { name: "Question" })).toBeTruthy();
     expect(within(row).getByText("CORE-1")).toBeTruthy();
     expect(row.querySelector("time")?.getAttribute("datetime")).toBe(first.created_at);
@@ -2756,6 +2770,123 @@ test("from 1280 px the Inbox is two columns: short rows in the list, the questio
     expect(shortRow("ask-b").getAttribute("data-inbox-selected")).toBeNull();
   } finally {
     unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+/** How tall each short row is in the case below, and how tall the list column's view is. */
+const SHORT_ROW_HEIGHT = 100;
+const LIST_VIEW_HEIGHT = 600;
+
+// Beside the reading column the list scrolls in itself (`inbox-list`), and its anchor leaves the
+// box's own scroll anchoring on. The pointer rests on the row at the foot of the list's view, and
+// the reader scrolls the list up until that row lies wholly below the view. A refetch then grows a
+// row in view by a line. The anchor keeps the row the pointer rests on wherever the scroll left
+// it: that row stays where it was, below the view, and the rows above the growth move up by as
+// much. Keeping the first row in view in its stead moved nothing in view. happy-dom lays nothing
+// out, so the case stacks the rows itself, each SHORT_ROW_HEIGHT tall and twice that once its
+// question runs on to a second line, from the list's top moved up by the list's own scroll.
+test("a row the pointer rests on keeps its place after a scroll leaves it below the list's view, and a row in view that grows moves the rows above it", async () => {
+  const narrow = widenToReadingPane();
+  const longer = "Which approach, now that the question runs on to a second line?";
+  const rows = Array.from({ length: 10 }, (_, index) =>
+    inboxIssue(`ask-${index + 1}`, `CORE-${index + 1}`, `Question ${index + 1}?`)
+  );
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const boxAt = (top: number, height: number) =>
+    ({
+      bottom: top + height,
+      height,
+      left: 0,
+      right: 800,
+      toJSON: () => ({}),
+      top,
+      width: 800,
+      x: 0,
+      y: top,
+    }) as DOMRect;
+  /** The list's rows stacked one under another in `list`, and the height they stack to. */
+  const stacked = (list: HTMLElement) => {
+    const drawn = new Map<Element, DOMRect>();
+    let top = -list.scrollTop;
+    for (const row of list.querySelectorAll("[data-inbox-row]")) {
+      const height = row.textContent?.includes(longer) ? 2 * SHORT_ROW_HEIGHT : SHORT_ROW_HEIGHT;
+      drawn.set(row, boxAt(top, height));
+      top += height;
+    }
+    return { drawn, height: top + list.scrollTop };
+  };
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const list = document.querySelector<HTMLElement>('[data-testid="inbox-list"]');
+    if (list === null) return boxAt(0, 0);
+    if (this === list) return boxAt(0, LIST_VIEW_HEIGHT);
+    const { drawn, height } = stacked(list);
+    return drawn.get(this) ?? boxAt(-list.scrollTop, height);
+  });
+  const { queryClient, unmount } = renderInbox();
+  try {
+    await waitFor(() => expect(rowIds()).toHaveLength(rows.length));
+    const list = screen.getByTestId("inbox-list");
+    Object.defineProperty(list, "clientHeight", { configurable: true, value: LIST_VIEW_HEIGHT });
+    Object.defineProperty(list, "scrollHeight", {
+      configurable: true,
+      get: () => stacked(list).height,
+    });
+    /** The reader scrolling the list to `top`, and the list's scroll event, which happy-dom does
+     *  not raise for a change of `scrollTop`. */
+    const scrollListTo = (top: number) =>
+      act(() => {
+        list.scrollTop = top;
+        list.dispatchEvent(new Event("scroll"));
+      });
+    const topOf = (id: string) => shortRow(id).getBoundingClientRect().top;
+    const ids = rowIds();
+    const foot = ids.at(-1) ?? "";
+    const above = ids[4] ?? "";
+    const grows = ids[5] ?? "";
+    expect(
+      list.contains(document.activeElement),
+      "a row holds the focus, so the case proves nothing"
+    ).toBe(false);
+
+    // The reader scrolls to the list's end, and the pointer comes to rest on its last row, at the
+    // foot of the view.
+    scrollListTo(400);
+    // user-event's hover cannot set the point the pointer rests at; the row's hold reads this
+    // pointerover alone.
+    fireEvent.pointerOver(shortRow(foot), { clientX: 400, clientY: 550 });
+    expect(topOf(foot)).toBe(500);
+
+    // The reader scrolls the list up by two rows: the pointer's row lies wholly below the view.
+    scrollListTo(200);
+    expect(topOf(foot)).toBe(LIST_VIEW_HEIGHT + SHORT_ROW_HEIGHT);
+    expect(topOf(above)).toBe(200);
+    expect(topOf(grows)).toBe(300);
+
+    // A refetch grows the row under `above` by a line.
+    getInbox.mockResolvedValue(
+      rows.map((row) => (row.id === grows ? { ...row, question: longer } : row))
+    );
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+    });
+    expect(shortRow(grows).textContent).toContain(longer);
+
+    expect(topOf(above), "the rows above the growth stayed where they were in view").toBe(100);
+    expect(topOf(foot), "the row the pointer rests on moved").toBe(
+      LIST_VIEW_HEIGHT + SHORT_ROW_HEIGHT
+    );
+    expect(list.scrollTop).toBe(300);
+  } finally {
+    unmount();
+    rect.mockRestore();
     narrow();
     getAsk.mockRestore();
     getInbox.mockRestore();

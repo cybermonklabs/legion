@@ -109,19 +109,20 @@ import { asUser } from "./users";
  * check names in the view's `verification.md` (c-rows).
  */
 
-// c-three-things, as the architect reads R8: the three sentences stand each after its label;
-// with no view on they are in the Contents pane at 1440 px and in the Outline sheet at 390 px,
-// never above the outline; under Spec they are the view's first group; under Verification, Plan
-// and Decisions they are not drawn; no Contents pane is drawn under a view; and the two rows
-// "How it gets done" and "What you will be shown" are drawn nowhere. Partial on today's data:
+// c-three-things, as the architect reads R8, with the Contents pane beside each filter and Graph:
+// the three sentences stand each after its label, once in each view; from 1024 px up in the
+// Contents pane, beside Conversation, each filter and Graph, so the Spec view draws no first
+// group of them; below 1024 px above the view's first row, in Spec as the view's first group,
+// and never in the Outline sheet, which draws the list alone; and the two rows "How it gets
+// done" and "What you will be shown" are drawn nowhere. Partial on today's data:
 // who wrote the sentences and when they were last read back wait on a read that holds them, so
 // the head draws neither and this test never asserts an author.
-// SLOW(>=2s): two seeded issues and twelve loads of the page, each read for its head and the
+// SLOW(>=2s): two seeded issues and fourteen loads of the page, each read for its head and the
 // page's own draw.
-test("the three sentences stand with their labels in the Contents pane, the Spec filter and the Outline sheet @phone", async ({
+test("the three sentences stand with their labels once in each view, in the Contents pane from 1024 px up and above the view's first row below it @phone", async ({
   browser,
 }) => {
-  // Twelve loads of the page, each read for its head and the page's own draw.
+  // Fourteen loads of the page, each read for its head and the page's own draw.
   test.setTimeout(180_000);
   const labels = [
     CONTROL_LABELS.in_short_what,
@@ -184,37 +185,42 @@ test("the three sentences stand with their labels in the Contents pane, the Spec
       "the head draws a gap that every issue has, which tells the reader nothing about this one"
     ).toBe(0);
 
-    // Under a view, at both widths: no Contents pane; the Spec view draws the three as its
-    // first group, above its first statement; the other three draw none.
+    // Under a view: at 1440 px the Contents pane beside it, holding the three, which the Spec
+    // view does not draw again; at 390 px no pane, and the three once above the view's first
+    // row, in Spec as its first group.
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize({ height: size.height, width: size.width });
+      const wide = size.width >= 1024;
       for (const preset of PRESET_ORDER) {
         if (preset === "conversation") continue;
         const where = `with the ${PRESET_NAMES[preset]} view at ${size.width} px`;
         // A view's body draws rows of its own shape - a table under Verification, a chart under
         // Plan - so the page is waited for until it has stopped reading, which is what says it
-        // has drawn everything it is going to. A view whose part has not filled its slot draws
-        // no tree, so only the Spec view is read for one.
+        // has drawn everything it is going to.
         const traffic = watchApiRequests(page);
         await gotoIssue(page, presetPath(seeded.key, preset));
-        if (preset === "spec") await expectIssuePageDrawn(page);
+        if (preset === "spec" || preset === "graph") await expectIssuePageDrawn(page);
         await expectLoadSettled(traffic);
-        expect(await contentsPane(page).count(), `a Contents pane is drawn ${where}`).toBe(0);
-        if (preset !== "spec") {
-          expect(await threeThings(page).count(), `the three sentences are drawn ${where}`).toBe(0);
-          continue;
-        }
-        await expectTheThree(threeThings(page), where);
+        expect(
+          await contentsPane(page).count(),
+          wide ? `no Contents pane is drawn ${where}` : `a Contents pane is drawn ${where}`
+        ).toBe(wide ? 1 : 0);
+        await expectTheThree(
+          wide ? contentsPane(page).getByTestId("issue-three-things") : threeThings(page),
+          wide ? `in the Contents pane ${where}` : where
+        );
+        if (wide || (preset !== "spec" && preset !== "graph")) continue;
         const head = await threeThings(page).boundingBox();
         const firstRow = await nodeRows(page).first().boundingBox();
         expect(
           head?.y ?? Number.POSITIVE_INFINITY,
-          `the three sentences are not the Spec view's first group ${where}`
+          `the three sentences do not stand above the view's first row ${where}`
         ).toBeLessThan(firstRow?.y ?? 0);
       }
     }
 
-    // 390 px, no view: not above the outline, and in the sheet the Outline control opens.
+    // 390 px, no view: above the outline's first row, and the sheet the Outline control opens
+    // draws the list and not the three.
     await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
@@ -222,15 +228,19 @@ test("the three sentences stand with their labels in the Contents pane, the Spec
       .poll(() => nodeRows(page).count(), { message: "no row is drawn at 390 px" })
       .toBeGreaterThan(0);
     expect(await contentsPane(page).count(), "a Contents pane is drawn at 390 px").toBe(0);
+    await expectTheThree(threeThings(page), "above the outline at 390 px");
+    const head = await threeThings(page).boundingBox();
+    const firstRow = await nodeRows(page).first().boundingBox();
     expect(
-      await threeThings(page).count(),
-      "the three sentences are drawn above the outline at 390 px"
-    ).toBe(0);
+      head?.y ?? Number.POSITIVE_INFINITY,
+      "the three sentences do not stand above the outline's first row at 390 px"
+    ).toBeLessThan(firstRow?.y ?? 0);
     await outlineControl(page).click();
-    await expectTheThree(
+    await expect(outlineSheet(page), "the Outline control opens no sheet at 390 px").toHaveCount(1);
+    await expect(
       outlineSheet(page).getByTestId("issue-three-things"),
-      "in the Outline sheet at 390 px"
-    );
+      "the Outline sheet draws the three sentences the view draws above its first row at 390 px"
+    ).toHaveCount(0);
   });
 
   await phase(browser, seedNoSummary, async (page, seeded) => {
@@ -261,17 +271,22 @@ test("a Contents entry draws a node's first line, cut at a word", async ({ brows
   test.setTimeout(120_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const asks = await listIssueAsks(seeded.key);
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const words = new Map<string, string>([
       ...(await listComments(seeded.key)).map((one) => [one.id, one.body] as const),
-      ...asks.map((one) => [one.id, one.question] as const),
+      ...asks.map(
+        (ask) =>
+          [
+            ask.block_id == null ? ask.id : blockNodeId(specSlug, ask.block_id),
+            ask.question,
+          ] as const
+      ),
     ]);
-    // The open question is the spec's `ask` block, so its entry is the block's node, whose words
-    // the server indexed into the ask.
-    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    // The spec's ask entries are drawn by block id, with the words the server indexed.
     const openQuestion = blockNodeId(specSlug, OPEN_QUESTION_BLOCK_ID);
-    const indexed = asks.find((one) => one.id === seeded.openQuestion.askId)?.question;
-    expect(indexed, "the seed's open question is none of the issue's asks").toBeDefined();
-    words.set(openQuestion, indexed ?? "");
+    expect(words.has(openQuestion), "the seed's open question is none of the issue's asks").toBe(
+      true
+    );
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
     const entries = contentsEntries(contentsPane(page));
@@ -641,8 +656,8 @@ test("a spec node shows the decisions that shaped it at every version", async ({
     const agent = stored.find(
       (one) => one.kind === "agent" && one.text.includes("Chosen so the page makes no request")
     );
-    const opening = (agent?.text ?? "").trimStart().split(/\n\s*\n/u)[0] ?? "";
-    const agentQuote = firstLineOf(/^#{1,6} +(.*)/u.exec(opening)?.[1] ?? opening).line;
+    // The decisions read gives the heading its own field and puts the whole typed block in text.
+    const agentQuote = firstLineOf(agent?.heading ?? "").line;
     expect(agentQuote, "the seed holds no agent's decision to quote").not.toBe("");
 
     const traffic = watchApiRequests(page);
@@ -944,8 +959,9 @@ test("the Spec view draws statements alone, each parent once, and no check once"
 const LONG_BLOCK_ID = "r-long";
 
 // R4, R5 and R6 against the approved picture `page-v3-spec-1440.png`. At 1440 px, from
-// the top: the legend's four marks, each a shape and its word; the column heads; the three
-// sentences; the first group. The page's own words never say "Requirement" and are each a word
+// the top: the legend's four marks, each a shape and its word; the column heads; the first
+// group, the three sentences standing in the Contents pane beside the view and not in it, so
+// they are drawn once. The page's own words never say "Requirement" and are each a word
 // of `page-words.ts` (R7, reading (g) of the part's plan). A cell is 280 px wide and 20 px left of
 // its statements. `t s` from the outline leaves the focus on a statement of the view, on screen.
 // A statement of 200 words is cut at six lines with "more · N words" and drawn whole with the
@@ -1058,14 +1074,21 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
       await heads.locator("[data-page-chrome]").allTextContents(),
       `the column heads are not Decided by and Statement at ${at}`
     ).toEqual([SPEC_WORDS.decided_by, sentenceCase(NODE_TYPE_NAMES.requirement)]);
-    const three = body.getByTestId("issue-three-things");
-    await expect(three, `the Spec view draws no three sentences at ${at}`).toHaveCount(1);
+    // From 1024 px up the three sentences stand in the Contents pane beside the view, so the
+    // Spec view draws no first group of them: they are drawn once.
+    await expect(
+      contentsPane(page).getByTestId("issue-three-things"),
+      `the Contents pane beside Spec draws no three sentences at ${at}`
+    ).toHaveCount(1);
+    await expect(
+      body.getByTestId("issue-three-things"),
+      `the Spec view draws the three sentences beside the pane that holds them at ${at}`
+    ).toHaveCount(0);
     const topOf = async (part: Locator): Promise<number> =>
       (await part.boundingBox())?.y ?? Number.NaN;
     const order = [
       { name: "the legend", top: Math.max(...legend.map((mark) => mark.top)) },
       { name: "the column heads", top: await topOf(heads) },
-      { name: "the three sentences", top: await topOf(three) },
       { name: "the first group", top: await topOf(body.locator("[data-spec-group]").first()) },
     ];
     for (const [place, part] of order.entries()) {

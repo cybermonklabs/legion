@@ -1,4 +1,4 @@
-import type { GraphNode, NodeStateInput, PointerInput } from "./dispatch-api.generated";
+import type { GraphNode, NodeStateInput, PointerInput, paths } from "./dispatch-api.generated";
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DEFAULT_ISSUE_READ_EVENTS,
@@ -11,6 +11,7 @@ import {
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
 } from "./dispatch-api-limits";
+import { SEARCH_RESULT_KINDS } from "./dispatch-api-search";
 import { goBlankPattern } from "./go-blank";
 import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-roles";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
@@ -497,6 +498,8 @@ export const ISSUE_UPDATE_PATCH_FIELDS = [
   "route",
   "parent",
   "blocked_by",
+  "duplicate_of",
+  "filed_from",
   "advances",
   "advances_revision",
   "components",
@@ -1006,12 +1009,14 @@ function resultProblem(value: unknown): string | undefined {
  * Longest `dispatch_search` query (`GET /api/v1/search`'s `q`, trimmed), in UTF-16 units.
  * Generated into Go as `contracts.SearchQueryMax`, which the server enforces.
  *
- * The URL budget: `dispatch search` sends its query and filters in the URL (`q` beside `project`,
- * `limit` and `offset`), and the load balancer in front of Dispatch answers a path and query over
- * 16,369 bytes with a bare `414` before the server runs. This limit and `PROJECT_KEY_PATTERN` (at
- * most 10 characters) keep the largest call the tool accepts at a 9,069-byte path and query, since
- * percent-encoding costs at most 9 bytes a unit. Raising either, or adding a parameter, means
- * redoing that sum.
+ * The URL budget: `dispatch search` sends its query and filters in the URL (`q` beside `kind`,
+ * `project`, `limit` and `offset`), and the load balancer in front of Dispatch answers a path and
+ * query over 16,369 bytes with a bare `414` before the server runs. This limit and
+ * `PROJECT_KEY_PATTERN` (at most 10 characters) keep the largest call the tool accepts at a
+ * 9,147-byte path and query, since percent-encoding costs at most 9 bytes a unit: a call carrying
+ * `kind` goes to `GET /api/v1/search/results`, 8 bytes longer, and repeats `&kind=` at most
+ * `SEARCH_KINDS.length` (5) times, at most 14 bytes each, over the 9,069 bytes a call without it
+ * takes. Raising either, or adding a parameter, means redoing that sum.
  */
 export const SEARCH_QUERY_MAX = 1000;
 
@@ -1026,6 +1031,29 @@ export const SEARCH_QUERY_HINT = "search with a short phrase of a few words, not
  * `contracts.SearchKindDepth`, where the server cuts each kind's list.
  */
 export const SEARCH_KIND_DEPTH = 100;
+
+/** One value of the repeated `kind` parameter, read off the route table itself rather than
+ *  written out a second time: the parameter is optional, so both the parameter object and
+ *  `kind` are unwrapped before the array's element is taken. It is read from
+ *  `GET /api/v1/search/results`, the route that declares every member the handler reads;
+ *  `GET /api/v1/search` reads `kind` too and declares it nowhere, as it does the other five a
+ *  build released before them does not serve (`SEARCH_MEMBERS_EVERY_BUILD_READS`). */
+type SearchKindParameter = NonNullable<
+  NonNullable<paths["/api/v1/search/results"]["get"]["parameters"]["query"]>["kind"]
+>[number];
+
+/**
+ * The kinds `GET /api/v1/search` ranks, which its repeated `kind` parameter names: the five the
+ * search index holds, in the order the answer's fusion lists them. A party, a component or any
+ * other node is read from its own route, so the search refuses a kind outside these rather than
+ * answering an empty page.
+ *
+ * It is the list a result's own kind is read as (`SEARCH_RESULT_KINDS` in
+ * `dispatch-api-search.ts`), named once: what the route ranks and what it answers with are one
+ * vocabulary. The `satisfies` is the route table's own, so a kind the CLI offers that the route
+ * would refuse does not compile.
+ */
+export const SEARCH_KINDS = SEARCH_RESULT_KINDS satisfies readonly SearchKindParameter[];
 
 /** A whole project key, as the Dispatch server creates them, generated into Go as
  *  `contracts.ProjectKeyPattern` (and held by the `projects.key` check constraint). */
@@ -1055,6 +1083,37 @@ const projectKeyValidation: NonNullable<DispatchToolSpec["validation"]> = {
  *  managed user's login ends in `_<shortcode>` (`mona-cat_octo`): the server saves a source in
  *  such an account, and a refusal here would leave it saved and never synced. */
 const ARCHITECTURE_SOURCE_REPO_PATTERN = /^[A-Za-z0-9_-]+\/(?!\.\.?$)[A-Za-z0-9._-]+$/;
+
+/** A route `dispatch api` reads: the API's root, which lists every route, or a route under it,
+ *  with a query or none. */
+const API_ROUTE_PATTERN = /^\/api\/v1(?=[/?]|$)/;
+
+const API_PATH_RULE =
+  "path is a route under /api/v1: it begins /api/v1 and names no scheme or host, every character is printable ASCII other than a space, a backslash and #, and no segment before the query is . or ..";
+
+/**
+ * Why `path` is no route `dispatch api` may read, naming the path, or undefined for one it may.
+ * Beginning `/api/v1` keeps the read on the client's own server and under the API. The rest keeps
+ * it there once a URL parser has read it: the parser drops a tab or a newline, reads `\` as `/`
+ * and resolves a `.` or `..` segment, spelled plainly or percent-encoded (`%2e`), and each of
+ * those could move the read outside `/api/v1`.
+ */
+function apiPathProblem(value: unknown): string | undefined {
+  const { path } = value as { readonly path?: unknown };
+  if (typeof path !== "string") return undefined;
+  const named = JSON.stringify(path);
+  if (!API_ROUTE_PATTERN.test(path)) {
+    return `path ${named} is no route under /api/v1: give the route alone, beginning /api/v1, with no scheme or host (dispatch api --path /api/v1 lists every route).`;
+  }
+  if (!/^[!-~]*$/.test(path) || /[\\#]/.test(path)) {
+    return `path ${named} holds a space, a backslash, a # or a character outside printable ASCII: percent-encode it.`;
+  }
+  const route = path.split("?", 1)[0] ?? "";
+  if (route.split("/").some((segment) => /^(?:\.|%2e){1,2}$/i.test(segment))) {
+    return `path ${named} holds a . or .. segment: name the route itself.`;
+  }
+  return undefined;
+}
 
 /** Issue lifecycle statuses the Dispatch server accepts (`model.IssueStatuses`), in lifecycle order. */
 export const ISSUE_STATUSES = [
@@ -1283,7 +1342,13 @@ export const dispatchToolSpecs = [
       `${ISSUE_STATUSES.join(", ")}; outside Legion, move it yourself as the work advances; inside ` +
       "Legion the daemon moves it. labels_add adds labels and keeps every label the issue holds; " +
       "labels replaces the whole set, so a label it does not name is removed, and the two never " +
-      "go together. A non-empty external_links is " +
+      "go together. On a Legion issue, where Dispatch runs with " +
+      "DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status write, the removal of the legion label, " +
+      "and a move out from under every labelled issue (403 LEGION_STATUS_SCOPE_REQUIRED) unless the " +
+      "credential holds the person or legion-status scope. The one exception is an architect of an " +
+      "issue above, once its claim is ready: its own broker token writes the status done, backlog, " +
+      "icebox or triage (not done with include_children, and with neither unlink_children nor " +
+      "include_parent). A non-empty external_links is " +
       "merged into the issue's existing links by URL, so linking the pull request you just opened " +
       "keeps every earlier link; an empty external_links removes every link instead. components " +
       "replaces the issue's own attachment. Closing an issue " +
@@ -1416,13 +1481,13 @@ export const dispatchToolSpecs = [
       advances: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_ADVANCES })
         .describe(
-          "Replacement list of priority ids this issue advances, which dispatch priorities lists; [] clears the issue's own, leaving every priority it inherits from the issues above it. A set that moves two or more relations is a whole-set write and carries advances_revision; the call reads the issue and sends the revision that read answered, so pass advances_revision only to answer a 409 ADVANCES_REVISION."
+          "Replacement list of priority ids this issue advances, which dispatch priorities lists; [] clears the issue's own, leaving every priority it inherits from the issues above it. Without advances_revision, Dispatch takes a list that adds or removes one priority, and refuses a list that changes two or more with 409 ADVANCES_REVISION, which names the issue's revision."
         )
         .optional(),
       advances_revision: z
         .number()
         .describe(
-          "The advances_revision the read this set answers returned, sent with advances and alone changing nothing. Omit it and the call sends the revision of its own read; pass the revision a 409 ADVANCES_REVISION named to write the set you mean against it."
+          "The issue's advances revision, which the Advances line of dispatch read --issue <KEY> prints and a 409 ADVANCES_REVISION names. To change two or more priorities, read the issue, then send this revision with the whole list you mean. Alone it changes nothing."
         )
         .optional(),
       components: componentsArgument(z).optional(),
@@ -1476,8 +1541,13 @@ export const dispatchToolSpecs = [
       "the issue and decide again. A claim whose session is no longer running may be " +
       "taken: the takeover is recorded on the issue and the session that lost it is told. A claim is not the " +
       "issue's status — claiming moves nothing, and the result names who moves the status: you, with " +
-      "dispatch issue-update, or Legion's daemon on an issue it runs, where a status written by anyone " +
-      "else is undone. A claim is released by its holder or any human, and by " +
+      "dispatch issue-update, or Legion's daemon on an issue it runs. On such an issue, where " +
+      "Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status write from a " +
+      "credential that holds neither the person nor the legion-status scope " +
+      "(403 LEGION_STATUS_SCOPE_REQUIRED), but an architect of an issue above writes done, backlog, " +
+      "icebox or triage with its own broker token once its claim is ready. Otherwise the daemon " +
+      "undoes a status that anyone else " +
+      "writes. A claim is released by its holder or any human, and by " +
       "any agent once the holder's session is no longer running. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
@@ -1727,7 +1797,7 @@ export const dispatchToolSpecs = [
     description:
       "Add review feedback to an issue or project document quote, or reply to a question asked with dispatch ask. " +
       "Do not use it for an exact replacement; use " +
-      `dispatch suggest instead. A quote anchor is pinned to its block. A reply under an open ask asks for clarification, not an answer: answer it with reply_to_ask, or reword the ask with dispatch edit-ask, rather than opening a second ask. ${BODY_BLOCK_RULE} The lines images appends count toward it. ${OWNER_REFERENCE}`,
+      `dispatch suggest instead. A quote anchor is pinned to its block. A reply under an open ask asks for clarification, not an answer: answer it with reply_to_ask, or reword the ask with dispatch edit-ask, rather than opening a second ask. A party reference in the body delivers this comment to that party: dispatch://agent/<session id> for an agent session, dispatch://role/<token> for a role. This tool sends no delivery mode, so Dispatch steers that party. A session ID that cannot be used as a delivery target, such as one with a dot or a colon, is refused with 400 MENTION_INPUT. Write that reference in backticks or in a code block to name nobody. dispatch://person/<login> names a person, and Dispatch delivers nothing to a person. ${BODY_BLOCK_RULE} The lines images appends count toward it. ${OWNER_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
       project: z.string().describe("Project key owning the document.").optional(),
@@ -1782,10 +1852,14 @@ export const dispatchToolSpecs = [
       mentions: z
         .array(z.string())
         .describe(
-          "Optional targets the comment mentions: role:<name> (lowercase letters, digits and -), " +
-            "which reaches the session holding that role, or session:<id> (letters, digits, _ " +
-            "and -); at most 10, none named twice. Dispatch delivers the comment to each target, " +
-            "retries a send that does not go through, and records every attempt on the comment."
+          "Optional targets the comment mentions beside the ones its body names: role:<name> " +
+            "(lowercase letters, digits and -), which reaches the session holding that role, or " +
+            "session:<id> (letters, digits, _ and -); none named twice here. The agents and roles " +
+            "the body names as references (dispatch://agent/<id>, dispatch://role/<token>) are " +
+            "delivered to as well and count toward the same limit of 10, each party once however " +
+            "often it is named; a person the body names is told nothing and counts for nothing. " +
+            "Dispatch delivers the comment to each target, retries a send that does not go " +
+            "through, and records every attempt on the comment."
         )
         .optional(),
       images: imagesArgument(z, "the issue (or the project document's project)"),
@@ -1881,6 +1955,8 @@ export const dispatchToolSpecs = [
       "the document's margin mark holds no text, each mention delivery still waiting is failed, " +
       "and search stops matching it. A suggestion of it still waiting is rejected out of the " +
       "document before the body goes, so the text an insert suggestion put there goes with it. " +
+      "A retired document takes no new text, so there the suggestion and the margin mark stay " +
+      "as its frozen text holds them, and the delete writes no version of it. " +
       "Every block of it loses the text each revision recorded, so a reference pinned to a block " +
       "of the comment reads none either. A Dispatch of this release keeps the body: " +
       "dispatch read --ref dispatch://KEY/comment/<id> --history then marks the comment deleted " +
@@ -2214,10 +2290,14 @@ export const dispatchToolSpecs = [
       HUMAN_AGREED_TO_DOCUMENT +
       ", with a one-sentence summary naming what changed since the earlier approval: the card " +
       "names that approval (version, date, reviewer) and its Show diff control carries the detail. " +
-      "A human's answer, resolve, decline, close or reopen of an ask writes one version, which " +
+      "A human's answer, resolve, decline, close or reopen of an ask writes one version. When " +
+      "the answer, resolve, decline, close or reopen is that version's whole change, the version " +
       "changes only the server-owned attributes of the ask's block: its state, and who answered " +
       "and when. An approval carries across the version an answer, a resolve or a decline writes, " +
-      "and the request keeps whoever held its turn; a close's version carries none, so the " +
+      "and the request keeps whoever held its turn. The version carries an approval only when the " +
+      "person's answer, resolve or decline is its whole change. If text that a person was editing " +
+      "in the browser is settled into the same version, the approval does not carry, and the " +
+      "request goes back to its agent. A close's version carries none, so the " +
       "approval reads stale until the reopen's version carries it. A new " +
       "version of a Legion root spec closes its armed design gate until a human approves it; a " +
       "carried approval reopens it too. " +
@@ -2663,7 +2743,9 @@ export const dispatchToolSpecs = [
       `The answer names how many results match; offset pages through them, and each kind lists at most its best ${SEARCH_KIND_DEPTH}, ` +
       "so narrow the query or name a project to reach the rest. Paging is exact only while the " +
       "corpus holds still: content added, changed, or removed between two offsets can shift rows " +
-      "across a page boundary, so one hit can come back twice and another never.",
+      "across a page boundary, so one hit can come back twice and another never. " +
+      `kind narrows the search to the kinds it names (${SEARCH_KINDS.join(", ")}), which are then ` +
+      "the only kinds ranked, counted and paged; with no kind named every kind is searched.",
     arguments: (z) => ({
       query: z
         .string({
@@ -2673,6 +2755,10 @@ export const dispatchToolSpecs = [
         })
         .describe(`Keyword, phrase, or websearch expression; 2 to ${SEARCH_QUERY_MAX} characters.`),
       project: z.string().describe("Optional project key to search within.").optional(),
+      kind: z
+        .array(z.enum(SEARCH_KINDS), { min: 1, max: SEARCH_KINDS.length })
+        .describe(`Kinds to search, any of ${SEARCH_KINDS.join(", ")}; every kind when absent.`)
+        .optional(),
       limit: z
         .number({ int: true, min: 1, max: 50 })
         .describe("Maximum results, 1-50; default 20.")
@@ -2869,10 +2955,11 @@ export const dispatchToolSpecs = [
       "any credential that may write the project's issues may send. off sends DELETE on the same " +
       "path, which needs the person scope: a credential without it is refused with 403 " +
       "OAUTH_SCOPE_REQUIRED, and the shared token and a pod's token hold none. A token scoped to " +
-      "another project is refused with 403 PROJECT_SCOPE. Turn it on only when the project's " +
-      "daemon and pods write with their own tokens. Turned on before that, it stops every " +
-      "architect write and every role-holder publication on the shared token, until a person " +
-      "turns it off. The answer names the project and the setting as Dispatch stored it.",
+      "another project is refused with 403 PROJECT_SCOPE. Only the project's roll-out issue " +
+      "turns it on, once the project's daemon and pods write with their own tokens. Turned on " +
+      "before that, it stops every architect write and every role-holder publication on the " +
+      "shared token, until a person turns it off. The answer names the project and the setting " +
+      "as Dispatch stored it.",
     arguments: (z) => ({
       project: z.string().describe("Project key whose setting to change, such as CORE."),
       proven_sessions: z
@@ -2991,6 +3078,25 @@ export const dispatchToolSpecs = [
     strict: true,
   },
   {
+    name: "dispatch_api",
+    example: { path: "/api/v1/issues/DSP-1/events?limit=200" },
+    description:
+      "Read one route of Dispatch's HTTP API that no other command reads, with this session's own credential, and print Dispatch's JSON answer, for jq to read. It sends one GET of path: a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. It only reads: it takes no method and no body, and every write goes through the command named for it (dispatch --help lists them). When Dispatch refuses the read, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint, and exits 1. Under Claude Code, an answer longer than the output limit is written to a file the output names.",
+    arguments: (z) => ({
+      path: z
+        .string({ min: 1 })
+        .describe(
+          "The route to read, beginning /api/v1, with its query after ?, such as /api/v1/issues/ACME-12/events?limit=200. No scheme or host, and no . or .. segment."
+        ),
+    }),
+    validation: {
+      check: (value) => apiPathProblem(value) === undefined,
+      message: API_PATH_RULE,
+      refusal: (value) => apiPathProblem(value) ?? API_PATH_RULE,
+    },
+    strict: true,
+  },
+  {
     name: "dispatch_handoff_write",
     example: {
       issue: "DSP-1",
@@ -3047,8 +3153,12 @@ export const dispatchToolSpecs = [
     example: { issue: "DSP-1" },
     description:
       "Print each step that ran on an issue, as the Legion daemon recorded it at the step's " +
-      "start and at its end. The first line is `<KEY>: <n> steps in <m> tasks`. Then each run " +
-      "of a step prints one line, task by task, in the order each task first ran: `<task> " +
+      "start and at its end, and the experiment and the variant the issue was drawn into, where " +
+      "its records name one. The first line is `<KEY>: <n> steps in <m> tasks`. Where the " +
+      "records of the issue's newest run name an experiment, the next line is `Experiment " +
+      "<experiment>: variant <variant>.`, and an issue whose newest run's records name none " +
+      "prints no such line. Then each run of a step prints one line, task by task, in the order " +
+      "each task first ran: `<task> " +
       "<step> <kind> <role> <type> attempt <attempt> <agent> <model> <started_at> <ended_at> " +
       "<result>`. kind is step, retro or merge. step is the step's place in its task, from 1, " +
       "and 0 for a retro or a merge. attempt counts the runs of the same task, step and kind, " +
@@ -3068,11 +3178,14 @@ export const dispatchToolSpecs = [
     example: { project: "INFRA" },
     description:
       "Print each finished issue of a project, newest close first, with the plan Legion ran it " +
-      "from, the rating each retro gave that plan with its reason, its time and its count of " +
-      "failed steps. An issue is finished when its status is done and Dispatch closed it. The " +
+      "from, the rating each retro gave that plan with its reason, its time, its count of " +
+      "failed steps, and the experiment and the variant it was drawn into, where its records " +
+      "name one. An issue is finished when its status is done and Dispatch closed it. The " +
       "first line is `<PROJECT>: <n> finished issues`. Then each issue prints one line: `<KEY> " +
       "closed <closed_at> plan <source> (<n> tasks: <steps of the first task>) ratings " +
-      `<rating>/${LEGION_PLAN_RATING_MOST} "<reason>"[, <rating>/${LEGION_PLAN_RATING_MOST} "<reason>" ...] time <h>h<m>m failed steps <n>\`. ` +
+      `<rating>/${LEGION_PLAN_RATING_MOST} "<reason>"[, <rating>/${LEGION_PLAN_RATING_MOST} "<reason>" ...] time <h>h<m>m failed steps <n>[ variant <experiment>/<variant>]\`. ` +
+      "The line ends with variant <experiment>/<variant> where the records of the issue's " +
+      "newest run name an experiment, and at failed steps <n> where they name none. " +
       "source is default (Legion's default steps) or owner (the plan the issue's owner wrote), " +
       `and the plan is the one of the issue's newest run. A rating is ${LEGION_PLAN_RATING_LEAST} (the plan cost the ` +
       `work) to ${LEGION_PLAN_RATING_MOST} (the plan fit the work), one for each retro in the order the retros ran, and ` +

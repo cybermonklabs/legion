@@ -3,8 +3,8 @@
 // The basebuild tag holds per-change tools, not standing tests. Each is run at a child's head
 // against a base its Verification document names, never on its own as a check of main: this
 // file's TestTheStoreCensusReadsZeroDifferences, and the predicate-and-lens read cost of the
-// INFRA-1098 tree's branches (predicate_lens_read_cost_test.go, which only those branches carry,
-// and which runs only where LEGION_SCALE_TEST=1 is set).
+// INFRA-1098 tree's branches (predicate_lens_read_cost_test.go, which only those branches carry).
+// That read cost runs only where LEGION_SCALE_TEST=1 is set.
 // Each builds the server at the commit BASELINE_SHA names (baseBuild, testbaseline.Commit) and
 // compares it with this build, so it needs a checkout that holds that commit, and takes from 2 to
 // 45 minutes on an issue pod. graph_cost_test.go holds the two arms, the clock and the order
@@ -47,7 +47,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -72,7 +71,7 @@ import (
 const censusSigningKey = "store-census-signing-key"
 
 // censusKinds are the kinds this child moves, as the census names them, the rank and the text of
-// every block dispatch://INFRA-1253's block index states (graphcensus' block_rank and block_text,
+// every block the issue-tree spec's block index states (graphcensus' block_rank and block_text,
 // which the backfill's drain and the reconciliation after it give every block the older build
 // indexed), the size it gives every plan node (graphcensus' block_size, whose row side is every
 // block of a document that owes no index, a block that writes no size among them), the document
@@ -87,7 +86,7 @@ const censusSigningKey = "store-census-signing-key"
 // checking is read by a person before this test agrees with it.
 var censusKinds = []string{
 	"comment", "block", "block_ref", "block_rank", "block_text", "block_size", "room_block", "block_author",
-	"person", "session", "role", "page", "artifact", "version", "artifact_reference",
+	"person", "session", "role", "page", "artifact", "version", "artifact_reference", "node_search",
 }
 
 // censusUnseededKinds are the census's kinds this run writes no row of, which a store may hold
@@ -95,16 +94,17 @@ var censusKinds = []string{
 // graphcensus' projections names it: a run of the command bar and its frames (runProjections), an
 // issue's parent and its waits (issueProjections), a component's parent, its dependencies and an
 // issue's components (componentProjections), a check's result and its retraction
-// (resultProjections), a comment's anchor block (anchorProjections), and the visibility and state
-// of each interaction, lens, finding, risk, constraint and lens kind
-// (visibilityStateProjections), of which the lens catalogue this build's migrations write holds
-// the constraints and the lens kinds. The census must check each and read no difference in it,
-// and no row of one is no refusal. The list is the test's own, as censusKinds is, so a kind the
-// census starts or stops checking fails this test until a person names it in one list or the
-// other.
+// (resultProjections), a comment's anchor block (anchorProjections), the Keeps the backfill's Keep
+// pass owes a write (graphcensus' CensusOfKeepSums), and the visibility and state of each
+// interaction, lens, finding, risk, constraint and lens kind (visibilityStateProjections), of
+// which the lens catalogue this build's migrations write holds the constraints and the lens kinds.
+// The census must check each and read no difference in it, and no row of one is no refusal. The
+// list is the test's own, as censusKinds is, so a kind the census starts or stops checking fails
+// this test until a person names it in one list or the other.
 var censusUnseededKinds = []string{
 	"interaction", "frame", "issue_parent", "issue_link", "component_parent", "component_depends",
-	"issue_component_member", "check_result", "check_result_retraction", "comment_anchor_block",
+	"issue_component_member", "check_result", "check_result_retraction", "comment_anchor_block", "keep_shaped_sum",
+	"review_carried_from",
 	"interaction_visibility_state", "lens_visibility_state", "finding_visibility_state",
 	"risk_visibility_state", "constraint_visibility_state", "lens_kind_visibility_state",
 }
@@ -1277,7 +1277,7 @@ func censusCommentTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []pr
 
 // censusBlockTuples is what every block row states: the document it is a block of, and the block
 // that holds it, which document_blocks spells as parent_block_id, or for a block no block holds
-// its document's top (dispatch://INFRA-1253's refs.DocumentTopSQL, the one statement the block
+// its document's top (the issue-tree spec's refs.DocumentTopSQL, the one statement the block
 // index and the census read it by): the issue for a block of an issue's spec, Verification or plan
 // document, and the document's own node for an upload or a project's document. The document is
 // the one refs.BlockDocumentSQL reads, as the block index and the census read it: for a row of an
@@ -2062,32 +2062,4 @@ func withoutTheAddedFields(t *testing.T, path string, answer any) {
 	}
 	t.Logf("GET %s: removed from this build's answer %d \"state\" and %d \"visibility\" field(s) of the nodes of links and linked_from, and %d \"address\" and %d \"kind\" field(s) of members",
 		path, removed["state"], removed["visibility"], removed["address"], removed["kind"])
-}
-
-// ───── running a subcommand of a build ────────────────────────────────────
-
-// runDispatchCommand runs one subcommand of a build against databaseURL, in a home of its own and
-// with nothing of the caller's environment, and answers its exit code and its whole output.
-func runDispatchCommand(t *testing.T, binary, databaseURL string, args ...string) (int, string) {
-	t.Helper()
-	home := t.TempDir()
-	cmd := exec.Command(binary, args...)
-	cmd.Dir = home
-	cmd.Env = []string{
-		"HOME=" + home,
-		"XDG_CONFIG_HOME=" + home,
-		"XDG_DATA_HOME=" + home,
-		"DATABASE_URL=" + databaseURL,
-		"DISPATCH_NATS_DISABLED=1",
-	}
-	sort.Strings(cmd.Env)
-	out, err := cmd.CombinedOutput()
-	code := 0
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		code = exit.ExitCode()
-	} else if err != nil {
-		t.Fatalf("run %s %s: %v\n%s", filepath.Base(binary), strings.Join(args, " "), err, out)
-	}
-	return code, strings.TrimRight(string(out), "\n")
 }

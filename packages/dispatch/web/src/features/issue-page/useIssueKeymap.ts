@@ -1,7 +1,8 @@
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { type IssueTab, parseIssuePath } from "../refs/routes";
+import { buildIssuePath, type IssueTab, parseIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
+import { CHILDREN_SECTION, CHILDREN_TOGGLE } from "./children-section";
 import { bringOnScreen } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
 import { CONTROL_LABELS, PRESET_NAMES, type Preset } from "./page-words";
@@ -15,11 +16,14 @@ const PARTS = {
   // The outline, by its name: the Contents pane's list is a tree too, and it stands before the
   // outline in the page.
   tree: `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`,
+  // The issue's children, the section above the outline (`children-section.tsx`).
+  children: CHILDREN_SECTION,
 } as const;
 
 /** What takes the focus inside each part, where the part itself does not: the tree's one tab
- *  stop. */
+ *  stop, and the children's heading control, which opens and closes their list. */
 const TAKES_FOCUS: Readonly<Record<keyof typeof PARTS, string | undefined>> = {
+  children: CHILDREN_TOGGLE,
   tree: '[data-node-row][tabindex="0"]',
 };
 
@@ -95,12 +99,16 @@ function toggled(key: string, view: Preset, active: Preset): string {
 
 /**
  * The chords of the view row, which are the `t` table of the spec's Design section for the five
- * views. Each one opens an address and puts the focus in what that address draws.
+ * views, and the chord of the issue's children. Each one opens an address and puts the focus in
+ * what that address draws.
  *
  * `t s`, `t k`, `t p` and `t d` toggle the Spec, Verification, Plan and Decisions views, `t g`
  * toggles Graph, the whole tree read (R10), and `t c` is the conversation, the page with every
- * view off; each leaves the focus in the outline. A label names what the chord does on this
- * page, in the view row's own names (`PRESET_NAMES`).
+ * view off; each leaves the focus in the outline. `t h` opens the children's own address,
+ * `/children`, the conversation with the focus on the children's section above the outline, each
+ * time it is pressed (R14); it is offered only where the page draws that section, as an issue
+ * with no children draws none. A label names what the chord does on this page, in the view row's
+ * own names (`PRESET_NAMES`).
  */
 const CHORDS: readonly {
   keys: string;
@@ -111,6 +119,8 @@ const CHORDS: readonly {
   /** What names the binding, which is the tab the address was that tab's, and Graph's own name
    *  for Graph, which was no tab. */
   tab: IssueTab | "graph";
+  /** Whether the chord is offered now; always, where it gives none. */
+  when?: () => boolean;
 }[] = [
   {
     keys: "t s",
@@ -156,6 +166,14 @@ const CHORDS: readonly {
     path: (key, active) => toggled(key, "graph", active),
     tab: "graph",
   },
+  {
+    keys: "t h",
+    label: "Move to the issue's children",
+    part: "children",
+    path: (key) => buildIssuePath({ key, kind: "children" }),
+    tab: "children",
+    when: () => document.querySelector(CHILDREN_SECTION) !== null,
+  },
 ];
 
 /**
@@ -174,7 +192,7 @@ export function useIssueKeymap(issueKey: string): void {
   useKeymapScope("issue");
   useKeymap(
     "issue",
-    CHORDS.map(({ keys, label, part, path, tab }) => ({
+    CHORDS.map(({ keys, label, part, path, tab, when }) => ({
       id: `tab-${tab}`,
       keys,
       label,
@@ -185,6 +203,7 @@ export function useIssueKeymap(issueKey: string): void {
         // unmounted with it - a view draws its rows at another depth than the outline does.
         requestAnimationFrame(() => reachPart(part));
       },
+      ...(when === undefined ? {} : { when }),
     }))
   );
 }

@@ -89,7 +89,7 @@ func parseIssueComponents(raw json.RawMessage) (*componentsInput, bool, error) {
 // id that is unknown (never imported, or retired by a re-import) and each that is external.
 //
 // Each component the issue holds as its own is an affects tuple from the issue's node to the
-// component's (dispatch://INFRA-1253 R9), which its issue_component_members row projects, naming
+// component's (R9 of the issue-tree spec), which its issue_component_members row projects, naming
 // the issue's node. It answers the affects tuples the write appends and retracts, which it reads
 // against the ones the issue's node states now so it states only what moved, dated at the time its
 // issue_components row records, at for a write that leaves the issue inheriting, held for the

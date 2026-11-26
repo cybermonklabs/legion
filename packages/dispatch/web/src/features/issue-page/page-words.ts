@@ -662,9 +662,10 @@ export function coverageLineWords(line: string): string | undefined {
  * What the page draws for the coverage read's own lines (`IssueCoverage.gaps`) that name no gap of
  * a requirement - a requirement's gap is drawn on the requirement, from its own gaps - each in the
  * words `coverageLineWords` draws it in, where it draws any. Today that is the line of each
- * document still being indexed, which says why no requirement is drawn as lacking a check: today's
- * Spec tab draws these over its list of requirements (`SpecRequirements`), and the outline in the
- * body of each statement (`TreeNode.coverageNotes`).
+ * document still being indexed, which says why no requirement is drawn as lacking a check: the
+ * outline draws these in the body of each statement (`TreeNode.coverageNotes`). Today's Spec tab
+ * draws the same lines with words of its own (`SpecRequirements`), since no file today's pages
+ * load imports this one.
  */
 export function coverageNotes(coverage: IssueCoverage | undefined): string[] {
   return (coverage?.gaps ?? []).flatMap((line) => {
@@ -685,7 +686,7 @@ export const PROGRESS_NOUNS = joinWords("PROGRESS_NOUNS", {
 
 /** How the issue stands, in a line of its own where no control's word carries it: a closed
  *  issue, whose writes the identity block refuses, and an issue that advances as many
- *  priorities as one may, whose priority row offers no control that adds another
+ *  priorities as one may, whose priorities' picker refuses a further choice with this line
  *  (`features/priorities/IssuePriorityLine.tsx`). One line each, saying what is so. */
 export const STATE_LINES = joinWords("STATE_LINES", {
   advances_at_cap: `An issue advances at most ${MAX_ISSUE_ADVANCES} priorities.`,
@@ -886,8 +887,10 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** The labels control's word where the issue has no label yet, as `add_priority` is the
    *  priority's: the property's own name would draw "Labels" twice in its row of Details. */
   add_label: "Add a label",
-  /** The control that places an issue under a priority, where the issue advances none: the
-   *  words its name begins with, which `IssuePriorityLine.tsx` ends with the issue's key. */
+  /** What the priorities' picker trigger draws in a row of Details while the issue advances
+   *  none, and the words its name begins with, which `IssuePriorityLine.tsx`'s
+   *  `addPriorityControlName` writes out with `control_name_to` and the issue's key ("Add a
+   *  priority to CORE-1"). */
   add_priority: "Add a priority",
   /** What the priority row says of a priority the issue advances because an issue above it
    *  does, which is that issue's to remove (dispatch://INFRA-2947 R4). */
@@ -939,15 +942,15 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   control_name_of: "of",
   /** The word between the labels control's `add_label` and the issue's key, in the name it
    *  answers to inside `NoTooltips` while the issue has no label: "Add a label to CORE-1"
-   *  (`labelsControlName`). */
+   *  (`labelsControlName`). `IssuePriorityLine.tsx`'s `addPriorityControlName` writes this word
+   *  out as a literal in the name of the priorities' trigger in a row of Details while the issue
+   *  advances none ("Add a priority to CORE-1"). */
   control_name_to: "to",
   /** The two words that make a progress count read as a sentence in the header's properties
    *  line, around the issue's own numbers: "Children 2 of 7 done", "All issues under it 5 of 30
    *  done" (R13, the 1440 px picture). */
   count_of: "of",
   count_done: "done",
-  /** The priority picker's first choice, which picks nothing. */
-  choose_priority: "Choose a priority",
   /** Closes the Details panel and the Outline sheet, each in its own head (R14); Escape does
    *  the same. */
   close: "Close",
@@ -988,9 +991,9 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** The one panel of the issue's properties, which opens over the right of the page, and the
    *  control at the right of the header's first row that opens it (R14). */
   details: "Details",
-  /** The one row a branch below the three drawn levels folds to, which opens it in place: the
-   *  count before it is the branch's own and carries `AUTHOR_TEXT_ATTRIBUTE` (R1), and the
-   *  words agree with it: "1 more row below", "3 more rows below". A node is a row to the
+  /** What the row a branch below the three drawn levels folded to said, when the outline drew
+   *  three levels: every level is drawn now (R11), and no row of the page draws these words.
+   *  They agree with their count: "1 more row below", "3 more rows below". A node is a row to the
    *  reader, the word the tree's own keys use (`useTreeKeymap.ts`). */
   deeper_row: "more row below",
   deeper_rows: "more rows below",
@@ -1010,6 +1013,11 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   editing: "Editing:",
   /** Gives an issue that has a parent a different one (R11, row one). */
   edit_parent: "Edit parent issue",
+  /** The name of the priorities' picker trigger, which adds one and takes one off alike, as the
+   *  labels' control beside it is named "Edit labels". `IssuePriorityLine.tsx`'s
+   *  `priorityTriggerName` says the same words inside `NoTooltips` and outside it; in a row of
+   *  Details, while the issue advances none, the trigger is named by `add_priority` instead. */
+  edit_priorities: "Edit priorities",
   /** What an external link says of an address the browser will not open. */
   external_link_unsafe: "unsafe external link",
   /** The box that narrows the outline to the rows whose words hold what is typed, which is
@@ -1021,8 +1029,7 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** Closes a branch of the tree (R1). */
   fold: "Fold",
   /** What a folded branch says it holds, after the count of the rows under it (R1): they are
-   *  not gone, they are out of sight until the branch is opened. It agrees with its count, as
-   *  `deeper_row` does. */
+   *  not gone, they are out of sight until the branch is opened. It agrees with its count. */
   folded_row: "row hidden inside",
   folded_rows: "rows hidden inside",
   /** Draws one branch of the outline at a time, the Contents pane's current one, by zooming the
@@ -1166,9 +1173,6 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   set_parent: "Set parent issue",
   /** Ends that comparison and draws the pinned version itself (R16). */
   show_version: "Show version",
-  /** Opens the rest of a list of unbounded length in Details, which shows its first ten
-   *  entries and then this, with the whole count (R13): "Show all 14". */
-  show_all: "Show all",
   /** Opens a handoff's fields and every proof entry under its line in the history, and closes
    *  them again (the old conversation's handoff card, R19). */
   show_fields: "Show fields",
@@ -1270,6 +1274,8 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   copied_from_document: "copied from document",
   /** The author of a decision, which the server writes from who wrote the block. */
   decided_by: "decided by",
+  /** The repository paths a plan task's implementer should read. */
+  docs: "docs to read",
   /** The question an agent's decision settles. An ask is drawn as a question (R34). */
   from_ask: "from question",
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
@@ -1294,9 +1300,11 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   serves: "serves",
   /** The spec blocks a decision, or the answer of an ask, shaped. */
   shaped: "shaped",
-  /** How long a plan task takes, in days, which the plan's chart draws as its bar's length;
+  /** How long a plan task takes, in minutes, which the plan's chart draws as its bar's length;
    *  the chart's own word for a task that holds none is `PLAN_WORDS.no_size`. */
   size: "size",
+  /** The skills a plan task's implementer should read. */
+  skills: "skills to read",
   state: "state",
   /** The steps of Legion a plan task runs, in their order. */
   steps: "steps",

@@ -1,16 +1,16 @@
-import type { TreeFilter } from "../../api/queries";
+import { TREE_FILTERS, type TreeFilter } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
-import { wordsOf } from "../refs/tree-fragment";
+import type { ReferenceNameReading } from "../refs/reference-names";
+import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
 import { blockIdOfNode } from "./decision-review";
 import {
-  drawnLine,
-  firstLineOf,
   heldBy,
   isCheck,
   isStatement,
-  lineWords,
+  type NodeChip,
   nodeWords,
   type ParentLine,
+  parentLineOf,
   type TreeNode,
   type TreeViews,
 } from "./issue-tree";
@@ -21,6 +21,7 @@ import {
   type NodeType,
   type Preset,
 } from "./page-words";
+import { storedReading } from "./stored-reading";
 import { nextTreeCursor, readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
@@ -124,6 +125,12 @@ export interface PresetView {
   /** How many distinct nodes of the view's main kind it draws: a check drawn under two
    *  requirements is one node, so this is what the control's own count says. */
   readonly matches: number;
+  /** How the view names each other parent of a row that the page's names read gave no words,
+   *  by the parent's reference: by the parent's own words, read off the tree that holds it
+   *  (`nodeReading`). The row's chip carries the reading; the page publishes it for the names
+   *  (`slots/view-parents.ts`), so the chip draws as every other does. Empty where the view is
+   *  read off the outline's tree. */
+  readonly parents: ReadonlyMap<string, ReferenceNameReading>;
   /** The tree as the view leaves it. Under a filter its children are the filter's top rows. */
   readonly root: TreeNode;
   /** Whether the issue itself is the outline's first row: with no filter on, and never under a
@@ -148,6 +155,9 @@ export interface PresetLine {
 /** No line on any row: a view read off the tree. */
 const NO_LINES: ReadonlyMap<string, readonly PresetLine[]> = new Map();
 
+/** No other parent named by the view: a view read off the outline's tree. */
+const NO_PARENTS: ReadonlyMap<string, ReferenceNameReading> = new Map();
+
 /** The kind a filter reads `node` as: its type, but for a requirement that is no statement
  *  (`isStatement`) and a check that is no check (`isCheck`), which are blocks of a document that
  *  does not play that part and nothing more, so no filter draws or counts either as its kind;
@@ -163,8 +173,8 @@ function kindOf(node: TreeNode): NodeType | undefined {
  *  them"), never the stored source: `**bold** text` is found by `bold text` and not by `**`. A
  *  post its author deleted holds none: its text is the deleted line as the model writes it
  *  (`tree-drafts.ts`'s `deletedPostLine`), naming the actor by a short id and the time as stored,
- *  and its row draws the page's own deleted line in its place (`NodeRow.tsx`'s `DeletedLine`), so
- *  no word typed finds it (INFRA-1523, R3). */
+ *  and its row draws the page's own deleted line in its place (`node-line.tsx`'s `DeletedLine`),
+ *  so no word typed finds it (deleted-post R3). */
 function holds(node: TreeNode, wanted: string): boolean {
   return (
     wanted === "" ||
@@ -219,10 +229,6 @@ export function filterOfUndrawn(node: TreeNode): Filter | undefined {
   return node.children.length === 0 ? NO_CONVERSATION_ROW[node.type] : undefined;
 }
 
-/** The filters whose held view answer an address of a block Conversation's read holds no node of
- *  is looked up in, in this order (`filterHolding`): Decisions' view is the decisions read. */
-const VIEW_FILTERS = ["spec", "verification", "plan"] as const satisfies readonly Filter[];
-
 /**
  * The filter whose view answer the page holds (`TreeNode.views`) answers the block `target` names
  * as a node of that filter's own kinds (`ROW_KINDS`): the filter an address of a node
@@ -233,7 +239,7 @@ export function filterHolding(
   views: TreeViews | undefined,
   target: BlockTarget
 ): Filter | undefined {
-  return VIEW_FILTERS.find((filter) => answerHolds(views?.[filter], target, ROW_KINDS[filter]));
+  return TREE_FILTERS.find((filter) => answerHolds(views?.[filter], target, ROW_KINDS[filter]));
 }
 
 /** The block an address names: its id, and the document that holds it where the address names
@@ -293,9 +299,11 @@ export function isThreadContext(node: Pick<TreeNode, "children" | "type">): bool
  * The page with no filter on, or Graph: the whole tree but the memo, or under a words filter each
  * match with the chain above it as context. In Conversation (`conversation`), which draws
  * Conversation's read and nothing else (R9), a result and a plan task are no row
- * (`NO_CONVERSATION_ROW`) but where a row stands under one or the address names it, and a message
- * under which a node it produced stands - any node but a turn of its thread - is one context row
- * with its kind. Graph draws every node of the tree as a row.
+ * (`NO_CONVERSATION_ROW`), and neither is a block of a converted document drawn as prose (root
+ * R1: the conversation's own blocks are the ones written in it), but where a row stands under one
+ * or the address names it; and a message under which a node it produced stands - any node but a
+ * turn of its thread - is one context row with its kind. Graph draws every node of the tree as a
+ * row, a block of a converted document among them.
  */
 function conversationView(
   root: TreeNode,
@@ -311,9 +319,13 @@ function conversationView(
     const children = node.children
       .map(prune)
       .filter((child): child is TreeNode => child !== undefined);
+    // A prose node is a block of a converted document where its draft is addressed in that
+    // document (`tree-read/tree-nodes.ts`' `referenceOf`, from the node's `document`); a block
+    // written in the conversation, the room's own fragment, has no address of its own.
+    const documentProse = node.type === "prose" && node.reference !== undefined;
     if (
       conversation &&
-      NO_CONVERSATION_ROW[node.type] !== undefined &&
+      (NO_CONVERSATION_ROW[node.type] !== undefined || documentProse) &&
       children.length === 0 &&
       !named.has(node.id)
     ) {
@@ -332,6 +344,7 @@ function conversationView(
       context,
       lines: NO_LINES,
       matches: matched.size,
+      parents: NO_PARENTS,
       root: pruned,
       rootRow: true,
     };
@@ -342,6 +355,7 @@ function conversationView(
     context,
     lines: NO_LINES,
     matches: 0,
+    parents: NO_PARENTS,
     root: { ...root, children: [], held: 0 },
     rootRow: true,
   };
@@ -374,10 +388,10 @@ function lift(
 }
 
 /** The rows `parts` give the place of `node`, which the filter draws as no row: each row of its
- *  own children carrying it as its parent's line (`lineOfParent`), so a drawn node whose parent
+ *  own children carrying it as its parent's line (`parentLineOf`), so a drawn node whose parent
  *  is no row is drawn where that parent stood, and each row from deeper as it came. */
 function liftPast(node: TreeNode, parts: readonly Lifted[]): TreeNode[] {
-  const line = parts.some((part) => part.drawn) ? lineOfParent(node) : undefined;
+  const line = parts.some((part) => part.drawn) ? parentLineOf(node) : undefined;
   return parts.flatMap((part) =>
     part.drawn && line !== undefined
       ? part.rows.map((row) => ({ ...row, parentLine: line }))
@@ -423,6 +437,7 @@ function filterView(
     context,
     lines: NO_LINES,
     matches: matched.size,
+    parents: NO_PARENTS,
     root: { ...root, children: top, held: heldBy(top) },
     rootRow: false,
   };
@@ -432,15 +447,18 @@ function filterView(
  * One filter drawn from its view read (`TreeNode.views`): the nodes the view's query took of
  * the filter's row kinds, each drawn as the tree's node of the same identity (`treeIdOfNode`),
  * so a row reads as it does in the outline, under the row the read places it under, else at the
- * top; two nodes of one read id, blocks of two documents, are two rows of two nodes. Verification
- * draws each statement the view holds as context, with each check under each statement it
- * serves and each result under its check. A node the tree holds no node for - a criterion, a
- * node of an issue under this one - is no row, and neither is the memo, a callout. A decision and
- * a constraint are never rows: each is a line of the row its tie names (`PresetView.lines`). The
- * words filter keeps the rows whose words hold it, as `filterView` keeps them, and a node the
- * address names is drawn whatever the filter: from the view where the view holds it as a row, and
- * else where `filterView` draws it, at each place the tree has it, under the nearest row of the
- * view above it there or at the top, in the tree's order among the view's rows there.
+ * top; two nodes of one read id, blocks of two documents, are two rows of two nodes. A node the
+ * outline's tree holds no node of is drawn as the node of the tree the view's own answer builds
+ * (`TreeViews.trees`), so the view draws its own read's rows whatever the outline read holds or
+ * whether it was sent at all (R4, R5). Verification draws each statement the view holds as
+ * context, with each check under each statement it serves and each result under its check. A
+ * node neither tree drafts - a criterion - is no row, and neither is the memo, a callout. A
+ * decision and a constraint are never rows: each is a line of the row its tie names
+ * (`PresetView.lines`). The words filter keeps the rows whose words hold it, as `filterView`
+ * keeps them, and a node the address names is drawn whatever the filter: from the view where the
+ * view holds it as a row, and else where `filterView` draws it, at each place the tree has it,
+ * under the nearest row of the view above it there or at the top, in the tree's order among the
+ * view's rows there.
  */
 function heldFilterView(
   root: TreeNode,
@@ -451,13 +469,21 @@ function heldFilterView(
 ): PresetView {
   // Each node of the tree the read drew, by its id and by the read's id, at its first placement,
   // and each placement by its id and the node it stands under. A view's node is matched by its
-  // id; a node the view does not hold, by the read's.
+  // id; a node the view does not hold, by the read's. The outline's tree is read first, and the
+  // view's own tree after it fills in only what the outline's holds no node of.
   const fromRead = new Map<string, TreeNode>();
   const byRead = new Map<string, TreeNode>();
   const ofRead = new Map<string, TreeNode[]>();
   const placements = new Map<string, TreeNode>();
-  const index = (parent: TreeNode): void => {
+  // Each node of the two trees by its own address, the outline's first: a row drawn from the
+  // view's own tree names each other parent whose chip the names read gave no words - a statement
+  // of the outline read the view's tree holds as context - by that parent's line (`otherParents`).
+  const byReference = new Map<string, TreeNode>();
+  const index = (parent: TreeNode, outline: boolean): void => {
     for (const child of parent.children) {
+      if (child.reference !== undefined && !byReference.has(child.reference)) {
+        byReference.set(child.reference, child);
+      }
       if (child.readId !== undefined) {
         if (!fromRead.has(child.id)) {
           fromRead.set(child.id, child);
@@ -466,12 +492,28 @@ function heldFilterView(
           else same.push(child);
         }
         if (!byRead.has(child.readId)) byRead.set(child.readId, child);
-        placements.set(`${child.id} ${parent.id}`, child);
+        const placement = `${child.id} ${parent.id}`;
+        if (outline || !placements.has(placement)) placements.set(placement, child);
       }
-      index(child);
+      index(child, outline);
     }
   };
-  index(root);
+  index(root, true);
+  const own = root.views?.trees?.[filter];
+  if (own !== undefined) index(own, false);
+  // The node's other parents (`TreeNode.alsoUnder`), each chip with no words named by its
+  // parent's own words (`nodeReading`), where a tree holds that parent. The page publishes each
+  // such reading for the names (`PresetView.parents`), so the chip is drawn as any other is.
+  const parents = new Map<string, ReferenceNameReading>();
+  const otherParents = (chips: readonly NodeChip[]): readonly NodeChip[] =>
+    chips.map((chip) => {
+      const parent =
+        chip.reading === undefined && !chip.gone ? byReference.get(chip.ref) : undefined;
+      if (parent === undefined) return chip;
+      const reading = nodeReading(parent);
+      parents.set(chip.ref, reading);
+      return { ...chip, reading };
+    });
   // The tree's node each node of the view stands for: the one of its own id (`treeIdOfNode`), so
   // two nodes of one block id, blocks of two documents, are two; else, for a view node that names
   // no document, the one of its read id. And each one's parent: the nearest node before it that
@@ -639,7 +681,12 @@ function heldFilterView(
     if (placing) context.add(tree.id);
     drawnIds.add(tree.id);
     const kept = parts.flatMap((part) => part.rows);
-    return { drawn: true, rows: [{ ...tree, children: kept, held: heldBy(kept) }] };
+    return {
+      drawn: true,
+      rows: [
+        { ...tree, alsoUnder: otherParents(tree.alsoUnder), children: kept, held: heldBy(kept) },
+      ],
+    };
   };
   const drawTop = (node: TreeAnswerNode): Lifted => {
     const part = draw(node, undefined, new Set());
@@ -656,6 +703,7 @@ function heldFilterView(
     context,
     lines: viewLines(answer, treeNodeOf, drawnIds),
     matches: matched.size,
+    parents,
     root: {
       ...issueNode,
       children,
@@ -668,7 +716,7 @@ function heldFilterView(
 
 /**
  * The line a row the view draws at the top carries for its parent in the view read, where that
- * parent is no row: the tree's node for it (`parent`), drawn as `lineOfParent` draws it, where the
+ * parent is no row: the tree's node for it (`parent`), drawn as `parentLineOf` draws it, where the
  * tree holds it, and else the parent's id, kind and first line the view read answers beside the
  * node (`parent`), for a kind the page has a word for. The issue is no row's parent line.
  */
@@ -678,13 +726,13 @@ function viewParentLine(
   parent: TreeNode | undefined
 ): ParentLine | undefined {
   if (node.parent === null || node.parent.id === root.id) return undefined;
-  if (parent !== undefined) return lineOfParent(parent);
+  if (parent !== undefined) return parentLineOf(parent);
   const read = node.parent;
   const types: readonly string[] = NODE_TYPES;
   if (read.supertag === "issue" || !types.includes(read.supertag)) return undefined;
   return {
     id: read.id,
-    line: read.first_line,
+    text: read.first_line,
     type: read.supertag as NodeType,
   };
 }
@@ -722,37 +770,16 @@ function viewLines(
   return lines;
 }
 
-/**
- * The line a node that is no row of a filter is drawn as on the row of each child the filter
- * draws (`TreeNode.parentLine`): cut by R1's first-line rule from the words of the node's first
- * block (`lineWords`), so a heading is never run into the paragraph after it, and drawn as a
- * row's first line is (`drawnLine`): an ellipsis only where the cut ended inside a sentence. A
- * node with no words - no text, or a reading none of whose blocks holds a word - is named by the
- * page's word for its kind (`NODE_TYPE_NAMES`), never by its id, which is no name a reader reads
- * (R22).
- */
-function lineOfParent(node: TreeNode): ParentLine {
-  return {
-    id: node.id,
-    line: parentLineOf(node),
-    // The parent's own address, which makes its line the link a reader follows to it (R18, and
-    // R26: a step's row reaches the statement it serves).
-    ...(node.reference === undefined ? {} : { reference: node.reference }),
-    // A comment's or a message's marks, which its child's row draws with the line
-    // (INFRA-1523, R2 and R3).
-    ...(node.deletedAt === undefined ? {} : { deletedAt: node.deletedAt }),
-    ...(node.deletedBy === undefined ? {} : { deletedBy: node.deletedBy }),
-    ...(node.editedAt === undefined ? {} : { editedAt: node.editedAt }),
-    type: node.type,
-  };
-}
-
-/** The one line a node that is no row of a filter is drawn as on its child's row: R1's first
- *  line of its first block's words (`lineWords`), and the page's word for its kind where those
- *  hold none (R22). */
-function parentLineOf(node: TreeNode): string {
-  const words = lineWords(node);
-  return words === "" ? NODE_TYPE_NAMES[node.type] : drawnLine(firstLineOf(words));
+/** How a chip names `node`, a node of a tree whose chip the names read gave no words: by the
+ *  reading of its words, its read's own else its stored text's (`storedReading`), with the page's
+ *  word for its kind where those words project to none, as a chip names a block
+ *  (`tree-drafts.ts`'s `treeContext`), and by that word alone where it holds no words (R22). */
+function nodeReading(node: TreeNode): ReferenceNameReading {
+  const word = NODE_TYPE_NAMES[node.type];
+  const tree = node.tree ?? (node.text === "" ? undefined : storedReading(node.text, node));
+  return tree === undefined || firstWordedBlock(tree) === undefined
+    ? { words: word }
+    : { fallback: word, tree };
 }
 
 /** What one control of the filter row draws after its name (R2): its count, then, where the

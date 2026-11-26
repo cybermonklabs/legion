@@ -33,6 +33,7 @@ import {
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
   ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
+  KNOWN_SESSIONS_MAX,
   LIVE_SOCKET_MAX_AGE_CLOSE,
   LIVE_SOCKET_MAX_AGE_MS,
   LIVE_SOCKET_MAX_SUBSCRIPTIONS,
@@ -44,6 +45,7 @@ import {
   MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
   POST_HISTORY_PAGE_LIMIT,
+  PRIORITY_ID_MAX,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
   REFERENCE_TARGETS_MAX,
@@ -121,6 +123,7 @@ import {
   legacyDispatchIssueSubject,
   legionControllerNoticeSubject,
   legionWakeSubject,
+  MESSAGE_NOT_SENT_PREFIX,
   NO_PROJECT,
   roleSubject,
   SUBJECT_MAX_BYTES,
@@ -341,6 +344,15 @@ func UncapturedTopicRefusal(topic, sessionID string) string {
 	return ${uncapturedTopicRefusalText}
 }
 
+// MessageNotSentPrefix opens the error of the 503 POST /v1/messages/send and POST
+// /v1/messages/publish answer for a message the bus refused before it sent anything, because the
+// deployed stream does not capture a topic this build stores (bus.ErrSubjectNotDeployed): nothing
+// was stored, and the same message may be sent again once the stream captures the topic. Generated
+// from MESSAGE_NOT_SENT_PREFIX in packages/contracts, which envoy-client's transport reads to tell
+// this answer from a 5xx after which the message may have been stored, so the listener and the
+// client cannot word it apart.
+const MessageNotSentPrefix = ${JSON.stringify(MESSAGE_NOT_SENT_PREFIX)}
+
 // DeliveryDuplicateWindow is how long a repeated delivery is recognised as a duplicate, by the
 // notification stream and by every host that reads it. Generated from
 // DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts, whose doc comment states the retry promise
@@ -381,6 +393,11 @@ const StoreUnconfirmedCause = ${JSON.stringify(STORE_UNCONFIRMED_CAUSE)}
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
 const MaxBroadcastRecipients = ${MAX_BROADCAST_RECIPIENTS}
+
+// KnownSessionsMax is the most session ids one GET /api/v1/agents/known names. Generated from
+// KNOWN_SESSIONS_MAX in packages/contracts so the server's refusal and the dashboard's batches
+// cannot drift apart.
+const KnownSessionsMax = ${KNOWN_SESSIONS_MAX}
 
 // ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
 // from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
@@ -551,6 +568,12 @@ const PostHistoryPageLimit = ${POST_HISTORY_PAGE_LIMIT}
 // PATCH /api/v1/issues/{key} accept. Generated from ISSUE_TITLE_MAX in packages/contracts so the
 // server's refusal and the dashboard's title fields cannot drift apart.
 const IssueTitleMax = ${ISSUE_TITLE_MAX}
+
+// PriorityIDMax is the longest priority id, in characters, that POST /api/v1/priorities writes:
+// the bound of an id the caller names and the length the id it derives from a title is cut to.
+// Generated from PRIORITY_ID_MAX in packages/contracts so the server's refusal and the server's
+// cut cannot drift apart.
+const PriorityIDMax = ${PRIORITY_ID_MAX}
 
 // DispatchBlockUnits is the longest one block of a comment, comment edit, message, broadcast or
 // ask part may be, in UTF-16 units. Generated from DISPATCH_BLOCK_UNITS in packages/contracts;

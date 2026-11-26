@@ -34,7 +34,7 @@ import { useAgentText } from "../../refs/AgentName";
 import { standsFailed } from "../../refs/reference-target";
 import {
   buildReferencePath,
-  type DispatchReferenceRoute,
+  type PagedReferenceRoute,
   parseNodeReference,
 } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
@@ -78,8 +78,8 @@ import { nodesInOrder } from "../tree-keys";
 import {
   issueTreeQuery,
   treeRead,
+  useBlocksRunning,
   useTreeRead,
-  useTreeReadRunning,
   viewQuery,
 } from "../tree-read/tree-read";
 import { issueAskThreadsQuery, type NamesFailure, useLastAnswer } from "../useIssueTree";
@@ -192,20 +192,23 @@ export function SpecFilterBody({
   const spec = primarySpec(issue);
   const verification = roleDocument(issue, "verification");
   const coverageQuery = issueCoverageQuery(issue.key);
-  // The spec's blocks and the Verification document's are the tree read's (`useTreeRead`), so
-  // both lines read them under its key.
+  // The spec's blocks come from its view read and the Verification document's from the outline
+  // read (`useTreeRead`); `treeQuery` names the tree key both lines tell their refusal by.
   const treeQuery = issueTreeQuery(issue.key);
   const resultsQuery = issueResultsQuery(issue.key);
   const specQuery = viewQuery(issue.key, "spec");
   const asksQuery = issueAskThreadsQuery(issue.key);
   const coverageRead = useQuery(treeRead(coverageQuery));
   const { blocksOf } = useTreeRead(issue);
-  // Whether the tree read runs, from an observer of its own (`useTreeReadRunning`): what a line
-  // of the blocks draws its Retry busy by.
-  const running = useTreeReadRunning(issue.key);
-  const specBlocksRead = { ...blocksOf("spec"), isFetching: running };
+  // Whether the read that holds each role's blocks runs, from an observer of its own
+  // (`useBlocksRunning`): what a line of those blocks draws its Retry busy by. Under the Spec
+  // filter the spec's are its view read's, and the Verification document's the outline read's.
+  const specBlocksRead = { ...blocksOf("spec"), isFetching: useBlocksRunning(issue.key, "spec") };
   const resultsRead = useQuery(treeRead(resultsQuery));
-  const checksRead = { ...blocksOf("verification"), isFetching: running };
+  const checksRead = {
+    ...blocksOf("verification"),
+    isFetching: useBlocksRunning(issue.key, "verification"),
+  };
   const asksRead = useQuery(treeRead(asksQuery));
   const asks = asksRead.data;
   // The decisions are the decision nodes of the Spec view read (`?view=spec`), which the page
@@ -897,9 +900,12 @@ function Quote({ decision }: { decision: SpecDecision }): ReactNode {
   );
 }
 
-/** Where the link to a decision goes: its node's own address, where the model holds one. */
-function routeOf(decision: SpecDecision | undefined): DispatchReferenceRoute | undefined {
-  return decision?.reference === undefined ? undefined : parseNodeReference(decision.reference);
+/** Where the link to a decision goes: its node's own address, where the model holds one and it
+ *  names a page: a person has none (`PagedReferenceRoute`), so such an address is no link. */
+function routeOf(decision: SpecDecision | undefined): PagedReferenceRoute | undefined {
+  const route =
+    decision?.reference === undefined ? undefined : parseNodeReference(decision.reference);
+  return route?.kind === "person" ? undefined : route;
 }
 
 /** One part of a line `dotted` draws. */
@@ -1255,13 +1261,13 @@ function WholeOf({ decision }: { decision: SpecDecision }): ReactNode {
 /**
  * One statement: its bullet, its words with the chips it carries after the last of them, the
  * line naming the decision that shaped it, and its mark at the right of the row (R5, R6, R17,
- * R34). Its words are cut as an agent's are on every row of the page, at six lines where more
- * than 20 words would be hidden, with a row's own "more · N words" opening the rest in place
- * (`MoreWords`: a statement of twenty lines opened every view on a wall of text); the focused
- * statement draws them whole. The row draws its own box rather than `CutWords`, so its chips
- * stand after its last word while the words are whole, and beside "more" while they are cut, as
- * a row of the outline draws them, which `CutWords`, drawing its words and nothing after them,
- * cannot.
+ * R34). Its words are cut in the Spec view at six lines where more than 20 words would be
+ * hidden, with a row's own "more · N words" opening the rest in place (`MoreWords`: a statement
+ * of twenty lines opened the Spec view on a wall of text); the focused statement draws them
+ * whole. The outline itself draws every row's words whole without cutting (R11). The row draws
+ * its own box rather than `CutWords`, so its chips stand after its last word while the words
+ * are whole, and beside "more" while they are cut, which `CutWords`, drawing its words and
+ * nothing after them, cannot.
  */
 function Statement({
   context,

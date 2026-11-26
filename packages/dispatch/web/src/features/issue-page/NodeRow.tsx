@@ -1,9 +1,9 @@
-import { replaceEqualDeep } from "@tanstack/react-query";
 import {
   type CSSProperties,
   type ReactNode,
   type RefObject,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -29,21 +29,28 @@ import {
   pageWordsText,
 } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
-import { DeletedBody, EditedMark } from "../refs/PostBody";
-import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
-import { buildReferencePath, parseNodeReference } from "../refs/routes";
+import { MarkdownBody } from "../refs/MarkdownBody";
+import { EditedMark } from "../refs/PostMarks";
+import { usePlainHeadline } from "../refs/plain-text";
+import { deletedLineText, postDeletion } from "../refs/post-marks";
+import { ReferenceHostIs } from "../refs/reference-host";
+import { namesBlockByLine, useKnownReferences } from "../refs/reference-names";
+import { parseNodeReference, referenceHref } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
-import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
+import { openChildEntry } from "./children-section";
+import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
+import { standingParts } from "./decisions-filter/entry-standing";
 import { useDocumentStage } from "./document-stage";
-import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
+import { ChildIssueFacts } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
 import { presetNodePath } from "./issue-address";
-import { isStatement, type NodeChip, type ParentLine, type TreeNode } from "./issue-tree";
+import { chipName, isStatement, type NodeAnswer, type NodeChip, type TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
-import { chipWords } from "./node-row-chip";
+import { DeletedLine, FirstLine, NodeParentLine } from "./node-line";
+import { documentWord } from "./node-row-chip";
 import { shortDay } from "./node-time";
 import { type ThreadMark, ThreadReadMark } from "./outline-thread-read";
 import { type OutlineWriter, replyItemOf, takesAnswer, useOutlineWriter } from "./outline-writer";
@@ -53,17 +60,16 @@ import {
   type AuthorKind,
   BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
-  DECISIONS_WORDS,
   GAP_LINES,
   GAP_WORDS,
   GLYPH_TOKENS,
   NODE_TYPE_NAMES,
   type NodeType,
-  nodeStateWord,
 } from "./page-words";
 import { isThreadContext, tagFilter } from "./presets";
-import { documentWord, RowText } from "./RowText";
-import { foldedLine, indentOf } from "./tree-fold";
+import { RowText, useOutOfTabOrder } from "./RowText";
+import { titleReading } from "./tree-drafts";
+import { indentOf } from "./tree-fold";
 
 /**
  * One row of the issue's outline, with everything its node shows on its face (R1, R6, R9, R11,
@@ -88,7 +94,7 @@ import { foldedLine, indentOf } from "./tree-fold";
  * a decision that waits, and the acts (R11). None of it waits for the focus, so moving the focus
  * changes no row's text and no row's height, and no element of the row carries a `title`. A
  * node the reader folded is the one place a row draws a single line: its first line
- * (`foldedLine`) and how many nodes it holds.
+ * (`node-line.tsx`'s `FirstLine`) and how many nodes it holds.
  *
  * The row is a `treeitem` of the tree's one tab stop: the focused row is the only row that takes
  * the focus, and nothing inside a row takes any, so Tab from outside enters the tree once and
@@ -267,9 +273,13 @@ export function NodeRow({
             <p
               className={`text-[15px] leading-6 break-words ${context ? pageQuietText : pageWordsText}`}
             >
-              <span data-node-first-line="" {...authorText}>
-                {deleted === null ? foldedLine(node) : <DeletedLine deleted={deleted} />}
-              </span>
+              {deleted === null ? (
+                <FirstLine node={node} />
+              ) : (
+                <span data-node-first-line="" {...authorText}>
+                  <DeletedLine deleted={deleted} />
+                </span>
+              )}
               {folded === undefined ? null : (
                 <span className={`ml-1.5 text-xs ${pageQuietText}`}>
                   <span className="whitespace-nowrap" data-node-count="" {...pageChrome}>
@@ -309,6 +319,7 @@ export function NodeRow({
                 // A child issue's row is one line, as the prototype's `.kr` draws it: its title,
                 // then how it stands, what blocks it and who holds it, small and grey (ruling 5).
                 <p className="break-words">
+                  {/* A title holds no markup: the reading list's `node-row-child-title`. */}
                   <span {...authorText}>{node.text}</span>
                   <ChildIssueFacts child={node.child} tabStops={tabStops} />
                 </p>
@@ -323,22 +334,18 @@ export function NodeRow({
             <NodeOptions body node={node} tabStops={tabStops} writer={writer} />
           )}
           {node.answer === undefined || oneLine ? null : (
-            <AskAnswer answerer={answerer ?? ""} node={node} own={ownAnswer} />
+            <AskAnswer
+              answerer={answerer ?? ""}
+              focused={focused}
+              node={node}
+              own={ownAnswer}
+              tabStops={tabStops}
+            />
           )}
           {/* Under a filter, the node's parent where the filter draws it as no row: one line,
               its kind's word and its first line (R2, R1's first-line rule). */}
           {node.parentLine === undefined ? null : (
-            <p
-              className={`flex min-w-0 items-baseline gap-1 text-xs leading-5 ${pageQuietText}`}
-              data-node-parent-line=""
-              data-parent-id={node.parentLine.id}
-              data-parent-type={node.parentLine.type}
-            >
-              <span className="shrink-0" {...pageChrome}>
-                {NODE_TYPE_NAMES[node.parentLine.type]}
-              </span>
-              <ParentLink line={node.parentLine} tabStops={tabStops} />
-            </p>
+            <NodeParentLine line={node.parentLine} tabStops={tabStops} />
           )}
           {oneLine ? null : (
             <NodeFace
@@ -397,31 +404,6 @@ export function IndentGuides({ depth }: { depth: number }): ReactNode {
       style={{ "--guide": guide } as CSSProperties}
     />
   ));
-}
-
-/**
- * A deleted post's line where its row draws its words, whole or as its one line, and where the
- * page draws its one line apart from its row - a filter's parent line (`ParentLink`), a crumb
- * above a zoom (`IssueTree.tsx`'s `CrumbLine`) (INFRA-1523, R3): the line every surface draws in
- * a deleted post's place (`DeletedBody`), in its italic, with who deleted it and when. The actor
- * is named as the page names an author (`AgentText.author`), the rule the row's own author and
- * "Kept by" are named by, by INFRA-1196's decision 342: a session nothing names reads as the
- * page's word for an agent, and never as its short id. The node's text is the same line as the
- * model writes it (`tree-drafts.ts`'s `deletedPostLine`), with the actor named as no registry
- * knows it and the time as stored, so the row draws the line from the delete and never from that
- * text. The line's words are the page's own, marked as its chrome and declared in
- * `page-words.ts` (`CONTROL_LABELS.post_deleted_by`), and the actor's name and the time are not
- * (INFRA-1523, R3).
- */
-export function DeletedLine({ deleted }: { deleted: PostDeletion }): ReactNode {
-  const agentText = useAgentText();
-  return (
-    <DeletedBody
-      {...(deleted.by === null ? {} : { actorName: agentText.author(deleted.by) })}
-      deleted={deleted}
-      marks={{ own: pageChrome, theirs: authorText }}
-    />
-  );
 }
 
 /** The bullet's box, as every row draws it: 24 px tall, its dot centred in it. */
@@ -600,6 +582,7 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
     case "handoff":
     case "image":
     case "issue":
+    case "prose":
       return "issue";
   }
 }
@@ -720,19 +703,30 @@ export function RowMargin({
   const time = node.at === undefined ? "" : shortDay(node.at);
   const authored = author.kind !== "unknown";
   const agentText = useAgentText();
-  // A decision a person asked to change reads "Changed by" and their name where the model names
-  // them, in place of its state's own word (R2, R3).
-  const changer = node.state === "change_requested" ? node.changedBy : undefined;
+  // How the decision stands, with the person its state names: its keeper after "Kept by", and
+  // whoever asked to change it after "Changed by", in place of its state's own word
+  // (`standingParts`, R2, R3).
+  const standing = node.state === undefined ? undefined : standingParts(node.state, node);
   if (node.child !== undefined) {
-    // A child issue's tag is its key, a link to its own page; its row names no author, no time
+    // A child issue's tag is its key, which opens the child in the children's section above the
+    // outline (R9, R14), where its entry links to its own page; its row names no author, no time
     // and no state, which its facts after its title say (ruling 5, the prototype's `.kr`).
+    const key = node.child.key;
     return (
       <div className={`${NODE_ROW_LAYOUT.margin} ${pageQuietText}`} data-node-margin="">
         <div className={NODE_ROW_LAYOUT.marginLine} data-node-margin-line="">
-          {/* A plain span: its link stays inline, so the 6 px a link's touch target takes above
-              and below it on a phone adds nothing to the line's height. */}
-          <span data-node-tag="">
-            <ChildIssueTag child={node.child} tabStops={tabStops} />
+          {/* The button keeps its touch padding without raising the height of the line. */}
+          <span className="inline-flex" data-node-tag="">
+            <button
+              className={`dispatch-inline-link font-semibold whitespace-nowrap max-[1279px]:-my-[6px] ${pageKindTag.child}`}
+              data-child-key=""
+              onClick={() => openChildEntry(key)}
+              tabIndex={tabStops ? undefined : -1}
+              type="button"
+              {...authorText}
+            >
+              {key}
+            </button>
           </span>
         </div>
       </div>
@@ -753,7 +747,7 @@ export function RowMargin({
               <KindTag node={node} />
             ) : (
               <Link
-                className="dispatch-inline-link inline-flex items-center gap-1 underline decoration-page-hair underline-offset-[3px]"
+                className="dispatch-inline-link inline-flex items-center gap-1 underline decoration-page-hair underline-offset-[3px] max-[1279px]:-my-[6px]"
                 data-node-tag-link=""
                 tabIndex={tabStops ? undefined : -1}
                 to={tagTo}
@@ -807,7 +801,7 @@ export function RowMargin({
       </div>
       {node.state === undefined && node.unsure !== true ? null : (
         <div className={NODE_ROW_LAYOUT.marginState}>
-          {node.state === undefined ? null : (
+          {standing === undefined ? null : (
             <span
               className={`inline-flex items-center gap-1 ${context ? "" : pageStateText[stateTone(node)]}`}
             >
@@ -815,22 +809,18 @@ export function RowMargin({
                 <NodeGlyph className="size-3 shrink-0" token={stateGlyph} />
               )}
               <span data-node-state={node.state} {...pageChrome}>
-                {changer === undefined ? nodeStateWord(node.state) : DECISIONS_WORDS.changed_by}
+                {standing.word}
                 {/* "Kept by" names the person who kept it, and "Changed by" the person whose
                     Change it waits on, by the page's one name for them (R2, R3). */}
-                {node.state === "kept" && node.keptBy !== undefined ? (
+                {standing.person === undefined ? null : (
                   <>
                     {" "}
-                    <span data-kept-by="" {...authorText}>
-                      {agentText.author(node.keptBy)}
-                    </span>
-                  </>
-                ) : null}
-                {changer === undefined ? null : (
-                  <>
-                    {" "}
-                    <span data-changed-by="" {...authorText}>
-                      {agentText.author(changer)}
+                    <span
+                      data-changed-by={node.state === "kept" ? undefined : ""}
+                      data-kept-by={node.state === "kept" ? "" : undefined}
+                      {...authorText}
+                    >
+                      {agentText.author(standing.person)}
                     </span>
                   </>
                 )}
@@ -849,8 +839,7 @@ export function RowMargin({
 }
 
 /** A typed node's kind, as its tag draws it: its type's word and shape, and the word alone for a
- *  `requirement` block of a document other than the spec, which is no statement (decision
- *  246). */
+ *  `requirement` block of a document other than the spec, which is no statement. */
 function KindTag({ node }: { node: TreeNode }): ReactNode {
   return node.type === "requirement" && !isStatement(node) ? (
     <span {...pageChrome}>{BLOCK_TYPE_NAMES.requirement}</span>
@@ -869,9 +858,15 @@ function KindTag({ node }: { node: TreeNode }): ReactNode {
  * beside its name are drawn where `body` holds: on every row of the outline (R11), and in the
  * body of a view that draws one (`DecisionsRow.tsx`).
  *
+ * An option's name and its words are the ask's stored text, drawn by the renderer from the
+ * server's reading of each, as the ask's card draws them (the reading list's `ask-option-text`).
+ * Whatever that draws that takes the focus - a reference's link - is out of the tab order unless
+ * `tabStops` holds, as every other control inside a row is (R9).
+ *
  * An open question's options are the choices of its answer (R16, the prototype's `button.opt`):
  * a press picks one, or lets it go, and sets the line at the foot of the outline to answer the
- * question, where the keyboard picks them too; the one picked is drawn on the waiting tint.
+ * question, where the keyboard picks them too; the one picked is drawn on the waiting tint. A
+ * reference inside such an option reads as a link and is none: the press is the option's.
  */
 export function NodeOptions({
   body,
@@ -885,12 +880,14 @@ export function NodeOptions({
   tabStops?: boolean;
   writer: OutlineWriter | undefined;
 }): ReactNode {
+  const list = useRef<HTMLUListElement>(null);
+  useOutOfTabOrder(list, !tabStops);
   const chosen = new Set(node.answer?.selected ?? []);
   const answering = writer !== undefined && takesAnswer(node);
   const picks =
     writer?.answer !== undefined && writer.answer.nodeId === node.id ? writer.answer.selected : [];
   return (
-    <ul className="my-0.5 text-sm leading-[21px]" data-node-options="">
+    <ul className="my-0.5 text-sm leading-[21px]" data-node-options="" ref={list}>
       {(node.options ?? []).map((option) => {
         const picked = chosen.has(option.label);
         const words = (
@@ -899,11 +896,27 @@ export function NodeOptions({
               {picked || picks.includes(option.label) ? "●" : "○"}
             </span>
             <span className="min-w-0 break-words">
-              <span {...authorText}>{option.label}</span>
+              <span {...authorText}>
+                <MarkdownBody
+                  markdown={option.label}
+                  source={node.source}
+                  surface="ask-option-text"
+                  tree={option.labelTree}
+                  variant="inline"
+                />
+              </span>
               {body && option.description !== undefined ? (
                 <span className={`font-normal ${pageQuietText}`}>
                   <span {...pageChrome}> — </span>
-                  <span {...authorText}>{option.description}</span>
+                  <span {...authorText}>
+                    <MarkdownBody
+                      markdown={option.description}
+                      source={node.source}
+                      surface="ask-option-text"
+                      tree={option.descriptionTree}
+                      variant="inline"
+                    />
+                  </span>
                 </span>
               ) : null}
             </span>
@@ -931,7 +944,7 @@ export function NodeOptions({
               // press leaves the focus where it is until it ends, so the press ends on the option
               // it went down on, in a view whose body opens on focus as much as on the outline's
               // rows. Once the press has picked, the focus goes to the row: one press picks the
-              // option and moves the reader to the row it is drawn on (decision 120).
+              // option and moves the reader to the row it is drawn on.
               <button
                 aria-pressed={picks.includes(option.label)}
                 className={`dispatch-inline-link ${pageRowOption} ${
@@ -949,7 +962,7 @@ export function NodeOptions({
                 tabIndex={tabStops ? undefined : -1}
                 type="button"
               >
-                {words}
+                <ReferenceHostIs host="control">{words}</ReferenceHostIs>
               </button>
             ) : (
               words
@@ -1076,18 +1089,28 @@ export function RowActs({
  * A person's answer to an ask, which is part of the ask and no node of its own
  * (R1): the page's word for it, who answered by
  * a name and a shape as every author is drawn (R9), what they chose where the ask offers no list
- * to mark it in, and what they wrote, whole and character for character, keeping the line breaks
- * they typed (R9, ruling 1). The reader's own answer carries the ink rule their own words carry
- * (R34).
+ * to mark it in, and what they wrote, whole (R9, ruling 1). The reader's own answer carries the
+ * ink rule their own words carry (R34).
+ *
+ * What they wrote is drawn as the row draws its node's words (`RowText`): by the renderer, from
+ * the server's reading of it, and where the read sent none from the page's own parse of it. What
+ * they chose is drawn by the renderer from the reading of each option's name the answer carries,
+ * as the Answers page draws it (the reading list's `answers-chosen-options`).
  */
 export function AskAnswer({
   answerer,
+  focused = false,
   node,
   own,
+  tabStops = false,
 }: {
   answerer: string;
+  /** Whether the row holds the focus (`RowText`'s `focused`). */
+  focused?: boolean;
   node: TreeNode;
   own: boolean;
+  /** Whether a link in the answer keeps its place in the tab order (`NodeRow`'s `tabStops`). */
+  tabStops?: boolean;
 }): ReactNode {
   const answer = node.answer;
   if (answer === undefined) return null;
@@ -1109,29 +1132,60 @@ export function AskAnswer({
         </span>
       </p>
       {node.options !== undefined || answer.selected.length === 0 ? null : (
-        <ul className={`flex min-w-0 flex-col text-sm leading-[21px] ${pageInkText}`}>
-          {answer.selected.map((option) => (
-            <li
-              className="break-words font-semibold"
-              data-answer-choice=""
-              key={option}
-              {...authorText}
-            >
-              {option}
-            </li>
-          ))}
-        </ul>
+        <AnswerChoices answer={answer} source={node.source} tabStops={tabStops} />
       )}
       {answer.text === "" ? null : (
-        <p
-          className={`text-[15px] leading-6 whitespace-pre-wrap break-words ${own ? pageInkText : pageWordsText}`}
+        <div
+          className={`text-[15px] leading-6 ${own ? pageInkText : pageWordsText}`}
           data-answer-text=""
           {...authorText}
         >
-          {answer.text}
-        </p>
+          <RowText
+            focused={focused}
+            markdown={answer.text}
+            source={node.source}
+            tabStops={tabStops}
+            tree={answer.textTree}
+          />
+        </div>
       )}
     </div>
+  );
+}
+
+/** The options an answer chose, where its ask offers no list to mark them in: each drawn by the
+ *  renderer from the reading of its name the answer carries, at the same index, and every link
+ *  that draws out of the tab order unless `tabStops` holds (R9). */
+function AnswerChoices({
+  answer,
+  source,
+  tabStops,
+}: {
+  answer: NodeAnswer;
+  source: TreeNode["source"];
+  tabStops: boolean;
+}): ReactNode {
+  const list = useRef<HTMLUListElement>(null);
+  useOutOfTabOrder(list, !tabStops);
+  return (
+    <ul className={`flex min-w-0 flex-col text-sm leading-[21px] ${pageInkText}`} ref={list}>
+      {answer.selected.map((option, index) => (
+        <li
+          className="break-words font-semibold"
+          data-answer-choice=""
+          key={option}
+          {...authorText}
+        >
+          <MarkdownBody
+            markdown={option}
+            source={source}
+            surface="answers-chosen-options"
+            tree={answer.selectedTrees?.[index]}
+            variant="inline"
+          />
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -1147,18 +1201,21 @@ export function NodeEdges({
   /** Whether a chip's link keeps its place in the tab order (`NodeRow`'s `tabStops`). */
   tabStops?: boolean;
 }): ReactNode {
+  // A chip reads a role by the issue the node's record is on, as the node's own words do.
+  const issue = node.source?.issue;
   return (
     <>
       {node.alsoUnder.map((chip) => (
         <Chip
           chip={chip}
+          issue={issue}
           key={`also:${chip.ref}`}
           label={CONTROL_LABELS.also_under}
           tabStops={tabStops}
         />
       ))}
       {node.chips.map((chip) => (
-        <Chip chip={chip} key={chip.ref} label={chip.label} tabStops={tabStops} />
+        <Chip chip={chip} issue={issue} key={chip.ref} label={chip.label} tabStops={tabStops} />
       ))}
       {node.gaps.map((gap) => (
         <span data-gap="" data-gap-kind={gap} key={gap} {...pageChrome}>
@@ -1171,52 +1228,97 @@ export function NodeEdges({
 
 /**
  * One tie of the node that is not the spine, on the node's own line (ruling 5): the page's word
- * for the tie where it has one, then the target by its short name where the model holds one, and
- * until then by its first words, cut at a word within 32 characters (`chipWords`), as the link a
- * reader follows to it; a whole document by the page's word for one, because today's model
- * holds no title for a document and its name is its file name (`documentWord`, part G's R4). No
- * address, slug or document name is drawn in its place (R22), save one: a short reference that
- * two or more targets answer to (`ambiguous`) names no one target, so it is drawn as its author
- * wrote it, as words with no link, and never as a target deleted (decision 62). A target nothing
- * answers to now says so. A chip whose target the batched reference read has not named yet
- * draws nothing until it does - "the names come last and all at once" (`useIssueTree.ts`) - and
- * neither does one the read named with no words at all: there is nothing to name it by. A
- * target's name is plain words already (`tree-drafts.ts`'s `treeContext` names every kind of
- * target in plain words, decisions 66 and 88), so it is drawn as it stands, with no markdown
- * pass: a pass would read "1. Stand the harness up." as a list and draw it without its number.
+ * for the tie where it has one, then the target by its name, cut as a chip's words are
+ * (`chipName`): a block's first line, and at a word within 32 characters, as the link a reader
+ * follows to it; a whole document by the page's word for it (`ReferenceNameReading.chipWord`),
+ * since a chip never draws a document's file name (decision 39), though the page publishes the
+ * document's name as a link to it reads it, for every plain line (`tree-drafts.ts`'s
+ * `treeContext`). No address, slug or document name is drawn in its place (R22), save one: a
+ * short reference that two or more targets answer to (`ambiguous`) names no one target, so it
+ * is drawn as its author wrote it, as words with no link, and never as a target deleted
+ * (decision 62). A target nothing answers to now says so.
+ *
+ * The name is the chip's address as the shared plain-text projection reads it standing alone:
+ * its target's current name (R8), which for a target the page's batched read answered is the
+ * name the page published for it (`refs/reference-names.tsx`) as a link to the target reads it,
+ * projected from the target's own words in plain words with no list or block reading, so "1.
+ * Stand the harness up." keeps its number (decisions 66 and 88); a party by its own name (R5),
+ * its role read by the issue the node's record is on (`issue`); and an issue by its key and
+ * title. A whole document and a block are the targets a chip names by other words than a link
+ * does: a document by the page's word for it, above; a block by the first block of its words
+ * that holds any, the line the names store projects beside the block's name from the reading
+ * the page published for it (`KnownReferences.lines`), as a block drawn as a chip in place in a
+ * node's words reads it (`RowText.tsx`), so a decision's chip is its heading. A
+ * chip whose target has no name yet draws nothing until it has one - "the names come last and
+ * all at once" (`useIssueTree.ts`) - which the projection's own answer says
+ * (`MarkdownHeadline.named`): a chip draws no address.
  *
  * A comment's or a message's chip names a post its author deleted by the deleted line without
  * its time, in the deleted line's italic, as a link to the post does (`RefLink`), the actor named
- * as the row names it (`DeletedLine`), where the model's name holds it as no registry knows it;
- * and a post its author edited by its words cut to the chip's length, then ` · edited`
- * (`EditedMark`), drawn after the cut, so no cut takes the mark (INFRA-1523, R2 and R3).
+ * as the row names it (`DeletedLine`), where the published name holds it as no registry knows
+ * it, so such a chip reads nothing; and a post its author edited by its words cut to the chip's
+ * length, then ` · edited` (`EditedMark`), drawn after the cut, so no cut takes the mark
+ * (deleted-post R2 and R3).
  */
 function Chip({
   chip,
+  issue,
   label,
   tabStops,
 }: {
   chip: NodeChip;
+  issue: string | undefined;
   label?: string;
   tabStops: boolean;
 }): ReactNode {
   // A chip names a node the page may not be drawing, and the old page's decision cards reached
   // each one by its words (R18, c-nothing-lost). A target nothing answers to now, one of several
-  // a short reference names, or a reference the grammar cannot read, is text: there is nowhere
-  // to go.
+  // a short reference names, a reference the grammar cannot read, or a person, whom no page
+  // shows (R5), is text: there is nowhere to go.
   const ambiguous = chip.ambiguous === true;
   const gone = chip.gone && !ambiguous;
   const target = parseNodeReference(chip.ref);
-  const word = ambiguous ? undefined : documentWord(target);
+  // A whole document by the page's word for it, which the chip's reading carries (`chipWord`),
+  // and where it carries none, the word the page's rule gives it by its address and the issue
+  // the node's record is on: that issue's spec as the Spec, and another issue's as a document.
+  const anyDocument = ambiguous ? undefined : documentWord(target, issue);
+  const word = anyDocument === undefined ? undefined : (chip.reading?.chipWord ?? anyDocument);
+  // A block by its first block of words, the line the store projected from the reading the page
+  // published for it, which the chip carries: such a chip waits on that line and reads nothing.
+  const { lines } = useKnownReferences();
+  const blockLine = !ambiguous && !gone && namesBlockByLine(target, chip.reading);
+  const line = blockLine ? lines.get(chip.ref) : undefined;
+  // A deleted comment or message by its deleted line, named from the delete as its row names
+  // the actor; a block of one is gone, and the model names it by nothing.
   const agentText = useAgentText();
   const deleted = postDeletion({ deleted_at: chip.deletedAt, deleted_by: chip.deletedBy });
-  // The model names a deleted comment or message by its deleted line, and a block of one by
-  // nothing, as gone.
-  const deletedName = deleted !== null && chip.name !== "";
-  const name = deletedName ? deletedLineText(deleted, { label: agentText.author }) : chip.name;
-  const cut = chipWords(name);
-  const edited = chip.editedAt !== undefined && cut !== "";
-  const words = ambiguous ? chip.ref : (word ?? cut);
+  const deletedLine =
+    ambiguous || gone || deleted === null || chip.reading === undefined
+      ? undefined
+      : deletedLineText(deleted, { label: agentText.author });
+  // The address as one text run, which the projection reads as the reference it is.
+  const address = useMemo(() => titleReading(chip.ref), [chip.ref]);
+  const { reads, text } = usePlainHeadline(
+    ambiguous || gone || word !== undefined || blockLine || deletedLine !== undefined
+      ? undefined
+      : address,
+    undefined,
+    { issue, surface: "node-row-chip" }
+  );
+  // Named only where the projection wrote its target's name in place of the address, which a
+  // chip never draws (`MarkdownHeadline.named`).
+  const named = text !== undefined && text.named.length > 0;
+  const name =
+    deletedLine !== undefined
+      ? chipName(target, deletedLine)
+      : line !== undefined
+        ? chipName(target, line)
+        : text !== undefined && named
+          ? chipName(target, text.text)
+          : "";
+  const words = ambiguous ? chip.ref : (word ?? name);
+  if (!gone && words === "") return reads;
+  const href = chip.gone || target === undefined ? undefined : referenceHref(target);
   // A target's name is its author's words, but for the page's own in it: the deleted line's
   // opening and the edited mark, marked as the page's chrome (INFRA-1523, R3).
   const opening =
@@ -1225,34 +1327,35 @@ function Chip({
       : deleted.by === null
         ? CONTROL_LABELS.post_deleted
         : CONTROL_LABELS.post_deleted_by;
-  const mark = edited ? <EditedMark at={chip.editedAt} marks={pageChrome} /> : null;
+  const mark =
+    chip.editedAt === undefined || name === "" ? null : (
+      <EditedMark at={chip.editedAt} marks={pageChrome} />
+    );
   const shown =
     ambiguous || word !== undefined ? (
       words
-    ) : deletedName ? (
+    ) : deletedLine !== undefined ? (
       <span className="italic" data-post-deleted="" {...pageChrome}>
         {opening}
-        {cut === opening ? null : <span {...authorText}>{cut.slice(opening.length)}</span>}
-        {mark}
+        {name === opening ? null : <span {...authorText}>{name.slice(opening.length)}</span>}
       </span>
     ) : (
       <>
-        {cut}
+        {name}
         {mark}
       </>
     );
-  if (!gone && words === "") return null;
-  const route = chip.gone ? undefined : target;
   // The page's word for a document is the page's, and a target's own words are its author's.
   const marks = word === undefined ? authorText : pageChrome;
   return (
     <span className="min-w-0 [overflow-wrap:anywhere]" data-node-chip="">
+      {reads}
       {label === undefined ? null : <span {...pageChrome}>{label} </span>}
       {/* A sentence about the target, so a colon sets it apart from the target's own words. */}
       {chip.stale === true ? <span {...pageChrome}>{CONTROL_LABELS.target_stale}: </span> : null}
       {gone ? (
         <span {...pageChrome}>{CONTROL_LABELS.target_gone}</span>
-      ) : route === undefined ? (
+      ) : href === undefined ? (
         // An address as written may run longer than the line, so it alone may wrap.
         <span className={ambiguous ? undefined : "whitespace-nowrap"} data-chip-name="" {...marks}>
           {shown}
@@ -1265,51 +1368,13 @@ function Chip({
           className={`dispatch-inline-link font-medium whitespace-nowrap underline decoration-page-bullet underline-offset-[3px] ${pageMutedText}`}
           data-chip-name=""
           tabIndex={tabStops ? undefined : -1}
-          to={buildReferencePath(route)}
+          to={href}
           {...marks}
         >
           {shown}
         </Link>
       )}
     </span>
-  );
-}
-
-/** The parent's own first line, as the link a reader follows to that node where the model gives
- *  it an address (R18, and R26: a step's row reaches the statement it serves). Out of the tab
- *  order, as every other control inside a row is, unless `tabStops` holds: `f` steps to it and
- *  Enter follows it. A parent its author deleted is drawn as the deleted line, as its own row
- *  draws it (`DeletedLine`), and one its author edited says ` · edited` after its line
- *  (`EditedMark`), so the line holds both marks wherever the parent's own row is not drawn
- *  (INFRA-1523, R2 and R3). The outline's row draws it; so does the Verification view's
- *  parent line (`VerificationFilterBody.tsx`'s `ParentLine`), with `tabStops`, since no tree's
- *  keys reach a link there; and so does the Decisions view's parent line of a parent with words
- *  (`DecisionsRow.tsx`), without `tabStops`, since that view's keys reach a link in its row. */
-export function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean }): ReactNode {
-  const route = line.reference === undefined ? undefined : parseNodeReference(line.reference);
-  const deleted = postDeletion({ deleted_at: line.deletedAt, deleted_by: line.deletedBy });
-  const words =
-    deleted === null ? (
-      <>
-        {line.line}
-        <EditedMark at={line.editedAt} marks={pageChrome} />
-      </>
-    ) : (
-      <DeletedLine deleted={deleted} />
-    );
-  return route === undefined ? (
-    <span className="min-w-0 break-words" {...authorText}>
-      {words}
-    </span>
-  ) : (
-    <Link
-      className={`dispatch-inline-link min-w-0 break-words underline decoration-page-bullet underline-offset-[3px] ${pageQuietText}`}
-      tabIndex={tabStops ? undefined : -1}
-      to={buildReferencePath(route)}
-      {...authorText}
-    >
-      {words}
-    </Link>
   );
 }
 
@@ -1509,21 +1574,13 @@ export function MoreWords({
  * before the page is painted, and while it stands within one screen of the viewport but wholly
  * outside the view, and again when its width or its words change or the page's typeface
  * arrives; never for any other row. A row in view keeps its length until a scroll leaves it
- * wholly outside the view, save where it draws other words: `drawnFrom` is what the words are
- * drawn from, and where a commit draws them from other words, a row measured before is measured
- * again in that commit as one that mounts, before the page is painted (`clampRedrawn`). Other
- * words are words of another value, as TanStack Query's `replaceEqualDeep` compares two answers of
- * a read (`api/queries.ts`): a later read answers the same words in objects of its own - a names
- * read under a new key, which a new comment on the issue starts, shares none with the last - and
- * a row drawn from them draws nothing new, so it keeps its length. A caller that cannot say what
- * its words are drawn from passes nothing. Undefined where the words are drawn whole, or not
+ * wholly outside the view. Undefined where the words are drawn whole, or not
  * measured yet; a row the reader scrolled away from keeps the cut it last had, save one measured
  * on the fallback face, which is measured again once the typeface arrives.
  */
 export function useClamp(
   words: RefObject<HTMLElement | null>,
-  cuttable: boolean,
-  drawnFrom?: unknown
+  cuttable: boolean
 ): Clamp | undefined {
   const [clamp, setClamp] = useState<Clamp | undefined>(undefined);
   useLayoutEffect(() => {
@@ -1534,15 +1591,5 @@ export function useClamp(
     }
     return watchClamp(element, (next) => setClamp((held) => (sameClamp(held, next) ? held : next)));
   }, [cuttable, words]);
-  // After the watch above: in a commit that watches the words anew, the measurer has not
-  // measured them yet, and leaves them to the mount's own pass.
-  const drawn = useRef(drawnFrom);
-  useLayoutEffect(() => {
-    // `replaceEqualDeep` gives back the old value where the new one holds the same values.
-    const same = replaceEqualDeep(drawn.current, drawnFrom) === drawn.current;
-    drawn.current = drawnFrom;
-    const element = words.current;
-    if (!same && cuttable && element !== null) clampRedrawn(element);
-  }, [cuttable, drawnFrom, words]);
   return cuttable ? clamp : undefined;
 }

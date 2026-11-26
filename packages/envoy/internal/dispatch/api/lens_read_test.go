@@ -452,7 +452,7 @@ func TestATriggerPointsOnlyAtALensInvokedBefore(t *testing.T) {
 		} {
 			// The answer names the near end of the refused tuple ("from") before its far end
 			// ("at"), and a lens that triggers itself once as each.
-			answer := requireRefused(t, refused.name+" "+when, refused.response, http.StatusBadRequest, "INVALID_POINTER",
+			answer := requireRefusedNaming(t, refused.name+" "+when, refused.response, http.StatusBadRequest, "INVALID_POINTER",
 				graphstore.TupleTriggeredBy)
 			if !graphstoretest.NamesInOrder(answer.Error, refused.near, refused.far) {
 				t.Errorf("%s %s is refused %q, want it to name %s and then %s", refused.name, when, answer.Error, refused.near, refused.far)
@@ -673,7 +673,7 @@ func TestALensReadOfANodeNobodyMaySeeAnswersNotFound(t *testing.T) {
 		"dispatch://NOPE-404/spec", "no address at all",
 	} {
 		response := rig.lensesResponse(address, "bob")
-		requireRefused(t, "bob's read on "+address, response, http.StatusNotFound, "NOT_FOUND", address)
+		requireRefusedNaming(t, "bob's read on "+address, response, http.StatusNotFound, "NOT_FOUND", address)
 		bodies[address] = strings.ReplaceAll(response.Body.String(), address, "<on>")
 	}
 	for address, body := range bodies {
@@ -690,5 +690,5 @@ func TestALensReadOfANodeNobodyMaySeeAnswersNotFound(t *testing.T) {
 	if bobs := rig.lenses(rig.spec, "bob"); len(bobs.Lenses) != 0 || len(bobs.Chains) != 0 || bobs.Lenses == nil || bobs.Chains == nil {
 		t.Errorf("bob reads the spec's lenses %v and chains %v, want two empty lists", readAddresses(bobs.Lenses), bobs.Chains)
 	}
-	requireRefused(t, "a read on nothing", rig.lensesResponse("", "bob"), http.StatusBadRequest, "INVALID_QUERY", "on")
+	requireRefusedNaming(t, "a read on nothing", rig.lensesResponse("", "bob"), http.StatusBadRequest, "INVALID_QUERY", "on")
 }

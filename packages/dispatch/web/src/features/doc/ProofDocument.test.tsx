@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
@@ -29,17 +29,24 @@ import type {
 } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { appKeymap } from "../shell/keymap";
 import { colorForLogin } from "./connection";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 answerTextReadsWithTheSeededText();
 
 /**
  * Every case of this file opens the issue's spec where an issue's room holds it: in a fragment of
  * the issue's one Yjs document named by the server, which the artifact the page is handed and the
- * artifact read both answer (INFRA-1253), never `prosemirror`. So each case passes only where the
- * page binds the fragment the server names. The other ProofDocument suites open a spec whose
- * answers name none, as a server without issue rooms answers it.
+ * artifact read both answer (the issue-tree spec), never `prosemirror`. So each case passes only
+ * where the page binds the fragment the server names. The other ProofDocument suites open a spec
+ * whose answers name none, as a server without issue rooms answers it.
  */
 const ROOM_FRAGMENT = "6f1d2c3b-4a5e-4f60-8b7c-9d0e1f2a3b4c";
 const artifact = { ...spec, fragment: ROOM_FRAGMENT };
@@ -876,7 +883,7 @@ test("a selection-bar action opens the margin composer for the mark and settles 
     heldSends(queryClient).send(marginComposeSendKey(anchor.artifact), {
       anchor,
       ask: { multiple: false, options: [], urgency: "med" },
-      draft: { body: "Why?", mentions: [], replacement: "" },
+      draft: { body: "Why?", replacement: "" },
       edit: undefined,
       kind,
       owner: { issueKey: "CORE-1", kind: "issue" },
@@ -1054,7 +1061,7 @@ test("a closed document's Comment opens a quote composer with no mark, which pos
       heldSends(queryClient).send(marginComposeSendKey(anchor.artifact), {
         anchor,
         ask: { multiple: false, options: [], urgency: "med" },
-        draft: { body: "After the close", mentions: [], replacement: "" },
+        draft: { body: "After the close", replacement: "" },
         edit: undefined,
         kind: "comment",
         owner: { issueKey: "CORE-1", kind: "issue" },

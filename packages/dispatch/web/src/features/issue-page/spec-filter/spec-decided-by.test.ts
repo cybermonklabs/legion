@@ -1,14 +1,17 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { renderHook } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 
-import type { CheckBlock } from "../../../api/types";
-import { wordsOf } from "../../refs/tree-fragment";
+import type { CheckBlock, DisplayTree } from "../../../api/types";
+import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import { ReferenceNamesProvider } from "../../refs/reference-names";
 import { decisionNodes } from "../decision-nodes/decision-nodes";
 import { issueTree, KEY, node, READER, READER_ACTOR } from "../decisions-filter/decisions-fixtures";
 import type { TreeNode } from "../issue-tree";
 import { CHIP_LIMIT } from "../node-row-chip";
 import { useReferenceNames } from "../one-line";
 import { presetView } from "../presets";
+import { Publisher, publishedTree } from "../projection-fixture";
 import { SENTENCE_TABLE } from "../sentence-table";
 import { treeContext } from "../tree-drafts";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
@@ -43,9 +46,13 @@ import {
  */
 
 /** How this issue addresses a node, which is how a tie finds the statement it names. Only the
- *  context's addresses are read here and no chip's name, so the line it names a block by is the
- *  whole reading's words (`wordsOf`), which nothing below reads. */
-const { nodeIdOf } = treeContext({ issue: issueDetails() }, wordsOf);
+ *  context's addresses are read here and no chip's name. */
+const { nodeIdOf } = treeContext({ issue: issueDetails() });
+
+// A chip is named from the reading the page published for it, which the store projects.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** A page that names no reference, so `referenceStandIns` names one by its issue's key where it
  *  is an issue, and else by its short form (`shortForm`). */
@@ -221,7 +228,7 @@ test("another person's answer is not drawn as the reader's own words", () => {
 test("an agent's decision is quoted by its own words, with how sure it was and how it stands", () => {
   const text = "One batched read names every address. The page asks the server once for them all.";
   const tree = { content: [{ content: [{ text, type: "text" }], type: "paragraph" }], type: "doc" };
-  const source = { id: "artifact-dec", kind: "artifact" } as const;
+  const source = { id: "artifact-dec", issue: KEY, kind: "artifact" } as const;
   const made = node({
     at: "2026-11-13T07:00:00Z",
     author: { id: "session-planner", kind: "agent" },
@@ -259,6 +266,64 @@ test("an agent's decision is quoted by its own words, with how sure it was and h
     unsure: true,
   });
   expect(decided?.words).toEqual({ markdown: text, source, tree });
+});
+
+/** The type of every node of `tree`, its own first, each before its children's. */
+function typesIn(tree: DisplayTree | undefined): string[] {
+  if (tree === undefined) return [];
+  const content = Array.isArray(tree.content) ? (tree.content as DisplayTree[]) : [];
+  return [tree.type, ...content.flatMap(typesIn)];
+}
+
+// R5, the tester's finding at e55b07e9 on the real stack: the tree read answers a decision
+// node's text as its whole stored block, the lines that open and close its `decision` directive
+// included, and its reading as that block's, one `decision` node that carries the block's
+// attributes. The cell drew that node, its attributes with it ("DECISION shaped: … replaced
+// false"). It draws the decision's own words and their reading, as the outline's node does
+// (`tree-read/tree-nodes.ts`' `readingOf`), and the because line quotes their first block.
+test("an agent's decision the tree read answers as its whole stored block draws its own words, never its block's attributes", () => {
+  const heading = {
+    attrs: { level: 3 },
+    content: [{ text: "Keep it", type: "text" }],
+    type: "heading",
+  };
+  const paragraph = {
+    content: [{ text: "Keep the model pure. The page reads it.", type: "text" }],
+    type: "paragraph",
+  };
+  const text =
+    `:::decision{#d1 shaped="${statementRef("r1")}" replaced="false"}\n` +
+    "### Keep it\n\nKeep the model pure. The page reads it.\n:::";
+  const cut = { content: [heading, paragraph], type: "doc" };
+  const groups = bodyOf(issueTree([statement("r1"), decisionNode("d1", { text, tree: cut })]), [
+    decision("d1", {
+      text,
+      text_tree: {
+        content: [
+          {
+            attrs: { id: "d1", replaced: "false", shaped: statementRef("r1") },
+            content: [heading, paragraph],
+            type: "decision",
+          },
+        ],
+        type: "doc",
+      },
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+      },
+    }),
+  ]);
+  const decided = groups[0]?.runs[0]?.decision;
+  expect(decided?.words, "the cell draws the decision's whole stored block").toEqual({
+    markdown: "### Keep it\n\nKeep the model pure. The page reads it.\n",
+    tree: cut,
+  });
+  expect(
+    typesIn(decided?.words?.tree),
+    "the cell draws the block's `decision` node, its attributes with it"
+  ).not.toContain("decision");
+  expect(decided?.quote, "the because line quotes the block's own lines").toBe("Keep it");
 });
 
 // R5: an agent's decision is quoted on the
@@ -568,10 +633,13 @@ test("a person's answer that cites a block carries its whole text for the focus,
     // The tree names the block by a chip of the batched read (`tree-drafts.ts`), which is the
     // name the page gives a reference a plain line cites.
     decisionNode("d1", {
-      chips: [{ answered: true, gone: false, name: "the one-line rule", ref: cited }],
+      chips: [{ answered: true, gone: false, reading: { words: "the one-line rule" }, ref: cited }],
     }),
   ]);
-  const names = renderHook(() => useReferenceNames(tree, nodeIdOf));
+  const published = publishedTree(tree);
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(ReferenceNamesProvider, null, createElement(Publisher, { published }), children);
+  const names = renderHook(() => useReferenceNames(tree, nodeIdOf), { wrapper });
   try {
     const made = bodyOf(tree, [], READER, [], names.result.current)[0]?.runs[0]?.decision;
     expect(made?.quote).toBe("Keep it as the one-line rule says.");

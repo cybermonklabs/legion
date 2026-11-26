@@ -42,17 +42,17 @@ import { asUser } from "./users";
  * them (decision 2 of the parts).
  *
  * The page is the one the reader turns on (`withIssuePage`), opened at the issue's own address
- * with `page.goto`; the body is `slots/body.tsx`'s: G's rows drew every branch unfolded, and
- * part I's outline later, which folds to the frontier: so a row that reads a node unfolds every
- * folded branch first (`unfoldEveryBranch`), and holds on either body.
+ * with `page.goto`; the body is `slots/body.tsx`'s, whose outline opens with every node unfolded
+ * and folds a node only where the reader folds it: a row that reads a node the reader may have
+ * folded unfolds every folded branch first (`unfoldEveryBranch`).
  *
  * The DOM a row reads: each node is a `role="treeitem"` `[data-node-row]` inside the
  * `role="tree"` named "Issue tree", carrying `data-node-id`, `data-node-type`, `data-node-state`
  * and `aria-level`; inside it the bullet `[data-node-bullet]` (the fold control where the node
  * holds nodes), the words `[data-node-words]` with their trail of chips `[data-node-chip]`, the
  * group `[data-node-margin]` (tag `[data-node-tag]`, author `[data-node-author]`, time
- * `[data-node-time]`, state `[data-node-state]`), the body `[data-node-body]` of the focused or
- * pinned row, and the focused row's acts `[data-row-act]` and `[data-row-copy]`.
+ * `[data-node-time]`, state `[data-node-state]`), the body `[data-node-body]` that every row's
+ * face draws whatever the focus, and the focused row's acts `[data-row-act]` and `[data-row-copy]`.
  *
  * A reader answers through one `page.evaluate` and returns what is there - an empty list for a
  * page that draws none of it - and a row asserts on that answer.
@@ -253,19 +253,15 @@ function cssValue(value: string): string {
 const BRANCHES_OPENED_AT_MOST = 200;
 
 /**
- * Opens every branch a fold left shut, as a reader does to read past one: these rows were drawn
- * with every branch open before the outline, which folds to the frontier and draws a
- * branch deeper than the levels it draws - one below 1024 px, three from there up - as one
- * `[data-branch-more]` line counting its nodes. So a row that reads what a branch holds presses
- * each fold control and each such line's control, until neither is left, rather than asserting
- * that the first drawing carried it. It ends with the focus on no row: a press may leave it on
- * the row it opened, and a focused row draws its body, while the rows read the tree as it stands
- * with no row focused.
+ * Opens every branch a fold left shut, as a reader does to read past one: the outline opens with
+ * every node unfolded, and a row that folded one, or a node that arrives under a fold, is read
+ * only once its branch is open again. So a row that reads what a branch holds presses each fold
+ * control until none is left, rather than asserting that the first drawing carried it. It ends
+ * with the focus on no row: a press may leave it on the row it opened, while the rows read the
+ * tree as it stands with no row focused.
  */
 export async function unfoldEveryBranch(page: Page): Promise<void> {
-  const controls = nodeRows(page)
-    .getByRole("button", { exact: true, name: CONTROL_LABELS.unfold })
-    .or(issuePage(page).locator("[data-branch-more] button"));
+  const controls = nodeRows(page).getByRole("button", { exact: true, name: CONTROL_LABELS.unfold });
   for (let pressed = 0; pressed < BRANCHES_OPENED_AT_MOST; pressed += 1) {
     const first = controls.first();
     // A caller waits for the tree it opens first - a settled load, or an expect.poll that reads
@@ -285,16 +281,32 @@ export async function unfoldEveryBranch(page: Page): Promise<void> {
 /** How long `expectSeedDrawn` waits for the seed's rows and the names their chips read. */
 const SEED_DRAWN_MS = 30_000;
 
+/** The seeded nodes Conversation draws no row of: its read holds no result, plan task or
+ *  message, and a comment on a node's text is drawn beside that node and not as a row. Graph,
+ *  which draws the whole tree read, draws each of them as Conversation draws a node. */
+export function leftOutOfConversation(seeded: RowSeed): string[] {
+  return [
+    seeded.result,
+    seeded.longMessage,
+    seeded.linked,
+    ...seeded.replies,
+    seeded.change,
+    blockNode(seeded.slugs.plan, "t1"),
+    blockNode(seeded.slugs.plan, "t2"),
+  ];
+}
+
 /**
- * Waits until the page draws a row for every node the seed wrote that a row reads, and the names
- * of what their chips cite. The tree is drawn with the issue alone; its comments, messages,
- * questions, decisions, results and blocks arrive after it, and the batched names last
- * (`useIssueTree.ts`), so a reading taken as soon as the tree exists may find a row, or a chip's
- * name, not drawn yet. The needs chip of `t2` draws nothing until the names have come
- * (`NodeRow.tsx`'s `Chip`), so it stands for them. Each poll first opens every branch a fold
- * left shut (`unfoldEveryBranch`), since a node that arrives late may arrive folded.
+ * Waits until the page draws a row for every node the seed wrote that Conversation draws, and
+ * the names of what their chips cite. The tree is drawn with the issue alone; its nodes, the
+ * kept reads and the batched names arrive after it (`useIssueTree.ts`), so a reading taken as
+ * soon as the tree exists may find a row, or a chip's name, not drawn yet. The unsure decision
+ * cites the plan's `t1`, which Conversation's read does not hold, so its chip names `t1` only
+ * once the batched names have come, and it stands for them. Each poll first opens every branch
+ * a fold left shut (`unfoldEveryBranch`), since a node that arrives late may arrive folded.
  */
 export async function expectSeedDrawn(page: Page, seeded: RowSeed): Promise<void> {
+  const leftOut = leftOutOfConversation(seeded);
   const ids = [
     seeded.child,
     seeded.blocker,
@@ -320,8 +332,10 @@ export async function expectSeedDrawn(page: Page, seeded: RowSeed): Promise<void
     blockNode(seeded.slugs.plan, "t1"),
     blockNode(seeded.slugs.plan, "t2"),
     blockNode(seeded.slugs.verification, "c1"),
-  ];
-  const needs = blockNode(seeded.slugs.plan, "t2");
+  ].filter((id) => !leftOut.includes(id));
+  const cited = nodeRow(page, seeded.unsure)
+    .first()
+    .locator(`${SELECTORS.nodeWords} a[data-row-chip]`);
   await expect
     .poll(
       async () => {
@@ -329,7 +343,7 @@ export async function expectSeedDrawn(page: Page, seeded: RowSeed): Promise<void
         const rows = await drawnRows(page);
         return {
           missing: ids.filter((id) => rowOf(rows, id) === undefined),
-          named: (rowOf(rows, needs)?.chips.length ?? 0) > 0,
+          named: /^1\. Stand/u.test((await cited.allTextContents()).join("").trim()),
         };
       },
       {
@@ -357,7 +371,9 @@ export interface DrawnRow {
   readonly answerAuthor: string | null;
   /** The text of the answer line an answered ask draws on its own row, or null where none. */
   readonly answerLine: string | null;
-  /** The whole of what the person wrote, every character kept; null where none is drawn. */
+  /** The whole of what the person wrote, every word and every paragraph kept, in order: each
+   *  paragraph the renderer draws, joined by the blank line the store holds between them, or
+   *  the text as drawn where the answer draws no paragraph; null where none is drawn. */
   readonly answerText: string | null;
   /** The author the row's group names, or null where it names none. An open body names an
    *  author of its own, "Author unknown" included, which this leaves out. */
@@ -422,6 +438,17 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
       if (rect.width === 0 && rect.height === 0) return null;
       return { height: rect.height, width: rect.width, x: rect.x, y: rect.y };
     };
+    // The renderer draws each paragraph of a stored text as a <p> of its own, so the blank line
+    // between two of them is a block boundary and no character of the page: the answer's words
+    // are its paragraphs' text, joined as the store joins them. An answer drawn with no <p> - as
+    // stored, where the read sent no reading - is its text as drawn.
+    const answerWords = (element: Element | null): string | null => {
+      if (element === null) return null;
+      const paragraphs = [...element.querySelectorAll("p")];
+      return paragraphs.length === 0
+        ? element.textContent
+        : paragraphs.map((paragraph) => paragraph.textContent ?? "").join("\n\n");
+    };
     const lineBox = (element: Element | null | undefined) =>
       element === null || element === undefined
         ? null
@@ -438,7 +465,7 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
       return {
         answerAuthor: text(answerLine?.querySelector(selectors.answerAuthor) ?? null),
         answerLine: text(answerLine),
-        answerText: row.querySelector(selectors.answerText)?.textContent ?? null,
+        answerText: answerWords(row.querySelector(selectors.answerText)),
         author: text(row.querySelector(`${selectors.nodeMargin} ${selectors.nodeAuthor}`)),
         authorShape:
           row
@@ -1088,7 +1115,7 @@ async function uploadPicture(key: string, name: string): Promise<string> {
  * change - and its `decision` block of the plan holding `:::requirement{#r1}` and a block's
  * address, so `r1` is a requirement of a document other than the spec (decision 246); a
  * picture; an open question with two options waiting on the reader, an answered one, and the
- * long texts c-cut reads. It is at most three levels deep (`DRAWN_LEVELS`).
+ * long texts c-cut reads. It is at most three levels deep.
  *
  * A decision is a `decision` block of the document that holds it, which the seed names by the
  * id it writes on it: Dispatch refuses a document of decisions (409 `DECISIONS_ARE_NODES`).
@@ -1272,8 +1299,8 @@ export async function seedRows(): Promise<RowSeed> {
     },
     asPlanner
   );
-  // The outline draws a message thread only once a person wrote in it (`agents-only.ts`), so the
-  // reader answers each of the planner's two messages.
+  // The reader answers each of the planner's two messages, so the outline draws a person's reply
+  // under each.
   const replies: string[] = [];
   for (const message of [longMessage, linked]) {
     replies.push((await createMessage(key, { body: "Read.", in_reply_to: message.id })).id);
@@ -1339,12 +1366,11 @@ export interface LongRowsSeed {
 /**
  * One issue whose spec opens with one long statement the planner wrote, which a check of its
  * Verification document serves and no result proves, and whose conversation is the reader's
- * comment and, under it, `LONG_ROWS` replies of the planner's of 160 short words each, which a
- * row cuts at six lines at either width and draws whole shorter than a phone's screen, with a
- * run of `OWN_ROWS` replies of the reader's own of the same words after the first
- * `ROWS_ABOVE_OWN`, which no cut ever shortens. Drawn whole they make a page many screens tall,
- * so a jump into it lands on rows no batch measured. The statement is the body's first row, and
- * the check nothing proves keeps it open in an outline folded to what is open.
+ * comment and, under it, `LONG_ROWS` replies of the planner's of 160 short words each, each drawn
+ * whole and shorter than a phone's screen, with a run of `OWN_ROWS` replies of the reader's own
+ * of the same words after the first `ROWS_ABOVE_OWN`. Drawn whole they make a page many screens
+ * tall, so a jump into it lands on rows no frame has laid out yet. The statement is the body's
+ * first row.
  */
 export async function seedLongRows(): Promise<LongRowsSeed> {
   await createProject({ key: PROJECT, name: "Rows" });
@@ -1370,7 +1396,7 @@ export async function seedLongRows(): Promise<LongRowsSeed> {
   const specSlug =
     ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary)?.slug ?? "";
   // A question that waits on the reader, which an outline that opens with the focus on such a
-  // question focuses in place of its first row, so the statement keeps its cut.
+  // question focuses in place of its first row, so the statement is no row the opening focuses.
   await createAsk(key, { question: "At which width is the cut read?", urgency: "high" }, asPlanner);
   const head = await createComment(key, { body: "Each reply under this one is long." });
   const rows: string[] = [];

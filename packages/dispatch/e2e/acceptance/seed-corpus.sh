@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The seeded corpus of dispatch://INFRA-1253 (plan task TT1): a project of issues written through
+# The seeded corpus of task TT1 of the issue-tree plan: a project of issues written through
 # the API of the release before this branch, the server lib-baseline.sh boots from BASELINE_SHA,
 # so that every row of it is one that release's own writers left. What reads it:
 #   - R19's two counts (c-migration-size's body and the first lines of c-old-versions-render): the
@@ -9,9 +9,10 @@
 #     --dry-run` timing (c-room-cutover's dry-run reading), which run over the database this
 #     leaves;
 #   - T16a's page size (c-tree-page) and c-conversation-holds-the-discussion's large issue: the
-#     largest issue here has the shape of the largest of the ten INFRA issues R8 measures,
-#     INFRA-1308, read through Dispatch's API at 2026-11-16T09:11Z: 10,842 blocks over 243
-#     documents, 34 comments, 34 messages and no ask, 10,910 items. Those are the constants below.
+#     largest issue here has the shape of the largest of the ten issues R8 measures, the memory
+#     experiment's measurement, read through Dispatch's API at 2026-11-16T09:11Z: 10,842 blocks
+#     over 243 documents, 34 comments, 34 messages and no ask, 10,910 items. Those are the
+#     constants below.
 #
 # The corpus, in project PROJECT (each issue's key is printed as it is written):
 #   The shapes issue. Its spec, its verification.md and its plan.md, and a notes.md, each hold the
@@ -75,8 +76,8 @@
 set -euo pipefail
 set +x
 
-# The largest of the ten INFRA issues R8 measures, INFRA-1308, as Dispatch's API read it at
-# 2026-11-16T09:11Z: its blocks, documents, comments, messages and asks.
+# The largest of the ten issues R8 measures, the memory experiment's measurement, as Dispatch's API
+# read it at 2026-11-16T09:11Z: its blocks, documents, comments, messages and asks.
 readonly corpus_measured_blocks=10842
 readonly corpus_measured_documents=243
 readonly corpus_measured_comments=34

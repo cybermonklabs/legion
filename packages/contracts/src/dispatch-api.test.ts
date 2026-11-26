@@ -65,6 +65,7 @@ import {
   type MyAnswersResponse,
   type MyRepliesResponse,
   NO_ROUTE_RETRY_DELAYS_MS,
+  ProjectAccessChangedEventPayloadSchema,
   type ReferenceChangesPayload,
   type ReplyBlock,
   ReplyBlockSchema,
@@ -96,6 +97,22 @@ test("review event validation preserves approved byte hashes and their provenanc
     artifact_id: "doc-1",
     version: 2,
   });
+});
+
+test("a project.access_changed payload names the project and the change, and no access list", () => {
+  // The event is read by every reader of the project's events, so it carries no email, group name
+  // or channel id, nor the time the channels changed.
+  const change = { project: "CORE", change: "slack_channels" } as const;
+  expect(ProjectAccessChangedEventPayloadSchema.parse(change)).toEqual(change);
+  for (const extra of [
+    { owner: "alice@example.com" },
+    { slack_channels: ["C012345678"] },
+    { slack_channels_changed_at: "2026-11-18T18:12:30Z" },
+  ]) {
+    expect(ProjectAccessChangedEventPayloadSchema.safeParse({ ...change, ...extra }).success).toBe(
+      false
+    );
+  }
 });
 
 test("delivery modes are exactly the closed capability list", () => {

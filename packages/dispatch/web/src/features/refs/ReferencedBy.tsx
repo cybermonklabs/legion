@@ -3,23 +3,31 @@ import type { ButtonHTMLAttributes, Ref, RefObject } from "react";
 import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
-import type { GraphEdge } from "../../api/types";
+import type { DisplayTree, GraphEdge, GraphReferences } from "../../api/types";
 import {
   borderDefault,
   linkHoverText,
   linkText,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pageQuietText,
+  pageRowAct,
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { compiledBlockSchema } from "../doc/schema";
 import { type BlockItemKind, blockFragment, isBlockItemKind } from "./block-reference";
-import { DeletedBody, EditedMark } from "./PostBody";
+import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownPreview } from "./MarkdownPreview";
+import { DeletedBody, EditedMark } from "./PostMarks";
 import { postDeletion } from "./post-marks";
 import { referenceTriggerProps } from "./RefPreview";
 import { referencesQuery, standsFailed, useNewIssuePageFreshness } from "./reference-target";
 import type { DispatchReferenceRoute } from "./routes";
-import { buildReferencePath, parseNodeReference } from "./routes";
+import { parseNodeReference, referenceHref } from "./routes";
 import { Timestamp } from "./Timestamp";
+import { type TextSource, textSourceKind, textSourceOf } from "./text-references";
 
 /** Every node kind a read of the graph answers, which `GraphNode.kind` names, each with the
  *  word the panel reads it under. A kind a newer build adds is skipped where it is met, since no
@@ -69,7 +77,7 @@ const STRUCTURAL_LABELS: Partial<Record<GraphEdge["kind"], string>> = {
   duplicate_of: "Duplicate issue",
   filed_from: "Issue filed from it",
   followed_by: "Follower",
-  // A wait, one relation however its ends are (dispatch://INFRA-1253 R10): an issue's on an issue,
+  // A wait, one relation however its ends are (R10 of the issue-tree spec): an issue's on an issue,
   // and the `needs` a plan task's `block[]` attribute makes on another (`blocks.json`), as a
   // check's or a plan task's `serves` names a requirement. Read from the node waited on, the edge
   // says what the citing node does for it.
@@ -116,6 +124,61 @@ const MANIFEST_EDGE_KINDS = new Set(
   )
 );
 
+/** Whether a list of what references a node draws `edge`. During a release a newer Dispatch can
+ *  answer with an edge kind, or a node kind at the other end, that this page does not know; every
+ *  such list - this panel, and a focused row's in Details (`NodeReferences.tsx`) - leaves that
+ *  edge out rather than draw it under another edge's label. */
+export function drawsEdge(edge: GraphEdge): boolean {
+  return (
+    (Object.hasOwn(RENDERED_EDGE_KINDS, edge.kind) || MANIFEST_EDGE_KINDS.has(edge.kind)) &&
+    Object.hasOwn(NODE_LABELS, edge.node.kind)
+  );
+}
+
+/** The edges a list of what references `reference` shows of a read's `edges`: those it draws
+ *  (`drawsEdge`), and with `page` none whose citing item - the node, or the ask, comment or
+ *  message a block of one belongs to (`blockItem`) - is an ask, comment or message of the issue
+ *  `reference` names, since the new page's outline is that issue's conversation. One function, so
+ *  a control that counts the list counts the rows the list shows. Undefined while there is no
+ *  read. */
+export function listedEdges<E extends GraphEdge>(
+  edges: readonly E[] | null | undefined,
+  reference: string,
+  page: boolean
+): E[] | undefined {
+  const drawn = edges?.filter(drawsEdge);
+  const route = page ? parseNodeReference(reference) : undefined;
+  const issueKey = route !== undefined && "key" in route ? route.key : undefined;
+  if (issueKey === undefined) {
+    return drawn;
+  }
+  return drawn?.filter(
+    (edge) =>
+      !isBlockItemKind((blockItem(edge.node) ?? edge.node).kind) || edge.node.issue_key !== issueKey
+  );
+}
+
+/** The colours of the list's heading, its lines, its rows, its excerpts and its links: the
+ *  application's, and with `page` the new page's own tokens (`PAGE_COLORS`), as every colour of
+ *  Details is - a link in the page's ink, underlined under the pointer as the page's row controls
+ *  are, and an excerpt in its muted grey. Its words are the application's on both. */
+const LIST_TOKENS = {
+  app: {
+    excerpt: textSecondaryOnSurface,
+    heading: textSecondaryOnSurface,
+    line: textMutedOnSurface,
+    link: `${linkText} ${linkHoverText}`,
+    row: borderDefault,
+  },
+  page: {
+    excerpt: pageMutedText,
+    heading: pageMutedText,
+    line: pageQuietText,
+    link: `${pageInkText} ${pageRowAct}`,
+    row: pageLineBorder,
+  },
+} as const;
+
 /** Beyond this the row clamps the excerpt and offers to expand it. The real clamp is CSS, so
  *  this is the text shape that makes a clamp likely rather than a measurement. */
 const CLAMP_LINES = 3;
@@ -154,14 +217,16 @@ interface SourcePath {
 
 /** Where `reference`, a node's own reference as the graph returned it, opens - whatever the length
  *  of its name - with `block` (the block of a document that holds the mention) as its `#b-`
- *  fragment when the reference names no block of its own. */
+ *  fragment when the reference names no block of its own. Undefined where it opens nothing: a
+ *  reference that does not parse, and a party the graph records no node for (R5). */
 function referencePath(reference: string | undefined, block?: string): SourcePath | undefined {
   const route = reference === undefined ? undefined : parseNodeReference(reference);
-  if (route === undefined) {
+  const href = route === undefined ? undefined : referenceHref(route);
+  if (route === undefined || href === undefined) {
     return undefined;
   }
   return {
-    href: `${buildReferencePath(route)}${
+    href: `${href}${
       ("block" in route && route.block !== undefined) || block === undefined
         ? ""
         : blockFragment(block)
@@ -170,8 +235,11 @@ function referencePath(reference: string | undefined, block?: string): SourcePat
   };
 }
 
+/** An edge as the references read answers it, with its excerpt's tree (`GraphEdgeWithTrees`). */
+type ReadEdge = NonNullable<GraphReferences["edges"]>[number];
+
 interface SourceGroup {
-  readonly edges: GraphEdge[];
+  readonly edges: ReadEdge[];
   readonly key: string;
   readonly label: string;
   /** How many citing nodes the group holds: more than one only when blocks of one document, or of
@@ -186,8 +254,8 @@ interface SourceGroup {
  *  that document's or item's rows. A source of one node links to that node (a block at the
  *  block); a document or item whose blocks are its rows links to itself, and each row to its own
  *  block. */
-function groupBySource(edges: readonly GraphEdge[]): SourceGroup[] {
-  const groups = new Map<string, { edges: GraphEdge[]; nodes: Set<string> }>();
+function groupBySource(edges: readonly ReadEdge[]): SourceGroup[] {
+  const groups = new Map<string, { edges: ReadEdge[]; nodes: Set<string> }>();
   for (const edge of edges) {
     const key =
       edge.node.document ??
@@ -200,7 +268,7 @@ function groupBySource(edges: readonly GraphEdge[]): SourceGroup[] {
     groups.set(key, group);
   }
   return [...groups].map(([key, { edges: grouped, nodes }]) => {
-    const [first] = grouped as [GraphEdge, ...GraphEdge[]];
+    const [first] = grouped as [ReadEdge, ...ReadEdge[]];
     return {
       edges: grouped,
       key,
@@ -214,21 +282,105 @@ function groupBySource(edges: readonly GraphEdge[]): SourceGroup[] {
   });
 }
 
-function Excerpt({ text }: { text: string }): ReactNode {
+/** The citing nodes whose excerpt is the head of their own stored text. */
+const BODY_NODE_KINDS: readonly string[] = ["ask", "block", "comment", "message"];
+
+/** Whether `edge`'s excerpt is the head of a stored body rather than a title or a name. A citing
+ *  block, ask, comment or message is listed by the head of its own text, and a document's
+ *  mention by the block that holds it (`excerpt.block_id`): each is a bounded head the server
+ *  cuts, which the renderer draws. A citing issue, document, component or session is listed by
+ *  its title or name, which is one line of text already. */
+function excerptIsBody(edge: GraphEdge): boolean {
+  return edge.excerpt?.block_id !== undefined || BODY_NODE_KINDS.includes(edge.node.kind);
+}
+
+/** The record a body excerpt is the head of, where the citing node is one a `TextSource` names:
+ *  an ask, a comment or a message, or a document. A citing block is a block of its holder - a
+ *  comment, an ask, a message or a document - which the node carries as its `parent`
+ *  (`refs/graph.go`), so its excerpt is the holder's text and a `#id` in it names a question of
+ *  the holder's document. */
+function excerptSource(node: GraphEdge["node"]): TextSource | undefined {
+  const holder = node.kind === "block" ? node.parent : node;
+  return holder === null
+    ? undefined
+    : textSourceOf(textSourceKind(holder.kind), holder.id, node.issue_key);
+}
+
+function Excerpt({
+  rendered,
+  source,
+  text,
+  tokens,
+  tree,
+  whole = false,
+}: {
+  /** Whether the text is the head of a stored body, which the renderer draws (`excerptIsBody`). */
+  rendered: boolean;
+  source: TextSource | undefined;
+  text: string;
+  tokens: { readonly excerpt: string; readonly link: string };
+  /** The server's reading of the head as it cut it, so the page parses none of it. */
+  tree: DisplayTree | undefined;
+  /** Whether the excerpt is drawn whole, as the new page's Details draws each one (`page`): with
+   *  no clamp and no Show more, a long word broken where it must be rather than run past its row.
+   *  Every other page passes nothing, and the excerpt clamps as it always has. */
+  whole?: boolean;
+}): ReactNode {
   const [expanded, setExpanded] = useState(false);
+  if (whole) {
+    return rendered ? (
+      <div className={`mt-1 text-sm [overflow-wrap:anywhere] ${tokens.excerpt}`} data-node-words="">
+        <MarkdownBody markdown={text} source={source} surface="referenced-by-excerpt" tree={tree} />
+      </div>
+    ) : (
+      <p className={`mt-1 whitespace-pre-wrap text-sm [overflow-wrap:anywhere] ${tokens.excerpt}`}>
+        {/* A title or a name, as the line it is: the reading list's `referenced-by-title`. */}
+        {text}
+      </p>
+    );
+  }
   const clampable = text.split("\n").length > CLAMP_LINES || text.length > CLAMP_CHARACTERS;
+  const clamped = clampable && !expanded;
 
   return (
     <>
-      <p
-        className={`mt-1 whitespace-pre-wrap text-sm ${expanded || !clampable ? "" : "line-clamp-3"} ${textSecondaryOnSurface}`}
-      >
-        {text}
-      </p>
+      {rendered ? (
+        // The head of a stored body, drawn by the renderer from the reading the server made of
+        // it: one clamped run until the reader opens it, the whole of it after.
+        // The type is on the element around the renderer in both, as `.dispatch-markdown` takes
+        // it from there (styles.css).
+        clamped ? (
+          <div className={`mt-1 text-sm ${tokens.excerpt}`}>
+            <MarkdownPreview
+              lines={3}
+              markdown={text}
+              source={source}
+              surface="referenced-by-excerpt"
+              tree={tree}
+            />
+          </div>
+        ) : (
+          <div className={`mt-1 text-sm ${tokens.excerpt}`}>
+            <MarkdownBody
+              markdown={text}
+              source={source}
+              surface="referenced-by-excerpt"
+              tree={tree}
+            />
+          </div>
+        )
+      ) : (
+        <p
+          className={`mt-1 whitespace-pre-wrap text-sm ${clamped ? "line-clamp-3" : ""} ${tokens.excerpt}`}
+        >
+          {/* A title or a name, as the line it is: the reading list's `referenced-by-title`. */}
+          {text}
+        </p>
+      )}
       {clampable ? (
         <button
           aria-expanded={expanded}
-          className={`min-h-11 text-xs font-medium ${linkText} ${linkHoverText}`}
+          className={`min-h-11 text-xs font-medium ${tokens.link}`}
           onClick={() => setExpanded((open) => !open)}
           type="button"
         >
@@ -286,12 +438,29 @@ export function ReferencedByToggle({
  *  the list outright — so this component has one behaviour. */
 export function ReferencedBy({
   className,
+  page = false,
+  pages,
   reference,
   retried,
   retryRef,
   toggle,
 }: {
   className?: string;
+  /** Whether the list is drawn in the new page's Details: in the page's colours, and without the
+   *  issue's own asks, comments and messages, which that page's outline holds (`listedEdges`). */
+  page?: boolean;
+  /** With `page`, the pages its rows are drawn in, which Details holds (`useListPages`): how
+   *  many rows the list draws, and the control under them that draws the next ones, which says
+   *  the page's words. The control is handed how many rows the whole list holds and the element
+   *  of each row by its place, which its press moves the focus to. Without it every row is
+   *  drawn. */
+  pages?: {
+    readonly drawn: number;
+    readonly more: (
+      count: number,
+      entry: (index: number) => Element | null | undefined
+    ) => ReactNode;
+  };
   reference: string;
   /** Notes the reader's press of Retry for the hand-off of its host (`useFocusHandOff`'s
    *  `pressed`): set as Retry is pressed, and forgotten where the list still reads as failed once
@@ -315,15 +484,39 @@ export function ReferencedBy({
 }): ReactNode {
   const freshness = useNewIssuePageFreshness();
   const query = useQuery({ ...referencesQuery(reference), ...freshness });
-  // During a release a newer Dispatch can answer with an edge kind, or a node kind at the other
-  // end, that this page does not know; the page leaves such an edge out rather than draw it under
-  // another edge's label.
-  const edges = query.data?.edges?.filter(
-    (edge) =>
-      (Object.hasOwn(RENDERED_EDGE_KINDS, edge.kind) || MANIFEST_EDGE_KINDS.has(edge.kind)) &&
-      Object.hasOwn(NODE_LABELS, edge.node.kind)
-  );
+  const edges = listedEdges(query.data?.edges, reference, page);
   const groups = groupBySource(edges ?? []);
+  const tokens = LIST_TOKENS[page ? "page" : "app"];
+  // With `page` and `pages`, the list's rows are one sequence, each source's rows in the order
+  // its card draws them, of which the list draws the first `pages.drawn`. Each source draws
+  // those of its rows that fit in what is left of that number (`rowsLeft`), in its place in the
+  // sequence, and counts every one of its rows in the list's (`rowCount`), the count the
+  // control under the list is handed. Another source of rows drawn after these takes and counts
+  // its rows the same way, and shares the list's pages, its control and its count. A card the
+  // cut falls in draws the rows before the cut, and a card after the cut is not drawn.
+  const paged = page ? pages : undefined;
+  let rowCount = 0;
+  if (paged !== undefined) {
+    let rowsLeft = paged.drawn;
+    const drawnGroups = groups.flatMap((group) => {
+      rowCount += group.edges.length;
+      const drawnEdges = group.edges.slice(0, rowsLeft);
+      rowsLeft -= drawnEdges.length;
+      return drawnEdges.length === 0 ? [] : [{ ...group, edges: drawnEdges }];
+    });
+    groups.splice(0, groups.length, ...drawnGroups);
+  }
+  // Each row drawn in pages carries the list's own mark, and each card its card mark
+  // (`data-reference-card`), by which the press of the control finds the first row it drew, by
+  // its place in the sequence: the row's card where the row is its card's first, whose link
+  // names the source, and else the row itself.
+  const rowsMark = useId();
+  const rowAt = (index: number) => {
+    const marked = `[data-reference-rows="${CSS.escape(rowsMark)}"]`;
+    const row = document.querySelectorAll(marked)[index];
+    const card = row?.closest("[data-reference-card]");
+    return card?.querySelector(marked) === row ? card : row;
+  };
   // Retry's attributes where the host notes its press (`retried`), spread over the ones it has on
   // every page.
   const retryInDetails:
@@ -353,18 +546,18 @@ export function ReferencedBy({
   return (
     <section aria-label="Referenced by" className={`space-y-2 ${className ?? ""}`} id={toggle?.id}>
       {toggle === undefined ? (
-        <h3 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>
+        <h3 className={`text-sm font-semibold ${tokens.heading}`}>
           Referenced by{edges === undefined ? "" : ` (${edges.length})`}
         </h3>
       ) : null}
       {query.isPending && !failed ? (
-        <p className={`text-sm ${textMutedOnSurface}`}>Loading references…</p>
+        <p className={`text-sm ${tokens.line}`}>Loading references…</p>
       ) : null}
       {failed ? (
-        <p className={`flex flex-wrap items-center gap-2 text-sm ${textMutedOnSurface}`}>
+        <p className={`flex flex-wrap items-center gap-2 text-sm ${tokens.line}`}>
           <span>Referenced by unavailable.</span>
           <button
-            className={`font-medium underline ${linkText} ${linkHoverText}`}
+            className={`font-medium underline ${tokens.link}`}
             disabled={query.isFetching}
             onClick={() => void query.refetch()}
             {...retryInDetails}
@@ -376,19 +569,23 @@ export function ReferencedBy({
         </p>
       ) : null}
       {edges?.length === 0 ? (
-        <p className={`text-sm ${textMutedOnSurface}`}>Nothing references this yet.</p>
+        <p className={`text-sm ${tokens.line}`}>Nothing references this yet.</p>
       ) : null}
       {groups.length === 0 ? null : (
         <ul className="space-y-2">
           {groups.map((group) => (
-            <li className={`rounded-lg border p-3 ${borderDefault}`} key={group.key}>
-              <div className={`text-xs font-medium ${textMutedOnSurface}`}>
+            <li
+              className={`rounded-lg border p-3 ${tokens.row}`}
+              data-reference-card={paged === undefined ? undefined : ""}
+              key={group.key}
+            >
+              <div className={`text-xs font-medium ${tokens.line}`}>
                 {group.path === undefined ? (
                   <span>{group.label}</span>
                 ) : (
                   <Link
                     {...referenceTriggerProps(group.path.route)}
-                    className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
+                    className={`dispatch-inline-link underline ${tokens.link}`}
                     to={group.path.href}
                   >
                     {group.label}
@@ -409,11 +606,10 @@ export function ReferencedBy({
                   const deleted = postDeletion(edge.node);
                   return (
                     <li
+                      data-reference-rows={paged === undefined ? undefined : rowsMark}
                       key={`${edge.node.kind}:${edge.node.id}:${edge.kind}:${edge.direction}:${edge.block?.id ?? ""}`}
                     >
-                      <div
-                        className={`flex flex-wrap items-center gap-x-1 text-xs ${textMutedOnSurface}`}
-                      >
+                      <div className={`flex flex-wrap items-center gap-x-1 text-xs ${tokens.line}`}>
                         {group.edges.length === 1 ? null : (
                           <>
                             <span>{edgeLabel(edge)}</span>
@@ -425,7 +621,7 @@ export function ReferencedBy({
                         ) : (
                           <Link
                             {...referenceTriggerProps(row.route)}
-                            className={`underline ${linkText} ${linkHoverText}`}
+                            className={`underline ${tokens.link}`}
                             to={row.href}
                           >
                             <Timestamp at={edge.created_at} />
@@ -437,7 +633,7 @@ export function ReferencedBy({
                             <span aria-hidden="true">·</span>
                             <Link
                               {...referenceTriggerProps(cited.route)}
-                              className={`underline ${linkText} ${linkHoverText}`}
+                              className={`underline ${tokens.link}`}
                               to={cited.href}
                             >
                               block {edge.block?.block_id}
@@ -445,10 +641,20 @@ export function ReferencedBy({
                           </>
                         )}
                       </div>
+                      {/* A block whose text opens with a reference longer than the server's cut
+                          has an empty excerpt that still names the block it links to: the row
+                          then draws no excerpt rather than an empty paragraph. */}
                       {deleted !== null ? (
                         <DeletedBody className="mt-1 block text-sm" deleted={deleted} />
-                      ) : edge.excerpt === undefined ? null : (
-                        <Excerpt text={edge.excerpt.text} />
+                      ) : edge.excerpt === undefined || edge.excerpt.text === "" ? null : (
+                        <Excerpt
+                          rendered={excerptIsBody(edge)}
+                          source={excerptSource(edge.node)}
+                          text={edge.excerpt.text}
+                          tokens={tokens}
+                          tree={edge.excerpt.text_tree}
+                          whole={page}
+                        />
                       )}
                     </li>
                   );
@@ -458,6 +664,7 @@ export function ReferencedBy({
           ))}
         </ul>
       )}
+      {paged === undefined ? null : paged.more(rowCount, rowAt)}
     </section>
   );
 }

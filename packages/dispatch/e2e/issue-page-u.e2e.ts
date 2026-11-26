@@ -1313,6 +1313,10 @@ test("each part of the Decisions view pages 20 entries at a time @owed", async (
           },
           `the control draws the next entries, ${pressed}`
         ).toEqual({ before, pages: pagesWanted(totals, footPages) });
+        await expect(
+          nodeRow(page, footOf(reading.parts)[before.length] ?? "").first(),
+          `the focus is on the first entry ${pressed} drew`
+        ).toBeFocused();
         expect(
           reading.control,
           `the Decisions control's count counts every entry, after ${pressed}`
@@ -1322,7 +1326,9 @@ test("each part of the Decisions view pages 20 entries at a time @owed", async (
     };
     await pressThrough("the pointer", (control) => control.click(), footOf(opening.parts));
 
-    // The same by the keyboard, from a new load: the control takes the focus, and Enter presses it.
+    // The same by the keyboard, from a new load. The control stands out of the tab order as a row
+    // of the tree (decision 366), so the foot's last drawn row, the row before it, takes the focus,
+    // and `j` there presses it.
     await page.reload();
     await issueRead(page);
     await expectIssuePageDrawn(page);
@@ -1333,10 +1339,11 @@ test("each part of the Decisions view pages 20 entries at a time @owed", async (
     ).toEqual(pagesWanted(totals, 1));
     await pressThrough(
       "the keyboard",
-      async (control) => {
-        await control.focus();
-        await expect(control, "the foot's control takes the focus").toBeFocused();
-        await page.keyboard.press("Enter");
+      async () => {
+        const last = footOf(await decisionsPages(page)).at(-1);
+        expect(last, "the foot draws no row before its control").toBeDefined();
+        await focusRow(page, last ?? "");
+        await page.keyboard.press("j");
       },
       footOf(reloaded.parts)
     );

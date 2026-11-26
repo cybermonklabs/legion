@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -118,9 +119,9 @@ func sameShape(t *testing.T, tree json.RawMessage) json.RawMessage {
 // declares that tree where the answer carries it. The routes covered here are the issue's
 // comment list and one comment's thread, the issue's ask list and one ask, the answer of an ask
 // the issue's Decisions read lists, the issue's message list, the issue's event log, a
-// document's text, the caller's own answers, a project's architecture and one node's
-// references; the search snippet, whose tree is cut and marked rather than read whole, has its
-// own test below.
+// document's text, the caller's own answers, the caller's own replies (each row's subject line),
+// a project's architecture, one node's references and the excerpt of each of its backlinks; the
+// search snippet, whose tree is cut and marked rather than read whole, has its own test below.
 func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
@@ -161,15 +162,26 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 	if answered.Code != http.StatusOK {
 		t.Fatalf("answer ask: status=%d body=%s", answered.Code, answered.Body.String())
 	}
+	// A thread of alice's that somebody else wrote in, so the replies read below has a row of its
+	// own. Its subject is the first line of the comment above, which the Inbox draws through the
+	// one renderer every body is drawn with (web/src/features/inbox/ThreadTitle.tsx). The reply
+	// says what the comment above says, because the event-log row below holds every
+	// comment.created event to one expected reading: a second body there would be a second
+	// expectation, and this row needs a reply rather than a different text.
+	sessionComment(t, handler, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"body": commentBody, "reply_to": commentID,
+	})
 
 	// Each row is read twice: the live answer carries the tree, and the OpenAPI document's own
 	// 200 schema for the route declares it there. The second reading is what holds a route row
 	// to the shaped read its handler writes (routes_shapes.go), since a row naming the model
-	// inside that read declares no tree at all. The architecture tree and one node's references
+	// inside that read declares no tree at all. The architecture tree and one node's own text
 	// are rows of the schema reading alone - the trees they carry need an architecture source
-	// and a stored reference this issue has neither of - and they are the two rows that were
-	// found naming the model (INFRA-635). A decision's text is a row of the schema reading too:
-	// its live reading is the old decisions member's own test, which reads a decision node
+	// and a block reference this issue has neither of - and they are the two rows that were
+	// found naming the model. A backlink's excerpt is read live: the reply above
+	// is a replies_to edge of the comment it answers, whose excerpt is the head of the reply's
+	// body. A decision's text is a row of the schema reading too: its live reading is the old
+	// decisions member's own test, which reads a decision node
 	// (TestTheOldDecisionsMembersAnswerFromTheStore, decisions_test.go).
 	node, _ := readOpenAPITree(t)
 	document, _ := node.(map[string]any)
@@ -190,11 +202,16 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 		{"one ask's answer", "/api/v1/asks/{id}", "/api/v1/asks/" + askID, "ask.answer.text", "ask.answer.text_tree"},
 		{"the caller's answer history", "/api/v1/me/answers",
 			"/api/v1/me/answers", "rows.0.question", "rows.0.question_tree"},
+		{"a thread row's subject", "/api/v1/me/replies",
+			"/api/v1/me/replies", "rows.0.subject", "rows.0.subject_tree"},
 		{"a document's text", "/api/v1/artifacts/{id}/text",
 			"/api/v1/artifacts/" + issue.PrimaryArtifactID + "/text", "markdown", "markdown_tree"},
 		{"a project's architecture", "/api/v1/projects/{key}/architecture", "", "", "components.0.prose_tree"},
 		{"a node's own text", "/api/v1/references", "", "", "node.text_tree"},
 		{"the text a reference pinned", "/api/v1/references", "", "", "node.pin.text_tree"},
+		{"a backlink's excerpt", "/api/v1/references",
+			"/api/v1/references?to=dispatch://" + issue.Key + "/comment/" + commentID + "&kind=replies_to",
+			"edges.0.excerpt.text", "edges.0.excerpt.text_tree"},
 		{"a decision's text", "/api/v1/issues/{key}/decisions", "", "", "decisions.0.text_tree"},
 		{"an answered ask's entry in the Decisions read", "/api/v1/issues/{key}/decisions",
 			"/api/v1/issues/" + issue.Key + "/decisions", "entries.0.answer", "entries.0.answer_tree"},
@@ -251,6 +268,168 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 	})
 }
 
+// A comment that replies to an ask carries that ask's question in its event (ask_question), which
+// the Activity line "replied to …" draws, so the event log carries the question's tree beside the
+// body's, under the header alone: a question is a stored text of any length, which no page
+// parses. The live frame reads the payload the write built rather than the one the database
+// stored, and answers the same key.
+func TestACommentEventCarriesTheTreeOfTheQuestionItReplies(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	const (
+		question = "Ship the **release** on [Friday](https://example.com/friday)?"
+		reply    = "Friday *works*."
+	)
+	issue := createInteractionIssue(t, handler, "TREE", "Reply trees", "A spec")
+	ask := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
+		"question": question, "options": []map[string]string{{"label": "Yes"}},
+	}, "alice")
+	if ask.Code != http.StatusCreated {
+		t.Fatalf("create ask: status=%d body=%s", ask.Code, ask.Body.String())
+	}
+	askID := decodeBody[model.Ask](t, ask).ID
+	replied := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
+		map[string]any{"body": reply, "ask_id": askID}, "alice")
+	if replied.Code != http.StatusCreated {
+		t.Fatalf("reply to the ask: status=%d body=%s", replied.Code, replied.Body.String())
+	}
+
+	target := "/api/v1/issues/" + issue.Key + "/events"
+	if bare := treesRequest(t, handler, target, false); strings.Contains(bare.Body.String(), `"trees"`) {
+		t.Errorf("GET %s without the header carries trees: %s", target, bare.Body.String())
+	}
+	var events []struct {
+		Type    string `json:"type"`
+		Payload struct {
+			AskQuestion string `json:"ask_question"`
+		} `json:"payload"`
+		Trees map[string]json.RawMessage `json:"trees"`
+	}
+	if err := json.Unmarshal(treesRequest(t, handler, target, true).Body.Bytes(), &events); err != nil {
+		t.Fatalf("decode the event log: %v", err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Type != "comment.created" {
+			continue
+		}
+		found = true
+		if event.Payload.AskQuestion != question {
+			t.Fatalf("comment.created ask_question = %q, want the ask's question", event.Payload.AskQuestion)
+		}
+		if want := pmdoc.DisplayJSON(question, pmdoc.DisplayLatest); !bytes.Equal(event.Trees["payload.ask_question"], want) {
+			t.Errorf("comment.created trees[payload.ask_question] = %s, want %s", event.Trees["payload.ask_question"], want)
+		}
+		if want := pmdoc.DisplayJSON(reply, pmdoc.DisplayLatest); !bytes.Equal(event.Trees["payload.body"], want) {
+			t.Errorf("comment.created trees[payload.body] = %s, want %s", event.Trees["payload.body"], want)
+		}
+	}
+	if !found {
+		t.Fatalf("the event log carried no comment.created: %+v", events)
+	}
+
+	frame := eventDisplayTrees(model.Event{Type: "comment.created", Payload: model.CommentEventPayload{
+		Comment: model.Comment{Body: reply}, AskQuestion: question,
+	}})
+	if want := pmdoc.DisplayJSON(question, pmdoc.DisplayLatest); !bytes.Equal(frame["payload.ask_question"], want) {
+		t.Errorf("a live frame's trees[payload.ask_question] = %s, want %s", frame["payload.ask_question"], want)
+	}
+}
+
+// A handoff's card draws each string of its body through the renderer: every top-level field
+// that holds one, and each entry of a `proof` list that is one (handoffFields). So a read of one
+// handoff with its body carries, under the header alone, the tree of each such string keyed by
+// its JSON Pointer into the body (`/summary`, `/proof/0`), each the tree pmdoc.DisplayJSON makes
+// of exactly that string, and no tree of a value the card draws as JSON - a number, a boolean, an
+// object, a proof entry that is an object - or of an empty string. A field named `proof.0` and
+// the first proof entry each keep their own tree under their own pointer, and a field whose name
+// holds a `/` or a `~` is keyed with them escaped (`~1`, `~0`). A body that is no JSON object,
+// which only a row written before the API refused one can hold, is drawn whole, and its tree
+// stands under the root's pointer "". Both routes that answer a body answer the trees, and the
+// document declares them.
+func TestAHandoffReadCarriesTheTreeOfEachTextItsCardDraws(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TREE", "Handoff trees", "A spec")
+	const (
+		summary = "Shipped the **parser**."
+		notes   = "See [the run](https://example.com/run)."
+		first   = "`go test ./...` passes."
+		third   = "The *second* proof."
+		legacy  = "A legacy **plain** handoff."
+		dotted  = "A field *named* like an entry."
+		entry   = "The **only** proof entry."
+		escaped = "A field whose name holds a _slash_ and a tilde."
+	)
+	body, err := json.Marshal(map[string]any{
+		"summary": summary, "notes": notes, "count": 3, "done": true, "blank": "",
+		"detail": map[string]string{"step": "parse"},
+		"proof":  []any{first, map[string]string{"command": "go test"}, third},
+	})
+	if err != nil {
+		t.Fatalf("encode the handoff body: %v", err)
+	}
+	written := recordedHandoff(t, handler, issue.Key, "implement", string(body))
+	colliding, err := json.Marshal(map[string]any{"proof.0": dotted, "proof": []string{entry}, "a/b~c": escaped})
+	if err != nil {
+		t.Fatalf("encode the handoff body whose keys would collide as dotted paths: %v", err)
+	}
+	pointed := recordedHandoff(t, handler, issue.Key, "review", string(colliding))
+	var legacyID string
+	if err := database.Pool.QueryRow(context.Background(), `
+		insert into handoffs (issue_key, phase, version, body, author) values ($1, 'plan', 1, $2, $3::jsonb)
+		returning id::text
+	`, issue.Key, legacy, `{"kind":"session","id":"s1"}`).Scan(&legacyID); err != nil {
+		t.Fatalf("seed a handoff whose body is no JSON object: %v", err)
+	}
+
+	trees := func(text string) json.RawMessage {
+		return sameShape(t, pmdoc.DisplayJSON(text, pmdoc.DisplayLatest))
+	}
+	node, _ := readOpenAPITree(t)
+	document, _ := node.(map[string]any)
+	for _, read := range []struct {
+		name, pattern, target string
+		want                  map[string]json.RawMessage
+	}{
+		{"a handoff by id", "/api/v1/handoffs/{id}", "/api/v1/handoffs/" + written.ID, map[string]json.RawMessage{
+			"/summary": trees(summary), "/notes": trees(notes), "/proof/0": trees(first), "/proof/2": trees(third),
+		}},
+		{"a phase's latest handoff", "/api/v1/issues/{key}/handoffs/{phase}/latest",
+			"/api/v1/issues/" + issue.Key + "/handoffs/implement/latest", map[string]json.RawMessage{
+				"/summary": trees(summary), "/notes": trees(notes), "/proof/0": trees(first), "/proof/2": trees(third),
+			}},
+		{"a field named like a proof entry, and one whose name holds a slash and a tilde", "/api/v1/handoffs/{id}",
+			"/api/v1/handoffs/" + pointed.ID, map[string]json.RawMessage{
+				"/proof.0": trees(dotted), "/proof/0": trees(entry), "/a~1b~0c": trees(escaped),
+			}},
+		{"a body that is no JSON object", "/api/v1/handoffs/{id}", "/api/v1/handoffs/" + legacyID,
+			map[string]json.RawMessage{"": trees(legacy)}},
+	} {
+		t.Run(read.name, func(t *testing.T) {
+			if bare := treesRequest(t, handler, read.target, false); strings.Contains(bare.Body.String(), "field_trees") {
+				t.Errorf("GET %s without the header carries field trees: %s", read.target, bare.Body.String())
+			}
+			var answer struct {
+				FieldTrees map[string]json.RawMessage `json:"field_trees"`
+			}
+			if err := json.Unmarshal(treesRequest(t, handler, read.target, true).Body.Bytes(), &answer); err != nil {
+				t.Fatalf("decode GET %s: %v", read.target, err)
+			}
+			got := make(map[string]json.RawMessage, len(answer.FieldTrees))
+			for path, tree := range answer.FieldTrees {
+				got[path] = sameShape(t, tree)
+			}
+			if !reflect.DeepEqual(got, read.want) {
+				t.Errorf("GET %s field_trees =\n\t%s\nwant the tree of each string the card draws\n\t%s", read.target, got, read.want)
+			}
+			// The map's keys are the body's own, so the document declares the one schema every
+			// value has (additionalProperties), which any key reaches.
+			requireTreeInAnswerSchema(t, document, read.pattern, "field_trees.summary")
+		})
+	}
+}
+
 // requireTreeInAnswerSchema fails unless the emitted document declares the display tree at
 // treePath of the 200 answer the GET of pattern gives. Every path a reader walks here is one a
 // live answer carries, so the two readings of a row hold the document to what the handler
@@ -289,9 +468,10 @@ func openAPIAnswerSchema(t *testing.T, document map[string]any, pattern string) 
 }
 
 // openAPISchemaChild is the schema one step of an answer path stands at: a name is a property of
-// an object, a number an item of a list. A reference is followed to what it names, and a schema
-// written as a choice of several - a nilable field is its own shape or null - is searched
-// through, since the path stands on whichever arm declares it.
+// an object, or a key of a map (its additionalProperties), a number an item of a list. A
+// reference is followed to what it names, and a schema written as a choice of several - a
+// nilable field is its own shape or null - is searched through, since the path stands on
+// whichever arm declares it.
 func openAPISchemaChild(document, schema map[string]any, step string) map[string]any {
 	if reference, names := schema["$ref"].(string); names {
 		components, _ := document["components"].(map[string]any)
@@ -310,6 +490,8 @@ func openAPISchemaChild(document, schema map[string]any, step string) map[string
 		if child, declared := properties[step].(map[string]any); declared {
 			return child
 		}
+	} else if values, holds := schema["additionalProperties"].(map[string]any); holds {
+		return values
 	}
 	for _, choice := range []string{"anyOf", "allOf", "oneOf"} {
 		arms, _ := schema[choice].([]any)

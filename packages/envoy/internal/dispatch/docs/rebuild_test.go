@@ -255,7 +255,7 @@ func TestTheRebuildAStoredHistoryYgoRefusesIsOfferedRestoresTheDocument(t *testi
 	}
 }
 
-// A document of an issue room is rebuilt in its room (T12b of dispatch://INFRA-1253's plan): the
+// A document of an issue room is rebuilt in its room (T12b of the issue-tree plan): the
 // room's stored history, the one that does not load, is replaced by one seed holding the rebuilt
 // document's fragment from its latest version and every other document's fragment from its own,
 // nothing is stored under the document's own id, and once the rebuild commits the room loads and

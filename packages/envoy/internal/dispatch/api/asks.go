@@ -641,8 +641,9 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	// The edit writes the question and the options, so it is a revision of the ask's parts: plan
 	// them at the edited_at the queued update writes, which the row above carries already, queue
-	// the index after that update, and name what they moved beside the rest.
-	askChanges, err = s.queueAskParts(documentCtx, ledger, ask, nil, editedAt, askChanges)
+	// the index after that update and after the question's reconciliation just queued, and name
+	// what they moved beside the rest.
+	askChanges, err = s.queueAskParts(documentCtx, ledger, ask, nil, editedAt, true, askChanges)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -659,7 +660,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// and plans nothing for no run). The node write is queued after the row's update and the
 	// parts the edit queued above, and what it states right after ask.edited
 	// (graphstore.QueueCaused over graphstore.LatestEvent), as an issue's own field write does
-	// (patchIssue).
+	// (writeIssue).
 	var askNode graphstore.Uncaused
 	if askWordsChanged(previous, ask) {
 		askNode, err = graphstore.PlanChangedForRun(documentCtx, editedAt, actor, func() (graphstore.Node, error) {

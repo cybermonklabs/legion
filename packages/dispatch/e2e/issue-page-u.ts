@@ -337,8 +337,8 @@ export function decisionsPages(page: Page): Promise<PagedPart[]> {
   });
 }
 
-/** The control under the Decisions view's part `part` that draws its next entries
- *  (`DecisionsFilterBody.tsx`' `NextEntries`), a plain button. */
+/** The button of the control under the Decisions view's part `part` that draws its next
+ *  entries (`DecisionsFilterBody.tsx`' `NextEntries`), a treeitem out of the tab order. */
 export function nextEntries(page: Page, part: string): Locator {
   return decisionsPart(page, part).locator("[data-decisions-next] button");
 }

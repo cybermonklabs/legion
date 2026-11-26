@@ -14,6 +14,7 @@ import type { SlotProps } from "../slot-props";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import { NextViewPage } from "../tree-read/view-read";
 import { useIssueTree } from "../useIssueTree";
+import { usePublishViewParents } from "./view-parents";
 
 /**
  * The Spec view's slot: what the stage draws in place of the outline
@@ -42,6 +43,9 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
     () => presetView(root, "spec", address.filter, named),
     [address.filter, named, root]
   );
+  // The other statements a decision is under are named by the page's names, which the view names
+  // where only its own tree holds them (`PresetView.parents`).
+  usePublishViewParents(view.parents);
   const request = useOutlineRequest();
   return (
     <NoTooltips>

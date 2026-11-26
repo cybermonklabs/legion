@@ -22,6 +22,7 @@ import type {
   CheckResultRetractionInput,
   ClaimedIssue,
   Comment,
+  CommentNodeAnchorSchema,
   CommentRead,
   CommentWriteResponse,
   ConstraintInput,
@@ -90,6 +91,7 @@ import type {
   RiskInput,
   RiskWritten,
   SearchResponse,
+  SearchResultKind,
   SessionAnswersResponse,
   StatusChangeAnswer,
   StatusChangeInput,
@@ -121,6 +123,7 @@ import {
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
+import type { z } from "zod";
 import { credentialDeadline, type RequestCredential } from "./bearer";
 import { reachedNothing } from "./errors";
 import { bodyForText, excerpt, redirectOrigin, SentTokens } from "./excerpt";
@@ -158,6 +161,9 @@ export class DispatchServiceError extends Error {
   readonly issues: DispatchServiceErrorShape["issues"] | undefined;
   /** A status change's refusal: the entry of each step that wrote before it. */
   readonly changed: DispatchServiceErrorShape["changed"] | undefined;
+  /** Dispatch's `hint`, where to look next, which only its answer to a path no route serves
+   *  carries (`DispatchServiceErrorShape["hint"]`); `messageFor` prints it after the message. */
+  readonly hint: string | undefined;
 
   constructor(
     readonly code: string,
@@ -166,7 +172,7 @@ export class DispatchServiceError extends Error {
     /** The members of Dispatch's refusal beside its message that a caller reads off the error:
      *  its answer's JSON, or another refusal whose members it keeps. */
     details: {
-      readonly [Member in "candidates" | "changed" | "current" | "issues" | "mismatches"]?:
+      readonly [Member in "candidates" | "changed" | "current" | "hint" | "issues" | "mismatches"]?:
         | DispatchServiceErrorShape[Member]
         | undefined;
     } = {}
@@ -177,6 +183,7 @@ export class DispatchServiceError extends Error {
     this.mismatches = details.mismatches;
     this.issues = details.issues;
     this.changed = details.changed;
+    this.hint = details.hint;
   }
 }
 
@@ -497,6 +504,9 @@ export interface SearchOptions {
   readonly project?: string;
   readonly limit?: number;
   readonly offset?: number;
+  /** The kinds to rank, count and page (`SEARCH_KINDS`): `#url` writes one `kind=` per entry,
+   *  which is how the route reads it. With none named the search reads every kind it indexes. */
+  readonly kind?: readonly SearchResultKind[];
 }
 
 /** One node's edges: `to` reads what points at it, `from` what it points to; exactly one. */
@@ -510,6 +520,35 @@ export type GraphReferencesQuery = ({ readonly to: string } | { readonly from: s
 export interface IssueReadOptions {
   /** `DEFAULT_ISSUE_READ_EVENTS` when absent or undefined. */
   readonly events?: number | "all" | undefined;
+}
+
+/** What a comment read asks of Dispatch beside the comment. */
+export interface CommentReadOptions {
+  /** Sends `?node_anchor=true`, so each comment whose anchor names a node or a block carries
+   *  `node_anchor` (`CommentNodeAnchor`). A Dispatch older than the member ignores the parameter
+   *  and answers none. */
+  readonly nodeAnchors?: boolean;
+}
+
+/** The member `node_anchor` of a comment a read asked with `?node_anchor=true` answers
+ *  (`CommentNodeAnchorSchema` in `@legion/contracts`): the node the comment's anchor names, by
+ *  its store kind and id, with its state; the words the anchor quotes; their zero-based match in
+ *  the node's text, null for a document anchor; and whether those words left the text. */
+export type CommentNodeAnchor = z.output<typeof CommentNodeAnchorSchema>;
+
+/** A comment as a read with `CommentReadOptions.nodeAnchors` answers it. */
+export type WithNodeAnchor<Read> = Read & { readonly node_anchor?: CommentNodeAnchor };
+
+/** `GET /api/v1/comments/{id}`'s answer, its comment read with `CommentReadOptions`. Its replies
+ *  carry no `node_anchor`, since a reply quotes no text. */
+export type CommentReadWithNodeAnchor = CommentRead & {
+  readonly comment: WithNodeAnchor<CommentRead["comment"]>;
+};
+
+/** The query of a comment read asked with `options`: `node_anchor=true` for node anchors, and
+ *  none otherwise. */
+function nodeAnchorQuery(options: CommentReadOptions): { readonly node_anchor: true } | undefined {
+  return options.nodeAnchors === true ? { node_anchor: true } : undefined;
 }
 
 /** The most events one `GET /api/v1/issues/{key}/events` page holds: Dispatch refuses a larger
@@ -1289,8 +1328,12 @@ export class DispatchClient {
    *  running session, or any human, holds it; 409 CLAIM_CONTENDED when the holder changed twice
    *  while the request ran, so nothing was applied. The answer's `legion_managed_status` says
    *  whether the Legion daemon owns this issue's status — true when the issue carries the
-   *  `legion` label in any case or sits under one that does, where a status anyone else writes
-   *  is undone. */
+   *  `legion` label in any case or sits under one of its own project that does. On such an
+   *  issue, where Dispatch runs with `DISPATCH_LEGION_STATUS_SCOPE` on, it refuses a status
+   *  write from a credential that holds neither the `person` nor the `legion-status` scope
+   *  (403 `LEGION_STATUS_SCOPE_REQUIRED`), but for `done`, `backlog`, `icebox` or `triage` from
+   *  an architect of an issue above with its own broker token. Otherwise the daemon undoes a
+   *  status anyone else writes. */
   async claimIssue(issue: string, input: { readonly actor?: Actor } = {}): Promise<ClaimedIssue> {
     return this.#json(
       "POST",
@@ -1427,6 +1470,22 @@ export class DispatchClient {
    *  that enforces it. The client keeps no copy of them: it prints what the server answers. */
   async limits(): Promise<DispatchLimits> {
     return this.#json("GET", ["api", "v1", "limits"]);
+  }
+
+  /** `GET <path>`, for `dispatch api`: one read of a route no method here names. `path` begins
+   *  `/api/v1` and may carry a query, and the contract's rule for it (`dispatch_api`) refuses a
+   *  scheme, a host and a dot segment, so it resolves under this client's server as every other
+   *  route does (`#url`). Answers Dispatch's JSON as `#response` reads it.
+   *
+   *  It sends the GET once (one `#send`) and throws a refusal as `#response` throws it, an answer
+   *  of no route (`404 NOT_FOUND`, "no route for …") included: unlike every other request this
+   *  client makes, it skips `#noRoute`, so it neither sends that request again nor turns the
+   *  answer into `DispatchNoRouteError`. The caller wrote this path, and a caller-written path
+   *  Dispatch has no route for is far more often a wrong path than half of a release in progress,
+   *  so Dispatch's own refusal, which names the route, is printed as it came. */
+  async readRoute(path: string): Promise<unknown> {
+    const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
+    return this.#response("GET", url, await this.#send("GET", url));
   }
 
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
@@ -2069,8 +2128,11 @@ export class DispatchClient {
     await this.#json("DELETE", ["api", "v1", "asks", id, "followers", sessionId], { actor });
   }
 
-  async getComment(id: string): Promise<CommentRead> {
-    return this.#json("GET", ["api", "v1", "comments", id]);
+  async getComment(
+    id: string,
+    options: CommentReadOptions = {}
+  ): Promise<CommentReadWithNodeAnchor> {
+    return this.#json("GET", ["api", "v1", "comments", id], undefined, nodeAnchorQuery(options));
   }
 
   /** Resolves a comment thread as `actor`; the server takes no reason and any actor may resolve. */
@@ -2103,8 +2165,16 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "comments", id, "history"]);
   }
 
-  async getComments(issue: string): Promise<Comment[]> {
-    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "comments"]);
+  async getComments(
+    issue: string,
+    options: CommentReadOptions = {}
+  ): Promise<WithNodeAnchor<Comment>[]> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "comments"],
+      undefined,
+      nodeAnchorQuery(options)
+    );
   }
 
   /** `POST /api/v1/issues/{key}/handoffs/{phase}`: records `body`, the handoff's exact text, as
@@ -2271,8 +2341,9 @@ export class DispatchClient {
   }
 
   /** `GET /api/v1/projects/{key}/plans`: each finished issue of the project, newest close first,
-   *  with its plan, each retro's rating, its time and its count of failed steps. `since` and
-   *  `until` bound the close to `[since, until)`, and a bound left out is not sent. */
+   *  with its plan, each retro's rating, its time, its count of failed steps, and the experiment
+   *  and the variant the step records of its newest run name, null where they name none. `since`
+   *  and `until` bound the close to `[since, until)`, and a bound left out is not sent. */
   async listProjectPlans(
     project: string,
     window: { readonly since?: string | undefined; readonly until?: string | undefined } = {}
@@ -3021,7 +3092,7 @@ export class DispatchClient {
           error.code ?? `HTTP_${response.status}`,
           response.status,
           error.error,
-          error
+          { ...error, hint: typeof error.hint === "string" ? error.hint : undefined }
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

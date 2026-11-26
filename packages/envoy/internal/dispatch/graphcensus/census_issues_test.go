@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
-// TestTheIssueLinkBatchTakesTheStoreLockOrder holds writeIssueLinkBatch (dispatch://INFRA-1253) to
+// TestTheIssueLinkBatchTakesTheStoreLockOrder holds writeIssueLinkBatch (the issue-tree spec) to
 // the store's lock order, as TestEveryBackfillBatchTakesTheStoreLockOrder holds the other batches:
 // the owner row the link stands under, its issue's row, first, then the needs tuple, then the
 // issue_links row that names the issue's node. The tuple is stated at the sentinel, which no repeat
@@ -76,7 +76,7 @@ func TestTheIssueLinkBatchTakesTheStoreLockOrder(t *testing.T) {
 }
 
 // TestTheObjectPassStatesTheParentAReparentMovedWhileItWaited holds the object pass to the parent an
-// issue's row names under the issue's own row (dispatch://INFRA-1253 R9): a batch reads its rows
+// issue's row names under the issue's own row (R9 of the issue-tree spec): a batch reads its rows
 // outside its transaction, so a reparent can commit between that read and the issue's lock. A
 // second transaction stands for the release before's PATCH: it takes the issue's row, as
 // lockPatchRows does, and moves the issue, whose row names no node, from LOCK-1 to LOCK-2. That

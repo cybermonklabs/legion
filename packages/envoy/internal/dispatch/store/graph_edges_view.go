@@ -6,7 +6,7 @@ import (
 )
 
 // GraphEdgesArms names one set of the arms graph_edges is stated with from
-// dispatch://INFRA-1253's split of the issue relations on: each migration that states the view
+// the issue-tree spec's split of the issue relations on: each migration that states the view
 // holds, after its header, the statement GraphEdgesView gives for its set, and nothing else
 // (TestEveryGraphEdgesMigrationHoldsTheViewItsSourceGives). Migrations are embedded files that
 // call no Go, so this function is the one source of their text, and the boot step that drops an
@@ -51,6 +51,16 @@ const (
 	// 20261121104002_graph_edges_store_class_last restates it from its own arms, so a database that
 	// ran any of them holds every arm of this branch again.
 	GraphEdgesTupleArmFilter
+	// GraphEdgesBlockNodeListed is the set 20261125150001_issue_tree_graph_edges_block_node_listed
+	// states: GraphEdgesTupleArmFilter with the tuple arm testing a pointer's target through
+	// block_node_listed, which 20261125150000_issue_tree_block_node_listed creates with the body of
+	// block_ref_listed, in place of block_ref_listed (R26 of the issue-tree spec,
+	// `r-block-type-supertag`). The arm over the block_refs rows that name no node keeps
+	// block_ref_listed, since only that row tests a target past the store's address bound. A boot
+	// step restates block_node_listed and block_pointer_targets to read a block's type from its
+	// node's supertag once the fleet and the store allow it
+	// (graphcensus.RunTypedBlockSupertagsStep), which no statement of the view moves.
+	GraphEdgesBlockNodeListed
 )
 
 // GraphEdgesView is the statement that states graph_edges with the arms of set arms. A set no
@@ -64,7 +74,7 @@ const (
 // writes again, naming no node, is answered by the old arm alone. Each correlated probe of a
 // projection row stands under a CASE and ends in `offset 0`, which Postgres keeps as a fence and
 // probes once per edge through the row's own index, where it would otherwise read the whole table
-// as a hashed `= any` that enable_seqscan does not steer (dispatch://INFRA-1149's 0f8b389c).
+// as a hashed `= any` that enable_seqscan does not steer (the graph-store spec's commit 0f8b389c).
 //
 // An issue's relations, as GraphEdgesIssueRelations has them: its child_of is answered while the
 // issues row carries the issue's node and names that parent, its needs to an issue while the
@@ -72,7 +82,7 @@ const (
 // release, and its duplicate_of and filed_from from the store alone, since no row projects
 // either. The release before's PATCH sets issues.parent_key and leaves the node columns as they
 // were, so a marked row can name a parent its node's child_of does not: such a row counts as
-// unmarked while that is so (IssueParentMoved, R9 of dispatch://INFRA-1253), and the child_of arm
+// unmarked while that is so (IssueParentMoved, R9 of the issue-tree spec), and the child_of arm
 // answers it, through a probe that stands under an OR and ends in `offset 0` as every probe here
 // does, until the backfill states the child_of that names its parent. A document's attached_to its
 // issue is the part_of the artifact's node states, which the arm over artifacts that carry their
@@ -120,8 +130,12 @@ func GraphEdgesView(arms GraphEdgesArms) string {
 	if arms >= GraphEdgesTupleArmFilter {
 		newest, tested = graphEdgesNotValue+tupleArmFilter(projects)+graphEdgesNewestOrder, graphEdgesProbesHead
 	}
+	pointers := graphEdgesPointersByRow
+	if arms >= GraphEdgesBlockNodeListed {
+		pointers = graphEdgesPointersByNode
+	}
 	return graphEdgesCreate + references + graphEdgesHead + components + graphEdgesBlocks + nodeColumn + graphEdgesTupleKinds +
-		projects + graphEdgesProjectsEnd + tuples + newest + nodes + tested + graphEdgesProbes + probes + graphEdgesTail
+		projects + graphEdgesProjectsEnd + tuples + newest + nodes + tested + pointers + graphEdgesProbes + probes + graphEdgesTail
 }
 
 // tupleArmFilter is the tuple arm's test that a tuple's `projects` is not null, spelled over the
@@ -154,14 +168,14 @@ func tupleArmFilter(classes string) string {
 // its node does not hang under: the newest child_of tuple out of that node that names the row's
 // parent_key does not assert it, or there is none. Only the release before writes such a row: its
 // issue PATCH sets parent_key in place and leaves node_kind and node_address as they were, and
-// appends no tuple. Such a row counts as unmarked (R9 of dispatch://INFRA-1253): graph_edges' old
+// appends no tuple. Such a row counts as unmarked (R9 of the issue-tree spec): graph_edges' old
 // child_of arm answers it, refs.BacklinkCounts counts it the same way, and the backfill states the
 // child_of that names its parent (graphcensus' object pass). It is the complement, over a marked
 // row, of the tuple arm's own test of the same edge, the newest tuple of the relation asserting it
 // while the row names that parent, so every parent is answered by exactly one of the two arms. The
 // probe reads graph_tuples_current, whose columns are the five it binds and then the sequence, and
 // it ends in `offset 0`: it stands under an OR, where Postgres would otherwise read graph_tuples
-// whole as a hashed subplan (dispatch://INFRA-1149's 0f8b389c).
+// whole as a hashed subplan (the graph-store spec's commit 0f8b389c).
 const IssueParentMoved = `not exists (
       select 1 from (
         select tuple.asserted from graph_tuples tuple
@@ -179,7 +193,7 @@ const IssueParentMoved = `not exists (
 // none. No importer of this release or of the release before moves a row's parent in place - each
 // deletes a source's components and inserts them again, so a row the release before writes names
 // no node - but a row updated in place by anything else, leaving its node columns as they were,
-// counts as unmarked while that is so (R9 of dispatch://INFRA-1253): graph_edges' old part_of arm
+// counts as unmarked while that is so (R9 of the issue-tree spec): graph_edges' old part_of arm
 // over components answers it, refs.BacklinkCounts counts it the same way, and the backfill states
 // the part_of that names its parent (graphcensus' component pass). It is the complement, over a
 // marked row, of the tuple arm's own test of the same edge, so every parent is answered by exactly
@@ -215,9 +229,10 @@ var componentArms = map[GraphEdgesArms]string{
   select 'issue', m.issue_key, 'affects', 'component', m.project_key || '/' || m.component_id, c.updated_at, null
   from issue_component_members m join issue_components c using (issue_key)
 `,
-	GraphEdgesComponents:     unmarkedComponentArms,
-	GraphEdgesArtifactRefs:   unmarkedComponentArms,
-	GraphEdgesTupleArmFilter: unmarkedComponentArms,
+	GraphEdgesComponents:      unmarkedComponentArms,
+	GraphEdgesArtifactRefs:    unmarkedComponentArms,
+	GraphEdgesTupleArmFilter:  unmarkedComponentArms,
+	GraphEdgesBlockNodeListed: unmarkedComponentArms,
 }
 
 // unmarkedComponentArms are the arms over a component's three relations over the rows no writer
@@ -559,11 +574,23 @@ const graphEdgesProbesNotNull = `  where edge.asserted and node.state <> 'gone' 
 const graphEdgesProbesHead = `  where edge.asserted and node.state <> 'gone'
 `
 
-// graphEdgesProbes is the tuple arm from its tests of an edge, after their head, to the probe of
-// an issue's wait, the last probe every set states before a set's own.
-const graphEdgesProbes = `    and (edge.projects <> 'block_ref' or edge.stated = 'mentions'
+// graphEdgesPointersByRow and graphEdgesPointersByNode are the tuple arm's test that a pointer is
+// listed, after its tests' head: through block_ref_listed in every set before
+// GraphEdgesBlockNodeListed, and through block_node_listed from it on, whose body a boot step
+// restates to read the target's type from its node (graphcensus.RunTypedBlockSupertagsStep). The
+// type of the pointer's source is block_pointer_targets' to read in either.
+const (
+	graphEdgesPointersByRow = `    and (edge.projects <> 'block_ref' or edge.stated = 'mentions'
          or block_ref_listed(block_pointer_targets(edge.from_id, edge.stated), edge.to_id))
-    and case edge.projects
+`
+	graphEdgesPointersByNode = `    and (edge.projects <> 'block_ref' or edge.stated = 'mentions'
+         or block_node_listed(block_pointer_targets(edge.from_id, edge.stated), edge.to_id))
+`
+)
+
+// graphEdgesProbes is the tuple arm from its test that a pointer is listed to the probe of an
+// issue's wait, the last probe every set states before a set's own.
+const graphEdgesProbes = `    and case edge.projects
           when 'store' then true
           when 'block' then exists (
             select 1 from document_blocks projected

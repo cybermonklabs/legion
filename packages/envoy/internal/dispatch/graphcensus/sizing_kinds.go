@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -80,6 +81,18 @@ const (
 	movedTextPlaces = "block_text_place_moved"
 )
 
+// authoredPointers is the name of the term of what an authored block - a criterion, a
+// requirement, a check or a plan node - writes beyond the facts of every block: the tuple of each
+// serves, needs and parent pointer its opening line writes (refs' authoredSourcesOf and
+// pointerPairs), which block_refs projects as a row of the pointer's kind, and a plan node's size
+// in whole minutes (refs' planBlockValues). authoredPointerKinds is the kinds of those rows, as
+// SQL: serves (refs' servesKind), needs and parent (pmdoc.ParentAttribute). The term block_ref
+// leaves those rows to it, so no tuple is counted by both.
+const (
+	authoredPointers     = "authored_pointer"
+	authoredPointerKinds = `('serves', '` + graphstore.TupleNeeds + `', '` + pmdoc.ParentAttribute + `')`
+)
+
 // storeKinds are the terms R4 states, each beside the writer or the requirement whose tuples it
 // counts:
 //   - a comment's node and its visibility, state and project or parties (graphstore.Write), the
@@ -97,8 +110,8 @@ const (
 //     reference, the pair's assertion and, at most, the retraction that ends it, which no table
 //     records once the pair is gone;
 //   - the node and three base attributes of an issue, an artifact, an ask and a message, and the
-//     gone state a document's removal states of its node, each written by its own create or
-//     removal on this branch;
+//     gone state a document's removal states of its node, each written by this build's own create
+//     or removal;
 //   - the values of each block a version wrote: the text value of each block whose text it wrote,
 //     the rank, the placement, the text_parent and the text_rank of a block's first row, and the
 //     new rank and the new place in the text of a block it moved under another parent (refs'
@@ -128,7 +141,8 @@ const (
 //     comment's anchored_in its anchor's block, the authored_by of a block of an issue's room, a
 //     result's node with its values and tuples, its screenshots and its retraction, a component's
 //     node with its part_of, depends_on and affects, a retired component's node stated gone with
-//     those relations retracted, and a criterion's authored_by
+//     those relations retracted, a criterion's authored_by, and an authored block's serves, needs
+//     and parent pointers and a plan node's size
 //     (#b-r-issue-relations, #b-r-result-node, #b-r-artifacts-in-tree, #b-r-reasoning-tree,
 //     #b-r-one-room, #b-r-queries);
 //   - the asks child's ask's answer_state, question, options, authored_by, anchored_to and
@@ -138,7 +152,9 @@ const (
 //   - the lenses child's interaction, its frames and its node stated gone once the release before
 //     deletes its row, a lens and its finding blocks, a lens kind, a constraint, a risk, a node's
 //     state and a pointer's retarget (#b-r-interaction, #b-r-lens, #b-r-lens-catalogue,
-//     #b-r-constraint-risk), every one of them assumed.
+//     #b-r-constraint-risk), every one of them assumed;
+//   - and R7's delete of a node, which takes a lens and its findings gone, each node's state gone
+//     and every relation out of it retracted, assumed too.
 //
 // Every node of an issue, a document, an ask, a message, a comment and a block states its project
 // or its parties beside its visibility and state, written by the create that makes it: each of
@@ -166,11 +182,12 @@ func storeKinds() []StoreKind {
 		Driver: "comments.created_at: each alias_of and recorded_as the credential that wrote one proved",
 		count:  `(select coalesce(sum(aliases), 0) from sized_comments)`,
 	}, {
-		Name: "anchor_block", MovedBy: movedWithBlocks, Tuples: 3,
+		Name: "anchor_block", MovedBy: movedWithBlocks, Tuples: 6,
 		Driver: "comments.created_at, each anchored to a document the store can key: its anchored_in to the block holding" +
-			" its quote (comments.anchor's block_id), at most the retraction that ends it once the quote's mark is gone, an" +
-			" accept's or a refresh's, and at most its restatement once a refresh finds the mark again, which over-states" +
-			" an anchor that names no quote",
+			" its quote (comments.anchor's block_id) and the part_of to that block of a comment that answers nothing (R31)," +
+			" at most the retraction of both once the quote's mark is gone, an accept's or a refresh's, and at most their" +
+			" restatement once a refresh finds the mark again, which over-states an anchor that names no quote. A comment on" +
+			" the text of a node is new in this release, so the window holds none for it to count",
 		count: `(select count(*) from sized_comments where anchored)`,
 	}, {
 		Name: "delivery", MovedBy: movedHere, Tuples: 1,
@@ -213,8 +230,9 @@ func storeKinds() []StoreKind {
 			" in document order, so the term is exact except there: the old parent's retraction and the new one's assertion",
 	}, {
 		Name: "block_ref", MovedBy: movedHere, Tuples: 2,
-		Driver: "block_refs.created_at: the pair's assertion and, at most, the retraction that ends it",
-		count:  `(select count(*) from block_refs where created_at > ` + sizingWindow + `)`,
+		Driver: "block_refs.created_at of each link but an authored block's serves, needs and parent pointers, which " +
+			authoredPointers + " counts: the pair's assertion and, at most, the retraction that ends it",
+		count: `(select count(*) from block_refs where created_at > ` + sizingWindow + ` and kind not in ` + authoredPointerKinds + `)`,
 	}, {
 		Name: "document_ref", MovedBy: movedWithBlocks, Tuples: 2,
 		Driver: "refs.created_at of a document's references: the mentions out of the document's node and, at most, the" +
@@ -432,6 +450,17 @@ func storeKinds() []StoreKind {
 		Name: "criterion", MovedBy: movedWithBlocks, Tuples: 1, Assumed: 5 * sizingWindowDays,
 		Driver: "assumed at 5 a day, since the block schema holds no criterion type before the blocks child ships and no" +
 			" row holds one: its authored_by, its node and placement being a block's, which the block terms count",
+	}, {
+		// Counted off the block index's links (refs' pointerPairs, queueBlockRefs), whose rows of the
+		// kinds authoredPointerKinds names are an authored block's pointers, and off the values a
+		// pass states of a plan node (refs' planBlockValues), whose size the opening line of its
+		// text writes (refs.WrittenSizeSQL reads it there too).
+		Name: authoredPointers, MovedBy: movedWithBlocks, Tuples: 2,
+		Driver: "block_refs.created_at of each serves, needs and parent pointer an authored block writes, and" +
+			" document_block_texts of the versions written in the window, each row of a plan_task block whose opening line" +
+			" writes a size: the pointer's tuple or the size value in whole minutes, and at most the retraction that ends it",
+		count: `((select count(*) from block_refs where created_at > ` + sizingWindow + ` and kind in ` + authoredPointerKinds + `)
+			+ (select count(*) from sized_texts where sized))`,
 	}, {
 		// Counted off graphstore.ResultFacts, which the record route (api's writeRecordedResult) and
 		// the backfill (backfillResults) write a result through, for one a session recorded naming
@@ -655,6 +684,20 @@ func storeKinds() []StoreKind {
 		Driver: "assumed at 10 a day, one for each assumed finding, since production writes no node state but live and" +
 			" gone before the lenses child ships: a node's proposed, settled or overtaken state value",
 	}, {
+		// Counted off api's deleteNode (R7's DELETE /api/v1/issues/{key}/nodes/{id}), which takes a
+		// lens, a finding, a risk or a constraint gone with what stands under it: each such node's
+		// state gone (deletePlan.goneNodes) and, as no other writer of those kinds does, the
+		// retraction of every relation out of it (deletePlan.retractions). A block of a document it
+		// takes leaves its document's text, which the version the delete writes of that document
+		// states gone, as the block terms count; the version a query's drain writes after it is the
+		// version terms'; and the anchored_in and the part_of of a comment whose node anchor it
+		// orphans are anchor_block's.
+		Name: "node_delete", MovedBy: movedHere, Tuples: 7, Assumed: 1 * sizingWindowDays,
+		Driver: "assumed at 1 a day, half the lenses the lens term assumes, since production writes no lens, finding," +
+			" risk or constraint before this release: a delete of a lens with one finding, each one's state gone and the" +
+			" retraction of every relation out of each - the lens's part_of, has_kind and authored_by, the finding's" +
+			" part_of and authored_by - which over-states a lens with no finding and under-states one with several",
+	}, {
 		// Counted off graphstore.Retarget, which the pointer route (api's writeReasoningPointer)
 		// moves a pointer through: the retraction of the far end it held and the assertion of the
 		// new one.
@@ -690,13 +733,14 @@ func reachesANode(topic string) string {
 // sizingWritesWith is the sets of rows several terms count over, each read once for every term
 // that counts it: the comments written inside the window with the facts each one's write states
 // beside its node; the document_block_texts rows of the versions written inside it, each with
-// whether the block's row before it held a text (null for the block's first row) and, for a row
-// of an issue's spec, Verification document or plan (roleDocument), how many authors its version
-// lists; the messages written inside it, and each issue message's thread root, found up
-// in_reply_to as user_threads_message finds it; the thread of each comment, issue message and
-// answer written inside it, with its writer as user_threads_record names one; the ask events
-// inside it; the people a comment first names, the roles an event first addresses, and the
-// components an import inside it wrote.
+// whether the block's row before it held a text (null for the block's first row), for a row of an
+// issue's spec, Verification document or plan (roleDocument), how many authors its version lists,
+// and whether it is a plan_task block's row whose opening line writes a size, as the renderer
+// writes one there (refs.WrittenSizeSQL); the messages written inside it, and each issue message's
+// thread root, found up in_reply_to as user_threads_message finds it; the thread of each comment,
+// issue message and answer written inside it, with its writer as user_threads_record names one; the
+// ask events inside it; the people a comment first names, the roles an event first addresses, and
+// the components an import inside it wrote.
 //
 // A comment's facts are read off its row as their writers read them: its author as authoredLink
 // does (graphstore.AuthorOf), a document it is anchored to or owned by only where the document's
@@ -730,7 +774,8 @@ func sizingWritesWith(rooms bool) string {
 		where c.created_at > ` + sizingWindow + `
 	),
 	sized_texts as (
-		select t.text is not null as written, earlier.held as earlier, coalesce(role.authors, 0) as authors
+		select t.text is not null as written, earlier.held as earlier, coalesce(role.authors, 0) as authors,
+		       coalesce(split_part(t.text, chr(10), 1) ~ '^:{3,}plan_task\{.* ` + refs.AttributePlanSize + `="', false) as sized
 		from artifact_versions v
 		join document_block_texts t on ` + documentTexts("t", "v.artifact_id", rooms) + ` and t.version = v.number
 		left join lateral (

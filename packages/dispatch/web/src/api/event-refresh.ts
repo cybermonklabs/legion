@@ -235,6 +235,7 @@ const LIVE_TEXTS_RENDERING_COPIES: RefreshTarget = {
           typeof entry.copied_from === "string"
       );
     }
+    // kept for one release: release-before-text
     return (
       "markdown" in data &&
       typeof data.markdown === "string" &&
@@ -365,6 +366,8 @@ const ISSUE_NODE_MOVERS: Readonly<Record<keyof IssueTreeNode, readonly string[]>
   // issue above it it is a view of.
   parent: ["parent"],
   view_of: ["parent"],
+  // The seq of the `part_of` that places it, which a parent move writes anew.
+  placement_seq: ["parent"],
   // In a plan view, the issue's two halves in the order of the whole tree: its waits and its
   // parent, beside its children and its plan tasks, which its child and document events move.
   plan: ["blocked_by", "needs", "parent"],
@@ -400,6 +403,11 @@ const ISSUE_NODE_MOVERS: Readonly<Record<keyof IssueTreeNode, readonly string[]>
   decision: MOVED_BY_NO_WRITE,
   document: MOVED_BY_NO_WRITE,
   result: MOVED_BY_NO_WRITE,
+  // A requirement's count of the checks that serve it, a session's title and a comment's anchor,
+  // which no issue's node carries.
+  anchor: MOVED_BY_NO_WRITE,
+  checks: MOVED_BY_NO_WRITE,
+  title: MOVED_BY_NO_WRITE,
 };
 
 /** The relations an issue states out of its own node that are edges of the reference graph,
@@ -572,6 +580,7 @@ const TREE_NODES_MOVED: Readonly<
   "architecture.sync_failed": [],
   "architecture.synced": [],
   "priority.updated": [],
+  "project.access_changed": [],
   "project.created": [],
   "project.updated": [],
   "settings.architecture_source.updated": [],
@@ -1134,22 +1143,10 @@ function treesHolding(
       }
       // A view follows the outline the page holds: the tree read below, Graph's, and where the
       // cache holds none, Conversation's read, which the view waits on and is judged by alike.
-      const conversation = client
-        .getQueryCache()
-        .get(hashKey(conversationTreeKey(String(query.queryKey[1]))));
-      if (
-        conversation !== undefined &&
-        client.getQueryCache().get(hashKey(query.queryKey.slice(0, 2))) === undefined
-      ) {
-        const answer = conversation.state.data;
-        const judged = typeof answer === "object" && answer !== null && held.get(answer) === true;
-        if (conversation.state.fetchStatus !== "idle" && !judged) {
-          waitForOutline(client, conversation, query, holds, issues);
-          return false;
-        }
-        return holds(answer, issues);
-      }
-      const outline = client.getQueryCache().get(hashKey(query.queryKey.slice(0, 2)));
+      const cache = client.getQueryCache();
+      const outline =
+        cache.get(hashKey(query.queryKey.slice(0, 2))) ??
+        cache.get(hashKey(conversationTreeKey(String(query.queryKey[1]))));
       if (outline === undefined) {
         return false;
       }
@@ -1600,12 +1597,8 @@ function issueWriteTargets(
   if (titleOrStatus) {
     targets.push(issueSummaryOf(key, event));
   }
-  // The Reference picker's project list and the Agents page's open-issue picker list titles and
-  // whether an issue is open.
+  // The Agents page's open-issue picker lists titles and whether an issue is open.
   if (created || closed || titleOrStatus) {
-    if (project !== undefined) {
-      targets.push({ exact: true, queryKey: ["issues", project] });
-    }
     targets.push({ exact: true, queryKey: ["agents", "issue-picker"] });
   }
   if (!created && titleOrStatus) {
@@ -2027,6 +2020,11 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   if (event.type === "priority.updated") {
     // A create, a rename, a move, a description or a delete of a priority, by anybody.
     return priorityWriteTargets(event);
+  }
+  if (event.type === "project.access_changed") {
+    // An owner given, or another change of who may see the project: no read of the dashboard
+    // carries a project's owner, visibility or access list yet, so nothing is refreshed.
+    return [];
   }
   if (event.type === "subscription.remove_requested") {
     return [];

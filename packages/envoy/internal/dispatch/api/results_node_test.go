@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -530,22 +528,22 @@ func (r *storeWriterRig) lockResultCheck(t *testing.T, uploaded *bool) {
 
 // resultRecord is the record of a result (recordCheckResult, writeRecordedResult), through its
 // route: the owner locks of the recording issue and the check's issue, here one
-// (lockIssueOwners), then the lock of the check's issue's room (docs.LockQueryRooms), then
-// result.recorded, the check_results row, whose foreign key takes the check's artifact row `for key
-// share`, then the result's node and the recorder's in one node write, and the tuples that event
-// causes. Each run records a result of its own under an id drawn in the run, so the row, the node
-// and the tuples are held as the tables they are written to. The event is an issue's, so it takes
-// no lock on projects (eventProjectLocks). The rig's issue is born converted, so the result moves
-// the record of its Verification query, and the route last appends a version of that document
-// (reviseQueriesUnder): the version's row, its node and its version_renders row, and the node's
-// tuples under result.recorded.
+// (lockIssueOwners), then result.recorded, the check_results row, whose foreign key takes the
+// check's artifact row `for key share`, then the result's node and the recorder's in one node
+// write, the tuples that event causes, and the mark of the issue's queries owed a version
+// (queryMarkStep). Each run records a result of its own under an id drawn in the run, so the row,
+// the node and the tuples are held as the tables they are written to. The event is an issue's, so
+// it takes no lock on projects (eventProjectLocks). The rig's issue is born converted, so the
+// result moves the record of its Verification query: the route's transaction takes no lock of the
+// issue's room and writes no version of that document, and the drain writes it in a transaction of
+// its own once the route has committed (docs.Service.DrainOwedQueries), which graphstore's register
+// of the store's writers names beside the test that proves its order (lockstep's sites.go).
 func (r *storeWriterRig) resultRecord() storeWriter {
 	uploaded := false
 	return storeWriter{
 		name: "recordCheckResult",
 		steps: []storeStep{
 			ownerLockStep(store.IssueOwner(r.issue)),
-			r.roomLockStep(),
 			resultEventStep(),
 			{
 				name: "the result's row", order: projectionStep,
@@ -558,8 +556,7 @@ func (r *storeWriterRig) resultRecord() storeWriter {
 				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
 			},
 			tupleAppendStep(),
-			revisedVersionRowStep(),
-			revisedRenderRowStep(),
+			queryMarkStep(),
 		},
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			r.lockResultCheck(t, &uploaded)
@@ -576,21 +573,19 @@ func (r *storeWriterRig) resultRecord() storeWriter {
 
 // resultRetraction is the retraction of a result (retractCheckResult, writeCheckResultRetraction),
 // through its route: it reads the result's check_results row plainly (readRetractedResult), takes
-// the owner lock of the check's issue (store.LockOwner) and then its room's lock
-// (docs.LockQueryRooms), reads whether the store holds the result's node, then appends
-// result.retracted, and writes, in one batch, the check_result_retractions row and the result's
-// retracted value that event causes, a tuple alone (graphstore.QueueWrite). Each run retracts a
-// result its ready recorded; the retraction's row and the value are held as the tables they are
-// written to. The retraction moves the record of the issue's Verification query, so the route last
-// appends a version of that document (reviseQueriesUnder): the version's row, its node, its
-// version_renders row, and the node's tuples under result.retracted.
+// the owner lock of the check's issue (store.LockOwner), reads whether the store holds the result's
+// node, then appends result.retracted, and writes, in one batch, the check_result_retractions row,
+// the result's retracted value that event causes, a tuple alone (graphstore.QueueWrite), and the
+// mark of the issue's queries owed a version (queryMarkStep). Each run retracts a result its ready
+// recorded; the retraction's row and the value are held as the tables they are written to. The
+// retraction moves the record of the issue's Verification query, whose version the drain writes
+// once the route has committed, as the record's is (resultRecord).
 func (r *storeWriterRig) resultRetraction() storeWriter {
 	uploaded := false
 	return storeWriter{
 		name: "retractCheckResult",
 		steps: []storeStep{
 			ownerLockStep(store.IssueOwner(r.issue)),
-			r.roomLockStep(),
 			resultEventStep(),
 			{
 				name: "the retraction's row", order: projectionStep,
@@ -602,13 +597,7 @@ func (r *storeWriterRig) resultRetraction() storeWriter {
 				hold: holdTableWrites("graph_tuples"), at: tupleOnlyAppendStatement,
 				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
 			},
-			revisedVersionRowStep(),
-			{
-				name: "the revised version's node", order: nodeStep,
-				hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
-				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
-			},
-			revisedRenderRowStep(),
+			queryMarkStep(),
 		},
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			r.lockResultCheck(t, &uploaded)
@@ -631,53 +620,21 @@ func (r *storeWriterRig) resultRetraction() storeWriter {
 
 // resultEventStep is the event a result's write appends (eventAppendStep), with the issue's row its
 // append updates (events.Broker moves the owner row's last_seq): a write held at an earlier step
-// that has locked that row already took its event, which the room's lock comes before.
+// that has locked that row already took its event.
 func resultEventStep() storeStep {
 	step := eventAppendStep()
 	step.takes = append(slices.Clone(step.takes), tableLock{"issues", rowExclusiveMode})
 	return step
 }
 
-// roomLockStep is the lock of the rig's issue's room (docs.LockQueryRooms), which a route that goes
-// on to append a version of one of the issue's query documents takes right after its owner lock
-// and before its event: held here as a writer of the room's stored history holds it, the advisory
-// lock of the issue's tree (lockDocumentRoom's key). It locks no table and no row.
-func (r *storeWriterRig) roomLockStep() storeStep {
+// queryMarkStep is the mark of the rig issue's queries owed a version (docs.QueueQueryMark), which
+// a result's write upserts in its batch after the tuples it appends and before its head rows; the
+// mark's row is the issue's own, so the step is held as the table it is written to.
+func queryMarkStep() storeStep {
 	return storeStep{
-		name: "the issue room's lock", order: roomStep,
-		hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
-			t.Helper()
-			tag, err := holder.Exec(ctx, `select pg_advisory_xact_lock(hashtext(artifact_id::text)) from issue_trees where issue_key = $1`, r.issue)
-			if err != nil {
-				t.Fatalf("hold the lock of %s's room: %v", r.issue, err)
-			}
-			if tag.RowsAffected() != 1 {
-				t.Fatalf("hold the lock of %s's room: it took %d room locks, want the one of the issue's tree", r.issue, tag.RowsAffected())
-			}
-		},
-		at: "select pg_advisory_xact_lock(hashtext(t.artifact_id::text)) from issue_trees t where t.issue_key = $1",
-	}
-}
-
-// revisedVersionRowStep is the row of the version a result's write appends of the Verification
-// document whose record it moved (docs.Service.ReviseQueries), whose insert's trigger owes the
-// document its block index (document_block_versions_owe); the version's number is drawn in the
-// run, so the table is held.
-func revisedVersionRowStep() storeStep {
-	return storeStep{
-		name: "the revised version's row", order: projectionStep,
-		hold: holdTableWrites("artifact_versions"), at: versionStatement,
-		takes: []tableLock{{"artifact_versions", rowExclusiveMode}, {"document_block_versions", rowExclusiveMode}},
-	}
-}
-
-// revisedRenderRowStep is the version_renders row of that version, holding its record's digest
-// (docs.QueueVersionRender), after the version's node.
-func revisedRenderRowStep() storeStep {
-	return storeStep{
-		name: "the revised version's render row", order: projectionStep,
-		hold: holdTableWrites("version_renders"), at: "insert into version_renders (",
-		takes: []tableLock{{"version_renders", rowExclusiveMode}},
+		name: "the issue's query mark", order: projectionStep,
+		hold: holdTableWrites("issue_query_marks"), at: "insert into issue_query_marks (",
+		takes: []tableLock{{"issue_query_marks", rowExclusiveMode}},
 	}
 }
 
@@ -823,18 +780,21 @@ func issueVersionCounts(t *testing.T, q queryer, issueKey string) map[string]int
 //     version, whose pass records its record's digest, and no version of the Verification document;
 //   - a requirement written into the Verification document's fragment: the settlement versions
 //     that document, and the spec's record moves while its rendering does not, so the settlement
-//     appends one spec version holding the bytes of the one before it, the record's digest on its
-//     row, its node caused by the Verification document's artifact.version;
+//     marks the issue's queries owed and the drain it runs once it has committed appends one spec
+//     version holding the bytes of the one before it, the record's digest on its row, its node
+//     caused by the latest event the settlement appended, the Verification document's
+//     artifact.version;
 //   - prose alone written into the spec: the rendering moved, so the settlement writes one spec
 //     version, and the record did not, so its digest is the one the approval before it pinned (R14);
 //   - a result recorded on the check appends one Verification version, the bytes of the one before
-//     it, holding the record's new digest, its node caused by result.recorded; its retraction
-//     appends another, caused by result.retracted; each is a query version that renders from the
-//     tree as its stored bytes, with no difference the census reads at it, and neither moves the
-//     spec.
+//     it, holding the record's new digest, its node caused by result.recorded, which the drain
+//     writes once the result has committed and before the route answers (docs.Service.DrainOwedQueries);
+//     its retraction appends another, caused by result.retracted; each is a query version that
+//     renders from the tree as its stored bytes, with no difference the census reads at it, and
+//     neither moves the spec.
 //
-// An issue that has not converted takes no version from a result recorded on its check, and
-// ReviseQueries answers nothing for it and writes nothing.
+// An issue that has not converted takes no version from a result recorded on its check, and the
+// drain of its queries answers nothing for it and writes nothing.
 func TestEveryWriteThatMovesAQuerysRecordAppendsAVersionOfIt(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	documents := deps.Docs.(*docs.Service)
@@ -938,20 +898,11 @@ func TestEveryWriteThatMovesAQuerysRecordAppendsAVersionOfIt(t *testing.T) {
 	if after := issueVersionCounts(t, database.Pool, unconverted.Key); !maps.Equal(after, before) {
 		t.Errorf("a result recorded on %s, which has not converted, leaves its documents at the versions %v, want %v", unconverted.Key, after, before)
 	}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
+	if drained := documents.DrainOwedQueries(ctx, unconverted.Key); len(drained) != 0 {
+		t.Errorf("the drain of %s, which has not converted, appended %+v, want nothing", unconverted.Key, drained)
 	}
-	defer tx.Rollback(ctx)
-	revised, err := documents.ReviseQueries(ctx, tx, unconverted.Key, model.Actor{Kind: "user", ID: "alice"})
-	if err != nil {
-		t.Fatalf("revise the queries of %s: %v", unconverted.Key, err)
-	}
-	if len(revised.Nodes) != 0 || len(revised.Tuples) != 0 {
-		t.Errorf("ReviseQueries of %s, which has not converted, answers %d nodes and %d tuples, want none", unconverted.Key, len(revised.Nodes), len(revised.Tuples))
-	}
-	if inside := issueVersionCounts(t, tx, unconverted.Key); !maps.Equal(inside, before) {
-		t.Errorf("ReviseQueries of %s, which has not converted, leaves its documents at the versions %v, want %v", unconverted.Key, inside, before)
+	if after := issueVersionCounts(t, database.Pool, unconverted.Key); !maps.Equal(after, before) {
+		t.Errorf("the drain of %s, which has not converted, leaves its documents at the versions %v, want %v", unconverted.Key, after, before)
 	}
 }
 
@@ -1178,8 +1129,8 @@ func requireTheRevisionAlone(t *testing.T, what string, before, after revisionSn
 // whose Verification document holds one check serving the first, the test reads at the store,
 // around each write, each such node's graph_nodes row, its parent and its rank as the tree walks
 // them, and every tuple out of it, and requires each to stand as it stood. The only nodes the store
-// gains are the result's, at its record, and the version node of each version the write's query
-// revision (docs.Service.ReviseQueries) appended, each holding its version_renders row, the
+// gains are the result's, at its record, and the version node of each version the drain of the
+// write's mark appended (docs.Service.DrainOwedQueries), each holding its version_renders row, the
 // Verification document taking one at each write. This is what keeps those versions outside the
 // spec-writer check (specWriterRevisions): a result is no requirement, criterion or check node,
 // and its tuple to its check is a relation out of the result. A failure names the node and the

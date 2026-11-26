@@ -41,12 +41,9 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  */
 
 /** The fields of a Change the Decisions filter reads (`decisionsParts`), and when its author
- *  deleted it and last edited it, which the Decisions view draws a Change with
- *  (`decisions-parts.ts`'s `DecisionChange`). */
-export type ChangeComment = Pick<
-  Comment,
-  "author" | "body" | "created_at" | "deleted_at" | "edited_at" | "id"
->;
+ *  last edited it, which the Decisions view draws a Change with (`decisions-parts.ts`'s
+ *  `DecisionChange`). */
+export type ChangeComment = Pick<Comment, "author" | "body" | "created_at" | "edited_at" | "id">;
 
 /**
  * Whether `decision` is an entry of the review list (R35): an agent's decision that waits for a
@@ -109,8 +106,9 @@ export function reviewState(
  * close the block left out (`ownWords`), and its own reading is the block's content at the top
  * level (`ownTree`), where a section's blocks stood. A text or a reading that is no such block is
  * its own already. `tree` is absent where the read sent no reading. The page reads no decisions
- * read: its decisions are nodes of the tree read, whose words are their own. Part I's browser
- * rows read a decisions read entry's words here (`e2e/issue-page-i.e2e.ts`).
+ * read: its decisions are nodes of the tree read, which answers a decision node's text and
+ * reading as the same whole block, so `decision-nodes.ts` reads each node's own content here too.
+ * Part I's browser rows read a decisions read entry's words here (`e2e/issue-page-i.e2e.ts`).
  */
 export function decisionContent(
   decision: Pick<DecisionEntry, "text" | "text_tree">
@@ -265,7 +263,7 @@ const NO_DELETED: ReadonlySet<string> = new Set();
 /** The ids of the comments among `comments` that their author deleted (`postDeletion`): the
  *  Changes that ask nothing any more (`decisionNodeChanges`). */
 export function deletedPostIds(
-  comments: readonly Pick<ChangeComment, "deleted_at" | "id">[] | undefined
+  comments: readonly Pick<Comment, "deleted_at" | "id">[] | undefined
 ): ReadonlySet<string> {
   const ids = new Set<string>();
   for (const comment of comments ?? []) {

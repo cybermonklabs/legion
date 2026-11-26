@@ -1,0 +1,3 @@
+jj git push --dry-run --ignore-working-copy --color=never -r d8ba684f07847ce4cf4f26ef18e0d5bc01229c91
+Warning: No bookmarks/tags point to the specified revisions: d8ba684f07847ce4cf4f26ef18e0d5bc01229c91
+Nothing changed.
