@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 )
 
@@ -170,22 +171,29 @@ func (g *googleIdentity) forget() {
 // twelve minutes, so a working kubelet never brings a token this near.
 const accountTokenExpiryMargin = 10 * time.Second
 
+// accountTokenFileSetting is the setting that names the account token file (cmd/dispatch's
+// ENVOY_ACCOUNT_TOKEN_FILE, WithAccountTokenFile), by which every failure to read the file names it.
+const accountTokenFileSetting = "ENVOY_ACCOUNT_TOKEN_FILE"
+
 // accountTokenFromFile is the token the account token file holds now, trimmed, when its own exp
 // leaves at least accountTokenExpiryMargin. A token whose payload names no exp, or is not a
 // compact JWT, is presented as it is, for the listener to judge. Every failure is an
-// accountTokenError naming the path and never the token.
+// accountTokenError naming the file by its setting and why (fileerr.Class), never its path or the
+// token: the setting holds what a person wrote, and a token pasted in place of the path would
+// print, in Dispatch's log line of the refused call (do) and in the 503 ENVOY_UNAVAILABLE answer
+// that carries this error, as ciphertoken.AccountTokenError names its own file.
 func accountTokenFromFile(path string, now time.Time) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", accountTokenError{fmt.Errorf("%w: read %s: %v", ErrAccountToken, path, err)}
+		return "", accountTokenError{fmt.Errorf("%w: %s names a file that cannot be read: %s", ErrAccountToken, accountTokenFileSetting, fileerr.Class(err))}
 	}
 	token := strings.TrimSpace(string(data))
 	if token == "" {
-		return "", accountTokenError{fmt.Errorf("%w: %s holds no token", ErrAccountToken, path)}
+		return "", accountTokenError{fmt.Errorf("%w: the file %s names holds no token", ErrAccountToken, accountTokenFileSetting)}
 	}
 	if expiry, ok := tokenExpiry(token); ok && !now.Add(accountTokenExpiryMargin).Before(expiry) {
-		return "", accountTokenError{fmt.Errorf("%w: the token in %s expires at %s and the file holds no newer one",
-			ErrAccountToken, path, expiry.UTC().Format(time.RFC3339))}
+		return "", accountTokenError{fmt.Errorf("%w: the token in the file %s names expires at %s and the file holds no newer one",
+			ErrAccountToken, accountTokenFileSetting, expiry.UTC().Format(time.RFC3339))}
 	}
 	return token, nil
 }
