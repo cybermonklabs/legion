@@ -79,10 +79,9 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 `packages/daemon/internal/testpg/testdb.Drop` retries PostgreSQL's 42501
 (`insufficient_privilege`) and 55006 (`object_in_use`) refusals until its context ends. A test
 that creates one database (`testdb.PlainDatabase` and `internal/store`'s `emptyStore`) takes
-`testwait.TeardownContext(t)` inside its cleanup. That context runs to the test binary's deadline,
-leaving diagnostic time to list the holding backends. A clone teardown after `testpg.Main` takes
-`testwait.TeardownDeadline`: the binary's parsed `-timeout` plus its post-test grace, because Go
-stops its own alarm when `m.Run` returns.
+`testwait.Context(t)`, which leaves the test binary's cleanup margin. A clone teardown after
+`testpg.Main` takes `testwait.TeardownDeadline`: the binary's parsed `-timeout` plus its
+post-test grace, because Go stops its own alarm when `m.Run` returns.
 
 Never give `Drop` `context.Background()`. A correct backend can take longer than an arbitrary
 retry span to exit under load. When the binary's bound does end, the error names the database and

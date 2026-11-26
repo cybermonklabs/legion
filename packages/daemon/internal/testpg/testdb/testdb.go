@@ -39,7 +39,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -86,9 +85,8 @@ func PlainDatabase(t testing.TB, prefix string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dropContext := testwait.Context(t)
 	t.Cleanup(func() {
-		dropContext, cancel := testwait.TeardownContext(t)
-		defer cancel()
 		if err := drop(dropContext); err != nil {
 			t.Error(err)
 		}
@@ -116,26 +114,19 @@ func create(dsn, prefix string) (string, func(context.Context) error, error) {
 		return "", nil, err
 	}
 	ctx := context.Background()
-	config, err := pgxpool.ParseConfig(admin)
-	if err != nil {
-		return "", nil, fmt.Errorf("parse the admin database URL: %w", err)
-	}
-	// The ordinary path takes one connection, and the second is reserved for the backend
-	// diagnostic when the context cancels a forced drop's connection.
-	config.MaxConns = 2
-	pool, err := pgxpool.NewWithConfig(ctx, config)
+	conn, err := pgx.Connect(ctx, admin)
 	if err != nil {
 		return "", nil, fmt.Errorf("connect to the admin database: %w", err)
 	}
 	// A copy of template1's files. Created the default way, from PostgreSQL 15, every page of
 	// template1 goes into the write-ahead log: 4.4 MB of log for each empty database.
-	if _, err := pool.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
-		pool.Close()
+	if _, err := conn.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+		_ = conn.Close(ctx)
 		return "", nil, fmt.Errorf("create %s: %w", name, err)
 	}
 	drop := func(ctx context.Context) error {
-		defer pool.Close()
-		if err := Drop(ctx, pool, name); err != nil {
+		defer func() { _ = conn.Close(context.Background()) }()
+		if err := Drop(ctx, conn, name); err != nil {
 			return fmt.Errorf("drop %s: %w", name, err)
 		}
 		return nil
@@ -166,19 +157,20 @@ type Execer interface {
 // waits only a few seconds for those backends to exit, and answers 55006 while one has not.
 //
 // Both refusals are retried until ctx ends. A caller supplies the test binary's deadline: a
-// test's cleanup takes testwait.TeardownContext(t), and testpg.Main uses
-// testwait.TeardownDeadline after m.Run has returned. That lets a correct teardown survive
-// machine load but still ends a holder that never leaves, naming its backends. Any error that is
-// not either refusal is the caller's at once.
+// test's cleanup takes testwait.Context(t), and testpg.Main uses testwait.TeardownDeadline after
+// m.Run has returned. That lets a correct teardown survive machine load but still ends a holder
+// that never leaves, naming its backends. Any error that is not either refusal is the caller's at
+// once.
 //
 // It lives here rather than in internal/testpg because this package imports no package of the
 // module except internal/testwait, which imports none, so every package's tests can take it —
 // internal/store's among them, whose own tests cannot import internal/testpg at all.
 func Drop(ctx context.Context, admin Execer, name string) error {
 	var (
-		attempt int
-		last    error
-		reason  string
+		attempt  int
+		last     error
+		reason   string
+		backends = "not read"
 	)
 	for {
 		if cause := ctx.Err(); cause != nil {
@@ -186,22 +178,22 @@ func Drop(ctx context.Context, admin Execer, name string) error {
 				last = errors.New("no forced drop ran before its context ended")
 				reason = "the context ended before a forced drop ran"
 			}
-			return dropDeadlineError(ctx, cause, last, attempt, reason, admin, name)
+			return dropDeadlineError(cause, last, attempt, reason, name, backends)
 		}
 		attempt++
 		_, err := admin.Exec(ctx, "drop database "+name+" with (force)")
 		if err == nil {
 			return nil
 		}
-		if cause := ctx.Err(); cause != nil {
-			if last == nil {
-				last = err
-				reason = "the forced drop did not finish before its context ended"
-			}
-			return dropDeadlineError(ctx, cause, last, attempt, reason, admin, name)
-		}
 		var pgErr *pgconn.PgError
 		if !errors.As(err, &pgErr) {
+			if cause := ctx.Err(); cause != nil {
+				if last == nil {
+					last = err
+					reason = "the forced drop did not finish before its context ended"
+				}
+				return dropDeadlineError(cause, last, attempt, reason, name, backends)
+			}
 			return err
 		}
 		switch pgErr.Code {
@@ -213,40 +205,34 @@ func Drop(ctx context.Context, admin Execer, name string) error {
 			return err
 		}
 		last = err
+		backends = holdingBackends(ctx, admin, name)
 		timer := time.NewTimer(250 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return dropDeadlineError(ctx, ctx.Err(), last, attempt, reason, admin, name)
+			return dropDeadlineError(ctx.Err(), err, attempt, reason, name, backends)
 		case <-timer.C:
 		}
 	}
 }
 
-// dropDeadlineError keeps the PostgreSQL error that says why the drop was retried, joins the
-// context's deadline or cancellation so errors.Is still reports it, and names the backends the
-// server still shows on the database.
-func dropDeadlineError(bound context.Context, cause, last error, attempts int, reason string, admin Execer, name string) error {
-	ctx, cancel := diagnosticContext(bound)
-	defer cancel()
+func holdingBackends(ctx context.Context, admin Execer, name string) string {
 	var backends string
 	if err := admin.QueryRow(ctx, `select coalesce(string_agg(
 		'pid=' || pid::text || ' type=' || coalesce(backend_type, 'not visible') ||
-		' user=' || coalesce(usename, '') || ' state=' || coalesce(state, '') || ' wait=' ||
-		coalesce(nullif(coalesce(wait_event_type, '') || '/' || coalesce(wait_event, ''), '/'), 'none'),
+		' state=' || coalesce(state, '') || ' query=' || left(coalesce(query, ''), 120),
 		'; ' order by pid), 'none')
 		from pg_stat_activity where datname = $1 and pid <> pg_backend_pid()`, name).Scan(&backends); err != nil {
-		backends = "could not read pg_stat_activity: " + err.Error()
+		return "could not read pg_stat_activity: " + err.Error()
 	}
-	return fmt.Errorf("%w (still refused after %d attempts before its context bound: %s; backends still holding %s: %s): %w",
-		last, attempts, reason, name, backends, cause)
+	return backends
 }
 
-func diagnosticContext(bound context.Context) (context.Context, context.CancelFunc) {
-	if deadline, bounded := testwait.TeardownDiagnosticDeadline(bound); bounded {
-		return context.WithDeadline(context.Background(), deadline)
-	}
-	return context.WithTimeout(context.Background(), testwait.TeardownDiagnosticBound)
+// dropDeadlineError keeps the PostgreSQL error that says why the drop was retried and names the
+// backends a live pg_stat_activity read saw before the context ended.
+func dropDeadlineError(cause, err error, attempts int, reason, name, backends string) error {
+	return fmt.Errorf("%w (still refused after %d attempts before its context bound: %s; backends still holding %s: %s): %w",
+		err, attempts, reason, name, backends, cause)
 }
 
 // RandomName is prefix with a random suffix, so two databases of one prefix never collide. It is

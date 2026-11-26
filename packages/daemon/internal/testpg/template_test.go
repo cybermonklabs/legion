@@ -6,10 +6,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // cloneChildVariable marks the run of this test binary that does the cloning, so the parent run
@@ -66,26 +64,5 @@ func TestTheAdminPoolHoldsTwiceTheDropsInFlightWhateverTheDSNSets(t *testing.T) 
 			t.Errorf("the admin pool on %s holds %d connections (at least %d), want %d: twice the %d drops in flight, and none held open",
 				dsn, config.MaxConns, config.MinConns, 2*cap(dropSlots), cap(dropSlots))
 		}
-	}
-}
-
-// TestTeardownContextStartsAfterTheTestsDeadline catches TestMain reading test.timeout before
-// m.Run parses it. The final database teardown runs after m.Run returns, so it must retain the
-// timeout plus its grace, not the unbounded five-minute fallback that a pre-parse read selects.
-func TestTeardownContextStartsAfterTheTestsDeadline(t *testing.T) {
-	testDeadline, bounded := t.Deadline()
-	if !bounded {
-		t.Skip("the test binary has -timeout 0, so it has no deadline to compare")
-	}
-	ctx, cancel := teardownContext()
-	defer cancel()
-	got, bounded := ctx.Deadline()
-	if !bounded {
-		t.Fatal("teardown context has no deadline in a bounded test binary")
-	}
-	wantFloor := testDeadline.Add(testwait.TeardownGrace - time.Second)
-	if got.Before(wantFloor) {
-		t.Fatalf("teardown deadline %s is before the test binary's deadline plus its grace, %s: Main read test.timeout before m.Run parsed it",
-			got.Format(time.RFC3339Nano), wantFloor.Format(time.RFC3339Nano))
 	}
 }

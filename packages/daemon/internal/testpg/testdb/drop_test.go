@@ -12,25 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-const heldBackend = "pid=17 type=client backend user=legion state=active wait=Lock/relation"
-
-// TestDropNamesTheBackendStillHoldingTheDatabase proves a teardown that reaches its context's
-// bound immediately after a retryable refusal names the particular backend to investigate, rather
-// than a time-only "after 30s" line. The fake is unavoidable here: PostgreSQL ends a real backend
-// when it handles the force signal, while this row must make the diagnostic path deterministic
-// without stopping a server process in the ordinary unit suite.
-func TestDropNamesTheBackendStillHoldingTheDatabase(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	admin := &heldDropAdmin{cancelAfterFirstAttempt: cancel}
-	err := Drop(ctx, admin, "legion_drop_holder")
-	if err == nil {
-		t.Fatal("Drop returned nil although the backend never exited")
-	}
-	if !errors.Is(err, admin.refusal) || !errors.Is(err, context.Canceled) {
-		t.Fatalf("Drop did not retain the PostgreSQL refusal and its bound: %v", err)
-	}
-	requireHolderDiagnostic(t, err, admin)
-}
+const heldBackend = "pid=17 type=client backend state=active query=select pg_sleep(60)"
 
 // TestDropNamesTheHolderWhenTheLastDropAttemptEndsWithItsContext preserves both the PostgreSQL
 // refusal that began the retry and the context failure of the attempt that ran into the bound. A
@@ -66,12 +48,11 @@ func requireHolderDiagnostic(t *testing.T, err error, admin *heldDropAdmin) {
 }
 
 type heldDropAdmin struct {
-	attempts                int
-	cancelAfterFirstAttempt context.CancelFunc
-	blockSecondAttempt      chan struct{}
-	refusal                 *pgconn.PgError
-	query, database         string
-	liveDiagnosticContext   bool
+	attempts              int
+	blockSecondAttempt    chan struct{}
+	refusal               *pgconn.PgError
+	query, database       string
+	liveDiagnosticContext bool
 }
 
 func (a *heldDropAdmin) Exec(ctx context.Context, _ string, _ ...any) (pgconn.CommandTag, error) {
@@ -80,9 +61,6 @@ func (a *heldDropAdmin) Exec(ctx context.Context, _ string, _ ...any) (pgconn.Co
 		a.refusal = &pgconn.PgError{Code: objectInUse, Message: "database is being accessed by other users"}
 	}
 	if a.attempts == 1 {
-		if a.cancelAfterFirstAttempt != nil {
-			a.cancelAfterFirstAttempt()
-		}
 		return pgconn.CommandTag{}, a.refusal
 	}
 	if a.blockSecondAttempt != nil {

@@ -26,8 +26,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -168,42 +166,27 @@ func Main(prefix string, run func() int) int {
 // large machine every package that clones opens one at once on one server, so it stays small.
 const adminConns = 4
 
-// dropSlots holds the forced-drop attempts in flight to half the admin pool's adminConns
-// connections. A clone takes one of those connections too, and a `drop database … with (force)`
-// forces a checkpoint and waits for it. Each retry releases its slot, so two held databases do not
-// prevent an otherwise-ready clone from receiving a drop attempt before the shared deadline.
+// dropSlots holds the drops in flight to half the admin pool's adminConns connections. A clone
+// takes one of those connections too, and a `drop database … with (force)` forces a checkpoint
+// and waits for it: with every connection on drops — a package whose parallel subtests each clone
+// one database queues one drop per test that ends — the next clone waits for a checkpoint on its
+// own clock, which is the cost dropInBackground exists to move off it.
 var dropSlots = make(chan struct{}, adminConns/2)
 
 // dropInBackground drops name without waiting for it; Main waits for every drop. Drops in flight
-// together share one checkpoint, and each may wait until the binary's teardown deadline for a
-// backend the forced drop has terminated to exit.
+// together share one checkpoint.
 func dropInBackground(name string) {
 	shared.drops.Go(func() {
+		dropSlots <- struct{}{}
+		defer func() { <-dropSlots }()
 		ctx, cancel := teardownContext()
 		defer cancel()
-		if err := testdb.Drop(ctx, dropSlotAdmin{shared.admin}, name); err != nil {
+		if err := testdb.Drop(ctx, shared.admin, name); err != nil {
 			shared.dropMu.Lock()
 			shared.dropFails = append(shared.dropFails, fmt.Sprintf("drop the cloned database %s: %v", name, err))
 			shared.dropMu.Unlock()
 		}
 	})
-}
-
-// dropSlotAdmin bounds concurrent server-side forced-drop attempts, not whole retry loops.
-type dropSlotAdmin struct{ admin testdb.Execer }
-
-func (a dropSlotAdmin) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	select {
-	case dropSlots <- struct{}{}:
-		defer func() { <-dropSlots }()
-	case <-ctx.Done():
-		return pgconn.CommandTag{}, ctx.Err()
-	}
-	return a.admin.Exec(ctx, sql, args...)
-}
-
-func (a dropSlotAdmin) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	return a.admin.QueryRow(ctx, sql, args...)
 }
 
 // teardownContext is one clone drop's bound. It reads the test timeout lazily, after m.Run has
