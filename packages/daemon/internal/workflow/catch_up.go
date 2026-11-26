@@ -212,6 +212,16 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // be a second prompt for work under way. So is a role a queued row already covers
 // (queuedRowCovers).
 //
+// The ready is the first moment a phase worker relaunched by an update round's replacement of its
+// pod is given its task back: the turn in which it answered the round retired the task it held
+// though its phase was not complete (supervise's settle), and the round's end sends only what is
+// still pending, so the worker's new process gets its phase's task here, once it is ready, before
+// the silence sweep would give it. A worker whose phase is over is given nothing: the issue has left
+// the phase for one its role does not work (RoleFor), or the phase's terminating fact has come
+// (PhaseFinished). The ready does not read a phase row's completion (record.PhaseRow.CompletedAt),
+// which the silence repair reads (PhaseWorkerOwedTurn): a merger that the boot relaunches with a
+// READY completion still on its row is owed its merging task at its ready (cutoverMergerRepair).
+//
 // The daemon's own delivery of a relaunch's record is no task (supervise.HoldsTask), so a claim
 // that holds that alone is read as holding nothing. The phase's task that this queues takes that
 // delivery's place while no prompt of it waits on a result, or waits for its turn to end

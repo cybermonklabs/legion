@@ -2,7 +2,8 @@
 # Tests for `check-workflow-files.sh`: every file under .github/workflows is within 64,000 bytes,
 # parses as YAML, repeats no mapping key after upper-casing, calls at most 45 unique reusable
 # workflows, sets JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they
-# stand for, and runs pg-crash-safety-off.sh in every job with a Postgres service.
+# stand for, and starts every Postgres service on postgres-service-settings.sh's command line
+# with a step that reads it back.
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
 # script into it, so the script under test is the file CI runs.
@@ -317,7 +318,7 @@ check "exits 0" "$(is "$status" 0)"
 check "says what it read" \
   "$(contains "$out" '^all 46 workflow files under .github/workflows are within 64,000 bytes')"
 check "and what it held them to" \
-  "$(contains "$out" 'call at most 45 unique reusable workflows, set JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, and run pg-crash-safety-off.sh in every job with a Postgres service$')"
+  "$(contains "$out" 'call at most 45 unique reusable workflows, set JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, and start every Postgres service on postgres-service-settings.sh.s command line with a step that reads it back$')"
 
 echo "case: job ids and with: keys that differ only in case"
 root=$(fixture folded-elsewhere)
@@ -578,9 +579,13 @@ check "names the step whose script sources gh-read.sh by its bare name" \
 check "not the step whose bash -c only echoes the path" "$(is "$(contains "$out" 'step 5 of job build')" false)"
 check "refuses those five and nothing else" "$(contains "$out" '^5 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 
-echo "case: a job with a Postgres service and no step that runs pg-crash-safety-off.sh is refused, and one with it passes"
-root=$(fixture crash-safety)
-cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+# The command line the services below must carry, from the script the check under test reads it
+# from, so a change to the settings changes no case here.
+command=$("$script_dir/postgres-service-settings.sh" --command)
+
+echo "case: a Postgres service off the settings' command line, or with no read-back of it, is refused, and one with both passes"
+root=$(fixture service-settings)
+cat > "$root/.github/workflows/ci.yaml" <<YAML
 name: Build
 on: push
 jobs:
@@ -590,23 +595,71 @@ jobs:
       postgres:
         image: ghcr.io/example/ci@sha256:aaaa
     steps:
-      - run: echo .github/scripts/pg-crash-safety-off.sh
-      # .github/scripts/pg-crash-safety-off.sh
+      - run: echo .github/scripts/postgres-service-settings.sh
+      # .github/scripts/postgres-service-settings.sh "\${{ job.services.postgres.id }}" postgres
       - run: go test ./...
   by-image:
     runs-on: ubuntu-latest
     services:
       db:
         image: pgvector/pgvector:pg17
+        command: postgres -c fsync=off
     steps:
+      - run: .github/scripts/postgres-service-settings.sh "\${{ job.services.db.id }}" db
+      - run: go test ./...
+  other-id:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: ghcr.io/example/ci@sha256:aaaa
+        command: $command
+    steps:
+      - run: .github/scripts/postgres-service-settings.sh "\${{ job.services.other.id }}" postgres
+      - run: go test ./...
+  two:
+    runs-on: ubuntu-latest
+    services:
+      postgres-a:
+        image: ghcr.io/example/ci@sha256:aaaa
+        command: $command
+      postgres-b:
+        image: ghcr.io/example/ci@sha256:aaaa
+        command: $command
+    steps:
+      - run: .github/scripts/postgres-service-settings.sh "\${{ job.services.postgres-a.id }}" postgres-a
+      - run: go test ./...
+  misplaced:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: ghcr.io/example/ci@sha256:aaaa
+        command: $command
+    steps:
+      - run: |
+          # .github/scripts/postgres-service-settings.sh "\${{ job.services.postgres.id }}" postgres
+          .github/scripts/postgres-service-settings.sh --command
+          echo "\${{ job.services.postgres.id }}"
+      - run: go test ./...
+  folded:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: ghcr.io/example/ci@sha256:aaaa
+        command: >-
+          ${command% -c *}
+          -c ${command##* -c }
+    steps:
+      - run: .github/scripts/postgres-service-settings.sh "\${{ job.services.postgres.id }}" postgres
       - run: go test ./...
   safe:
     runs-on: ubuntu-latest
     services:
       postgres:
         image: ghcr.io/example/ci@sha256:aaaa
+        command: $command
     steps:
-      - run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
+      - name: Read the service's settings back
+        run: .github/scripts/postgres-service-settings.sh "\${{ job.services.postgres.id }}" postgres
       - run: go test ./...
   nats-only:
     runs-on: ubuntu-latest
@@ -618,14 +671,54 @@ jobs:
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names the job whose step only echoes the script's path" \
-  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=7::.github/workflows/ci.yaml${colon}7: job bare runs the Postgres service 'postgres' and no step of it runs .github/scripts/pg-crash-safety-off.sh")"
-check "and the job whose service is Postgres by its image alone" \
-  "$(contains "$out" "line=16::.github/workflows/ci.yaml${colon}16: job by-image runs the Postgres service 'db'")"
+check "names the service with no command: line" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=7::.github/workflows/ci.yaml${colon}7: job bare runs the Postgres service 'postgres' with no command: line, not the one")"
+check "and its job, whose step only echoes the script's path, for the read-back" \
+  "$(contains "$out" "line=7::.github/workflows/ci.yaml${colon}7: job bare runs the Postgres service 'postgres' and no step of it runs .github/scripts/postgres-service-settings.sh")"
+check "names the service whose command: line is another, Postgres by its image alone" \
+  "$(contains "$out" "line=16::.github/workflows/ci.yaml${colon}16: job by-image runs the Postgres service 'db' on the command: line 'postgres -c fsync=off', not the one")"
+check "says which command: line to write" "$(contains "$out" "Write \`command: $command\`")"
+check "names the service whose job reads another service's id" \
+  "$(contains "$out" "line=25::.github/workflows/ci.yaml${colon}25: job other-id runs the Postgres service 'postgres' and no step")"
 check "says which step to add, with the service's own id" \
-  "$(contains "$out" 'run: .github/scripts/pg-crash-safety-off.sh "\${{ job.services.db.id }}"')"
-check "not the job that runs the script" "$(is "$(contains "$out" 'job safe ')" false)"
+  "$(contains "$out" 'run: .github/scripts/postgres-service-settings.sh "\${{ job.services.postgres.id }}" postgres')"
+check "names the second service of a job whose step reads only the first" \
+  "$(contains "$out" "job two runs the Postgres service 'postgres-b' and no step")"
+check "not the first" "$(is "$(contains "$out" "service 'postgres-a'")" false)"
+check "names the service whose id is only in a comment and an echo beside the --command form" \
+  "$(contains "$out" "job misplaced runs the Postgres service 'postgres' and no step")"
+check "nor the folded command: line with the same words" "$(is "$(contains "$out" 'job folded ')" false)"
+check "nor the job with both" "$(is "$(contains "$out" 'job safe ')" false)"
 check "nor the job with no Postgres service" "$(is "$(contains "$out" 'job nats-only ')" false)"
+check "refuses those six and nothing else" "$(contains "$out" '^6 problem(s) across the 1 workflow file(s) under .github/workflows$')"
+
+echo "case: a settings script that prints no command line is refused by name, and the read-back is still held"
+broken="$work/broken-scripts"
+mkdir -p "$broken"
+cp "$check_script" "$script_dir/workflow_paths.py" "$broken/"
+printf '#!/usr/bin/env bash\necho "no settings here" >&2\nexit 3\n' > "$broken/postgres-service-settings.sh"
+root="$work/broken-settings"
+mkdir -p "$root/.github/scripts" "$root/.github/workflows"
+ln -s "$broken/check-workflow-files.sh" "$root/.github/scripts/check-workflow-files.sh"
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: push
+jobs:
+  bare:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: ghcr.io/example/ci@sha256:aaaa
+        command: postgres
+    steps:
+      - run: go test ./...
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the script, its exit and what it printed" \
+  "$(contains "$out" "^::error file=.github/scripts/postgres-service-settings.sh::\`.github/scripts/postgres-service-settings.sh --command\` gives no command line (it exited 3 and printed 'no settings here')")"
+check "still names the job with no read-back" "$(contains "$out" "job bare runs the Postgres service 'postgres' and no step")"
+check "and holds no command: line to a line it could not read" "$(is "$(contains "$out" 'not the one')" false)"
 check "refuses those two and nothing else" "$(contains "$out" '^2 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 
 summary "check-workflow-files.sh"

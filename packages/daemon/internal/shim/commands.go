@@ -153,8 +153,9 @@ func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (o
 	}
 	ctx, cancel := context.WithTimeout(s.commands, budget)
 	started := time.Now()
+	start := s.children.Starter()
 	runIn := func(at string, stdin []byte, args ...string) (string, error) {
-		return workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, env, at, stdin, args)
+		return workspace.RunCommand(ctx, start, budget, started, env, at, stdin, args)
 	}
 	run := func(stdin []byte, args ...string) (string, error) { return runIn(dir, stdin, args...) }
 	return openedWorkspace{dir: dir, jj: jj, run: run, runIn: runIn, ctx: ctx}, cancel, nil
@@ -162,8 +163,9 @@ func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (o
 
 // adopt answers `adopt-working-copy`, which fromDaemon hands it, with the adoption's outcome
 // (runAdoption). A request the shim cannot act on is answered with the reason when it names an
-// id to answer. The answer goes out as one line, so a refusal carries at most maxAnswerErrorBytes
-// of its reason (cutAnswerError): jj's standard error has no bound of its own.
+// id to answer. The answer goes out as one line, so a refusal carries at most
+// shimwire.MaxAnswerErrorBytes of its reason (shimwire.CutAnswerError): jj's standard error has no
+// bound of its own.
 func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 	result := shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: true}
 	if err := request.Validate(); err != nil {
@@ -171,9 +173,9 @@ func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 			s.log.Printf("[worker-shim] refusing an adopt-working-copy frame: %v", err)
 			return
 		}
-		result.OK, result.Error = false, cutAnswerError(err.Error())
+		result.OK, result.Error = false, shimwire.CutAnswerError(err.Error())
 	} else if err := s.runAdoption(request); err != nil {
-		result.OK, result.Error = false, cutAnswerError(err.Error())
+		result.OK, result.Error = false, shimwire.CutAnswerError(err.Error())
 	}
 	s.toDaemon(result)
 }

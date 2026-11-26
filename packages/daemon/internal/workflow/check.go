@@ -432,7 +432,10 @@ func (e *Engine) failedBetweenLooks(ctx context.Context, tx pgx.Tx, check *recor
 // whether that retry has one attempt left of the budget the failure spent (the daemon's outbox,
 // supervise.RequestRetry.OneAttemptLeft) or starts a fresh run, the failure having spent none; or,
 // once the check's last look lost its role, that the check closed as not run. The count of failed
-// looks in a row closes it, which is what the backoff doubles by (failedLookRetry).
+// looks in a row closes it, which is what the backoff doubles by (failedLookRetry). A claim that
+// failed on OpenAI's cyber-policy refusal is retried by no look, since no start of the daemon's
+// own launches its agent again (supervise.ErrHeldForCyberPolicy), so its notice says only that
+// it does not start again by itself (noStartOfItsOwn) where the look would be named.
 func checkRoleFailedReason(fact intake.ClaimFailed, check record.ProductionCheck) string {
 	said := deathReason(fact, false)
 	if said == "" {
@@ -443,6 +446,9 @@ func checkRoleFailedReason(fact intake.ClaimFailed, check record.ProductionCheck
 	}
 	if !check.Open() {
 		return said + "; that was the check's last look, so the check closed as " + string(check.Outcome)
+	}
+	if clause := noStartOfItsOwn(fact); clause != "" {
+		return fmt.Sprintf("%s; %s (failed looks in a row: %d)", said, clause, check.FailedLooks)
 	}
 	how := "with a fresh run, since its failure spent no budget"
 	if fact.Budgets.Spent(fact.Limits) {

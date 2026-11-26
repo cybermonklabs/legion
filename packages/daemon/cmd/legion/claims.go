@@ -450,23 +450,26 @@ func printCompaction(w io.Writer, answer []byte) error {
 }
 
 // claimsRetry retries --claim, or with --failed every claim the daemon holds failed, in the
-// order the daemon lists them: an architect is relaunched on its session with fresh budgets, a
-// phase worker is relaunched by the start of its issue's phase — the phase it is held from, or the
-// one it stands in, which is where an operator's stop leaves it — and the daemon refuses the rest,
-// naming why (api's retryClaim). Under --failed each retried claim prints its line as --claim
-// prints it, each refusal is reported naming its claim, and the command fails once any was
-// refused, having asked for every one. A claim an operator stopped is retired rather than failed,
-// so --failed passes over it: name it with --claim.
+// order the daemon lists them: an architect's agent is launched again with fresh budgets, a phase
+// worker's is launched again by the start of its issue's phase — the phase it is held from, or
+// the one it stands in, which is where an operator's stop leaves it — and the daemon refuses the
+// rest, naming why (api's retryClaim). Under --failed each retried claim prints its line as
+// --claim prints it, each refusal is reported naming its claim, and the command fails once any
+// was refused, having asked for every one. A claim an operator stopped is retired rather than
+// failed, so --failed passes over it: name it with --claim.
 //
-// --fresh-session starts the claim in a new session rather than resuming the recorded one. Every
-// other retry resumes the recorded session with fresh budgets, whatever its run of refused turns
-// (supervise's freshSession): a new session is the operator's or the controller's choice, for an
-// agent wedged in a way no budget counts, or a session its provider keeps refusing when a new one
-// would not be.
+// --fresh-session starts the claim's agent in a new session rather than resuming the recorded
+// one. Every other retry resumes the recorded session with fresh budgets, whatever its run of
+// refused turns (supervise's freshSession): a new session is the operator's or the controller's
+// choice, for an agent wedged in a way no budget counts, or a session its provider keeps refusing
+// when a new one would not be. The one exception is a claim held for OpenAI's cyber-policy
+// refusal, whose agent every retry starts in a new session, with the flag or without it and under
+// --failed as under --claim, since its recorded session would send the refused content to OpenAI
+// again.
 func claimsRetry(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (this, or --failed)")
 	failed := c.flags.Bool("failed", false, "retry every claim the daemon holds failed")
-	fresh := c.flags.Bool("fresh-session", false, "start the claim in a new session rather than resuming the recorded one")
+	fresh := c.flags.Bool("fresh-session", false, "start the claim's agent in a new session rather than resuming the recorded one")
 	return func(ctx context.Context, _ []string) int { return c.retry(ctx, *token, *failed, *fresh) }
 }
 

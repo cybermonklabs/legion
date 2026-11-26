@@ -304,6 +304,14 @@ type IdleView struct {
 	// decline taken in another pod ends (IdleDecline.Stands): that pod's disk, and the work the
 	// decline names, went with it.
 	PodUID string
+	// KeptVolume is whether the issue's Sandbox keeps a volume the issue's next pod mounts
+	// (runtime.IssueVolumeReader): a release of a pod no claim owns keeps that Sandbox and its
+	// volume, so it deletes no disk, reads none, and is held by no decline whose read failed
+	// (workflow.UnownedPodRelease). The store does not hold it either: the daemon's pass reads it
+	// from the runtime and sets it on the view, and only where the rule's decision without it turns
+	// on it (workflow.IdleDecision.TurnsOnKeptVolume). The close of a left pod never sets it, since
+	// a close deletes the Sandbox with any volume it holds.
+	KeptVolume bool
 	// Paused is whether the daemon's project is paused (a project_pauses row of that project
 	// stands open), read by the project's token whatever project the issue's key names (store's
 	// readOpenPauseByToken says why). A paused project's pods stay: the pause starts no release
@@ -453,18 +461,13 @@ type IdleDecline struct {
 //     the disk the check read went with that pod, and with it the work the decline names;
 //   - for a read that failed, DeclineUnreadRetry has passed since the last check.
 func (d IdleDecline) Stands(v IdleView, now time.Time) bool {
-	if d.At.IsZero() || d.podMoved(v) {
-		return false
-	}
-	checked := d.checked()
-	if d.Reason == DeclineWorkspaceUnread && !now.Before(checked.Add(DeclineUnreadRetry)) {
+	if d.At.IsZero() || d.podMoved(v) || d.RetryDue(now) {
 		return false
 	}
 	for _, c := range v.Claims {
-		if c.LastStartRow > d.StartedRow {
-			return false
-		}
-		if c.Live() && c.LastTurnStart.After(checked) {
+		// A start ends the decline whatever the claim is now; a turn ends it only where its claim
+		// is live.
+		if d.StartedSince(c.LastStartRow) || c.Live() && d.TurnedSince(c.LastTurnStart) {
 			return false
 		}
 	}
@@ -473,29 +476,46 @@ func (d IdleDecline) Stands(v IdleView, now time.Time) bool {
 
 // HoldsUnpushedWork is whether the decline says the disk of the pod that stands now holds work
 // that no branch or tag on origin holds: the last read that could read the workspace found such
-// work, and the pod is the one that read was made in. The release of a pod no claim owns and the
-// close of a left pod with no live claim read it (workflow.UnownedPodRelease, LeftPodClose): such a
-// pod runs no role to read through, so the decline on record is the one word the daemon has of its
-// disk. A turn does not end it, since a pod no claim owns runs no turn, and a read that failed says
-// nothing of the disk, so it ends nothing either.
+// work, the pod is the one that read was made in, and no claim of the issue was started or ran a
+// turn since that read. The release of a pod no claim owns and the close of a left pod with no live
+// claim read it (workflow.UnownedPodRelease, LeftPodClose): such a pod runs no role to read
+// through, so the decline on record is the one word the daemon has of its disk. A read that failed
+// says nothing of the disk, so it ends nothing.
 //
-// Where the decline and the view each name the pod, the pod is all that ends it (podMoved): a start
-// row into that same pod, such as an operator's retry whose process fails again before any read,
-// leaves the disk and the work on it as they were. Only where either uid is unknown does a start row
-// after the decline end it, as the one word that a process may have run, and read, since.
+// A start of a claim's process after the last read (a start row above StartedRow), or a turn of a
+// claim that started after it, ends the hold, in whichever pod it ran: the process can have pushed
+// the work, or made more (the Legion reviewer's point 2 on R6 of #5285). Ending it
+// deletes nothing unread: both callers then have the pod's launcher read the disk before any
+// delete (workflow.IdleDecision.Read), and a read that finds the same work writes the decline again
+// at its own moment, so each start or turn costs one read.
 func (d IdleDecline) HoldsUnpushedWork(v IdleView) bool {
 	if d.At.IsZero() || !(d.Work || d.Reason == DeclineUnpushedWork) || d.podMoved(v) {
 		return false
 	}
-	if d.PodUID != "" && v.PodUID != "" {
-		return true
-	}
 	for _, c := range v.Claims {
-		if c.LastStartRow > d.StartedRow {
+		if d.StartedSince(c.LastStartRow) || d.TurnedSince(c.LastTurnStart) {
 			return false
 		}
 	}
 	return true
+}
+
+// StartedSince is whether a claim whose newest start row is startRow had its process started again
+// after the decline's last check (a start row above StartedRow). It and TurnedSince are the two
+// tests of a claim that ends a decline: the idle rules read them (Stands, HoldsUnpushedWork), and
+// so does the read that may end an update round's keep of a pod (internal/daemon's
+// keptPodReadDue).
+func (d IdleDecline) StartedSince(startRow int64) bool { return startRow > d.StartedRow }
+
+// TurnedSince is whether a claim whose newest turn started at turnStart started that turn after the
+// decline's last check (StartedSince).
+func (d IdleDecline) TurnedSince(turnStart time.Time) bool { return turnStart.After(d.checked()) }
+
+// RetryDue is whether the decline is of a read that failed (DeclineWorkspaceUnread) and
+// DeclineUnreadRetry has passed at now since its last check (Stands, and internal/daemon's
+// keptPodReadDue).
+func (d IdleDecline) RetryDue(now time.Time) bool {
+	return d.Reason == DeclineWorkspaceUnread && !now.Before(d.checked().Add(DeclineUnreadRetry))
 }
 
 // podMoved is whether the runtime holds another pod for the issue than the one the decline's last

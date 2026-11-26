@@ -299,13 +299,14 @@ func (c *Conn) WorkspaceWork(ctx context.Context, issue string, timeout time.Dur
 	}
 	switch answer := answer.(type) {
 	case shimwire.WorkspaceWorkResult:
-		if err := answer.Validate(); err != nil {
+		work, refused, err := runtime.WorkspaceWorkOf(answer)
+		switch {
+		case err != nil:
 			return runtime.WorkspaceWork{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+		case refused != "":
+			return runtime.WorkspaceWork{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeWorkspaceWork, Reason: refused}
 		}
-		if !answer.OK {
-			return runtime.WorkspaceWork{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeWorkspaceWork, Reason: answer.Error}
-		}
-		return runtime.WorkspaceWork{Head: answer.Head, Changed: answer.Changed, Commits: answer.Commits, Count: answer.Count}, nil
+		return work, nil
 	case shimwire.Response:
 		// A shim that does not answer the frame itself forwards it, and OMP refuses a command
 		// it does not know.
@@ -525,11 +526,12 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 			}
 			if frame.Error != nil {
 				// Oh My Pi's error object, not the message alone: the structured members are what
-				// a failure is judged on. Code, its class of the failure, is left: no decision reads it.
+				// a failure is judged on, its class (Code) among them.
 				event.Retryable = frame.Error.Retryable
 				event.HTTPStatus = frame.Error.HTTPStatus
 				event.Provider = frame.Error.Provider
 				event.Model = frame.Error.Model
+				event.Code = frame.Error.Code
 			}
 			c.events.push(event)
 		}
