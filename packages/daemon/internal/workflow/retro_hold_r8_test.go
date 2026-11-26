@@ -32,8 +32,8 @@ const retroHeldStarts = "Legion starts the retro by itself once nothing holds it
 func reviewingWithoutAcceptance(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 	t.Helper()
 	seedStepsPlan(t, pool, key, 1, "implementer", "reviewer")
-	move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	assertWalksAt(t, pool, engine, key, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
 }
 

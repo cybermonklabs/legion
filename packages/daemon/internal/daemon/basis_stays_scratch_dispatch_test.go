@@ -811,8 +811,8 @@ func recordTaskAt(ctx context.Context, tx pgx.Tx, records record.Store, issue re
 	case phase.Merging:
 		place.Kind = record.PlaceMerge
 	default:
-		roles, steps := planwords.BuiltinRoles(), stored.Steps[task.Task]
-		at := slices.IndexFunc(steps, func(step record.PlanStep) bool { return roles[step.Role].Phase == issue.Phase })
+		steps := stored.Steps[task.Task]
+		at := slices.IndexFunc(steps, func(step record.PlanStep) bool { return planwords.RunsAs(step.Role) == issue.Phase })
 		if at < 0 {
 			return fmt.Errorf("the task %s of %s runs no step as %s", task.Task, issue.Key, issue.Phase)
 		}

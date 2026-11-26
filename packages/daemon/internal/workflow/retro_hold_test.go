@@ -256,10 +256,10 @@ func TestAParentMovedBackOutOfMergingIsToldTheMoveThatHeldIt(t *testing.T) {
 	engine, _ := loggedEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	approveReview(t, pool, engine)
-	move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
 	assertWalksAt(t, pool, engine, root.Key, phase.Merging, record.TaskPlace{Kind: record.PlaceMerge})
 	stepChild(t, pool, heldParentChild, phase.Implementing, nil)
 

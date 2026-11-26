@@ -22,9 +22,9 @@ func waitsOnItsChild(t *testing.T, pool *pgxpool.Pool, engine *Engine, words ...
 	t.Helper()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, words...)
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	mirrorChild(t, pool, cwChild, root.Key, "todo", 1)
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	waiting := issueOf(t, pool, engine, root.Key)
 	if waiting.Phase != phase.AwaitingChildren || waiting.ChildrenWait == nil {
 		t.Fatalf("%s after the implementer's completion stands in %s holding %+v, want awaiting_children", root.Key, waiting.Phase, waiting.ChildrenWait)
