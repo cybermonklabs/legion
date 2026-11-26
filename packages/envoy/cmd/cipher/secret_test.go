@@ -1691,6 +1691,7 @@ func TestSecretShowSaysWhoDecidesAndOnWhatGuidance(t *testing.T) {
 // says so, and a person decides it: the broker may serve no name from it, or be older than the
 // judge tags and read none.
 func TestSecretShowPrintsTheKeysJudgeTagsAndItsJudgedProfiles(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	source := policytest.Judged(policytest.Secret("RELEASE_PAT", "ada@example.com", policy.TierHuman, "s"), 900, "grant for the release job named in the reason")
 	unserved := policytest.Judged(policytest.Secret("UNSERVED_KEY", "ada@example.com", policy.TierHuman, "u"), 600, "")
 	local := secrets.NewLocal(source, unserved)
@@ -1989,7 +1990,7 @@ func TestSecretSetOrCreateWithASharedOwner(t *testing.T) {
 // region the broker's settings answer; the SDK reads AWS_PROFILE (and the rest of its chain) from
 // the environment itself, so the forms pass it no profile.
 func TestSecretFormsSignInInTheBrokersRegion(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBroker, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it sets a package variable the package's other tests read (awsClients set at secret_test.go:1997).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBroker, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it sets a package variable the package's other tests read (awsClients set at secret_test.go:1998).
 	local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	startSecretBroker(t, servedBy(local))
 	var regions []string

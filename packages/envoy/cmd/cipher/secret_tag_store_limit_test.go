@@ -16,6 +16,7 @@ import (
 // writes on AWS: a group owner, and the requesters rollback guard a project tag brings. moto and
 // the stand-in stores enforce none of AWS's rule, so the client's own check is what is tested.
 func TestEachStoreTakesTheTagValuesItCan(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:599); it sets a package variable the package's other tests read (main.onEachStore, main.useAWS, awsClients set at secret_test.go:375).
 	long := strings.Repeat("g", 257)
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		aws := strings.HasSuffix(t.Name(), "/aws")
