@@ -50,6 +50,11 @@ var headNoTree = map[string]string{
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes":         "writes the session nodes of the followers the seed copies",
 	"docs/removed_by.go#queueRemovals":                            "writes the node of the person who removed an answered ask's block; the removed_by it appends rides in the version's block index, whose cause sites write its heads",
 	"asks/followers.go#queueFollow":                               "writes the following session's node alone; its callers state the ask's followed_by and write the ask's heads",
+	"cmd/dispatch-seed/write_core.go#writeArchitecture":           "writes component nodes and their part_of and depends_on, as an import does",
+	"seedcorpus/agents.go#writeRoles":                             "writes role and page nodes, each page's part_of its role, a role's held_by and its holder's part_of the role",
+	"seedcorpus/claims.go#EndClaim":                               "retracts a role's held_by",
+	"seedcorpus/claims.go#RestoreClaim":                           "appends a role's held_by",
+	"seedcorpus/nobody.go#writeNobodysRun":                        "writes a run's interaction node through WriteRun",
 }
 
 // Write and Caused are on none of the lists: each queues the head rows of what it wrote in its own
@@ -71,7 +76,7 @@ var headWrappers = map[string]string{
 var headLeftTo = map[string][]string{
 	"refs/blocks.go#Queue": {"api/artifacts.go#storeArtifact", "api/artifacts.go#commitArtifactVersionEvent",
 		"api/issue_create.go#createIssue", "docs/block_index.go#indexOwedDocument", "docs/block_index.go#causeRoomFacts",
-		"docs/settlement.go#appendEvents", "docs/decision_restore.go#writeVersion", "cmd/dispatch-seed/write_docs.go#writeDocument"},
+		"docs/settlement.go#appendEvents", "cmd/dispatch-seed/write_docs.go#writeDocument"},
 	"refs/decision_nodes.go#Queue": {"docs/block_index.go#indexOwedDocument", "docs/block_index.go#causeRoomFacts",
 		"docs/settlement.go#appendEvents"},
 	"docs/mutation.go#WriteVersionNode": {"api/artifacts.go#storeArtifact", "api/artifacts.go#commitArtifactVersionEvent",

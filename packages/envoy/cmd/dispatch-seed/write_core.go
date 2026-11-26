@@ -310,7 +310,11 @@ func (r *seedRun) writeIssueLinks(ctx context.Context) error {
 			}
 			rows = append(rows, row)
 		}
-		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nil, tuples)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+			return nil
+		}); err != nil {
 			return fmt.Errorf("the issues' needs: %w", err)
 		}
 		_, err := tx.CopyFrom(ctx, pgx.Identifier{"issue_links"}, columns, pgx.CopyFromRows(rows))
@@ -409,7 +413,11 @@ func (r *seedRun) writeIssueComponents(ctx context.Context) error {
 				members = append(members, member)
 			}
 		}
-		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nil, tuples)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+			return nil
+		}); err != nil {
 			return fmt.Errorf("the issues' components: %w", err)
 		}
 		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"issue_components"},

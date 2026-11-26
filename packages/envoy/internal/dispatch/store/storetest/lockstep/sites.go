@@ -399,7 +399,7 @@ var storeWriteCallSites = map[string]string{
 	// rows, the move of an open approval request, a carry, the artifact.version, the clear of the
 	// mark, then one call of Caused under the mark's event and the head rows, after the rows its
 	// path holds, whose order refs' TestCausedTakesTheStoreLockOrder proves.
-	"docs/query_marks.go#drainQueryMark": "refs#TestCausedTakesTheStoreLockOrder",
+	"docs/query_marks.go#drainMark": "refs#TestCausedTakesTheStoreLockOrder",
 	// R2's daemon-thread step (docs.DaemonThreadStep): it reads with no lock the blocks that stand
 	// under a message of a thread the Legion daemon's session began, then takes every owner lock of
 	// their issues in one call of store.LockOwners and each of their rooms' locks in room-id order,

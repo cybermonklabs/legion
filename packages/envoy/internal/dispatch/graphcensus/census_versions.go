@@ -281,7 +281,11 @@ func writeArtifactRowBatch(ctx context.Context, database *store.Store, refKeys [
 		if len(nodes) == 0 {
 			return nil
 		}
-		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nodes, tuples)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nodes, tuples))
+			return nil
+		}); err != nil {
 			return err
 		}
 		written, stated = int64(len(nodes)), int64(len(tuples))

@@ -216,7 +216,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// committed appends a version of that document under result.recorded (drainQueryMark):
 		// the version's node, a query version with its definition_version.
 		Name: "api/results.go#writeRecordedResult", Database: r.database,
-		Sites: []string{"api/results.go#writeRecordedResult", "docs/query_marks.go#drainQueryMark", "docs/mutation.go#WriteVersionNode"},
+		Sites: []string{"api/results.go#writeRecordedResult", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Ready: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
 				"name": "verification.md", "content": ":::check{#" + sizedCheck + " surface=\"cli\"}\nThe sizing counts every writer.\n:::\n",
@@ -237,7 +237,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// the retraction moves the record of, which the drain appends under result.retracted
 		// (drainQueryMark).
 		Name: "api/results_retract.go#writeCheckResultRetraction", Database: r.database,
-		Sites: []string{"api/results_retract.go#writeCheckResultRetraction", "docs/query_marks.go#drainQueryMark", "docs/mutation.go#WriteVersionNode"},
+		Sites: []string{"api/results_retract.go#writeCheckResultRetraction", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/results/"+result+"/retract",
 				map[string]any{"reason": "The run measured the wrong build."}, "alice", http.StatusCreated)
@@ -338,7 +338,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// appends nothing.
 		Name: "docs/block_index.go#causeRoomFacts, a settlement of an issue's room", Database: r.database,
 		Sites: []string{"docs/block_index.go#causeRoomFacts", "refs/blocks.go#Queue", "docs/mutation.go#WriteVersionNode",
-			"docs/query_marks.go#drainQueryMark"},
+			"docs/query_marks.go#drainMark"},
 		Ready: func(t *testing.T) {
 			created := decoded[struct {
 				Key     string `json:"key"`
@@ -381,7 +381,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// drain it runs once its batch has committed (drainQueryMark) finds that the move of a
 		// paragraph, which no query takes, moved no record, so that appends nothing.
 		Name: "docs/daemon_thread_step.go#queueDaemonThreadMoves, a paragraph under a daemon thread", Database: r.database,
-		Sites: []string{"docs/daemon_thread_step.go#queueDaemonThreadMoves", "docs/query_marks.go#drainQueryMark"},
+		Sites: []string{"docs/daemon_thread_step.go#queueDaemonThreadMoves", "docs/query_marks.go#drainMark"},
 		Ready: func(t *testing.T) {
 			daemonIssue = decoded[model.Issue](t, r.request(t, http.MethodPost, "/api/v1/issues", map[string]any{
 				"project": "SIZE", "title": "What the daemon's thread holds", "spec": "A paragraph the daemon's thread holds.\n", "force": true,
@@ -492,7 +492,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// query whose record the delete moved (drainQueryMark): the version's node, a query version
 		// with its definition_version.
 		Name: "api/node_delete.go#queueNodeDelete, a lens with a finding a comment is anchored on", Database: r.database,
-		Sites: []string{"api/node_delete.go#queueNodeDelete", "docs/anchor_refresh.go#Queue", "docs/query_marks.go#drainQueryMark",
+		Sites: []string{"api/node_delete.go#queueNodeDelete", "docs/anchor_refresh.go#Queue", "docs/query_marks.go#drainMark",
 			"docs/mutation.go#WriteVersionNode"},
 		Ready: func(t *testing.T) {
 			invoked := decoded[lensInvoked](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/lenses", map[string]any{

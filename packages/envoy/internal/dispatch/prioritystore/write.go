@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Write writes every node and appends every tuple inside the caller's transaction, through the
@@ -44,7 +45,13 @@ func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 			MadeAt: node.MadeAt, MadeBy: node.MadeBy, SourceEvent: node.SourceEvent,
 		}
 	}
-	if err := graphstore.Write(ctx, tx, written, tuples); err != nil {
+	// The head rows of what it writes go in the same batch, after its statements: an `advances`
+	// tuple is a relation out of an issue's node, whose head row holds it.
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, written, tuples)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(written, tuples))
+		return nil
+	}); err != nil {
 		return fmt.Errorf("write priorities: %w", err)
 	}
 	return nil

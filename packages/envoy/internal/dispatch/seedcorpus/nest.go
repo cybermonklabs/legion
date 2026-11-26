@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -24,22 +25,26 @@ type nest struct {
 // loadRootCommentAuthors and commentRecipientsQuery), can be written by no route, and neither can
 // a cycle of them. Each comment was written through the route first, so its node, its blocks and
 // its event are the route's; this moves the one column the walks read and nothing else, and no
-// tuple projects that column at this head.
+// tuple projects that column at this head. The head row of a comment holds that column
+// (item_reply_to), so each statement claims the head rows kept (graphstore.KeptHeadRows) and the
+// transaction writes the head rows of the comments it moved after them (graphstore.WriteHeads).
 func (s *seeder) nestReplies(ctx context.Context, key string, nests []nest) error {
 	return pgx.BeginFunc(ctx, s.database.Pool, func(tx pgx.Tx) error {
 		if err := store.LockOwner(ctx, tx, store.IssueOwner(key)); err != nil {
 			return fmt.Errorf("take the owner lock of %s: %w", key, err)
 		}
-		for _, moved := range nests {
-			tag, err := tx.Exec(ctx, `update comments set reply_to = $2::uuid where id = $1::uuid and issue_key = $3`,
-				moved.comment, moved.parent, key)
+		moved := make([]graphstore.NodeKey, 0, len(nests))
+		for _, nested := range nests {
+			tag, err := tx.Exec(ctx, `update comments set reply_to = $2::uuid where id = $1::uuid and issue_key = $3 and `+graphstore.KeptHeadRows,
+				nested.comment, nested.parent, key)
 			if err != nil {
-				return fmt.Errorf("nest comment %s under %s: %w", moved.comment, moved.parent, err)
+				return fmt.Errorf("nest comment %s under %s: %w", nested.comment, nested.parent, err)
 			}
 			if tag.RowsAffected() != 1 {
-				return fmt.Errorf("nest comment %s under %s moved %d rows, want one", moved.comment, moved.parent, tag.RowsAffected())
+				return fmt.Errorf("nest comment %s under %s moved %d rows, want one", nested.comment, nested.parent, tag.RowsAffected())
 			}
+			moved = append(moved, graphstore.NodeKey{Kind: graphstore.KindComment, ID: nested.comment})
 		}
-		return nil
+		return graphstore.WriteHeads(ctx, tx, moved)
 	})
 }

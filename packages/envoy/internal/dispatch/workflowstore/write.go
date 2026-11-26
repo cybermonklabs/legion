@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The forms of a step's names. A task id is a plan's slug, `default` for an issue whose owner gave
@@ -207,7 +208,12 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, bool, err
 		if !write.makes {
 			return nil, false, errNoNode
 		}
-		if err := graphstore.Write(ctx, tx, []graphstore.Node{write.node(nil, write.project)}, nil); err != nil {
+		made := []graphstore.Node{write.node(nil, write.project)}
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, made, nil)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(made, nil))
+			return nil
+		}); err != nil {
 			return nil, false, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
 		}
 		if heldText, found, err = lockNode(ctx, tx, write.kind, write.id); err != nil {
@@ -278,7 +284,12 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, bool, err
 	if _, fills := setting[AttributeProject]; fills {
 		project = write.project
 	}
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{write.node(setting, project)}, tuples); err != nil {
+	putNodes := []graphstore.Node{write.node(setting, project)}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, putNodes, tuples)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(putNodes, tuples))
+		return nil
+	}); err != nil {
 		return nil, false, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
 	}
 	for name, value := range setting {

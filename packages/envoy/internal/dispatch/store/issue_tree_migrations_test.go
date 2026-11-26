@@ -714,6 +714,20 @@ func requireTheIssueTreeMigrationsKeepToTheLimit(t *testing.T, fsys fs.FS) {
 	if len(ours) == 0 {
 		t.Fatal("no migration is named <timestamp>_issue_tree_<what>.up.sql: the marker migration stands in every set of this child, so the set read here is the wrong one")
 	}
+	// A migration numbered after the newest of this child's is later work, which may read what
+	// this child's migrations make (dispatch://INFRA-1098's restatement of graph_edges reads the
+	// node columns of artifacts): it can precede none of them, so the database before the set and
+	// the census of the set are taken over the migrations up to the newest of this child's alone.
+	newest := ours[len(ours)-1].Version
+	var later []pgmigrate.Migration
+	for _, migration := range set {
+		if migration.Version > newest {
+			later = append(later, migration)
+		}
+	}
+	if len(later) > 0 {
+		fsys = withoutMigrations(t, fsys, later)
+	}
 	for _, migration := range ours {
 		t.Logf("issue tree migration: %s", migration.Name)
 	}
