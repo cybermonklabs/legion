@@ -93,6 +93,26 @@ func TestTheTokenIsTheAccountsThePathNames(t *testing.T) {
 	}
 }
 
+// TestAccountSlotFoldsAGitHubOwnerWithGitHubSlot: an account the request names is read with the
+// same ASCII-only fold the release wrote its slot with. A request for KELVIN-ORG reaches the
+// held ASCII installation, while U+212A KELVIN SIGN is not an ASCII K and names no held
+// installation. The latter fails if accountSlot folds with strings.ToLower instead.
+func TestAccountSlotFoldsAGitHubOwnerWithGitHubSlot(t *testing.T) {
+	slots := map[string]string{requests.GitHubSlot("kelvin-org"): "token"}
+	for _, row := range []struct {
+		path, wantSlot string
+		wantHeld       bool
+	}{
+		{"/repos/KELVIN-ORG/widget", requests.SlotGitHubPrefix + "kelvin-org", true},
+		{"/repos/Kelvin-org/widget", requests.SlotGitHubPrefix + "Kelvin-org", false},
+	} {
+		slot, held := accountSlot(boundHost, row.path, slots)
+		if slot != row.wantSlot || held != row.wantHeld {
+			t.Errorf("accountSlot(%q) = %q, %t; want %q, %t", row.path, slot, held, row.wantSlot, row.wantHeld)
+		}
+	}
+}
+
 // TestARenewedGitHubGrantsEndedPlaceholderIsRefused: a role's GitHub grant is renewed, its
 // connections open with the new grant's placeholder, and gh still sends the ended grant's
 // placeholder of the same name, from a configuration written before the renewal. No live grant
