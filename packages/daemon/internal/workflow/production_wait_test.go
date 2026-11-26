@@ -248,6 +248,10 @@ func TestTheDailyTurnNamesEachTermThatStands(t *testing.T) {
 		{"the production check", claim.RoleTester, func(t *testing.T, rig *waitRig) {
 			rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
 		}, "Its production check of generation 3 at merge commit " + waitRootMerge},
+		{"a reason", "", func(t *testing.T, rig *waitRig) {
+			rig.seedDefect(waitRoot, "the retro found the cache key unchecked")
+			rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+		}, "waits since " + waitMergedAt.Add(time.Minute).Format("2006-01-02")},
 		{"a reason in a parked tree", "", func(t *testing.T, rig *waitRig) {
 			rig.seedDefect(waitRoot, "the retro found the cache key unchecked")
 			until := rig.now.Add(30 * 24 * time.Hour)
