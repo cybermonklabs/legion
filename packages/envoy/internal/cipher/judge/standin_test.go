@@ -477,16 +477,18 @@ type fakeRequests struct {
 	// private and projectErr are what JudgeProject answers, projectAsked the names it was
 	// asked about and projectReasons the signed reasons, and projectTakes how long it takes to
 	// answer: like the real read of Dispatch, it gives up when its context ends first.
-	// projectBeforeEnd, when not zero, has it answer that long before the end of the run's
-	// Dispatch phase instead, which phaseEnd holds: the deadline of the context the first
-	// JudgeProject call was given (dispatchPhaseEnd).
+	// projectBeforeEnd, when not zero, has it answer that long before the end the Dispatch
+	// phase should have, dispatchBound after its start (plannedPhaseEnd), instead.
 	private          bool
 	projectErr       error
 	projectAsked     []string
 	projectReasons   []string
 	projectTakes     time.Duration
 	projectBeforeEnd time.Duration
-	phaseEnd         time.Time
+	// phaseStart is when the run's first read under its Dispatch phase came (the phase's
+	// first JudgePolicy call), and phaseDeadline the deadline of that call's context: the
+	// end the judge gave the phase (notePhase, dispatchPhase).
+	phaseStart, phaseDeadline time.Time
 	// state and stateErr are what JudgeRequestState answers, and stateAsked how many
 	// times a run asked it. LogJudged reads state too, for the verdict of the row it writes.
 	state      string
@@ -561,6 +563,7 @@ func (f *fakeRequests) JudgePolicy(ctx context.Context, _, name string) (policy.
 	defer f.mu.Unlock()
 	f.policyAsked = append(f.policyAsked, name)
 	f.bounded = append(f.bounded, boundedCall{"JudgePolicy", requests.UnderJudgeDispatch(ctx)})
+	f.notePhase(ctx)
 	withheld := f.withheld || (f.withheldName != "" && f.withheldName == name)
 	decision := f.decision
 	switch name {
@@ -580,12 +583,10 @@ func (f *fakeRequests) JudgeProject(ctx context.Context, _, name, reason string)
 	f.projectAsked = append(f.projectAsked, name)
 	f.projectReasons = append(f.projectReasons, reason)
 	f.bounded = append(f.bounded, boundedCall{"JudgeProject", requests.UnderJudgeDispatch(ctx)})
-	if end, ok := ctx.Deadline(); ok && f.phaseEnd.IsZero() {
-		f.phaseEnd = end
-	}
+	f.notePhase(ctx)
 	takes := f.projectTakes
 	if f.projectBeforeEnd > 0 {
-		takes = time.Until(f.phaseEnd.Add(-f.projectBeforeEnd))
+		takes = time.Until(f.phaseStart.Add(dispatchBound - f.projectBeforeEnd))
 	}
 	f.mu.Unlock()
 	if takes > 0 {
@@ -600,12 +601,30 @@ func (f *fakeRequests) JudgeProject(ctx context.Context, _, name, reason string)
 	return f.private, f.projectErr
 }
 
-// dispatchPhaseEnd is the end of the run's Dispatch phase, as the first JudgeProject call read it
-// from its context: the zero time before any call came.
-func (f *fakeRequests) dispatchPhaseEnd() time.Time {
+// notePhase records, at the first call made under the run's Dispatch phase, when it came and the
+// deadline its context carries. f.mu is held.
+func (f *fakeRequests) notePhase(ctx context.Context) {
+	if !f.phaseStart.IsZero() || !requests.UnderJudgeDispatch(ctx) {
+		return
+	}
+	f.phaseStart = time.Now()
+	f.phaseDeadline, _ = ctx.Deadline()
+}
+
+// dispatchPhase is when the run's Dispatch phase began, as its first read saw it, and the deadline
+// the judge gave the phase: zero times before any read under the phase came.
+func (f *fakeRequests) dispatchPhase() (start, deadline time.Time) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.phaseEnd
+	return f.phaseStart, f.phaseDeadline
+}
+
+// plannedPhaseEnd is when the Dispatch phase should end, dispatchBound after its start: the
+// product's constant, not the deadline the phase's context shows, so a fake that answers before
+// it still runs past a phase the judge cut short.
+func (f *fakeRequests) plannedPhaseEnd() time.Time {
+	start, _ := f.dispatchPhase()
+	return start.Add(dispatchBound)
 }
 
 // projectsAsked is every name JudgeProject was asked about, in order, and reasonsAsked every
