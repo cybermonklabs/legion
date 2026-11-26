@@ -517,10 +517,14 @@ const OLD_RULE_ROOTS = [
 
 /** Listed paths under the roots, tracked or untracked, no reader is sent to for the rule: the
  *  recorded HTTP answers under `packages/dispatch/e2e/__recordings__`, each what a server answered
- *  when it was recorded. The changelogs, their `.changes` notes and `docs/solutions` are histories
- *  too, but no root holds them, so the listing never returns one. What git ignores (dependencies,
- *  build output, generated reference pages, test results) is never listed. */
-const OLD_RULE_LEFT_OUT = /(?:^|\/)__recordings__\//;
+ *  when it was recorded, and the captured answers of GitHub's REST API under
+ *  `packages/envoy/internal/dispatch/delivery/survival/testdata/diffs` and
+ *  `packages/envoy/internal/dispatch/codesurvival/testdata/github`, each a commit's text as it
+ *  was when GitHub served it. The changelogs, their `.changes` notes and `docs/solutions` are
+ *  histories too, but no root holds them, so the listing never returns one. What git ignores
+ *  (dependencies, build output, generated reference pages, test results) is never listed. */
+const OLD_RULE_LEFT_OUT =
+  /(?:^|\/)__recordings__\/|^packages\/envoy\/internal\/dispatch\/(?:delivery\/survival\/testdata\/diffs|codesurvival\/testdata\/github)\//;
 
 /** Wordings of the two-step rule. `sentence` is false for a wording that is the two-step rule on
  *  its own, whatever else its sentence says. */

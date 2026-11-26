@@ -5312,7 +5312,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   - The read of the day rows names each eval and, for each series whose samples or last write it reads, the pair (eval, series): a page of 200 evals of 234 series of 512-byte names would name about 49 MB of pairs, so it goes in one statement where its parameters take at most 256 KiB and otherwise in one for each run of evals that does (`evals.DayWindowIn`), the rows of each eval coming from its own run's statement; the list read runs every one of them in its one repeatable-read snapshot (below), so all of them read the moment its other reads read.
 
-  - `400 INVALID_QUERY` names a malformed key, and a key the route does not take (any but those above, so a caller still sending the old `scope=` is told rather than answered every issue), `404 PROJECT_NOT_FOUND` an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`. `session` is the timeline's session facet here, taken any number of times, beside being the global `session` parameter.
+  - `400 INVALID_QUERY` names a malformed key, and a key the route does not take (any but those above, so a caller still sending the old `scope=` is told rather than answered every issue), `404 PROJECT_NOT_FOUND` an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`.
+    `session` is the timeline's session facet here, taken any number of times, beside being the global `session` parameter.
 
   - One answer is one database moment: the project, the page, the deploy repository its rows are recorded under and every read its values are stated from run in one read-only repeatable-read transaction, so a refresher pass that commits while it reads is in the whole answer or in none of it; the eval's detail and its items (below) read the same way.
 

@@ -7,9 +7,10 @@
 // Every commit carries a committer and author date the test gives, so a history's days are the
 // test's own. Git runs in the repository's directory, under an environment of its own: a home in
 // the test's temporary directory, no system or global configuration (GIT_CONFIG_NOSYSTEM=1,
-// GIT_CONFIG_GLOBAL=/dev/null) and no variable of the process's but PATH, so no GIT_DIR, git
+// GIT_CONFIG_GLOBAL=/dev/null) and no variable of the process's, so no GIT_DIR, git
 // configuration or credential a pod hands its processes reaches it (docs/testing.md, "A test that
-// starts jj or git inherits no pod's environment").
+// starts jj or git inherits no pod's environment"). The git it runs is the one exec.LookPath
+// finds on the process's PATH, and the PATH it runs under is that git's directory alone.
 package survivaltest
 
 import (
@@ -17,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,6 +29,7 @@ import (
 type Repo struct {
 	t   testing.TB
 	dir string
+	git string
 	env []string
 }
 
@@ -60,7 +63,12 @@ func New(t testing.TB) *Repo {
 			t.Fatalf("survivaltest: make %s: %v", made, err)
 		}
 	}
-	repo := &Repo{t: t, dir: dir, env: []string{
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("survivaltest: find git: %v", err)
+	}
+	repo := &Repo{t: t, dir: dir, git: git, env: []string{
+		"PATH=" + filepath.Dir(git),
 		"HOME=" + home,
 		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
 		"GIT_CONFIG_NOSYSTEM=1",
@@ -90,9 +98,9 @@ func (r *Repo) Git(args ...string) string {
 // run runs git with args under the repository's environment and extra.
 func (r *Repo) run(extra []string, args ...string) []byte {
 	r.t.Helper()
-	command := exec.Command("git", args...)
+	command := exec.Command(r.git, args...)
 	command.Dir = r.dir
-	command.Env = append(append([]string{"PATH=" + os.Getenv("PATH")}, r.env...), extra...)
+	command.Env = append(slices.Clip(r.env), extra...)
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	out, err := command.Output()

@@ -152,6 +152,8 @@ representatives=(
   packages/daemon/internal/daemon/imageprobe_test.go
   packages/daemon/cmd/legion/controller_test.go
   .github/workflows/release.yaml
+  packages/envoy/internal/dispatch/delivery/survival/testdata/diffs/rename-exact.diff
+  packages/envoy/internal/dispatch/codesurvival/testdata/github/commits-page.txt
 )
 for index in "${!representatives[@]}"; do
   file=${representatives[index]}

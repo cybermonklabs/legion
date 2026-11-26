@@ -79,6 +79,12 @@ allowlist=(
   # paragraph that says why.
   .github/workflows/release.yaml
   .github/ci-notes/release.md
+  # Captured answers of GitHub's REST API, a fixture of the code-survival patch parser: each holds
+  # a commit's text as it was when it was committed.
+  packages/envoy/internal/dispatch/delivery/survival/testdata/diffs/
+  # Captured answers of GitHub's REST API to the code-survival run's reads, which hold a commit's
+  # text as it was, for the same reason.
+  packages/envoy/internal/dispatch/codesurvival/testdata/github/
   # This check and its test spell the name they hunt.
   .github/scripts/check-plugin-names.sh
   .github/scripts/check-plugin-names.test.sh
