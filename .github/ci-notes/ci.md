@@ -1747,9 +1747,11 @@ What that gives, with each job's 90th percentile in minutes:
 dispatch-browser-pr is the one exception the rule names: at 14.2 minutes it is above the line,
 and it stays on the pull request, since its rows tagged `@pr` are the ones a change to the
 dashboard is held to (.github/ci-notes/ci.md#the-browser-suites-two-outputs-one-per-lane).
-A job whose numbers cross the line moves class by the same rule. dispatch-references is in
-neither class: it is outside ci-ok, runs on a pull request alone and never in the queue, whose
-full lane already runs every row of it
+A job whose numbers cross the line moves class by the same rule. dispatch-references is outside
+both classes: it is outside ci-ok and never runs in the queue, whose full lane already runs every
+row of it. Its output is held back on a pull request as a slow suite's is, all the same, because
+its rows, 147 of them on the real stack on 2026-11-26, would take a change to the reference
+framework past the pull-request budget of 150 real-stack rows (dispatch://INFRA-983's R2)
 (.github/ci-notes/ci.md#the-reference-rows-preview-job).
 
 What this accepts: a slow test that would have failed the pull request now fails first in the
@@ -1859,10 +1861,10 @@ cache, at the version the root package.json and bun.lock give.
 ## A lane label turns on one slow suite on a pull request
 
 A pull request label `lane:<output>` turns on that one slow suite, as `full-ci` turns on all of
-them. `<output>` is one of the fifteen outputs the `full-ci` term gates, and the label turns
+them. `<output>` is one of the sixteen outputs the `full-ci` term gates, and the label turns
 that output on where its paths matched: `daemon_go_tests`, `dispatch_browser`,
-`dispatch_memory`, `dispatch_multiprocess`, `dispatch_two_builds`, `envoy_go`,
-`envoy_go_checks`, `envoy_go_claim_model`, `envoy_go_race`, `envoy_go_race_api`,
+`dispatch_memory`, `dispatch_multiprocess`, `dispatch_references`, `dispatch_two_builds`,
+`envoy_go`, `envoy_go_checks`, `envoy_go_claim_model`, `envoy_go_race`, `envoy_go_race_api`,
 `envoy_go_race_docs`, `envoy_infra_go`, `envoy_smoke`, `pi_legion` and `test`. It is for a pull
 request that needs one slow suite's result at its head - a test that only that suite runs, or a
 `ci_check` naming that job - without running the others. Each term names its own label, so the
@@ -1883,7 +1885,7 @@ request and reopen it. Take it off once the run it was added for passes, as `ful
 .github/scripts/ci-router-outputs.test.sh evaluates ci.yaml's own outputs
 (.github/scripts/ci_router_outputs.py) and holds them to this: each lane label turns on its
 own output and leaves every other one as an unlabelled pull request has it, `full-ci` still
-turns all fifteen on, the paths term still holds under both, and a label naming no such output
+turns all sixteen on, the paths term still holds under both, and a label naming no such output
 turns on nothing.
 
 ## Why envoy-go's build and checks come back on every push
@@ -2476,8 +2478,12 @@ Pull requests alone: the merge queue's full lane already runs these rows, so a m
 would pay for them twice. The merge-group attempt term is the one every job of ci.yaml but
 ci-ok and pr-title carries; with the pull_request term it holds nothing back, and it is there
 because check-ci-filters.sh's rule 12 holds every job to it. Its `changes` output,
-dispatch_references, carries no `full-ci` or `lane:` term either: the job is no slow suite held
-back on a pull request, and the merge queue's full lane runs the same rows whatever the labels.
+dispatch_references, carries the `full-ci` and `lane:dispatch_references` terms of a slow suite
+(.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request): a pull request runs it
+only under one of those labels. Its rows, 147 of them on the real stack on 2026-11-26, would
+otherwise run on every pull request that changes the reference framework, beside the
+pull-request lane's own real-stack rows, past the budget of 150 a pull request runs
+(dispatch://INFRA-983's R2); the merge queue's full lane runs the same rows whatever the labels.
 The `dispatch_references` filter selects it;
 .github/ci-notes/ci.md#dispatch_references-the-reference-rows-preview-dispatch-references-the-eleven-spec-files
 says why that filter is narrower than what the job reads.

@@ -157,7 +157,7 @@ jobs:
       # why: .github/ci-notes/ci.md#the-browser-suites-two-outputs-one-per-lane
       dispatch_browser_pr: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.dispatch_browser_pr }}
       # why: .github/ci-notes/ci.md#the-reference-rows-preview-job
-      dispatch_references: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.dispatch_references }}
+      dispatch_references: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_references')) && steps.filter.outputs.dispatch_references || 'false' }}
       claude_envoy: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.claude_envoy }}
       envoy_go: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go')) && steps.filter.outputs.envoy_go || 'false' }}
       # why: .github/ci-notes/ci.md#why-envoy-gos-build-and-checks-come-back-on-every-push
