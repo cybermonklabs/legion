@@ -480,7 +480,14 @@ func (e *Engine) fixTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w W
 	if err != nil {
 		return "", err
 	}
-	dirOf := fixDirOf(e.cfg.WorkspaceDir)
+	facts, err := e.startFacts(ctx, tx, fixing, w)
+	if err != nil {
+		return "", err
+	}
+	if !facts.Own || facts.Fix != fix.Fix {
+		return "", fmt.Errorf("compose the task of fix %d of task %s of %s: the start at its place stands beside fix %d", fix.Fix, fix.Task, issue.Key, facts.Fix)
+	}
+	dirOf := func(record.Issue) string { return facts.FixDir }
 	standing, err := standingText(fixing, dirOf, w, rows)
 	if err != nil {
 		return "", err
@@ -489,23 +496,12 @@ func (e *Engine) fixTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w W
 	if err != nil {
 		return "", err
 	}
-	facts, err := e.startFacts(ctx, tx, fixing, w)
-	if err != nil {
-		return "", err
-	}
-	if !facts.Own || facts.Fix != fix.Fix {
-		return "", fmt.Errorf("compose the task of fix %d of task %s of %s: the start at its place stands beside fix %d", fix.Fix, fix.Task, issue.Key, facts.Fix)
-	}
 	copyLine := WorkingCopy(fixing, dirOf).lines
 	sentences := fixSentence(issue.Key, facts)
 	for _, check := range facts.Failed {
 		sentences += fmt.Sprintf(" Check %s failed at %s too: CI job of the check ended %s.", check, facts.Head, facts.Cases[check])
 	}
-	dir := ""
-	if dirOf != nil {
-		dir = dirOf(fixing)
-	}
-	sentences += owedMergeSentence(facts) + fixPushSentence(issue, fix, facts.Branch, dir)
+	sentences += owedMergeSentence(facts) + fixPushSentence(issue, fix, facts.Branch, facts.FixDir)
 	standing.lines = copyLine + sentences + strings.TrimPrefix(standing.lines, copyLine)
 	return task(fixing, standing, record.PhaseRow{}, pr, ""), nil
 }
@@ -568,12 +564,15 @@ func fixPushSentence(issue record.Issue, fix record.TaskFix, own, dir string) st
 //   - a start of an implementation step of a task that takes a fix, with no fix open: the head and
 //     each check a CI job runs that fails there (Failed).
 //
-// The fix's own start holds its own branch F as Branch. Every other start holds none.
+// The fix's own start holds its own branch F as Branch, and the directory of its own working copy
+// beside the task's (FixDir: workspace.FixDir of the directory the runtime gives the issue's working
+// copy, Config.WorkspaceDir, "" where the runtime names none), which its task's working copy line
+// and its push commands name. Every other start holds none.
 type startFacts struct {
 	Fix                                        int
 	Own                                        bool
 	Check, Head, CICase, Job, Page, ReadFailed string
-	Branch, Pushed                             string
+	Branch, Pushed, FixDir                     string
 	MergeHead, MergeBase                       string
 	Failed                                     []string
 	// Cases is the ci_case of each check of Failed that a fix holds.
@@ -702,6 +701,9 @@ func (e *Engine) fixFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	facts := startFacts{Fix: fix.Fix, Own: true, Check: fix.Check, Head: fix.Head, CICase: held.States[fix.Check].CICase,
 		Job: fix.JobName, Page: fix.JobURL, ReadFailed: fix.ReadFailed}
 	facts.Branch, _ = e.besideBranchOf(issue, fix.Task, fix.Fix, claim.RoleImplementer)
+	if dir := fixDirOf(e.cfg.WorkspaceDir); dir != nil {
+		facts.FixDir = dir(issue)
+	}
 	for _, state := range failedChecks(held) {
 		if state.Check == fix.Check {
 			continue

@@ -130,8 +130,12 @@ func TestEachStartBesideAFixHoldsItsFixAndItsBranch(t *testing.T) {
 		r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
 		own := r.startFactsIn(phase.Implementing)
 		if !own.Own || own.Fix != 1 || own.Check != "k-ci" || own.Head != fixHead || own.Job != "unit" || own.Page != fixPage ||
-			own.Branch != besideFix1(t, claim.RoleImplementer) {
-			t.Fatalf("the fix's own start facts = %+v, want fix 1 of k-ci at %s, job unit at %s, on its own branch", own, fixHead, fixPage)
+			own.Branch != besideFix1(t, claim.RoleImplementer) || own.FixDir != "" {
+			t.Fatalf("the fix's own start facts = %+v, want fix 1 of k-ci at %s, job unit at %s, on its own branch, with no directory: the runtime names none", own, fixHead, fixPage)
+		}
+		withWorkspace(r.engine)
+		if own := r.startFactsIn(phase.Implementing); own.FixDir != fixWorkspace+"-fix" {
+			t.Fatalf("the fix's own start facts with the runtime's directory = %+v, want the fix's directory %s-fix", own, fixWorkspace)
 		}
 		tester := r.startFactsIn(phase.Testing)
 		if tester.Own || tester.Fix != 1 || tester.Check != "k-ci" || tester.Head != fixHead || !claim.IsBesideBranch(tester.Branch) ||

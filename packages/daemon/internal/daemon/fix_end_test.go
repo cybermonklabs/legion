@@ -18,21 +18,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // The end of a task that a CI job's check decides, on the whole daemon: the real Dispatch this
 // checkout builds, reading its check runs from the fake GitHub and publishing each check state the
-// listener's settlement moves (Task 7b's fixture, which the fix rig stands on), the daemon over the
-// fake runtime, and GitHub's events on the notification stream. Each issue's Verification document
-// holds k1, which its tester records, and k-ci, which the CI job unit proves.
-
-// fixEndNarrowed is why a task whose tester completes while its job runs waits here: the testing
-// step that leaves each check a CI job runs to the fix is not on this branch yet, so the tester's
-// step waits for k-ci.
-const fixEndNarrowed = "needs the testing step that leaves each check a CI job runs to the fix, which this branch does not hold yet"
+// listener's settlement moves (scratch_dispatch_ci_test.go's fixture, which the fix rig stands
+// on), the daemon over the fake runtime, and GitHub's events on the notification stream. Each
+// issue's Verification document holds k1, which its tester records, and k-ci, which the CI job
+// unit proves.
 
 // fixEndIssues are the issues of TestVFixEnd, tasks A to F in order, each on a pull request of its
 // own; no two titles share a word that counts (walkTitles says why).
@@ -96,6 +95,29 @@ func (e *fixEnd) planAndGate(first phase.Phase, steps ...string) {
 	r.openGate(first)
 }
 
+// testerAloneAndGate is the plan of one task whose one step is the tester's, and the person
+// approving the spec, after which the task stands in testing. The registration route refuses a
+// task with no implementer step in this release (plan.Supported), so the owner's plan.md is put in
+// Dispatch and its rows are written into the daemon's store as the route's fact writes an owner's
+// plan (the engine's writeVersion): they stand for a stored plan the route cannot write.
+func (e *fixEnd) testerAloneAndGate() {
+	r := e.at()
+	r.t.Helper()
+	artifact := r.document("plan.md", planOf("tester"))
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		version := record.PlanVersion{Issue: e.key, Generation: 1, Version: 1, ArtifactID: artifact, Source: record.PlanSourceOwner,
+			GivenBy: r.token(claim.RoleArchitect), GivenAt: time.Now().UTC()}
+		task := record.PlanTask{Issue: e.key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Make the change the issue asks for.",
+			State: record.TaskWaiting}
+		steps := []record.PlanStep{{Issue: e.key, Generation: 1, Task: "a", Position: 1, Role: "tester", Type: "testing"}}
+		return r.records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps)
+	}); err != nil {
+		r.t.Fatalf("write the plan rows of %s's tester alone: %v", e.key, err)
+	}
+	r.fact("plan-seeded", "%s's plan.md %s takes the step tester alone, its rows written into the daemon's store", e.key, artifact)
+	r.openGate(phase.Testing)
+}
+
 // opensAtX is the pull request opening at X with unit running there, as CI starts on the push that
 // opens it: the fake sets the run first, the stand-in opens the pull request, and the opened event
 // is sent; it returns once the daemon records the pull request at X.
@@ -110,6 +132,26 @@ func (e *fixEnd) opensAtX() {
 		pr := r.pullRequest()
 		return pr != nil && pr.HeadSHA == e.x
 	})
+}
+
+// pushesY is the fix's one push of Y to the task's branch, as GitHub sends it: the stand-in moves
+// the pull request to Y first, then the push and the synchronize are sent. It returns Y once the
+// daemon records the pull request at Y.
+func (e *fixEnd) pushesY() string {
+	r := e.at()
+	r.t.Helper()
+	y := scratchCIHead(e.key, "y")
+	moved := r.tick()
+	r.pulls.move(r.number, y, moved)
+	push := r.publishPush(e.x, y)
+	synchronize := r.publishPullRequest("synchronize", y, moved, map[string]string{"before": e.x, "sender": implementerLogin})
+	r.awaitProcessed(push)
+	r.awaitProcessed(synchronize)
+	r.await(e.key+"'s pull request record at Y", func() bool {
+		pr := r.pullRequest()
+		return pr != nil && pr.HeadSHA == y
+	})
+	return y
 }
 
 // implementsAtX is the implementer taking its task, the pull request opening at X, and the
@@ -294,33 +336,55 @@ func (e *fixEnd) toldOwner(kind record.NoticeKind) []record.Notice {
 	return told
 }
 
-// pendingFix is the fix and the fix's commit the pending delivery of the issue's implementer
-// names, zero where it holds none.
-func (e *fixEnd) pendingFix() (int, string) {
+// fixBranch is the own branch of fix 1 of the issue's task, beside the task's branch, which every
+// start of the fix names and its adoption reads (claim.BesideBranch of the implementer).
+func (e *fixEnd) fixBranch() string {
+	e.r.t.Helper()
+	branch, err := claim.BesideBranch(e.key, 1, "a", 1, claim.RoleImplementer)
+	if err != nil {
+		e.r.t.Fatalf("name fix 1's own branch of %s: %v", e.key, err)
+	}
+	return branch
+}
+
+// pendingFix is the fix, the fix's commit and the fix's own branch the pending delivery of the
+// issue's implementer names, zero where it holds none.
+func (e *fixEnd) pendingFix() (int, string, string) {
 	r := e.r
 	r.t.Helper()
 	var fix int
-	var from string
-	err := r.st.Pool().QueryRow(context.Background(), `select fix, fix_from from pending_task_deliveries where claim_token = $1`,
-		string(r.tokenOf(e.key, claim.RoleImplementer))).Scan(&fix, &from)
+	var from, branch string
+	err := r.st.Pool().QueryRow(context.Background(), `select fix, fix_from, fix_branch from pending_task_deliveries where claim_token = $1`,
+		string(r.tokenOf(e.key, claim.RoleImplementer))).Scan(&fix, &from, &branch)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		r.t.Fatalf("read the pending delivery of %s's implementer: %v", e.key, err)
 	}
-	return fix, from
+	return fix, from, branch
 }
 
 // fixAdoptions is each adoption of the working copy the fake runtime made for the issue's
-// implementer that names a fix's commit, oldest first.
-func (e *fixEnd) fixAdoptions() []string {
+// implementer that names a fix's commit or a fix's branch, oldest first.
+func (e *fixEnd) fixAdoptions() []runtime.Adoption {
 	r := e.r
 	token := r.tokenOf(e.key, claim.RoleImplementer)
-	var from []string
+	var adoptions []runtime.Adoption
 	for _, call := range r.rt.CallsOf("AdoptWorkingCopy") {
-		if call.Locator.Claim == token && call.Adoption.FixFrom != "" {
-			from = append(from, call.Adoption.FixFrom)
+		if call.Locator.Claim == token && (call.Adoption.FixFrom != "" || call.Adoption.FixBranch != "") {
+			adoptions = append(adoptions, call.Adoption)
 		}
 	}
-	return from
+	return adoptions
+}
+
+// assertFixAdopted fails unless the latest adoption of a fix's working copy for the issue's
+// implementer names fix 1's commit X and its own branch, and moves nothing, so the shim makes the
+// fix's copy at X or at the head of that branch.
+func (e *fixEnd) assertFixAdopted(t *testing.T) {
+	t.Helper()
+	want := runtime.Adoption{FixFrom: e.x, FixBranch: e.fixBranch()}
+	if adoptions := e.fixAdoptions(); len(adoptions) == 0 || adoptions[len(adoptions)-1] != want {
+		t.Fatalf("the fix adoptions of %s's implementer = %+v, want the latest %+v", e.key, adoptions, want)
+	}
 }
 
 // fixEndHoldLine is the line the supervise machine logs where it holds a phase task for another
@@ -370,14 +434,26 @@ func (e *fixEnd) fixStarts(t *testing.T, run githubtest.CheckRun) (shimwire.Prom
 	return e.awaitFixTask()
 }
 
-// assertFixTask fails unless prompt is the fix's task, naming k-ci, X, the job unit and the run's
-// page, rather than held is the hold of it, naming the claim that held it.
+// fixDir is the directory of the fix's own working copy beside the issue's workspace
+// (workspace.FixDir), where the daemon's runtime places that workspace (engineWorkspaceDir).
+func (e *fixEnd) fixDir() string {
+	e.r.t.Helper()
+	dir := engineWorkspaceDir(e.r.cfg)(record.Issue{Key: e.key, Repo: liveRepo})
+	if dir == "" {
+		e.r.t.Fatalf("UNKNOWN: the daemon's runtime places no workspace for %s in %s, so no fix's directory can be read", e.key, liveRepo)
+	}
+	return workspace.FixDir(dir)
+}
+
+// assertFixTask fails unless prompt is the fix's task, naming k-ci, X, the job unit, the run's
+// page and the fix's own directory, rather than held is the hold of it, naming the claim that held
+// it.
 func (e *fixEnd) assertFixTask(t *testing.T, prompt shimwire.Prompt, held string, run githubtest.CheckRun) {
 	t.Helper()
 	if held != "" {
 		t.Fatalf("the daemon held %s's fix task for another claim's turn: %s", e.key, held)
 	}
-	for _, value := range []string{scratchCICheck, e.x, scratchCIJob, run.HTMLURL} {
+	for _, value := range []string{scratchCICheck, e.x, scratchCIJob, run.HTMLURL, "directory " + e.fixDir() + "."} {
 		if !strings.Contains(prompt.Message, value) {
 			t.Fatalf("the fix's task of %s does not name %q: %q", e.key, value, prompt.Message)
 		}
@@ -445,16 +521,17 @@ func fixEndCommit(commit *string) string {
 }
 
 // assertRecord fails unless records holds the record of step and attempt, kind step, starting at
-// start and ending at end ("" for not named), and naming check as its fix's check ("" for none).
+// start and ending at end, each "none" where the record must name no commit, and naming check as
+// its fix's check ("" for none).
 func assertRecord(t *testing.T, key string, records []fixEndRecord, step, attempt int, start, end, check string) {
 	t.Helper()
 	got, ok := fixEndRecordOf(records, "step", step, attempt)
 	switch {
 	case !ok:
 		t.Fatalf("%s's steps hold no record of step %d attempt %d: %+v", key, step, attempt, records)
-	case start != "" && fixEndCommit(got.StartCommit) != start:
+	case fixEndCommit(got.StartCommit) != start:
 		t.Fatalf("%s's step %d attempt %d starts at %s, want %s", key, step, attempt, fixEndCommit(got.StartCommit), start)
-	case end != "" && fixEndCommit(got.EndCommit) != end:
+	case fixEndCommit(got.EndCommit) != end:
 		t.Fatalf("%s's step %d attempt %d ends at %s, want %s", key, step, attempt, fixEndCommit(got.EndCommit), end)
 	case check != fixEndCommitOrEmpty(got.FixCheck):
 		t.Fatalf("%s's step %d attempt %d names the fix's check %q, want %q", key, step, attempt, fixEndCommitOrEmpty(got.FixCheck), check)
@@ -469,16 +546,16 @@ func fixEndCommitOrEmpty(value *string) string {
 	return *value
 }
 
-// retroAndMerge is the implementer's retro rating the plan at X, the merger's launch, GitHub's
-// merge of the pull request and its closed event; it returns once Dispatch holds the issue done
-// with its closed_at.
-func (e *fixEnd) retroAndMerge() {
+// retroAndMerge is the implementer's retro rating the plan at head, the merger's launch, GitHub's
+// merge of the pull request at head and its closed event; it returns once Dispatch holds the issue
+// done with its closed_at.
+func (e *fixEnd) retroAndMerge(head string) {
 	r := e.at()
 	r.t.Helper()
 	implementer := e.worker(claim.RoleImplementer)
 	rating, reason := 4, "The plan fit the work."
-	if status, body := r.complete(implementer, api.HandoffCompleteRequest{Summary: "retro written", Commit: e.x, PlanRating: &rating, PlanReason: &reason}); status != http.StatusOK {
-		r.t.Fatalf("%s's retro at X = %d %s, want 200", e.key, status, body)
+	if status, body := r.complete(implementer, api.HandoffCompleteRequest{Summary: "retro written", Commit: head, PlanRating: &rating, PlanReason: &reason}); status != http.StatusOK {
+		r.t.Fatalf("%s's retro at %s = %d %s, want 200", e.key, head, status, body)
 	}
 	implementer.endTurn()
 	r.waitPhase(phase.Merging)
@@ -486,22 +563,12 @@ func (e *fixEnd) retroAndMerge() {
 	merged := r.tick()
 	mergeSHA := scratchCIHead(e.key, "merge")
 	r.pulls.merge(r.number, mergeSHA, merged)
-	r.awaitProcessed(r.publishPullRequest("closed", e.x, merged, map[string]string{"merged": "true", "merge_commit_sha": mergeSHA}))
+	r.awaitProcessed(r.publishPullRequest("closed", head, merged, map[string]string{"merged": "true", "merge_commit_sha": mergeSHA}))
 	r.waitPhase(phase.Done)
 	r.await(e.key+" done in Dispatch with its closed_at", func() bool {
 		status, closed := r.dispatchIssue()
 		return status == record.DoneStatus && closed != nil
 	})
-}
-
-// endHoldTakenOut is the seam that takes the end hold out of the daemon's engine, under which a
-// task's end reads no check a CI job runs, and whether this branch's engine has it.
-func endHoldTakenOut() (func(*workflow.Engine), bool) {
-	type withoutEndHold interface{ WithoutEndHold() }
-	if _, ok := any((*workflow.Engine)(nil)).(withoutEndHold); !ok {
-		return nil, false
-	}
-	return func(engine *workflow.Engine) { any(engine).(withoutEndHold).WithoutEndHold() }, true
 }
 
 // walkToTheEndWhileTheJobRuns walks task A's or B's form, `implementer tester`, to its end while
@@ -528,21 +595,22 @@ func (e *fixEnd) walkToTheEndWhileTheJobRuns() api.Issue {
 //   - D (`implementer tester`): unit passed at X before the tester completed, so the retro runs;
 //     unit fails at X while it does: no fix starts, and the failure is the merger's.
 //   - E (`implementer tester reviewer`): unit fails at X while the reviewer's turn is open, and the
-//     fix's task reaches the implementer while it stays open, its adoption naming the fix's commit.
+//     fix's task reaches the implementer while it stays open, its adoption naming the fix's commit
+//     and the fix's own branch; the fix pushes Y and ends there.
 //   - F: the same, with the implementer's task held by its own turn while the daemon restarts: after
-//     the restart its adoption names the fix's commit.
-//   - The records: each record of D and E holds its commits, each fix's record names k-ci, and the
-//     project's read gives each finished issue's fixes.
+//     the restart its adoption names the fix's commit and the fix's own branch.
+//   - The records: each record of each task holds its start and end commits, each fix's record
+//     names k-ci, the record of E's fix ends at Y, and the project's read gives each finished
+//     issue's fixes, B's one among them.
 //
-// The control, kept as a subtest of its own daemon: with the end hold taken out of the engine
-// (WithoutEndHold), task A reaches its retro while unit runs, which the subtest asserts.
+// The control is a test of its own (TestVFixEndWithoutTheEndHold), since its daemon needs the
+// shared NATS server, which one test takes once.
 func TestVFixEnd(t *testing.T) {
 	t.Parallel()
 	r := newFixRig(t, nil, fixEndIssues...)
 	a, b, c, d, e, f := r.walking(0), r.walking(1), r.walking(2), r.walking(3), r.walking(4), r.walking(5)
 
 	t.Run("A is not done while its job runs, and its fix ends at its one notice", func(t *testing.T) {
-		t.Skip(fixEndNarrowed)
 		stands := a.walkToTheEndWhileTheJobRuns()
 		if stands.Phase != phase.Held || stands.HoldReason != string(record.HoldForCI) {
 			t.Fatalf("%s stands in %s held for %q while unit runs at X, want held for %q", a.key, stands.Phase, stands.HoldReason, record.HoldForCI)
@@ -550,6 +618,7 @@ func TestVFixEnd(t *testing.T) {
 		run := a.unitFails()
 		prompt, held := a.fixStarts(t, run)
 		a.assertFixTask(t, prompt, held, run)
+		a.assertFixAdopted(t)
 		implementer := a.worker(claim.RoleImplementer)
 		implementer.answer()
 		implementer.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
@@ -581,13 +650,13 @@ func TestVFixEnd(t *testing.T) {
 	})
 
 	t.Run("B is done only after its job passed, and its fix counts no return", func(t *testing.T) {
-		t.Skip(fixEndNarrowed)
 		if stands := b.walkToTheEndWhileTheJobRuns(); stands.Phase != phase.Held {
 			t.Fatalf("%s stands in %s while unit runs at X, want held", b.key, stands.Phase)
 		}
 		run := b.unitFails()
 		prompt, held := b.fixStarts(t, run)
 		b.assertFixTask(t, prompt, held, run)
+		b.assertFixAdopted(t)
 		implementer := b.worker(claim.RoleImplementer)
 		implementer.answer()
 		implementer.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
@@ -613,12 +682,11 @@ func TestVFixEnd(t *testing.T) {
 			t.Fatalf("%s's task counts %d returns, want none: its fix made no commit", b.key, returns)
 		}
 		implementer.take()
-		b.retroAndMerge()
+		b.retroAndMerge(b.x)
 	})
 
 	t.Run("C, a tester alone, starts no fix, and its owner is told once", func(t *testing.T) {
-		t.Skip(fixEndNarrowed)
-		c.planAndGate(phase.Testing, "tester")
+		c.testerAloneAndGate()
 		c.opensAtX()
 		c.testerRecordsK1()
 		c.testerCompletes()
@@ -655,7 +723,7 @@ func TestVFixEnd(t *testing.T) {
 		if stands := d.standing(); stands.Phase != phase.Retro {
 			t.Fatalf("%s stands in %s once unit failed in its retro, want its retro", d.key, stands.Phase)
 		}
-		d.retroAndMerge()
+		d.retroAndMerge(d.x)
 	})
 
 	t.Run("E's fix task reaches the implementer while the reviewer's turn is open", func(t *testing.T) {
@@ -674,9 +742,25 @@ func TestVFixEnd(t *testing.T) {
 		if state := er.d.claim(reviewer.token).State; state != string(supervise.StateWorking) {
 			t.Fatalf("%s's reviewer is %s when the fix's task reached the implementer, want its turn still open", e.key, state)
 		}
-		if from := e.fixAdoptions(); !slices.Equal(from, []string{e.x}) {
-			t.Fatalf("the fix adoptions of %s's implementer = %q, want one from X %s", e.key, from, e.x)
+		e.assertFixAdopted(t)
+		if adoptions := e.fixAdoptions(); len(adoptions) != 1 {
+			t.Fatalf("the fix adoptions of %s's implementer = %+v, want one", e.key, adoptions)
 		}
+		implementer := e.worker(claim.RoleImplementer)
+		implementer.answer()
+		implementer.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
+		implementer.waitState(supervise.StateWorking)
+		y := e.pushesY()
+		handoff, version := er.writeHandoff(implementer.session, "implement")
+		if status, body := er.complete(implementer, api.HandoffCompleteRequest{Summary: "the fix of unit", Commit: y, HandoffID: handoff,
+			HandoffVersion: version}); status != http.StatusOK {
+			t.Fatalf("the fix's completion at Y = %d %s, want 200", status, body)
+		}
+		implementer.endTurn()
+		er.await(e.key+"'s fix ended at Y", func() bool {
+			fixes := e.fixes()
+			return len(fixes) == 1 && fixes[0].state == string(record.FixEnded) && fixes[0].endHead == y
+		})
 	})
 
 	t.Run("F's fix task, pending across a restart, adopts from the fix's commit", func(t *testing.T) {
@@ -698,11 +782,12 @@ func TestVFixEnd(t *testing.T) {
 			t.Fatalf("the fixes of %s = %+v, want fix 1 for k-ci at %s", f.key, fixes, f.x)
 		}
 		fr.await(f.key+"'s implementer's pending delivery of fix 1", func() bool {
-			fix, _ := f.pendingFix()
+			fix, _, _ := f.pendingFix()
 			return fix == 1
 		})
-		if fix, from := f.pendingFix(); fix != 1 || from != f.x {
-			t.Fatalf("the pending delivery of %s's implementer names fix %d from %q, want fix 1 from X %s", f.key, fix, from, f.x)
+		if fix, from, branch := f.pendingFix(); fix != 1 || from != f.x || branch != f.fixBranch() {
+			t.Fatalf("the pending delivery of %s's implementer names fix %d from %q on %q, want fix 1 from X %s on %s", f.key, fix, from, branch,
+				f.x, f.fixBranch())
 		}
 		// The pane's turn ends while the daemon restarts, so no daemon reads its end: the new
 		// daemon's probe finds the shim in no turn, and sends the pending task.
@@ -711,18 +796,36 @@ func TestVFixEnd(t *testing.T) {
 		fr.on(f.key)
 		prompt := implementer.receive()
 		f.assertFixTask(t, prompt, "", run)
-		if from := f.fixAdoptions(); len(from) == 0 || from[len(from)-1] != f.x {
-			t.Fatalf("the fix adoptions of %s's implementer after the restart = %q, want the latest from X %s", f.key, from, f.x)
-		}
+		f.assertFixAdopted(t)
 	})
 
 	t.Run("each record names its commits, each fix's record its check, and the project's read the fixes", func(t *testing.T) {
-		records := d.records()
-		assertRecord(t, d.key, records, 1, 1, "", d.x, "")
-		assertRecord(t, d.key, records, 2, 1, d.x, d.x, "")
-		records = e.records()
-		assertRecord(t, e.key, records, 2, 1, e.x, e.x, "")
-		assertRecord(t, e.key, records, 1, 2, e.x, "", scratchCICheck)
+		// A step that starts before the pull request opens names no start commit; a step still
+		// running names no end commit; a fix's run is its step's second attempt.
+		for _, tc := range []struct {
+			e    *fixEnd
+			want [][3]string
+		}{
+			{e: a, want: [][3]string{{"1/1", "none", a.x}, {"2/1", a.x, a.x}, {"1/2", a.x, a.x}}},
+			{e: b, want: [][3]string{{"1/1", "none", b.x}, {"2/1", b.x, b.x}, {"1/2", b.x, b.x}}},
+			{e: c, want: [][3]string{{"1/1", "none", c.x}}},
+			{e: d, want: [][3]string{{"1/1", "none", d.x}, {"2/1", d.x, d.x}}},
+			{e: e, want: [][3]string{{"1/1", "none", e.x}, {"2/1", e.x, e.x}, {"3/1", e.x, "none"}, {"1/2", e.x, scratchCIHead(e.key, "y")}}},
+			{e: f, want: [][3]string{{"1/1", "none", f.x}, {"2/1", f.x, f.x}, {"3/1", f.x, "none"}, {"1/2", f.x, "none"}}},
+		} {
+			records := tc.e.records()
+			for _, want := range tc.want {
+				var step, attempt int
+				if _, err := fmt.Sscanf(want[0], "%d/%d", &step, &attempt); err != nil {
+					t.Fatal(err)
+				}
+				check := ""
+				if attempt > 1 {
+					check = scratchCICheck
+				}
+				assertRecord(t, tc.e.key, records, step, attempt, want[1], want[2], check)
+			}
+		}
 		var plans struct {
 			Issues []fixEndPlan `json:"issues"`
 		}
@@ -730,24 +833,28 @@ func TestVFixEnd(t *testing.T) {
 			t.Fatalf("read the plans of %s: %v", r.cfg.Project, err)
 		}
 		r.fact("plans", "Dispatch's read of %s's plans: %+v", r.cfg.Project, plans)
-		at := slices.IndexFunc(plans.Issues, func(issue fixEndPlan) bool { return issue.Issue == d.key })
-		if at < 0 || plans.Issues[at].Fixes != 0 {
-			t.Fatalf("the plans of %s = %+v, want %s finished with 0 fixes", r.cfg.Project, plans, d.key)
+		for _, finished := range []struct {
+			key   string
+			fixes int
+		}{{d.key, 0}, {b.key, 1}} {
+			at := slices.IndexFunc(plans.Issues, func(issue fixEndPlan) bool { return issue.Issue == finished.key })
+			if at < 0 || plans.Issues[at].Fixes != finished.fixes {
+				t.Fatalf("the plans of %s = %+v, want %s finished with %d fixes", r.cfg.Project, plans, finished.key, finished.fixes)
+			}
 		}
 	})
+}
 
-	t.Run("the control: with the end hold taken out, A reaches its retro while its job runs", func(t *testing.T) {
-		t.Skip(fixEndNarrowed)
-		seam, ok := endHoldTakenOut()
-		if !ok {
-			t.Skip("the engine of this branch has no WithoutEndHold yet")
-		}
-		control := newFixRig(t, seam, fixEndIssues[0])
-		a := control.walking(0)
-		stands := a.walkToTheEndWhileTheJobRuns()
-		if stands.Phase == phase.Held && stands.HoldReason == string(record.HoldForCI) {
-			t.Fatalf("%s stands held for %q with the end hold taken out, want it in its retro: the control cannot fail", a.key, stands.HoldReason)
-		}
-		t.Logf("with the end hold taken out %s stands in %s while unit runs at X: A's first assertion, held for CI, fails as it must", a.key, stands.Phase)
-	})
+// TestVFixEndWithoutTheEndHold is the control of TestVFixEnd, kept: on a daemon whose engine has
+// the end hold taken out (WithoutEndHold), task A's walk reaches its retro while unit runs at X,
+// so A's first assertion, held for its CI, fails.
+func TestVFixEndWithoutTheEndHold(t *testing.T) {
+	t.Parallel()
+	control := newFixRig(t, func(engine *workflow.Engine) { engine.WithoutEndHold() }, fixEndIssues[0])
+	a := control.walking(0)
+	stands := a.walkToTheEndWhileTheJobRuns()
+	if stands.Phase == phase.Held && stands.HoldReason == string(record.HoldForCI) {
+		t.Fatalf("%s stands held for %q with the end hold taken out, want it in its retro: the control cannot fail", a.key, stands.HoldReason)
+	}
+	t.Logf("with the end hold taken out %s stands in %s while unit runs at X: A's first assertion, held for CI, fails as it must", a.key, stands.Phase)
 }

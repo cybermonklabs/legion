@@ -487,3 +487,26 @@ func TestATaskOfTheReleaseBeforeStartsNoFix(t *testing.T) {
 		"Nothing moved on it: read the job's log and decide whose failure it is."
 	assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), []string{ciFailed, settled})
 }
+
+// The fix rule runs at the tail of every fact of an issue, a review among them, which names the
+// issue only through its pull request. The reviewer's approval of X moves a task that takes no fix,
+// whose k-ci fails at X, into its retro, so the task is held there for its CI, and in the same
+// transaction the rule tells the owner once, by one ci-failed notice naming the check and X. The
+// control is the state before the review: the failure alone, at a task in reviewing that takes no
+// fix, tells the owner nothing and starts no fix.
+func TestAReviewThatHoldsATaskForItsCITellsTheOwnerAtOnce(t *testing.T) {
+	r := reviewing(t)
+	seedClaimSession(t, r.pool, reviewClaim, "ses-reviewer")
+	r.releaseBefore()
+	r.fails(fixHead, "k-ci")
+	assertStrings(t, "the fixes", r.fixes(), nil)
+	if told := r.ciFailed(); len(told) != 0 {
+		t.Fatalf("the ci-failed notices before the review = %+v, want none", told)
+	}
+
+	r.reviewOf(1, "approved", fixHead)
+
+	r.assertEndHold(record.HoldForCI)
+	assertStrings(t, "the fixes after the review", r.fixes(), nil)
+	r.assertToldOwnerOnce("k-ci")
+}

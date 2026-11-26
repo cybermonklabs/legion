@@ -1,15 +1,12 @@
-// The skeleton of the rig a whole-daemon test of a fix beside a review stands on (fixRig), and
-// its one walk (TestTheFixRigSkeleton): the real Dispatch this checkout builds, with its events on
-// the test's NATS server and its GitHub App reading the check runs of the fake GitHub of
-// githubtest.Checks; the whole daemon over the fake runtime, reading GitHub from a stand-in of its
-// own (fixRigGitHub, fix_rig_github_test.go) that serves the issue's pull request in step with the
-// events the rig sends; and GitHub's events and the listener's settlements published on the
-// notification stream, the path they take into the daemon and into Dispatch in production.
-//
-// The walk proves no rule of a fix. It drives one issue with no fix from its plan to done and logs
-// each fact the rig produces as it arrives, on lines that start `RIG FACT:`, so a later test's
-// checks can be written against facts a run of the rig showed. It asserts only that each step of
-// the walk happened.
+// The rig the whole-daemon tests of a fix beside a review stand on (fixRig): the real Dispatch
+// this checkout builds, with its events on the test's NATS server and its GitHub App reading the
+// check runs of the fake GitHub of githubtest.Checks; the whole daemon over the fake runtime,
+// reading GitHub from a stand-in of its own (fixRigGitHub, fix_rig_github_test.go) that serves
+// each issue's pull request in step with the events the rig sends; and GitHub's events and the
+// listener's settlements published on the notification stream, the path they take into the
+// daemon and into Dispatch in production. Its watcher (fixRigWatch) logs each fact the rig
+// produces as it arrives, on lines that start `RIG FACT:`, so a failed wait reads with the facts
+// that came before it.
 package daemon
 
 import (
@@ -34,11 +31,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -47,13 +42,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
-)
-
-// fixRigPull is the number of the walk's pull request, and fixRigTitle the walk's issue's title,
-// which the pull request's title carries after the issue's key.
-const (
-	fixRigPull  = 7
-	fixRigTitle = "Fix rig skeleton walks one issue"
 )
 
 // fixRigVerification is the walk's Verification document: k1, a before_merge check the tester
@@ -992,203 +980,4 @@ func (w *fixRigWatch) logLines(name, text string, offset int, messages []string)
 		}
 	}
 	return end
-}
-
-// TestTheFixRigSkeleton walks one issue with no fix from its owner's plan to done through the
-// whole rig, and logs each fact the rig produces as it arrives. The plan is `implementer tester
-// reviewer`; the Verification document holds k1, which the tester proves, and k-ci, which the CI
-// job unit proves. The implementer completes at X with the pull request open; the tester records
-// k1 and completes; unit concludes at X success and its settlement is published; the issue reaches
-// reviewing; the head moves to Y by the push and the synchronize GitHub sends; the reviewer
-// approves at Y with its own session and Y in its footer while unit still runs at Y; the round
-// ends, and the task's end is held for its CI (record.HoldForCI); unit concludes at Y success with
-// its settlement, which ends the hold while the reviewer's turn is still open, so the retro's task
-// waits for that turn; the reviewer completes; the implementer's retro rates the plan; the merger
-// is launched and GitHub's merge of the pull request lands; and the issue is done in Dispatch, its
-// step records written.
-//
-// It asserts that each step happened, and nothing of any rule of a fix.
-func TestTheFixRigSkeleton(t *testing.T) {
-	t.Parallel()
-	r := newFixRig(t, nil, fixRigIssue{title: fixRigTitle, number: fixRigPull, verification: fixRigVerification})
-	x, y := scratchCIHead(r.key, "x"), scratchCIHead(r.key, "y")
-	r.fact("heads", "X is %s and Y is %s, on pull request #%d of %s", x, y, r.number, liveRepo)
-
-	r.walk("plan-and-gate", func() {
-		artifact := r.givePlan("implementer", "tester", "reviewer")
-		r.fact("plan-registered", "POST /legion/v1/plans/register took plan.md %s at version 1 for %s: 200", artifact, r.key)
-		r.openGate(phase.Implementing)
-	})
-
-	implementer := r.worker(claim.RoleImplementer)
-	r.walk("implementer-completes-at-x", func() {
-		task := implementer.take()
-		r.fact("task", "the implementer was prompted: %q", fixRigCut(task.Message, 300))
-		// CI starts on the push that opens the pull request, so unit runs at X before Dispatch first
-		// reads X.
-		r.setRun(x, unitRun(9001, "in_progress", ""))
-		opened := r.tick()
-		r.pulls.open(r.number, x, opened)
-		id := r.publishPullRequest("opened", x, opened, nil)
-		r.awaitProcessed(id)
-		r.await("the daemon's pull request record at X", func() bool {
-			pr := r.pullRequest()
-			return pr != nil && pr.HeadSHA == x
-		})
-		r.fact("pull-request-recorded", "the record after the opened event: %s", fixRigPullRequest(r.pullRequest()))
-		handoff, version := r.writeHandoff(implementer.session, "implement")
-		if status, body := r.complete(implementer, api.HandoffCompleteRequest{Summary: "implemented", Commit: x, HandoffID: handoff, HandoffVersion: version}); status != http.StatusOK {
-			t.Fatalf("the implementer's completion at %s = %d %s, want 200", x, status, body)
-		}
-		implementer.endTurn()
-		r.waitPhase(phase.Testing)
-	})
-
-	tester := r.worker(claim.RoleTester)
-	r.walk("tester-records-k1-and-completes-at-x", func() {
-		task := tester.take()
-		r.fact("task", "the tester was prompted: %q", fixRigCut(task.Message, 300))
-		r.await("Dispatch's head row of the pull request at X, attributed to "+r.key, func() bool {
-			head, _, issue := r.dispatchHead()
-			return head == x && issue == r.key
-		})
-		r.awaitState(scratchCICheck, x, "that says no run concluded there", func(held scratchCIState) bool {
-			return held.CICase == scratchCINotCompleted || held.CICase == scratchCIAbsent
-		})
-		r.awaitState("k1", x, "of any word", func(scratchCIState) bool { return true })
-		r.recordResult(tester, "k1", x)
-		r.awaitState("k1", x, "yes", func(held scratchCIState) bool { return held.State == "yes" })
-		handoff, version := r.writeHandoff(tester.session, "test")
-		if status, body := r.complete(tester, api.HandoffCompleteRequest{Summary: "k1 holds", Commit: x, HandoffID: handoff, HandoffVersion: version}); status != http.StatusOK {
-			t.Fatalf("the tester's completion at %s = %d %s, want 200", x, status, body)
-		}
-		tester.endTurn()
-		r.await("the tester's row completed", func() bool { return r.phaseOf(claim.RoleTester).Completed() })
-		r.fact("after-tester", "the daemon holds %s in %s after the tester's completion", r.key, r.d.state().Issues[r.key].Phase)
-	})
-
-	r.walk("unit-concludes-at-x", func() {
-		run := unitRun(9001, "completed", "success")
-		r.setRun(x, run)
-		r.settle(x, run)
-		r.awaitState(scratchCICheck, x, "yes", func(held scratchCIState) bool { return held.State == "yes" })
-		r.waitPhase(phase.Reviewing)
-		r.fact("reviewing", "%s stands in reviewing", r.key)
-	})
-
-	reviewer := r.worker(claim.RoleReviewer)
-	var entry int64
-	r.walk("head-moves-to-y", func() {
-		task := reviewer.take()
-		entry = fixRigEntry(t, task.Message)
-		r.fact("task", "the reviewer was prompted, entry %d: %q", entry, fixRigCut(task.Message, 300))
-		// GitHub moves the pull request first, as it does on github.com, and CI starts on the push.
-		r.setRun(y, unitRun(9002, "in_progress", ""))
-		moved := r.tick()
-		r.pulls.move(r.number, y, moved)
-		push := r.publishPush(x, y)
-		synchronize := r.publishPullRequest("synchronize", y, moved, map[string]string{"before": x, "sender": implementerLogin})
-		r.awaitProcessed(push)
-		r.awaitProcessed(synchronize)
-		r.await("the daemon's pull request record at Y", func() bool {
-			pr := r.pullRequest()
-			return pr != nil && pr.HeadSHA == y
-		})
-		r.fact("head-moved", "the record after the push and the synchronize: %s", fixRigPullRequest(r.pullRequest()))
-	})
-
-	r.walk("reviewer-approves-at-y-while-unit-runs", func() {
-		r.await("Dispatch's head row of the pull request at Y", func() bool {
-			head, _, _ := r.dispatchHead()
-			return head == y
-		})
-		r.awaitState(scratchCICheck, y, "that says no run concluded there", func(held scratchCIState) bool {
-			return held.CICase == scratchCINotCompleted || held.CICase == scratchCIAbsent
-		})
-		r.await("the daemon's pull request record at Y with GitHub's merge state of Y", func() bool {
-			pr := r.pullRequest()
-			return pr != nil && pr.HeadSHA == y && pr.MergeState.Mergeable()
-		})
-		r.fact("ready-for-review", "the record before the review: %s", fixRigPullRequest(r.pullRequest()))
-		review := r.publishReview("approved", y, legionEntryFooter(reviewer.session, y, entry))
-		r.awaitProcessed(review)
-		decision := r.phaseOf(claim.RoleReviewer).Decision
-		if decision == nil || decision.State != "approved" || decision.Head != y {
-			t.Fatalf("the reviewer's ReviewDecision after its approval at %s is %+v, want approved at %s; %s", y, decision, y, r.readout())
-		}
-		r.fact("review-decided", "the reviewer's ReviewDecision after the approval: %+v", *decision)
-		var stands api.Issue
-		r.await(r.key+" held before its retro for its CI, or in its retro", func() bool {
-			stands = r.d.state().Issues[r.key]
-			return stands.Phase == phase.Held || stands.Phase == phase.Retro
-		})
-		if stands.Phase != phase.Held || stands.HoldReason != string(record.HoldForCI) {
-			t.Fatalf("%s stands in %s held for %q after the approval at %s while unit runs there, want held for %q; %s",
-				r.key, stands.Phase, stands.HoldReason, y, record.HoldForCI, r.readout())
-		}
-		r.fact("end-held", "%s stands in %s held for %q after the round ended", r.key, stands.Phase, stands.HoldReason)
-	})
-
-	r.walk("unit-concludes-at-y-and-the-hold-ends", func() {
-		run := unitRun(9002, "completed", "success")
-		r.setRun(y, run)
-		r.settle(y, run)
-		r.awaitState(scratchCICheck, y, "yes", func(held scratchCIState) bool { return held.State == "yes" })
-		r.waitPhase(phase.Retro)
-		r.fact("end-hold-ended", "%s stands in its retro once k-ci passed at %s", r.key, y)
-	})
-
-	r.walk("reviewer-completes", func() {
-		handoff, version := r.writeHandoff(reviewer.session, "review")
-		status, body := r.complete(reviewer, api.HandoffCompleteRequest{Summary: "approved", Commit: y, HandoffID: handoff, HandoffVersion: version})
-		if status != http.StatusOK {
-			t.Fatalf("the reviewer's completion at %s = %d %s, want 200", y, status, body)
-		}
-		r.fact("reviewer-completed", "the reviewer's completion at %s: %d", y, status)
-		reviewer.endTurn()
-	})
-
-	r.walk("retro", func() {
-		task := implementer.take()
-		r.fact("task", "the implementer was prompted: %q", fixRigCut(task.Message, 300))
-		rating, reason := 4, "The plan fit the work."
-		if status, body := r.complete(implementer, api.HandoffCompleteRequest{Summary: "retro written", Commit: y, PlanRating: &rating, PlanReason: &reason}); status != http.StatusOK {
-			t.Fatalf("the implementer's retro at %s = %d %s, want 200", y, status, body)
-		}
-		implementer.endTurn()
-		r.waitPhase(phase.Merging)
-	})
-
-	r.walk("merge", func() {
-		r.awaitLaunch(r.token(claim.RoleMerger))
-		r.fact("merger-launched", "the daemon launched %s", r.token(claim.RoleMerger))
-		merged := r.tick()
-		mergeSHA := scratchCIHead(r.key, "merge")
-		// GitHub merges first, as it does on github.com, and then sends the event.
-		r.pulls.merge(r.number, mergeSHA, merged)
-		id := r.publishPullRequest("closed", y, merged, map[string]string{"merged": "true", "merge_commit_sha": mergeSHA})
-		r.awaitProcessed(id)
-		r.waitPhase(phase.Done)
-		r.fact("done-in-daemon", "the record after the merge: %s", fixRigPullRequest(r.pullRequest()))
-	})
-
-	r.walk("done-in-dispatch", func() {
-		r.await(r.key+" done in Dispatch with its closed_at", func() bool {
-			status, closed := r.dispatchIssue()
-			return status == record.DoneStatus && closed != nil
-		})
-		status, closed := r.dispatchIssue()
-		r.fact("dispatch-done", "Dispatch holds %s %s, closed_at %s", r.key, status, closed.UTC().Format("15:04:05.000"))
-		r.await("every step-record and status row of "+r.key+" finished", func() bool {
-			return r.unfinishedRows(record.OutboxKindStepRecord) == 0 && r.unfinishedRows(record.OutboxKindDispatchStatus) == 0
-		})
-		var steps json.RawMessage
-		if err := r.personRead("/api/v1/issues/"+r.key+"/steps", &steps); err != nil {
-			t.Fatalf("read the steps of %s: %v", r.key, err)
-		}
-		r.fact("steps", "GET /api/v1/issues/%s/steps: %s", r.key, steps)
-	})
-
-	r.watch.stop()
-	r.fact("test-time", "the walk took %s from the rig's start", time.Since(r.started).Round(time.Millisecond))
 }

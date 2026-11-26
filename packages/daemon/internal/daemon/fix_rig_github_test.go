@@ -1,4 +1,4 @@
-// The GitHub stand-in of the fix rig's daemon (fix_rig_skeleton_test.go): GitHub's REST API for
+// The GitHub stand-in of the fix rig's daemon (fix_rig_test.go): GitHub's REST API for
 // acme/widgets as that daemon reads it, serving the pull request of each issue of the rig in step
 // with the events the rig sends.
 package daemon
@@ -27,10 +27,13 @@ const fixRigBase = "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
 // default branch main at fixRigBase, and the create of an issue branch, which admission and the
 // launches read; each issue's pull request, by its number, once the rig has opened it (open), at
 // the head and with the updated_at the rig last gave it (move), mergeable and clean while it is
-// open, and closed and merged at its merge commit once the rig has merged it (merge); the list of
-// the open pull requests of a branch; each pull request's reviews as none; and a GraphQL root that
-// knows no pull request. Every other request is answered 404, so nothing reaches github.com and a
-// read the rig did not plan is named.
+// open, but `mergeable: false` and dirty at a head the rig said conflicts with the base
+// (conflicts), and closed and merged at its merge commit once the rig has merged it (merge); the
+// list of the open pull requests of a branch; each pull request's reviews as none; and a GraphQL
+// root that knows no pull request. Every other request is answered 404, so nothing reaches
+// github.com and a read the rig did not plan is named. So is the read of the base's rules that a
+// conflicting answer makes (readBaseRules), which the daemon then reads as rules it could not
+// read.
 //
 // Each request is kept, in the order it came, with its status and, for a read of a pull request,
 // what it served (requests). The daemon's merge-state ladder reads the pull request alone
@@ -45,14 +48,16 @@ type fixRigGitHub struct {
 	answered []fixRigRequest
 }
 
-// fixRigStandInPull is one pull request of the stand-in: its number, branch and title, whether the rig
-// has opened it, its head and GitHub's clock of it, and whether and at what commit it merged.
+// fixRigStandInPull is one pull request of the stand-in: its number, branch and title, whether the
+// rig has opened it, its head and GitHub's clock of it, each head that conflicts with the base,
+// and whether and at what commit it merged.
 type fixRigStandInPull struct {
 	number        int
 	branch, title string
 	opened        bool
 	head          string
 	updated       time.Time
+	conflicting   map[string]bool
 	merged        bool
 	mergeSHA      string
 }
@@ -114,6 +119,18 @@ func (g *fixRigGitHub) merge(number int, mergeSHA string, updated time.Time) {
 	defer g.mu.Unlock()
 	pull := g.pull(number)
 	pull.merged, pull.mergeSHA, pull.updated = true, mergeSHA, updated
+}
+
+// conflicts makes head of pull request number conflict with the base: from the next read on, the
+// stand-in answers the pull request at that head `mergeable: false` and dirty.
+func (g *fixRigGitHub) conflicts(number int, head string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	pull := g.pull(number)
+	if pull.conflicting == nil {
+		pull.conflicting = map[string]bool{}
+	}
+	pull.conflicting[head] = true
 }
 
 // pull is pull request number, which the rig must have added. Its caller holds g.mu.
@@ -214,18 +231,22 @@ func (g *fixRigGitHub) answer(w http.ResponseWriter, r *http.Request) (int, stri
 }
 
 // answer is the pull request as GitHub's REST API answers it now: open, mergeable and clean at its
-// head, or closed and merged at its merge commit, where GitHub answers `unknown` for good.
+// head, or not mergeable and dirty at a head that conflicts with the base (conflicts), or closed
+// and merged at its merge commit, where GitHub answers `unknown` for good.
 func (p *fixRigStandInPull) answer() map[string]any {
-	state, mergeState := "open", "clean"
-	if p.merged {
+	state, mergeable, mergeState := "open", true, "clean"
+	switch {
+	case p.merged:
 		state, mergeState = "closed", "unknown"
+	case p.conflicting[p.head]:
+		mergeable, mergeState = false, "dirty"
 	}
 	return map[string]any{
 		"number": p.number, "state": state, "title": p.title, "body": "",
 		"html_url":   fmt.Sprintf("https://github.com/%s/pull/%d", liveRepo, p.number),
 		"base":       map[string]string{"ref": "main", "sha": fixRigBase},
 		"head":       map[string]any{"ref": p.branch, "sha": p.head, "repo": map[string]string{"full_name": liveRepo}},
-		"updated_at": p.updated.UTC().Format(time.RFC3339), "mergeable": true, "mergeable_state": mergeState,
+		"updated_at": p.updated.UTC().Format(time.RFC3339), "mergeable": mergeable, "mergeable_state": mergeState,
 		"merged": p.merged, "merge_commit_sha": p.mergeSHA,
 	}
 }
