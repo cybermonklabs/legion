@@ -461,7 +461,9 @@ func sandboxConfig(c config.SandboxConfig) sandbox.SandboxConfig {
 }
 
 // repositoryCache is runtime.kubernetes.repository_cache as the runtime takes it: the volume as a
-// quantity, the intervals as durations, and the reservation as a container's requirements.
+// quantity, the intervals as durations, the reservation as a container's requirements, and the
+// bucket with the ServiceAccount the cache pods alone run as, as the file wrote them, both "" while
+// off.
 func repositoryCache(c config.RepositoryCacheConfig) (sandbox.RepositoryCache, error) {
 	volume, err := resource.ParseQuantity(c.Volume)
 	if err != nil {
@@ -473,7 +475,7 @@ func repositoryCache(c config.RepositoryCacheConfig) (sandbox.RepositoryCache, e
 	}
 	return sandbox.RepositoryCache{
 		Volume: volume, Refresh: time.Duration(c.RefreshMinutes) * time.Minute, Retain: time.Duration(c.RetainHours) * time.Hour,
-		Resources: resources,
+		Resources: resources, Bucket: c.Bucket, ServiceAccount: c.ServiceAccount,
 	}, nil
 }
 

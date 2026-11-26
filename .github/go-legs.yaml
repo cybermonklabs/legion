@@ -135,6 +135,8 @@ packages/daemon:
       - internal/testtypes
       - internal/tlsalert
       - internal/treelifecycle
+      - internal/repocache/fakegcs
+      - internal/repocache/fakegcs/cmd/fakegcs
       - internal/subreaper
       - internal/startwalk
     3:

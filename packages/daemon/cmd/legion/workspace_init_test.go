@@ -185,9 +185,10 @@ func (v *issueVolume) args(issue string) []string {
 	return []string{"provision", "--issue", issue, "--repo", winitRepo, "--root", v.root, "--credential-helper", winitHelper, "--feed", v.feed, "--default-branch", v.defaultBranch}
 }
 
-// runtimeOptionalEnv are the variables a runtime sets on an init container only for some
-// launches; no run in these tests inherits them from whoever runs the tests.
-var runtimeOptionalEnv = []string{"LEGION_PROVISION_TOKEN_FILE", "LEGION_REPOSITORY_CACHE_URL", "LEGION_REPOSITORY_CACHE_TOKEN_FILE"}
+// runtimeOptionalEnv are the variables a runtime sets on an init container, or on a cache's
+// container, only for some launches; no run in these tests inherits them from whoever runs the
+// tests.
+var runtimeOptionalEnv = []string{"LEGION_PROVISION_TOKEN_FILE", "LEGION_REPOSITORY_CACHE_URL", "LEGION_REPOSITORY_CACHE_TOKEN_FILE", "LEGION_REPOSITORY_CACHE_BUCKET"}
 
 // process is what a run of the command inside this test process reads instead of the process's
 // own (runIn): proc, with its environment less runtimeOptionalEnv and with the volume's env over it
