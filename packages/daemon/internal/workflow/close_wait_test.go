@@ -706,6 +706,45 @@ func TestAReadThatNamesAnEarlierMergeDecidesNothing(t *testing.T) {
 	closedOnChecks(t, rig, waitRoot)
 }
 
+// A check Dispatch answers unknown because it could not place a result, or could not make a read,
+// is read again on the backoff (D4): the read queues one more read, due a minute on, and the same
+// answer read again queues the next one further out, as long after the read as the answer has
+// stood. A check with no result waits for evidence, so its read queues no read again.
+func TestACheckDispatchCouldNotPlaceIsReadAgainOnTheBackoff(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{dispatch.PassStandsReasonNotPlaced, dispatch.PassStandsReasonReadFailed} {
+		t.Run(reason, func(t *testing.T) {
+			rig := newWaitRig(t, "")
+			rig.seedRoot(phase.Merging, "retro")
+			rig.mergeRoot()
+			rig.ranOut(waitRoot, "close_read")
+			unknown := answerOf(waitRoot, nil, check("c-after", waitRootMerge, dispatch.PassStandsUnknown, reason))
+			rig.read(waitRoot, unknown)
+			rows := issueOutboxOf(t, rig.pool, waitRoot, "close_read")
+			if len(rows) != 1 || !rows[0].nextAt.Equal(rig.now.Add(time.Minute)) {
+				t.Fatalf("close_read rows after the unknown answer = %+v, want one due a minute after %s", rows, rig.now)
+			}
+			rig.ranOut(waitRoot, "close_read")
+			rig.now = rows[0].nextAt
+			rig.read(waitRoot, unknown)
+			again := issueOutboxOf(t, rig.pool, waitRoot, "close_read")
+			if len(again) != 1 || again[0].nextAt.Sub(rig.now) <= time.Minute {
+				t.Fatalf("close_read rows after the same answer again = %+v, want one due more than a minute after %s", again, rig.now)
+			}
+		})
+	}
+	t.Run("no result", func(t *testing.T) {
+		rig := newWaitRig(t, "")
+		rig.seedRoot(phase.Merging, "retro")
+		rig.mergeRoot()
+		rig.ranOut(waitRoot, "close_read")
+		rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge)))
+		if got := rig.rows(waitRoot, "close_read"); got != 0 {
+			t.Fatalf("close_read rows after a check with no result = %d, want none: it waits for evidence", got)
+		}
+	})
+}
+
 // After a second merge, the production check recorded for the earlier merge decides nothing: the
 // production term reads earlier_merge, and the close waits. A reason waits too, so the read opens
 // no check of the newest merge, which would stand in the term's place.
