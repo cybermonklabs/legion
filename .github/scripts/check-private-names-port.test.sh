@@ -474,7 +474,7 @@ check "the frozen script names the file and the line" \
 check "the frozen script does not repeat the name" "$(is "$(contains "$frozen_out" "$repo")" false)"
 check "the engine names the record it refused" "$(contains "$door_out" '^  the title: names the private deployment repository')"
 check "the engine names the match as written, and the line of the record it stands on" \
-  "$(contains "$door_out" "^  the title: names the private deployment repository or its Dispatch project key: matched \"[^\"]*$repo[^\"]*\" on line 1: \"the $repo repository\"\$")"
+  "$(contains "$door_out" "^  the title: names the private deployment repository or its Dispatch project key: matched \"[^\"]*${repo}[^\"]*\" on line 1: \"the $repo repository\"\$")"
 note "rule-9-record" "names the file and the line a hit is on, and never the text" \
   "names the record of the write (for a text its title or its body), the text that matched and the line of that record it stands on" \
   "the engine scans a write's records, not a checkout's files, so its line counts from the record's first line; it shows the text because the agent it refuses wrote that text, and this suite reads the class alone out of its report"
