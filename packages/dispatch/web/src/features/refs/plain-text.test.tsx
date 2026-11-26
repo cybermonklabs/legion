@@ -1,7 +1,8 @@
 import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor, within } from "@testing-library/react";
+import { act, render, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
@@ -13,6 +14,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import { PlainText, usePlainHeadline } from "./plain-text";
 import { type PublishedReferences, ReferenceNamesProvider } from "./reference-names";
+import { askQuery } from "./reference-target";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -166,6 +168,43 @@ test("a plain line and a link name another issue's block the batch answered with
   }
 });
 
+/** An open question of CORE-1 by its whole id, as its read answers it. */
+function askRead(id: string, question: string): AskRead {
+  return {
+    answers: [],
+    ask: {
+      anchor: null,
+      answer: null,
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      author: { id: "planner", kind: "session" },
+      block_id: null,
+      created_at: "2026-01-01T00:00:00Z",
+      edited_at: null,
+      id,
+      issue_key: "CORE-1",
+      kind: "question",
+      multiple: false,
+      opened_event_id: 1,
+      options: [],
+      question,
+      question_tree: displayTree(question),
+      state: "open",
+      urgency: "med",
+    },
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies: [],
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+  } as unknown as AskRead;
+}
+
 /** An ask of CORE-1, by its whole id, whose question runs past the room a link's title has. */
 const LONG_ASK_ID = "6b3f2a10-4c5d-4e6f-8a9b-0c1d2e3f4a5b";
 const LONG_ASK = `dispatch://CORE-1/ask/${LONG_ASK_ID}`;
@@ -180,41 +219,7 @@ const LONG_QUESTION =
 test("a name past a link's room reads the same from the page's batch, from its own read and in a link", async () => {
   const words = `${[...LONG_QUESTION].slice(0, 60).join("")}…`;
   expect(words).toBe("Should the outline keep every folded branch closed after the…");
-  spies.push(
-    spyOn(api, "getAsk").mockResolvedValue({
-      answers: [],
-      ask: {
-        anchor: null,
-        answer: null,
-        artifact_id: null,
-        asked_of: null,
-        asked_of_at: null,
-        asked_of_by: null,
-        author: { id: "planner", kind: "session" },
-        block_id: null,
-        created_at: "2026-01-01T00:00:00Z",
-        edited_at: null,
-        id: LONG_ASK_ID,
-        issue_key: "CORE-1",
-        kind: "question",
-        multiple: false,
-        opened_event_id: 1,
-        options: [],
-        question: LONG_QUESTION,
-        question_tree: displayTree(LONG_QUESTION),
-        state: "open",
-        urgency: "med",
-      },
-      claimant: null,
-      edits: [],
-      followers: [],
-      replies: [],
-      route: null,
-      route_holder: null,
-      route_status: null,
-      route_status_reason: null,
-    } as unknown as AskRead)
-  );
+  spies.push(spyOn(api, "getAsk").mockResolvedValue(askRead(LONG_ASK_ID, LONG_QUESTION)));
   const markdown = `See ${LONG_ASK} now`;
   const tree = displayTree(LONG_QUESTION);
   if (tree === undefined) throw new Error("the engine read no question");
@@ -247,6 +252,67 @@ test("a name past a link's room reads the same from the page's batch, from its o
     await within(view.container).findByRole("link", { name: words });
     await waitFor(() => expect(view.getByTestId("own").textContent).toBe(`See ${words} now`));
     expect(view.getByTestId("batch").textContent, "the batch's name").toBe(`See ${words} now`);
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The whole id of the `at`th of a run of asks of CORE-1. */
+function askId(at: number): string {
+  return `00000000-0000-4000-8000-${String(at).padStart(12, "0")}`;
+}
+
+// A Spec view at 390 px whose statements cite many posts the page's batched read does not name
+// reads each of them itself (`OwnNameRead`), and those reads answer one after another. Each
+// answer's name must land in the commits that answer makes, with no update of its line left
+// waiting: React counts the commits made while an update waits as one nested update, and past
+// fifty of them it stopped the view with "Maximum update depth exceeded". The answers come
+// inside one `act`, each rendered at once (`flushSync`), as a browser renders each read's answer
+// before the next: a line's update left waiting is held back to the end of the `act`.
+test("lines whose own reads answer one after another take each name in its answer's commits, and React never stops them", async () => {
+  const lines = [0, 1, 2, 3].map((line) =>
+    Array.from({ length: 15 }, (_, at) => ({
+      id: askId(line * 15 + at),
+      question: `Question ${line * 15 + at + 1}?`,
+    }))
+  );
+  const asks = lines.flat();
+  // Each read is asked and answers nothing by itself: the case hands every answer in.
+  const getAsk = spyOn(api, "getAsk").mockImplementation(() => new Promise<AskRead>(() => {}));
+  spies.push(getAsk);
+  const queries = client();
+  const view = render(
+    page(
+      queries,
+      publication({}),
+      lines.map((held, line) => (
+        <PlainText
+          key={held[0]?.id}
+          markdown={held.map(({ id }) => `dispatch://CORE-1/ask/${id}`).join(" ")}
+        >
+          {(text) => <span data-testid={`line-${line}`}>{text ?? ""}</span>}
+        </PlainText>
+      ))
+    )
+  );
+  try {
+    await waitFor(() => expect(getAsk).toHaveBeenCalledTimes(asks.length));
+    let stopped: unknown;
+    try {
+      act(() => {
+        for (const { id, question } of asks) {
+          flushSync(() => queries.setQueryData(askQuery(id).queryKey, askRead(id, question)));
+        }
+      });
+    } catch (error) {
+      stopped = error;
+    }
+    expect(stopped, "React stopped the lines").toBeUndefined();
+    for (const [line, held] of lines.entries()) {
+      expect(view.getByTestId(`line-${line}`).textContent).toBe(
+        held.map(({ question }) => question).join(" ")
+      );
+    }
   } finally {
     view.unmount();
   }

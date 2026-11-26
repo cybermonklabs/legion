@@ -42,6 +42,7 @@ import {
   rowOf,
   rowWords,
   seedLongRows,
+  seedLongStatement,
   seedRows,
   seedWideNote,
   unfoldEveryBranch,
@@ -738,20 +739,19 @@ interface FirstViewFrame {
 
 // R11: a row that stands in view as the page opens is drawn whole on the first frame it is
 // drawn in, and never changes its height in view after. At each width a
-// script that runs before the page's own reads the planner's long statement, the body's first
-// row, at each animation frame from the first one it is drawn in: it draws no control for more
-// words on that first frame, and its height is the same 60 frames later. The row is drawn from
-// the spec's blocks before the reads that bring its words, and a row with no words has no height
-// of its words yet, so it is read from the first frame it draws its words in. It carries
-// `@phone` because the phone's first view is another set of rows, laid out at three device
-// pixels to the CSS pixel.
-// SLOW(>=2s): sixty-six long rows seeded, and the page loaded at two widths, each watched over
-// 61 frames.
+// script that runs before the page's own reads the planner's long statement, the body's second
+// row, under its one question (`seedLongStatement`), at each animation frame from the first one
+// it is drawn in: it draws no control for more words on that first frame, and its height is the
+// same 60 frames later. The row is drawn from the spec's blocks before the reads that bring its
+// words, and a row with no words has no height of its words yet, so it is read from the first
+// frame it draws its words in. It carries `@phone` because the phone's first view is another set
+// of rows, laid out at three device pixels to the CSS pixel.
+// SLOW(>=2s): the page loaded at two widths, each watched over 61 frames.
 test("a long row in the first view is drawn whole on the first frame it is drawn in, and its height holds 60 frames later @phone", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
-  await phase(browser, seedLongRows, async (page, seeded) => {
+  await phase(browser, seedLongStatement, async (page, seeded) => {
     await page.addInitScript((id) => {
       const frames: FirstViewFrame[] = [];
       window.__firstViewFrames = frames;

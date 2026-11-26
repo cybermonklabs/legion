@@ -107,8 +107,8 @@ export function contentsOf(
   ): void => {
     for (const child of node.children) {
       if (child.transcluded) continue;
-      // The list keeps each entry that Conversation counts, even at or under an overtaken
-      // node, because the entry rule reads what kind of node it is, not what its branch holds.
+      // The list keeps each entry, even at or under an overtaken node, because the entry rule
+      // reads what kind of node it is, not what its branch holds.
       if (isContentsEntry(node, child, viewer, producing)) {
         const children: ContentsEntry[] = [];
         const own = tally();

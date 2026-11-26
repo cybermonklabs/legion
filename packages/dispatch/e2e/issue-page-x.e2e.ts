@@ -133,12 +133,12 @@ import { asUser } from "./users";
  * ask's; the reserved nodes' writes answer their own (`seedAuthorOnly`).
  *
  * Every node a row names it names by the id the tree read gives it - a question of the spec by the
- * id the read it is drawn from holds it by, its ask's in Conversation's and its block's in Graph's
- * (`questionReadId`), and a node Conversation's read holds none of, a result or a plan task, by
- * the whole tree read's - and every row it reads by the id the page draws it under for that read
- * id (`drawnIdOf`, `treeIdOf`): no row builds an id. A `@phone` row reads 1440 px on `chromium`
- * and 390 px on `iphone` (`rowSize`). Every word a row reads is the page's own word list's
- * (`page-words.ts`), never typed here.
+ * id the read it is drawn from holds it by, its ask's in Conversation's and, in Graph's, that of
+ * whichever of its block and its ask's node the read holds first (`questionReadId`), and a node
+ * Conversation's read holds none of, a result or a plan task, by the whole tree read's - and every
+ * row it reads by the id the page draws it under for that read id (`drawnIdOf`, `treeIdOf`): no
+ * row builds an id. A `@phone` row reads 1440 px on `chromium` and 390 px on `iphone` (`rowSize`).
+ * Every word a row reads is the page's own word list's (`page-words.ts`), never typed here.
  *
  * What a row reads of code that is not under this head it reads behind a gate, and notes as owed
  * where the gate is not met (`noteOwed`): Details' facts of the focused row
@@ -1592,8 +1592,9 @@ async function expectOpensOnLiveQuestion(page: Page, read: SeededPage): Promise<
 
 /** The overtaken question in Graph, with its statement open under it, and its criterion where the
  *  page draws one, and no gap on the statement. Graph's read names no kind, so it holds the
- *  question's block, as the seed's whole tree read does (`NodeStateSeed.answer`), and the page
- *  draws the question there by its block's read id (`questionReadId`). */
+ *  question's block and its ask's node, as the seed's whole tree read does
+ *  (`NodeStateSeed.answer`), and the page draws the question there by the read id of the one of
+ *  the two that read holds first (`questionReadId`). */
 async function expectQuestionInGraph(page: Page, read: SeededPage): Promise<void> {
   if (!noteOwed(await graphGate(page))) return;
   const { seeded } = read;
@@ -1810,9 +1811,9 @@ test("each way to a node reaches an overtaken one", async ({ browser }) => {
 // ---------------------------------------------------------------------------------------------
 
 /** One question row 6 reads: the read id the read the page draws it from holds it by
- *  (`questionReadId`) - its ask's in Conversation's, its block's in Graph's - the id of the ask's
- *  node, whose state the row draws, the mark that state draws, and the words a reading names it
- *  by. */
+ *  (`questionReadId`) - its ask's in Conversation's, and in Graph's that of whichever of its block
+ *  and its ask's node the read holds first - the id of the ask's node, whose state the row draws,
+ *  the mark that state draws, and the words a reading names it by. */
 interface StatedQuestion {
   readonly askId: string;
   readonly mark: DrawnMark;
@@ -1865,8 +1866,9 @@ async function expectQuestionMarks(page: Page, read: LoadedPage): Promise<void> 
 }
 
 /** Each question carries its mark in Graph, read only where the page draws a Graph control. Graph's
- *  read names no kind, so each question is read by its block, which the seed's whole tree read
- *  holds (`NodeStateSeed.answer`). */
+ *  read names no kind, so it holds each question's block and its ask's node, as the seed's whole
+ *  tree read does (`NodeStateSeed.answer`), and each question is read by the read id of the one of
+ *  the two that read holds first (`questionReadId`). */
 async function expectQuestionMarksInGraph(page: Page, read: LoadedPage): Promise<void> {
   if (!noteOwed(await graphGate(page))) return;
   await pickGraphSettled(page, read.traffic);

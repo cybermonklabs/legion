@@ -447,9 +447,10 @@ export function focusedRowReadId(page: Page): Promise<string | null> {
 }
 
 /** Whether the row drawn as `id` (`data-node-id`) draws a row that stands for the children it
- *  draws no row for yet (`[data-tree-page]`, part T's page of a node's children, `tree-fold.ts`'s
- *  `CHILD_PAGE`): one level under it after the last child it draws, before the next row at its
- *  own level or above. False where it draws every child, or where the page draws no row `id`. */
+ *  draws no row for yet (`[data-tree-page]`, the tree read's page of a node's children,
+ *  `tree-fold.ts`'s `CHILD_PAGE`): one level under it after the last child it draws, before the
+ *  next row at its own level or above. False where it draws every child, or where the page draws
+ *  no row `id`. */
 export function drawsChildPageRow(page: Page, id: string): Promise<boolean> {
   return issuePage(page)
     .locator(`${SELECTORS.nodeRow}, ${SELECTORS.treePage}`)
