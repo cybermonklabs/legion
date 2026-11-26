@@ -310,7 +310,9 @@ func TestAHeldStartIsWeighedAgainstTheClaimItNames(t *testing.T) {
 			}
 			admission := newAdmission(t, 1, nil)
 
-			apply(t, pool, admission, "observe", intake.DispatchIssue{Key: "LEGION-9", Seq: 5, Type: "issue.updated", Status: "backlog",
+			// Applied through the mirror, as the daemon applies a Dispatch fact, whose write of the
+			// issue's row is the record the pass runs for (Admission.Apply's pass rule).
+			applyMirrored(t, pool, admission, "observe", intake.DispatchIssue{Key: "LEGION-9", Seq: 5, Type: "issue.updated", Status: "backlog",
 				Title: "someone else's", Rank: "Z", ResolvedRepo: "acme/widgets"}, workflow.New(record.NewStore(), workflow.Config{Project: testProject,
 				Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil))
 

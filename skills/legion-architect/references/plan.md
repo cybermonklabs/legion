@@ -28,17 +28,16 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
   A key other than `owner` may stand on any role but `acceptance`, and `owner` on `acceptance` alone.
   A role may stand at two steps, of one agent where both steps carry one key, or of two.
   Each agent is named for the role of its first step, and an agent whose role's name another agent of the plan holds takes a numbered name of its own:
-  `steps="implementer reviewer implementer"` runs step 3 as a fresh agent, `implementer-2`, in a claim and a session of its own.
-  Under `runtime: kubernetes` it runs in a slot of the issue pod named for it; where the pod has no such slot, step 3 waits until the pod's update round or release replaces the pod.
+  `steps="implementer reviewer implementer"` runs step 3 as a fresh agent, `implementer-2`.
+  Under `runtime: kubernetes` it runs in a pod slot named for it, and where the pod has none, step 3 waits for the pod's update round or release.
   A later version's agent names: `skill://legion-architect/references/plan-changes.md`.
 
 ## The roles and their order
 
 Name the steps in `steps` in the order they run.
 A step names one of Legion's roles in the table below, or a role this deployment defines: your `Legion addressing` line lists both ("The roles of this deployment"), each with the type of its step.
-A `planner` step may stand at any place, and the task's first `implementer` step stands before each `tester`, `reviewer` and `acceptance:owner` step: a plan that names one of them with no `implementer` step before it is refused with a reason that ends `This release of Legion does not carry it out yet.`
-A later `implementer` step may stand after them, as step 3 of `implementer:a reviewer implementer:a` does.
-A role this deployment defines runs where its step stands in your plan, at the phase `step`, and reports pass or fail.
+A `planner` step may stand at any place. The task's first `implementer` step stands before each `tester`, `reviewer` and `acceptance:owner` step, and a later one may follow them, as in `implementer:a reviewer implementer:a`: a plan with no `implementer` step before one of them is refused with a reason that ends `This release of Legion does not carry it out yet.`
+A role this deployment defines runs where its step stands, at the phase `step`, and reports pass or fail.
 It reads no pull request, so it may stand at any place too.
 A role of the type implementation is the one exception: it stands before the task's first `implementer` step.
 The table lists Legion's steps in the default steps' order:
@@ -58,7 +57,7 @@ Do not send back a `ci_check` whose run has not concluded or cannot be read, who
 Send a whole-suite `run` to the architect as a finding, not a move back, because the implementer runs no whole suite.
 Send an `absent` name as a finding too, unless GitHub is holding the job back until its label is on.
 On a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
-A step of a role of this deployment runs and holds the checks only where its prompt file asks it to.
+A step of a role of this deployment runs and holds the checks only as its prompt file asks.
 
 ## What Legion refuses
 

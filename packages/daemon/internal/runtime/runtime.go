@@ -1021,7 +1021,8 @@ func RoleIdentities(identities map[claim.Role]GitIdentity) string {
 
 // ReadRoleIdentities reads the table, value, as RoleIdentities writes it. It answers the table and
 // "", or why value cannot be used: empty, not one JSON object of identities (trailing data after
-// the object included), a role outside claim.Roles, or a name or an email that is empty or holds a
+// the object included), a key that is no role (claim.IsRole: a role the deployment defines is
+// one, since a launch writes it beside Legion's six), or a name or an email that is empty or holds a
 // line break. An identity may hold fields it does not know, which it passes over: a role's image
 // may run a `legion` of another release than the daemon's, and a field a later daemon adds must not
 // turn its step off. The reason names no value, so the line it goes into stays one line.
