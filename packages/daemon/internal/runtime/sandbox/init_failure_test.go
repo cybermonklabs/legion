@@ -270,7 +270,9 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 			LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: code, Reason: "Error"}},
 		}
 	}
-	initFailed := ended(initContainer, 0, 1, "Error")
+	// initFailed is workspace-init ended 1 past its restart grace, which is the pod's death: an end
+	// inside the grace, in a Pending pod, is the pod still provisioning (startingAgain).
+	initFailed := ended(initContainer, initRestartGrace+1, 1, "Error")
 	// status sets the pod's phase and its init containers' statuses.
 	status := func(phase corev1.PodPhase, statuses ...corev1.ContainerStatus) func(*corev1.Pod) {
 		return func(p *corev1.Pod) {
@@ -296,7 +298,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 		// The kubelet's end of a container it lost is exit 137 with the reason ContainerStatusUnknown,
 		// which keeps the volume (TestAKeptVolumeOutlivesAnInitContainerTheKubeletLost). The rule
 		// reads the reason, so an exit 137 with the reason Error resets the volume.
-		{"workspace-init ended 137 with the reason Error", initContainer, status(corev1.PodPending, ended(initContainer, 0, 137, "Error"))},
+		{"workspace-init ended 137 with the reason Error", initContainer, status(corev1.PodPending, ended(initContainer, initRestartGrace+1, 137, "Error"))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := &logBuffer{}
@@ -458,7 +460,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 	t.Run("workspace-init ended 2", func(t *testing.T) {
 		log := &logBuffer{}
 		g, old, before := launched(t, kept, log)
-		fail(t, g, status(corev1.PodPending, ended(initContainer, 0, workspace.InitExitUsage, "Error")))
+		fail(t, g, status(corev1.PodPending, ended(initContainer, initRestartGrace+1, workspace.InitExitUsage, "Error")))
 		keeps(t, g, log, next(t, g), before, old.Sandbox.PodUID, true)
 	})
 
@@ -542,7 +544,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 	t.Run("workspace-init ended OOMKilled", func(t *testing.T) {
 		log := &logBuffer{}
 		g, old, before := launched(t, kept, log)
-		fail(t, g, status(corev1.PodPending, ended(initContainer, 0, 137, "OOMKilled")))
+		fail(t, g, status(corev1.PodPending, ended(initContainer, initRestartGrace+1, 137, "OOMKilled")))
 		keeps(t, g, log, next(t, g), before, old.Sandbox.PodUID, true)
 	})
 

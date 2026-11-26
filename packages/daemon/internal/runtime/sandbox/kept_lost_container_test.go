@@ -82,7 +82,8 @@ func TestAKeptVolumeOutlivesAnInitContainerTheKubeletLost(t *testing.T) {
 		before := g.sandbox(name)
 		edit := func(p *corev1.Pod) {
 			p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{{
-				Name: initContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "Error"}},
+				Name: initContainer, RestartCount: initRestartGrace + 1,
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "Error"}},
 			}}}
 		}
 		g.editPod(name, "the pod store to see the failed init container", edit)
