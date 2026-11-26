@@ -10,10 +10,10 @@ import { TEXT_MARGIN_ATTRIBUTE } from "./TextMargin";
  * on text is drawn. happy-dom applies no CSS, so this reads the steps from the class tokens the
  * stage's files write, as `git grep -c` counts them, and the browser suite measures the widths
  * (c-margin (8)): the window steps are those of B0, each named here with its rule, and a step a
- * later part adds fails this test until the list names it. With the column drawn, Plan's chart
- * (and, from part J, the Spec view) steps by the width of its own column, through container
- * variants beside the window classes, which apply only where the stage carries the attribute that
- * the column sets.
+ * later part adds fails this test until the list names it. With the column drawn, Plan's chart,
+ * the Verification view's table (and, from part J, the Spec view) step by the width of their own
+ * column, through container variants beside the window classes, which apply only where the stage
+ * carries the attribute that the column sets.
  */
 
 /** The directory of `issue-page/`. */
@@ -121,8 +121,9 @@ const WINDOW_STEPS: readonly WindowStep[] = [
   },
   {
     file: "verification-filter/VerificationFilterBody.tsx",
+    inColumn: true,
     lines: 7,
-    rule: "from 761 px of window the table is one frame under a head row, 1180 px wide at most, its statements at 38% and 62% and its checks at 58% and 42%; below it each row is a card",
+    rule: "from 761 px of window the table is one frame under a head row, 1180 px wide at most, its statements at 38% and 62% and its checks at 58% and 42%; below it each row is a card; with the column drawn, the cards below a 656 px column and the table from there",
     token: "min-[761px]",
   },
 ];
@@ -249,6 +250,22 @@ function planFormIn(file: string, width: number): string {
   return utilities.flatMap((utility) => PLAN_GRIDS[utility] ?? []).join(" and ") || "no grid";
 }
 
+/** What the Verification view draws in a main column `width` px wide, by the container classes of
+ *  `file` that apply there, as the browser suite reads its form: its phone step's cards where its
+ *  head row is hidden and a row of the table has a card's 8 px corners, its table where neither
+ *  applies, and what applies where only one does. */
+function verificationFormIn(file: string, width: number): string {
+  const applied = containerTokens(file).filter((token) => appliesAt(token, width));
+  const headHidden = applied.some(
+    (token) => token.includes(">[data-verification-head]]:") && token.endsWith(":hidden")
+  );
+  const rowsAreCards = applied.some(
+    (token) => token.includes(">[data-node-row]]:") && token.endsWith(":rounded-[8px]")
+  );
+  if (headHidden === rowsAreCards) return headHidden ? "cards" : "table";
+  return headHidden ? "the table's rows with no head row" : "cards under the table's head row";
+}
+
 describe("every view steps by its column's width", () => {
   // The main column, in px, and the form Plan draws in it: the cards of its phone step below the
   // width its narrow grid's fixed tracks hold (about 482 px; `CHART_COLUMNS`' 260 px and 220 px,
@@ -273,6 +290,28 @@ describe("every view steps by its column's width", () => {
     ).toEqual(PLAN_FORMS.map(([width, form]) => `${width} px ${form}`));
     expect(linesHolding(file, "max-[1241px]"), "the window step stays beside it").toBe(2);
     expect(linesHolding(file, "max-[761px]"), "the phone step stays beside it").toBe(15);
+  });
+
+  test("the Verification view draws its cards below a 656 px column", () => {
+    const file = "verification-filter/VerificationFilterBody.tsx";
+    expect(
+      containerThresholds(file),
+      "the Verification view's steps by its column's width"
+    ).toEqual([656]);
+    // The main column, in px, and the form the view draws in it: below the narrowest column at
+    // which the base draws the table (656 px, at 768 px of window, measured on part W's head) the
+    // cards of its phone step, and from there the table.
+    const forms: readonly (readonly [number, string])[] = [
+      [392, "cards"],
+      [655, "cards"],
+      [656, "table"],
+      [748, "table"],
+    ];
+    expect(
+      forms.map(([width]) => `${width} px ${verificationFormIn(file, width)}`),
+      "the form the Verification view draws at each main column"
+    ).toEqual(forms.map(([width, form]) => `${width} px ${form}`));
+    expect(linesHolding(file, "min-[761px]"), "the window step stays beside it").toBe(7);
   });
 
   test("no container class applies without the attribute the column sets on the stage", () => {

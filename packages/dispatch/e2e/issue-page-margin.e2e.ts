@@ -39,6 +39,7 @@ import {
   seedNoThreads,
 } from "./issue-page-margin";
 import { GATES } from "./issue-page-margin-gates";
+import { boxesPastTheirCard, verificationCardBoxes } from "./issue-page-v";
 import { lensCatalogue, requestedTreeRead } from "./issue-page-w";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
@@ -1020,11 +1021,50 @@ function planChart(page: Page): Promise<{
   });
 }
 
-/** The narrowest window width from `from` up to `to`, where the chart draws `form` at `to` and not
- *  at `from`, at which it draws `form`, and the width of its column there. */
+/** The two forms of the Verification view: the phone step's cards and the table. */
+type VerificationForm = "cards" | "table";
+
+/** The Verification view as the page lays it out two frames after the last resize: its form, read
+ *  off its head row and its first statement (`VerificationFilterBody.tsx`'s `TABLE`, `ROW` and
+ *  `TABLE_IN_COLUMN`), and the width of the container its column step reads (the body's parent,
+ *  the stage's column, its content box); null while the view draws no statement. */
+function verificationForm(page: Page): Promise<{
+  readonly column: number;
+  readonly form: string;
+} | null> {
+  return page.evaluate(async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    await promise;
+    const body = document.querySelector("[data-verification-body]");
+    const head = body?.querySelector("[data-verification-head]") ?? null;
+    const card = body?.querySelector("[data-verification-card]") ?? null;
+    const container = body?.parentElement ?? null;
+    if (head === null || card === null || container === null) return null;
+    // The table draws its head row as a grid and each statement as a band with square corners,
+    // and the cards draw no head row and each statement as a card with 8 px corners.
+    const display = getComputedStyle(head).display;
+    const corner = getComputedStyle(card).borderTopLeftRadius;
+    let form = `a ${display} head row over ${corner} corners`;
+    if (display === "grid" && corner === "0px") form = "table";
+    if (display === "none" && corner === "8px") form = "cards";
+    const box = getComputedStyle(container);
+    const inset = ["borderLeftWidth", "borderRightWidth", "paddingLeft", "paddingRight"] as const;
+    return {
+      column:
+        container.getBoundingClientRect().width -
+        inset.reduce((sum, side) => sum + (Number.parseFloat(box[side]) || 0), 0),
+      form,
+    };
+  });
+}
+
+/** The narrowest window width from `from` up to `to`, where `read` answers `form` at `to` and not
+ *  at `from`, at which it answers `form`, and the width of the column it measures there. */
 async function narrowestColumn(
   page: Page,
-  form: PlanForm,
+  read: (page: Page) => Promise<{ readonly column: number; readonly form: string } | null>,
+  form: PlanForm | VerificationForm,
   from: number,
   to: number
 ): Promise<{ readonly column: number; readonly width: number }> {
@@ -1033,15 +1073,15 @@ async function narrowestColumn(
   while (at - below > 1) {
     const middle = Math.floor((below + at) / 2);
     await page.setViewportSize(viewportAt(middle));
-    // The reading waits two frames after the resize, in which the chart's steps apply, so one
-    // answer says which form the chart draws at this width.
-    const chart = await planChart(page);
-    if (chart?.form === form) at = middle;
+    // The reading waits two frames after the resize, in which the view's steps apply, so one
+    // answer says which form the view draws at this width.
+    const drawn = await read(page);
+    if (drawn?.form === form) at = middle;
     else below = middle;
   }
   await page.setViewportSize(viewportAt(at));
-  // The search ended on this width, where the chart drew this form two frames after the resize.
-  const found = await planChart(page);
+  // The search ended on this width, where the view drew this form two frames after the resize.
+  const found = await read(page);
   return { column: found?.column ?? 0, width: at };
 }
 
@@ -1083,8 +1123,8 @@ async function readPlanSteps(page: Page, traffic: ApiRequests, seeded: MarginSee
     }
     await assertPageFits(page);
   }
-  const narrow = await narrowestColumn(page, "narrow", 1024, 1279);
-  const wide = await narrowestColumn(page, "wide", 1280, 1920);
+  const narrow = await narrowestColumn(page, planChart, "narrow", 1024, 1279);
+  const wide = await narrowestColumn(page, planChart, "wide", 1280, 1920);
   test.info().annotations.push(
     {
       description: `Plan's chart draws its wide form from a column of ${wide.column} px (a window of ${wide.width} px)`,
@@ -1102,6 +1142,57 @@ async function readPlanSteps(page: Page, traffic: ApiRequests, seeded: MarginSee
     Math.round(narrow.column),
     "Plan's narrow grid holds down to a column of about 482 px"
   ).toBe(482);
+}
+
+/** (8) with the threads drawn: the Verification view's cards at 1024 and 1100 px, each word inside
+ *  its card, and the narrowest column at which it draws its table, which the row records. */
+async function readVerificationSteps(
+  page: Page,
+  traffic: ApiRequests,
+  seeded: MarginSeed
+): Promise<void> {
+  await page.setViewportSize(DESKTOP);
+  await loadView(page, traffic, seeded.key, "verification");
+  await expect(
+    threadBox(page, seeded.statementComment),
+    "Verification draws the thread on the statement in the region"
+  ).toBeVisible();
+  for (const width of [1024, 1100]) {
+    await page.setViewportSize(viewportAt(width));
+    await expect
+      .poll(async () => Math.round((await region(page).boundingBox())?.width ?? 0), {
+        message: inView("verification", `the region is 280 px wide at ${width} px`),
+      })
+      .toBe(280);
+    await expect(
+      verificationCardBoxes(page).first(),
+      `the Verification view draws a statement at ${width} px`
+    ).toBeVisible();
+    // Part V's measure of the faults of the old tab: an element past a side of its card.
+    await expect
+      .poll(() => boxesPastTheirCard(page), {
+        message: `no word of a Verification card reaches past its card at ${width} px`,
+      })
+      .toEqual([]);
+    await expect
+      .poll(async () => (await verificationForm(page))?.form ?? null, {
+        message: `with a thread on a statement, at ${width} px the Verification view draws its cards`,
+      })
+      .toBe("cards");
+    await assertPageFits(page);
+  }
+  // From 1280 px the column of comments on text is 320 px wide and the Contents pane 260 px, so
+  // the main column is 588 px there, where the view draws its cards, and 748 px at 1440 px, where
+  // it draws its table.
+  const table = await narrowestColumn(page, verificationForm, "table", 1280, 1440);
+  test.info().annotations.push({
+    description: `The Verification view draws its table from a column of ${table.column} px (a window of ${table.width} px)`,
+    type: "measured",
+  });
+  expect(
+    Math.round(table.column),
+    "the Verification view draws its table from a column of 656 px"
+  ).toBe(656);
 }
 
 /**
@@ -1285,8 +1376,9 @@ async function readNoThreads(page: Page, seeded: NoThreadsSeed): Promise<void> {
 // c-margin.
 // SLOW(>=2s): the whole seeded issue read in six views at 1440 px with every outline branch
 // opened, Details opened twice and resized, Plan's chart resized through two searches of its
-// steps, each view resized through nine widths, then the issue with no thread read again in six
-// views and at six widths of Plan; on `iphone`, six views at 390 px.
+// steps and the Verification view through one, each view resized through nine widths, then the
+// issue with no thread read again in six views and at six widths of Plan; on `iphone`, six views
+// at 390 px.
 test("a comment on text stands beside its node in every view @phone", async ({ browser }) => {
   test.setTimeout(900_000);
   const phone = test.info().project.name === "iphone";
@@ -1344,6 +1436,7 @@ test("a comment on text stands beside its node in every view @phone", async ({ b
     await readEveryView(page, traffic, seeded, spots, { quoted, stacking });
     await readDetails(page, traffic, seeded, spots);
     await readPlanSteps(page, traffic, seeded);
+    await readVerificationSteps(page, traffic, seeded);
     await readWidths(page, traffic, seeded, spots);
     if (deleted) {
       const reply = seeded.postQuotedReply;
