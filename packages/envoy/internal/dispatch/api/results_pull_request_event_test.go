@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // headAfterEventBound is how long after GitHub's `pull_request` event the results route may take
@@ -191,7 +192,10 @@ func durableState(client *bus.Client) string {
 // (delivery.StartIntakes), on a NATS server of the test's own, with database's pool, the intakes'
 // callers of its lease pool and whatever delivery settings database holds (none unless the test
 // wrote them), and answers a publisher that owns the stream: what it publishes is the intakes'
-// input. The intakes stop, and then the publisher closes, when the test ends.
+// input. It answers once the events intake has bound its durable: a first bind starts at the
+// stream's next message (delivery's takeOverStart, from main's #5525), so an envelope published
+// before it would never be delivered. The intakes stop, and then the publisher closes, when the
+// test ends.
 func startTheIntakes(t *testing.T, database *store.Store, served *server) *bus.Client {
 	t.Helper()
 	_, natsURL := testnats.Start(t)
@@ -220,6 +224,10 @@ func startTheIntakes(t *testing.T, database *store.Store, served *server) *bus.C
 		cancel()
 		stopIntakes()
 	})
+	testwait.Until(t, "the delivery intake to bind its durable", func() (string, bool) {
+		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		return durableState(publisher), err == nil && info.PushBound
+	})
 	return publisher
 }
 
@@ -244,8 +252,8 @@ func startTheIntakes(t *testing.T, database *store.Store, served *server) *bus.C
 //
 // Red where the intake binds only under delivery settings, as at main before
 // cybermonklabs/legion#4209 (Intake.Run waited for the settings cache to hold settings): the
-// event is never taken, #9 stays stored open, and when the bound ends c1 still reads run 42's
-// cancel at #9.
+// intake never binds its durable, so startTheIntakes's wait for that bind gives up at the test
+// binary's deadline, and no event is ever taken.
 func TestAPullRequestClosedEventMovesTheCIReadToTheOpenHeadWithNoDeliverySettings(t *testing.T) {
 	t.Parallel()
 	runs := newCheckRunsFake()
