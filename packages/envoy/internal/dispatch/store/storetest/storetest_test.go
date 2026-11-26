@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
@@ -89,7 +90,7 @@ func TestNoDatabaseIsDroppedWhileATestOfThePackageHoldsOne(t *testing.T) {
 func TestAFinishedDatabaseIsDroppedOnceNoTestHoldsOne(t *testing.T) {
 	batch := dropBatch
 	dropBatch = 1
-	t.Cleanup(func() { dropBatch = batch })
+	testcleanup.Add(t, func() { dropBatch = batch })
 	var first string
 	t.Run("first", func(t *testing.T) { first = currentDatabase(t, Open(t)) })
 	t.Run("second", func(t *testing.T) { Open(t) })

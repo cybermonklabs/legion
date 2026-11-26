@@ -284,12 +284,10 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			}, "alice", http.StatusCreated))
 			r.issue, r.spec = created.Key, created.Primary
 		},
-		// The issue's node, and the project its spec's blocks carry, come with the slice that carries
-		// the issue writer (S3c-issues); this one states the spec's block index alone.
-		Counts: newBlockUnscoped,
+		Counts: merged(newBlockCounted, objectNodeCounted(graphstore.KindIssue), objectNodeCounted(graphstore.KindArtifact)),
 	}, {
 		Name: "api/artifacts.go#storeArtifact", Database: r.database,
-		Sites: []string{"api/artifacts.go#storeArtifact", "refs/blocks.go#Queue"},
+		Sites: []string{"api/artifacts.go#storeArtifact", "api/artifacts.go#queueNewArtifact", "refs/blocks.go#Queue"},
 		Drive: func(t *testing.T) {
 			notes := decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
@@ -298,9 +296,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			}, "alice", http.StatusCreated)).Artifact
 			r.notes, r.notesSlug = notes.ID, notes.Slug
 		},
-		// The document's own node (queueNewArtifact), and the project its new blocks carry, come
-		// with S3c-documents.
-		Counts: newBlockUnscoped,
+		Counts: merged(newBlockCounted, objectNodeCounted(graphstore.KindArtifact)),
 	}, {
 		Name: "api/artifacts.go#commitArtifactVersionEvent", Database: r.database,
 		Sites: []string{"api/artifacts.go#commitArtifactVersionEvent", "refs/blocks.go#Queue"},
@@ -322,6 +318,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: map[graphcensus.StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
+			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
 			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
@@ -346,6 +343,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: map[graphcensus.StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
+			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
 		},
@@ -382,6 +380,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: map[graphcensus.StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
+			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindComment, graphstore.TupleDeliveredTo}:    {"delivery"},
 			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
@@ -437,13 +436,12 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				"question": "Which store do the writers take?", "actor": sessionActor("ses_asker"),
 			}, "", http.StatusCreated)).ID
 		},
-		// The ask's own node comes with the slice that carries the ask writer (S3c-issues).
-		Counts: sessionNodeCounted,
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk)),
 	}, {
 		// The removal of an untouched document of the issue, made just before by typing a title:
 		// its node stated gone, which the term artifact_removed counts.
 		Name: "api/artifact_removal.go#removeArtifact", Database: r.database,
-		Sites: []string{"api/server.go#appendCausingEvent"},
+		Sites: []string{"api/artifact_removal.go#removeArtifact", "api/server.go#appendCausingEvent"},
 		Ready: func(t *testing.T) {
 			r.removable = decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
@@ -453,9 +451,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodDelete, "/api/v1/artifacts/"+r.removable, nil, "alice", http.StatusNoContent)
 		},
-		// The removal's gone statement of the document's node (removeArtifact) comes with
-		// S3c-documents, so the removal states nothing here.
-		Counts: nil,
+		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindArtifact, graphstore.AttributeState}: {"artifact_removed"}},
 	}, {
 		Name: "api/server.go#appendCausingEvent", Database: r.database,
 		Sites: []string{"api/server.go#appendCausingEvent", "asks/followers.go#queueFollow"},
@@ -468,13 +464,12 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		// The spec's approval request, which a session opens: the request's node, in the spec's
 		// project, and the requester's follow.
 		Name: "api/reviews.go#openApprovalAsk", Database: r.database,
-		Sites: []string{"asks/followers.go#queueFollow"},
+		Sites: []string{"api/reviews.go#openApprovalAsk", "asks/followers.go#queueFollow"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
 				map[string]any{"actor": sessionActor("ses_requester")}, "", http.StatusCreated)
 		},
-		// The request's own node (openApprovalAsk) comes with S3c-documents.
-		Counts: sessionNodeCounted,
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk)),
 	}, {
 		// That request renewed by another session while it waits on the person: a retry, which
 		// appends no event.
@@ -578,15 +573,6 @@ var (
 		{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
 		{refs.BlockNodeKind, graphstore.AttributeState}:      {"block"},
 		{refs.BlockNodeKind, graphstore.AttributeProject}:    {"block"},
-		{refs.BlockNodeKind, refs.TupleInDocument}:           {"block"},
-		{refs.BlockNodeKind, graphstore.TuplePartOf}:         {"block"},
-	}
-	// newBlockUnscoped is a block of a document its own transaction creates, which carries no
-	// project until the slices that carry the creating writers (S3c-issues, S3c-documents) record
-	// the document's scope on the address they create.
-	newBlockUnscoped = map[graphcensus.StoredKind][]string{
-		{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
-		{refs.BlockNodeKind, graphstore.AttributeState}:      {"block"},
 		{refs.BlockNodeKind, refs.TupleInDocument}:           {"block"},
 		{refs.BlockNodeKind, graphstore.TuplePartOf}:         {"block"},
 	}

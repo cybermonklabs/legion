@@ -151,7 +151,7 @@ func hold(t testing.TB, name string, create func() error) error {
 		held.Unlock()
 		return err
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		held.Lock()
 		defer held.Unlock()
 		held.live--

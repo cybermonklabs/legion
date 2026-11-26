@@ -569,6 +569,11 @@ var indexPasses = map[string]string{
 	// caused by the event the settlement appends. The object nodes a request's own write states
 	// come with the slices that carry those writers (S3c-documents, S4).
 	"docs/ask_blocks.go#createAskBlock": "the ask block the settlement opens and the document that holds it",
+	"api/reviews.go#openApprovalAsk":    "the approval request the request opens and the ask.opened it appended",
+	"api/artifacts.go#queueNewArtifact": "the document the upload creates, the node the store holds at its address, and the event the upload appends",
+	// The removal of an untouched document states its node gone before its row goes, caused by
+	// the artifact.removed event it appends.
+	"api/artifact_removal.go#removeArtifact": "the document the request removes and the event it appended",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.QueueCaused), which reads no
 	// projection and mends nothing.
