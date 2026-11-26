@@ -1673,10 +1673,10 @@ the split after `split.sql`. The plans the parser was written from are in
 #### The production form
 
 On production the reads go through the read login of dispatch://INFRA-4863. The rules of its
-section in theorem-labs/agent-infra `legion/references/reads.md` ("Dispatch's database") allow one
-run of its one command for each read: `psql -X -q -w -v ON_ERROR_STOP=1 --single-transaction -c
-'SET TRANSACTION READ ONLY' -f - <conninfo>`, with the query on its input and a token of the login
-as the password. psql opens the read-only transaction itself, so a read sends no `BEGIN`,
+section in the deployment repository's `legion/references/reads.md` ("Dispatch's database") allow
+one run of its one command for each read: `psql -X -q -w -v ON_ERROR_STOP=1 --single-transaction
+-c 'SET TRANSACTION READ ONLY' -f - <conninfo>`, with the query on its input and a token of the
+login as the password. psql opens the read-only transaction itself, so a read sends no `BEGIN`,
 `ROLLBACK`, `SET TRANSACTION`, `PREPARE`, `EXECUTE`, session `SET` or psql backslash command, and a
 read written by hand writes `public.` before each name of the database. `subjects.sql` and
 `split.sql` break those rules, so steps 1 and 3 also write a production form beside them, in the
@@ -1745,7 +1745,7 @@ DISPATCH_SEARCH_SPLIT_OUT=$OUT DISPATCH_SEARCH_SPLIT_RUNS=3 DISPATCH_TEST_DATABA
   go test -count=1 -run '^TestSearchReadSplitScript$' -v ./internal/dispatch/api
 # 4. One run of the command for each file, in turn, in list.tsv's order.
 (cd "$OUT" && while IFS=$'\t' read -r file output part <&3; do
-  [ -s "$output" ] && continue    # written by an earlier pass of this loop
+  if [ -s "$output" ] || [ -e "$output.refused" ]; then continue; fi    # written, or recorded as cut, by an earlier pass of this loop
   cut=0
   until read_file "$file" "$output"; do
     if grep -q 'too many connections for role' "$output.err"; then sleep 30; continue; fi
@@ -1776,7 +1776,7 @@ side) and the refusal text, rather than measure it another way, since an `explai
 `analyze` reads no buffers. A joined custom run that stops again is recorded as cut: its refusal
 goes to `<plan file>.refused`, and step 4 goes on. Any other refusal stops step 4 with the file and
 psql's error, and `reads.md` says what each refusal means. Step 4 passes over a plan file already
-written, so the same loop, run again, goes on from the file that stopped it.
+written or recorded as cut, so the same loop, run again, goes on from the file that stopped it.
 
 ## coverage-scale.sh
 

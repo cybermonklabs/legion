@@ -11,13 +11,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"golang.org/x/text/language"
-	"golang.org/x/text/message"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // coverageStatementRows bounds how many rows one coverage statement changes. Each statement is
@@ -742,8 +741,8 @@ var ErrCoverageNotFilled = errors.New("the search coverage counts are not filled
 // rows: the counts are the base rows plus every delta row not yet folded into them, and the report
 // refuses rather than read more. The route answers it 503 SEARCH_COVERAGE_FOLD_BEHIND with its
 // text, which writes the bound with thousands separators ("100,000").
-var ErrCoverageFoldBehind = errors.New(message.NewPrinter(language.English).Sprintf(
-	"more than %d rows of writes are not folded into the search coverage counts yet", coverageDeltaBound))
+var ErrCoverageFoldBehind = fmt.Errorf(
+	"more than %s rows of writes are not folded into the search coverage counts yet", pgmigrate.Thousands(coverageDeltaBound))
 
 // coverageReadStatement is the report's one statement (coverageRead), so one snapshot and one
 // now() answer every count and every age. $1 is the identity, the empty string when none is

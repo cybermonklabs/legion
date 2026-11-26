@@ -15,13 +15,15 @@ import (
 	"text/tabwriter"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // This file is the production form of the split of search's buffer reads (search_split_test.go,
 // steps 1 and 3 of its pipeline), and the report of the joined statement's plans beside the split.
 //
 // The production form follows the rules of the read login of dispatch://INFRA-4863
-// (theorem-labs/agent-infra legion/references/reads.md, "Dispatch's database"): one psql run of
+// (the deployment repository's legion/references/reads.md, "Dispatch's database"): one psql run of
 // the login's one command for each read, in the read-only transaction psql opens itself, so no
 // file sends BEGIN, ROLLBACK, PREPARE, EXECUTE, a session SET or a psql backslash command, and a
 // read written by hand writes `public.` before each name of the database. subjects-read.sql is
@@ -177,7 +179,7 @@ func searchSplitValues(literals []string, vector string) []string {
 	values := slices.Clone(literals)
 	for index, literal := range values {
 		if literal == searchSplitVectorVariable {
-			values[index] = searchSplitQuote(vector)
+			values[index] = store.QuoteLiteral(vector)
 		}
 	}
 	return values

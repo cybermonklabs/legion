@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -618,7 +619,7 @@ func searchSplitLiteral(t *testing.T, value any, vector string) string {
 		if v == vector {
 			return searchSplitVectorVariable
 		}
-		return searchSplitQuote(v)
+		return store.QuoteLiteral(v)
 	case int:
 		return strconv.Itoa(v)
 	case float64:
@@ -628,12 +629,12 @@ func searchSplitLiteral(t *testing.T, value any, vector string) string {
 		for index, element := range v {
 			elements[index] = `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(element) + `"`
 		}
-		return searchSplitQuote("{" + strings.Join(elements, ",") + "}")
+		return store.QuoteLiteral("{" + strings.Join(elements, ",") + "}")
 	case *time.Time:
 		if v == nil {
 			return "null"
 		}
-		return searchSplitQuote(v.Format(time.RFC3339Nano))
+		return store.QuoteLiteral(v.Format(time.RFC3339Nano))
 	}
 	t.Fatalf("split.sql has no literal for a %T (%v)", value, value)
 	return ""
@@ -641,9 +642,6 @@ func searchSplitLiteral(t *testing.T, value any, vector string) string {
 
 // searchSplitVectorVariable is the query vector as split.sql writes it, psql's variable.
 const searchSplitVectorVariable = ":'query_vector'"
-
-// searchSplitQuote is text as a string constant.
-func searchSplitQuote(text string) string { return "'" + strings.ReplaceAll(text, "'", "''") + "'" }
 
 // writeSearchSplitFile writes one file of the split's directory.
 func writeSearchSplitFile(t *testing.T, path, content string) {
@@ -1160,7 +1158,7 @@ func reportSearchSplit(t *testing.T, in string, runs int, files map[searchSplitK
 	t.Helper()
 	subject := fmt.Sprintf("%s word %q, %s, %s statement", word.class, word.lexeme, form.name, statement)
 	sides := map[string]searchSplitSide{}
-	for _, side := range []string{searchSplitMain, searchSplitHead} {
+	for _, side := range searchSplitSides {
 		var read searchSplitSide
 		for run := 1; run <= runs; run++ {
 			plans := map[bool]searchSplitPlan{}
@@ -1200,7 +1198,7 @@ func reportSearchSplit(t *testing.T, in string, runs int, files map[searchSplitK
 	var report strings.Builder
 	fmt.Fprintf(&report, "%s (main's %s, the head's %s), shared buffer reads (hit plus read) of each part:\n",
 		subject, sides[searchSplitMain].shape, sides[searchSplitHead].shape)
-	for _, side := range []string{searchSplitMain, searchSplitHead} {
+	for _, side := range searchSplitSides {
 		for run, split := range sides[side].runs {
 			var terms []string
 			var sum searchSplitBlocks
@@ -1224,7 +1222,7 @@ func reportSearchSplit(t *testing.T, in string, runs int, files map[searchSplitK
 	}
 	for _, part := range printed {
 		medians, spreads := map[string]float64{}, map[string]float64{}
-		for _, side := range []string{searchSplitMain, searchSplitHead} {
+		for _, side := range searchSplitSides {
 			var values []float64
 			for _, split := range sides[side].runs {
 				values = append(values, part.of(split).reads())

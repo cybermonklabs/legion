@@ -507,10 +507,11 @@ func (b *backendStatements) statements() []backendStatement {
 	return slices.Clone(b.seen)
 }
 
-// The two settings R1 holds the transaction of every search statement to: the server's own
-// bound on the statement, 15 s in the whole milliseconds store.StatementTimeoutSetting writes,
-// and the interval at which Postgres checks, while the statement runs, that its client is still
-// connected.
+// searchBoundSetting is the statement_timeout setting R1 holds the transaction of every search
+// statement to: 15 s in the whole milliseconds store.StatementTimeoutSetting writes.
+// searchClientConnectionCheck, the interval at which Postgres checks, while the statement runs,
+// that its client is still connected, is the other setting unboundedBecause holds every search
+// statement's transaction to.
 var searchBoundSetting = store.StatementTimeoutSetting(15 * time.Second)
 
 // unboundedBecause says why the statement at position at of seen did not run inside a
