@@ -25,9 +25,9 @@
 #               and hold the page's requests by their paths, and a wait on a path the page no
 #               longer reads fails only in a browser run. A few of its files read a kept route on
 #               purpose and are spared, each by its exact path (callers_spared says why), and its
-#               recorded HARs by their extension. The two fallbacks of the release roll are spared
-#               by their file and the one function that holds each, and no other line of those
-#               files is. A scratch tree holding a planted read in each of those forms, two
+#               recorded HARs by their extension. The three fallbacks of the release roll are
+#               spared by their file and the one function that holds each, and no other line of
+#               those files is. A scratch tree holding a planted read in each of those forms, two
 #               planted sends, and a read inside and a read outside each spared function, is
 #               searched first.
 #   gone        no tracked file but frozen history names the comparison (its command
@@ -436,17 +436,22 @@ readonly caller_trees=(packages/dispatch/web/src packages/envoy-client/src packa
 # still read. And acceptance/root-deletes.txt, the list of what the root's pull request deletes,
 # which names the kept reads it deletes and calls nothing.
 #
-# The two fallbacks of the release roll, each by its file and the one function that holds it, each
-# with its line in root-deletes.txt and a test that drives it against the refusal it answers:
+# The three fallbacks of the release roll, each by its file and the one function that holds it,
+# each with its line in root-deletes.txt and a test that drives it against the refusal it answers:
 # - the page's openAsksOfTheReleaseBefore (web/src/api/client.ts), which reads GET /api/v1/inbox
 #   and which openAsksQuery calls only where the read of every project's open asks is refused 400
 #   AUTHOR_SESSION_OR_PROJECT_REQUIRED, as a Dispatch process of the release before refuses it;
+# - the page's inboxOfTheReleaseBefore (web/src/api/client.ts), which reads GET /api/v1/inbox and
+#   GET /api/v1/me/replies and which getMeInbox, the Inbox page's own read of GET /api/v1/me/inbox,
+#   calls only where the server answers that read with no route, so that a page of this release
+#   that reaches only a server of the release before still shows the Inbox;
 # - `dispatch inbox`'s inboxReadOfTheReleaseBefore (envoy-client/src/dispatch-commands/session.ts),
 #   which reads GET /api/v1/inbox and GET /api/v1/me/replies only where the server answers
 #   GET /api/v1/me/inbox with no route.
 # Each one's test answers the reads it makes as a server of the release before answers them, so it
 # names them and calls nothing: it is a file of its own, which holds that test alone, spared by its
-# exact path and deleted with its fallback (web/src/api/open-asks-release-before.test.ts and
+# exact path and deleted with its fallback (web/src/api/open-asks-release-before.test.ts,
+# web/src/api/inbox-release-before.test.ts and
 # envoy-client/src/__tests__/dispatch-inbox-release-before.test.ts).
 readonly callers_spared=(
   'packages/dispatch/e2e/inbox-unchanged.e2e.ts'
@@ -457,6 +462,8 @@ readonly callers_spared=(
   'packages/dispatch/e2e/acceptance/root-deletes.txt'
   'packages/dispatch/web/src/api/client.ts openAsksOfTheReleaseBefore'
   'packages/dispatch/web/src/api/open-asks-release-before.test.ts'
+  'packages/dispatch/web/src/api/client.ts inboxOfTheReleaseBefore'
+  'packages/dispatch/web/src/api/inbox-release-before.test.ts'
   'packages/envoy-client/src/dispatch-commands/session.ts inboxReadOfTheReleaseBefore'
   'packages/envoy-client/src/__tests__/dispatch-inbox-release-before.test.ts'
 )
@@ -636,9 +643,10 @@ TS
   # A script beside the recordings, which their sparing by extension still reads.
   printf '%s\n' 'await fetch("/api/v1/inbox");' >"$plant/packages/dispatch/e2e/__recordings__/planted-caller.ts"
   # Each spared function, in a file at its path, beside another function of that file that reads
-  # one of the paths too: the search spares the read inside the spared function and finds the one
-  # outside it, so it spares by function and not by file. The page's is a method of a class, and
-  # the command's a function with an overload above its body.
+  # one of the paths too: the search spares the reads inside the spared functions and finds the one
+  # outside them, so it spares by function and not by file. The page's two are methods of a class,
+  # one on each side of the read the search finds, and the command's a function with an overload
+  # above its body.
   mkdir -p "$plant/packages/dispatch/web/src/api" "$plant/packages/envoy-client/src/dispatch-commands"
   cat >"$plant/packages/dispatch/web/src/api/client.ts" <<'TS'
 export class PlantedClient {
@@ -648,6 +656,14 @@ export class PlantedClient {
 
   plantedRead() {
     return this.read("/api/v1/inbox", {});
+  }
+
+  private async inboxOfTheReleaseBefore(query: InboxRead): Promise<MeInboxResponse> {
+    const [asks, replies] = await Promise.all([
+      query.state === "inbox" ? this.read("/api/v1/inbox", {}, { assignee: "me" }) : [],
+      this.read("/api/v1/me/replies", {}, { kind: "reply,agent", ...query }),
+    ]);
+    return { asks, replies };
   }
 }
 TS
@@ -687,7 +703,7 @@ TS
   done
   [[ "$(grep -c . <<<"$found")" == "${#wants[@]}" ]] ||
     fail "$section" "the search finds the ${#wants[@]} planted reads in the scratch tree, and nothing else" "it found: $found"
-  pass "$section" "the search finds the ${#wants[@]} planted reads in a scratch tree of the five trees - plain, in a template, in a segment list, regex-escaped, joined by +, as a glob, as a route pattern and in a function of a file beside a spared one - and not the two planted sends, the reads inside the two spared functions or anything else"
+  pass "$section" "the search finds the ${#wants[@]} planted reads in a scratch tree of the five trees - plain, in a template, in a segment list, regex-escaped, joined by +, as a glob, as a route pattern and in a function of a file beside a spared one - and not the two planted sends, the reads inside the three spared functions or anything else"
 
   found="$(callers_in "$repo")" || fail "$section" "search the five trees" "git grep failed"
   [[ -z "$found" ]] || fail "$section" "no read of the three paths in ${caller_trees[*]}" "$found"
