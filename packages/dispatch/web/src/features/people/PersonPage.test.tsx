@@ -26,7 +26,8 @@ const named: IssueReferenceSummary = {
 };
 
 /** One comment alice wrote, as the person nodes read sends it: the first line of its text, which
- *  holds a mark and a reference, here with no tree of that line, so the page parses it. */
+ *  holds a mark and a reference, under both its names (`first_line`, and `title`, the name a page
+ *  of the release before reads), here with no tree of that line, so the page parses it. */
 const node: PersonNode = {
   created_at: "2026-11-20T09:00:00Z",
   first_line: "Ask **dispatch://CORE-9** first.",
@@ -34,6 +35,7 @@ const node: PersonNode = {
   id: "comment-1",
   kind: "comment",
   relations: ["authored_by"],
+  title: "Ask **dispatch://CORE-9** first.",
 };
 
 // The reading list's `person-node-title`: the line is drawn by the renderer, never as the
@@ -85,7 +87,13 @@ test("a role the line's issue records reads as that role, read by the issue its 
     limit: 50,
     offset: 0,
     person: "alice",
-    rows: [{ ...node, first_line: "Ask dispatch://role/legion-p-core-1-reviewer first." }],
+    rows: [
+      {
+        ...node,
+        first_line: "Ask dispatch://role/legion-p-core-1-reviewer first.",
+        title: "Ask dispatch://role/legion-p-core-1-reviewer first.",
+      },
+    ],
     total: 1,
   });
   const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
@@ -135,9 +143,10 @@ test("a role the line's issue records reads as that role, read by the issue its 
   }
 });
 
-/** One comment of the person's, by its id, with `overrides` over a standing comment's fields. */
+/** One comment of the person's, by its id, with `overrides` over a standing comment's fields; its
+ *  `title` is its first line, as the read answers the one line under both names. */
 function commentNode(id: string, overrides: Partial<PersonNode> = {}): PersonNode {
-  return {
+  const row = {
     created_at: "2026-11-20T00:00:00Z",
     first_line: "Agreed.",
     href: `/issues/CORE-1/comments/${id}`,
@@ -146,6 +155,7 @@ function commentNode(id: string, overrides: Partial<PersonNode> = {}): PersonNod
     relations: ["authored_by"],
     ...overrides,
   };
+  return { title: row.first_line, ...row };
 }
 
 function renderPage(rows: PersonNode[]) {
@@ -227,6 +237,29 @@ test("a row whose comment its author deleted keeps its place as the deleted line
     );
     expect(row?.textContent).not.toContain("edited");
     expect(row?.textContent).toContain("Open");
+  } finally {
+    page.restore();
+  }
+});
+
+// A server of the release before answers each row's line as `title` alone, with no `first_line`
+// and no tree of it, and a roll or a rollback leaves such a pod serving this page: the page draws
+// that line all the same.
+test("a row a server of the release before answers, with its line only as title, draws that line", async () => {
+  await warmMarkdownRenderer();
+  const { first_line: _absent, ...older } = commentNode("comment-older", {
+    first_line: "Ship it on **Monday**.",
+  });
+  // The client's type is this build's answer, which always carries first_line; the older pod's
+  // row is that answer without it.
+  const page = renderPage([older as PersonNode]);
+
+  try {
+    await waitFor(() =>
+      expect(page.row("comment-older")?.textContent).toContain("Ship it on Monday.")
+    );
+    expect(page.row("comment-older")?.textContent).not.toContain("**");
+    expect(page.row("comment-older")?.querySelector("strong")?.textContent).toBe("Monday");
   } finally {
     page.restore();
   }

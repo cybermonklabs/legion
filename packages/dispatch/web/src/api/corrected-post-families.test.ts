@@ -956,7 +956,8 @@ const ROWS: readonly WriteRow[] = [
     kind: "message",
   },
   // A person's page (`PersonPage`, pages): the post's row, named by the first line of its words
-  // and the tree of that line, beside another comment's.
+  // and the tree of that line, and by that line again as `title`, the name a page of the release
+  // before reads, beside another comment's.
   {
     answer: {
       pageParams: [0],
@@ -974,6 +975,7 @@ const ROWS: readonly WriteRow[] = [
               id: POST,
               kind: "comment",
               relations: ["authored_by"],
+              title: OLD_WORDS,
             },
             {
               created_at: "2026-11-18T00:00:00Z",
@@ -982,6 +984,7 @@ const ROWS: readonly WriteRow[] = [
               id: OTHER,
               kind: "comment",
               relations: ["authored_by"],
+              title: "Agreed.",
             },
           ],
           total: 2,

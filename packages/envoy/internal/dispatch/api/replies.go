@@ -460,9 +460,11 @@ func parseMyRepliesPage(r *http.Request, state string) (limit *int, offset int, 
 }
 
 // parseLimitOffset reads ?limit= and ?offset=, the paging of GET /api/v1/me/replies' unread and
-// inbox states and of GET /api/v1/me/inbox: an absent limit is every row, a limit the caller names
-// keeps the rules GET /api/v1/me/answers has (1 to myAnswersMaxLimit, so limit=0 is refused), and
-// an offset is one non-negative integer, 0 when absent.
+// inbox states and of GET /api/v1/me/inbox: an absent limit is nil, which each caller reads as
+// every row but GET /api/v1/me/inbox under state=dismissed, which reads it as one page
+// (parseMeInboxRequest), a limit the caller names keeps the rules GET /api/v1/me/answers has (1 to
+// myAnswersMaxLimit, so limit=0 is refused), and an offset is one non-negative integer, 0 when
+// absent.
 func parseLimitOffset(query url.Values) (limit *int, offset int, err error) {
 	if value, present, valid := parseQueryInt(query, "limit", 1, myAnswersMaxLimit); present {
 		if !valid {

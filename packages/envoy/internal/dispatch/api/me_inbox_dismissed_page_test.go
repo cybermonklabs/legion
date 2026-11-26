@@ -265,3 +265,78 @@ func dismissedPageDifference(fewer, more dismissedPagePlan) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// TestTheDismissedStateWithNoLimitAnswersOnePage holds GET /api/v1/me/inbox?state=dismissed with no
+// limit to the page GET /api/v1/me/replies?state=dismissed answered, myRepliesDismissedPage entries,
+// and not to the whole pile: on a pile of dismissedPageFewer dismissed threads the read answers the
+// newest 200 with limit 200 and a next_cursor, and the read from that cursor answers the other 50
+// and no next_cursor, so every dismissed thread is reached a page at a time and none twice.
+func TestTheDismissedStateWithNoLimitAnswersOnePage(t *testing.T) {
+	t.Parallel()
+	shape := seedDismissedPagePile(t, dismissedPageFewer)
+	first := readMeInboxAs(t, shape.handler, dismissedScaleLogin, url.Values{"state": {myRepliesStateDismissed}})
+	if len(first.Entries) != myRepliesDismissedPage || first.Limit != myRepliesDismissedPage || first.NextCursor == "" {
+		t.Fatalf("state=dismissed with no limit over %d dismissed threads answers %d entries, limit %d and next_cursor %q; want one page of %d, limit %d and a next_cursor",
+			dismissedPageFewer, len(first.Entries), first.Limit, first.NextCursor, myRepliesDismissedPage, myRepliesDismissedPage)
+	}
+	next := readMeInboxAs(t, shape.handler, dismissedScaleLogin, url.Values{
+		"state": {myRepliesStateDismissed}, "cursor": {first.NextCursor},
+	})
+	if want := dismissedPageFewer - myRepliesDismissedPage; len(next.Entries) != want || next.NextCursor != "" {
+		t.Fatalf("the page after the first page's next_cursor answers %d entries and next_cursor %q, want the other %d and none",
+			len(next.Entries), next.NextCursor, want)
+	}
+	reached := map[string]bool{}
+	for _, entry := range slices.Concat(first.Entries, next.Entries) {
+		node := entry.Node.Kind + ":" + entry.Node.ID
+		if reached[node] {
+			t.Errorf("%s is answered on both pages", node)
+		}
+		reached[node] = true
+	}
+	if len(reached) != dismissedPageFewer {
+		t.Errorf("the two pages reach %d dismissed threads, want all %d", len(reached), dismissedPageFewer)
+	}
+}
+
+// TestTheDismissedStateRefusesAnOffsetItsPageCannotCountTo holds GET /api/v1/me/inbox under
+// state=dismissed to the bound its statement needs: the page is read to offset + limit + 1, a
+// bigint sum, so an offset that takes it past the largest integer is 400 INVALID_QUERY and not the
+// 500 Postgres' bigint out of range made of it, and an offset at the bound answers an empty page.
+// The other states take no such sum, so the largest offset answers them an empty page too.
+func TestTheDismissedStateRefusesAnOffsetItsPageCannotCountTo(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	dismissed := func(limit string, offset int) url.Values {
+		query := url.Values{"state": {myRepliesStateDismissed}, "offset": {fmt.Sprint(offset)}}
+		if limit != "" {
+			query.Set("limit", limit)
+		}
+		return query
+	}
+	for _, query := range []url.Values{
+		// The request the review named.
+		dismissed("1", math.MaxInt),
+		// One past the bound of a page of one.
+		dismissed("1", math.MaxInt-1),
+		// One past the bound of the page of 200 an absent limit reads.
+		dismissed("", math.MaxInt-myRepliesDismissedPage),
+	} {
+		response := meInboxRequestAs(t, handler, context.Background(), "alice", query)
+		var refusal struct{ Code, Error string }
+		if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &refusal) != nil ||
+			refusal.Code != "INVALID_QUERY" || !strings.HasPrefix(refusal.Error, "offset must be at most ") {
+			t.Errorf("?%s answers %d %s, want 400 INVALID_QUERY naming the bound of offset", query.Encode(), response.Code, response.Body.String())
+		}
+	}
+	for _, query := range []url.Values{
+		dismissed("1", math.MaxInt-2),
+		dismissed("", math.MaxInt-myRepliesDismissedPage-1),
+		{"state": {myRepliesStateInbox}, "limit": {"1"}, "offset": {fmt.Sprint(math.MaxInt)}},
+		{"limit": {"1"}, "offset": {fmt.Sprint(math.MaxInt)}},
+	} {
+		if answer := readMeInboxAs(t, handler, "alice", query); len(answer.Entries) != 0 || answer.NextCursor != "" {
+			t.Errorf("?%s answers %d entries and next_cursor %q, want an empty page", query.Encode(), len(answer.Entries), answer.NextCursor)
+		}
+	}
+}

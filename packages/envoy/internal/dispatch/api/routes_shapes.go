@@ -383,7 +383,8 @@ type myRepliesQuery struct {
 // TestTheOneReadsDeclaredKeysAreItsParamsStruct holds to these tags), so it is the one row of the
 // document that takes no `session` (RefusesUndeclared).
 type meInboxQuery struct {
-	// Limit is the page size, 1 to 200; an absent one is every entry.
+	// Limit is the page size, 1 to 200; an absent one is every entry, but under state=dismissed one
+	// page of 200.
 	Limit int `query:"limit"`
 	// Offset is where that page starts.
 	Offset int `query:"offset"`

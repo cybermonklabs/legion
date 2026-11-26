@@ -4,6 +4,7 @@ import { Link, useParams } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { nextOffsetPage } from "../../api/queries";
+import type { PersonNode } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
@@ -26,6 +27,14 @@ import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 
 const PAGE_SIZE = 50;
+
+/** A row of the person nodes read as a server of either release answers it: this build's carries
+ *  the line as `first_line` and again as `title`, and a server of the release before answers it as
+ *  `title` alone, which the page reads while a roll or a rollback leaves such a pod serving.
+ *
+ *  kept for one release: person-node-title
+ */
+type PersonNodeRead = Omit<PersonNode, "first_line"> & { readonly first_line?: string };
 
 /** What each tie reads as on the page. A row carries one or both: a comment a person wrote that
  *  was then delivered back to a session of theirs is authored and received at once. */
@@ -56,7 +65,7 @@ export function PersonPage(): ReactNode {
   if (nodes.isError) {
     return <p className={dangerText}>Could not load this page: {nodes.error.message}</p>;
   }
-  const rows = nodes.data.pages.flatMap((page) => page.rows ?? []);
+  const rows: PersonNodeRead[] = nodes.data.pages.flatMap((page) => page.rows ?? []);
 
   return (
     <section aria-label="Person">
@@ -80,6 +89,8 @@ export function PersonPage(): ReactNode {
         <ul aria-label="Person nodes" className="space-y-3">
           {rows.map((row) => {
             const deleted = postDeletion(row);
+            // kept for one release: person-node-title
+            const line = row.first_line ?? row.title;
             return (
               <li
                 className={`rounded-xl border p-3 ${card} ${borderDefault}`}
@@ -97,13 +108,14 @@ export function PersonPage(): ReactNode {
                   ))}
                 </div>
                 {/* The record's first line as the server cut it, drawn from the server's reading
-                    of it (`first_line_tree`). */}
+                    of it (`first_line_tree`); a row a server of the release before answers
+                    carries no tree, and the preview parses its line. */}
                 <PostPreview
                   className="mt-2 text-sm"
                   deleted={deleted}
                   fullTitle
                   lines={2}
-                  markdown={row.first_line}
+                  markdown={line}
                   source={textSourceOf(
                     textSourceKind(row.kind),
                     row.id,
