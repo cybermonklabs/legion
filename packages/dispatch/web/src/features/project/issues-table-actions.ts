@@ -36,7 +36,12 @@ import {
   startNextWrites,
   WRITES_IN_FLIGHT,
 } from "./issues-table-model";
-import { type TableAction, tableEpicWrite, useTableRecovery } from "./issues-table-recovery";
+import {
+  stepsByWriteKey,
+  type TableAction,
+  tableEpicWrite,
+  useTableRecovery,
+} from "./issues-table-recovery";
 
 interface Patch {
   key: string;
@@ -1097,7 +1102,7 @@ export function useIssueTableActions({
     // at once, as `apply` ends the name of a write it sends: those writes are Pending changes' own
     // and never pass through `apply`. Each is known by its row there, the step it is for read off
     // the key the record holds: a write sent again keeps its row, and can be sent under a new key.
-    const steps = new Map(Object.entries(interrupted.writes).map(([step, key]) => [key, step]));
+    const steps = stepsByWriteKey(interrupted.writes);
     const stepOfRow = new Map(
       writes.rows().flatMap((row) => {
         const step = steps.get(row.key);

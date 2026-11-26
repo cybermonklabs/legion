@@ -88,7 +88,7 @@ export const tableEpicWrite = defineWriteKind<string>({
 });
 
 /** The step each of `writes` was sent for, by its write key. */
-function stepsByWriteKey(writes: TableAction["writes"]): ReadonlyMap<string, string> {
+export function stepsByWriteKey(writes: TableAction["writes"]): ReadonlyMap<string, string> {
   return new Map(Object.entries(writes).map(([step, key]) => [key, step]));
 }
 
