@@ -120,7 +120,7 @@ func TestAPushOfALongHistorySetsEveryAuthor(t *testing.T) {
 		t.Fatalf("jj alone exited %d:\n%s", code, stderr)
 	}
 	twin.checkHistory(rolePushReviewer, "")
-	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+	rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 		f := newRolePushFixture(t, form, "")
 		f.mutableHistory(rolePushHistory)
 		divergent := f.divergence()
