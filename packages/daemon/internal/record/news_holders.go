@@ -335,13 +335,15 @@ func HoldsUntakenTask(held *RoleClaim) bool {
 // where the row names none), since a claim behind that entry is owed its phase start, which
 // carries the news — a root's architect among them, whose start of an entry carries its summary
 // as a phase worker's carries its news; it has not ended (ClaimEnded), since a failed or retired
-// claim is revived by its phase's own repair, whose start carries the news; and no operator holds
-// it suspended (operatorHolds). A claim an idle pod release suspended takes the news, and the
-// start that carries it wakes the claim as any start wakes one. Both readers state it through
-// this: the reconcile and the architect's summary over the claim the record holds
-// (RecordedClaimTakesNews), and the daemon's start over the claim its machine holds.
-func NewsClaimTakes(given, entry int64, state supervise.ClaimState, operatorHolds bool) bool {
-	return given == entry && !ClaimEnded(state) && !operatorHolds
+// claim is revived by its phase's own repair, whose start carries the news; and no suspension that
+// holds is over its agent (suspensionHolds): the operator's or the controller's
+// (supervise.SuspendSource.Holds), which no start the daemon queues gets past. A claim an idle pod
+// release suspended takes the news, and the start that carries it wakes the claim as any start
+// wakes one. Both readers state it through this: the reconcile and the architect's summary over
+// the claim the record holds (RecordedClaimTakesNews), and the daemon's start over the claim its
+// machine holds.
+func NewsClaimTakes(given, entry int64, state supervise.ClaimState, suspensionHolds bool) bool {
+	return given == entry && !ClaimEnded(state) && !suspensionHolds
 }
 
 // RecordedClaimTakesNews is NewsClaimTakes over a claim as the record holds it (RoleClaim), nil
@@ -350,6 +352,6 @@ func RecordedClaimTakesNews(held *RoleClaim, entry int64) bool {
 	if held == nil {
 		return false
 	}
-	operator := held.State == supervise.StateSuspended && held.SuspendedBy == supervise.SuspendedByOperator
-	return NewsClaimTakes(held.GivenEntry, entry, held.State, operator)
+	holds := held.State == supervise.StateSuspended && held.SuspendedBy.Holds()
+	return NewsClaimTakes(held.GivenEntry, entry, held.State, holds)
 }

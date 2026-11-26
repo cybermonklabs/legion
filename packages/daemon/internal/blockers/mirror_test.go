@@ -85,7 +85,7 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		{fact: intake.DispatchClaim{Key: "LEGION-903", Seq: 3, ClaimedBy: "user:alice"}, claims: []string{"LEGION-903"}},
 	}
 	for _, fact := range []intake.Fact{
-		intake.Handover{}, intake.DispatchArtifact{}, intake.GateAboveDispatch{},
+		intake.Handover{}, intake.DispatchArtifact{}, intake.MergeHoldsChanged{}, intake.GateAboveDispatch{},
 		intake.DispatchAskOpened{}, intake.DispatchAskRestored{}, intake.DispatchAskClosed{}, intake.DispatchAskReply{},
 		intake.DispatchApprovalMoved{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{}, intake.ProjectResumed{}, intake.SignalDeadline{},
 		intake.PullRequestOpened{}, intake.PullRequestSynchronized{}, intake.PullRequestReview{}, intake.PullRequestChecks{},

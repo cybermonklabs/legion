@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A stage driver's own home for Oh My Pi. Sourced, never run.
 #
-# omp_natives_dir prints the operator's native module cache (124 MiB per Oh My Pi version at the
+# omp_natives_dir prints the operator's native module cache (125 MiB per Oh My Pi version at the
 # pin, the one variant the CPU selects): $XDG_CACHE_HOME/omp/natives when XDG_CACHE_HOME is set and
 # $XDG_CACHE_HOME/omp exists, and $HOME/.omp/natives otherwise. Those are the two places getNativesDir
 # in @oh-my-pi/pi-natives' native/natives-dir.js reads when none of PI_NATIVES_DIR,

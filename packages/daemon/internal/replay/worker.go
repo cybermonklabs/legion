@@ -101,6 +101,9 @@ var OutboxHandling = map[RowKind]RowHandling{
 	{Kind: record.OutboxKindUpdateAsk}:        {Way: OutboxFinished, Assumption: assumeNoticesChangeNothing},
 	{Kind: record.OutboxKindMergeForward}:     {Way: OutboxFinished, Assumption: assumeNoticesChangeNothing},
 	{Kind: record.OutboxKindPhaseEnded}:       {Way: OutboxFinished, Assumption: assumeNoticesChangeNothing},
+	// The message that tells the merger of an issue in merging that the project's merge holds
+	// changed (record.MergeHoldsChanged), which no fact a replay applies writes (FactSources).
+	{Kind: record.OutboxKindMergeHoldsChanged}: {Way: OutboxFinished, Assumption: assumeNoticesChangeNothing},
 
 	{Kind: record.OutboxKindPendingBasisSeed}: {Way: OutboxFinished, Assumption: assumeNoBasis},
 	{Kind: record.OutboxKindReparentSeed}:     {Way: OutboxFinished, Assumption: assumeNoBasis},
