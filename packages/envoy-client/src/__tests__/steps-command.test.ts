@@ -385,7 +385,7 @@ describe("dispatch steps", () => {
     });
 
     expect(result.text.split("\n")[1]).toBe(
-      "- 2 step - implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed"
+      "- 2 step - implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed set - answered unknown"
     );
   });
 
