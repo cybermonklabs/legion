@@ -41,8 +41,8 @@ const (
 	// scopeProject is a write to an object that belongs to one project: the issue-key rows, the
 	// project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the
 	// message rows that carry an issue. The handler reads the object as the caller reads it, so
-	// one of a project the caller does not see answers as an object nobody holds
-	// (TestNoWriteReachesAHiddenObject, which writeProbes lets call every such row).
+	// one of a project the caller does not see answers as an object nobody holds.
+	// undecidableWrites refuses to mount a project row whose address writeProbes cannot call.
 	scopeProject writeScope = "project"
 	// scopeSession is a write that belongs to the calling session rather than to any project:
 	// an agent conversation's own artifact, messages and stream frames, the two routes a
@@ -252,7 +252,7 @@ var writeClasses = map[string]writeScope{
 // Dispatch names, and answers anyone else's as an unknown id. Whose each grant is the broker
 // decides for a full member (403 NOT_APPROVER for one not theirs), and Dispatch decides for a
 // restricted member: revokeCredentialGrant relays their revoke only of a grant whose session acts
-// for them (memberGrants) and answers any other id 403 RESTRICTED_MEMBER, sending no revoke.
+// for them and answers any other id 403 RESTRICTED_MEMBER, sending no revoke.
 var personsOwnAtTheBroker = map[string]bool{
 	"POST /api/v1/credential-grants/{id}/revoke": true,
 	"POST /api/v1/signins/{id}/revoke":           true,
