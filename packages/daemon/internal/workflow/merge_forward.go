@@ -145,13 +145,14 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //     reviewer step moves out of implementing into its retro, or into an acceptance no step
 //     follows, the ask of implementing stays on the record, and the move into merging asks the
 //     merger. A parent held before its retro, and its release into it, ask nothing either and
-//     make no call here (holdBeforeRetro, startHeldRetro).
+//     make no call here (holdBeforeRetro, StartHeldRetro).
 //
 // mergeForward asks once for each head, so a move into merging at a head the merger was already
 // asked of asks nothing more.
 func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
 	if issue.Phase == phase.Implementing {
-		return e.clearMergeForward(ctx, tx, issue.Key)
+		_, err := e.clearMergeForward(ctx, tx, issue.Key)
+		return err
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil || pr == nil || !classify.ConflictRound(*pr) {
@@ -197,17 +198,23 @@ func (e *Engine) holdMerger(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // clearMergeForward drops the merge forward the record holds for issue's pull request
-// (record.PullRequest.MergeForward), on a move into implementing (mergeForwardOnEntry) and when
-// the issue leaves the workflow (leave): the ask, its landing and the review it asked for are of
-// a stretch of work that is over, and a later conflict is asked about afresh. A record that holds
-// none is not written.
-func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string) error {
+// (record.PullRequest.MergeForward), on a move into implementing (mergeForwardOnEntry) or into
+// awaiting_children (awaitChildren) and when the issue leaves the workflow (leave): the ask, its
+// landing and the review it asked for are of a stretch of work that is over, and a later conflict
+// is asked about afresh. A record that holds none is not written. It answers the merge forward it
+// dropped, nil where it dropped none, which the move into awaiting_children names to the role it
+// asked (record.MergeForward.Asked) where it had not landed.
+func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string) (*record.MergeForward, error) {
 	pr, err := e.store.PullRequest(ctx, tx, issue)
 	if err != nil || pr == nil || pr.MergeForward == nil {
-		return err
+		return nil, err
 	}
+	cleared := pr.MergeForward
 	pr.MergeForward = nil
-	return e.putPullRequest(ctx, tx, *pr)
+	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
+		return nil, err
+	}
+	return cleared, nil
 }
 
 // mergeForwardLanded records that a merge forward landed (dispatch://INFRA-4374 R1): pr's head,
@@ -319,17 +326,17 @@ func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key stri
 // (pr, nil for none) is open and holds a merge forward of head (record.PullRequest.MergeForward)
 // that, for an ask or a hold, has not landed. In each other state the message would tell its role
 // of work nobody wants any more. The roles of a tree that lingers are suspended. The workflow drops
-// the ask on a move into implementing and when the issue leaves the workflow (clearMergeForward),
-// and a merge forward of another head is a newer ask, which has its own messages. A pull request
-// that is not open ends every step: mergeForward asks nothing for one, and once it closed or
-// merged nothing is left to merge forward, to hold for or to review. The ask and the hold end at
-// the landing (record.MergeForward.Landed): role-message rows run in no order of the issue's, so a
-// hold still queued would reach the worker after its landed and tell it to wait for a head that
-// already came, and an ask would ask for a merge already pushed. A message to the merger ends when
-// the issue no longer stands in merging: a backward move gives the workspace to an earlier phase,
-// and the merger must not be woken to write or merge there. The record keeps the ask and its
-// earlier landings, so their completion fences and review still stand. The landed and the review
-// are the landing's own messages, and they still go after it while their role applies.
+// the ask on a move into implementing or awaiting_children and when the issue leaves the workflow
+// (clearMergeForward), and a merge forward of another head is a newer ask, which has its own
+// messages. A pull request that is not open ends every step: mergeForward asks nothing for one, and
+// once it closed or merged nothing is left to merge forward, to hold for or to review. The ask and
+// the hold end at the landing (record.MergeForward.Landed): role-message rows run in no order of
+// the issue's, so a hold still queued would reach the worker after its landed and tell it to wait
+// for a head that already came, and an ask would ask for a merge already pushed. A message to the
+// merger ends when the issue no longer stands in merging: a backward move gives the workspace to an
+// earlier phase, and the merger must not be woken to write or merge there. The record keeps the ask
+// and its earlier landings, so their completion fences and review still stand. The landed and the
+// review are the landing's own messages, and they still go after it while their role applies.
 func leftMergeForwardAt(issue record.Issue, lingers bool, pr *record.PullRequest, role claim.Role, step record.MergeForwardStep, head string) string {
 	switch {
 	case !record.InWorkflow(issue):

@@ -94,10 +94,11 @@ func waitUntil(deadline time.Time, poll time.Duration, condition func() bool) bo
 	return condition()
 }
 
-// margin is how long before the test binary's deadline Until and Receive give up: the time the
+// Margin is how long before the test binary's deadline Until and Receive give up: the time the
 // failing test's cleanups and the failure itself have to run in before Go's alarm panics the
-// binary.
-const margin = 30 * time.Second
+// binary. A bound of another package's that must end before that alarm too (testdb's connect
+// timeout) leaves the same.
+const Margin = 30 * time.Second
 
 // PastTheRun is a span longer than any run of a test binary: longer than the longest -timeout a
 // command of this repository gives one (the API race step's 70 minutes,
@@ -206,7 +207,7 @@ func giveUpAt(t *testing.T) (time.Time, bool) {
 	if !bounded {
 		return time.Time{}, false
 	}
-	return deadline.Add(-margin), true
+	return deadline.Add(-Margin), true
 }
 
 // oneLine writes a newline or a carriage return as its escape, so a failure text is one line.
@@ -217,7 +218,7 @@ var oneLine = strings.NewReplacer("\n", `\n`, "\r", `\r`)
 // wait that has none.
 func gaveUp(t *testing.T, what string, reading func() string) {
 	t.Helper()
-	text := fmt.Sprintf("testwait: %s: gave up waiting for %s %s before the test binary's deadline", t.Name(), what, margin)
+	text := fmt.Sprintf("testwait: %s: gave up waiting for %s %s before the test binary's deadline", t.Name(), what, Margin)
 	if reading != nil {
 		text += "; last read: " + reading()
 	}
