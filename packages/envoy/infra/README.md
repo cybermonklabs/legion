@@ -4878,7 +4878,8 @@ only the full set: each allowed review is judged alone (`operator-token-minters/
 Who is reviewed: each ServiceAccount outside the system namespaces (`kube-system`, `gke-*` and
 `gmp-*`), Kubernetes' own groups, anyone unauthenticated, and each binding subject the check does
 not allow. A `system:*` User is an allowed Kubernetes component, never reviewed. A User with no
-`system:` prefix, such as `kube-apiserver` in GKE's own `kubelet-api-admin` binding, is reviewed
+`system:` prefix, such as `kube-apiserver` in GKE's own ClusterRoleBinding
+`kube-apiserver-kubelet-api-admin` (to the ClusterRole `kubelet-api-admin`), is reviewed
 and printed on every cluster that binds it, and the check accepts no subject by its name.
 A username is only a name: whoever can have a certificate or token issued with it, through a
 certificate signer and approver or by impersonation, presents it. Accepting it by name would hide
