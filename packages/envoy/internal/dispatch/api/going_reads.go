@@ -268,8 +268,12 @@ func (s *server) goingPageArguments(ctx context.Context, run, tool string, argum
 			return nil, fmt.Errorf("read the page of run %s: %w", run, err)
 		}
 	}
-	filled := make(map[string]any, len(arguments)+1)
-	maps.Copy(filled, arguments)
+	// A copy of the call's arguments, which the page's issue or project is added to; a call with
+	// no arguments gets a map of its own.
+	filled := maps.Clone(arguments)
+	if filled == nil {
+		filled = map[string]any{}
+	}
 	switch {
 	case tool == going.ReadProgress && page.Issue != "":
 		filled["issue"] = page.Issue
