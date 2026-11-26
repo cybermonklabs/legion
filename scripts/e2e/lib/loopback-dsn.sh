@@ -45,11 +45,12 @@
 # batch's SKILL_SCENARIOS_POSTGRES_URL with this guard in services_up, through
 # require_loopback_env and run_database_url_env, and gives each run's Dispatch the string
 # run_database_url rebuilds, in own_dispatch. The thirteenth is hook-prompt-two-builds.sh, which
-# sources this file itself and reads LEGION_TEST_PG_DSN with this guard before it takes the base
-# commit's tree. Eleven of the thirteen call sites call this function. envoy-session-delivery.sh
-# and dispatch-session-settings.sh read their DSN with run_database_url alone, through
-# run_database_url_env, which begins with this guard's own check. Every proof that writes a
-# server its caller's DSN names reads that DSN with this guard before it starts anything.
+# sources this file itself and reads LEGION_TEST_PG_DSN with this guard, through
+# require_loopback_env, before it takes the base commit's tree. Eleven of the thirteen call sites
+# call this function. envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN
+# with run_database_url alone, through run_database_url_env, which begins with this guard's own
+# check. Every proof that writes a server its caller's DSN names reads that DSN with this guard
+# before it starts anything.
 #
 # libpq's own parser answers which host the DSN names, because libpq and a URL parser read
 # different text as the host. libpq ends the user name at the first `@` and starts no query

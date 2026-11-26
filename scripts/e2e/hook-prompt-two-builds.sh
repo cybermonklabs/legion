@@ -26,7 +26,7 @@
 # listener with that variable alone.
 #
 # LEGION_TEST_PG_DSN is required and must name a loopback host: the test creates and drops
-# databases there, and lib/loopback-dsn.sh's require_loopback_dsn refuses any other host with exit
+# databases there, and lib/loopback-dsn.sh's require_loopback_env refuses any other host with exit
 # 2 before the run takes or builds anything. The test is skipped without it, and a skipped test is
 # never read as a pass or a loss: each case reads the subtest's own `--- PASS` or `--- FAIL` line.
 # The test starts its nats-server as a container, so docker must answer. Each case's `go test -v`
@@ -142,12 +142,11 @@ run_subtest() {
 begin prerequisites
 [ "$base_given" = true ] && [ -n "$base_commit" ] ||
   refuse "--base-commit is required: it names the commit of the earlier daemon, such as legion-v23.21.0"
-dsn=${LEGION_TEST_PG_DSN:-}
-[ -n "$dsn" ] ||
+[ -n "${LEGION_TEST_PG_DSN:-}" ] ||
   refuse "LEGION_TEST_PG_DSN is unset: it names the loopback PostgreSQL the test creates its databases on"
 unset PGHOSTADDR PGSERVICE PGSERVICEFILE
 db_host=''
-require_loopback_dsn db_host LEGION_TEST_PG_DSN "$dsn" "this run creates and drops databases there" ||
+require_loopback_env db_host LEGION_TEST_PG_DSN "this run creates and drops databases there" ||
   refuse "$db_host"
 for tool in go git tar docker grep; do
   command -v "$tool" >/dev/null || refuse "no $tool on PATH"

@@ -3084,7 +3084,7 @@ The strip costs the message nothing: its `body` holds the text this release wrot
 The delete costs the architect the notice of each message still held, which names nothing the message does not.
 
 Roll the Envoy listener back before the daemon.
-An earlier daemon ends a hook prompt's row at the `404` a listener of this release answers it, and the prompt is lost (`scripts/e2e/hook-prompt-two-builds.sh`); an earlier listener keeps the prompt for the role's next holder, as the earlier daemon expects.
+An earlier daemon ends a hook prompt's row, and a phase-ended message's row, at the `404` a listener of this release answers it, and the message is lost (`scripts/e2e/hook-prompt-two-builds.sh` shows it for the hook prompt); an earlier listener keeps either for the role's next holder, as the earlier daemon expects.
 This change writes no column and runs no migration, so no dump and no `alter table` belong here.
 
 #### Rolling back the release that frees the slot past review

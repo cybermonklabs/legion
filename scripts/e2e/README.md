@@ -6366,7 +6366,7 @@ The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prere
 The tenth is [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s negative control, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it builds the base commit's tree, through the copy [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources.
 The eleventh is [`approved-version-news.sh`](#approved-version-newssh)'s `arguments` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it builds or extracts anything, through that same copy.
 The twelfth is the skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`, which reads a batch's `SKILL_SCENARIOS_POSTGRES_URL` with `require_loopback_env` in `services_up`, checks there with `run_database_url_env` that a run's connection string can carry it, and gives each run's Dispatch the string `run_database_url` rebuilds, in `own_dispatch`, through the copy [`lib/rig.sh`](#librigsh) sources.
-The thirteenth is `hook-prompt-two-builds.sh`'s `prerequisites` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_dsn` before it takes the base commit's tree, sourcing [`lib/loopback-dsn.sh`](#libloopback-dsnsh) itself.
+The thirteenth is `hook-prompt-two-builds.sh`'s `prerequisites` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it takes the base commit's tree, sourcing [`lib/loopback-dsn.sh`](#libloopback-dsnsh) itself.
 `require_loopback_env` takes the variable's name rather than its value and hands the value to `require_loopback_dsn` with the shell's xtrace off, so a run under `bash -x` traces no DSN, where a caller's own line that passed the DSN would trace it.
 [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database, through `run_database_url_env`, which takes the variable's name in the same way.
 They create and drop that database with `psql_env`, which takes the name in the same way too, and hand Dispatch the connection string `run_database_url_env` rebuilt from a subshell that turns xtrace off before it expands that string, so a run of either under `bash -x` traces no part of the DSN.
@@ -6427,7 +6427,7 @@ The sixth, [`envoy-session-delivery.sh`](#envoy-session-deliverysh), sources it 
 The ninth, [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), sources it on its own too, and calls `require_loopback_env` in `prerequisites` for each proof that makes its run.
 The tenth, [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), has it through that file, and calls `require_loopback_env` itself once more, for its negative control.
 The eleventh, [`approved-version-news.sh`](#approved-version-newssh), has it through that file too, and calls `require_loopback_env` in its own `arguments` check as well, before it builds or extracts anything.
-The thirteenth, `hook-prompt-two-builds.sh`, sources it on its own, and calls `require_loopback_dsn` in its `prerequisites` check, before it takes the base commit's tree.
+The thirteenth, `hook-prompt-two-builds.sh`, sources it on its own, and calls `require_loopback_env` in its `prerequisites` check, before it takes the base commit's tree.
 
 ```sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"     # sourced, never run
