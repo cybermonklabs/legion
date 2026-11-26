@@ -4,8 +4,11 @@
 # Sourced by operator-token-minters.sh, whose header says what each step checks.
 # --- The IAM checks: each a step, a resource, the permissions asked and a witness. ---
 
-declare -A CHECK_STEP=() CHECK_RESOURCE=() CHECK_PERMS=() CHECK_WITNESS=() CHECK_MISSING=()
-CHECKS=(gke gsa broker sql dbsecret state signing fleet)
+# CHECK_RESIDUAL, for a check of the minters of a Google service account whose credited grant reaches
+# the broker's pod fence's residual (step-live-iam.sh): the account and that grant, which each
+# holder's ALLOWANCE names in place of a finding (live_iam).
+declare -A CHECK_STEP=() CHECK_RESOURCE=() CHECK_PERMS=() CHECK_WITNESS=() CHECK_MISSING=() CHECK_RESIDUAL=()
+CHECKS=(gke dm gsa broker sql dbsecret state signing fleet)
 PROJECT_RES="//cloudresourcemanager.googleapis.com/projects/$PROJECT"
 BUCKET=""
 if [ -n "$BROKER_STATE" ]; then
@@ -17,6 +20,11 @@ project_name="the operator's project"
 CHECK_STEP[gke]="live: GKE IAM on $project_name"
 CHECK_RESOURCE[gke]="$PROJECT_RES"
 CHECK_PERMS[gke]="${CONTAINER_PERMISSIONS[*]} resourcemanager.projects.setIamPolicy iam.roles.update"
+# Deployment Manager acts as the project's Google APIs service agent, which holds roles/editor there,
+# whoever asks it to (DEPLOYMENT_MANAGER_PERMISSIONS, rights.sh).
+CHECK_STEP[dm]="live: Deployment Manager on $project_name"
+CHECK_RESOURCE[dm]="$PROJECT_RES"
+CHECK_PERMS[dm]="${DEPLOYMENT_MANAGER_PERMISSIONS[*]}"
 # The names steps print: a flag's value, or what it would name. A default holding an apostrophe
 # cannot be written as ${NAME:-...} inside double quotes, where bash reads the apostrophe as a quote.
 operator_account="the operator's Google service account" sql_name="the broker's instance"
@@ -93,6 +101,7 @@ iam_verdict() {
       ;;
     broker) if [ -n "$BROKER_WI_MEMBER" ] && [ "$member" = "$BROKER_WI_MEMBER" ]; then VERDICT=ok; fi ;;
     signing) if [ "$member" = "serviceAccount:$GSA" ]; then VERDICT=ok; fi ;;
+    dm) NOTE="$NOTE, by which Deployment Manager creates a deployment's resources as the project's Google APIs service agent, which holds roles/editor there" ;;
   esac
 }
 # held_text CHECK PERMISSIONS_CSV: the check's permissions among PERMISSIONS, in the check's order.
