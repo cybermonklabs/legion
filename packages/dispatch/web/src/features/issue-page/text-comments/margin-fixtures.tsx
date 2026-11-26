@@ -491,20 +491,26 @@ function drawIn(
 /** The page's root, `IssueOutlinePage`, at the issue's address of `preset` under what the app
  *  provides above it, in a window `width` px wide (`DESKTOP_WIDTH`, 1440 px, where none is given)
  *  that `window.set` resizes. Details' drawer is the shell's own (`drawer`) where the case wants
- *  Details. */
+ *  Details. `beside` is drawn after the root, under the same router and providers: what a case
+ *  needs beside the page that reads none of the page's own providers (a composer's opener, a
+ *  row's sheet), while the root keys its slots by the issue as the page does. */
 export function drawPage(
   client: QueryClient,
   preset: Preset,
   {
     after = "",
+    beside = null,
     drawer = false,
     width = DESKTOP_WIDTH,
-  }: { after?: string; drawer?: boolean; width?: number } = {}
+  }: { after?: string; beside?: ReactNode; drawer?: boolean; width?: number } = {}
 ): DrawnPage {
-  return drawIn(client, `${presetPath(KEY, preset)}${after}`, <IssueOutlinePage />, {
-    drawer,
-    width,
-  });
+  const page = (
+    <>
+      <IssueOutlinePage />
+      {beside}
+    </>
+  );
+  return drawIn(client, `${presetPath(KEY, preset)}${after}`, page, { drawer, width });
 }
 
 /** The page's root as `IssueOutlinePage` draws it - the stage in the issue's column and the

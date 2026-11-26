@@ -22,7 +22,9 @@ import type { ViewThreads } from "./useTextThreads";
 /**
  * The composer a comment on selected words is written in (R5), as the column draws it beside the
  * node (`TextMargin.tsx`) and the node's sheet below 1024 px (`NodeThreads.tsx`): the quoted words
- * cut to one line (`quoteLine`), then `MentionComposer`, which keeps the draft as it keeps any.
+ * cut to one line (`quoteLine`), then `MentionComposer`, which keeps the draft under the
+ * composer's send name at each change, so the composer drawn at the same words in the other place
+ * opens on it when the window crosses 1024 px.
  * Escape closes it with the draft kept and gives the focus to the node's row.
  *
  * Its send (`useSelectionSend`) writes the request of the node's kind (`text-comment-write.ts`).
@@ -192,6 +194,12 @@ export function SelectionComposer({
         onClose={onLeave}
         onSent={nothingMore}
         owner={{ issueKey: write?.issue ?? issue.key, kind: "issue" }}
+        // The draft is kept under the send name at each change, as a standing box keeps its own,
+        // and not by its address only as the composer unmounts: at 1024 px the column and the
+        // node's sheet swap their composers at the same words in one commit, and the one that
+        // arrives reads the draft as it first draws, before the one that leaves has unmounted.
+        // Every other effect of `standing` is on a reply target, which this composer never has.
+        standing
       />
       {said === undefined ? null : (
         <p className="text-sm" role="status">

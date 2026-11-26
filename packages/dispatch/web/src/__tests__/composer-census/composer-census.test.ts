@@ -13,7 +13,10 @@
  * coverage lists and the matrix files' titles are always this tree's.
  */
 import { expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 import { coverage as signIn } from "../../draft-matrix.sign-in.coverage";
 import { coverage as agentsRow } from "../../features/agents/draft-matrix.agents-row.coverage";
@@ -25,6 +28,7 @@ import { coverage as phoneThread } from "../../features/conversation/draft-matri
 import { coverage as ask } from "../../features/inbox/draft-matrix.ask.coverage";
 import { coverage as messageBox } from "../../features/inbox/draft-matrix.message-box.coverage";
 import { coverage as threadBox } from "../../features/inbox/draft-matrix.thread-box.coverage";
+import { coverage as textComments } from "../../features/issue-page/text-comments/draft-matrix.text-comments.coverage";
 import { coverage as margin } from "../../features/margin/draft-matrix.margin.coverage";
 import { type CensusItem, composerCensus, keyParts } from "./census";
 import type { CoverageEntry } from "./coverage";
@@ -44,6 +48,10 @@ const MATRIX: readonly { readonly file: string; readonly entries: readonly Cover
   { entries: ask, file: "features/inbox/draft-matrix.ask.test.tsx" },
   { entries: messageBox, file: "features/inbox/draft-matrix.message-box.test.tsx" },
   { entries: threadBox, file: "features/inbox/draft-matrix.thread-box.test.tsx" },
+  {
+    entries: textComments,
+    file: "features/issue-page/text-comments/draft-matrix.text-comments.test.tsx",
+  },
   { entries: margin, file: "features/margin/draft-matrix.margin.test.tsx" },
 ];
 
@@ -135,4 +143,100 @@ test("every reason entry has words", () => {
       .map((entry) => `${listOf(file)}: the reason for ${entryNamed(entry)} has no words`)
   );
   expect(empty).toEqual([]);
+});
+
+/** A tree the census reads in place of `web/src`, for the case below: the three draft fields as
+ *  the census finds them (`DRAFT_FIELDS` in `trees.ts`), and two routes, each drawing a composer
+ *  under a context provider written as a `createElement` call, as a module with no JSX writes
+ *  it: `PlantedProvider` as `useDocumentToolbars.ts` writes the issue page's, two providers
+ *  nested, and `KeyedProvider` with a key among its props, which ends every mount below it when
+ *  it changes, so the census reads no further. */
+const PLANTED: Readonly<Record<string, string>> = {
+  "app.tsx": `import { Route, Routes } from "react-router";
+import { KeyedPage, PlantedPage } from "./features/planted/PlantedPage";
+
+export function App() {
+  return (
+    <Routes>
+      <Route path="/planted" element={<PlantedPage id="a" />} />
+      <Route path="/keyed" element={<KeyedPage id="b" />} />
+    </Routes>
+  );
+}
+`,
+  "features/conversation/MentionComposer.tsx": `export function MentionComposer({ mutationKey }: { mutationKey: readonly string[] }) {
+  useComposerSend(mutationKey);
+  return <textarea />;
+}
+`,
+  "features/inbox/AskThread.tsx": `export function AskReplyComposer() {
+  return null;
+}
+`,
+  "features/inbox/useAskAnswerForm.ts": `export function useAskAnswerForm() {
+  return undefined;
+}
+`,
+  "features/planted/PlantedPage.tsx": `import { MentionComposer } from "../conversation/MentionComposer";
+import { KeyedProvider, PlantedProvider } from "./planted-context";
+
+export function PlantedPage({ id }: { id: string }) {
+  return (
+    <PlantedProvider value={1}>
+      <MentionComposer mutationKey={["planted", id]} />
+    </PlantedProvider>
+  );
+}
+
+export function KeyedPage({ id }: { id: string }) {
+  return (
+    <KeyedProvider value={1}>
+      <MentionComposer mutationKey={["keyed", id]} />
+    </KeyedProvider>
+  );
+}
+`,
+  "features/planted/planted-context.ts": `import { createContext, createElement, type ReactNode } from "react";
+
+const OuterContext = createContext(0);
+const InnerContext = createContext(0);
+
+export function PlantedProvider({ children, value }: { children: ReactNode; value: number }) {
+  if (value < 0) return null;
+  return createElement(
+    OuterContext.Provider,
+    { value },
+    createElement(InnerContext.Provider, { value: value + 1 }, children)
+  );
+}
+
+export function KeyedProvider({ children, value }: { children: ReactNode; value: number }) {
+  return createElement(OuterContext.Provider, { key: value, value }, children);
+}
+`,
+};
+
+const plantedRoot = temporaryDirectory("composer-census-planted");
+
+test("the composer census reads through a context provider drawn by createElement, and not through a keyed one", () => {
+  for (const [path, source] of Object.entries(PLANTED)) {
+    mkdirSync(join(plantedRoot, path, ".."), { recursive: true });
+    writeFileSync(join(plantedRoot, path), source);
+  }
+  const planted = composerCensus(plantedRoot);
+  const mount = 'PlantedPage <MentionComposer mutationKey={["planted", id]}>';
+  const keyed = 'KeyedPage <MentionComposer mutationKey={["keyed", id]}>';
+  const found = planted.items
+    .filter((item) => item.above.includes(mount))
+    .map((item) => `${item.host} · ${item.kind} · ${item.expression}`);
+  // The mount placed, the provider's own code read past both of its calls, and the route above.
+  const wanted = [
+    'PlantedPage · address prop · mutationKey={["planted", id]}',
+    'PlantedPage · lifetime · <MentionComposer mutationKey={["planted", id]}>',
+    "PlantedProvider · early return · if (value < 0) return …",
+    'App · route · <Route path="/planted">',
+  ];
+  expect(wanted.filter((item) => !found.includes(item))).toEqual([]);
+  expect(planted.unread.filter((line) => !line.endsWith(`, above ${keyed}`))).toEqual([]);
+  expect(planted.unread.filter((line) => line.endsWith(`, above ${keyed}`))).toHaveLength(1);
 });
