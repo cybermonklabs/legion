@@ -869,6 +869,11 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 		if _, err := runCheckedOnClone(ctx, run, cloneDir, "git", "import"); err != nil {
 			return err
 		}
+		for _, ref := range source.issue.defaults {
+			if _, err := runCheckedOnClone(ctx, run, cloneDir, "bookmark", "track", originRow(strings.TrimPrefix(ref, "refs/heads/"))); err != nil {
+				return err
+			}
+		}
 		source.issue.fetched = true
 		source.issue.log(fmt.Sprintf("the clone holds %s already: %s bytes from GitHub for the delta (%s)",
 			source.issue.repository, groupedBytes(bytes), refCount(refs)))
