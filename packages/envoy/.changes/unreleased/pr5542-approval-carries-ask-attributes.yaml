@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    An approval carries across a version whose only change from the approved one is in the server-owned attributes of its ask blocks: the version a person's answer, resolve or decline writes, a reopen's, and the first write of a document the release before wrote, which takes the answers' words and an open ask's `state` off its blocks. The two versions must be the same text once `state`, `answered_by`, `answered_at`, `selected`, `answer`, `invalid`, `copied_from` and `copied_from_document` are taken off every ask block of each, every ask block must agree with its ask's node, and every node the approved version held must still stand. A write that changes one further character supersedes the approval and reports it, as before. An approval request that waits on the person keeps its turn across such a version: it moves to the version, stays with the person, and wakes nobody. A close's version carries no approval, and the reopen's carries the one that stood.
+time: 2026-11-26T03:00:03Z
+custom:
+    Issue: pr5542

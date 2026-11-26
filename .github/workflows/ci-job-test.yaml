@@ -257,6 +257,10 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_plugin_names_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-plugin-names.test.sh .github/scripts/check-plugin-names.test.sh
 
+      - name: Test the kept-for-one-release list check
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_kept_for_one_release_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-kept-for-one-release.test.sh .github/scripts/check-kept-for-one-release.test.sh
+
       - name: Test the fireEvent reason check
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_fireevent_reasons_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-fireevent-reasons.test.sh .github/scripts/check-fireevent-reasons.test.sh

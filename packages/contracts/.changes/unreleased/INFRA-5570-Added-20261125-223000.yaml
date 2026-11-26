@@ -1,9 +1,0 @@
-kind: Added
-body: |-
-    `DISPATCH_ASKS_HEADER` is `Dispatch-Asks`, the request header a reader of the text routes
-    sends as `Dispatch-Asks: 1` to say that it reads their `asks` member.
-    `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts` describe what the text
-    routes serve with and without it.
-time: 2026-11-25T22:30:00Z
-custom:
-    Issue: INFRA-5570

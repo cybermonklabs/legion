@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+    `DISPATCH_ASKS_HEADER` is `Dispatch-Asks`, the request header a reader of the text routes sends as `Dispatch-Asks: 1` to say that it reads their `asks` member. `TextAsk` is one entry of that member: an ask block's `block_id`, and its `state`, `answered_by`, `answered_at`, `selected` and `answer`, and on a copy `copied_from` and `copied_from_document`. `schemas/dispatch-openapi.json`, and the types rendered from it, describe what the text routes serve with the header and without it.
+    `askOpenerAttributes(line)` returns the ask an ask block's opening line (`askOpenerLines`) carries on it, as a Dispatch of the release before writes it there: the block id and each of those attributes the line holds, with the character references the renderer writes read back. The page and `dispatch doc-read` read an answer there only from a Dispatch that answers no `asks`.
+time: 2026-11-26T03:00:06Z
+custom:
+    Issue: pr5542

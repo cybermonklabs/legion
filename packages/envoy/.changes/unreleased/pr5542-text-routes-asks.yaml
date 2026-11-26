@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    `GET /api/v1/artifacts/{id}/text` and its issue and project slug forms answer an `asks` member, one entry per ask block in document order with its state, answerer, time, selection and answer read from the ask's node, and serve each reader the markdown it reads. A request that sends `Dispatch-Asks: 1`, which says that it reads `asks`, is served markdown with none of an ask block's eight server-owned attributes (`state`, `answered_by`, `answered_at`, `selected`, `answer`, `invalid`, `copied_from` and `copied_from_document`), so a read uploads back unchanged. A request without the header, which is every reader of the release before, is served the kept form: `selected`, `answer` and `invalid` are taken off every ask block, and `state`, `answered_by`, `answered_at`, `copied_from` and `copied_from_document` stay as the document holds them, so the `dispatch doc-read` of that release still reads which asks are answered or resolved, and by whom, and no answer's words. Both forms answer the same `token` and the same `asks`, and the answer says `Vary: Dispatch-Asks`.
+time: 2026-11-26T03:00:02Z
+custom:
+    Issue: pr5542

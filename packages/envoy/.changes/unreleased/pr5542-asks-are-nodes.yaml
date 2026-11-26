@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+    An ask is a node of the store, and a person's answer is held once, on that node. The answer route appends the answer's words, the options it selects, its author and its time as attributes of the ask node, and its author also as a `decided_by` tuple to the person, and every read of an answer reads the node. The `asks` row is only a projection of it, written in the same transaction. Once no process of the release before is serving, no document holds an answer's words or its selection: a person's answer, resolve or decline of an ask, and an issue's close or reopen, each write one version of the document, and it changes only the server-owned attributes of the ask's block. An open ask's block holds no `state`.
+    For one release a stored version keeps what the clients of the release before read: the `state` of an ask that is answered or resolved, who answered it and when, and on a copy of another document's ask its `copied_from` and `copied_from_document`. While a process of the release before still serves, settlement keeps all eight server-owned attributes of an ask block in step with the `asks` row, as that release does.
+    A booting process first states on the store every ask and ask follower that a build before this one wrote with no node, and, while a process of another build serves, a tick of its own states the answers, resolutions, openings, follows and unfollows that process appends. The migrations of this release add to the `asks` and `ask_followers` rows the marker that names their node, and move the arms of `graph_edges` that answer an ask's `anchored_to`, `owned_by` and `followed_by` to the store's own.
+time: 2026-11-26T03:00:00Z
+custom:
+    Issue: pr5542
