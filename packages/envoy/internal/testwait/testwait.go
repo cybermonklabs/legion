@@ -22,7 +22,16 @@
 // <reading>" to stderr at once, then fails the test with the same text: without -v, Go's alarm
 // panics without printing a running test's log, so a cleanup that outlasted the margin would
 // otherwise take the message with it. The text is one line: a newline in what or in the reading is
-// written as \n.
+// written as \n. The reading describes the value snapshot its callback handed it; pointers into
+// live objects print as addresses, so a callback that needs fields behind one copies them while it
+// holds that object's lock. After the failure the test's output carries the goroutine stacks as the
+// wait gave up, the dump Go's alarm would print had the wait not given up before it: the waiting
+// goroutine's, then those its test started, bounded (goroutineStacks). A wait that began past the
+// margin did not wait, so its failure is collateral: it prints a line that says so and names the
+// longest completed testwait wait recorded so far, and the stacks only when no earlier give-up of
+// the binary has printed them (diagnostics). A wait with a failure text of its own that takes its
+// bound from Bounded, Remaining, Left or Context gets the same stacks, read at that bound's end and
+// printed when its test fails (watchBound).
 package testwait
 
 import (
@@ -49,13 +58,17 @@ func Eventually(t *testing.T, what string, condition func() bool) {
 // Bounded is bound, or what is left of the test binary's own deadline less spare when that is
 // sooner, so a -timeout smaller than bound still reports the wait rather than the binary's panic.
 // Eventually is Bounded of a minute and a second; a wait with a span or a spare of its own takes
-// those. spare is the caller's, not this package's margin.
+// those. spare is the caller's, not this package's margin. The bound it gives is watched
+// (watchBound): a test that fails after its wait gave up at that bound's end prints the goroutine
+// stacks as that end came.
 func Bounded(t *testing.T, bound, spare time.Duration) time.Duration {
 	if testDeadline, ok := t.Deadline(); ok {
 		if left := time.Until(testDeadline) - spare; left < bound {
-			bound = left
+			watchBound(t, "Bounded", testDeadline.Add(-spare), false, "the test binary's deadline less "+spare.String(), callerSite())
+			return left
 		}
 	}
+	watchBound(t, "Bounded", time.Now().Add(bound), true, "the wait's own span of "+bound.String(), callerSite())
 	return bound
 }
 
@@ -119,15 +132,17 @@ func Until[T any](t *testing.T, what string, read func() (T, bool)) T {
 // second (Holds).
 func UntilPolling[T any](t *testing.T, poll time.Duration, what string, read func() (T, bool)) T {
 	t.Helper()
+	started := time.Now()
 	var value T
 	end, bounded := giveUpAt(t)
+	spent := bounded && !clock.Now().Before(end)
 	holds := func() bool {
 		var ok bool
 		value, ok = read()
 		return ok
 	}
 	if !asked(end, bounded, poll, holds) {
-		gaveUp(t, what, func() string { return fmt.Sprintf("%+v", value) })
+		gaveUp(t, what, started, end, spent, func() string { return describe(value) })
 	}
 	return value
 }
@@ -139,7 +154,10 @@ func UntilPolling[T any](t *testing.T, poll time.Duration, what string, read fun
 // select happens to pick ch.
 func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 	t.Helper()
-	if end, bounded := giveUpAt(t); !bounded || clock.Now().Before(end) {
+	started := time.Now()
+	end, bounded := giveUpAt(t)
+	spent := bounded && !clock.Now().Before(end)
+	if !spent {
 		expired, stop := expiry(t)
 		defer stop()
 		select {
@@ -155,7 +173,7 @@ func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 		return value
 	default:
 	}
-	gaveUp(t, what, nil)
+	gaveUp(t, what, started, end, spent, nil)
 	var zero T
 	return zero
 }
@@ -164,7 +182,8 @@ func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 // when t ends: Receive's end, for a call that takes a context, or a socket whose deadline is the
 // context's. Under -timeout 0 it has no deadline; under a -timeout of 30 s or less its deadline
 // has already passed when the test starts, so a call under it fails at once, as every wait here
-// does.
+// does. Its deadline is watched (watchBound): a test that fails after a call under it gave up
+// prints the goroutine stacks as that deadline came.
 func Context(t *testing.T) context.Context {
 	end, bounded := giveUpAt(t)
 	if !bounded {
@@ -172,6 +191,7 @@ func Context(t *testing.T) context.Context {
 		t.Cleanup(cancel)
 		return ctx
 	}
+	watchBound(t, "Context", end, false, "the test binary's deadline less "+margin.String(), callerSite())
 	ctx, cancel := context.WithDeadline(context.Background(), end)
 	t.Cleanup(cancel)
 	return ctx
@@ -213,10 +233,10 @@ func giveUpAt(t *testing.T) (time.Time, bool) {
 // oneLine writes a newline or a carriage return as its escape, so a failure text is one line.
 var oneLine = strings.NewReplacer("\n", `\n`, "\r", `\r`)
 
-// gaveUp ends a wait in t that the margin ended: it writes the failure's text to stderr at once,
-// in one write, then fails t with the same text. reading is the wait's last reading, or nil for a
-// wait that has none.
-func gaveUp(t *testing.T, what string, reading func() string) {
+// gaveUp ends a wait in t that ended at the test binary's deadline less margin: it writes the
+// failure's text to stderr at once, then records the failure, its diagnostics, and its stop in one
+// shared tail (fail). reading is the wait's last reading, or nil for a wait that has none.
+func gaveUp(t *testing.T, what string, started, end time.Time, spent bool, reading func() string) {
 	t.Helper()
 	text := fmt.Sprintf("testwait: %s: gave up waiting for %s %s before the test binary's deadline", t.Name(), what, Margin)
 	if reading != nil {
@@ -224,5 +244,6 @@ func gaveUp(t *testing.T, what string, reading func() string) {
 	}
 	text = oneLine.Replace(text)
 	_, _ = os.Stderr.WriteString(text + "\n")
-	t.Fatalf("%s", text)
+	stacks := diagnostics(t, what, started, end, spent, "the test binary's deadline less "+margin.String())
+	fail(t, text, stacks)
 }

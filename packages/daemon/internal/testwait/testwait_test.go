@@ -148,4 +148,11 @@ func TestReceiveFailsNamingWhenItGaveUp(t *testing.T) {
 		t.Fatalf("the child run ran into the binary's deadline, want the wait's own failure first; its output:\n%s", out)
 	}
 	RequireGaveUp(t, string(out), "a value nothing sends", timeout)
+	// The child runs without -v, so the stacks reach go test's output with the failure, as a run's
+	// does: after the header, the waiting goroutine's stack names the row that waited.
+	_, stacks, found := strings.Cut(string(out), "testwait: TestReceiveFailsNamingWhenItGaveUp: the goroutine stacks as the wait gave up: ")
+	waiting, _, _ := strings.Cut(stacks, "\n    \n")
+	if !found || !strings.Contains(waiting, ".TestReceiveFailsNamingWhenItGaveUp(") || !strings.Contains(stacks, "testwait: TestReceiveFailsNamingWhenItGaveUp: end of the goroutine stacks: ") {
+		t.Fatalf("the child's give-up printed no goroutine stacks whose first names the row that waited; its output:\n%s", out)
+	}
 }

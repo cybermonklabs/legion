@@ -1,6 +1,7 @@
 package testwait
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -30,18 +31,26 @@ var deadlineOf = (*testing.T).Deadline
 // span, so a fact that is merely slow on a loaded machine still passes, and a wait that gives up
 // still leaves its test the margin to fail in and run its cleanups. With giveUpMargin or less
 // left there is no span a wait could run on, so Remaining fails t there, on one line naming the
-// deadline and the margin, and returns nothing. It calls t.Fatalf, so it must be called from the
-// goroutine running the test.
+// deadline and the margin, and returns nothing; it prints the goroutine stacks after it, as a wait
+// begun past the margin does (stacksFor). Otherwise the span it gives ends at the deadline less
+// giveUpMargin, which is watched (watchBound): a test that fails after its wait gave up there
+// prints the goroutine stacks as that moment came. It calls t.FailNow, so it must be called from
+// the goroutine running the test.
 func Remaining(t *testing.T) time.Duration {
 	t.Helper()
+	started := time.Now()
 	deadline, ok := deadlineOf(t)
 	if !ok {
 		return unboundedRemaining
 	}
 	left := time.Until(deadline)
+	end := deadline.Add(-giveUpMargin)
 	if left <= giveUpMargin {
-		t.Fatalf("testwait.Remaining: the test binary's deadline %s is %s away, less than the %s margin a wait leaves its test to fail in and run its cleanups",
+		text := fmt.Sprintf("testwait.Remaining: the test binary's deadline %s is %s away, less than the %s margin a wait leaves its test to fail in and run its cleanups",
 			deadline.Format(time.RFC3339Nano), left.Round(time.Millisecond), giveUpMargin)
+		stacks := diagnostics(t, "the span testwait.Remaining gives", started, end, true, "the test binary's deadline less "+giveUpMargin.String())
+		fail(t, text, stacks)
 	}
+	watchBound(t, "Remaining", end, false, "the test binary's deadline less "+giveUpMargin.String(), callerSite())
 	return left - giveUpMargin
 }

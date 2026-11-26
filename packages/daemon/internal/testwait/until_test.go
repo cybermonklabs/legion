@@ -123,11 +123,10 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 	}
 	name := "TestTheWaitsGiveUpChild/"
 	ending := " 30s before the test binary's deadline"
-	spent := ending + ", a moment that had passed before this wait began: the first give-up line in time order is the cause"
 	want := []string{
 		"testwait: " + name + "until: gave up waiting for a reading that never holds" + ending + fmt.Sprintf(`; last read: reading\n%d`, reads),
-		"testwait: " + name + "eventually: gave up waiting for a condition that never holds" + spent,
-		"testwait: " + name + "cleanup: gave up waiting for a condition a cleanup waits for" + spent,
+		"testwait: " + name + "eventually: gave up waiting for a condition that never holds" + ending,
+		"testwait: " + name + "cleanup: gave up waiting for a condition a cleanup waits for" + ending,
 	}
 	written := strings.Split(stderr.String(), "\n")
 	for _, line := range want {
@@ -138,11 +137,17 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 			t.Errorf("the child failed no test with %q; its output:\n%s", line, &stdout)
 		}
 	}
+	collateral := "this give-up is collateral: it began 30s after the test binary's deadline less 30s and waited 0s; " +
+		"the longest completed testwait give-up recorded so far waited"
+	if strings.Count(stdout.String(), collateral) != 2 ||
+		!strings.Contains(stdout.String(), name+"until, waiting for a reading that never holds") {
+		t.Errorf("the two waits begun after their end did not name the longer first wait as collateral:\n%s", &stdout)
+	}
 	if !strings.Contains(stdout.String(), "the condition was asked 1 time(s)") {
 		t.Errorf("a wait that began after the margin did not ask exactly once; the child's output:\n%s", &stdout)
 	}
 	if first, later := slices.Index(written, want[0]), slices.Index(written, want[1]); first < 0 || later < first {
-		t.Errorf("the give-up with no note (line %d of stderr) does not come before the one that began past the margin (line %d); its stderr:\n%s", first, later, &stderr)
+		t.Errorf("the first completed wait (line %d of stderr) does not come before a collateral wait (line %d); its stderr:\n%s", first, later, &stderr)
 	}
 }
 

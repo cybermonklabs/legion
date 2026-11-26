@@ -17,14 +17,20 @@ const unbounded = time.Duration(1 << 60)
 // before the test binary's deadline, the one go test's -timeout sets, to fail in and run its
 // cleanups: that deadline less spare, less now; under -timeout 0, a span no wait reaches. A wait
 // bounded by it ends on its fact or gives up with spare left, never at a fixed span. With spare or
-// less left there is no span to wait, and Remaining fails t at once (Fatal) on the one line Left
-// gives, written to stderr first, as a wait that gives up writes its line (gaveUp).
+// less left there is no span to wait, and Remaining fails t at once on the one line Left gives,
+// written to stderr first, as a wait that gives up writes its line (gaveUp), and then prints the
+// goroutine stacks, as a wait begun past the margin does (stacksFor): only when no give-up of the
+// binary has printed them.
 func Remaining(t *testing.T, spare time.Duration) time.Duration {
 	t.Helper()
-	left, err := Left(t, spare)
+	started := time.Now()
+	left, err := leftOf(t, spare, "Remaining", callerSite())
 	if err != nil {
-		_, _ = os.Stderr.WriteString(err.Error() + "\n")
-		t.Fatal(err.Error())
+		deadline, _ := t.Deadline()
+		text := err.Error()
+		_, _ = os.Stderr.WriteString(text + "\n")
+		stacks := diagnostics(t, "the span testwait.Remaining gives", started, deadline.Add(-spare), true, "the test binary's deadline less "+spare.String())
+		fail(t, text, stacks)
 	}
 	return left
 }
@@ -32,8 +38,14 @@ func Remaining(t *testing.T, spare time.Duration) time.Duration {
 // Left is Remaining for a caller that must not end its goroutine, such as a helper a hook calls on
 // a goroutine other than the test's, where t.Fatal would end the hook rather than the test: with
 // spare or less of the deadline left it fails nothing and returns, as an error, the line Remaining
-// fails with, "testwait: <test>: " and the cause (spent).
+// fails with, "testwait: <test>: " and the cause (spent). Otherwise the span it gives ends at the
+// deadline less spare, which is watched (watchBound): a test that fails after its wait gave up
+// there prints the goroutine stacks as that moment came.
 func Left(t *testing.T, spare time.Duration) (time.Duration, error) {
+	return leftOf(t, spare, "Left", callerSite())
+}
+
+func leftOf(t *testing.T, spare time.Duration, fn, site string) (time.Duration, error) {
 	deadline, bounded := t.Deadline()
 	if !bounded {
 		return unbounded, nil
@@ -43,6 +55,7 @@ func Left(t *testing.T, spare time.Duration) (time.Duration, error) {
 		timeout, known := binaryTimeout()
 		return 0, errors.New(oneLine.Replace("testwait: " + t.Name() + ": " + spent(left, spare, timeout, known)))
 	}
+	watchBound(t, fn, deadline.Add(-spare), false, "the test binary's deadline less "+spare.String(), site)
 	return left - spare, nil
 }
 
