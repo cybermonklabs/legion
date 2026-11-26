@@ -21,9 +21,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
@@ -249,9 +249,10 @@ func taskOf(t *testing.T, entry jetstream.KeyValueEntry) uint64 {
 }
 
 // bucketWorker is one claim's worker process as its pane runs it: the shim on the worker stream,
-// which answers what the daemon asks of the agent, and the plugin that takes the claim's task
-// (takeDriver). The plugin's memory of what it was handed and what it asked at is the process's, so
-// it outlives a daemon restart: the worker reconnects to the daemon that started (reattach).
+// with the Oh My Pi behind it, which answers what the daemon asks of the agent (ompPeer), and the
+// plugin that takes the claim's task (takeDriver). The plugin's memory of what it was handed and
+// what it asked at, and the handoff Oh My Pi runs, are the process's, so they outlive a daemon
+// restart: the worker reconnects to the daemon that started (reattach).
 type bucketWorker struct {
 	rig        *bucketRig
 	token      claim.Token
@@ -260,6 +261,7 @@ type bucketWorker struct {
 	generation uint64
 	secret     string
 	sh         *shim
+	omp        *ompPeer
 	// mu guards the plugin the state probe is answered from, which the test sets while the serve
 	// goroutine reads it.
 	mu     sync.Mutex
@@ -272,7 +274,8 @@ func (r *bucketRig) spawn(issue, task string) *bucketWorker {
 	r.t.Helper()
 	token := r.d.spawn(api.SpawnRequest{Tree: issue, Issue: issue, Role: claim.RoleArchitect, Prompt: "Reply ready and wait.", Task: task})
 	launch := lastLaunch(r.t, r.rt, token)
-	w := &bucketWorker{rig: r, token: token, session: "ses_" + string(token), bootToken: launch.BootToken, generation: launch.Generation}
+	w := &bucketWorker{rig: r, token: token, session: "ses_" + string(token), bootToken: launch.BootToken, generation: launch.Generation,
+		omp: &ompPeer{t: r.t}}
 	w.connect()
 	testwait.Eventually(r.t, "the hello to reach the machine", func() bool {
 		return r.d.claim(token).State == string(supervise.StateShimConnected)
@@ -303,34 +306,15 @@ func (w *bucketWorker) connect() {
 	address := w.rig.record.address
 	w.rig.record.mu.Unlock()
 	w.sh = dialShimUntilAcked(w.rig.t, address, w.bootToken)
-	go w.serve(w.sh)
+	go w.omp.serve(w, w.sh)
 }
 
-// serve answers the protocol negotiation and the state probe — idle, or streaming while a turn of
-// the plugin's runs — for as long as the connection lasts.
-func (w *bucketWorker) serve(sh *shim) {
-	_ = sh.conn.SetReadDeadline(time.Time{})
-	for {
-		line, err := sh.lines.ReadBytes('\n')
-		if err != nil {
-			return
-		}
-		frame, err := shimwire.Decode(line)
-		if err != nil {
-			continue
-		}
-		switch f := frame.(type) {
-		case shimwire.NegotiateProtocol:
-			_ = sh.writer.WriteFrame(shimwire.Response{ID: f.ID, Command: shimwire.TypeNegotiateProtocol, Success: true})
-		case shimwire.GetState:
-			w.mu.Lock()
-			driver := w.driver
-			w.mu.Unlock()
-			streaming := driver != nil && driver.inATurn()
-			data, _ := json.Marshal(shimwire.StateData{IsStreaming: &streaming})
-			_ = sh.writer.WriteFrame(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data})
-		}
-	}
+// streaming is the agent's answer to the state probe: whether a turn of the plugin's runs.
+func (w *bucketWorker) streaming() bool {
+	w.mu.Lock()
+	driver := w.driver
+	w.mu.Unlock()
+	return driver != nil && driver.inATurn()
 }
 
 // ready is the agent saying it is ready.
@@ -708,95 +692,280 @@ func TestTaskValueARestartDuringAProviderErrorsWaitWritesOnceAndIsTakenOnce(t *t
 	}
 }
 
-// A daemon restarted while a claim is stored working with its task taken back — the record a
-// compaction's start writes (supervise's compactStart), which a restart in the middle of the
-// compaction finds — writes the owed task once at the boot. The worker's agent, asked at its
-// shim's hello whether it is in a turn, answers that it is in no turn: that ends the turn the
-// store recorded, and the daemon's view of the worker's turns is whole again. The worker asks at
-// the boot's revision; the take is accepted, and the turn start is held up to the second bound
-// (worker_turn_start_timeout_seconds), armed once, with no charge and no second take. An agent
-// that answered nothing would arm no bound until a turn frame or the reconnect deadline
-// (supervise's connview.go).
-func TestTaskValueARestartDuringACompactionWritesOnceAndIsTakenOnce(t *testing.T) {
-	t.Parallel()
+// handoffTurnStart is the short second wait (worker_turn_start_timeout_seconds) the rows of a
+// restart during a held handoff configure: far below runtime.CompactTimeout, and below the
+// reconnect bound, so a wait armed the usual way would be due long before the handoff's deadline.
+const handoffTurnStart = time.Minute
+
+// handoffRestart is one restore of a daemon restarted while a handoff it asked for holds a claim
+// whose take is accepted and whose turn has not started (departure 10 of dispatch://INFRA-2811's
+// plan, row H6). The worker's Oh My Pi holds the handoff (ompPeer), the restarted daemon runs on a
+// clock held at its start (boot), and the worker's process — its Oh My Pi and its plugin — is the
+// one that ran before the restart, reattached.
+type handoffRestart struct {
+	t     *testing.T
+	r     *bucketRig
+	w     *bucketWorker
+	clock *heldClock
+	boot  time.Time
+	taken takenTask
+	// resumes is how many relaunches the runtime had made before the restart.
+	resumes int
+}
+
+// newHandoffRestart takes a claim's task, asks for its compaction through the operator's route,
+// which the worker's Oh My Pi holds in its handoff, and observes the record the compaction's start
+// wrote: the claim working over its accepted take, whose turn has not started. It then restarts
+// the daemon alone, and reattaches the same worker, whose shim's hello the daemon asks whether its
+// agent is in a turn: an ask the agent's Oh My Pi answers only once its handoff is over.
+func newHandoffRestart(t *testing.T) *handoffRestart {
+	t.Helper()
 	r := newBucketRig(t)
-	r.cfg.WorkerTakeTimeout, r.cfg.WorkerTurnStartTimeout = 5*time.Minute, 25*time.Minute
+	r.cfg.WorkerRPCTimeout, r.cfg.WorkerTurnStartTimeout = time.Second, handoffTurnStart
 	r.o.clock = &heldClock{}
 	r.boot()
 	w := r.spawn("LEGION-1", "Say hello.")
 	w.ready()
-	key := string(w.token)
 	taken := w.driver.mustTake(t, "the worker takes its task")
-	before := r.entry(key)
-	r.d.stop()
 
-	compacting := storedClaim(t, r.cfg, w.token)
-	if compacting.Pending == nil || compacting.TaskTakeState != supervise.TakeAccepted {
-		t.Fatalf("the stopped claim holds %+v with take state %q, want its accepted take", compacting.Pending, compacting.TaskTakeState)
+	r.compactInBackground(w.token)
+	testwait.Eventually(t, "the compaction's handoff to reach the worker's Oh My Pi", w.omp.running)
+	testwait.Eventually(t, "the compaction's start to store the claim working over its accepted take", func() bool {
+		c := storedClaim(t, r.cfg, w.token)
+		return c.State == supervise.StateWorking && c.TaskTakeState == supervise.TakeAccepted && c.Pending != nil &&
+			c.Pending.Number == taken.Number && !c.Pending.ConfirmedAt.IsZero() && !c.Pending.TurnStarted
+	})
+	resumes := len(r.rt.CallsOf("Resume"))
+	r.d.stop()
+	// Not fatal: a stop that gave the claim back would also leave the next start's deadlines
+	// unprotected, which the restore's own checks then catch (the stop's control).
+	if c := storedClaim(t, r.cfg, w.token); c.State != supervise.StateWorking || c.Pending == nil || c.Pending.ConfirmedAt.IsZero() || c.Pending.TurnStarted {
+		t.Errorf("the stopped daemon left the claim %s holding %+v, want it working over the accepted take whose turn has not started", c.State, c.Pending)
 	}
-	compacting.State = supervise.StateWorking
-	compacting.Pending.ConfirmedAt, compacting.Pending.TakenText = time.Time{}, ""
-	putStoredClaim(t, r.cfg, compacting)
-	// The compaction aborted the turn the take was to start, so the worker holds no take awaiting
-	// its turn: what it remembers is the revision it asked at.
-	w.driver.mu.Lock()
-	w.driver.accepted = 0
-	w.driver.mu.Unlock()
 
 	clock := &heldClock{}
+	clock.advance(0)
 	r.o.clock = clock
 	rebindHeldPorts(t, &r.cfg)
 	r.boot()
 	w.reattach()
-	r.awaitEntry("the owed task written at the boot", key, func(e jetstream.KeyValueEntry) bool {
-		return e != nil && e.Revision() > before.Revision()
+	testwait.Eventually(t, "the hello's one ask to wait behind the handoff", func() bool { return w.omp.statesHeld() == 1 })
+	return &handoffRestart{t: t, r: r, w: w, clock: clock, boot: clock.Now(), taken: taken, resumes: resumes}
+}
+
+// compactInBackground asks for token's compaction through the operator's route and leaves the
+// request to wait for its answer, which a handoff held past the daemon's stop never gives.
+func (r *bucketRig) compactInBackground(token claim.Token) {
+	d := r.d
+	go func() {
+		request, err := http.NewRequest(http.MethodPost, d.base+"/legion/v1/operator/claims/"+string(token)+"/compact", nil)
+		if err != nil {
+			return
+		}
+		request.Header.Set("Authorization", "Bearer "+testOperatorToken)
+		if response, err := d.client.Do(request); err == nil {
+			_ = response.Body.Close()
+		}
+	}()
+}
+
+// fireDue runs every timer of clock that is due by now: one armed for a moment at or before now,
+// and one armed for a wait that, counted from armed — the clock's held time when every such timer
+// was armed — ends at or before now.
+func fireDue(clock *heldClock, armed, now time.Time) int {
+	return clock.run(func(timer *heldTimer) bool {
+		if !timer.moment.IsZero() {
+			return !timer.moment.After(now)
+		}
+		return !armed.Add(timer.after).After(now)
 	})
-	// The worker runs no turn of its own, so its agent answers the hello's ask that it is in none.
-	testwait.Eventually(t, "the agent's answer that it is in no turn to end the turn the store recorded", func() bool {
-		return r.d.claim(w.token).State == string(supervise.StateIdle)
-	})
-	again := w.driver.mustTake(t, "the worker takes the task at the boot's revision")
-	if again.Number != taken.Number {
-		t.Fatalf("the worker took task %d, want %d", again.Number, taken.Number)
-	}
+}
+
+// advance moves the restarted daemon's clock on by d and fires every timer due by then, all of
+// which it armed at its start (boot), and gives their decisions time to run.
+func (h *handoffRestart) advance(d time.Duration) {
+	h.t.Helper()
+	h.clock.advance(d)
+	fireDue(h.clock, h.boot, h.clock.Now())
 	time.Sleep(settle)
-	if causes := r.writes(w.token); !slices.Equal(causes, []string{supervise.TaskValueBoot}) {
-		t.Fatalf("the restarted daemon wrote the owed task for %v, want once at the boot", causes)
-	}
-	if n := r.accepted(w.token); n != 1 {
-		t.Fatalf("the restarted daemon accepted %d takes, want the one", n)
-	}
-	if live, _ := clock.armed(r.cfg.WorkerTurnStartTimeout); live != 1 {
-		t.Fatalf("%d waits of %s are armed for the take's turn, want the one second bound", live, r.cfg.WorkerTurnStartTimeout)
-	}
-	if c := r.d.claim(w.token); c.State != string(supervise.StateIdle) || c.Budgets.PromptFailures != 0 {
-		t.Fatalf("while the take's turn is held the claim is %s with %d prompt failures, want idle with none", c.State, c.Budgets.PromptFailures)
-	}
-	w.driver.mustStartTurn(t)
-	testwait.Eventually(t, "the take's turn to start", func() bool { return r.d.claim(w.token).State == string(supervise.StateWorking) })
-	if c := r.d.claim(w.token); c.Budgets.PromptFailures != 0 {
-		t.Fatalf("the take's turn started with %d prompt failures charged, want none", c.Budgets.PromptFailures)
+}
+
+// pastTheOrdinaryDeadlines holds the agent's answer behind the handoff past the RPC timeout, in
+// real time, and moves the restarted daemon's clock past the reconnect deadline its start and the
+// worker's hello would have without the handoff, firing every timer due by then. The take is
+// relaunched, charged, offered and accepted by nothing before the handoff's deadline, and the ask
+// still waits.
+func (h *handoffRestart) pastTheOrdinaryDeadlines() {
+	h.t.Helper()
+	time.Sleep(2 * h.r.cfg.WorkerRPCTimeout)
+	h.advance(h.r.cfg.WorkerBootTimeout*time.Duration(h.r.cfg.WorkerBootRegistrationDeadlineIntervals) + time.Second)
+	h.wantKept("past the ordinary reconnect and RPC deadlines")
+	if held := h.w.omp.statesHeld(); held != 1 {
+		h.t.Fatalf("%d asks wait behind the handoff past the ordinary deadlines, want the hello's one", held)
 	}
 }
 
-// putStoredClaim writes c, its pending task with it, to the store under cfg, as a daemon that
-// stopped before it wrote anything after c leaves it.
-func putStoredClaim(t *testing.T, cfg config.Config, c supervise.Claim) {
-	t.Helper()
-	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.PostgresDSN)
-	if err != nil {
-		t.Fatalf("open the store: %v", err)
+// wantKept holds that, by the time of what, the restarted daemon kept the worker and its take as
+// they were: no relaunch, the same generation, no charge, the take accepted, and nothing written
+// or accepted since the restart.
+func (h *handoffRestart) wantKept(what string) {
+	h.t.Helper()
+	r, w := h.r, h.w
+	if resumes := len(r.rt.CallsOf("Resume")); resumes != h.resumes {
+		h.t.Fatalf("%s the daemon relaunched the worker %d times before the handoff's deadline, want none", what, resumes-h.resumes)
 	}
-	defer st.Close()
-	if c.Pending == nil {
-		err = st.PutClaim(ctx, supervise.StoredClaim(c))
-	} else {
-		err = st.PutClaimAndDelivery(ctx, supervise.StoredClaim(c), *c.Pending)
+	c := r.d.claim(w.token)
+	if c.Generation != w.generation || c.Budgets != (api.BudgetsView{}) {
+		h.t.Fatalf("%s the claim is at generation %d with budgets %+v, want generation %d and nothing charged", what, c.Generation, c.Budgets, w.generation)
 	}
-	if err != nil {
-		t.Fatalf("write %s: %v", c.Token, err)
+	if c.Pending == nil || c.Pending.ConfirmedAt == nil {
+		h.t.Fatalf("%s the claim holds %+v, want its accepted take kept", what, c.Pending)
 	}
+	if causes, n := r.writes(w.token), r.accepted(w.token); len(causes) != 0 || n != 0 {
+		h.t.Fatalf("%s the restarted daemon wrote the value for %v and accepted %d takes, want neither: the take stands", what, causes, n)
+	}
+}
+
+// wantAnswered holds that the restarted daemon read the agent's answer, which waited behind the
+// handoff, as the answer to the hello's ask, streaming or not.
+func (h *handoffRestart) wantAnswered(streaming bool) {
+	h.t.Helper()
+	testwait.Eventually(h.t, "the daemon to read the agent's answer the handoff held", func() bool {
+		for _, line := range h.r.lines("supervise: the agent said whether it is in a turn after its shim reconnected; the bounds on the worker run again from here", h.w.token) {
+			if line["streaming"] == streaming {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// wantFinishedOnce holds that the take's own turn finished the task once: the value deleted, the
+// task recorded finished under its number, the claim idle and holding nothing, the worker never
+// relaunched or charged, and nothing written or accepted since the restart.
+func (h *handoffRestart) wantFinishedOnce() {
+	h.t.Helper()
+	r, w := h.r, h.w
+	r.awaitEntry("the finished task's value deleted", string(w.token), func(e jetstream.KeyValueEntry) bool { return e == nil })
+	testwait.Eventually(h.t, "the take's report to finish the task", func() bool {
+		c := r.d.claim(w.token)
+		return c.State == string(supervise.StateIdle) && c.Pending == nil
+	})
+	if finished := storedClaim(h.t, r.cfg, w.token).TaskFinished; finished != h.taken.Number {
+		h.t.Fatalf("the claim finished task %d, want %d, the take's", finished, h.taken.Number)
+	}
+	time.Sleep(settle)
+	if resumes := len(r.rt.CallsOf("Resume")); resumes != h.resumes {
+		h.t.Fatalf("the daemon relaunched the worker %d times, want none", resumes-h.resumes)
+	}
+	if c := r.d.claim(w.token); c.Generation != w.generation || c.Budgets != (api.BudgetsView{}) {
+		h.t.Fatalf("the claim finished at generation %d with budgets %+v, want generation %d and nothing charged", c.Generation, c.Budgets, w.generation)
+	}
+	if causes, n := r.writes(w.token), r.accepted(w.token); len(causes) != 0 || n != 0 {
+		h.t.Fatalf("the restarted daemon wrote the value for %v and accepted %d takes, want neither: the take accepted before the restart ran the task", causes, n)
+	}
+}
+
+// A daemon restarted while a handoff holds a claim keeps the claim's accepted take and holds its
+// turn (departure 10 of dispatch://INFRA-2811's plan, row H6; check c3's compaction case). The
+// compaction's start stored the claim working over a take accepted whose turn has not started,
+// and the worker's Oh My Pi runs the handoff on, past the restart: it parks the take's text until
+// the handoff is over, and answers the reattached shim's ask whether it is in a turn only then,
+// since both wait on its one serial queue. The restarted daemon reads that stored state as a take
+// a handoff may still run over, and protects it until its start plus runtime.CompactTimeout
+// (supervise's handoffGuard): past the reconnect deadline a hello has without it and past the RPC
+// timeout, the worker stays in its generation, with no relaunch, charge, offer or second take,
+// and the ask still waits, whose late answer the daemon then reads.
+//
+//   - A start replayed ahead of the answer gives the take its turn, and that turn's report
+//     finishes the task once and deletes its value.
+//   - An answer that the agent is streaming, with no start frame, gives no task the turn on a
+//     restore (supervise's answerView): only a start frame or the take's own report does, and the
+//     report finishes the task once.
+//   - An answer that the agent is in no turn, after the handoff ended early, ends the turn the
+//     store recorded; the take's text then starts its turn after the short second wait
+//     (handoffTurnStart) has passed, and the second wait, which the handoff's deadline bounds from
+//     below, charges nothing before it.
+//   - With neither an answer nor a frame by the handoff's deadline, the reconnect deadline's
+//     let-go runs there, as for any hello whose ask went unanswered.
+//
+// Its controls are runs of it at the daemon with one protection removed, the held handoff kept:
+// with the reconnect deadline armed the usual way, the first restores relaunch the worker past the
+// ordinary deadline; with the second wait armed the usual way, the third charges it; and with the
+// stop giving the claim back as #5567's daemon did (supervise's Machine.Compact), the stopped
+// daemon leaves the claim ready, and the next start relaunches the worker past the ordinary
+// deadline.
+func TestTaskValueARestartDuringACompactionKeepsTheAcceptedTakeAndHoldsItsTurn(t *testing.T) {
+	t.Parallel()
+	t.Run("a start replayed ahead of the late answer gives the take its turn", func(t *testing.T) {
+		t.Parallel()
+		h := newHandoffRestart(t)
+		h.pastTheOrdinaryDeadlines()
+		w := h.w
+		// The handoff ends, and Oh My Pi starts the turn of the text it parked: the turn's
+		// agent_start reaches the daemon ahead of the answer that waited behind the handoff.
+		w.driver.mustStartTurn(t)
+		w.omp.endHandoff(handoffShortened, true)
+		testwait.Eventually(t, "the start to give the take its turn", func() bool {
+			p := storedClaim(t, h.r.cfg, w.token).Pending
+			return p != nil && p.TurnStarted
+		})
+		w.driver.mustEndTurn(t)
+		h.wantFinishedOnce()
+	})
+	t.Run("a late answer that the agent is streaming gives no task the turn, and the take's report finishes it", func(t *testing.T) {
+		t.Parallel()
+		h := newHandoffRestart(t)
+		h.pastTheOrdinaryDeadlines()
+		w := h.w
+		// The handoff ends and the take's turn runs, and no start frame of it reaches the daemon.
+		w.driver.mu.Lock()
+		w.driver.inTurn, w.driver.running, w.driver.accepted = true, h.taken.Number, 0
+		w.driver.mu.Unlock()
+		w.omp.endHandoff(handoffShortened, true)
+		h.wantAnswered(true)
+		if c := h.r.d.claim(w.token); c.State != string(supervise.StateWorking) || c.Pending == nil || c.Pending.ConfirmedAt == nil {
+			t.Fatalf("after the streaming answer the claim is %s holding %+v, want it working over the accepted take", c.State, c.Pending)
+		}
+		if p := storedClaim(t, h.r.cfg, w.token).Pending; p == nil || p.TurnStarted {
+			t.Fatalf("after the streaming answer the record holds %+v, want the take's turn not given by an answer on a restore", p)
+		}
+		w.driver.mustEndTurn(t)
+		h.wantFinishedOnce()
+	})
+	t.Run("an early end of the handoff and a turn that starts after the short second wait charge nothing", func(t *testing.T) {
+		t.Parallel()
+		h := newHandoffRestart(t)
+		h.pastTheOrdinaryDeadlines()
+		w := h.w
+		w.omp.endHandoff(handoffShortened, false)
+		h.wantAnswered(false)
+		testwait.Eventually(t, "the answer that the agent is in no turn to end the turn the store recorded", func() bool {
+			return h.r.d.claim(w.token).State == string(supervise.StateIdle)
+		})
+		// The take's text is slow to start its turn: the second wait the answer armed, which the
+		// handoff's deadline bounds from below, passes its configured length.
+		h.clock.advance(handoffTurnStart + time.Second)
+		fireDue(h.clock, h.clock.Now().Add(-handoffTurnStart-time.Second), h.clock.Now())
+		time.Sleep(settle)
+		h.wantKept("past the short second wait")
+		w.driver.mustStartTurn(t)
+		w.driver.mustEndTurn(t)
+		h.wantFinishedOnce()
+	})
+	t.Run("with neither an answer nor a frame the reconnect deadline lets the process go at the handoff's deadline", func(t *testing.T) {
+		t.Parallel()
+		h := newHandoffRestart(t)
+		h.pastTheOrdinaryDeadlines()
+		h.clock.advance(h.boot.Add(runtime.CompactTimeout).Sub(h.clock.Now()) + time.Second)
+		fireDue(h.clock, h.boot, h.clock.Now())
+		testwait.Eventually(t, "the reconnect deadline to relaunch the worker at the handoff's deadline", func() bool {
+			return len(h.r.rt.CallsOf("Resume")) == h.resumes+1
+		})
+		if c := h.r.d.claim(h.w.token); c.Budgets != (api.BudgetsView{}) {
+			t.Fatalf("the relaunch at the handoff's deadline charged %+v, want nothing: no answer of a hello's ask is the worker's fault", c.Budgets)
+		}
+	})
 }
 
 // The line a daemon whose configuration names no NATS says at boot and `legion config check`

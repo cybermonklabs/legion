@@ -1553,9 +1553,19 @@ Two commands replace what a provider keeps refusing, and the compaction is the f
 legion claims compact --claim <token> --operator-token-file <file>
 ```
 
-It has the claim's Oh My Pi session write a summary of itself and then writes again whatever task the claim owes, which the claim takes, however much of the provider-error ladder's wait was left: the claim keeps its session, its workspace and everything it knows of its issue, and what goes is the length of the transcript the provider is asked to read.
-The summary is text, because the daemon asks with instructions of its own: Oh My Pi runs its image-based snapcompact method only for a compaction that carries none, and a worker resumed on those images would need a vision model to read its own past (`compactInstructions`, `packages/daemon/internal/api/compact.go`).
-The answer says whether the session was compacted and, when it was not, why — Oh My Pi's own words for a compaction it refused or skipped, `Already compacted` or `Nothing to compact (session too small)`, and the daemon's for a wait that ran out or a transport that failed — and whatever task the claim owed is written again either way.
+It has the claim's Oh My Pi session write a handoff document of itself and then writes again whatever task the claim owes, which the claim takes, however much of the provider-error ladder's wait was left:
+the claim keeps its session, its workspace and everything it knows of its issue, and what goes is the length of the transcript the provider is asked to read.
+The daemon asks with Oh My Pi's `handoff` request, never its `compact` request:
+Anthropic refuses the summary request `compact` sends for a long Claude session (`Refusal (reasoning_extraction)`, dispatch://INFRA-5798), and accepts the handoff, which sends the live system prompt, tools and turns.
+Oh My Pi commits the handoff document as the session's compaction entry, method `handoff`, on the same session.
+The daemon's instructions (`compactInstructions`, `packages/daemon/internal/api/compact.go`) are the focus the document is written to, and they keep the reviewer's entry in it.
+The answer says whether the session was shortened and, when it was not, why
+— Oh My Pi's own words for a handoff it refused, such as `Cannot hand off while a response is in progress` or `Nothing to hand off (already compacted)`, the daemon's `Oh My Pi made no handoff document. The session did not change.` for a handoff Oh My Pi answered with success and no document, the daemon's `Oh My Pi gave a handoff result that is not an object. The daemon cannot say if the session changed.` for a success whose data is a boolean, a number, a string or an array, and the daemon's for a wait that ran out or a transport that failed
+— and whatever task the claim owed and had not taken is written again either way.
+Neither of the daemon's two sentences resets the claim's run of provider errors, since neither says the session was shortened.
+A take the worker had accepted when the compaction was asked for is kept, and its task runs once: the handoff aborts no turn, and Oh My Pi parks the take's text until the handoff ends, so the next turn is the take's.
+The daemon does not charge, relaunch or offer such a take again before the handoff's own ten-minute bound, even when the connection drops and Oh My Pi answers no question about its turn until the handoff ends.
+A daemon that stops while the handoff runs leaves the claim stored `working` over that take, and the daemon that starts next keeps the take the same way until its start plus ten minutes.
 The command carries no deadline of its own, as no `legion claims` command does, and the daemon bounds that model call over the whole transcript at ten minutes (`runtime.CompactTimeout`).
 While it runs the claim reads `working`, the daemon's one word for a busy agent, so the ladder's next write of the task and any newer task wait for its end, a second compaction is refused in its own words, and a fresh session is refused `CLAIM_IN_A_TURN`, since a claim whose session is being compacted is read before its process and the compaction in flight owns what becomes of its agent.
 

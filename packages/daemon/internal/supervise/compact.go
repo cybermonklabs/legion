@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -13,16 +14,17 @@ import (
 // session, its workspace and everything it knows stay, and what goes is the length of the
 // transcript the provider is being asked to read (dispatch://INFRA-956 R3). `legion claims
 // compact` and the controller's own compact both run it (api's compact), and this file is the
-// machine's half: taking the claim, asking Oh My Pi, and giving the claim back with the value of
-// its owed task written again, for the worker to take at its next idle point.
+// machine's half: taking the claim, asking Oh My Pi for a handoff (runtime.Conn's Compact), and
+// giving the claim back with the value of its owed task written again, for the worker to take at
+// its next idle point, unless the worker's take of it was accepted before the compaction, whose
+// own turn then runs it. Oh My Pi's `compact` is never asked for: Anthropic refuses its summary
+// request for a long Claude session (dispatch://INFRA-5798).
 
-// ErrCompactInstructions is a compaction asked for with nothing to write the summary to. Oh My
-// Pi runs the image-based snapcompact method for a compaction that carries no instructions and
-// no internal guidance (`runsManually`, packages/coding-agent/src/session/session-maintenance.ts
-// at the pinned tag), and a worker resumed on images needs a vision model to read its own past:
-// the instructions are what make the summary text, so a compaction with none is refused before
-// anything is sent.
-var ErrCompactInstructions = errors.New("a compaction carries custom instructions, so Oh My Pi writes its summary as text rather than snapcompact's images")
+// ErrCompactInstructions is a compaction asked for with nothing to write the handoff document
+// to. The instructions are what keep the reviewer's entry in the document (api's
+// compactInstructions), and a document that dropped it leaves the reviewer no entry to write, so
+// a compaction with none is refused before anything is sent.
+var ErrCompactInstructions = errors.New("a compaction carries custom instructions, which keep the reviewer's entry in the handoff document")
 
 // ErrCompactNotTaken is a compaction nothing was asked for: the claim could not be written as
 // working, it lost its process between the take and the ask, its shim is not connected, a
@@ -36,16 +38,18 @@ var ErrCompactInstructions = errors.New("a compaction carries custom instruction
 var ErrCompactNotTaken = errors.New("the claim was not taken for a compaction, so nothing was asked of its session")
 
 // ErrCompactNotEnded is a compaction whose end did not finish: Oh My Pi answered and a step of
-// the hand-back failed, so the task the claim owes is not offered (offerPending). It is the
-// daemon's own failure and not a compaction that did not run, whose answer promises the claim is
-// back and its task offered again (api's compact).
+// the hand-back failed, or the daemon stopped before Oh My Pi answered, so the task the claim owes
+// is not offered (offerPending). It is the daemon's own failure and not a compaction that did not
+// run, whose answer promises the claim is back and its task offered again (api's compact).
 //
-// Two shapes reach it, and the claim is in a different place in each. The write that gives the
+// Three shapes reach it, and the claim is in a different place in each. The write that gives the
 // claim back failed, and the claim is left working, which is where the compaction took it. Or
 // that write landed and what follows it failed — the stale-plugin relaunch held for this end, or
 // the offer of the owed task itself (afterTurn) — and the claim is back with its agent, as a claim
-// whose turn ended is, with the task still to go. The error says the hand-back did not finish,
-// which is true of both, rather than naming one of them.
+// whose turn ended is, with the task still to go. Or the daemon stopped while Oh My Pi ran the
+// handoff, and the claim is left stored working on purpose, for the next start to read as a take
+// a handoff may still run over (Machine.Compact, NewMachine). The error says the hand-back did not
+// finish, which is true of each, rather than naming one of them.
 //
 // What a daemon that stops here leaves behind is a shape it already knows: a claim stored
 // working, whose agent's own answer to "are you streaming" ends it (askTurnOver), or a ready
@@ -96,7 +100,9 @@ var ErrCompactSuspended = errors.New("a suspension held over the claim ended its
 // was taken at. Those two, and the claim recording a compaction at all, are what the end of a
 // compaction is fenced on (ownsCompaction). It is memory only, as a held suspension is: a
 // daemon that restarts mid-compaction leaves a claim stored working, which its agent's own
-// answer to "are you streaming" then ends (askTurnOver), and the owed task goes on that end.
+// answer to "are you streaming" then ends (askTurnOver). An untaken owed task is offered on that
+// end; a take accepted before the compaction keeps waiting for its own turn, which the restart
+// protects until its start plus runtime.CompactTimeout (handoffGuard, NewMachine).
 type compacting struct {
 	conn       runtime.Conn
 	generation uint64
@@ -106,8 +112,9 @@ type compacting struct {
 	// idle, since the claim has had a turn by then (turnStartedWhileBusy, turnEnded).
 	back ClaimState
 	// inTurn is whether a turn Oh My Pi started under the compaction is still running: an
-	// Envoy follow-up it queued, which starts as the compaction ends. The claim is left
-	// working for that turn and its end gives the claim back (compactEnded, turnEnded).
+	// Envoy follow-up it queued, or the turn of a take accepted before the handoff, whose text
+	// Oh My Pi parks until the handoff ends; either starts as the compaction ends. The claim is
+	// left working for that turn and its end gives the claim back (compactEnded, turnEnded).
 	inTurn bool
 }
 
@@ -126,14 +133,16 @@ type compacting struct {
 // already asks whether the claim is working, and none of them has learned a second word for busy
 // (compactStart).
 //
-// Nil is a session compacted and the claim given back. A compaction Oh My Pi refused or skipped
-// — a session too small, one already compacted, a summarizer that failed — carries its words
-// (runtime.RefusalReason); a wait that ran out, or a transport that failed, is an error of its
-// own. The claim is given back in every one of those cases, and the task it owes goes with it —
-// or waits for the turn of a launch the pacing parked over its process, where every take of
-// such a claim waits (claimHold) — and only a compaction that ran puts the claim's run of
-// provider-error turns back to zero (compactEnded). A take that did not happen at all is
-// ErrCompactNotTaken or a *RefusedError, and leaves the claim where it was with its task unsent.
+// Nil is a session shortened and the claim given back. A handoff Oh My Pi refused — one asked
+// for in a turn, a session with nothing to hand off, a model call that failed — carries its
+// words, and one it answered with no document the daemon's (runtime.RefusalReason); a wait that
+// ran out, or a transport that failed, is an error of its own. The claim is given back in every
+// one of those cases, and the value of the task it owes is written again with it — or waits for
+// the turn of a launch the pacing parked over its process, where every take of such a claim waits
+// (claimHold), or is left to the take accepted before the compaction, whose own turn runs it —
+// and only a compaction that ran puts the claim's run of provider-error turns back to zero
+// (compactEnded). A take that did not happen at all is ErrCompactNotTaken or a *RefusedError, and
+// leaves the claim where it was with its task unsent.
 //
 // A compaction that ran and did not end is none of those, and the end's own answer is what
 // tells them apart: ErrCompactNotEnded is the end the store would not write,
@@ -169,9 +178,26 @@ func (m *Machine) Compact(ctx context.Context, customInstructions string) error 
 		return fmt.Errorf("%w: %s lost its process before its session could be compacted", ErrCompactNotTaken, token)
 	}
 	err := run.conn.Compact(ctx, customInstructions, runtime.CompactTimeout)
-	// The end runs whatever the compaction did and whatever became of ctx — a caller that hung up
-	// still leaves a claim to give back — so it is posted on a context the caller cannot cancel.
-	ended := CompactEnded{Claim: token, Generation: run.generation, Compacted: err == nil}
+	if err != nil && !handoffAnswered(err) && m.ctx.Err() != nil {
+		// The daemon is stopping, and Oh My Pi has not answered the handoff: the stop's halt ended
+		// every machine's own context before its drain ended this route's decision and the worker
+		// stream (api's decision). The handoff may still run in the session, and the loss of its
+		// answer releases no protection of the take it may run over (handoffGuard), so the claim
+		// is left as the compaction's start stored it, working over whatever take it holds. The
+		// next daemon start reads that record as a take a handoff may still run over, protects it
+		// until its start plus runtime.CompactTimeout and asks the agent whether it is in a turn
+		// (NewMachine); a task owed untaken is offered once that answer ends the stored turn.
+		// Given back here, as #5567's daemon gave it back at a stop, the claim would be stored
+		// ready or idle over a take whose turn the handoff holds, which the next start bounds by
+		// the ordinary reconnect deadline and second wait alone.
+		m.log.Warn("supervise: the daemon stopped while Oh My Pi ran the handoff; the claim stays stored working for the next start",
+			"generation", run.generation, "error", err)
+		return fmt.Errorf("%w: the daemon stopped while Oh My Pi ran the handoff, so the claim is left working for the next start: %w", ErrCompactNotEnded, err)
+	}
+	// The end runs whatever the compaction did and whatever became of the caller — a caller that
+	// hung up still leaves a claim to give back — so it is posted on a context the caller cannot
+	// cancel.
+	ended := CompactEnded{Claim: token, Generation: run.generation, Compacted: err == nil, Answered: handoffAnswered(err)}
 	endErr := m.Handle(context.WithoutCancel(ctx), ended)
 	if endErr == nil {
 		// compactEnded ran: the claim is back and the task it owes has gone again, so what this
@@ -278,17 +304,29 @@ func (m *Machine) compactionLostProcess() {
 // rather than from the machine. A claim left working by a daemon that stopped mid-compaction is
 // the shape a restart already knows: it asks the agent whether the turn is still running and
 // ends it when the agent says it is not (askTurnOver), and a take from it is the worker's word
-// that the compaction is over (takeInTurn).
+// that the compaction is over (takeInTurn). A stop before Oh My Pi answers the handoff leaves
+// that record as it is (Machine.Compact): the next start reads it, over a take accepted whose
+// turn has not started, as the handoff the take may still be parked behind, and protects it
+// (NewMachine, handoffGuard).
 //
-// A take accepted whose turn has not started is taken back before anything is asked, under its
-// number (takeBack). Oh My Pi runs one thing at a time, so the compaction aborts the turn that
-// take was about to start: left as it was, the task would wait on a turn its worker never runs.
-// Taken back, its value is written again at the end of the compaction (afterTurn, offerPending),
-// and the worker takes it again. A task taken again after work that may have run is this
-// operation's lesser fault, as it is wherever a take may repeat one. So is a sentence told again:
-// what the take told — the abandoned session, or what the last let-go ended — goes back to untold
-// with it, and so does the handshake's confirmation of its entry, since no turn ran its text
-// (giveBackTake); the next accepted take carries the sentence again.
+// A take accepted whose turn has not started is kept as it is: its number, its text, the
+// handshake's confirmation of its entry and what it told stay, and nothing offers the task again
+// (departure 10 of dispatch://INFRA-2811's plan). The compaction is Oh My Pi's handoff
+// (stream's Conn.Compact), which aborts no turn: the pinned Oh My Pi refuses a handoff while a
+// turn runs, and parks a prompt that reaches it while a handoff runs, starting that prompt's turn
+// only once the handoff is over (waitForMaintenanceCleanup in
+// packages/coding-agent/src/session/session-maintenance.ts at the pinned tag). So the text the
+// worker hands Oh My Pi starts the take's own turn, before the compaction's end reaches the
+// machine or after it, and the report of that turn finishes the task once. A start under the
+// compaction is the take's as any start of a ready or idle claim is (turnStartedWhileBusy,
+// turnStarted). Taken back, as the daemon did around Oh My Pi's `compact`, which could abort the
+// turn, the take's turn report would name a task no take held, and the task would run again.
+//
+// Such a take is protected until the handoff's own deadline, runtime.CompactTimeout from the ask
+// (protectTake, handoffGuard): the handoff may run for that long, and Oh My Pi answers no ask
+// whether it is in a turn until the handoff is over, since both wait on its one serial queue. A
+// second handoff is refused while a protected take's deadline stands with no handoff answer
+// (protectedRecovery).
 //
 // A claim whose launch waits its turn in the wake pacing is taken for nothing either
 // (launchWaits). What becomes of the process its session runs on is already decided — the turn
@@ -346,21 +384,16 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 		}
 		return fmt.Errorf("the claim's session is not held to it, so nothing is asked of that session: %w", err)
 	}
-	switch p := m.claim.Pending; {
-	case m.takeAwaitsTurn():
-		// A take awaiting its turn is taken back, a migrated worker's (waitNone) among them, and the
-		// line says so; where the view does not show every frame of the claim's turns — the
-		// compaction needs only a connection, so it can run while a hello's ask waits for its
-		// answer — it goes back as a cut turn with its note (dropTake, turnMayHaveRunUnseen).
-		m.log.Info("supervise: the compaction aborts the turn this task's take was to start; the task goes back to waiting",
-			"task", p.Number)
-		if err := m.takeBack(ctx, takenBackCompaction); err != nil {
-			return err
-		}
-	case p != nil && p.awaitsStart():
+	if m.compacting == nil && m.protectedRecovery() {
+		// The handoff asked for before may still run in this session: its answer never came, and
+		// its bound has not passed (handoffGuard). A second one would queue behind it in Oh My
+		// Pi, and its end would give back a claim the first handoff still holds.
+		return errors.New("a handoff asked for earlier may still run in the claim's session, since no answer of it came, so no second one is asked before its bound passes")
+	}
+	if p := m.claim.Pending; p != nil && p.awaitsStart() {
 		// A take whose start is not recorded and whose report's finish the store refused
-		// (takePhase, waitFinish) is finished by that report instead (makeOwedFinish): no turn of
-		// it is aborted.
+		// (takePhase, waitFinish) is finished by that report (makeOwedFinish), and no handoff
+		// protects it: its report decided.
 		if _, err := m.makeOwedFinish(ctx); err != nil {
 			return err
 		}
@@ -375,18 +408,27 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 		m.claim.State = was
 		return err
 	}
+	if p := m.claim.Pending; p != nil && m.takeAwaitsTurn() {
+		m.log.Info("supervise: the compaction keeps the accepted take; a handoff aborts no turn, and the take's turn starts once the handoff is over",
+			"task", p.Number)
+		m.protectTake(m.deps.Clock.Now().Add(runtime.CompactTimeout))
+	}
 	return nil
 }
 
 // compactEnded gives the claim back once Oh My Pi has answered, or once the wait for it ran out.
 // It is turnEnded's shape, for the same reason: the claim was working, nothing of it is working
 // now, and what was held for that is owed now — the suspension an operator asked for while the
-// compaction ran, and the task the claim owes, which goes again whether the compaction ran or was
-// refused (dispatch://INFRA-956 R3). A claim that owes none is sent nothing. With nothing held,
-// the end is a turn's end's own (endNothingHeld): a stale-plugin relaunch held for the compaction,
-// or for the take's turn before it, runs here only where the task that turn was of is settled, and
-// otherwise at that task's finish by the end-frame bound or by the report of the take's turn, as
-// at the end of the turn.
+// compaction ran, and the offer of the task the claim owes untaken, whose value is written again
+// whether the compaction ran or was refused (dispatch://INFRA-956 R3). A take accepted before the
+// compaction is kept, not offered again: its own turn, which the handoff aborted none of, runs the
+// task (compactStart). A claim that owes nothing is offered nothing. Oh My Pi's answer, a
+// shortened session or a refusal, also ends the handoff guard (handoffGuard): the handoff is over.
+// A wait that ran out or a transport that failed ends no guard, since the handoff may still run.
+// With nothing held, the end is a turn's end's own (endNothingHeld): a stale-plugin relaunch held
+// for the compaction, or for the take's turn before it, runs here only where the task that turn
+// was of is settled, and otherwise at that task's finish by the end-frame bound or by the report
+// of the take's turn, as at the end of the turn.
 //
 // A compaction that ran puts the claim's run of provider-error turns back to zero, so the
 // project's controller can be told a second time if the compacted session's turns go the same
@@ -397,17 +439,18 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 // it carried still stands.
 //
 // The ladder's wait goes whatever the compaction did (TimerPromptRetry), so the owed task is
-// sent from here rather than at the end of a wait that was counted against the transcript this
+// offered from here rather than at the end of a wait that was counted against the transcript this
 // operation just shortened: the whole point of compacting a claim the provider keeps refusing
 // is to put the task in front of it again, and the next step of that ladder can be ten minutes
 // away (promptRetryDelay). What the ladder counted stays on the delivery
 // (Delivery.ProviderErrorRetries), so a turn that fails again waits the step it had reached.
 //
 // A turn Oh My Pi started under the compaction and has not ended — a follow-up an Envoy
-// delivery queued while the session was being compacted — leaves the claim working for that
-// turn, and that turn's end gives the claim back and offers the owed task (turnEnded). Idling
-// the claim here would offer the owed task while a turn runs and leave the daemon reading the
-// agent as free while it works.
+// delivery queued while the session was being compacted, or the turn of a take accepted before
+// the handoff, whose text Oh My Pi parks until the handoff ends — leaves the claim working for
+// that turn, and that turn's end gives the claim back and offers the owed task, or the report of
+// the take's turn settles the task (turnEnded, reportedTask). Idling the claim here would offer
+// the owed task while a turn runs and leave the daemon reading the agent as free while it works.
 //
 // A suspension held over the claim is the one end that gives the claim back to nothing, and it
 // says so to whoever asked for the compaction (ErrCompactSuspended). The hold runs here, as
@@ -433,6 +476,11 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	run := *m.compacting
 	m.compacting = nil
 	m.disarm(TimerPromptRetry)
+	if ended.Answered {
+		// Oh My Pi answered the handoff, so it is over, and its turn's start is the only wait of
+		// the take: the bounds are the usual ones from here (handoffGuard).
+		m.dropHandoff()
+	}
 	if ended.Compacted {
 		m.claim.ProviderErrorRun = 0
 	}
@@ -459,4 +507,152 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 		return ErrCompactSuspended
 	}
 	return m.endNothingHeld(ctx, run.back, m.armEndFrameBoundUnlessArmed)
+}
+
+// handoffAnswered is whether err is Oh My Pi's own answer to a handoff (runtime.Conn's Compact):
+// nil for a session shortened, or a refusal that carries its words (runtime.RefusalReason), a
+// handoff that made no document among them. A wait that ran out and a transport that failed are
+// no answer: the handoff may still run in the session.
+func handoffAnswered(err error) bool {
+	var refusal interface{ RefusalReason() string }
+	return err == nil || errors.As(err, &refusal)
+}
+
+// handoffProtectsLine is the line of a take the handoff guard protects (protectTake), at Info,
+// with the take's number and the guard's deadline.
+const handoffProtectsLine = "supervise: a handoff may run over the accepted take, so its bounds wait for the handoff's deadline"
+
+// handoffAskLine is the line of the one ask a protected hello makes (askProtected), at Info, with
+// the take's number and the ask's deadline.
+const handoffAskLine = "supervise: the shim reconnected over a take a handoff protects; the daemon asks its agent whether it is in a turn and does not wait for the answer"
+
+// handoffGuard is the one fixed deadline of a take awaiting its turn that a handoff may still run
+// over (departure 10 of dispatch://INFRA-2811's plan): its process generation and number, the
+// deadline, and the cancel of the one ask a protected hello made (askProtected), nil for none. The
+// pinned Oh My Pi runs a handoff and a get_state on one serial queue, so while a handoff runs no
+// ask of whether the agent is in a turn is answered, and the usual reconnect deadline
+// (reconnectBound) and a short second wait can pass before the handoff ends and the take's text
+// starts its turn. A take the guard protects is charged, relaunched and offered again by nothing
+// before its deadline:
+//
+//   - the reconnect deadline of a close (reconnectFromClose), of a hello (helloView) and of a
+//     daemon start (NewMachine) is the later of its usual time and the guard's deadline, and a new
+//     hello does not renew the guard;
+//   - a hello asks once on its connection, with no wait inside the decision and a lifetime through
+//     its reconnect deadline (askProtected), and the answer is applied as every answer is
+//     (turnAnswered); the next hello or a close cancels it;
+//   - the second wait, once the view is whole, is due no earlier than the guard's deadline
+//     (armWaits).
+//
+// The live path's deadline is the handoff request's own, runtime.CompactTimeout from the ask
+// (compactStart). A daemon start reads a claim stored working with a take accepted and its turn
+// not started as one a handoff may still run over, and gives it the deadline of the start plus
+// runtime.CompactTimeout (NewMachine). A compaction's start writes that record, and so does a take
+// put back behind a turn that was not its own while that turn runs (putBack). The stored state
+// cannot tell the two apart, so the start protects both: the second's bounds wait at most until
+// that deadline, and an answer that its agent is streaming gives neither take the turn
+// (answerView).
+//
+// Oh My Pi's answer to the handoff, a shortened session or a refusal, ends the guard
+// (compactEnded): the handoff is over. A wait that ran out and a transport that failed end
+// nothing, since the handoff may still run. The take's turn starting, its finish and its take-back
+// make the guard moot (handoffUntil), and a let-go drops it (letGo). At the deadline the ordinary
+// paths run: the reconnect deadline's over a view that is not whole, and the second wait's over a
+// whole one.
+type handoffGuard struct {
+	generation uint64
+	number     uint64
+	until      time.Time
+	ask        context.CancelFunc
+	// anchorConn is the sequence of the connection whose protected hello left a restored take's
+	// anchor to the ask's answer rather than a probe that would wait behind the handoff
+	// (bindRestoredAnchor, bindAnchorAtAnswer), 0 for none.
+	anchorConn uint64
+}
+
+// protectTake gives the pending take, which awaits its turn, the handoff deadline until for the
+// claim's process generation. A take the guard protects already keeps the deadline it has.
+func (m *Machine) protectTake(until time.Time) {
+	p := m.claim.Pending
+	if g := m.handoff; g != nil && g.generation == m.claim.Generation && g.number == p.Number {
+		return
+	}
+	m.dropHandoff()
+	m.handoff = &handoffGuard{generation: m.claim.Generation, number: p.Number, until: until}
+	m.log.Info(handoffProtectsLine, "task", p.Number, "until", until)
+}
+
+// handoffUntil is the handoff guard's deadline, and whether it protects the pending take: it is
+// this process generation's and this take's, and the take still awaits its turn.
+func (m *Machine) handoffUntil() (time.Time, bool) {
+	g, p := m.handoff, m.claim.Pending
+	if g == nil || p == nil || g.generation != m.claim.Generation || g.number != p.Number || !m.takeAwaitsTurn() {
+		return time.Time{}, false
+	}
+	return g.until, true
+}
+
+// protectedRecovery is whether a take the handoff guard protects is still short of its deadline.
+func (m *Machine) protectedRecovery() bool {
+	until, protected := m.handoffUntil()
+	return protected && m.deps.Clock.Now().Before(until)
+}
+
+// laterOfHandoff is due, or the handoff guard's deadline where it protects the pending take and is
+// later.
+func (m *Machine) laterOfHandoff(due time.Time) time.Time {
+	if until, protected := m.handoffUntil(); protected && until.After(due) {
+		return until
+	}
+	return due
+}
+
+// dropHandoff ends the handoff guard, and the ask its hello made with it.
+func (m *Machine) dropHandoff() {
+	m.cancelProtectedAsk()
+	m.handoff = nil
+}
+
+// cancelProtectedAsk cancels the ask a protected hello made, where one is pending: a new hello's
+// connection, a close, the reconnect deadline and a let-go each end it.
+func (m *Machine) cancelProtectedAsk() {
+	if g := m.handoff; g != nil && g.ask != nil {
+		g.ask()
+		g.ask = nil
+	}
+}
+
+// askProtected makes the one ask of a hello over a take the handoff guard protects, on conn:
+// whether the agent is in a turn, with a lifetime through the reconnect deadline the hello armed,
+// on a goroutine of its own, so the decision does not wait behind the handoff on Oh My Pi's queue.
+// The answer reaches the machine as every answer does, behind the frames before it
+// (StreamTurnAnswered, turnAnswered); the stream delivers it only while this request still waits
+// for it, on the connection it was made on. The ask is not counted among the machine's goroutines
+// (Machine.Wait): it may wait for minutes, and its context ends with the machine's.
+func (m *Machine) askProtected(conn runtime.Conn) {
+	m.cancelProtectedAsk()
+	until := m.handoff.until
+	if a, armed := m.timers[TimerRegistration]; armed && a.due.After(until) {
+		until = a.due
+	}
+	asking, cancel := context.WithDeadline(m.ctx, time.Now().Add(until.Sub(m.deps.Clock.Now())))
+	m.handoff.ask = cancel
+	m.log.Info(handoffAskLine, "task", m.claim.Pending.Number, "until", until)
+	log := m.log
+	go func() {
+		defer cancel()
+		if _, err := conn.GetState(asking); err != nil && asking.Err() == nil {
+			log.Warn("supervise: the agent could not say whether it is in a turn after its shim reconnected over a take a handoff protects", "error", err)
+		}
+	}()
+}
+
+// armNoEarlierThanHandoff arms timer kind after from now, or at the handoff guard's deadline where
+// it protects the pending take and is later (laterOfHandoff).
+func (m *Machine) armNoEarlierThanHandoff(kind TimerKind, after time.Duration, deliveryID string) {
+	if until, protected := m.handoffUntil(); protected && until.After(m.deps.Clock.Now().Add(after)) {
+		m.armAt(kind, until, deliveryID)
+		return
+	}
+	m.arm(kind, after, deliveryID)
 }

@@ -91,7 +91,7 @@ const heldPassedOverLine = "supervise: a turn started that the producer said ran
 //
 // A report that comes before the start of the turn given the take is kept (takeAnchor.heldReport)
 // and read at that start, which is given no take where it is of a turn that held the text
-// (turnStarted). A take of a number taken before — one a provider error's ladder, a compaction or
+// (turnStarted). A take of a number taken before — one a provider error's ladder or
 // the second wait gave back, taken again — has no anchor, so a report its earlier take's hold
 // made, sent late, reaches no later take; nor does a report naming another number than the
 // pending take's, a report at or below the sequences the anchor already accounts for
@@ -228,6 +228,13 @@ const restoredAnchorRefusedLine = "supervise: the first hello after the daemon s
 //     at the hello, that the word still held when the shim attached. The ask is the anchor's own,
 //     logged by this refusal's line alone, not one of the asks the hello's row makes (streaming);
 //   - the connection is gone already: frames may have been lost with it.
+//
+// Over a take a handoff protects (handoffGuard) the probe is not made: Oh My Pi answers no ask
+// behind the handoff, so a probe bounded by the RPC timeout would discard the anchor for an answer
+// that only comes later, or hold the hello behind the handoff. The anchor stays unbound, which
+// gives no report the take's turn back meanwhile (heldUnrun), and the answer to the one ask the
+// hello makes (askProtected) is the evidence, on this connection, that binds it
+// (bindAnchorAtAnswer).
 func (m *Machine) bindRestoredAnchor(ctx context.Context, hello StreamHello) error {
 	a := &m.turns.anchor
 	if !a.restored || a.conn != 0 || m.turns.generation != m.claim.Generation {
@@ -243,6 +250,10 @@ func (m *Machine) bindRestoredAnchor(ctx context.Context, hello StreamHello) err
 		m.turns.anchor = takeAnchor{}
 		return nil
 	}
+	if _, protected := m.handoffUntil(); protected {
+		m.handoff.anchorConn = conn.Sequence()
+		return nil
+	}
 	asking, cancel := context.WithTimeout(ctx, m.deps.Timeouts.RPC)
 	_, err := conn.GetState(asking)
 	cancel()
@@ -252,6 +263,23 @@ func (m *Machine) bindRestoredAnchor(ctx context.Context, hello StreamHello) err
 		return nil
 	}
 	a.conn = conn.Sequence()
+	if since, given := m.sinceGiven(); given && a.unrun(since) {
+		a.pass(since)
+		return m.putBack(ctx, "held")
+	}
+	return nil
+}
+
+// bindAnchorAtAnswer binds a restored take's anchor that a protected hello left to the answer of
+// its ask (bindRestoredAnchor): the answer reached the machine on that connection, behind every
+// frame its shim replayed, which is the evidence the probe gives. The reports kept before it are
+// then read as at the probe.
+func (m *Machine) bindAnchorAtAnswer(ctx context.Context) error {
+	g, a := m.handoff, &m.turns.anchor
+	if g == nil || g.anchorConn == 0 || !a.restored || a.conn != 0 || m.turns.generation != m.claim.Generation {
+		return nil
+	}
+	a.conn, g.anchorConn = g.anchorConn, 0
 	if since, given := m.sinceGiven(); given && a.unrun(since) {
 		a.pass(since)
 		return m.putBack(ctx, "held")
@@ -442,8 +470,8 @@ const turnsPlacementTakenBackLine = "supervise: the agent's answer does not bear
 // not known, what learnTurns needs to place that take's turn (takeAnchor), and drops what an
 // earlier take kept. first is whether the claim had never taken the take's number before
 // (Claim.TaskTaken, the number of its last accepted take: numbers rise, and a pending number a
-// take holds is the last one taken). A number taken before — a take a provider error, a
-// compaction or the second wait gave back, then taken again — keeps nothing, and so does a take
+// take holds is the last one taken). A number taken before — a take a provider error or the
+// second wait gave back, then taken again — keeps nothing, and so does a take
 // accepted while the claim has no connection: see learnTurns.
 func (m *Machine) anchorTake(first bool) {
 	count := m.counted()

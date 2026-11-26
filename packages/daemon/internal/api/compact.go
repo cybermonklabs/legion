@@ -13,24 +13,27 @@ import (
 )
 
 // CompactResponse is what became of the compaction, and it is the same answer through both
-// doors. Compacted is whether Oh My Pi compacted the session; Reason is why it did not, which
-// is Oh My Pi's own words for a compaction it refused or skipped ("Already compacted",
-// "Nothing to compact (session too small)") and the daemon's for a wait that ran out or a
+// doors. Compacted is whether Oh My Pi's handoff shortened the session (stream's Conn.Compact);
+// Reason is why it did not, which is Oh My Pi's own words for a handoff it refused ("Cannot hand
+// off while a response is in progress", "Nothing to hand off (already compacted)"), the daemon's
+// for a handoff Oh My Pi answered with no document, and the daemon's for a wait that ran out or a
 // transport that failed, cut to reasonBound.
 //
 // A compaction that did not run is this answer and not a failure status, because the operation
 // still did the whole of what it promises: it asked Oh My Pi, and it gave the claim back and wrote
-// again the task it owes, for it to take, or nothing when it owes none (supervise's compactEnded).
-// So this answer always carries the claim back, whatever it says of the compaction, and the CLI
-// prints both halves of it in one line (cmd/legion's printCompaction). What it promises of the
-// owed task is that nothing of the daemon's is left holding it: either its value was written
-// again, or the claim came back into something whose own end writes it, and none of those ends
-// leaves the worker stopped. There are two shapes of that. A turn Oh My Pi started under the
-// compaction leaves the claim working for it and the end writes nothing at all: that turn's end
-// gives the claim back and writes the task's value (supervise's compactEnded, turnEnded). Where
-// the end does reach the write, a hold can still refuse the take — the paced turn of a launch
-// parked over the process, an open update round the worker has answered — and each of those ends
-// of the daemon's own accord with the value written again (supervise's offerPending).
+// again the task it owes, for it to take, or nothing when it owes none or its take was accepted
+// before the compaction (supervise's compactEnded). So this answer always carries the claim back,
+// whatever it says of the compaction, and the CLI prints both halves of it in one line
+// (cmd/legion's printCompaction). What it promises of the owed task is that nothing of the
+// daemon's is left holding it: either its value was written again, or its take is accepted and
+// that take's own turn runs it, since a handoff aborts no turn, or the claim came back into
+// something whose own end writes it, and none of those ends leaves the worker stopped. There are
+// two shapes of that last one. A turn Oh My Pi started under the compaction leaves the claim
+// working for it and the end writes nothing at all: that turn's end gives the claim back and
+// writes the task's value (supervise's compactEnded, turnEnded). Where the end does reach the
+// write, a hold can still refuse the take — the paced turn of a launch parked over the process, an
+// open update round the worker has answered — and each of those ends of the daemon's own accord
+// with the value written again (supervise's offerPending).
 //
 // Every other outcome is a failure status and gives the claim back nothing here: a refusal made
 // before anything was asked — a claim in no state to be compacted, a Claude Code claim, a role
@@ -46,13 +49,12 @@ type CompactResponse struct {
 }
 
 // reasonBound is how much of a compaction's reason the answer carries. The reason is words the
-// daemon did not write: Oh My Pi's for a compaction it refused or skipped, and through that a
-// summarizer model's own explanation of a refusal. It reaches the controller's tool result and
-// so its next prompt, where no text the daemon did not write belongs
-// (dispatch://INFRA-956 R2, supervise's classifyProviderError). The known refusals are one short
-// sentence each ("Nothing to compact (session too small)" is 37 bytes), and a transport
-// failure's is of the same order, so 200 bytes carries every reason the operation has and no
-// model's essay.
+// daemon did not write: Oh My Pi's for a handoff it refused, and through that a model's own
+// explanation of a refusal. It reaches the controller's tool result and so its next prompt, where
+// no text the daemon did not write belongs (dispatch://INFRA-956 R2, supervise's
+// classifyProviderError). The known refusals are one short sentence each ("Nothing to hand off
+// (already compacted)" is 39 bytes), and a transport failure's is of the same order, so 200 bytes
+// carries every reason the operation has and no model's essay.
 const reasonBound = 200
 
 // The refusals the compaction writes itself, which both doors give word for word (compact).
@@ -72,10 +74,9 @@ const (
 	compactionFailed = "COMPACTION_FAILED"
 )
 
-// compactInstructions is what Oh My Pi writes the summary to. Its first purpose is the summary's
-// form: Oh My Pi runs the image-based snapcompact method only for a compaction that carries no
-// instructions (shimwire.Compact), and a worker resumed on images needs a vision model to read
-// its own past, so these instructions are what make the summary text.
+// compactInstructions is what Oh My Pi writes the handoff document to: the focus its handoff
+// prompt carries (shimwire.Handoff). The handoff writes text whatever the instructions say, so
+// what they are for is what the document keeps.
 //
 // They keep word for word the reviewer's entry (reviewround.EntryLabel): the reviewer copies its
 // number into the footer of its review, and a summary that dropped it leaves the reviewer no entry
@@ -96,16 +97,16 @@ const compactInstructions = "Write the summary as text. " +
 	"Drop the full text of a file you read and the full output of a command that passed."
 
 // compactOp is the compaction in the words its own refusals name it by, which both of its doors
-// give: the role `controller` the controller's door may not name (claimCompact), the claim
-// whose turn a compaction would abort, and the states a compaction does reach (refuseState).
-// Those states are the two the machine itself takes a compaction in, which is all a compaction
-// reaches live, so reaches and liveStates name the same pair here where the fresh session's
-// differ (supervise.TakesCompaction, controllerOp). The type is the two recoveries' own
-// (controllerOp, freshsession.go).
+// give: the role `controller` the controller's door may not name (claimCompact), the claim in a
+// turn, in which Oh My Pi refuses the handoff a compaction asks for, and the states a compaction
+// does reach (refuseState). Those states are the two the machine itself takes a compaction in,
+// which is all a compaction reaches live, so reaches and liveStates name the same pair here where
+// the fresh session's differ (supervise.TakesCompaction, controllerOp). The type is the two
+// recoveries' own (controllerOp, freshsession.go).
 var compactOp = controllerOp{
 	name:             "a compaction",
 	notTheController: "the controller does not compact its own session",
-	cutsTheTurn:      "a compaction would abort that turn",
+	cutsTheTurn:      "Oh My Pi refuses a compaction's handoff in that turn",
 	reaches:          "A compaction reaches a claim whose agent is ready or idle",
 	liveStates:       "ready or idle",
 }
@@ -154,7 +155,8 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 
 // compact is the one compaction effect, which `legion claims compact` (compactClaim) and the
 // controller's compact (claimCompact) both run: the claim's Oh My Pi session is compacted, and
-// then the task the claim owes is sent to it again.
+// then the value of the task the claim owes is written again, unless a take of it was accepted
+// before the compaction, whose own turn runs it.
 //
 // It is what a claim whose provider keeps refusing its session reaches for first. The session,
 // its workspace and everything the worker knows of its issue stay where they are, and what goes
@@ -174,8 +176,8 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //     names what does start it, which the claim's role decides: fresh_session for every
 //     workflow role, and the daemon's controller keeper for the project's own controller, which
 //     fresh_session refuses (startsAgainName);
-//   - a claim stored working whose process that read finds running is refused because a
-//     compaction aborts whatever turn that process is in and that turn may be the one that
+//   - a claim stored working whose process that read finds running is refused because Oh My Pi
+//     refuses a handoff in whatever turn that process is in, and that turn may be the one that
 //     ends the run of provider errors; the refusal says the claim is stored working, which is
 //     all either door knows of it, and names the compaction, so a controller told to compact
 //     first is not told to ask for a fresh session instead (refuseWorkingClaim,
@@ -227,12 +229,12 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // ladder's wait goes with it, so the owed task goes now rather than at the end of a wait
 // counted against the transcript the compaction shortened (supervise's compactEnded).
 //
-// A compaction Oh My Pi refused or skipped is no refusal of this route: the answer says so, the
-// claim is back, and whatever task it owes is written again (CompactResponse). A compaction that
-// ran and did not end is a failure of its own: the store would not write the end
-// (supervise.ErrCompactNotEnded), or the claim lost its process under the compaction
-// (supervise.ErrCompactProcessGone). Neither gave the claim back, so neither is answered as a
-// compaction that did not run.
+// A handoff Oh My Pi refused, or answered with no document, is no refusal of this route: the
+// answer says so, the claim is back, and whatever task it owes is written again, unless its take
+// was accepted already (CompactResponse). A compaction that ran and did not end is a failure of
+// its own: the store would not write the end (supervise.ErrCompactNotEnded), or the claim lost its
+// process under the compaction (supervise.ErrCompactProcessGone). Neither gave the claim back, so
+// neither is answered as a compaction that did not run.
 //
 // While the project is paused, a claim that is not the project's controller is refused
 // PROJECT_PAUSED at both doors before anything is asked of it, and nothing of it changes
@@ -318,9 +320,9 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 			// process made now (refuseState).
 			return CompactResponse{}, s.refuseState(w, r, m, token, refused.State, m.View())
 		}
-		// Oh My Pi refused or skipped the compaction, the wait for it ran out, or the transport
-		// failed. The claim is back and whatever task it owes is written again, so the caller is
-		// told why rather than told the request failed.
+		// Oh My Pi refused the handoff or made no document, the wait for it ran out, or the transport
+		// failed. The claim is back and whatever task it owes is written again, unless its take was
+		// accepted already, so the caller is told why rather than told the request failed.
 		reason := boundReason(runtime.RefusalReason(err))
 		if reason == "" {
 			reason = boundReason(err.Error())

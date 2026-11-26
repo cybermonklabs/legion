@@ -2929,6 +2929,56 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(worker.sentUserMessages).toEqual([text]);
     });
 
+    // #5644's cyber_policy ladder climbs a rung inside the take's own turn: its `session_stop`
+    // handler answers the host's continuation, so the refused attempt ends its run with
+    // `willContinue` and the host sends the rung's request in the same turn
+    // (src/cyber-policy-ladder.ts). That refused end is no end of the take's turn (`turnGoesOn`):
+    // the take keeps its number, nothing is reported, and the rung the provider answers settles the
+    // turn with the one report, which names the take's number and carries no `cyber_policy` code.
+    // Only a refusal of the ladder's last rung settles the turn refused, with that code.
+    test("a take's turn the cyber_policy ladder retries once and that then settles is finished once by that settle's report", async () => {
+      const text = "Implement REPO-44 on its branch.";
+      const tasks = taskStandIn();
+      const value = tasks.give(text);
+      let taken = 0;
+      const worker = await bootStalling({
+        taskValue: value,
+        idle: () => true,
+        routes: (url, body) => {
+          if (url.pathname === "/legion/v1/claims/take") taken += 1;
+          return tasks.answer(url.pathname, body as Record<string, unknown>);
+        },
+      });
+      await turns(() => worker.sentUserMessages.length > 0);
+      expect(worker.sentUserMessages).toEqual([text]);
+
+      await worker.starts();
+      await worker.ends({
+        willContinue: true,
+        messages: [
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage:
+              "Invalid prompt: your prompt was flagged as potentially violating our usage policy (cyber_policy)",
+          },
+        ],
+      });
+      await turns(() => false);
+      expect(reportedTurns(worker)).toEqual([]);
+      await worker.starts();
+      await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+      await turns(() => false);
+
+      expect(reportedTurns(worker)).toEqual([[1, "clean", value.number]]);
+      const reports = daemonRequests(worker.requests).filter(
+        (request) => request.path === "/legion/v1/claims/turn-outcome"
+      );
+      expect(reports[0]?.body).not.toHaveProperty("code");
+      expect(taken).toBe(1);
+      expect(worker.sentUserMessages).toEqual([text]);
+    });
+
     test("a turn that ends on a tool call written as text is told the call did not run", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);

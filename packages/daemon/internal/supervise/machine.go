@@ -1993,6 +1993,22 @@ type Machine struct {
 	// (endState). Nothing else reads it: for the rest of the daemon the compaction is gone. It
 	// is memory only, as compacting is.
 	lostCompaction *compacting
+	// handoff is the one deadline of a take a handoff protects (handoffGuard, compact.go), nil for
+	// none: a take awaiting its turn when a compaction is asked for, whose handoff may still run
+	// in the session after the answer is lost, or which a daemon start restored from a claim
+	// stored working (NewMachine). It is memory only, as compacting is; a let-go drops it.
+	handoff *handoffGuard
+	// restoredHandoff is a claim a daemon start restored working over a take accepted and not
+	// started, which a compaction's start writes, and a put-back behind a foreign turn too
+	// (NewMachine): its working is read as the handoff's until a turn starts or ends, so the next
+	// start frame is a turn's first and is given the take (workingForNoTurn,
+	// turnStartedWhileBusy). It is memory only.
+	restoredHandoff bool
+	// admittedByAnswer is a turn an agent's answer that it is in a turn admitted over a claim
+	// working for no turn (answerView): the start frame of that turn, replayed behind the
+	// answer, is the same turn and counts nothing again (turnStartedWhileBusy). A turn's end
+	// clears it. It is memory only.
+	admittedByAnswer bool
 	// heldStopBack is the state the claim's held suspension finds it in when it runs at the end of
 	// the turn, or of the compaction, the claim is still stored working for (suspendHeldAtEnd):
 	// the state that end gives the claim back in. That is idle after a turn, and after a
@@ -2340,6 +2356,27 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	// (dispatch://INFRA-2811, rule one of T3). accept and letGo clear the mark as before.
 	if p != nil && !p.taken() && p.Interrupted {
 		m.cutTurnOf = p.ID
+	}
+	// A claim stored working with a take accepted and its turn not started is the record a
+	// compaction's start writes, since a take into a working claim is refused and a turn's start
+	// records the take's turn started (compactStart, departure 10 of dispatch://INFRA-2811's
+	// plan). A take put back behind a turn that was not its own, while that turn runs (putBack),
+	// leaves the same record, and the store cannot tell the two apart. Machine.compacting is
+	// memory only, so this narrow stored state is the boot's one sign that a handoff may still run
+	// over the take, and the boot protects both: the take is protected until the start plus
+	// runtime.CompactTimeout (handoffGuard), the registration deadline the start armed is the
+	// later of its own and that one, and the claim's working is read as the handoff's, so the next
+	// start frame is the take's turn (workingForNoTurn). An answer that the agent is streaming
+	// gives the take no turn here (answerView): the turn it reports may be the one the take was
+	// put back behind.
+	if c.State == StateWorking && m.takeAwaitsTurn() {
+		m.restoredHandoff = true
+		m.protectTake(m.deps.Clock.Now().Add(runtime.CompactTimeout))
+		if a, armed := m.timers[TimerRegistration]; armed {
+			if due := m.laterOfHandoff(a.due); !due.Equal(a.due) {
+				m.armAt(TimerRegistration, due, "")
+			}
+		}
 	}
 	// The take the store holds accepted is anchored where the store shows the daemon before this
 	// one handled no turn start after the one it gave it, for the producer's word that its text
@@ -5040,6 +5077,8 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.turnsTask, m.reportedAhead, m.rewrite = 0, aheadReport{}, valueRewrite{}
 	m.cutTurnOf = ""
 	m.compacting, m.lostCompaction = nil, nil
+	m.dropHandoff()
+	m.restoredHandoff, m.admittedByAnswer = false, false
 	m.processGone, m.goneOutOfMemory, m.goneCause, m.claim.DeathCharged = false, false, "", false
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {
 		m.revoke(*enrollment)

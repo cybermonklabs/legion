@@ -684,10 +684,11 @@ test("a take's text held through a run the worker did not start is taken again a
   expect(ran).toEqual([AFRESH_TEXT]);
 });
 
-// A text handed to the host and dropped by it before its turn started — a compaction aborted the
-// prompt the host was setting up, and `sendUserMessage` rejected — never reached the host either:
-// the take awaits the value's next revision, which the daemon writes once it has taken the task
-// back, takes at it, and hands that answer's text once.
+// A text handed to the host and dropped by it before its turn started — the host aborted the
+// prompt it was setting up, and `sendUserMessage` rejected — never reached the host either: the
+// take awaits the value's next revision, which the daemon writes once it has taken the task back
+// (R5's second wait), takes at it, and hands that answer's text once. A compaction's handoff is no
+// such abort: Oh My Pi parks a text it receives while a handoff runs, and runs it after.
 test("a take whose text the host dropped before its turn started is taken at the value's next revision, and its text runs once", async () => {
   const { take, takes, ran, handed, advance, routed, marks } = rig();
   take.ready();
@@ -717,9 +718,10 @@ test("a take whose text the host dropped before its turn started is taken at the
 
 // The host can drop the text after the daemon wrote the value again and answered the take at that
 // newer revision: an abort ends a prompt the host is setting up only once that setup reaches its
-// next step, which can be after a short compaction that took the task back has ended. The answer
-// that came while the host still held the text is the next accepted answer, and its text goes to
-// the host in the dropped one's place, once; a rejection of a text whose run has started is no drop.
+// next step, which can be after the daemon took the task back (R5's second wait) and wrote its
+// value again. The answer that came while the host still held the text is the next accepted
+// answer, and its text goes to the host in the dropped one's place, once; a rejection of a text
+// whose run has started is no drop.
 test("a take answered at a newer revision while the host still held the text it then dropped hands that answer's text, once", async () => {
   const { take, takes, ran, handed, advance, routed } = rig();
   take.ready();

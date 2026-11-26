@@ -10,7 +10,7 @@ import (
 )
 
 // takeBack returns a taken task to waiting under the number it has, for a reason that keeps the
-// process: a provider error's turn, a compaction, and the second wait. The take goes (ConfirmedAt,
+// process: a provider error's turn and the second wait. The take goes (ConfirmedAt,
 // TakenText, TurnStarted, TakeTold, which dropTake resets for both take-backs of a take), so the
 // next take of the number is decided afresh and its text composed
 // again with whatever note the cause left (Delivery.message); the end of the task's turn is no
@@ -19,16 +19,16 @@ import (
 // machine remembers the number (Machine.rewrite), so that write is logged as the retake it is.
 //
 // What the take told and, for a take whose turn had not started, the handshake's confirmation go
-// back with it (giveBackTake): a provider error's turn started on the take's text, and a
-// compaction's and the second wait's had not. Where either moved, the claim goes with the
-// delivery in one write.
+// back with it (giveBackTake): a provider error's turn started on the take's text, and the second
+// wait's had not. Where either moved, the claim goes with the delivery in one write. A compaction
+// takes no take back: it is Oh My Pi's handoff, which aborts no turn (compactStart).
 //
 // What the take-back establishes holds in memory at once, whether or not its write lands: a
 // write that fails leaves the delivery unsaved, and settle writes it again, with the claim.
 //
 // A take awaiting its turn while the claim's connection does not show every frame of its turns, or
-// one marked so, goes back as a cut turn with its note (dropTake, turnMayHaveRunUnseen): the
-// operator's compaction can take it back while the view waits for the agent's answer to a hello.
+// one marked so, goes back as a cut turn with its note (dropTake, turnMayHaveRunUnseen): R5's
+// second wait takes back a take marked so after a turn's end the daemon never saw begin.
 // The task is then marked for the record of a let-go of the process that comes before its next
 // take (Machine.cutTurnOf), so that record tells the cut turn rather than a turn the agent was not
 // in.
@@ -75,8 +75,8 @@ func (m *Machine) takeBackInMemory(cause string) (claimMoved bool) {
 //     the next accepted take carries its sentence again (untell). A provider error's take-back, whose
 //     turn started, untells too: the error is a model call that failed, often the turn's first, so
 //     the agent never read the text, and where an earlier call of the turn did, the sentence is
-//     told twice rather than lost. A compaction aborts the turn before it starts, and the second
-//     wait finds no turn of the take at all, so neither ran the text.
+//     told twice rather than lost. The second wait finds no turn of the take at all, so it ran
+//     none of the text.
 //   - Where the take's turn had not started, the claim's handshake gives back its confirmation of
 //     the take's entry (EntryHandshake.unconfirmed), read before the take's ConfirmedAt is
 //     cleared: a take is the worker's own word that it took the entry, but one whose text no turn

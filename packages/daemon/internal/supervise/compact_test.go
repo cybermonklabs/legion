@@ -2,15 +2,16 @@ package supervise
 
 import (
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// compactInstructions stands for what the API sends with every compaction: Oh My Pi writes a
-// text summary only for a compaction that carries instructions, and Machine.Compact refuses one
-// that carries none.
+// compactInstructions stands for what the API sends with every compaction: the instructions
+// keep the reviewer's entry in Oh My Pi's handoff document, and Machine.Compact refuses a
+// compaction that carries none.
 const testCompactInstructions = "Write the summary as text."
 
 // ladderStuck is the claim the provider-errors notice names, idle between the ladder's takes:
@@ -90,18 +91,18 @@ func TestACompactionStartsTheRunOfProviderErrorsAgainSoTheControllerIsToldASecon
 	}
 }
 
-// A compaction Oh My Pi refused or skipped resets nothing: the session is as it was, so the run
-// of refused turns it carried still stands and the controller is not told again for it. The
-// owed task goes again all the same.
+// A handoff Oh My Pi refused resets nothing: the session is as it was, so the run of refused
+// turns it carried still stands and the controller is not told again for it. The owed task goes
+// again all the same.
 func TestACompactionThatWasRefusedKeepsTheRunOfProviderErrors(t *testing.T) {
 	notices := 0
 	h := ladderStuck(t, &notices)
 	sent := ladderSends
-	h.conn.RefuseCompact("Nothing to compact (session too small)")
+	h.conn.RefuseCompact("Nothing to hand off (already compacted)")
 
 	err := h.m.Compact(h.ctx, testCompactInstructions)
 
-	if reason := runtimeRefusalReason(err); reason != "Nothing to compact (session too small)" {
+	if reason := runtimeRefusalReason(err); reason != "Nothing to hand off (already compacted)" {
 		t.Fatalf("compact answered %v, want Oh My Pi's own refusal", err)
 	}
 	h.m.Wait()
@@ -177,9 +178,9 @@ func waitForCompacting(t *testing.T, h *harness) {
 }
 
 // A turn that ends while the session is being compacted leaves the claim exactly where it is: a
-// compaction aborts whatever turn its session was running, so a background turn's end can
-// arrive under one, and taking it for the compaction's end would hand the claim its owed task
-// while Oh My Pi is still writing the summary.
+// turn can start and end under the compaction, a background turn among them, and taking its end
+// for the compaction's end would hand the claim its owed task while Oh My Pi is still writing the
+// handoff document.
 func TestATurnThatEndsDuringACompactionLeavesTheClaimWorking(t *testing.T) {
 	notices := 0
 	h := ladderStuck(t, &notices)
@@ -204,9 +205,8 @@ func TestATurnThatEndsDuringACompactionLeavesTheClaimWorking(t *testing.T) {
 	h.wantPrompts(sent + 1)
 }
 
-// A compaction asked for with no instructions is refused before anything is sent: Oh My Pi
-// archives the history onto snapcompact's images for a compaction that carries none, and a
-// worker resumed on images needs a vision model to read its own past.
+// A compaction asked for with no instructions is refused before anything is sent: the
+// instructions are what keep the reviewer's entry in Oh My Pi's handoff document.
 func TestACompactionWithNoInstructionsIsRefusedBeforeAnythingIsSent(t *testing.T) {
 	notices := 0
 	h := ladderStuck(t, &notices)
@@ -224,49 +224,365 @@ func TestACompactionWithNoInstructionsIsRefusedBeforeAnythingIsSent(t *testing.T
 	}
 }
 
-// The ladder has just written the owed task's value again and the worker's take of it is
-// accepted, its turn still to come, when the compaction is taken. Oh My Pi runs one thing at a
-// time, so the compaction aborts the turn that take was about to start: left taken, the task would
-// wait on a turn its worker never runs. The task is taken back under its number instead, and the
-// end of the compaction writes its value again, which the worker takes.
-func TestTakeBackByACompactionKeepsTheNumberAndTheTaskIsTakenAgainAfterIt(t *testing.T) {
+// handoffRefusedInATurn is what the pinned Oh My Pi answers a handoff asked for while a turn
+// runs (`case "handoff"` in packages/coding-agent/src/modes/rpc/rpc-mode.ts of
+// cybermonklabs/oh-my-pi at the pinned tag).
+const handoffRefusedInATurn = "Cannot hand off while a response is in progress"
+
+// takenBeforeACompaction is ladderStuck, on the current plugin, with the ladder's next step come:
+// the owed task's value written again and the worker's take of it accepted, its turn still to
+// come. It answers that take. This is what a compaction finds when it is asked for after the take
+// and before its turn (departure 10 of dispatch://INFRA-2811's plan).
+func takenBeforeACompaction(t *testing.T) (*harness, taken) {
+	t.Helper()
 	notices := 0
-	h := ladderStuck(t, &notices)
-	h.advance(promptRetryMax) // the ladder's next step writes the owed task's value again
+	h := ladderStuck(t, &notices, currentPlugin)
+	h.advance(promptRetryMax)
 	sent := h.wantPrompts(ladderSends + 1)[ladderSends]
-	if got := h.state(); got != StateIdle {
-		t.Fatalf("after the ladder's take the claim is %s, want it idle waiting for the turn", got)
+	if p := h.pending(); p.Number != sent.Number || !p.awaitsStart() {
+		t.Fatalf("after the ladder's step the claim holds %+v, want task %d's take awaiting its turn", p, sent.Number)
 	}
-	release := h.conn.HoldCompact()
-	compacted := make(chan error, 1)
+	return h, sent
+}
+
+// compactHeld starts a compaction whose answer the claim's connection holds, and answers the call
+// that lets the answer through and the channel Machine.Compact answers on.
+func compactHeld(t *testing.T, h *harness) (release func(), compacted chan error) {
+	t.Helper()
+	release = h.conn.HoldCompact()
+	compacted = make(chan error, 1)
 	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
 	waitForCompacting(t, h)
-	if p := h.claim().Pending; p == nil || p.taken() {
-		t.Fatalf("pending %+v under the compaction, want the task taken back", p)
-	}
+	return release, compacted
+}
 
-	h.must(StreamTurnStart{Claim: h.token})
-	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+// wantTakeKept holds that the accepted take of sent stands as accepted left it, in memory and in
+// the store: the same delivery and number, accepted at the same moment, its text kept, its turn
+// still to come, and no note of a cut turn.
+func (h *harness) wantTakeKept(sent taken, accepted Delivery, when string) {
+	h.t.Helper()
+	p := h.pending()
+	if p.ID != sent.DeliveryID || p.Number != sent.Number || !p.awaitsStart() || !p.ConfirmedAt.Equal(accepted.ConfirmedAt) ||
+		p.TakenText != accepted.TakenText || p.Interrupted {
+		h.t.Fatalf("%s the claim holds %+v, want task %d's take kept as it was accepted, %+v", when, p, sent.Number, accepted)
+	}
+	stored, ok := h.store.delivery(h.token)
+	if !ok || !stored.awaitsStart() || !stored.ConfirmedAt.Equal(accepted.ConfirmedAt) || stored.TakenText != accepted.TakenText {
+		h.t.Fatalf("%s the store holds %+v, want task %d's take kept as it was accepted", when, stored, sent.Number)
+	}
+}
 
-	release()
-	if err := <-compacted; err != nil {
-		t.Fatalf("compact: %v", err)
+// Row H1 of departure 10: the worker's take of the owed task is accepted, its turn still to come,
+// when the compaction is asked for, and the compaction's end reaches the machine before that
+// turn's start. The compaction is Oh My Pi's handoff, which aborts no turn: the pinned Oh My Pi
+// parks the text the worker hands it while the handoff runs, and starts its turn once the handoff
+// is over. So the take stands — its acceptance, its text and the handshake's confirmation — and
+// nothing offers the task again, whether Oh My Pi wrote the handoff or refused it; the take's
+// turn, when it starts, is the take's, and its report settles the task once. Taken back, as the
+// daemon did around Oh My Pi's `compact`, the turn's report would name a task no take held, and
+// the task would be offered and run a second time.
+//
+// Row H5 of departure 10 is the task no take holds: a take of it while the compaction runs is
+// refused, the compaction's end writes its value once, and the worker takes it once. A claim that
+// owes no task is offered nothing.
+func TestTakeAcceptedBeforeACompactionIsKeptAndRunsOnce(t *testing.T) {
+	for _, tc := range []struct{ name, refusal string }{
+		{"the handoff shortens the session", ""},
+		{"Oh My Pi refuses the handoff", handoffRefusedInATurn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, sent := takenBeforeACompaction(t)
+			accepted, handshake, writes := h.pending(), h.claim().Handshake, len(h.values.written())
+			var err error
+			if tc.refusal == "" {
+				release, compacted := compactHeld(t, h)
+				h.wantTakeKept(sent, accepted, "under the compaction")
+				release()
+				err = <-compacted
+			} else {
+				h.conn.RefuseCompact(tc.refusal)
+				err = h.m.Compact(h.ctx, testCompactInstructions)
+			}
+			if got := runtimeRefusalReason(err); got != tc.refusal || (tc.refusal == "" && err != nil) {
+				t.Fatalf("compact answered %v, want %q", err, tc.refusal)
+			}
+			h.m.Wait()
+			h.workerAsks()
+
+			h.wantState(StateIdle)
+			h.wantTakeKept(sent, accepted, "after the compaction's end")
+			if got := h.claim().Handshake; got != handshake {
+				t.Fatalf("the handshake is %+v after the compaction, want %+v: the take's confirmation stands", got, handshake)
+			}
+			if got := len(h.values.written()); got != writes {
+				t.Fatalf("%d values were written over the compaction, want none: the take is accepted, so nothing is offered", got-writes)
+			}
+			h.wantPrompts(ladderSends + 1)
+
+			h.must(StreamTurnStart{Claim: h.token})
+			if p := h.pending(); p.Number != sent.Number || !p.startRecorded() {
+				t.Fatalf("after the turn's start the claim holds %+v, want task %d's take given that turn", p, sent.Number)
+			}
+			h.must(StreamTurnEnd{Claim: h.token})
+
+			if p := h.claim().Pending; p != nil {
+				t.Fatalf("after the turn's report the claim holds %+v, want task %d finished", p, sent.Number)
+			}
+			if got := h.claim().TaskFinished; got != sent.Number {
+				t.Fatalf("the claim finished task %d, want %d", got, sent.Number)
+			}
+			h.wantFinishedOnce(finishedByReport)
+			h.wantPrompts(ladderSends + 1)
+		})
 	}
-	h.m.Wait()
-	h.workerAsks()
-	owed := h.claim().Pending
-	if owed == nil {
-		t.Fatal("the compaction retired the task whose turn it aborted: the claim owes nothing, and nothing gives it again")
+	t.Run("a task no take holds is written once and taken once at the compaction's end", func(t *testing.T) {
+		notices := 0
+		h := ladderStuck(t, &notices)
+		owed := h.pending()
+		h.manualTakes()
+		release, compacted := compactHeld(t, h)
+		h.wantRefused(HoldInTurn)
+		writes := len(h.values.written())
+
+		release()
+		if err := <-compacted; err != nil {
+			t.Fatalf("compact: %v", err)
+		}
+		h.m.Wait()
+
+		if got := len(h.values.written()); got != writes+1 {
+			t.Fatalf("%d values were written at the compaction's end, want one", got-writes)
+		}
+		h.mustTake()
+		if p := h.pending(); p.Number != owed.Number || !p.awaitsStart() {
+			t.Fatalf("after the take the claim holds %+v, want task %d's take awaiting its turn", p, owed.Number)
+		}
+		if got := len(h.values.written()); got != writes+1 {
+			t.Fatalf("%d values were written by the take, want only the one the compaction's end wrote", got-writes)
+		}
+	})
+	t.Run("a claim that owes no task is offered nothing at the compaction's end", func(t *testing.T) {
+		h := waitsHarness(t, currentPlugin)
+		h.reach(StateIdle)
+		takes, writes := len(h.prompts()), len(h.values.written())
+
+		if err := h.m.Compact(h.ctx, testCompactInstructions); err != nil {
+			t.Fatalf("compact: %v", err)
+		}
+		h.m.Wait()
+		h.workerAsks()
+
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("the claim holds %+v after the compaction, want no task", p)
+		}
+		if got := len(h.values.written()); got != writes {
+			t.Fatalf("%d values were written at the compaction's end, want none", got-writes)
+		}
+		h.wantPrompts(takes)
+	})
+}
+
+// startLinesOf counts the start lines of turns given task number (startTurn).
+func (h *harness) startLinesOf(number uint64) int {
+	n := 0
+	for _, r := range h.records.of(turnStartedLine) {
+		if task, ok := r.attr("task"); ok && task.String() == strconv.FormatUint(number, 10) {
+			n++
+		}
 	}
-	if owed.ID != sent.DeliveryID || owed.Number != sent.Number {
-		t.Fatalf("the owed task is %s, number %d; want the task the take was of, %s, number %d: a take-back keeps its number",
-			owed.ID, owed.Number, sent.DeliveryID, sent.Number)
+	return n
+}
+
+// Row H2 of departure 10: the take's turn starts while the handoff still runs — Oh My Pi parked
+// the take's text and started it as the handoff ended, before the handoff's answer reached the
+// machine — so the start is the take's, decided and written as any start of a ready or idle
+// claim is (turnStarted): its line names the task, the delivery records the turn started, and the
+// claim stays working for that turn past the compaction's end. Its end and report may come before
+// that end, or the end before it and the report after; the report settles the task once either way,
+// and a finished task does not come back at the compaction's end. A foreign turn the start was
+// given to, whose report says the take's text was held through it, gives the take its turn back,
+// and the take's own turn settles it.
+func TestTakeWhoseTurnStartsBeforeTheCompactionEndsIsGivenThatTurn(t *testing.T) {
+	started := func(t *testing.T, h *harness, sent taken) {
+		t.Helper()
+		before := h.startLinesOf(sent.Number)
+		h.must(StreamTurnStart{Claim: h.token})
+		if p := h.pending(); p.Number != sent.Number || !p.startRecorded() {
+			t.Fatalf("after the start under the compaction the claim holds %+v, want task %d's take given that turn", p, sent.Number)
+		}
+		if stored, ok := h.store.delivery(h.token); !ok || !stored.startRecorded() {
+			t.Fatalf("after the start under the compaction the store holds %+v, want the take's turn written started", stored)
+		}
+		if got := h.startLinesOf(sent.Number) - before; got != 1 {
+			t.Fatalf("the start under the compaction wrote %d start lines naming task %d, want one", got, sent.Number)
+		}
+		h.wantState(StateWorking)
 	}
-	prompts := h.wantPrompts(ladderSends + 2)
-	if prompts[ladderSends+1].Number != owed.Number {
-		t.Fatalf("the take after the compaction was of task %d, want the task the claim still owes, %d",
-			prompts[ladderSends+1].Number, owed.Number)
+	ended := func(t *testing.T, h *harness, release func(), compacted chan error) {
+		t.Helper()
+		release()
+		if err := <-compacted; err != nil {
+			t.Fatalf("compact: %v", err)
+		}
+		h.m.Wait()
+		h.workerAsks()
 	}
+	settledOnce := func(t *testing.T, h *harness, sent taken) {
+		t.Helper()
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("the claim holds %+v, want task %d finished", p, sent.Number)
+		}
+		h.wantFinishedOnce(finishedByReport)
+		h.wantPrompts(ladderSends + 1)
+		if value, held := h.values.value(h.token); held && value.Number == sent.Number {
+			t.Fatalf("the bucket holds %+v, want task %d's value deleted", value, sent.Number)
+		}
+	}
+	t.Run("its turn runs on past the compaction's end", func(t *testing.T) {
+		h, sent := takenBeforeACompaction(t)
+		release, compacted := compactHeld(t, h)
+		started(t, h, sent)
+		ended(t, h, release, compacted)
+		h.wantState(StateWorking)
+		h.must(StreamTurnEnd{Claim: h.token})
+		h.wantState(StateIdle)
+		settledOnce(t, h, sent)
+	})
+	t.Run("its end and its report come before the compaction's end", func(t *testing.T) {
+		h, sent := takenBeforeACompaction(t)
+		release, compacted := compactHeld(t, h)
+		started(t, h, sent)
+		h.must(StreamTurnEnd{Claim: h.token})
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("after the report under the compaction the claim holds %+v, want task %d finished", p, sent.Number)
+		}
+		ended(t, h, release, compacted)
+		h.wantState(StateIdle)
+		settledOnce(t, h, sent)
+	})
+	t.Run("its end comes before the compaction's end and its report after", func(t *testing.T) {
+		h, sent := takenBeforeACompaction(t)
+		release, compacted := compactHeld(t, h)
+		started(t, h, sent)
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		ended(t, h, release, compacted)
+		h.wantState(StateIdle)
+		if p := h.pending(); p.Number != sent.Number || !p.startRecorded() {
+			t.Fatalf("after the compaction's end the claim holds %+v, want task %d's turn run and its report to come", p, sent.Number)
+		}
+		h.mustReport(nil)
+		settledOnce(t, h, sent)
+	})
+	t.Run("a foreign turn whose report says the take's text was held through it", func(t *testing.T) {
+		h, sent := takenBeforeACompaction(t)
+		release, compacted := compactHeld(t, h)
+		started(t, h, sent)
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.worker.sequence++
+		h.must(RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence, Held: sent.Number})
+		if p := h.pending(); p.Number != sent.Number || !p.awaitsStart() {
+			t.Fatalf("after the foreign turn's report the claim holds %+v, want task %d's take awaiting its turn again", p, sent.Number)
+		}
+		ended(t, h, release, compacted)
+		h.must(StreamTurnStart{Claim: h.token})
+		h.must(StreamTurnEnd{Claim: h.token})
+		settledOnce(t, h, sent)
+	})
+}
+
+// Row H3 of departure 10: the claim's view of the worker's turns is not whole when the handoff
+// starts — a hello's ask still waits for its answer — or the connection cuts while the handoff
+// runs. Nothing takes the take back, and nothing gives it a note. An answer that the agent is in
+// a turn, under the compaction, is the take's turn starting, given by the rule of every start
+// (turnStarted), once: a replayed start frame after it is the same turn. An answer that the agent
+// is in no turn leaves the take awaiting its turn. A turn's end the daemon never saw begin, under
+// the compaction, marks the take as one whose turn may have run unseen, as such an end does
+// outside one (blindTurnEnded), and a later let-go of the process takes it back as a cut turn.
+func TestTakeKeptByACompactionOverACutViewIsGivenTheTurnTheAnswerReports(t *testing.T) {
+	cuts := []struct {
+		name string
+		cut  func(t *testing.T, h *harness) (func(), chan error)
+	}{
+		{"the view is cut when the handoff starts", func(t *testing.T, h *harness) (func(), chan error) {
+			h.reconnectLater()
+			h.helloOf(true, false)
+			return compactHeld(t, h)
+		}},
+		{"the connection cuts while the handoff runs", func(t *testing.T, h *harness) (func(), chan error) {
+			release, compacted := compactHeld(t, h)
+			h.reconnectLater()
+			h.helloOf(true, false)
+			return release, compacted
+		}},
+	}
+	for _, cut := range cuts {
+		t.Run(cut.name, func(t *testing.T) {
+			t.Run("an answer of a turn, then the turn's replayed start", func(t *testing.T) {
+				h := boundsHarness(t)
+				number := h.takeOf("implement the plan")
+				release, compacted := cut.cut(t, h)
+
+				h.answerAsk(true)
+				if p := h.pending(); p.Number != number || !p.startRecorded() || p.Interrupted {
+					t.Fatalf("after the answer the claim holds %+v, want task %d's take given the turn the answer reports", p, number)
+				}
+				h.must(StreamTurnStart{Claim: h.token})
+				if got := h.startLinesOf(number); got != 1 {
+					t.Fatalf("%d start lines name task %d, want one: the replayed start is the turn the answer admitted", got, number)
+				}
+				release()
+				if err := <-compacted; err != nil && runtimeRefusalReason(err) != "" {
+					t.Fatalf("compact: %v", err)
+				}
+				h.m.Wait()
+				h.mustQuiet(StreamTurnEnd{Claim: h.token})
+				h.reportOf(h.worker.sequence+1, number)
+				h.wantRunOnce(number)
+			})
+			t.Run("an answer of no turn", func(t *testing.T) {
+				h := boundsHarness(t)
+				number := h.takeOf("implement the plan")
+				release, compacted := cut.cut(t, h)
+
+				h.answerAsk(false)
+				h.wantAwaitingItsTurn(number, "after the answer")
+				release()
+				if err := <-compacted; err != nil && runtimeRefusalReason(err) != "" {
+					t.Fatalf("compact: %v", err)
+				}
+				h.m.Wait()
+				h.wantAwaitingItsTurn(number, "after the compaction's end")
+				h.must(StreamTurnStart{Claim: h.token})
+				h.mustQuiet(StreamTurnEnd{Claim: h.token})
+				h.reportOf(h.worker.sequence+1, number)
+				h.wantRunOnce(number)
+			})
+		})
+	}
+	t.Run("an end never seen begun, then a let-go", func(t *testing.T) {
+		h := boundsHarness(t)
+		h.takeRunsItsOwnTurn("the first task", 1, false)
+		number := h.takeOf("implement the plan")
+		release, compacted := compactHeld(t, h)
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		release()
+		if err := <-compacted; err != nil {
+			t.Fatalf("compact: %v", err)
+		}
+		h.m.Wait()
+		h.wantAwaitingItsTurn(number, "after the compaction's end")
+
+		h.observe(runtime.Gone)
+
+		h.wantState(StateLaunching)
+		if ended := h.claim().EndedWork; !ended.TaskTurn {
+			t.Fatalf("the let-go recorded %+v, want the task's turn recorded as cut off", ended)
+		}
+		if p := h.pending(); p.Number != number || p.taken() || !p.Interrupted {
+			t.Fatalf("the let-go left %+v, want task %d taken back with the note of a cut turn", p, number)
+		}
+		h.wantTakenOnceMore(number, relaunchedAndTaken)
+	})
 }
 
 // A turn Oh My Pi starts as the compaction ends — a follow-up an Envoy delivery queued while the
@@ -902,8 +1218,8 @@ func TestACompactionOfAClaimASuspensionIsHeldOverIsNotTaken(t *testing.T) {
 //
 // What the new machine has of the compaction is nothing. It is memory only (compacting), the
 // claim records only the working the take wrote (compactStart), and the shim carries no event of
-// a compaction either: Oh My Pi answers the `compact` request, and that answer goes to the
-// connection of the daemon that asked (shimwire.Compact). So the restored claim is the shape
+// a compaction either: Oh My Pi answers the `handoff` request, and that answer goes to the
+// connection of the daemon that asked (shimwire.Handoff). So the restored claim is the shape
 // every other restored working claim is, and its recovery is that shape's: the daemon asks the
 // agent whether the turn an earlier daemon saw start is still running (askTurnOver).
 //
@@ -957,10 +1273,10 @@ func TestARestartWhileASessionIsBeingCompactedSendsNothingWhileItsAgentIsInATurn
 	}
 }
 
-// The same restart, and the agent answers that no turn is running — the answer the question can
-// get while Oh My Pi is still writing the summary, since a compaction is not a turn of the agent
-// and the daemon has no second word to ask about one. The restarted daemon ends the turn it was
-// asking about and the owed task goes, into a session that may still be being compacted.
+// The same restart, and the agent answers that no turn is running — the answer the question gets
+// while Oh My Pi is still writing the handoff document, since a handoff is not a turn of the
+// agent and the daemon has no second word to ask about one. The restarted daemon ends the turn it
+// was asking about and the owed task goes, into a session that may still be handing off.
 //
 // That is the recovery compactStart states and the only one a restart can make: no store and no
 // frame tells the new daemon a compaction is in flight (restartedMidCompaction), so the agent's

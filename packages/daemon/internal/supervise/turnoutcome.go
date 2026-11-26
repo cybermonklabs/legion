@@ -670,10 +670,10 @@ func (m *Machine) putBack(ctx context.Context, by string) error {
 // and the mark would take the next start, the next task's own among them. There no start is
 // marked, and one of the reported turn that does come is read as any other (turnStarted): given
 // to a take that awaits its turn, which its own report then settles, or no task's, its line naming
-// no task. A busy claim marks nothing (busy): in a turn, its start frame has come already, and the
-// turn running is the report's; under a compaction with no turn started under it, a start is given
-// no take and reads no mark (turnStartedWhileBusy), so a mark left for a start that comes under
-// the compaction would outlive it and name this task in a later start.
+// no task. A claim in a turn marks nothing: its start frame has come already, and the turn
+// running is the report's. A claim working for no turn — a compaction with no turn started under
+// it, or a take a handoff may still run over (workingForNoTurn) — marks the start still to come as
+// a ready or idle claim does, since that start is given the take as theirs is (turnStartedWhileBusy).
 func (m *Machine) startedUnseen(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
 	if p == nil {
@@ -687,7 +687,7 @@ func (m *Machine) startedUnseen(ctx context.Context, r RequestTurnOutcome) error
 	if !count.known {
 		toCome = !count.cut
 	}
-	if !m.busy() && toCome {
+	if (!m.busy() || m.workingForNoTurn()) && toCome {
 		m.reportedAhead = aheadReport{task: p.Number, sequence: r.Sequence}
 	}
 	count.take = r.Sequence

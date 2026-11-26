@@ -52,6 +52,10 @@ type Conn struct {
 	tokenReads   int
 	shutdowns    int
 	state        runtime.ConnState
+	// stateGate, when HoldGetState opened it, holds every GetState until the test lets it through
+	// or the caller's context ends; statesHeld is how many wait there now (StatesHeld).
+	stateGate  chan struct{}
+	statesHeld int
 	// asks is the id of every get_state the connection answered, in order (GetState, LastAsk).
 	asks     []string
 	failures map[string]error
@@ -78,7 +82,28 @@ func (c *Conn) registered(seq uint64) {
 
 // GetState answers the state the test set (SetStreaming) under an ask id of its own, "ask-1",
 // "ask-2" and on, as the stream's answer names the get_state it answers (runtime.ConnState.Ask).
-func (c *Conn) GetState(_ context.Context) (runtime.ConnState, error) {
+// A gate HoldGetState opened makes it wait first, for the test to open it or for the caller's
+// context to end: an answer Oh My Pi gives only once a handoff ahead of it on its serial queue is
+// over.
+func (c *Conn) GetState(ctx context.Context) (runtime.ConnState, error) {
+	c.mu.Lock()
+	gate := c.stateGate
+	if gate != nil {
+		c.statesHeld++
+	}
+	c.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+		}
+		c.mu.Lock()
+		c.statesHeld--
+		c.mu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return runtime.ConnState{}, err
+		}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.failures["GetState"]; err != nil {
@@ -88,6 +113,24 @@ func (c *Conn) GetState(_ context.Context) (runtime.ConnState, error) {
 	state.Ask = fmt.Sprintf("ask-%d", len(c.asks)+1)
 	c.asks = append(c.asks, state.Ask)
 	return state, nil
+}
+
+// HoldGetState makes every later GetState wait before it answers, and returns the call that lets
+// each of them through.
+func (c *Conn) HoldGetState() func() {
+	gate := make(chan struct{})
+	c.mu.Lock()
+	c.stateGate = gate
+	c.mu.Unlock()
+	return sync.OnceFunc(func() { close(gate) })
+}
+
+// StatesHeld is how many GetState calls wait at the gate HoldGetState opened now: asks the
+// daemon made that are still pending.
+func (c *Conn) StatesHeld() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.statesHeld
 }
 
 // LastAsk is the id of the last get_state the connection answered, "" for none: the id the
@@ -115,7 +158,7 @@ func (c *Conn) AdoptWorkingCopy(_ context.Context, id runtime.GitIdentity, timeo
 	return c.failures["AdoptWorkingCopy"]
 }
 
-// Compact answers the daemon asking Oh My Pi to compact the session, recording what it asked
+// Compact answers the daemon asking Oh My Pi to shorten the session, recording what it asked
 // for. A gate HoldCompact opened makes the answer wait for the test to open it, or for the
 // caller's context: that is a compaction that takes its time, which the caller must still get
 // the real answer of.
@@ -170,9 +213,9 @@ func (c *Conn) HoldCompact() func() {
 	return sync.OnceFunc(func() { close(gate) })
 }
 
-// RefuseCompact makes every later Compact Oh My Pi refusing the compaction with reason — a
-// session too small, one already compacted — as the stream's connection answers `success:
-// false`; RefuseCompact("") clears it.
+// RefuseCompact makes every later Compact Oh My Pi refusing the handoff with reason — one asked
+// for in a turn, a session with nothing to hand off — as the stream's connection answers
+// `success: false`; RefuseCompact("") clears it.
 func (c *Conn) RefuseCompact(reason string) {
 	if reason == "" {
 		c.fail("Compact", nil)

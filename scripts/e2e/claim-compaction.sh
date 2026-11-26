@@ -7,28 +7,32 @@
 # --mode rpc` panes run under it — the real `legion worker-shim`, this checkout's `legion`, and
 # this checkout's @sjawhar/pi-envoy and @sjawhar/pi-legion in an Oh My Pi profile of the run's own
 # — against four HTTP model stand-ins of the driver's own, each of which answers a turn's request
-# and a compaction's summary request apart.
+# and a handoff's request apart.
 #
-# Each pane runs the overlays a deployment renders: the operator's own
-# (`runtime.tmux.pi_config_files`), which turns `retry.enabled` off and sets
-# `compaction.keepRecentTokens` to 1, then the claim's own (`role_config_files`), which names the
-# one model its stand-in serves — a model that reads images. Nothing names a compaction method, so
-# every pane runs Oh My Pi's own default order, which puts the image-based `snapcompact` above
-# every summary method: the only thing that keeps a compaction off it is the custom instructions
-# the daemon sends, and the proof reads the compaction entry back out of the pane's own session
-# file to show the summary is text.
+# The compaction the daemon asks for is Oh My Pi's handoff, never its `compact`, whose summary
+# request Anthropic refuses for a long Claude session (dispatch://INFRA-5798). Each pane runs the
+# overlays a deployment renders: the operator's own (`runtime.tmux.pi_config_files`), which turns
+# `retry.enabled` off and sets `compaction.keepRecentTokens` to 1, then the claim's own
+# (`role_config_files`), which names the one model its stand-in serves. The proof reads the
+# compaction entry back out of the pane's own session file and holds that its method is
+# `handoff` and its summary is text.
 #
-# After a compaction the worker keeps its session, the task it owes goes once and only after the
-# compaction, and a root architect that owes nothing is sent nothing; a compaction whose endpoint
-# holds the summary past `worker_rpc_timeout_seconds` and past 30 s still returns its real answer,
-# and a `fresh_session` asked for while it runs is refused; a refused summary and an already
-# compacted session are reported to the caller with the owed task sent again all the same; six
-# turns in a row in a provider error tell the project's controller, and a compaction that ran puts
-# that count back to zero so six more tell it a second time; a suspended, a stopped, a failed and
-# a Claude Code worker, a worker in a turn and role `controller` are each refused in their own
-# words through both doors; a fresh session starts the phase worker on its issue's current
-# phase task and the root architect on its catch-up; and a fresh session asked for a claim whose
-# pane's process group was killed out from under a daemon that took no report of that death
+# Each worker takes its task (dispatch://INFRA-2811): the daemon writes the task's value, and the
+# worker's plugin takes it and hands its text to Oh My Pi. After a compaction the worker keeps its
+# session, the task it owes untaken is offered once and only after the compaction — its value
+# written once and its take accepted once, by the daemon's own lines — and a root architect that
+# owes nothing is offered nothing; a compaction whose endpoint holds the handoff past
+# `worker_rpc_timeout_seconds` and past 30 s still returns its real answer, and a `fresh_session`
+# asked for while it runs is refused; a refused handoff and an already compacted session are
+# reported to the caller with the owed task offered again all the same; six turns in a row in a
+# provider error tell the project's controller, and a compaction that ran puts that count back to
+# zero so six more tell it a second time; a task taken, its text handed to Oh My Pi and its turn
+# running when a compaction is asked for is refused `CLAIM_IN_A_TURN` through both doors, and has
+# one accepted take, one turn of its number and one report that finishes it, in the same session;
+# a suspended, a stopped, a failed and a Claude Code worker and role `controller` are each refused
+# in their own words through both doors; a fresh session starts the phase worker on its issue's
+# current phase task and the root architect on its catch-up; and a fresh session asked for a claim
+# whose pane's process group was killed out from under a daemon that took no report of that death
 # starts that worker again in a session of its own, holding the task its dead turn held — the
 # planner through the operator's command and the root architect through the controller's door,
 # which is the one recovery a project's controller has for a dead architect — where the same
@@ -39,14 +43,25 @@
 # step does). Each check prints `== <name>`, what it observed and `ok <name>`; the
 # first that fails ends the run non-zero, naming it.
 #
+# What this proof cannot make is a take accepted whose text Oh My Pi has not yet admitted when the
+# handoff is asked for. The real plugin hands an accepted take's text to Oh My Pi as soon as the
+# take's answer comes, and Oh My Pi starts the turn at once, so the daemon reads the turn's
+# agent_start within milliseconds of the take; nothing in the rig can hold the plugin between the
+# take and the hand-over without changing the plugin under test. That state — the take kept
+# across a held handoff, its parked text run once after it, and a daemon restarted under it — is
+# proved over the wire against the real daemon by the handoff rows of
+# packages/daemon/internal/daemon (handoff_compaction_test.go's
+# TestTaskValueATakeAcceptedWhenTheHandoffIsAskedForIsTakenOnce and taskbucket_test.go's
+# TestTaskValueARestartDuringACompactionKeepsTheAcceptedTakeAndHoldsItsTurn).
+#
 # The whole run took 176 s measured in a Legion worker pod (omp/18.16.0) with a warm Go build
 # cache, the driver 152 s of it; a cold cache adds the driver's own build. Four panes start Oh My
 # Pi once each and the five fresh sessions of steps 7 and 8 start one more each, and each of the
 # three phase workers answers the task its phase's start left
 # pending on its claim — which is what keeps admission's repair of a slotted worker off these
 # claims, as the driver's seed says —
-# and the one wait is the held summary: Oh My Pi writes a split turn's summary in two passes and
-# the stand-in holds each for 35 s, so that compaction answers after about 70 s. Nothing else
+# and the one wait is the held handoff: Oh My Pi writes the handoff document in one request and
+# the stand-in holds it for 35 s, so that compaction answers after about 35 s. Nothing else
 # waits on a clock bar step 8, which releases each of its two holds just after a pass of the
 # runtime's own two-second observation sweep: the ladder's own gaps are provider-error-retry.sh's
 # subject and this proof never waits one out, since a newer task takes the place of the one a

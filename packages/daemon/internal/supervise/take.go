@@ -232,13 +232,13 @@ const (
 )
 
 // The causes a take-back is logged under (takenBackLine): a provider error's turn
-// (providerErrored), a compaction that took the claim (compactStart), and a retirement and a
-// suspension that keep the task (retire, suspended, takeBackUnstarted). The second wait's
-// take-back is logged under its wait's name (WaitTurnStart), and a death's or a forced stop's under
-// the sentence its own Warn line gives (interrupted).
+// (providerErrored), and a retirement and a suspension that keep the task (retire, suspended,
+// takeBackUnstarted). The second wait's take-back is logged under its wait's name
+// (WaitTurnStart), and a death's or a forced stop's under the sentence its own Warn line gives
+// (interrupted). A compaction takes no take back: it is Oh My Pi's handoff, which aborts no turn
+// (compactStart).
 const (
 	takenBackProviderError = "provider-error"
-	takenBackCompaction    = "compaction"
 	takenBackRetired       = "retired"
 	takenBackSuspended     = "suspended"
 )

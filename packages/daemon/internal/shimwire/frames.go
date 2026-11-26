@@ -32,7 +32,7 @@ const (
 	TypeNegotiateProtocol      = "negotiate_protocol"
 	TypeResponse               = "response"
 	TypeGetState               = "get_state"
-	TypeCompact                = "compact"
+	TypeHandoff                = "handoff"
 	TypeAgentStart             = "agent_start"
 	TypeAgentEnd               = "agent_end"
 	TypeToolExecutionStart     = "tool_execution_start"
@@ -785,18 +785,26 @@ type GetState struct {
 	ID string `json:"id"`
 }
 
-// Compact asks Oh My Pi to compact the session's context: `{id?, type: "compact",
-// customInstructions?: string}` (omp://rpc.md, "Compaction"). The shim answers none of it — it
-// forwards it to Oh My Pi as it forwards every frame it does not act on itself — and Oh My Pi
-// answers a `response` of the same command, carrying its CompactionResult on success and
-// `success: false` with the reason when the compaction was refused or skipped.
+// Handoff asks Oh My Pi to shorten the session's context with a handoff: `{id?, type:
+// "handoff", customInstructions?: string}` (`RpcCommand` in
+// packages/coding-agent/src/modes/rpc/rpc-types.ts of cybermonklabs/oh-my-pi at the pinned tag).
+// Oh My Pi has the session's own model write a handoff document over the live system prompt,
+// tools and turns, with no tool to call, and commits that document as the session's compaction
+// entry, method `handoff`, on the same session. The shim answers none of it — it forwards it to
+// Oh My Pi as it forwards every frame it does not act on itself — and Oh My Pi answers a
+// `response` of the same command: `success: true` with the handoff's result in `data` for a
+// session shortened, `success: true` with `data: null` for a handoff that made no document, and
+// `success: false` with the reason for one it refused, a turn in progress among them.
 //
-// CustomInstructions is what the summary is written to, and the daemon always sends one: Oh My
-// Pi runs the image-based snapcompact method only for a compaction with no instructions and no
-// internal guidance (`runsManually`, packages/coding-agent/src/session/session-maintenance.ts at
-// the pinned tag), so instructions are what make the summary text the resumed session can read
-// back without a vision model. A frame with none is refused here rather than sent.
-type Compact struct {
+// The daemon sends it where it sent `compact` before dispatch://INFRA-5798, and never `compact`:
+// `compact` writes its summary from the history quoted as text in one message, which
+// Anthropic's classifier refuses for a long Claude session.
+//
+// CustomInstructions is the focus the handoff document is written to, and the daemon always
+// sends one: the instructions keep the reviewer's entry in the document (api's
+// compactInstructions), and a document that dropped it leaves the reviewer no entry to write. A
+// frame with none is refused here rather than sent.
+type Handoff struct {
 	ID                 string `json:"id"`
 	CustomInstructions string `json:"customInstructions"`
 }
@@ -966,7 +974,7 @@ func (HelloAck) FrameType() string                     { return TypeHelloAck }
 func (NegotiateProtocol) FrameType() string            { return TypeNegotiateProtocol }
 func (Response) FrameType() string                     { return TypeResponse }
 func (GetState) FrameType() string                     { return TypeGetState }
-func (Compact) FrameType() string                      { return TypeCompact }
+func (Handoff) FrameType() string                      { return TypeHandoff }
 func (AgentStart) FrameType() string                   { return TypeAgentStart }
 func (AgentEnd) FrameType() string                     { return TypeAgentEnd }
 func (ToolExecutionStart) FrameType() string           { return TypeToolExecutionStart }
@@ -1018,9 +1026,9 @@ func (f GetState) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeGetState, plain(f))
 }
 
-func (f Compact) MarshalJSON() ([]byte, error) {
-	type plain Compact
-	return marshalFrame(TypeCompact, plain(f))
+func (f Handoff) MarshalJSON() ([]byte, error) {
+	type plain Handoff
+	return marshalFrame(TypeHandoff, plain(f))
 }
 
 func (AgentStart) MarshalJSON() ([]byte, error) { return marshalFrame(TypeAgentStart, struct{}{}) }
@@ -1181,16 +1189,15 @@ func (f AdoptWorkingCopy) Validate() error {
 	return nil
 }
 
-// Validate refuses a compaction request Oh My Pi could not answer for this daemon: one with no
-// request id to correlate its response by, and one with no instructions, which is the frame that
-// would let Oh My Pi archive the history onto snapcompact's images instead of writing a text
-// summary (Compact).
-func (f Compact) Validate() error {
+// Validate refuses a handoff request Oh My Pi could not answer for this daemon: one with no
+// request id to correlate its response by, and one with no instructions, whose document would
+// not keep the reviewer's entry (Handoff).
+func (f Handoff) Validate() error {
 	switch {
 	case f.ID == "":
-		return fmt.Errorf("%w: compact carries no id", ErrMalformedFrame)
+		return fmt.Errorf("%w: handoff carries no id", ErrMalformedFrame)
 	case f.CustomInstructions == "":
-		return fmt.Errorf("%w: compact carries no customInstructions", ErrMalformedFrame)
+		return fmt.Errorf("%w: handoff carries no customInstructions", ErrMalformedFrame)
 	}
 	return nil
 }
@@ -1593,8 +1600,8 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[Response](trimmed)
 	case TypeGetState:
 		return decodeInto[GetState](trimmed)
-	case TypeCompact:
-		return decodeInto[Compact](trimmed)
+	case TypeHandoff:
+		return decodeInto[Handoff](trimmed)
 	case TypeAgentStart:
 		return AgentStart{}, nil
 	case TypeAgentEnd:

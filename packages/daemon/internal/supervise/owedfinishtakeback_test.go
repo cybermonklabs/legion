@@ -555,7 +555,8 @@ func TestTakeWhoseFinishIsOwedAcrossARestartIsFinishedByItsCleanReportNotALaterP
 // Two cases are live. A newer task queued over a take whose turn ran and whose finish is owed
 // retired the task unfinished, the owed finish dropped (retirePending). And the operator's
 // compaction of a migrated worker's take awaiting its turn, whose phase is no wait's (waitNone),
-// took it back with no line; the line reads the phase as the take-back does (compactStart).
+// keeps that take, as it keeps every take awaiting its turn (departure 10: the handoff aborts no
+// turn), and logs no take-back (compactStart).
 //
 // The negative control is the commit under this change, where each reader asked whether the
 // take's turn started alone (Delivery.awaitsStart, Delivery.startRecorded), and the compaction's
@@ -623,11 +624,11 @@ func TestTakeWhoseFinishIsOwedReadsAsATakeWhoseTurnRan(t *testing.T) {
 
 		compactedByTheOperator(t, h)
 
-		if p := h.pending(); p.Number != number || p.taken() {
-			t.Fatalf("the claim holds %+v, want task %d taken back by the compaction", p, number)
+		if p := h.pending(); p.Number != number || !p.awaitsStart() || p.Interrupted {
+			t.Fatalf("the claim holds %+v, want task %d's take kept by the compaction, awaiting its turn", p, number)
 		}
-		if lines := h.logs.lines("the compaction aborts the turn this task's take was to start"); len(lines) != 1 {
-			t.Fatalf("logged %q, want the compaction's abort of the take's turn logged once", lines)
+		if lines := h.records.of(takenBackLine); len(lines) != 0 {
+			t.Fatalf("logged %d take-backs, want none: a handoff aborts no turn", len(lines))
 		}
 	})
 }

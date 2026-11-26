@@ -1,0 +1,29 @@
+kind: Fixed
+body: |-
+  `legion claims compact` and the controller's `compact` now shorten a claim's Oh My Pi session
+  with Oh My Pi's `handoff` request, not its `compact` request. Anthropic refuses the summary
+  request that `compact` sends for a long Claude session (`Refusal (reasoning_extraction)`), and
+  accepts the `handoff` request for the same session. The handoff writes its document as the
+  session's compaction entry,
+  method `handoff`, on the same session, and the daemon never falls back to `compact`. The answer
+  is the same `{compacted, reason}`: Oh My Pi's own words for a handoff it refused (`Cannot hand
+  off while a response is in progress`, `Nothing to hand off (already compacted)`), `Oh My Pi
+  made no handoff document. The session did not change.` for a success with `data: null`, and
+  `Oh My Pi gave a handoff result that is not an object. The daemon cannot say if the session
+  changed.` for a success whose data is no object. A task whose take the daemon accepted before
+  the compaction is asked for now runs once: the handoff aborts no turn, so the daemon keeps the
+  accepted take, with its number and its text, and does not offer the task again after the
+  compaction. Oh My Pi refuses a handoff while the take's text runs, and parks a text that reaches
+  it while the handoff runs until the handoff ends. Either way the take's own turn runs the task,
+  and that turn's report finishes it, whether the turn starts before or after the compaction's
+  end. A task the claim owes and has not taken is offered once, when the compaction ends. While a
+  take awaits its turn under a handoff, the reconnect deadline and the wait for its turn to start
+  are never earlier than the handoff's own ten-minute bound, since Oh My Pi answers nothing behind
+  a handoff. A daemon that stops while Oh My Pi runs the handoff leaves the claim stored working,
+  and the next daemon start protects the take the same way, until that start plus ten minutes.
+  A claim in a turn is still refused `CLAIM_IN_A_TURN`, now with the reason that Oh My Pi refuses
+  a compaction's handoff in that turn. A pod of an older release needs nothing new: its shim
+  forwards the `handoff` line to Oh My Pi as it forwarded `compact`.
+time: 2026-11-25T09:30:25Z
+custom:
+  Issue: INFRA-5798

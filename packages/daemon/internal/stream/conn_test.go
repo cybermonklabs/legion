@@ -89,8 +89,8 @@ func TestARequestHonoursItsContextAndTheRPCTimeout(t *testing.T) {
 	short.next()
 	quiet := short.conn()
 	err := awaitResult(t, async(func() error { return quiet.Negotiate(context.Background()) }))
-	if !errors.Is(err, ErrNoAnswer) {
-		t.Fatalf("a request with no answer = %v, want ErrNoAnswer", err)
+	if !errors.Is(err, runtime.ErrNoAnswer) {
+		t.Fatalf("a request with no answer = %v, want runtime.ErrNoAnswer", err)
 	}
 }
 
@@ -183,7 +183,7 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 				_, result := h.getState(context.Background(), p)
 				return awaitResult(h.t, result)
 			},
-			isCase: func(err error) bool { return errors.Is(err, ErrNoAnswer) },
+			isCase: func(err error) bool { return errors.Is(err, runtime.ErrNoAnswer) },
 		},
 		{name: "the caller's deadline",
 			drive: func(h *harness, p *peer) error {

@@ -140,12 +140,14 @@ func takenEntryOne(h *harness) (queued, confirmed time.Time) {
 }
 
 // A take the daemon gives back before its turn started was never run: the worker took the task and
-// no turn ran its text. The second wait that finds no turn of the take, and a compaction that
-// aborts the turn the take was to start, each take the task back (takeBack), and the handshake
-// gives that confirmation back with it (giveBackTake), in memory and in the store, so the state's
-// `entryConfirmedAt` does not say the worker took an entry it never ran. The task's next accepted
-// take is then the one recorded. A provider error is different: its turn started on the take's
-// text, so the handshake keeps the confirmation across that take-back. A death is
+// no turn ran its text. The second wait that finds no turn of the take takes the task back
+// (takeBack), and the handshake gives that confirmation back with it (giveBackTake), in memory and
+// in the store, so the state's `entryConfirmedAt` does not say the worker took an entry it never
+// ran. The task's next accepted take is then the one recorded. A compaction before that second
+// wait gives nothing back: it is Oh My Pi's handoff, which aborts no turn, so the take and the
+// handshake's confirmation stand through it (departure 10 of dispatch://INFRA-2811's plan). A
+// provider error is different: its turn started on the take's text, so the handshake keeps the
+// confirmation across that take-back. A death is
 // TestADeathTakesTheHandshakesConfirmationBackOnlyWhileTheTakeAwaitsItsTurn's.
 func TestATakenBackConfirmationIsTakenFromTheHandshake(t *testing.T) {
 	for _, tc := range []struct {
@@ -160,17 +162,22 @@ func TestATakenBackConfirmationIsTakenFromTheHandshake(t *testing.T) {
 				h.advance(turnStartBound)
 				h.wantCharges(WaitTurnStart)
 			}},
-		{name: "a compaction aborts the turn the take was to start",
+		{name: "the second wait finds no turn of a take a compaction kept", set: []func(*Deps){withWaits},
 			takeBack: func(h *harness) {
+				confirmed := h.claim().Handshake
 				release, compacted := h.compactHeld()
-				if p := h.claim().Pending; p == nil || p.taken() {
-					h.t.Fatalf("the claim holds %+v while the compaction runs, want the task taken back", p)
+				if p := h.claim().Pending; p == nil || !p.awaitsStart() {
+					h.t.Fatalf("the claim holds %+v while the compaction runs, want the take kept, awaiting its turn", p)
 				}
+				h.wantHandshake("while the compaction runs,", confirmed)
 				release()
 				if err := <-compacted; err != nil {
 					h.t.Fatalf("the compaction answered %v, want it over", err)
 				}
 				h.m.Wait()
+				h.wantHandshake("after the compaction's end,", confirmed)
+				h.advance(turnStartBound)
+				h.wantCharges(WaitTurnStart)
 			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

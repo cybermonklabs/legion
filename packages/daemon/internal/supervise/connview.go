@@ -195,6 +195,7 @@ func (m *Machine) closeView() {
 	m.setView(viewClosed)
 	m.closedAt = m.deps.Clock.Now()
 	m.helloAsked = false
+	m.cancelProtectedAsk()
 	if SaidReady(m.claim.State) && m.claim.Locator != nil {
 		m.reconnectFromClose()
 	}
@@ -213,7 +214,7 @@ func (m *Machine) reconnectFromClose() {
 		m.disarm(TimerRegistration)
 		return
 	}
-	due := m.closedAt.Add(m.reconnectBound())
+	due := m.laterOfHandoff(m.closedAt.Add(m.reconnectBound()))
 	if a, armed := m.timers[TimerRegistration]; armed && !a.due.Before(due) {
 		return
 	}
@@ -314,6 +315,7 @@ func (m *Machine) startAskServes() bool {
 // which the process is relaunched uncharged, as after a hello whose ask went unanswered, rather
 // than retired as one whose shim never said hello (reconnectDeadline).
 func (m *Machine) helloView() (served bool) {
+	m.cancelProtectedAsk()
 	served = m.startAskServes()
 	if served && m.askTurn {
 		m.askedAt = m.deps.Clock.Now()
@@ -326,7 +328,7 @@ func (m *Machine) helloView() (served bool) {
 	}
 	m.setView(viewAsked)
 	m.helloAsked = true
-	m.arm(TimerRegistration, m.reconnectBound(), "")
+	m.armNoEarlierThanHandoff(TimerRegistration, m.reconnectBound(), "")
 	return served
 }
 
@@ -338,6 +340,15 @@ func (m *Machine) helloView() (served bool) {
 // answer is not asked again, here or at a sweep (observe): the view waits for a turn frame, or for
 // the reconnect deadline the hello armed.
 func (m *Machine) askView(ctx context.Context, served bool) (asked bool) {
+	if _, protected := m.handoffUntil(); protected {
+		// A handoff may still run over the take, and Oh My Pi answers no ask behind it: the one
+		// ask of this hello waits for its answer on a goroutine of its own, through the deadline
+		// the hello armed (askProtected), and a daemon start's own ask is served by it too.
+		if conn, ok := m.deps.Conns.Conn(m.claim.Token); ok {
+			m.askProtected(conn)
+		}
+		return true
+	}
 	if served || m.claim.Pending == nil {
 		return false
 	}
@@ -423,6 +434,16 @@ func (m *Machine) setTurnUnseen(unseen bool) { m.turnUnseen = unseen }
 // that turn's end (turnEnded), so an end frame the connection lost leaves no claim working for
 // ever. An answer the claim already agrees with changes nothing. The bounds are armed whole from
 // here at the end of this decision, or at the end of the turn the answer started.
+//
+// A turn running over a claim whose session is being compacted with no turn started under the
+// compaction is a turn's start too, by the rule of every start (turnStartedWhileBusy): the
+// compaction took the claim from ready or idle, so the turn the answer reports began under it, and
+// the first such turn after an accepted take is the take's (departure 10 of dispatch://INFRA-2811's
+// plan). A claim a daemon start restored working over a take a handoff may still run over
+// (Machine.restoredHandoff) is not read so: the stored working state cannot tell a take whose text
+// Oh My Pi parked from a foreign turn the take was put back behind (notTheTakesTurn), so the answer
+// gives no task the turn there, and only an explicit start frame (turnStartedWhileBusy) or the
+// take's own report (reportedTask, heldUnrun) does.
 func (m *Machine) answerView(ctx context.Context, streaming bool) error {
 	cut := m.connSeen != viewWhole
 	m.setView(viewWhole)
@@ -434,6 +455,14 @@ func (m *Machine) answerView(ctx context.Context, streaming bool) error {
 	switch {
 	case streaming && !m.busy():
 		return turnStarted(m, ctx, nil)
+	case streaming && m.compacting != nil && !m.compacting.inTurn:
+		// The turn began under the compaction (above), and its start frame, replayed behind the
+		// answer, counts nothing again (Machine.admittedByAnswer).
+		if err := turnStartedWhileBusy(m, ctx, nil); err != nil {
+			return err
+		}
+		m.admittedByAnswer = true
+		return nil
 	case !streaming && m.inTurn():
 		return turnEnded(m, ctx, nil)
 	}
@@ -509,6 +538,7 @@ func (m *Machine) answerView(ctx context.Context, streaming bool) error {
 // read after a suspension the deadline runs above, which ends the process instead, and before the
 // hello paths, which would charge a stale observation.
 func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
+	m.cancelProtectedAsk()
 	askedTurn := m.askTurn && !m.askedAt.IsZero()
 	if askedTurn && m.inTurn() && m.connSeen != viewWhole {
 		m.askTurn, m.unansweredAsks, askedTurn = false, 0, false

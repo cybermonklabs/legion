@@ -860,14 +860,18 @@ type RequestCompact struct{ Claim claim.Token }
 // CompactEnded is the compaction over, posted by whoever asked for it (Machine.Compact).
 // Generation is the generation the claim was taken at, and an end that names one the claim no
 // longer holds the compaction of is answered ErrCompactProcessGone rather than reaching a row
-// (Machine.fence, ownsCompaction). Compacted is whether Oh My Pi compacted the session: false
-// for a compaction it refused or skipped and for a wait that ran out, each of which gives the
-// claim back and offers the owed task again all the same, and only true puts the claim's run of
-// provider-error turns back to zero.
+// (Machine.fence, ownsCompaction). Compacted is whether Oh My Pi's handoff shortened the session:
+// false for a handoff it refused or answered with no document and for a wait that ran out, each
+// of which gives the claim back and offers an untaken owed task again all the same, and only true
+// puts the claim's run of provider-error turns back to zero. Answered is whether Oh My Pi answered
+// the handoff at all, a shortened session or a refusal: only that answer says the handoff is over,
+// and a wait that ran out or a transport that failed leaves a take the handoff protects protected
+// to its deadline (handoffGuard).
 type CompactEnded struct {
 	Claim      claim.Token
 	Generation uint64
 	Compacted  bool
+	Answered   bool
 }
 
 func (RuntimeObservation) isEvent()   {}
@@ -1814,6 +1818,9 @@ func (m *Machine) askRestoredTurn(ctx context.Context) {
 // the shim wrote to that daemon's connection as it closed.
 func turnAnswered(m *Machine, ctx context.Context, ev Event) error {
 	answer := ev.(StreamTurnAnswered)
+	if err := m.bindAnchorAtAnswer(ctx); err != nil {
+		return err
+	}
 	if !m.askTurn {
 		if m.connSeen != viewAsked {
 			return nil
@@ -1988,6 +1995,16 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // given no take (heldUnrun): its line names no task, and the take awaits the start after it.
 func turnStarted(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateWorking
+	return m.startOfTurn(ctx)
+}
+
+// startOfTurn is what every start of a turn of the claim's process decides and writes, the claim
+// working for it already: a ready or idle claim's (turnStarted), and a claim working with no turn
+// known to run, under a compaction or over a take a handoff may still run over
+// (turnStartedWhileBusy, answerView). The take attribution, the start line, the durable write and
+// the step record are turnStarted's doc's; there is one rule of them, whatever the claim was
+// working for.
+func (m *Machine) startOfTurn(ctx context.Context) error {
 	m.claim.LastTurnStart = m.deps.Clock.Now()
 	m.resetPromptBudgets()
 	p := m.claim.Pending
@@ -2101,15 +2118,19 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 }
 
 // turnStartedWhileBusy is a turn starting in a claim that is already working. A claim working a
-// turn is in the turn it is already in and nothing moves. A claim working because its session
-// is being compacted has a turn of Oh My Pi's own starting under the compaction — a follow-up
-// an Envoy delivery queued while the session was being compacted — and that turn is recorded on
-// the compaction: its end would otherwise reach an idle claim, where it means nothing, and the
-// compaction's end would offer the owed task while a turn runs (compactEnded).
-//
-// That turn's start line is written here (startTurn), because its end writes the end line
-// (turnEnded): an operator reads an end with no start as a turn the daemon never saw begin, and
-// the daemon saw this one. No take started it, so it is no task's turn and its line names none.
+// turn is in the turn it is already in and nothing moves. A claim working with no turn known to
+// run (workingForNoTurn) is another case: its session is being compacted with no turn started
+// under it, or a daemon start restored it working over a take a handoff may still run over
+// (handoffGuard). A turn that starts then — a follow-up an Envoy delivery queued while the session
+// was being compacted, or the turn of a take accepted before the handoff, whose text Oh My Pi
+// parks until the handoff is over — is decided and written as a start of a ready or idle claim is
+// (startOfTurn): the first turn after an accepted take that awaits its turn is the take's, its
+// line names the task and its delivery records the turn started (startTakesTurn), and any other
+// is no task's. Under a compaction the turn is recorded on the compaction too: its end would
+// otherwise reach an idle claim, where it means nothing, and the compaction's end would offer the
+// owed task while a turn runs (compactEnded). A start an agent's answer of a turn already
+// admitted (answerView, Machine.admittedByAnswer) is that turn's replayed start frame, and counts
+// nothing a second time.
 //
 // A start over a turn running outside a compaction says the machine missed the end of a turn, or
 // was sent a start twice, so its count of the process's turns is no longer known (turnCount), and
@@ -2117,17 +2138,35 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // saw, so that take's report places no count (takeAnchor, learnTurns): the report of a later
 // take's own turn may. A count a take's report placed that the agent's answer has not checked
 // yet goes back with it (turnCount.lose).
-func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
-	if m.compacting == nil {
+func turnStartedWhileBusy(m *Machine, ctx context.Context, _ Event) error {
+	if m.admittedByAnswer {
+		m.admittedByAnswer = false
+		return nil
+	}
+	if !m.workingForNoTurn() {
 		m.counted().lose()
 		return nil
 	}
-	m.startTurn(0)
-	m.resetPromptBudgets()
-	m.log.Info("supervise: a turn started while this claim's session is being compacted; the claim is left working for it",
-		"generation", m.claim.Generation)
-	m.compacting.inTurn, m.compacting.back = true, StateIdle
-	return nil
+	m.restoredHandoff = false
+	if m.compacting != nil {
+		m.log.Info("supervise: a turn started while this claim's session is being compacted; the claim is left working for it",
+			"generation", m.claim.Generation)
+		m.compacting.inTurn, m.compacting.back = true, StateIdle
+	}
+	return m.startOfTurn(ctx)
+}
+
+// workingForNoTurn is whether the claim is working with no turn of its process known to run: its
+// session is being compacted and no turn started under the compaction, or a daemon start restored
+// it working over a take a handoff may still run over, and no start has come since
+// (Machine.restoredHandoff). A start frame then is a turn's first (turnStartedWhileBusy), and so
+// is an answer that the agent is streaming under a compaction, though not on such a restore
+// (answerView).
+func (m *Machine) workingForNoTurn() bool {
+	if m.compacting != nil {
+		return !m.compacting.inTurn
+	}
+	return m.restoredHandoff && m.busy()
 }
 
 // turnEnded is the turn over: what was held for it runs — a suspension held for this turn
@@ -2219,17 +2258,24 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 // task one of them holds rather than adopt the working copy they share under this turn may be
 // taken now.
 //
-// A claim working because its session is being compacted is left exactly where it is: a
-// compaction aborts whatever turn its session was running, so the agent_end of a background
-// turn can arrive under one, and taking that for the compaction's end would hand the claim its
-// owed task while Oh My Pi is still writing the summary. CompactEnded is the only end of a
-// compaction (compactEnded). The end is recorded on the compaction all the same: the turn it
-// ends is over, so the compaction's end has none to leave the claim working for, and a claim
-// that has had a turn goes back idle rather than ready. Its end line is written before that
+// A claim working because its session is being compacted is left exactly where it is: a turn can
+// start and end under a compaction — a follow-up an Envoy delivery queued, or the turn of a take
+// whose text Oh My Pi parked until its handoff was over, which can run before the handoff's answer
+// reaches the machine — and taking that turn's agent_end for the compaction's end would give the
+// claim back, and offer its owed task, while the compaction is still the claim's. CompactEnded is
+// the only end of a compaction (compactEnded). The end is recorded on the compaction all the same:
+// the turn it ends is over, so the compaction's end has none to leave the claim working for, and a
+// claim that has had a turn goes back idle rather than ready. Its end line is written before that
 // return (endTurn), because the turn ended, and it closes a start line of its own: a turn that
 // starts under a compaction writes one too (turnStartedWhileBusy), so a reader counting starts
 // against ends finds the pair.
-func turnEnded(m *Machine, ctx context.Context, _ Event) error {
+func turnEnded(m *Machine, ctx context.Context, ev Event) error {
+	if _, frame := ev.(StreamTurnEnd); frame && m.workingForNoTurn() {
+		// An end frame no start the machine saw came before: the take's turn may have run with its
+		// start lost, as at an end a ready or idle claim never saw begin (blindTurnEnded).
+		m.markTurnUnseen()
+	}
+	m.restoredHandoff, m.admittedByAnswer = false, false
 	m.endTurn()
 	m.turnsEnded.Add(1)
 	m.counted().ended++
@@ -2267,12 +2313,13 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 // settled already. Where it is not, it runs where the task settles instead, one rule for both
 // ends: at the end-frame bound's finish over a take whose turn ran (finishAtTurnsEnd), and at the
 // report over a take whose report is still to come (reportedTask, reportwait.go) — its turn over,
-// or the take put back while the turn or the compaction ran, which waits for its own turn
-// (putBack). A stale-plugin relaunch run at the end would let the process go before that finish
-// or that report: its take-back would cut a take whose turn ran whole, or one whose start is on
-// its way. A relaunch held for this end that now begins to wait for the report, or for the take's
-// own turn again, is logged so, by the take's phase (waitsLine), once (Machine.staleForEnd); one
-// that waited for it already is not logged again.
+// or the take put back behind a turn that was not its own, which waits for its own turn
+// (putBack). A take accepted when the compaction began awaits its own turn the same way: the
+// compaction kept it (compactStart). A stale-plugin relaunch run at the end would let the process
+// go before that finish or that report: its take-back would cut a take whose turn ran whole, or
+// one whose start is on its way. A relaunch held for this end that now begins to wait for the
+// report, or for the take's own turn again, is logged so, by the take's phase (waitsLine), once
+// (Machine.staleForEnd); one that waited for it already is not logged again.
 func (m *Machine) endNothingHeld(ctx context.Context, back ClaimState, armFinish func(id string)) error {
 	id, finishes := m.backAtEnd(back)
 	if err := m.persist(ctx); err != nil {

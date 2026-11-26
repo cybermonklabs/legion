@@ -147,8 +147,8 @@ const (
 // offerPending writes the claim's value again under its pending task's number where the worker
 // asked at the latest revision the daemon wrote and the task is free to take now: the worker
 // asks once per revision, so a value its take was refused at — by a hold, or because the daemon
-// failed to decide or record the take (undecided) — or one whose take a provider error, a
-// compaction or a death took back says nothing new until it is written again. It is the end of
+// failed to decide or record the take (undecided) — or one whose take a provider error, the
+// second wait or a death took back says nothing new until it is written again. It is the end of
 // every hold that refused a take, and runs at each point one can end: the agent's ready, the
 // shim's hello, the sweep's observation, the end of a turn on this claim or another of its issue,
 // a start's arrival, the end of a provider error's wait and of a compaction, the end of an update
@@ -164,7 +164,7 @@ const (
 // The write's cause is the one the latest event that left one names (Machine.rewrite):
 // TaskValueTakeFailed where this same process failed to decide or record the take at that
 // revision, TaskValueRetake where the task was taken back in this same process and can be taken
-// again now — after a provider error's wait, a compaction, the second wait — and
+// again now — after a provider error's wait or the second wait — and
 // TaskValueHoldEnded for every other write here.
 //
 // A take-failed write waits while the claim owes a write the store did not take (owedWrite): the

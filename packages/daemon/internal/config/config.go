@@ -136,7 +136,11 @@ type Config struct {
 	// relaunched, charged nothing. Where the operator's stop or a replacement of the process waits
 	// for the report of a take's turn that ended, the same deadline ends that wait instead
 	// (supervise's stopAtDeadline, replacementAtDeadline): the task is taken back as a cut turn,
-	// and the stop or the replacement runs, charged nothing.
+	// and the stop or the replacement runs, charged nothing. One exception: over a take accepted
+	// whose turn has not started and over which a compaction's handoff may still run (Oh My Pi
+	// answers nothing behind a handoff), the reconnect deadline is never earlier than the
+	// handoff's own bound, runtime.CompactTimeout from the handoff's ask, or from a daemon start
+	// that finds the claim stored working over such a take (supervise's handoffGuard).
 	WorkerBootRegistrationDeadlineIntervals int
 	WorkerRPCTimeout                        time.Duration
 	WorkerStopTimeout                       time.Duration

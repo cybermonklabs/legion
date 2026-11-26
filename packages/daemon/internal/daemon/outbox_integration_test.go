@@ -1261,12 +1261,14 @@ func TestTheWorkflowsTreeCloseIsNotPutToTheOperatorsPredicate(t *testing.T) {
 }
 
 // The daemon wires phaseHolds into every claim's machine, and one path a delivery takes rewrites
-// the delivery: a take a compaction stopped before its turn started is taken back, its take gone
-// (supervise's takeBack). The workflow's own task must still be dropped after that rewrite once
-// its issue has left the phase the task was queued for: the worker's next take of it is answered
-// dropped. A predicate that reads anything the take-back rewrites answers this wrong in production
-// and green in a test that skips it.
-func TestAWorkflowTaskIsDroppedAfterACompactionTakesItBack(t *testing.T) {
+// the delivery: a take whose turn did not start within the second wait
+// (worker_turn_start_timeout_seconds) is taken back, its take gone (supervise's
+// turnStartBoundOver, takeBack). A compaction takes no take back: it is Oh My Pi's handoff, which
+// aborts no turn (supervise's compactStart). The workflow's own task must still be dropped after
+// that rewrite once its issue has left the phase the task was queued for: the worker's next take
+// of it is answered dropped. A predicate that reads anything the take-back rewrites answers this
+// wrong in production and green in a test that skips it.
+func TestAWorkflowTaskIsDroppedAfterTheSecondWaitTakesItBack(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -1275,6 +1277,9 @@ func TestAWorkflowTaskIsDroppedAfterACompactionTakesItBack(t *testing.T) {
 	putOutboxIssue(t, pool, records, issue)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds // exactly what daemon.go wires in production
+	const secondWait = time.Minute
+	clock := &heldClock{}
+	sup.deps.Clock, sup.deps.Timeouts.TurnStart = clock, secondWait
 	token, err := claim.NewToken("legion", issue.Key, claim.RoleImplementer)
 	if err != nil {
 		t.Fatalf("claim token: %v", err)
@@ -1318,15 +1323,22 @@ func TestAWorkflowTaskIsDroppedAfterACompactionTakesItBack(t *testing.T) {
 	})
 	queued := machine.Claim().Pending
 
-	// The worker takes the task, and a compaction takes it back before its turn starts: the
-	// delivery is rewritten, its number kept.
+	// The worker takes the task, and its turn does not start within the second wait, which takes
+	// it back: the delivery is rewritten, its number kept.
 	acceptTake(ctx, t, machine)
-	if err := machine.Compact(ctx, "Write the summary as text."); err != nil {
-		t.Fatalf("compact: %v", err)
+	testwait.Eventually(t, "the second wait to be armed for the take's turn", func() bool {
+		live, _ := clock.armed(secondWait)
+		return live == 1
+	})
+	if fired := clock.fire(secondWait); fired != 1 {
+		t.Fatalf("second waits fired = %d, want the one the take armed", fired)
 	}
-	machine.Wait()
-	if back := machine.Claim().Pending; back == nil || back.Number != queued.Number || !back.ConfirmedAt.IsZero() {
-		t.Fatalf("pending delivery after the compaction = %+v, want task %d taken back under its number", back, queued.Number)
+	testwait.Eventually(t, "the second wait to take the task back", func() bool {
+		back := machine.Claim().Pending
+		return back != nil && back.ConfirmedAt.IsZero()
+	})
+	if back := machine.Claim().Pending; back.Number != queued.Number {
+		t.Fatalf("pending delivery after the second wait = %+v, want task %d taken back under its number", back, queued.Number)
 	}
 
 	// The phase ends meanwhile: the work the task asks for is done.

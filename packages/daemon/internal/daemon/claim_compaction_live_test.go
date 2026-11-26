@@ -17,18 +17,17 @@
 // runs would otherwise share a wall clock, and this one starts four panes and waits out a
 // compaction the endpoint holds for over half a minute.
 //
-// The overlays are this deployment's rendered shape, which is what makes the compaction's form
-// provable (paneOverlays): an image-capable model, Oh My Pi's own default compaction method order
-// — which puts `snapcompact` above the summary methods — and `compaction.keepRecentTokens` small
-// enough that a session of a few turns has anything to compact at all. Under those settings the
-// only thing keeping the compaction off snapcompact's images is the custom instructions the
-// daemon sends (api's compactInstructions, shimwire.Compact), and step 2 reads the compaction
-// entry back out of the pane's own session file to show the summary is text.
+// The compaction the daemon asks for is Oh My Pi's handoff, never its `compact`, whose summary
+// request Anthropic refuses for a long Claude session (dispatch://INFRA-5798). Step 2 and step 4
+// read the compaction entry back out of the pane's own session file and hold that its method is
+// `handoff` and its summary is text (awaitCompactionEntry). The overlays are this deployment's
+// rendered shape (paneOverlays), with `compaction.keepRecentTokens` small enough that a session
+// of a few turns has anything to hand off at all.
 //
 // What stands in is the model endpoint and nothing else. Each pane talks to one HTTP stand-in of
-// the driver's own (paneStandin), which answers a turn's request and a compaction's summary
-// request separately, so one pane can walk the provider-error ladder while its compaction
-// succeeds, is refused, or is held past the daemon's RPC timeout.
+// the driver's own (paneStandin), which answers a turn's request and a handoff's request
+// separately, so one pane can walk the provider-error ladder while its compaction succeeds, is
+// refused, or is held past the daemon's RPC timeout.
 //
 // Each phase worker is seeded holding the task its phase's start left pending, and the root
 // architect's issue stands in accepting, because admission repairs a slotted worker that holds
@@ -70,31 +69,40 @@ import (
 )
 
 // compactKeepRecentTokens is `compaction.keepRecentTokens` on every pane of this proof. Oh My Pi
-// keeps that many tokens of the newest turns out of the summary and summarizes the rest, so at
-// the shipped 20,000 a session of a few turns has nothing left to summarize and every compaction
-// answers "Nothing to compact (session too small)". One token is the smallest honest value: it
-// keeps the cut point at the newest turn and leaves everything before it to the summary. Step 1
-// reads the value back out of the pane's own Oh My Pi rather than trusting this literal.
+// writes the handoff document from the whole session, and then keeps that many tokens of the
+// newest turns verbatim after the compaction entry it commits, which stands for every turn before
+// that cut point. At the shipped 20,000 a session of a few turns has no turn before the cut point,
+// so there is nothing to hand off. One token is the smallest honest value: it puts the cut point
+// at the newest turn. Step 1 reads the value back out of the pane's own Oh My Pi rather than
+// trusting this literal.
 const compactKeepRecentTokens = 1
 
-// compactSummaryMarker is how a stand-in tells a compaction's summary request from a turn's: the
-// summarization system prompt Oh My Pi sends such a request under, which the plugins' own pane
-// harness recognises the same way (packages/pi-shared/test/omp-harness.ts:586-592,
-// `isSummarization`). A release that rewords that prompt makes a summary request look like a
-// turn, which this proof's first compaction then fails on rather than passing quietly.
+// compactHandoffMarker is how a stand-in tells a handoff's request from a turn's: the first line
+// of the handoff prompt Oh My Pi appends as the request's last user message
+// (packages/agent/src/compaction/prompts/handoff-document.md of cybermonklabs/oh-my-pi at the
+// pinned tag). A release that rewords that prompt makes a handoff look like a turn, which this
+// proof's first compaction then fails on rather than passing quietly.
+const compactHandoffMarker = "Write a handoff document for another instance of yourself."
+
+// compactSummaryMarker is how a stand-in tells the summary request of Oh My Pi's own `compact`
+// from a turn's: the summarization system prompt such a request goes under, which the plugins'
+// own pane harness recognises the same way (packages/pi-shared/test/omp-harness.ts,
+// `isSummarization`). The daemon never asks for a `compact`, and the stand-in answers one all
+// the same, as it answers a handoff: a daemon that asked for one is then caught by what the
+// session committed, a compaction entry whose method is not `handoff` (awaitCompactionEntry),
+// rather than by an endpoint that refused to answer it.
 const compactSummaryMarker = "Summarize user"
 
-// compactHeldSummary is how long the held-summary stand-in sits on a compaction's answer in step
-// 5: past `worker_rpc_timeout_seconds`, which bounds every other request on the worker stream,
-// and past 30 s, which is the ladder's first rung. The step reads both of those back and refuses
-// to run on a bound this no longer outlasts, so a configuration or a ladder that grew past it
-// fails the proof rather than passing on a stale literal.
+// compactHeldSummary is how long the held stand-in sits on a handoff's answer in step 5: past
+// `worker_rpc_timeout_seconds`, which bounds every other request on the worker stream, and past
+// 30 s, which is the ladder's first rung. The step reads both of those back and refuses to run on
+// a bound this no longer outlasts, so a configuration or a ladder that grew past it fails the
+// proof rather than passing on a stale literal.
 const compactHeldSummary = 35 * time.Second
 
-// compactSnapcompactMethod is the compaction method this proof must never see on a session the
-// daemon compacted: the image-based archive (omp://compaction.md, "Snapcompact method"), which a
-// worker resumed on it needs a vision model to read back.
-const compactSnapcompactMethod = "snapcompact"
+// compactHandoffMethod is the method of every compaction entry the daemon's compaction commits:
+// Oh My Pi's handoff writes its document as the session's compaction entry with this method.
+const compactHandoffMethod = "handoff"
 
 // compactNamesFreshSession is what a compaction's refusal of a claim running no Oh My Pi session
 // names as the operation that reaches it instead, word for word through both doors (api's
@@ -247,7 +255,7 @@ func (r *claimCompactionLive) seededPanes() []seededPane {
 		{r.ladder, "the issue whose planner the ladder holds", phase.Planning, claim.RolePlanner, ladderPaneProvider},
 		{r.notice, "the issue whose implementer keeps failing its turns", phase.Implementing, claim.RoleImplementer, noticePaneProvider},
 		{r.root, "the issue whose architect owes no task", phase.Accepting, claim.RoleArchitect, rootPaneProvider},
-		{r.refusing, "the issue whose summary the endpoint holds and then refuses", phase.Testing, claim.RoleTester, refusingPaneProvider},
+		{r.refusing, "the issue whose handoff the endpoint holds and then refuses", phase.Testing, claim.RoleTester, refusingPaneProvider},
 	}
 }
 
@@ -418,27 +426,15 @@ func (r *claimCompactionLive) seedClaim(ctx context.Context, issue string, role 
 // ---- the steps -----------------------------------------------------------------------------------
 
 // overlaysAreTheDeployments reads back, from the Oh My Pi each pane runs and under the overlays
-// each pane is told, the three settings the compaction's form rests on: the method order, which
-// is Oh My Pi's own default and puts snapcompact above every summary method; the model's input
-// modalities, which include images, so snapcompact is a method this pane could run; and
-// keepRecentTokens, which is small enough that a session of a few turns has something to
-// summarize. Nothing of the three is asserted against a literal of this file's: each is read with
-// the same binary the panes run, under the same overlays, so a changed default fails the proof.
+// each pane is told, the two settings the compaction rests on: keepRecentTokens, which is small
+// enough that a session of a few turns has something to hand off, and the model, which is the one
+// the pane's stand-in serves. Neither is asserted against a literal of this file's: each is read
+// with the same binary the panes run, under the same overlays, so a changed default fails the
+// proof.
 func (r *claimCompactionLive) overlaysAreTheDeployments() {
 	t := r.t
 	pane := r.seededPanes()[0]
 	token := r.token(pane.issue, pane.role)
-	order := r.paneSetting(token, "compaction.methodOrder")
-	var methods []string
-	if err := json.Unmarshal(order, &methods); err != nil {
-		t.Fatalf("read %s's compaction.methodOrder %s: %v", token, order, err)
-	}
-	if !slices.Contains(methods, compactSnapcompactMethod) {
-		t.Fatalf("the pane's compaction.methodOrder is %v, which names no %s: the proof's proposition is that the "+
-			"custom instructions alone keep the compaction off it", methods, compactSnapcompactMethod)
-	}
-	r.note("compaction.methodOrder on the pane is %v — Oh My Pi's own default, which this proof overrides nowhere", methods)
-
 	keep := r.paneSetting(token, "compaction.keepRecentTokens")
 	var kept int
 	if err := json.Unmarshal(keep, &kept); err != nil {
@@ -448,30 +444,26 @@ func (r *claimCompactionLive) overlaysAreTheDeployments() {
 		t.Fatalf("the pane reads compaction.keepRecentTokens %d, want the %d the operator's overlay sets", kept, compactKeepRecentTokens)
 	}
 	r.note("compaction.keepRecentTokens on the pane is %d, from the operator's own overlay: at the shipped default a session "+
-		"of a few turns answers every compaction \"Nothing to compact (session too small)\"", kept)
+		"of a few turns has nothing to hand off", kept)
 
 	// Every model role of the claim's own overlay names one selector, so that is the model the
 	// pane's session runs on; the profile's roster carries each pane's.
 	selector := standinModel(pane.provider)
 	listed := r.paneModels(token)
-	served := slices.IndexFunc(listed, func(model paneModel) bool { return model.Selector == selector })
-	if served < 0 {
+	if !slices.ContainsFunc(listed, func(model paneModel) bool { return model.Selector == selector }) {
 		t.Fatalf("the pane's Oh My Pi serves no %s; it serves %+v", selector, listed)
 	}
-	if !slices.Contains(listed[served].Input, "image") {
-		t.Fatalf("the pane's model %s takes %v, and snapcompact needs one that reads images", selector, listed[served].Input)
-	}
-	r.note("the model every role of %s names is %s, which takes %v: snapcompact is a method it could run, and the instructions "+
-		"the daemon sends are what keep the summary text (api's compactInstructions)", token, selector, listed[served].Input)
+	r.note("the model every role of %s names is %s, the one its stand-in serves", token, selector)
 	r.note("every pane's PI_CONFIG_FILES is %v: the operator's own overlay, then the claim's own (role_config_files), "+
 		"and nothing of Legion's after them", r.overlays[token])
 }
 
 // operatorCompactsAPhaseWorker drives `legion claims compact` — the built binary against the
 // booted daemon — at an idle phase worker the provider-error ladder holds, and reads back what
-// the operation promises: the worker keeps its session, that session holds a text compaction
-// entry rather than snapcompact's images, and the task the claim owes is sent once and only after
-// the compaction, inside the ladder's own first rung and so by the compaction and not the wait.
+// the operation promises: the worker keeps its session, that session holds a compaction entry
+// Oh My Pi's handoff wrote, and the task the claim owes untaken is offered once — its value
+// written once and its take accepted once — and only after the compaction, inside the ladder's
+// own first rung and so by the compaction and not the wait.
 func (r *claimCompactionLive) operatorCompactsAPhaseWorker() {
 	t := r.t
 	token := r.token(r.ladder, claim.RolePlanner)
@@ -527,8 +519,8 @@ func (r *claimCompactionLive) operatorCompactsAPhaseWorker() {
 		token, after.Session, after.SessionFile, ended.Attrs["providerErrorRun"])
 
 	entry := r.awaitCompactionEntry(after.SessionFile, 1)
-	r.note("the session's compaction entry is method %q with a %d-character text summary %q and no snapcompact archive (preserveData %v)",
-		entry.Method, len(entry.Summary), firstLine(entry.Summary), entry.preserveKeys())
+	r.note("the session's compaction entry is method %q with a %d-character text summary %q",
+		entry.Method, len(entry.Summary), firstLine(entry.Summary))
 
 	again := r.awaitLogFrom("the owed task's next turn", from, ladderDelays[0]+time.Minute, func(record loggedRecord) bool {
 		return record.Message == providerErroredMessage && record.Attrs["claim"] == string(token)
@@ -537,27 +529,29 @@ func (r *claimCompactionLive) operatorCompactsAPhaseWorker() {
 		t.Fatalf("the owed task ran a turn at %s, before the compaction ended at %s", again.at, ended.at)
 	}
 	// Only after the compaction, and only once: the ladder's wait is what would otherwise have
-	// sent this task, and it sent nothing between the turn that armed it and this one. That is
-	// read from the daemon's own record of every such send rather than from the clock, so a
-	// compaction slower than the rung does not fail the proof for the wrong reason.
-	if sends := r.logs(func(record loggedRecord) bool {
+	// offered this task again, and it offered nothing between the turn that armed it and this one.
+	// That is read from the daemon's own record of every such offer rather than from the clock, so
+	// a compaction slower than the rung does not fail the proof for the wrong reason.
+	if offers := r.logs(func(record loggedRecord) bool {
 		return record.Message == providerWaitOverMessage &&
 			record.Attrs["claim"] == string(token) && record.at.After(errored.at) && record.at.Before(again.at)
-	}); len(sends) != 0 {
-		t.Fatalf("the ladder's wait sent the task %d times before the compaction's own send did", len(sends))
+	}); len(offers) != 0 {
+		t.Fatalf("the ladder's wait offered the task %d times before the compaction's own offer did", len(offers))
 	}
 	if again.Attrs["providerErrorRun"] != float64(1) {
 		t.Fatalf("the turn after the compaction counts providerErrorRun %v, want 1: the compaction put the run back to zero",
 			again.Attrs["providerErrorRun"])
 	}
-	// Once: the daemon's own record of every turn this task's prompt ran. The stand-in's request
+	// Once: the daemon's own record of every turn this task's text ran. The stand-in's request
 	// count is the host's behaviour — a turn carries side requests of Oh My Pi's own, and a later
-	// release can carry others — where the send is the daemon's act and the daemon writes it down.
+	// release can carry others — where the offer and the take are the daemon's acts and the
+	// daemon writes them down (offeredOnce).
 	if turns := r.erroredTurns(token); len(turns) != 2 {
-		t.Fatalf("the daemon ran %d turns of the owed task, want 2: the first send and the compaction's own", len(turns))
+		t.Fatalf("the daemon ran %d turns of the owed task, want 2: the first take's and the one after the compaction", len(turns))
 	}
-	r.note("the owed task went again %s after the turn that armed the ladder's %s rung and %s after the compaction ended, "+
-		"once by the daemon's own count of the turns it ran, with the ladder's own wait having sent nothing in between; "+
+	r.offeredOnce(token, ended, again)
+	r.note("the owed task ran again %s after the turn that armed the ladder's %s rung and %s after the compaction ended, "+
+		"once by the daemon's own count of the turns it ran, with the ladder's own wait having offered nothing in between; "+
 		"the stand-in answered %d requests carrying the task across those two turns",
 		again.at.Sub(errored.at).Round(time.Millisecond), ladderDelays[0], again.at.Sub(ended.at).Round(time.Millisecond),
 		r.pane(token).stand.turnsHolding(marker))
@@ -602,10 +596,11 @@ func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 	if ended.Attrs["providerErrorRun"] != float64(0) {
 		t.Fatalf("the compaction left providerErrorRun %v, want it back to zero", ended.Attrs["providerErrorRun"])
 	}
-	// The owed task the compaction sent again is the first of the six turns that earn the second
-	// notice: it ends in the same 529, so the run starts over at one.
-	r.awaitErroredTurnFrom(token, 1, from, ladderDelays[0]+time.Minute)
-	r.note("the compaction put the run back to zero and sent the owed task again, whose turn starts the next run at 1")
+	// The owed task the compaction offered again is the first of the six turns that earn the
+	// second notice: it ends in the same 529, so the run starts over at one.
+	again := r.awaitErroredTurnFrom(token, 1, from, ladderDelays[0]+time.Minute)
+	r.offeredOnce(token, ended, again)
+	r.note("the compaction put the run back to zero and offered the owed task again, whose turn starts the next run at 1")
 	for run := 2; run <= 6; run++ {
 		r.erroredTurn(token, run)
 	}
@@ -696,11 +691,11 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 	started := time.Now()
 	answered := make(chan compactRun, 1)
 	go func() {
-		// --wait past both of the summary's held passes: `legion claims compact` waits one minute
-		// by default, and Oh My Pi writes a split turn's summary in two passes, each held for
-		// compactHeldSummary, so the compaction answers after about 70 s. The command's --wait is a
-		// client bound apart from the daemon's own CompactTimeout, so it is given room past that or
-		// it would give up on a compaction that is still running as the step intends.
+		// --wait past the held handoff: `legion claims compact` waits one minute by default, and
+		// Oh My Pi writes the handoff document in one request, held for compactHeldSummary, so
+		// the compaction answers after about 35 s. The command's --wait is a client bound apart
+		// from the daemon's own CompactTimeout, so it is given room past that or it would give up
+		// on a compaction that is still running as the step intends.
 		out, err := r.legionClaimsTry("compact", "--claim", string(token), "--wait", (4 * compactHeldSummary).String())
 		answered <- compactRun{out: out, err: err}
 	}()
@@ -736,13 +731,16 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 		run.out, waited.Round(time.Second), r.cfg.WorkerRPCTimeout)
 	stand.answerSummary()
 
+	ended := r.awaitLogFrom("the compaction to end", from, time.Minute, func(record loggedRecord) bool {
+		return record.Message == "supervise: the compaction of the claim's session is over" && record.Attrs["claim"] == string(token)
+	})
 	again := r.awaitLogFrom("the owed task's next turn", from, 2*time.Minute, func(record loggedRecord) bool {
 		return record.Message == providerErroredMessage && record.Attrs["claim"] == string(token) && record.at.After(started)
 	})
 	// Once, and by the daemon's own count of the turns it ran: the ladder's own first rung came
-	// due while the compaction held the claim, and a claim being compacted is handed nothing.
+	// due while the compaction held the claim, and a claim being compacted takes nothing.
 	if turns := r.erroredTurns(token); len(turns) != 2 {
-		t.Fatalf("the daemon ran %d turns of the owed task, want 2: the first send and the compaction's own", len(turns))
+		t.Fatalf("the daemon ran %d turns of the owed task, want 2: the first take's and the one after the compaction", len(turns))
 	}
 	if sends := r.logs(func(record loggedRecord) bool {
 		return record.Message == providerWaitOverMessage &&
@@ -750,9 +748,10 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 	}); len(sends) == 0 {
 		t.Fatalf("the ladder's %s rung never came due inside the %s the summary was held for", ladderDelays[0], compactHeldSummary)
 	}
-	r.note("the ladder's own %s rung came due while the compaction held the claim and sent nothing; the owed task went at the "+
-		"compaction's end, %s after the turn that armed the ladder, once by the daemon's own count of the turns it ran",
-		ladderDelays[0], again.at.Sub(errored.at).Round(time.Second))
+	r.offeredOnce(token, ended, again)
+	r.note("the ladder's own %s rung came due while the compaction held the claim, and no take of the task was accepted under "+
+		"the compaction; the owed task was offered at the compaction's end, %s after the turn that armed the ladder, and ran once "+
+		"by the daemon's own count of the turns it ran", ladderDelays[0], again.at.Sub(errored.at).Round(time.Second))
 }
 
 // everyRefusalGetsItsMessage drives, through both doors, every case the compaction refuses before
@@ -764,17 +763,18 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 	tester := r.token(r.refusing, claim.RoleTester)
 	stand := r.pane(tester).stand
 
-	// A summary the endpoint refuses every time: reported to the caller, with the owed task sent
+	// A handoff the endpoint refuses every time: reported to the caller, with the owed task offered
 	// again all the same, which is the operation's whole promise.
 	stand.refuseSummary()
 	from := r.daemon.count()
 	refused := r.compactedByController(r.refusing, claim.RoleTester)
-	// Oh My Pi names the pass that failed — the history summary's, or a split turn's prefix — so
-	// the words are matched rather than the whole sentence.
-	if refused.Compacted || !strings.Contains(strings.ToLower(refused.Reason), "summarization failed") {
-		t.Fatalf("a refused summary answered %+v, want compacted=false carrying Oh My Pi's own reason", refused)
+	// Oh My Pi puts the provider's own words after its prefix (createSummarizationError in
+	// packages/agent/src/compaction/compaction.ts at the pinned tag), so the prefix is matched
+	// rather than the whole sentence.
+	if refused.Compacted || !strings.Contains(strings.ToLower(refused.Reason), "handoff generation failed") {
+		t.Fatalf("a refused handoff answered %+v, want compacted=false carrying Oh My Pi's own reason", refused)
 	}
-	r.note("the endpoint refused every summary request and the caller was told: 200, compacted=false, reason %q", refused.Reason)
+	r.note("the endpoint refused every handoff request and the caller was told: 200, compacted=false, reason %q", refused.Reason)
 	ended := r.awaitLogFrom("the refused compaction to end", from, runtime.CompactTimeout, func(record loggedRecord) bool {
 		return record.Message == "supervise: the compaction of the claim's session is over" && record.Attrs["claim"] == string(tester)
 	})
@@ -787,19 +787,30 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 		ended.Attrs["providerErrorRun"])
 	stand.answerSummary()
 
-	// A worker in a turn of its own: the stand-in holds the turn open, so the claim is working
-	// when the request arrives.
+	// A take accepted when the compaction is asked for, as the real host makes one: the plugin
+	// takes the task and hands its text to Oh My Pi at once, and the stand-in holds the turn open,
+	// so the claim is working, in the take's turn, when the request arrives. Through both doors it
+	// is refused CLAIM_IN_A_TURN, and the task has one accepted take, one turn of its number and
+	// one report that finishes it, in the same session. A take accepted before Oh My Pi admitted
+	// its text, under a handoff held past the take, is no state this rig can make (the script's
+	// header says why): internal/daemon's handoff rows drive it over the wire (H6, H7).
 	stand.holdTurn()
+	session, since := r.claim(tester).Session, time.Now()
+	taken := r.daemon.count()
 	r.deliver(tester, "Say the word HELD-"+randomSuffix(t)+" and nothing else.")
 	r.await(string(tester)+" to be in a turn", 2*time.Minute, func() bool {
 		return r.claim(tester).State == string(supervise.StateWorking)
 	})
-	r.refusedThroughBothDoors("a worker in a turn of its own", compactDoors, tester, r.refusing, claim.RoleTester,
-		http.StatusConflict, "CLAIM_IN_A_TURN", "is stored working: if a turn of it is running, a compaction would abort that turn")
+	r.refusedThroughBothDoors("a worker in the turn of a take it was answered", compactDoors, tester, r.refusing, claim.RoleTester,
+		http.StatusConflict, "CLAIM_IN_A_TURN", "is stored working: if a turn of it is running, Oh My Pi refuses a compaction's handoff in that turn")
 	stand.releaseTurn()
+	finished := r.awaitLogFrom("the take's report to finish its task", taken, 2*time.Minute, func(record loggedRecord) bool {
+		return record.Message == "supervise: a task was finished" && record.Attrs["claim"] == string(tester)
+	})
 	r.await(string(tester)+"'s turn to end", 2*time.Minute, func() bool {
 		return r.claim(tester).State != string(supervise.StateWorking)
 	})
+	r.heldOnceAndFinished(tester, since, finished, session)
 
 	// A role the configuration runs on Claude Code, which keeps no Oh My Pi session at all. The
 	// claim runs nothing and never has: the refusal comes before the backend is used for anything.
@@ -1191,9 +1202,60 @@ func (r *claimCompactionLive) erroredTurn(token claim.Token, run int) (string, *
 	return marker, r.awaitErroredTurnFrom(token, run, from, 4*time.Minute)
 }
 
+// offeredOnce holds that the task the claim owed untaken went to it once after the compaction that
+// ended at ended and before the turn that ran it (ran): the daemon wrote its value once and
+// accepted one take of it in that window, by its own lines. The worker takes its task
+// (dispatch://INFRA-2811), so the offer and the take are the daemon's acts this counts, where
+// erroredTurns counts the turns the text ran.
+func (r *claimCompactionLive) offeredOnce(token claim.Token, ended, ran *loggedRecord) {
+	r.t.Helper()
+	within := func(record loggedRecord) bool {
+		return record.Attrs["claim"] == string(token) && !record.at.Before(ended.at) && !record.at.After(ran.at)
+	}
+	writes := r.logs(func(record loggedRecord) bool {
+		return record.Message == "supervise: a task value was written" && within(record)
+	})
+	takes := r.logs(func(record loggedRecord) bool {
+		return record.Message == "supervise: a take was answered" && record.Attrs["outcome"] == string(supervise.TakeOutcomeAccepted) && within(record)
+	})
+	if len(writes) != 1 || len(takes) != 1 {
+		r.t.Fatalf("between the compaction's end and the owed task's turn the daemon wrote its value %d times and accepted %d takes of it, want one of each",
+			len(writes), len(takes))
+	}
+	r.note("%s's owed task was offered once after the compaction (value written for %v) and taken once (task %v)",
+		token, writes[0].Attrs["cause"], takes[0].Attrs["task"])
+}
+
+// heldOnceAndFinished holds that the task whose finish is finished, the one the claim took since,
+// had one accepted take, one turn of its number and one finish, and that the claim holds nothing
+// and kept session.
+func (r *claimCompactionLive) heldOnceAndFinished(token claim.Token, since time.Time, finished *loggedRecord, session string) {
+	r.t.Helper()
+	number := finished.Attrs["task"]
+	count := func(message string, also func(loggedRecord) bool) int {
+		return len(r.logs(func(record loggedRecord) bool {
+			return record.Message == message && record.Attrs["claim"] == string(token) && record.at.After(since) &&
+				record.Attrs["task"] == number && also(record)
+		}))
+	}
+	every := func(loggedRecord) bool { return true }
+	takes := count("supervise: a take was answered", func(record loggedRecord) bool {
+		return record.Attrs["outcome"] == string(supervise.TakeOutcomeAccepted)
+	})
+	turns, finishes := count("supervise: a turn started", every), count("supervise: a task was finished", every)
+	if takes != 1 || turns != 1 || finishes != 1 {
+		r.t.Fatalf("task %v of %s had %d accepted takes, %d turns and %d finishes, want one of each", number, token, takes, turns, finishes)
+	}
+	if held := r.claim(token); held.Session != session || held.Pending != nil {
+		r.t.Fatalf("%s is on session %s holding %+v after its take's turn, want session %s holding nothing", token, held.Session, held.Pending, session)
+	}
+	r.note("task %v of %s had one accepted take, one turn and one finish (by %v), in session %s, with both compactions refused in that turn",
+		number, token, finished.Attrs["by"], session)
+}
+
 // erroredTurns is every turn of the claim the daemon has read a provider error from, oldest
 // first: the daemon's own count of the times it put this claim's task in front of its agent and
-// the provider refused, which is what "the task was sent once" is a statement about.
+// the provider refused, which is what "the task ran once" is a statement about.
 func (r *claimCompactionLive) erroredTurns(token claim.Token) []loggedRecord {
 	return r.logs(func(record loggedRecord) bool {
 		return record.Message == providerErroredMessage && record.Attrs["claim"] == string(token)
@@ -1446,30 +1508,18 @@ func (r *claimCompactionLive) awaitControllerNotices(issue string, count int) {
 }
 
 // compactionEntry is a session's compaction record as this proof reads it back out of the pane's
-// own transcript (omp://session.md, "compaction"): the summary text, the method Oh My Pi used,
-// and whatever it preserved, which carries a snapcompact archive for a compaction that ran that
-// method and nothing of the sort for one written as text.
+// own transcript (omp://session.md, "compaction"): the summary text and the method Oh My Pi used.
 type compactionEntry struct {
-	Type         string                     `json:"type"`
-	Summary      string                     `json:"summary"`
-	Method       string                     `json:"method"`
-	PreserveData map[string]json.RawMessage `json:"preserveData"`
-}
-
-func (e compactionEntry) preserveKeys() []string {
-	keys := make([]string, 0, len(e.PreserveData))
-	for key := range e.PreserveData {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
+	Type    string `json:"type"`
+	Summary string `json:"summary"`
+	Method  string `json:"method"`
 }
 
 // awaitCompactionEntry waits until the pane's transcript holds count compaction entries and
-// answers the newest, holding that it is a text summary rather than snapcompact's images. The
-// transcript is the session file the claim records, one JSON entry per line, which is how the
-// plugins' own pane harness reads a session back too
-// (packages/pi-shared/test/omp-harness.ts:915-926).
+// answers the newest, holding that Oh My Pi's handoff wrote it as text: its method is `handoff`
+// (compactHandoffMethod), which no `compact` writes. The transcript is the session file the
+// claim records, one JSON entry per line, which is how the plugins' own pane harness reads a
+// session back too (packages/pi-shared/test/omp-harness.ts:915-926).
 func (r *claimCompactionLive) awaitCompactionEntry(path string, count int) compactionEntry {
 	t := r.t
 	t.Helper()
@@ -1482,11 +1532,9 @@ func (r *claimCompactionLive) awaitCompactionEntry(path string, count int) compa
 	switch {
 	case strings.TrimSpace(entry.Summary) == "":
 		t.Fatalf("the compaction entry in %s carries no summary text: %+v", path, entry)
-	case entry.Method == compactSnapcompactMethod:
-		t.Fatalf("the compaction in %s ran %s, and the daemon's instructions are meant to keep it off that method", path, entry.Method)
-	}
-	if _, archived := entry.PreserveData[compactSnapcompactMethod]; archived {
-		t.Fatalf("the compaction entry in %s preserved a snapcompact archive: %v", path, entry.preserveKeys())
+	case entry.Method != compactHandoffMethod:
+		t.Fatalf("the compaction entry in %s has method %q, want %q: the daemon asks Oh My Pi for a handoff and never for a compact",
+			path, entry.Method, compactHandoffMethod)
 	}
 	return entry
 }
@@ -1577,9 +1625,7 @@ func (r *claimCompactionLive) paneOmp(token claim.Token, args ...string) *exec.C
 // ---- the Oh My Pi profile and the overlays -----------------------------------------------------------
 
 // writeOmpProfile writes the profile every pane of this proof shares: the four stand-in
-// providers, one model each, and the settings a pane needs to run unattended. Every model takes
-// images, because snapcompact needs a model that reads them and the proof's proposition is that
-// the compaction stays text all the same.
+// providers, one model each, and the settings a pane needs to run unattended.
 func (r *claimCompactionLive) writeOmpProfile() {
 	t := r.t
 	t.Helper()
@@ -1596,7 +1642,7 @@ func (r *claimCompactionLive) writeOmpProfile() {
 		// one of the daemon's sends is one request and a turn that ends in a provider error ends
 		// at once rather than after the host's own round of retries.
 		fmt.Fprintf(&models, "  %s:\n    baseUrl: %s\n    api: anthropic-messages\n    apiKey: a-literal-key-no-endpoint-checks\n"+
-			"    models:\n      - id: %s\n        name: %s\n        input: [text, image]\n        contextWindow: 200000\n        maxTokens: 8192\n",
+			"    models:\n      - id: %s\n        name: %s\n        input: [text]\n        contextWindow: 200000\n        maxTokens: 8192\n",
 			seeded.provider, stand.url, seeded.provider+standinModelID, seeded.provider)
 		fmt.Fprintf(&enabled, "  - %s\n", standinModel(seeded.provider))
 	}
@@ -1619,13 +1665,13 @@ func (r *claimCompactionLive) writeOmpProfile() {
 //   - `retry.enabled: false`, so the host walks no fallback chain of its own and every failed
 //     turn reaches the daemon, as provider_error_retry_live_test.go's does;
 //   - `compaction.keepRecentTokens: 1`, because Oh My Pi keeps that many tokens of the newest
-//     turns out of every summary and a session of a few turns has nothing left to summarize at
-//     the shipped 20,000 (compactKeepRecentTokens).
+//     turns verbatim after the compaction entry, and a session of a few turns has no turn before
+//     that cut point at the shipped 20,000 (compactKeepRecentTokens).
 //
-// `compaction.methodOrder` is deliberately absent, so each pane runs Oh My Pi's own default,
-// which puts the image-based `snapcompact` above every summary method. The claim's own overlay
-// names the single model its stand-in serves for every model role (writeRoleOverlay), so no role
-// of the session reaches a model this run does not answer for.
+// `compaction.methodOrder` is deliberately absent: the daemon's compaction is a handoff, which
+// reads no method order. The claim's own overlay names the single model its stand-in serves for
+// every model role (writeRoleOverlay), so no role of the session reaches a model this run does
+// not answer for.
 func (r *claimCompactionLive) writeOverlays(work string) map[claim.Token][]string {
 	t := r.t
 	t.Helper()
@@ -1665,21 +1711,23 @@ const (
 	turnHolds
 )
 
-// summaryAnswer is what a stand-in does with a compaction's summary request.
+// summaryAnswer is what a stand-in does with a handoff's request, whose answer is the document
+// Oh My Pi commits as the compaction's summary.
 type summaryAnswer int
 
 const (
-	// summaryAnswers writes the summary at once.
+	// summaryAnswers writes the document at once.
 	summaryAnswers summaryAnswer = iota
 	// summaryHolds writes it after a delay of the step's choosing.
 	summaryHolds
-	// summaryRefuses answers 400, which Oh My Pi reports as `Summarization failed: 400 …` and
+	// summaryRefuses answers 400, which Oh My Pi reports as `Handoff generation failed: …` and
 	// does not retry: a 5xx it retries until the daemon's own ten-minute bound runs out.
 	summaryRefuses
 )
 
-// paneStandin is one pane's provider endpoint: it answers a turn's request and a compaction's
-// summary request apart, over the stand-in every such proof shares (live_agent_proof_test.go),
+// paneStandin is one pane's provider endpoint: it answers a turn's request and a handoff's
+// request apart (and a `compact`'s summary request as a handoff's, compactSummaryMarker), over
+// the stand-in every such proof shares (live_agent_proof_test.go),
 // which records each request. A step sets each behaviour before it drives the claim, and the two
 // counts of its own are what a step reads back. role_prompt_rule_live_test.go takes this
 // stand-in as it is, at its default, where every turn is answered and no step sets anything.
@@ -1714,7 +1762,7 @@ func (s *paneStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		_, _ = io.WriteString(w, `{"input_tokens":1000}`)
 		return
 	}
-	if strings.Contains(body, compactSummaryMarker) {
+	if strings.Contains(body, compactHandoffMarker) || strings.Contains(body, compactSummaryMarker) {
 		s.mu.Lock()
 		s.summaries++
 		mode, held := s.summary, s.held

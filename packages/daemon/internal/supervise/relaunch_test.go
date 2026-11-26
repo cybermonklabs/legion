@@ -706,14 +706,17 @@ func heldAtRelaunch(t *testing.T, task string, set ...func(*Deps)) (*harness, st
 // relaunched worker holds a task that was not in the cut turn, so it is not Interrupted, and its
 // take at the ready is answered behind the record's sentence, which tells the record by that
 // delivery. The take is then given back: a provider error ends its turn — a model call that
-// failed, often the turn's first, so the sentence is told twice rather than lost — or a compaction
-// aborts the turn the take was to start, so no turn ran its text. The take after it carries the
-// sentence again and tells it again. The second wait's give-back is
+// failed, often the turn's first, so the sentence is told twice rather than lost — or the second
+// wait finds no turn of a take a compaction kept, so no turn ran its text. The compaction itself
+// gives nothing back: it is Oh My Pi's handoff, which aborts no turn, so the take's telling stands
+// through it (departure 10 of dispatch://INFRA-2811's plan). The take after the give-back carries
+// the sentence again and tells it again. The second wait's give-back with no compaction is
 // TestARelaunchSentenceIsGivenBackWhenTheSecondWaitTakesTheTakeBack's.
 func TestARelaunchSentenceIsToldAgainWhenItsConfirmationIsTakenBack(t *testing.T) {
 	const task = "implement the plan"
 	for _, tc := range []struct {
 		name string
+		set  []func(*Deps)
 		// takeBack gives the accepted take back and brings the claim to where its worker takes the
 		// task again; it answers the text that take is answered with.
 		takeBack func(t *testing.T, h *harness) string
@@ -725,20 +728,26 @@ func TestARelaunchSentenceIsToldAgainWhenItsConfirmationIsTakenBack(t *testing.T
 			h.advance(promptRetryDelay(1))
 			return h.wantPrompts(2)[1].Message
 		}},
-		{name: "a compaction aborts the turn the take was to start", takeBack: func(t *testing.T, h *harness) string {
-			release, compacted := h.compactHeld()
-			h.wantEndedTold(false, "", "once the compaction took the take back")
-			release()
-			if err := <-compacted; err != nil {
-				t.Fatalf("the compaction answered %v, want it over", err)
-			}
-			h.m.Wait()
-			h.workerAsks()
-			return h.wantPrompts(2)[1].Message
-		}},
+		{name: "the second wait finds no turn of a take a compaction kept", set: []func(*Deps){withWaits},
+			takeBack: func(t *testing.T, h *harness) string {
+				taken := h.claim().Pending.ID
+				release, compacted := h.compactHeld()
+				h.wantEndedTold(true, taken, "while the compaction runs: it aborts no turn")
+				release()
+				if err := <-compacted; err != nil {
+					t.Fatalf("the compaction answered %v, want it over", err)
+				}
+				h.m.Wait()
+				h.wantEndedTold(true, taken, "after the compaction's end")
+				h.manualTakes()
+				h.advance(turnStartBound)
+				h.wantCharges(WaitTurnStart)
+				h.wantEndedTold(false, "", "once the second wait took the take back")
+				return h.mustTake()
+			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h, want := heldAtRelaunch(t, task)
+			h, want := heldAtRelaunch(t, task, tc.set...)
 			h.ready()
 			first := h.wantPrompts(1)[0]
 			if first.Message != want {

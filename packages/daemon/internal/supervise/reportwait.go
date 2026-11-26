@@ -129,8 +129,8 @@ import (
 // Every take-back finishes such a task by that report instead, since each reads this phase before
 // it takes anything back: interrupted (every let-go that settles a take, a death, a replacement,
 // the reconnect deadline and this wait's own take-back among them), takeBackUnstarted (a
-// retirement and a suspension), takeBack (the operator's compaction, R5's second bound and a
-// provider error that holds the issue) and takeToLadder (a provider error the ladder waits out).
+// retirement and a suspension), takeBack (R5's second bound and a provider error that holds the
+// issue) and takeToLadder (a provider error the ladder waits out).
 // takeBackInMemory, which reads no phase, runs only behind the last two. The retirement of such a
 // task for a newer one finishes it by that report too (retirePending).
 //

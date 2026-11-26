@@ -146,7 +146,9 @@ func (m *Machine) armWaits() {
 		m.secondFor = time.Time{}
 	} else if !armed || !m.secondFor.Equal(takenAt) {
 		m.secondFor = takenAt
-		m.arm(TimerTurnStart, m.deps.Timeouts.TurnStart, p.ID)
+		// A take a handoff protects is not charged before the handoff's deadline, whatever the
+		// configured wait (handoffGuard); every other take's wait is the configured one.
+		m.armNoEarlierThanHandoff(TimerTurnStart, m.deps.Timeouts.TurnStart, p.ID)
 	}
 	m.armReportWait()
 }

@@ -214,8 +214,9 @@ func relaunchedAndTaken(h *harness) {
 	h.mustTake()
 }
 
-// compactedByTheOperator is the operator's compaction of the claim's session (compactStart),
-// which takes back a take awaiting its turn and keeps the process, run to its end (compactEnded).
+// compactedByTheOperator is the operator's compaction of the claim's session (compactStart), run
+// to its end (compactEnded). It keeps the process, and it takes back no take awaiting its turn:
+// it is Oh My Pi's handoff, which aborts no turn (departure 10 of dispatch://INFRA-2811's plan).
 func compactedByTheOperator(t *testing.T, h *harness) {
 	t.Helper()
 	if err := h.m.Compact(h.ctx, testCompactInstructions); err != nil {
@@ -228,18 +229,17 @@ func compactedByTheOperator(t *testing.T, h *harness) {
 // turns — no hello since a close or a daemon start, or no answer since the hello — taken back by a
 // let-go that is no reconnect deadline: a retirement, a held suspension's deadline, a death, the
 // one the close's own probe finds among them, or a relaunch of a process still running for a stale
-// address; or by the operator's compaction, which keeps the process. Its turn may have run unseen,
-// its start frame lost with the connection, so it goes back as a turn cut off, and the next
-// process, or the same one after the compaction, takes it told its turn on it may have run, as row
-// 8 takes it back. A stale plugin's relaunch waits for a whole view (row 29) and runs over a cut
-// one only at the reconnect deadline, whose take-back
-// TestAStaleRelaunchBehindABacklogCutTakesTheTakeBackAsACutTurn holds. The negative control is the
-// commit under this change, where each let-go gave the take back unstarted with no note: only the
-// reconnect deadline marked such a take (turnUnseen), the close probed its process before it cut
-// the view, and a relaunch's take-back, made before its let-go records anything, read the mark
-// alone (interrupted). The compaction's is the head before the change that made clearTake read
-// the view (2da324b8), where its take-back (takeBack, clearTake) read neither the view nor the
-// mark and gave the take back with no note.
+// address. Its turn may have run unseen, its start frame lost with the connection, so it goes back
+// as a turn cut off, and the next process takes it told its turn on it may have run, as row 8
+// takes it back. A stale plugin's relaunch waits for a whole view (row 29) and runs over a cut one
+// only at the reconnect deadline, whose take-back
+// TestAStaleRelaunchBehindABacklogCutTakesTheTakeBackAsACutTurn holds. The operator's compaction
+// takes no take back (departure 10): it is Oh My Pi's handoff, which aborts no turn
+// (TestTakeKeptByACompactionOverACutViewIsGivenTheTurnTheAnswerReports). The negative control is
+// the commit under this change, where each let-go gave the take back unstarted with no note: only
+// the reconnect deadline marked such a take (turnUnseen), the close probed its process before it
+// cut the view, and a relaunch's take-back, made before its let-go records anything, read the mark
+// alone (interrupted).
 func TestTakeAwaitingItsTurnIsTakenBackAsACutTurnWhileTheViewIsCut(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -266,10 +266,6 @@ func TestTakeAwaitingItsTurnIsTakenBackAsACutTurnWhileTheViewIsCut(t *testing.T)
 			h.observe(runtime.StaleAddress)
 			h.wantState(StateLaunching)
 		}, next: relaunchedAndTaken},
-		{name: "the operator's compaction after a hello no answer followed", cut: func(h *harness) {
-			h.reconnectLater()
-			h.helloOf(true, false)
-		}, letGo: compactedByTheOperator, next: func(h *harness) { h.mustTake() }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := boundsHarness(t)
@@ -304,84 +300,69 @@ func TestTakeAwaitingItsTurnIsTakenBackAsACutTurnWhileTheViewIsCut(t *testing.T)
 	})
 }
 
-// Row 26 after the take-back: the operator's compaction took a take awaiting its turn back as a
-// cut turn while a hello's ask waited for its answer, and kept the process; a let-go of that
-// process then comes before the next take — the reconnect deadline of that hello, or a death.
-// The let-go's record says the task's turn was cut off (EndedWork.TaskTurn), as it says for a
-// take-back the let-go's own decision makes (interrupted), so the next process takes the task
-// told its turn on it may have run. The claim ran a turn first, so the let-go writes its record.
-// The negative control is the head before this change, where the compaction's take-back marked
-// nothing for that record (Machine.cutTurnOf, clearTake): the record said the agent was in no
-// turn, and its sentence stood in place of the cut turn's note, so the next take carried none.
-func TestTakeTheCompactionGaveBackAsACutTurnKeepsItsNoteThroughALaterLetGo(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		letGo func(h *harness)
-	}{
-		{"the reconnect deadline of the hello no answer followed", func(h *harness) { h.advance(deadline) }},
-		{"a death", func(h *harness) { h.observe(runtime.Gone) }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := boundsHarness(t)
-			h.takeRunsItsOwnTurn("the first task", 1, false)
-			number := h.takeOf("implement the plan")
-			h.reconnectLater()
-			h.helloOf(true, false)
-			compactedByTheOperator(t, h)
-			if p := h.pending(); p.Number != number || p.taken() || !p.Interrupted {
-				t.Fatalf("the compaction left %+v, want task %d taken back with the note of a cut turn", p, number)
-			}
+// heldStaleRelaunch is a stale-plugin relaunch of the claim held for the end of a turn of the
+// host's own, and run at that end (holdStaleRelaunch, afterTurn).
+func heldStaleRelaunch(t *testing.T, h *harness) {
+	t.Helper()
+	staleToTheDaemon(h)
+	h.must(StreamTurnStart{Claim: h.token})
+	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
+	h.wantCalls("Resume", 0)
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h.wantState(StateLaunching)
+}
 
-			tc.letGo(h)
-
-			h.wantState(StateLaunching)
-			if ended := h.claim().EndedWork; !ended.TaskTurn {
-				t.Fatalf("the let-go recorded %+v, want the task's turn recorded as cut off", ended)
-			}
-			h.wantTakenOnceMore(number, relaunchedAndTaken)
-		})
+// secondWaitGivesBackACutTurn is R5's second wait over a take marked as one whose turn may have
+// run unseen (blindTurnEnded, Machine.turnUnseen), with the agent's answer making the view whole:
+// the bound passes with no turn started, the worker is charged, and the take goes back as a cut
+// turn with its note (turnStartBoundOver, takeBack), the process kept.
+func secondWaitGivesBackACutTurn(t *testing.T, h *harness, number uint64) {
+	t.Helper()
+	h.reconnectLater()
+	h.helloOf(true, false)
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h.answerAsk(false)
+	h.wantAwaitingItsTurn(number, "after the answer")
+	h.advance(turnStartBound)
+	h.wantCharges(WaitTurnStart)
+	if p := h.pending(); p.Number != number || p.taken() || !p.Interrupted {
+		t.Fatalf("the second wait left %+v, want task %d taken back with the note of a cut turn", p, number)
 	}
 }
 
-// Row 28 after R5's second wait: a take awaiting its turn behind an end its daemon never saw begin
-// is marked as one whose turn may have run unseen (blindTurnEnded, Machine.turnUnseen), and the
-// agent's answer makes the view whole. The second bound then passes with no turn started: the
-// worker is charged, and the take goes back as a cut turn with its note (turnStartBoundOver,
-// takeBack), the process kept. A let-go of that process then comes before the next take — a death
-// or a retirement. Its record says the task's turn was cut off (EndedWork.TaskTurn), as it says
-// after the compaction's take-back, so the next process takes the task told its turn on it may
-// have run. The claim ran a turn first, so the let-go writes its record. The negative control is
-// the take-back with no mark for that record (Machine.cutTurnOf, takeBackInMemory): the record
-// says the agent was in no turn, and its sentence stands in place of the cut turn's note, so the
-// next take carries none.
+// Row 35: R5's second wait took back a take marked as one whose turn may have run unseen, and
+// kept the process (secondWaitGivesBackACutTurn). A let-go of that process then comes before the
+// next take — the reconnect deadline of a hello no answer followed, a death, a retirement or a
+// held stale-plugin relaunch. Its record says the task's turn was cut off (EndedWork.TaskTurn),
+// as it says for a take-back the let-go's own decision makes (interrupted), so the next process
+// takes the task told its turn on it may have run. The claim ran a turn first, so the let-go
+// writes its record. The negative control is the take-back with no mark for that record
+// (Machine.cutTurnOf, takeBackInMemory): the record says the agent was in no turn, and its
+// sentence stands in place of the cut turn's note, so the next take carries none.
 func TestTakeTheSecondWaitGaveBackAsACutTurnKeepsItsNoteThroughALaterLetGo(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		letGo func(t *testing.T, h *harness)
 		next  func(h *harness)
 	}{
+		{"the reconnect deadline of a hello no answer followed", func(t *testing.T, h *harness) {
+			h.reconnectLater()
+			h.helloOf(true, false)
+			h.advance(deadline)
+			h.wantState(StateLaunching)
+		}, relaunchedAndTaken},
 		{"a death", func(t *testing.T, h *harness) {
 			h.observe(runtime.Gone)
 			h.wantState(StateLaunching)
 		}, relaunchedAndTaken},
 		{"a retirement", retiredByTheOperator, retriedAfterRetirement},
+		{"a held stale-plugin relaunch", heldStaleRelaunch, relaunchedAndTaken},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := boundsHarness(t)
 			h.takeRunsItsOwnTurn("the first task", 1, false)
 			number := h.takeOf("implement the plan")
-			h.reconnectLater()
-			h.helloOf(true, false)
-			h.mustQuiet(StreamTurnEnd{Claim: h.token})
-			h.answerAsk(false)
-			h.wantAwaitingItsTurn(number, "after the answer")
-
-			h.advance(turnStartBound)
-
-			h.wantCharges(WaitTurnStart)
-			if p := h.pending(); p.Number != number || p.taken() || !p.Interrupted {
-				t.Fatalf("the second wait left %+v, want task %d taken back with the note of a cut turn", p, number)
-			}
+			secondWaitGivesBackACutTurn(t, h, number)
 
 			tc.letGo(t, h)
 
@@ -393,26 +374,20 @@ func TestTakeTheSecondWaitGaveBackAsACutTurnKeepsItsNoteThroughALaterLetGo(t *te
 	}
 }
 
-// Row 26 after a later take: the operator's compaction took a take awaiting its turn back as a
-// cut turn while a hello's ask waited for its answer, and kept the process; the agent's answer
-// then makes the view whole, and the worker takes the task again. A death before that take's turn
-// starts cuts off no turn of the task: the worker ran nothing of that take, and the view showed
-// every frame of its turns, so the let-go's record says the task's turn was not cut off
-// (EndedWork.TaskTurn). The mark the compaction's take-back left (Machine.cutTurnOf) ends with the
-// acceptance of the task's next take (accept). The claim ran a turn first, so the let-go writes
-// its record. The negative control is the head before this change (3399439b), where only letGo
-// cleared the mark, and the record said the task's turn was cut off for a take that never ran.
-func TestTakeAcceptedAgainAfterTheCompactionGaveItBackAsACutTurnIsInNoTurnCutOffAtALaterDeath(t *testing.T) {
+// Row 36: R5's second wait took back a take marked as one whose turn may have run unseen, and
+// kept the process (secondWaitGivesBackACutTurn); the worker takes the task again. A death before
+// that take's turn starts cuts off no turn of the task: the worker ran nothing of that take, and
+// the view showed every frame of its turns, so the let-go's record says the task's turn was not
+// cut off (EndedWork.TaskTurn). The mark the second wait's take-back left (Machine.cutTurnOf) ends
+// with the acceptance of the task's next take (accept). The claim ran a turn first, so the let-go
+// writes its record. The negative control is the head before this change (3399439b), where only
+// letGo cleared the mark, and the record said the task's turn was cut off for a take that never
+// ran.
+func TestTakeAcceptedAgainAfterTheSecondWaitGaveItBackAsACutTurnIsInNoTurnCutOffAtALaterDeath(t *testing.T) {
 	h := boundsHarness(t)
 	h.takeRunsItsOwnTurn("the first task", 1, false)
 	number := h.takeOf("implement the plan")
-	h.reconnectLater()
-	h.helloOf(true, false)
-	compactedByTheOperator(t, h)
-	if p := h.pending(); p.Number != number || p.taken() || !p.Interrupted {
-		t.Fatalf("the compaction left %+v, want task %d taken back with the note of a cut turn", p, number)
-	}
-	h.answerAsk(false)
+	secondWaitGivesBackACutTurn(t, h, number)
 	h.mustTake()
 	if p := h.pending(); p.Number != number || !p.awaitsStart() {
 		t.Fatalf("the take again left %+v, want task %d's take awaiting its turn", p, number)
@@ -430,35 +405,21 @@ func TestTakeAcceptedAgainAfterTheCompactionGaveItBackAsACutTurnIsInNoTurnCutOff
 	}
 }
 
-// Rows 35 and 37: a take-back that keeps the process sends a take awaiting its turn back as a cut
-// turn — the operator's compaction while a hello's ask waited for its answer, or R5's second wait
-// over a take marked as one whose turn may have run unseen. The daemon then restarts before any
-// let-go, and a let-go of the process comes before the task's next take: the restored claim's
-// reconnect deadline, or a death. The let-go's record says the task's turn was cut off
-// (EndedWork.TaskTurn), as it says with no restart between, so the next process takes the task
-// told its turn on it may have run. The claim ran a turn first, so the let-go writes its record.
-// The negative control is the head 4ce1b85d80, where the cut-turn mark (Machine.cutTurnOf) is
-// memory only: the restored machine records no cut turn, the record says the agent was in no
-// turn, and the next take carries no note.
+// Row 37: R5's second wait sends a take awaiting its turn, marked as one whose turn may have run
+// unseen, back as a cut turn, and keeps the process (secondWaitGivesBackACutTurn). The daemon then
+// restarts before any let-go, and a let-go of the process comes before the task's next take: the
+// restored claim's reconnect deadline, a death, or a held stale-plugin relaunch. The let-go's
+// record says the task's turn was cut off (EndedWork.TaskTurn), as it says with no restart
+// between, so the next process takes the task told its turn on it may have run. The claim ran a
+// turn first, so the let-go writes its record. The negative control is the head 4ce1b85d80, where
+// the cut-turn mark (Machine.cutTurnOf) is memory only: the restored machine records no cut turn,
+// the record says the agent was in no turn, and the next take carries no note.
 func TestTakeTheCutTurnMarkSurvivesADaemonRestartBeforeALaterLetGo(t *testing.T) {
 	takeBacks := []struct {
 		name     string
 		takeBack func(t *testing.T, h *harness, number uint64)
 	}{
-		{"the compaction", func(t *testing.T, h *harness, number uint64) {
-			h.reconnectLater()
-			h.helloOf(true, false)
-			compactedByTheOperator(t, h)
-		}},
-		{"the second wait", func(t *testing.T, h *harness, number uint64) {
-			h.reconnectLater()
-			h.helloOf(true, false)
-			h.mustQuiet(StreamTurnEnd{Claim: h.token})
-			h.answerAsk(false)
-			h.wantAwaitingItsTurn(number, "after the answer")
-			h.advance(turnStartBound)
-			h.wantCharges(WaitTurnStart)
-		}},
+		{"the second wait", secondWaitGivesBackACutTurn},
 	}
 	letGos := []struct {
 		name  string
@@ -466,6 +427,11 @@ func TestTakeTheCutTurnMarkSurvivesADaemonRestartBeforeALaterLetGo(t *testing.T)
 	}{
 		{"the reconnect deadline of the restored claim", func(h *harness) { h.advance(deadline) }},
 		{"a death", func(h *harness) { h.observe(runtime.Gone) }},
+		{"a held stale-plugin relaunch", func(h *harness) {
+			h.connect()
+			h.answerAsk(false)
+			heldStaleRelaunch(h.t, h)
+		}},
 	}
 	for _, back := range takeBacks {
 		t.Run(back.name, func(t *testing.T) {
@@ -719,5 +685,111 @@ func TestStalePluginRelaunchOfAClaimHoldingNoTakeRunsOverAClosedConnection(t *te
 				t.Fatalf("the relaunch left %+v, want the untaken task waiting for the process it starts", p)
 			}
 		})
+	}
+}
+
+// handoffAnswerLost is the stream's failure of a handoff whose connection closed before Oh My Pi
+// answered it: no answer, so the handoff may still run in the session.
+var handoffAnswerLost = errors.New("worker-stream: handoff: worker stream closed before it was answered")
+
+// shortTurnStart is a second wait configured far shorter than a handoff can take.
+func shortTurnStart(d *Deps) { d.Timeouts.TurnStart = 30 * time.Second }
+
+// Row H4 of departure 10: the take awaits its turn when the handoff is asked for, and the
+// handoff's answer is lost with the connection: the handoff may still run in the session, up to
+// runtime.CompactTimeout from the ask, and Oh My Pi answers no ask whether it is in a turn until it
+// is over, since the handoff and get_state share its serial queue. So the take is protected until
+// that one fixed deadline: the reconnect deadline of the close and of the next hello is the later
+// of its usual bound and that deadline, the hello's ask stays pending on its own connection past
+// the RPC timeout, and the second wait, once the answer makes the view whole, cannot pass before
+// the deadline either. Before it nothing charges, relaunches or offers the task again, and the
+// late answer, the take's turn and its report run the task once. With no answer and no frame by
+// the deadline the ordinary recovery runs: the process is relaunched, charged nothing, and the
+// take goes back as a cut turn. A claim the handoff does not protect keeps its usual deadline. A
+// later connection's hello cancels the first connection's ask.
+func TestChargeNoneForATakeAcrossACompactionLongerThanTheSecondBound(t *testing.T) {
+	protected := func(t *testing.T) (*harness, uint64, time.Time) {
+		t.Helper()
+		h := boundsHarness(t, shortTurnStart)
+		number := h.takeOf("implement the plan")
+		until := h.clock.Now().Add(runtime.CompactTimeout)
+		h.conn.FailCompact(handoffAnswerLost)
+		if err := h.m.Compact(h.ctx, testCompactInstructions); !errors.Is(err, handoffAnswerLost) {
+			t.Fatalf("compact answered %v, want the lost answer", err)
+		}
+		h.m.Wait()
+		h.wantAwaitingItsTurn(number, "after the handoff's answer was lost")
+		h.reconnectLater()
+		t.Cleanup(h.conn.HoldGetState())
+		h.helloOf(true, false)
+		waitStatesHeld(t, h.conn, 1, "the hello's one ask on the new connection")
+		return h, number, until
+	}
+	t.Run("the answer comes past the usual bounds and within the handoff's", func(t *testing.T) {
+		h, number, until := protected(t)
+		writes := len(h.values.written())
+
+		h.advance(deadline + time.Second)
+
+		h.wantCharges()
+		h.wantCalls("Resume", 0)
+		h.wantAwaitingItsTurn(number, "past the usual reconnect deadline")
+		if got := len(h.values.written()); got != writes {
+			t.Fatalf("%d values were written before the handoff's deadline, want none", got-writes)
+		}
+		if held := h.conn.StatesHeld(); held != 1 {
+			t.Fatalf("%d asks wait past the RPC timeout, want the hello's one still pending", held)
+		}
+		h.answerAsk(false)
+		if due, ok := h.dueOf(TimerTurnStart); !ok || !due.Equal(until) {
+			t.Fatalf("the second wait is armed %t, due %s; want it due at the handoff's deadline, %s", ok, due, until)
+		}
+		h.advance(30 * time.Second)
+		h.wantCharges()
+		h.must(StreamTurnStart{Claim: h.token})
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.reportOf(h.worker.sequence+1, number)
+		h.wantRunOnce(number)
+		h.wantCharges()
+	})
+	t.Run("a close of the hello's connection cancels its ask", func(t *testing.T) {
+		h, number, _ := protected(t)
+		first := h.conn
+		h.reconnectLater()
+		waitStatesHeld(t, first, 0, "no ask on the closed connection")
+		h.wantAwaitingItsTurn(number, "after the close")
+	})
+	t.Run("no answer and no frame by the handoff's deadline", func(t *testing.T) {
+		h, number, until := protected(t)
+
+		h.advance(until.Sub(h.clock.Now()))
+
+		h.wantCalls("Resume", 1)
+		h.wantCharges()
+		h.wantTakenBackWithItsNote(number)
+	})
+	t.Run("a claim the handoff does not protect keeps its usual deadline", func(t *testing.T) {
+		h := boundsHarness(t, shortTurnStart)
+		number := h.takeOf("implement the plan")
+		h.reconnectLater()
+		h.helloOf(true, false)
+
+		h.advance(deadline)
+
+		h.wantCalls("Resume", 1)
+		h.wantTakenBackWithItsNote(number)
+	})
+}
+
+// waitStatesHeld waits until want asks wait at conn's gate (fake.Conn.HoldGetState): an ask the
+// machine makes on a goroutine of its own reaches the connection a moment after its decision.
+func waitStatesHeld(t *testing.T, conn *fake.Conn, want int, what string) {
+	t.Helper()
+	until := time.Now().Add(5 * time.Second)
+	for conn.StatesHeld() != want && time.Now().Before(until) {
+		time.Sleep(time.Millisecond)
+	}
+	if held := conn.StatesHeld(); held != want {
+		t.Fatalf("%d asks wait at the connection, want %d: %s", held, want, what)
 	}
 }

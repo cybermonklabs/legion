@@ -399,50 +399,81 @@ func TestTakeOfARestoredWorkingClaimAnsweredAtALaterHelloIsNotRetiredAtItsDeadli
 //
 //   - Unanswered, the ask is not asked again at a sweep, and at the deadline the process is
 //     relaunched, charged nothing, and the take taken back as a cut turn, so the relaunched worker
-//     takes it again told its turn on it may have run. The negative control is the head before
-//     this change (2da324b8), where the hello disarmed the start's deadline and armed none, so the
-//     unanswered ask was bounded only by the sweep's repeat and the stall backstop.
+//     takes it again told its turn on it may have run. That deadline is the later of the hello's
+//     whole bound and the daemon's start plus runtime.CompactTimeout, never the fixed one alone: a
+//     claim stored working with its take accepted and its turn not started is the record a
+//     compaction's start writes, and a handoff may still run over the take for that long with Oh
+//     My Pi answering no ask behind it, so the boot protects the take to that fixed deadline
+//     (departure 10 of dispatch://INFRA-2811's plan, handoffGuard), while a hello late enough
+//     still gets its whole reconnect bound. Both orderings run. The negative control is the head
+//     before this change (2da324b8), where the hello disarmed the start's deadline and armed none,
+//     so the unanswered ask was bounded only by the sweep's repeat and the stall backstop.
 //   - Answered at the hello, the answer disarms the deadline where it makes the view whole
-//     (answerView), and at the deadline's time nothing is relaunched or charged. It passes at the
-//     head before this change too, where no deadline was armed at the hello; with that deadline
-//     armed and askTurnOver making the view whole without disarming it, the deadline would retire
-//     the live worker as one whose shim never said hello.
+//     (answerView), and at the deadline's time nothing is relaunched or charged. The hello's one
+//     ask is made off its decision (askProtected), so the answer reaches the machine as the stream
+//     posts it, behind the hello, and gives no task the turn it reports: a stored working state
+//     cannot tell a parked take from a foreign turn (answerView). It passes at the head before this
+//     change too, where no deadline was armed at the hello; with that deadline armed and
+//     askTurnOver making the view whole without disarming it, the deadline would retire the live
+//     worker as one whose shim never said hello.
 func TestTakeOfARestoredWorkingClaimIsBoundedByTheReconnectDeadlineArmedAtItsFirstHello(t *testing.T) {
 	awaiting := func(c *Claim) { c.Pending.TurnStarted, c.Pending.TakenText = false, c.Pending.Task }
-	t.Run("an unanswered ask", func(t *testing.T) {
-		h := restoredWorking(t, awaiting)
-		number := h.pending().Number
-		h.conn.FailGetState(errBoom)
-		// The hello comes half a deadline after the daemon's start, so a deadline counted from the
-		// start would come due half a deadline early.
-		h.advance(deadline / 2)
-		h.connect()
-		h.wantArmedFromNow(TimerRegistration, deadline, "at the first hello")
-		h.advance(deadline / 2)
-		h.observe(runtime.Alive)
-		if asks := h.logs.lines("supervise: the agent could not say whether it is in a turn"); len(asks) != 1 {
-			t.Fatalf("the asks the agent left unanswered are %q, want the first hello's alone", asks)
-		}
-		h.advance(deadline/2 - time.Second)
-		h.wantCalls("Resume", 0)
+	for _, tc := range []struct {
+		name string
+		// hello is how long after the daemon's start the first hello comes.
+		hello time.Duration
+	}{
+		{"an unanswered ask, the handoff's deadline the later", deadline / 2},
+		{"an unanswered ask, the hello's whole bound the later", runtime.CompactTimeout - deadline/2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := restoredWorking(t, awaiting)
+			number := h.pending().Number
+			until := h.clock.Now().Add(runtime.CompactTimeout)
+			h.conn.FailGetState(errBoom)
+			h.advance(tc.hello)
+			h.connect()
+			if bound := h.clock.Now().Add(deadline); bound.After(until) {
+				until = bound
+			}
+			if due, ok := h.dueOf(TimerRegistration); !ok || !due.Equal(until) {
+				t.Fatalf("at the first hello the registration timer is armed %t, due %s; want it due at the later of the hello's bound and the handoff's deadline, %s", ok, due, until)
+			}
+			// The hello's one ask is made off its decision (askProtected), so its failure reaches the
+			// log a moment after the hello.
+			const unanswered = "supervise: the agent could not say whether it is in a turn"
+			for wait := time.Now().Add(5 * time.Second); len(h.logs.lines(unanswered)) == 0 && time.Now().Before(wait); {
+				time.Sleep(time.Millisecond)
+			}
+			h.advance(deadline / 2)
+			h.observe(runtime.Alive)
+			if asks := h.logs.lines(unanswered); len(asks) != 1 {
+				t.Fatalf("the asks the agent left unanswered are %q, want the first hello's alone", asks)
+			}
+			h.advance(until.Sub(h.clock.Now()) - time.Second)
+			h.wantCalls("Resume", 0)
 
-		h.advance(time.Second)
+			h.advance(time.Second)
 
-		h.wantCalls("Resume", 1)
-		h.wantState(StateLaunching)
-		h.wantBudgets(Budgets{})
-		h.wantCharges()
-		if cause := h.claim().PendingCause; cause != "" {
-			t.Fatalf("the relaunch is pending cause %q, want none: it is charged nothing", cause)
-		}
-		h.wantTakenBackWithItsNote(number)
-		h.wantTakenOnceMore(number, relaunchedAndTaken)
-	})
+			h.wantCalls("Resume", 1)
+			h.wantState(StateLaunching)
+			h.wantBudgets(Budgets{})
+			h.wantCharges()
+			if cause := h.claim().PendingCause; cause != "" {
+				t.Fatalf("the relaunch is pending cause %q, want none: it is charged nothing", cause)
+			}
+			h.wantTakenBackWithItsNote(number)
+			h.wantTakenOnceMore(number, relaunchedAndTaken)
+		})
+	}
 	t.Run("an answered ask", func(t *testing.T) {
 		h := restoredWorking(t, awaiting)
 		number := h.pending().Number
 		h.conn.SetStreaming(true)
 		h.connect()
+		// The hello's one ask is made off the decision (askProtected), so its answer reaches the
+		// machine as the stream posts it, behind the hello.
+		h.answerAsk(true)
 		h.wantUnarmed("after the answer to the first hello's ask", TimerRegistration)
 
 		h.advance(deadline)

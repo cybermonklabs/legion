@@ -69,12 +69,14 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * offer (the plan's decision 9). A text held through a run the worker did not start was never
  * handed over, so it is let go at that revision, which the take asks about once the host is idle.
  * A text the host dropped before its turn started — `run`'s answer rejects, as Oh My Pi's
- * `pi.sendUserMessage` does for a message it drops before its turn begins, the abort a compaction
- * makes of a prompt the host is setting up among them — leaves the take asking at the number's
- * next revision. The next accepted answer's text goes to the host once, at idle: one that came
- * while the host still held the text it then dropped goes in that text's place at the drop. The
- * daemon answers such a take afresh where it took the task back (a provider error's ladder, R5's
- * second wait, a compaction) and with the same text where it only wrote the value again.
+ * `pi.sendUserMessage` does for a message it drops before its turn begins, an abort of a prompt
+ * the host is setting up among them — leaves the take asking at the number's next revision. The
+ * next accepted answer's text goes to the host once, at idle: one that came while the host still
+ * held the text it then dropped goes in that text's place at the drop. The daemon answers such a
+ * take afresh where it took the task back (a provider error's ladder, R5's second wait) and with
+ * the same text where it only wrote the value again. A compaction the daemon asks for takes no
+ * task back: it is Oh My Pi's handoff, which aborts no prompt and parks a text it receives while
+ * the handoff runs until the handoff is over.
  *
  * A seen report or a take is sent through `sendUntilAnswered` (`./daemon-client`): one the daemon
  * gave no answer to — any failure that carries no HTTP status, whatever the transport names it (a
