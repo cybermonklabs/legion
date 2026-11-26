@@ -34,6 +34,11 @@ import (
 // repositoriesGitHub answers for and testRepositories serves at main.
 const startedAgainRepo = "acme/widgets"
 
+// productionLookWait bounds each wait of the production check's subtest: the check's opening at
+// the first read, the look's launch and the look's task. A look that never starts fails that
+// subtest in this bound, and spends none of the test binary's own.
+const productionLookWait = 30 * time.Second
+
 // startedAgainDispatch is the Dispatch board the daemon of each subtest reads: the calls every
 // boot makes (servedBootCall), no issues listed, and every
 // other call unavailable, as a Dispatch whose dependencies are down answers.
@@ -455,14 +460,17 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		// it, and GitHub reports the merge. The merge stands the issue in verifying, and the
 		// first read of its checks after it, which the outbox makes and this applies as it would,
 		// opens the production check (workflow's openCheckAtRead). A merge of an issue already
-		// done is taken from no phase and opens no check, so this is not finish's done.
+		// done is taken from no phase and opens no check, so this is not finish's done. Each wait
+		// on the check and its look has its own bound, productionLookWait, and not only the test
+		// binary's deadline: a look that never starts fails this subtest alone, and no later test
+		// of the binary.
 		mergingPhase(t, pool, root)
 		engine := startedAgainEngine(cfg)
 		applyFact(t, pool, "api", "merged:"+root, intake.PullRequestMerged{Repo: startedAgainRepo, Number: 42,
 			MergeSHA: "0bada55e0bada55e0bada55e0bada55e0bada55e"}, engine)
 		applyFact(t, pool, "outbox", "read:"+root, intake.CloseChecksRead{Issue: root, Generation: 1, ReadAt: time.Now().Add(time.Second),
 			Answer: &record.CheckReadAnswer{Results: dispatch.IssueResults{Issue: root}}}, engine)
-		testwait.WithinPolling(t, 30*time.Second, 100*time.Millisecond, "the first read after the merge to open "+root+"'s production check", func() bool {
+		testwait.WithinPolling(t, productionLookWait, testwait.Poll, "the first read after the merge to open "+root+"'s production check", func() bool {
 			var open bool
 			if err := pool.QueryRow(context.Background(),
 				`select exists (select 1 from production_checks where issue = $1)`, root).Scan(&open); err != nil {
@@ -474,9 +482,12 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 			t.Fatalf("the check the merge opened is %+v, want look 1 open for the %s, the role the project checks production with", check, claim.RoleTester)
 		}
 
+		testwait.WithinPolling(t, productionLookWait, testwait.Poll, "the first look of "+root+"'s production check to launch "+string(tester)+" again", func() bool {
+			return len(launchesOf(rt, kept.Token)) > before
+		})
 		startedAgain(t, cfg, rt, kept, before, "the first look of the production check the merge opened")
 
-		testwait.Eventually(t, "the look's task to reach "+string(tester), func() bool {
+		testwait.WithinPolling(t, productionLookWait, testwait.Poll, "the look's task to reach "+string(tester), func() bool {
 			pending := storedClaim(t, cfg, tester).Pending
 			return pending != nil && pending.CheckLook.Look == 1
 		})
