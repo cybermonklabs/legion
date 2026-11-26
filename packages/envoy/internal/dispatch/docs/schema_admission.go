@@ -300,7 +300,7 @@ func (s *Service) RunAccessRecheck(ctx context.Context, every time.Duration) {
 // every socket of theirs closed too, as recheckAdmission closes a socket whose read fails: the pass
 // cannot show they still read those rooms, and each reconnect's admission reads them again.
 func (s *Service) recheckAccess(ctx context.Context) {
-	if ctx.Err() != nil {
+	if s.stopping.Load() {
 		return
 	}
 	// hidden is each socket whose person's read answered that they no longer read its room, and
@@ -310,6 +310,9 @@ func (s *Service) recheckAccess(ctx context.Context) {
 	for person, admissions := range s.schemaAdmissions.beginAccessCheck() {
 		readable, err := s.readableRooms(ctx, person, admissions)
 		if err != nil {
+			if s.stopping.Load() {
+				return
+			}
 			if ctx.Err() == nil {
 				slog.Warn("dispatch: read which documents a person with an open document socket still reads; their sockets close and the provider reconnects", "sockets", len(admissions), "error", err)
 			}
@@ -324,7 +327,7 @@ func (s *Service) recheckAccess(ctx context.Context) {
 			}
 		}
 	}
-	if len(hidden) == 0 && len(unread) == 0 {
+	if s.stopping.Load() || (len(hidden) == 0 && len(unread) == 0) {
 		return
 	}
 	for _, admission := range s.schemaAdmissions.revokeUnless(func(admission *schemaAdmission) bool { return !hidden[admission] && !unread[admission] }, errAccessRevoked) {

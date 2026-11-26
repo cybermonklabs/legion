@@ -281,16 +281,15 @@ func TestARevocableSocketWriterAnswersPlainTextBeforeUpgrade(t *testing.T) {
 	}
 }
 
-// TestARecheckAccessOnACancelledContextRevokesNoSocket: a server shutdown cancels the lifetime
-// context, which the access re-check runs under. If a cancelled context falls through into the
-// pass, readableRooms fails (the query's context is done), every socket of that person is marked
-// unread, and revokeUnless closes each one with errAccessRevoked, the close code that tells the
-// client its person lost the room, not that the server stopped. recheckAccess returns before the
-// loop when ctx.Err() is non-nil, so no socket is revoked.
+// TestARecheckAccessWhileTheServerStopsRevokesNoSocket: shutdown sets stopping before it closes
+// the rooms, and recheckAccess returns when stopping is true, so a re-check that runs while the
+// server stops never revokes a socket with errAccessRevoked. The close code then tells the truth:
+// shutdown's own going-away, not a loss of access.
 //
-// Control: with the ctx.Err() return deleted, the same cancelled context closes the socket with
-// DocumentAdmissionRevokedCloseCode.
-func TestARecheckAccessOnACancelledContextRevokesNoSocket(t *testing.T) {
+// Control: with the stopping guard removed, recheckAccess under a cancelled lifetime context
+// closes the socket with DocumentAdmissionRevokedCloseCode (the m12 test's "the re-check's context
+// has ended" row).
+func TestARecheckAccessWhileTheServerStopsRevokesNoSocket(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	service := New(Deps{
@@ -319,19 +318,21 @@ func TestARecheckAccessOnACancelledContextRevokesNoSocket(t *testing.T) {
 	testcleanup.Add(t, server.Close)
 	peer := connectPeer(t, server.URL, ids[0], "alice@example.com")
 
-	// Cancel the context and run the re-check; no socket should be revoked.
+	// Mark the server as stopping, then run the re-check with a cancelled context.
+	service.stopping.Store(true)
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 	service.recheckAccess(cancelled)
 
-	// The socket is still alive: its Ended channel is not closed.
+	// The socket is still alive: the stopping guard returned before the loop.
 	select {
 	case <-peer.Ended:
-		t.Fatalf("socket was revoked on a cancelled context (close code %d)", peer.CloseCode())
+		t.Fatalf("socket was revoked while the server stops (close code %d); want no revocation", peer.CloseCode())
 	case <-time.After(time.Second):
 	}
 
-	// The room still reads: a live-context recheck keeps alice's socket because she is on the list.
+	// Restore stopping so the live-context control runs the loop.
+	service.stopping.Store(false)
 	service.recheckAccess(context.Background())
 	select {
 	case <-peer.Ended:
