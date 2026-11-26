@@ -98,8 +98,9 @@ type Deps struct {
 	NewIssueLabel   string
 	NewIssueSession string
 	// Origins is the server's web origins, canonical first (text.NewOrigins of DepsInput.ServerURL
-	// and DepsInput.OutsideOrigin): a dashboard URL of either that a text or a request writes is
-	// read as the reference its page names.
+	// and DepsInput.OutsideOrigin): a dashboard URL of one of them that a text or a request writes
+	// is read as the reference its page names. At this slice only the canonical one is ever set,
+	// since nothing reads DISPATCH_OUTSIDE_ORIGIN until S6a carries the setting.
 	Origins text.Origins
 	Docs    docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
@@ -954,8 +955,9 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// The document service admits a socket by its sign-in cookie alone, so its heartbeat
 		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
 		const pattern = "/ws/doc/{room}"
-		mux.Handle("GET "+pattern, accesslog.HandlerOn(pattern, s.whileCallerResolves(s.signInStillResolves,
-			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))), s.clock()))
+		readclass.Handle(mux, []readclass.Class{readclass.Project}, "GET "+pattern,
+			accesslog.HandlerOn(pattern, s.whileCallerResolves(s.signInStillResolves,
+				trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))), s.clock()))
 	}
 	readclass.Handle(mux, []readclass.Class{readclass.Project, readclass.People, readclass.Deployment}, "GET "+liveSocketPattern,
 		s.liveSocketHandler(s.serveLiveSocket))

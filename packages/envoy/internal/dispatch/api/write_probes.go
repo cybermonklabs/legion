@@ -4,8 +4,9 @@ package api
 // {session_id}): the object each wildcard is filled with (a Probe, as a GET row's), and the JSON
 // body sent with every fill, "" for none. The body is one the row takes as far as the read of the
 // object its path names, from a person at a browser and from a personal token alike, so a call
-// naming an object nobody holds is answered as missing rather than refused for its body
-// (TestNoWriteReachesAHiddenObject holds every row to that).
+// naming an object nobody holds is answered as missing rather than refused for its body. The
+// acceptance driver walks every row with these bodies (RouteProbes), and
+// TestRouteProbesNameEveryRowAndFillEveryGETWildcard holds the two tables to the same rows.
 type writeProbe struct {
 	Probe readProbe
 	Body  string
@@ -43,8 +44,9 @@ var (
 )
 
 // writeProbes is how every write row whose pattern names an object is called, by "<method>
-// <pattern>", beside writeClasses. TestNoWriteReachesAHiddenObject holds the two in exact
-// correspondence and calls every entry, and the acceptance driver reads it through RouteProbes.
+// <pattern>", beside the route table's own scopes. undecidableWrites refuses to mount a project's
+// write that names no entry here, TestEveryMutatingRouteIsClassed walks the table through it, and
+// the acceptance driver reads the bodies through RouteProbes.
 var writeProbes = map[string]writeProbe{
 	// An issue, and what it holds.
 	"PATCH /api/v1/issues/{key}": {byIssue, `{` + probeActor + `,"labels":["walked"]}`},
@@ -73,10 +75,11 @@ var writeProbes = map[string]writeProbe{
 	// Each record write reads its issue as the caller sees it before it judges the writer
 	// (lockRecordedIssue), so a key the caller cannot see is a key no issue holds whatever session
 	// the body names.
-	"PUT /api/v1/issues/{key}/steps/{id}":        {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
-	"PUT /api/v1/issues/{key}/steps/{id}/rating": {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
-	"PUT /api/v1/issues/{key}/plans/{id}":        {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
-	"POST /api/v1/results/{id}/retract":          {readProbe{"id": probeResult}, `{` + probeActor + `,"reason":"A walked retraction."}`},
+	"PUT /api/v1/issues/{key}/steps/{id}":            {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
+	"PUT /api/v1/issues/{key}/steps/{id}/experiment": {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `,"rated":true}`},
+	"PUT /api/v1/issues/{key}/steps/{id}/rating":     {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
+	"PUT /api/v1/issues/{key}/plans/{id}":            {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
+	"POST /api/v1/results/{id}/retract":              {readProbe{"id": probeResult}, `{` + probeActor + `,"reason":"A walked retraction."}`},
 
 	// A project, and what it holds.
 	"POST /api/v1/projects/{key}/artifacts":                                {byProject, `{` + probeActor + `,"name":"walked.md","content":"# Walked\n"}`},
@@ -84,6 +87,8 @@ var writeProbes = map[string]writeProbe{
 	"POST /api/v1/projects/{key}/artifacts/{slug}/edits":                   {byProjectSlug, `{` + probeActor + `,"summary":"A walked edit.","ops":[]}`},
 	"PUT /api/v1/projects/{key}/default-assignee":                          {byProject, `{"assignee":"alice"}`},
 	"PUT /api/v1/projects/{key}/gated-steps":                               {byProject, `{` + probeActor + `,"steps":[]}`},
+	"PUT /api/v1/projects/{key}/proven-sessions":                           {byProject, `{` + probeActor + `}`},
+	"DELETE /api/v1/projects/{key}/proven-sessions":                        {byProject, ""},
 	"PUT /api/v1/projects/{key}/legion/daemon":                             {byProject, `{` + probeActor + `,"state_url":"http://legion-walked.internal"}`},
 	"PUT /api/v1/projects/{key}/default-repository":                        {byProject, `{` + probeActor + `,"repo":"acme/walked"}`},
 	"DELETE /api/v1/projects/{key}/legion/daemon":                          {byProject, ""},
