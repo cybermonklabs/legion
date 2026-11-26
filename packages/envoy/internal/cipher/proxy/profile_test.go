@@ -166,7 +166,7 @@ func (pr *profileRig) machine(t *testing.T, file string) *requests.Machine {
 		Minters: map[string]requests.Minter{policy.TypeGitHubApp: secrets.GitHubApp{Base: pr.minting.URL()}.Mint},
 		// Two strings the release carries to the session unread: the session in these rows is
 		// the rig's own client, which is pointed at the rig's proxy and trusts its authority.
-		AirlockProxyURL: "http://127.0.0.1:13381", ProxyRoots: func() string { return "-----BEGIN CERTIFICATE-----\nprofile-rig\n-----END CERTIFICATE-----\n" },
+		AirlockProxyURL: "http://127.0.0.1:13381", AirlockCACertificate: "-----BEGIN CERTIFICATE-----\nprofile-rig\n-----END CERTIFICATE-----\n",
 	}
 	m.Chain = requests.NewChainVerifier(pr.st, profileAudience, time.Minute, m.Policy)
 	return m

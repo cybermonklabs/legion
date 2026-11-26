@@ -490,11 +490,9 @@ func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, project
 		Chain: requests.NewChainVerifier(st, slackAudience, time.Minute, current),
 		// Two strings the release carries through unread: the command here is the rig's client,
 		// which reaches the proxy and trusts its authority on its own.
-		AirlockProxyURL: "http://127.0.0.1:13381",
-		ProxyRoots: func() string {
-			return "-----BEGIN CERTIFICATE-----\nslack-test-airlock-ca\n-----END CERTIFICATE-----\n"
-		},
-		Projects: dispatch,
+		AirlockProxyURL:      "http://127.0.0.1:13381",
+		AirlockCACertificate: "-----BEGIN CERTIFICATE-----\nslack-test-airlock-ca\n-----END CERTIFICATE-----\n",
+		Projects:             dispatch,
 	}
 
 	enrollmentID, key := enrolSession(t, st, projects)

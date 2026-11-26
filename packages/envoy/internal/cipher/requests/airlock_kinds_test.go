@@ -71,7 +71,7 @@ func TestAReleaseTakesEachNamesHostsAndPlaceholderPrefixFromItsKind(t *testing.T
 // fingerprint, and a grant made after it releases the name as the policy now reads it.
 func TestAProxyTagIsReadAtEachLoad(t *testing.T) {
 	m, enr, key := newAirlockFixture(t, policytest.KindsFile())
-	m.AirlockProxyURL, m.ProxyRoots = testProxyURL, func() string { return testCACertificate }
+	m.AirlockProxyURL, m.AirlockCACertificate = testProxyURL, testCACertificate
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	proxyTag(t, m, "AUTO_TOKEN", "example")
 	behind := func(name string) bool { return m.AirlockRules().Lookup(name) != nil }
@@ -167,7 +167,7 @@ func TestAKindThatLosesAHostOrAHeaderEndsTheGrantsDecidedUnderIt(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key := newAirlockFixture(t, kindFile(c.decided, "AUTO_TOKEN"))
-			m.AirlockProxyURL, m.ProxyRoots = testProxyURL, func() string { return testCACertificate }
+			m.AirlockProxyURL, m.AirlockCACertificate = testProxyURL, testCACertificate
 			_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 			digest := m.Policy.Get().Secrets["AUTO_TOKEN"].ProfileDigest
 			if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
@@ -216,7 +216,7 @@ func TestAKindThatLosesAHostOrAHeaderEndsTheGrantsDecidedUnderIt(t *testing.T) {
 // it back, and asks afresh.
 func TestAnApprovalRecordsTheKindItWasGivenUnder(t *testing.T) {
 	m, enr, key := newAirlockFixture(t, kindFile(baseKind, "SHARED_KEY"))
-	m.AirlockProxyURL, m.ProxyRoots = testProxyURL, func() string { return testCACertificate }
+	m.AirlockProxyURL, m.AirlockCACertificate = testProxyURL, testCACertificate
 	// SHARED_KEY is shared and human tier, so its grant comes of a person's approval.
 	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the shared key", "SHARED_KEY"), "")
 	if err != nil || pending.RecordID == nil {

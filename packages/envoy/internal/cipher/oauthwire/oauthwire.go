@@ -185,17 +185,15 @@ const (
 )
 
 // AirlockRelease is how a command reaches the values the airlock holds back: the proxy it sends
-// their requests through, the roots that proxy's certificates chain to, the password every
-// connection to it opens with, and one entry per name held back. A release of secrets answers it
-// under "airlock" (POST /v1/grants/{id}/values), and the token exchange's placeholder answer under
-// ExtraProxy.
+// their requests through, the certificate authority that proxy's certificates are signed by, the
+// password every connection to it opens with, and one entry per name held back. A release of
+// secrets answers it under "airlock" (POST /v1/grants/{id}/values), and the token exchange's
+// placeholder answer under ExtraProxy.
 type AirlockRelease struct {
 	// The URL the command points HTTPS_PROXY at (BROKER_AIRLOCK_PROXY_URL).
 	ProxyURL string `json:"proxy_url"`
-	// The PEM root certificates the command must trust to reach the proxy, one or more blocks
-	// one after another, all of which the trust bundle takes: the root the proxy's chain ends at,
-	// and each of BROKER_PROXY_RELEASE_ROOTS_FILE. The proxy signs a certificate for each host it
-	// carries a request to.
+	// The PEM certificate the command must trust to reach the proxy, which signs a certificate
+	// for each host it carries a request to.
 	CACertificate string `json:"ca_certificate"`
 	// The password every proxy connection authenticates with: one of this grant's own
 	// placeholders, the first (name, slot) pair in sorted order.

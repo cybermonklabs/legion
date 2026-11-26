@@ -34,7 +34,7 @@ func newProxiedTestServer(t *testing.T, names []string, adjust func(*api.Deps)) 
 		for _, name := range names {
 			proxyTag(t, d, name, "example")
 		}
-		d.Machine.AirlockProxyURL, d.Machine.ProxyRoots = testProxyURL, func() string { return testCACertificate }
+		d.Machine.AirlockProxyURL, d.Machine.AirlockCACertificate = testProxyURL, testCACertificate
 		adjust(d)
 	})
 }

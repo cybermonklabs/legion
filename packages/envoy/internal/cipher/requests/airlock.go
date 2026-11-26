@@ -204,14 +204,11 @@ func (m *Machine) deleteSpentPlaceholders(ctx context.Context) (int64, error) {
 }
 
 // AirlockRelease is how a release tells a session to reach the values it did not hand over: the
-// proxy that holds them, the roots to trust it by, the password every connection to it opens
-// with, and each name the airlock holds back.
+// proxy that holds them, the certificate authority to trust it by, the password every connection
+// to it opens with, and each name the airlock holds back.
 type AirlockRelease struct {
-	ProxyURL string
-	// CACertificate is every root the session trusts the proxy by, PEM blocks one after the
-	// other: a client writes the whole string into its trust bundle, so a release that carries
-	// two roots during a rollout is trusted under either by a client of any release.
-	CACertificate string
+	ProxyURL      string
+	CACertificate string // PEM
 	ProxyPassword string
 	Names         map[string]AirlockName
 }
@@ -475,10 +472,7 @@ func (m *Machine) airlockRelease(ctx context.Context, grantID string, expires *t
 	if err != nil {
 		return nil, err
 	}
-	released := &AirlockRelease{ProxyURL: m.AirlockProxyURL, Names: map[string]AirlockName{}}
-	if m.ProxyRoots != nil {
-		released.CACertificate = m.ProxyRoots()
-	}
+	released := &AirlockRelease{ProxyURL: m.AirlockProxyURL, CACertificate: m.AirlockCACertificate, Names: map[string]AirlockName{}}
 	for name, split := range splits {
 		slots := map[string]string{}
 		for _, slot := range split.slots() {

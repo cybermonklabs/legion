@@ -34,24 +34,13 @@ const (
 // ApproveSettings is the approve capability (requests.MintedKind ApproveName) as the token exchange
 // grants it: the digest of the dpop block and private destination every grant is made under
 // (config.MintedEntryDigest), and what the session is handed beside its placeholder - where
-// Cipher's proxy is, the roots to trust it by, and the one host the capability's dpop block binds.
+// Cipher's proxy is, the certificate authority to trust it by, and the one host the capability's
+// dpop block binds.
 type ApproveSettings struct {
-	EntryDigest string
-	ProxyURL    string
-	// ProxyRoots answers the roots the proxy's certificates chain to, PEM blocks one after the
-	// other, read at each trade as a release of names reads them (requests.Machine.ProxyRoots): a
-	// pod on a pool learns its root from its first intermediate, after the start, and a rollout
-	// carries two roots. nil, or an answer of "", hands the session no root.
-	ProxyRoots func() string
-	Host       string
-}
-
-// proxyRoots is the roots a trade hands the session now.
-func (s *ApproveSettings) proxyRoots() string {
-	if s.ProxyRoots == nil {
-		return ""
-	}
-	return s.ProxyRoots()
+	EntryDigest   string
+	ProxyURL      string
+	CACertificate string
+	Host          string
 }
 
 // approveGrantLifetime is how long an approve grant lasts: ApproveGrantMaxLifetime, or the access
@@ -108,7 +97,7 @@ func (p *Provider) grantApprove(ctx context.Context, session *oauthstore.Exchang
 		"expires_in":           int64(lifetime / time.Second),
 		oauthwire.ExtraGrantID: ApproveWord + ":" + grant.ID,
 		oauthwire.ExtraProxy: oauthwire.AirlockRelease{
-			ProxyURL: p.approve.ProxyURL, CACertificate: p.approve.proxyRoots(), ProxyPassword: held,
+			ProxyURL: p.approve.ProxyURL, CACertificate: p.approve.CACertificate, ProxyPassword: held,
 			Names: map[string]oauthwire.AirlockName{ApproveName: {Value: held, Slots: map[string]string{"value": held}, Hosts: []string{p.approve.Host}}},
 		},
 	}, nil

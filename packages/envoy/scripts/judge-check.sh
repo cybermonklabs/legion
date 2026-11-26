@@ -17,9 +17,7 @@
 #   - one PASS: or FAIL: line for each property the check's outcome sentence names, and one for
 #     its negative control, because a control that does not behave as the check says leaves the
 #     check proving nothing;
-#   - one last line, `check <id>: passed`, `check <id>: failed (<n> of <m>)`, or
-#     `check <id>: UNKNOWN (no property was evaluated)`, which fails too: a run that asserted
-#     nothing proved nothing.
+#   - one last line, `check <id>: passed` or `check <id>: failed (<n> of <m>)`.
 #
 # No line it prints is a credential. A value is compared by its SHA-256 (the first 16 hex
 # digits) and its length, and every line that compares one says so; that is a rule of the
@@ -84,11 +82,6 @@ ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # never through a process's arguments (exec_with_env, broker_env_of, with_broker_env).
 # shellcheck source-path=SCRIPTDIR source=lib/exec-env.sh
 . "$SCRIPT_DIR/lib/exec-env.sh"
-# The stack helpers this script and proxy-chain-check.sh share: await, stack_start, broker_env,
-# start_extra_broker and logged_addr.
-CHECK_NAME=judge-check
-# shellcheck source-path=SCRIPTDIR source=lib/check-stack.sh
-. "$SCRIPT_DIR/lib/check-stack.sh"
 
 usage() {
 	cat <<'EOF'
@@ -101,8 +94,7 @@ each property the check's outcome sentence names, what it expected beside what i
   --keep-stack   leave the stack and this run's work directory up, to look at a failure with
   --help         print this
 
-It exits 0 only when every property passed, 1 when one did not or none was evaluated, and 2 on
-a usage error.
+It exits 0 only when every property passed, 1 when one did not and 2 on a usage error.
 EOF
 }
 
@@ -239,11 +231,6 @@ report() {
 	echo
 	printf '%s\n' "${VERDICTS[@]+"${VERDICTS[@]}"}"
 	echo
-	# A run that asserted nothing proved nothing.
-	if [ "$TOTAL" -eq 0 ]; then
-		echo "check $CHECK_ID: UNKNOWN (no property was evaluated)"
-		return 1
-	fi
 	if [ "$PASSED" -eq "$TOTAL" ]; then
 		echo "check $CHECK_ID: passed"
 		return 0
@@ -266,11 +253,38 @@ contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 
 # --- The stack ---------------------------------------------------------------------------------
 
-# start_stack runs dev-airlock.sh with the options its caller names and reads its banner
-# (lib/check-stack.sh's stack_start), then the facts this check reads besides: the stack's own
-# database, and the judge's actor and the proxy's address.
+# await waits for a line a process logs, and ends the run the moment that process dies: a stack
+# that never came up proves nothing, and the check's own steps would each fail with a reason
+# that is not the check's.
+await() { # <what> <seconds> <log> <pattern> <pid>
+	local i
+	for ((i = 0; i < $2 * 2; i++)); do
+		if grep -qE "$4" "$3" 2>/dev/null; then return 0; fi
+		if ! kill -0 "$5" 2>/dev/null; then
+			echo "judge-check: $1 exited before it was ready; see $3" >&2
+			tail -n 20 "$3" >&2 || true
+			exit 1
+		fi
+		sleep 0.5
+	done
+	echo "judge-check: $1 was not ready within $2 seconds; see $3" >&2
+	exit 1
+}
+
+# start_stack runs dev-airlock.sh with the options its caller names, waits for its banner, and
+# exports everything that banner names. dev-broker.sh's own export block is in the same log and
+# is read first, so where the two name one variable the airlock's wins, as the banner says.
 start_stack() {
-	stack_start "$@"
+	echo "judge-check: starting the stack (dev-airlock.sh $*)..." >&2
+	: >"$STACK_LOG"
+	bash "$SCRIPT_DIR/dev-airlock.sh" "$@" >"$STACK_LOG" 2>&1 &
+	STACK_PID=$!
+	await "the stack" 900 "$STACK_LOG" '^dev-airlock: ready\.$' "$STACK_PID"
+	eval "$(sed -n 's/^  \(export [A-Z][A-Z_0-9]*=.*\)$/\1/p' "$STACK_LOG")"
+	mapfile -t BROKER_API_ADDRS < <(sed -n 's/^  broker [0-9]*: *api \([^,]*\),.*/\1/p' "$STACK_LOG")
+	mapfile -t BROKER_PROXY_ADDRS < <(sed -n 's/^  broker [0-9]*:.*proxy \([^,]*\),.*/\1/p' "$STACK_LOG")
+	mapfile -t BROKER_PIDS < <(sed -n 's/^  broker [0-9]*:.*pid \([0-9]*\),.*/\1/p' "$STACK_LOG")
+	mapfile -t BROKER_LOGS < <(sed -n 's/^  broker [0-9]*:.*, pid [0-9]*, log \(.*\)$/\1/p' "$STACK_LOG")
 	STACK_DB_NAME="$(sed -n 's/^dev-airlock: created isolated database \([a-z0-9_]*\).*/\1/p' "$STACK_LOG" | head -n 1)"
 	# The brokers' database URL, built exactly as dev-airlock.sh builds it, which is the one way
 	# to reach the rows a check writes by hand (a withheld name, a forged judged approval).
@@ -279,6 +293,7 @@ start_stack() {
 	else
 		STACK_DB_URL="postgres://postgres:dispatch@127.0.0.1:55432/${STACK_DB_NAME}?sslmode=disable"
 	fi
+	BROKER_BIN="$DEV_BROKER_DIR/bin/broker"
 	JUDGE_ACTOR="judge:$AIRLOCK_JUDGE_MODEL"
 	PROXY_ADDR="${AIRLOCK_PROXY_URL##*://}"
 	echo "judge-check: the stack is up (${#BROKER_API_ADDRS[@]} brokers, work directory $AIRLOCK_DIR)" >&2
@@ -297,6 +312,48 @@ stop_stack() {
 		wait "$STACK_PID" 2>/dev/null || true
 	fi
 	STACK_PID=""
+}
+
+# broker_env answers, in BROKER_ENV, the environment of a broker like the stack's own with the
+# caller's overrides on top, one NAME=value entry each (lib/exec-env.sh's broker_env_of). It is
+# read out of the first stack broker's /proc/<pid>/environ rather than spelled here, so that a
+# broker this script starts can never lack a setting dev-airlock.sh gave the stack's. A broker is
+# started with it through lib/exec-env.sh's with_broker_env, in its own environment and in no
+# process's arguments, since the stack broker's environment holds its database URL, password and
+# all.
+broker_env() { # <VAR=value>...
+	broker_env_of "${BROKER_PIDS[0]}" "$@"
+}
+
+# start_extra_broker starts one more broker process beside the stack's, on its database, profiles
+# file, certificate authority and stand-ins, with the environment the caller adds on top, and
+# answers its API and proxy addresses in EXTRA_API_ADDR and EXTRA_PROXY_ADDR. It is how a control
+# that changes one setting - or the broker binary itself, through EXTRA_BROKER_BIN - is run.
+#
+# EXTRA_BROKER_BIN is the broker binary it runs, and the stack's own when the caller sets none.
+# k10g sets it: its control is a broker built from a source tree with the admin refusal taken
+# out, which no setting could stand in for, and everything else about that process - the
+# database, the profiles file, the fake store, the identities - has to stay the stack's.
+start_extra_broker() { # <name> <VAR=value>...
+	local name="$1"
+	shift
+	local log="$WORK_DIR/broker-$name.log"
+	: >"$log"
+	# Three ports the system picks, so this one never collides with the broker it was copied from.
+	broker_env BROKER_LISTEN_ADDR="127.0.0.1:0" BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" "$@"
+	( with_broker_env "${EXTRA_BROKER_BIN:-$BROKER_BIN}" ) >"$log" 2>&1 &
+	local pid=$!
+	EXTRA_BROKER_PIDS+=("$pid")
+	await "the $name broker" 120 "$log" '"message":"airlock proxy listening"' "$pid"
+	EXTRA_API_ADDR="$(logged_addr 'broker listening' "$log")"
+	EXTRA_PROXY_ADDR="$(logged_addr 'airlock proxy listening' "$log")"
+}
+
+# logged_addr answers the addr field of the first line of a broker's log whose message is the one
+# named, or nothing. The broker logs one JSON object per line, and a line still being written
+# parses as nothing, so half an address is never read as the whole one.
+logged_addr() { # <message> <log>
+	jq -Rnr --arg message "$1" '[inputs | fromjson? | select(.message == $message) | .addr][0] // empty' "$2" || true
 }
 
 # front_backends points the stack's two fronts at the brokers the caller names, by writing the

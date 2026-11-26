@@ -170,7 +170,7 @@ func newProfiledProjectFixture(t *testing.T, file string, team projectaccesstest
 		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
 	}
 	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Policy)
-	m.AirlockProxyURL, m.ProxyRoots = testProxyURL, func() string { return testCACertificate }
+	m.AirlockProxyURL, m.AirlockCACertificate = testProxyURL, testCACertificate
 	return m, enrollmentID, key, answerFrom(t, m, dispatchRows(team))
 }
 

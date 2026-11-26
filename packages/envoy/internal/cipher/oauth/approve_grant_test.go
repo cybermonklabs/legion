@@ -21,15 +21,12 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 )
 
-// testProxyRoot is the one root approveSettings' proxy is trusted by.
-const testProxyRoot = "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"
-
-// approveSettings is a broker serving the approve capability: its proxy, the roots it is trusted
-// by, the one host its dpop block binds, and the digest every grant is made under.
+// approveSettings is a broker serving the approve capability: its proxy, its authority, the one
+// host its dpop block binds, and the digest every grant is made under.
 func approveSettings() *oauth.ApproveSettings {
 	return &oauth.ApproveSettings{
 		EntryDigest: strings.Repeat("ab", 32),
-		ProxyURL:    "http://proxy.test:3128", ProxyRoots: func() string { return testProxyRoot }, Host: "dispatch.test",
+		ProxyURL:    "http://proxy.test:3128", CACertificate: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n", Host: "dispatch.test",
 	}
 }
 
@@ -134,39 +131,6 @@ func TestAnApproveGrantNamesNoProject(t *testing.T) {
 	}
 	if answer, err := f.provider.Introspect(context.Background(), minted); err != nil || !answer.Active || len(answer.Projects) != 0 || answer.Scope != "approve" {
 		t.Fatalf("the minted token introspects as %+v, %v; want live, scope approve, no project", answer, err)
-	}
-}
-
-// TestAnApprovePlaceholderCarriesTheProxyRootsOfItsTrade: the proxy release beside the placeholder
-// carries the roots ProxyRoots answers at the trade, not at the broker's start: a pod on a pool
-// learns its root from its first intermediate, after the start, and a rollout adds a second root.
-// So a trade before the pod holds an intermediate carries no root, and each later trade the roots
-// as they are then.
-func TestAnApprovePlaceholderCarriesTheProxyRootsOfItsTrade(t *testing.T) {
-	roots := ""
-	f := newSignInFixtureWith(t, func(c *oauth.Config) {
-		c.Approve = approveSettings()
-		c.Approve.ProxyRoots = func() string { return roots }
-	})
-	carried := func(session string) any {
-		t.Helper()
-		status, body := f.exchange(t, f.placeholderForm(t, session), newKey(t))
-		release, _ := body[oauthwire.ExtraProxy].(map[string]any)
-		if status != http.StatusOK || release == nil {
-			t.Fatalf("the placeholder trade for %s = %d %v; want 200 and a proxy release", session, status, body)
-		}
-		return release["ca_certificate"]
-	}
-	if got := carried("ada-box-roots-1"); got != nil && got != "" {
-		t.Errorf("a trade before the pod holds an intermediate carries the roots %q; want none", got)
-	}
-	roots = testProxyRoot
-	if got := carried("ada-box-roots-2"); got != testProxyRoot {
-		t.Errorf("a trade once the pod holds its root carries %q; want that root", got)
-	}
-	roots = testProxyRoot + "-----BEGIN CERTIFICATE-----\nnext\n-----END CERTIFICATE-----\n"
-	if got := carried("ada-box-roots-3"); got != roots {
-		t.Errorf("a trade during a rollout of a second root carries %q; want both roots", got)
 	}
 }
 

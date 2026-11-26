@@ -42,9 +42,9 @@ func approveCapabilityOf(profiles policy.Profiles, rules proxyrules.Rules, upstr
 
 // settings is the capability as the token exchange grants it: its digest, and what a session is
 // handed beside its placeholder - the proxy's URL as releases name it (BROKER_AIRLOCK_PROXY_URL),
-// the proxy's roots as they are at each trade (proxy.Authority.ReleaseRoots), and the one host.
-func (c approveCapability) settings(proxyURL string, proxyRoots func() string) *oauth.ApproveSettings {
-	return &oauth.ApproveSettings{EntryDigest: c.entryDigest, ProxyURL: proxyURL, ProxyRoots: proxyRoots, Host: c.host}
+// the certificate the proxy signs its hosts' certificates with, and the one host.
+func (c approveCapability) settings(proxyURL, caCertificate string) *oauth.ApproveSettings {
+	return &oauth.ApproveSettings{EntryDigest: c.entryDigest, ProxyURL: proxyURL, CACertificate: caCertificate, Host: c.host}
 }
 
 // kind is the capability as the proxy serves its grants: the approve_grants table read by the

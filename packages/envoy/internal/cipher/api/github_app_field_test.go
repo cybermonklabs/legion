@@ -135,7 +135,7 @@ func newGitHubAppFieldServer(t *testing.T, off bool) *gitHubAppFieldServer {
 		d.Policy, d.Machine.Policy, d.MachineLogin.Policy = cur, cur, cur
 		d.Machine.ServicesByAccount = map[string]string{workerAccount: oldClientService, otherAccount: otherService}
 		d.Machine.AirlockProxyURL = "http://airlock.example:3128"
-		d.Machine.ProxyRoots = func() string { return "the airlock's authority" }
+		d.Machine.AirlockCACertificate = "the airlock's authority"
 		d.Machine.GitHubAppFieldOff = off
 		// BROKER_GITHUB_APP_FIELD_REQUESTERS: the deployment's own list, the service whose pods
 		// run a released client and the person whose box runs one. A caller it does not name is
