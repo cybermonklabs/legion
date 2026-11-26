@@ -5,7 +5,6 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/importer"
-	"go/printer"
 	"go/token"
 	"go/types"
 	"path/filepath"
@@ -64,31 +63,6 @@ var storedTaskReaders = map[string]string{
 		"of a design document",
 }
 
-// keptLoopName names one loop of keptLoopReaders: its function, as go/types names it
-// (types.Func.FullName), and its clause as gofmt prints it (loopClause).
-type keptLoopName struct{ fn, clause string }
-
-// keptLoopReaders is every loop of the three packages one pass of whose body reads a kept
-// decision (record.ParkedDecision or record.DecisionMark) and does not reach the predicate in
-// that pass, each named by its function and its clause (keptLoopName), with why the loop renders
-// nothing an architect or person reads. A row allows that one loop: another such loop of the same
-// function needs a row of its own, a clause two such loops share allows neither, and a row whose
-// loop came to ask, changed its clause or went is taken out (unaskedKeptLoops).
-var keptLoopReaders = map[keptLoopName]string{
-	{senderModule + "workflow.ParkedDecisionTask", "for _, d := range decisions"}: "it turns each unclaimed row into its mark " +
-		"(record.ParkedDecision.Mark), the list ForgetSuperseded and KeptDecisionsTask each ask of in a loop of their own, and renders nothing",
-	{senderModule + "workflow.ReadKeptGates", "for _, d := range owed.Decisions"}: "it collects the issue each decision was made on, " +
-		"to read their gates in one read (record.Store.Gates), and renders nothing",
-	{"(*" + senderModule + "workflow.Engine).warnKeptDecisionsOfAClosedTree", "for _, decision := range kept"}: "it writes each " +
-		"decision a closing tree still owes into the daemon's log (keptDecisionOfAClosedTree), which no architect or person is " +
-		"sent; the controller was told each when it was kept",
-	{"(*" + senderModule + "daemon.workflowRuntime).rootTask", "for _, mark := range named.Decisions"}: "it drops the marks a " +
-		"held task named that its delivery no longer holds and sorts the rest into those whose issue stands in the tree (stays) " +
-		"and those whose issue left it (left), rendering nothing: what stays is asked and written again by " +
-		"workflow.KeptDecisionsTask, and what left is released to the tree it is owed to now, whose catch-up asks it " +
-		"(workflow.CatchUpTheTreesOwed)",
-}
-
 // envoyPublishes are the functions that hand a message to Envoy, each as go/types names it: the
 // outbox's publish and its publish with keep, which every executor publishes through, and the two
 // of notify.Publisher, which those call. A function that hands one of them a record.Notice it
@@ -108,11 +82,6 @@ var envoyPublishes = []string{
 // asks a relayed changes request again at its publish to the controller (controllerNotice), and
 // admission, which composes a re-admitted root's start from what was kept for it.
 var senderPackages = []string{"workflow", "daemon", "admit"}
-
-// keptDecisionTypes are the record types that hold one kept decision: the row the daemon keeps
-// (record.ParkedDecision) and the mark a task names it by (record.DecisionMark). A loop that
-// reads a value of either type reads a kept decision, whatever the loop runs over (readKeptLoop).
-var keptDecisionTypes = []string{"ParkedDecision", "DecisionMark"}
 
 // decisionReviewSentences is every fixed phrase a task says about a person's review of a design
 // document, each with the function that renders it. A function whose string constants hold one
@@ -190,21 +159,28 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // carries, and of nothing kept beside the row, is its behavior too, which
 // TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved drives.
 //
-// A list of kept decisions is held to more: every loop, a for or a range over anything (a slice,
-// a map, an iterator, or a count that indexes the list), one pass of whose body reads a kept
-// decision (keptDecisionTypes) — a field of it, a method of it, the value whole as an argument or
-// a switch's tag, a conversion or a copy — must reach the predicate in that pass (readKeptLoop):
-// through what the pass itself calls, not through a call before or after the loop, and not
-// through a loop nested in it, whose body is a pass of that loop's own. A loop that renders
-// nothing a person or architect reads passes only where keptLoopReaders names it, by its
-// function and its clause, with why; a row allows that one loop, so a second such loop of the
-// function fails, and so does a row that names no such loop or two of them (unaskedKeptLoops). A
-// function that asks about one decision, or about the kept approval, and renders the rest of the
-// list unasked — naming only Ref and Actor, handing the whole decision to a helper or a method,
-// switching on Decision to write constants, or printing the value whole — is what this test
+// A list of kept decisions is held to more, by the rule decision_senders_kept_loops_test.go holds
+// it to, which says as well what that rule does not follow. Every loop, a for or a range over
+// anything (a slice, a map, an iterator, or a count that indexes the list), one pass of whose
+// body reads a kept decision (keptDecisionTypes) must ask the predicate, in that pass, of each
+// decision the pass reads (unaskedKeptLoops): through a call the pass itself makes with that
+// decision, not through a call before or after the loop, and not through a loop nested in it,
+// whose body is a pass of that loop's own. An ask of another decision — a fixed one (marks[0], a
+// parameter), another list's element at the loop's index, or the kept approval — is no ask of the
+// decision the pass reads. A loop that renders nothing a person or architect reads passes only
+// where keptLoopReaders names it, by its function and its clause, with why; a row allows that one
+// loop, so a second such loop of the function fails, and so does a row that names no such loop or
+// two of them. And no function writes a list of kept decisions into text as one value
+// (wholeListRenders), in a loop or outside one: a slice or a map of them, or a struct that holds
+// one (record.KeptDecisions), printed by fmt or handed to a function of the walk that prints that
+// parameter, since no ask can be of each decision of a value printed whole. A function that asks
+// about one decision, or about the kept approval, and renders the rest of the list unasked —
+// naming only Ref and Actor, handing the whole decision to a helper or a method, switching on
+// Decision to write constants, or printing the decision or the list whole — is what this test
 // fails on: a task named a changes request that the person's approval had superseded that way.
-// TestDecisionSendersSeeEveryLoopThatReadsAKeptDecision plants each of those shapes, and
-// TestDecisionSendersAllowAnUnaskedKeptLoopOnlyByItsOwnRow the list's rows, and holds the walk to
+// TestDecisionSendersSeeEveryLoopThatReadsAKeptDecision and
+// TestDecisionSendersSeeEveryKeptListWrittenWhole plant each of those shapes, and
+// TestDecisionSendersAllowAnUnaskedKeptLoopOnlyByItsOwnRow the list's rows, and hold the walk to
 // what each must read.
 //
 // A task a phase entry stored when it was raised is held to more as well: a function that reads
@@ -299,6 +275,9 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 	for _, failure := range failures {
 		t.Error(failure)
 	}
+	for _, failure := range walk.wholeListRenders() {
+		t.Error(failure)
+	}
 	// A queued notice is published where it is delivered (the outbox's deliverNotice), and a relay
 	// to the controller where its row runs (controllerNotice): the walk has to see both publishes,
 	// or the rule for a publisher of a notice proves nothing.
@@ -307,10 +286,21 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 			t.Errorf("the walk found no publish of a record.Notice in %s", name)
 		}
 	}
-	// The one wording of kept decisions (workflow.KeptDecisionsTask) renders them in a loop: the
-	// walk has to see it, or it proves nothing of any renderer.
-	if f := walk.named("workflow.KeptDecisionsTask"); f == nil || !slices.ContainsFunc(f.keptLoops, func(l keptLoop) bool { return walk.reaches(l.calls) }) {
-		t.Error("the walk found no kept-decision loop reaching the predicate in workflow.KeptDecisionsTask")
+	// The one wording of kept decisions (workflow.KeptDecisionsTask), and the forget of those that
+	// are no longer the person's word (workflow.ForgetSuperseded), each ask of every decision in a
+	// loop: the walk has to see both ask, or it proves nothing of any loop.
+	for _, name := range []string{"workflow.KeptDecisionsTask", "workflow.ForgetSuperseded"} {
+		if f := walk.named(name); f == nil || !slices.ContainsFunc(f.keptLoops, func(l keptLoop) bool { return l.asks }) {
+			t.Errorf("the walk found no kept-decision loop in %s that asks %s of each decision it reads", name, short(decisionPredicate))
+		}
+	}
+	// Both ask through keptSuperseded, which hands the decision's fields to RefSuperseded in a
+	// workflow.Decision, which hands that to the predicate: the walk has to follow the decision down
+	// each, or it proves nothing of a loop that asks through a function.
+	for _, ask := range []struct{ fn, param string }{{"workflow.keptSuperseded", "mark"}, {"workflow.RefSuperseded", "d"}} {
+		if !walk.asksOfParameter(ask.fn, ask.param) {
+			t.Errorf("the walk does not read %s as asking %s of its parameter %s", ask.fn, short(decisionPredicate), ask.param)
+		}
 	}
 	// The resume of an answered root is rendered at each send from the gate as it stands
 	// (workflow.ResumeAwaitedRootTask, the daemon's rootTask), so it is a sender too: the walk has
@@ -341,99 +331,6 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 	}
 }
 
-// A loop that reads a kept decision and asks nothing passes only where a row of keptLoopReaders
-// names it, by its function and its clause, and a row allows that one loop (unaskedKeptLoops).
-// Each row here plants a function render beside the planted rows' helpers
-// (plantedDecisionPreamble), allows loops of it in a list of its own, and names a phrase of each
-// failure the rule must write, in order.
-func TestDecisionSendersAllowAnUnaskedKeptLoopOnlyByItsOwnRow(t *testing.T) {
-	t.Parallel()
-	planted := newPlantedDecisionSource(t)
-	const collects = `
-func render(marks []record.DecisionMark) []string {
-	var issues []string
-	for _, d := range marks {
-		issues = append(issues, d.Issue)
-	}
-	return issues
-}
-`
-	const twoLoops = `
-func render(marks []record.DecisionMark) (string, []string) {
-	var issues []string
-	for _, d := range marks {
-		issues = append(issues, d.Issue)
-	}
-	var named []string
-	for _, other := range marks {
-		named = append(named, fmt.Sprintf("%s by %s", other.Ref, other.Actor))
-	}
-	return joined(named), issues
-}
-`
-	const sharedClause = `
-func render(marks []record.DecisionMark) (string, []string) {
-	var issues []string
-	for _, d := range marks {
-		issues = append(issues, d.Issue)
-	}
-	var named []string
-	for _, d := range marks {
-		named = append(named, fmt.Sprintf("%s by %s", d.Ref, d.Actor))
-	}
-	return joined(named), issues
-}
-`
-	const asking = `
-func render(gate *record.DesignGate, marks []record.DecisionMark) string {
-	var named []string
-	for _, d := range marks {
-		if stands(gate, d) {
-			named = append(named, line(d))
-		}
-	}
-	return joined(named)
-}
-`
-	collectsLoop := keptLoopName{plantedDecisionRender, "for _, d := range marks"}
-	for _, row := range []struct {
-		name    string
-		source  string
-		allowed []keptLoopName
-		fails   []string
-	}{
-		{name: "a row allows its one loop", source: collects, allowed: []keptLoopName{collectsLoop}},
-		{name: "a second loop of the function that asks nothing fails", source: twoLoops, allowed: []keptLoopName{collectsLoop},
-			fails: []string{"in the loop `for _, other := range marks`"}},
-		{name: "a row whose clause two such loops share fails", source: sharedClause, allowed: []keptLoopName{collectsLoop},
-			fails: []string{"holds 2 loops of that clause"}},
-		{name: "a row whose loop asks is taken out", source: asking, allowed: []keptLoopName{collectsLoop},
-			fails: []string{"holds no loop of that clause"}},
-		{name: "a row whose clause its loop no longer has is taken out", source: collects,
-			allowed: []keptLoopName{{plantedDecisionRender, "for _, mark := range marks"}},
-			fails:   []string{"in the loop `for _, d := range marks`", "holds no loop of that clause"}},
-		{name: "a row of a function the walk does not hold is taken out", source: collects,
-			allowed: []keptLoopName{collectsLoop, {plantedDecisionPackage + ".gone", "for _, d := range marks"}},
-			fails:   []string{"holds no loop of that clause"}},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			allowed := map[keptLoopName]string{}
-			for _, name := range row.allowed {
-				allowed[name] = "planted"
-			}
-			_, failures := planted.walk(t, row.source).unaskedKeptLoops(allowed)
-			if len(failures) != len(row.fails) {
-				t.Fatalf("the rule wrote %d failures, want %d (%q): %q", len(failures), len(row.fails), row.fails, failures)
-			}
-			for i, phrase := range row.fails {
-				if !strings.Contains(failures[i], phrase) {
-					t.Errorf("failure %d is %q, want it to say %q", i, failures[i], phrase)
-				}
-			}
-		})
-	}
-}
-
 // decisionFunc is what the walk reads of one function declaration, its function literals
 // included: they run as part of it (a transaction's body is one).
 type decisionFunc struct {
@@ -455,6 +352,15 @@ type decisionFunc struct {
 	queuesResume bool
 	// publishes are the positions where the body hands a record.Notice to one of envoyPublishes.
 	publishes []string
+	// info is the type checker's record of the function's package, params its receiver and
+	// parameters by position (funcParams), and sites every call it makes of a function it names
+	// (callSites): what the walk reads, once it has read every function, of what the function asks
+	// the predicate of and writes into text through the functions it calls (resolve).
+	info   *types.Info
+	params []types.Object
+	sites  []callSite
+	// renders are the lists of kept decisions the body writes whole into text (resolve).
+	renders []wholeRender
 }
 
 func (f *decisionFunc) short() string { return short(f.name) }
@@ -462,14 +368,6 @@ func (f *decisionFunc) short() string { return short(f.name) }
 // short is a function's FullName without the module's path: workflow.SupersedingApproval,
 // (*workflow.Engine).tellChanges.
 func short(name string) string { return strings.ReplaceAll(name, senderModule, "") }
-
-// keptLoop is a loop of a function one pass of whose body reads a kept decision
-// (keptDecisionTypes): where it is, its clause (loopClause), and what that pass calls.
-type keptLoop struct {
-	at     string
-	clause string
-	calls  []string
-}
 
 type decisionSender struct {
 	fn  *decisionFunc
@@ -480,6 +378,10 @@ type decisionWalk struct {
 	funcs  []*decisionFunc
 	byName map[string]*decisionFunc // FullName → function
 	record *checkedPackage
+	// asking and rendering are, by a function's FullName, each position of a call of it
+	// (callSite) whose argument the function asks the predicate of, or writes whole into text,
+	// itself or through the functions it calls by name (resolve).
+	asking, rendering map[string]map[int]bool
 }
 
 // named is the function short names (short), nil when the walk read none.
@@ -512,47 +414,6 @@ func (w *decisionWalk) reaches(calls []string) bool {
 		}
 	}
 	return false
-}
-
-// unaskedKeptLoops holds w's loops that read a kept decision to the rule for them (the test's doc
-// comment), given allowed, the loops that may ask nothing (keptLoopReaders): notes says why each
-// allowed loop asks nothing, and failures names each loop that asks nothing in its own pass and no
-// row allows, then each row of allowed that names no such loop or more than one.
-func (w *decisionWalk) unaskedKeptLoops(allowed map[keptLoopName]string) (notes, failures []string) {
-	found := map[keptLoopName][]string{}
-	for _, f := range w.funcs {
-		for _, loop := range f.keptLoops {
-			if w.reaches(loop.calls) {
-				continue
-			}
-			name := keptLoopName{f.name, loop.clause}
-			why, named := allowed[name]
-			if !named {
-				failures = append(failures, fmt.Sprintf("%s (%s) reads kept decisions in the loop `%s` at %s, but that loop asks %s "+
-					"about none of them, directly or through a function it calls: it can name a decision without knowing whether it is "+
-					"still the person's word. Ask the predicate in the loop's own body, or name the loop in keptLoopReaders with why it "+
-					"renders nothing", f.short(), f.at, loop.clause, loop.at, short(decisionPredicate)))
-				continue
-			}
-			found[name] = append(found[name], loop.at)
-			notes = append(notes, fmt.Sprintf("kept-decision loop that asks nothing, `%s` of %s at %s: %s", loop.clause, f.short(), loop.at, why))
-		}
-	}
-	var rows []string
-	for name := range allowed {
-		switch at := found[name]; {
-		case len(at) == 0:
-			rows = append(rows, fmt.Sprintf("keptLoopReaders names the loop `%s` of %s, which holds no loop of that clause that reads "+
-				"a kept decision and asks nothing: take the row out, so the list names every such loop and no other",
-				name.clause, short(name.fn)))
-		case len(at) > 1:
-			rows = append(rows, fmt.Sprintf("keptLoopReaders names the loop `%s` of %s, which holds %d loops of that clause that read "+
-				"a kept decision and ask nothing (at %s): a row allows one loop, so ask the predicate in the others or give each "+
-				"a clause of its own", name.clause, short(name.fn), len(at), strings.Join(at, ", ")))
-		}
-	}
-	slices.Sort(rows)
-	return notes, append(failures, rows...)
 }
 
 // decisionSenders is every sender the walk finds (the test's doc comment), each once, with what
@@ -643,7 +504,8 @@ func (w *decisionWalk) specDecisionKinds(t *testing.T) []string {
 
 // checkedPackage is one package's non-test source, type-checked (testtypes.CheckPackage), with
 // its files in the order of their names, so the walk reads them, and logs what it finds, in the
-// same order on every run.
+// same order on every run; or the planted source, type-checked by the same check
+// (testtypes.CheckFiles, plantedDecisionSource.walk).
 type checkedPackage struct {
 	name  string
 	files []*ast.File
@@ -667,23 +529,44 @@ func checkPackage(t *testing.T, fset *token.FileSet, imports types.Importer, nam
 	return &checkedPackage{name: name, files: checked.Files, fset: fset, info: checked.Info}
 }
 
-// readDecisionWalk type-checks record and the three sender packages and reads every function
-// declaration of the three. It reads their dependencies' types where the compiler left them, as
-// supervise's source tests read them (testtypes.CompiledDependencies): the build that runs this
-// test has written them into its cache, so the walk reads those rather than type-checking the
-// dependency tree from its source. This package imports the other two sender packages and record,
-// so the one listing of its dependencies serves the four packages the walk checks.
+// readDecisionWalk type-checks record and the three sender packages against the compiler's
+// export data of their dependencies (compiledImports), and reads every function declaration of
+// the three (newDecisionWalk).
 func readDecisionWalk(t *testing.T) *decisionWalk {
+	t.Helper()
+	fset, imports := compiledImports(t)
+	recordPackage := checkPackage(t, fset, imports, "record")
+	pkgs := make([]*checkedPackage, 0, len(senderPackages))
+	for _, name := range senderPackages {
+		pkgs = append(pkgs, checkPackage(t, fset, imports, name))
+	}
+	return newDecisionWalk(recordPackage, pkgs...)
+}
+
+// compiledImports is a FileSet and the importer, over it, of the types the compiler left for the
+// daemon's dependencies, as supervise's source tests read them (testtypes.CompiledDependencies):
+// the build that runs this test has written them into its cache, so the walk reads those rather
+// than type-checking the dependency tree from its source. This package imports the other two
+// sender packages and record, so the one listing of its dependencies serves the four packages the
+// walk checks and the planted source alike (plantedDecisionSource).
+func compiledImports(t *testing.T) (*token.FileSet, types.Importer) {
 	t.Helper()
 	compiled, err := testtypes.CompiledDependencies(senderModule + "daemon")
 	if err != nil {
 		t.Fatal(err)
 	}
 	fset := token.NewFileSet()
-	imports := importer.ForCompiler(fset, "gc", compiled)
-	w := &decisionWalk{byName: map[string]*decisionFunc{}, record: checkPackage(t, fset, imports, "record")}
-	for _, name := range senderPackages {
-		pkg := checkPackage(t, fset, imports, name)
+	return fset, importer.ForCompiler(fset, "gc", compiled)
+}
+
+// newDecisionWalk reads every function declaration of pkgs (readDecisionFunc), then what each
+// asks the predicate of and writes into text through the functions it calls (resolve). It is the
+// one reader of a package's declarations, for the three sender packages (readDecisionWalk) and
+// the planted source (plantedDecisionSource.walk) alike. recordPackage is the record package the
+// walk reads record.SpecDecision's set from (specDecisionKinds), nil for planted source.
+func newDecisionWalk(recordPackage *checkedPackage, pkgs ...*checkedPackage) *decisionWalk {
+	w := &decisionWalk{byName: map[string]*decisionFunc{}, record: recordPackage}
+	for _, pkg := range pkgs {
 		for _, file := range pkg.files {
 			for _, decl := range file.Decls {
 				fn, ok := decl.(*ast.FuncDecl)
@@ -696,31 +579,27 @@ func readDecisionWalk(t *testing.T) *decisionWalk {
 			}
 		}
 	}
+	w.resolve()
 	return w
 }
 
-// readDecisionFunc reads what fn calls, the record.Notice literals it writes, the review
-// sentences its string constants hold, its loops that read a kept decision (readKeptLoop), the
-// stored entry tasks it reads, the starts it writes that carry a person's answered wait and the
-// notices it publishes.
+// readDecisionFunc reads what fn calls, by name and with what at each position (callSites), the
+// record.Notice literals it writes, the review sentences its string constants hold, its loops that
+// read a kept decision (readKeptLoop), the stored entry tasks it reads, the starts it writes that
+// carry a person's answered wait and the notices it publishes.
 func readDecisionFunc(pkg *checkedPackage, fn *ast.FuncDecl) *decisionFunc {
 	info := pkg.info
-	f := &decisionFunc{pkg: pkg.name, name: info.Defs[fn.Name].(*types.Func).FullName(), at: pkg.pos(fn)}
-	f.calls = namedCalls(info, func(visit func(ast.Node) bool) { ast.Inspect(fn.Body, visit) })
+	f := &decisionFunc{pkg: pkg.name, name: info.Defs[fn.Name].(*types.Func).FullName(), at: pkg.pos(fn), info: info,
+		params: funcParams(info, fn)}
+	body := func(visit func(ast.Node) bool) { ast.Inspect(fn.Body, visit) }
+	f.calls = namedCalls(info, body)
+	f.sites = callSites(pkg, body)
 	f.asks = slices.Contains(f.calls, decisionRule)
 	f.picks = slices.Contains(f.calls, senderModule+"record.SpecDecision")
 	assigned := localAssignments(info, fn.Body)
-	// written is every field selector an assignment writes, which reads nothing of the field. The
-	// walk visits an assignment before its left-hand selectors, so each is marked before it is read.
-	written := map[*ast.SelectorExpr]bool{}
+	written := writtenExprs(fn.Body)
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch node := n.(type) {
-		case *ast.AssignStmt:
-			for _, lhs := range node.Lhs {
-				if sel, ok := ast.Unparen(lhs).(*ast.SelectorExpr); ok {
-					written[sel] = true
-				}
-			}
 		case ast.Expr:
 			if value := info.Types[node].Value; value != nil && value.Kind() == constant.String {
 				text := constant.StringVal(value)
@@ -749,13 +628,31 @@ func readDecisionFunc(pkg *checkedPackage, fn *ast.FuncDecl) *decisionFunc {
 				f.publishes = append(f.publishes, pkg.pos(call))
 			}
 		case *ast.RangeStmt, *ast.ForStmt:
-			if loop, ok := readKeptLoop(pkg, node); ok {
+			if loop, ok := readKeptLoop(pkg, node, written); ok {
 				f.keptLoops = append(f.keptLoops, loop)
 			}
 		}
 		return true
 	})
 	return f
+}
+
+// writtenExprs is the left-hand side of every plain assignment and definition (= and :=) in
+// body, function literals included: what each writes is not read there, though what is inside it
+// is (an index, the base of a selector). A compound assignment (x.F += y) reads what it writes,
+// so its left-hand side is read. The walk takes one such map of each function, for the stored
+// entry tasks it reads and for its loops that read a kept decision alike.
+func writtenExprs(body *ast.BlockStmt) map[ast.Expr]bool {
+	written := map[ast.Expr]bool{}
+	ast.Inspect(body, func(n ast.Node) bool {
+		if assign, ok := n.(*ast.AssignStmt); ok && (assign.Tok == token.ASSIGN || assign.Tok == token.DEFINE) {
+			for _, lhs := range assign.Lhs {
+				written[ast.Unparen(lhs)] = true
+			}
+		}
+		return true
+	})
+	return written
 }
 
 // readNoticeKind adds to f the spec-decision kind a record.Notice literal writes, or the literal's
@@ -866,109 +763,6 @@ func namedCalls(info *types.Info, walk func(visit func(ast.Node) bool)) []string
 	return calls
 }
 
-// readKeptLoop reads loop, a for or a range statement, when one pass of its body reads a kept
-// decision (keptDecisionTypes): a field of it, a method of it, the value whole as an argument or a
-// switch's tag, a conversion or a copy, whatever the loop runs over (a slice, a map, an iterator)
-// or however it counts (a C-style for that indexes the list). A pass is the body as ownPass walks
-// it, and what that pass calls is what the loop reaches the predicate through: a call before or
-// after the loop asks nothing of its decisions, and an ask in a loop nested in it answers for
-// that nested loop alone.
-func readKeptLoop(pkg *checkedPackage, loop ast.Node) (keptLoop, bool) {
-	var body *ast.BlockStmt
-	switch loop := loop.(type) {
-	case *ast.RangeStmt:
-		body = loop.Body
-	case *ast.ForStmt:
-		body = loop.Body
-	}
-	pass := func(visit func(ast.Node) bool) { ownPass(body, visit) }
-	if !passReadsKeptDecision(pkg.info, pass) {
-		return keptLoop{}, false
-	}
-	return keptLoop{at: pkg.pos(loop), clause: loopClause(pkg.fset, loop), calls: namedCalls(pkg.info, pass)}, true
-}
-
-// passReadsKeptDecision is whether pass, one pass of a loop (ownPass), reads an expression whose
-// type is a kept decision (keptDecisionTypes). The left-hand side of a plain assignment or a
-// definition is written, not read; what is inside it, an index or the base of a selector, is read.
-func passReadsKeptDecision(info *types.Info, pass func(visit func(ast.Node) bool)) bool {
-	written := map[ast.Expr]bool{}
-	found := false
-	pass(func(n ast.Node) bool {
-		if found {
-			return false
-		}
-		switch node := n.(type) {
-		case *ast.AssignStmt:
-			if node.Tok == token.ASSIGN || node.Tok == token.DEFINE {
-				for _, lhs := range node.Lhs {
-					written[ast.Unparen(lhs)] = true
-				}
-			}
-		case ast.Expr:
-			if tv, ok := info.Types[node]; ok && !written[node] && tv.IsValue() && isKeptDecision(tv.Type) {
-				found = true
-				return false
-			}
-		}
-		return true
-	})
-	return found
-}
-
-// ownPass walks one pass of the loop whose body is body, as ast.Inspect walks a node: every
-// statement of the body, and of a loop nested in it only what runs in that pass, its range
-// expression or its init, condition and post. The nested loop's body is a pass of that loop's
-// own, which readDecisionFunc reads as a loop of its own, and the key and value a nested range
-// assigns are written, not read.
-func ownPass(body *ast.BlockStmt, visit func(ast.Node) bool) {
-	var inspect func(ast.Node) bool
-	inspect = func(n ast.Node) bool {
-		var clause []ast.Node
-		switch loop := n.(type) {
-		case *ast.RangeStmt:
-			clause = []ast.Node{loop.X}
-		case *ast.ForStmt:
-			clause = []ast.Node{loop.Init, loop.Cond, loop.Post}
-		default:
-			return visit(n)
-		}
-		for _, part := range clause {
-			if part != nil {
-				ast.Inspect(part, inspect)
-			}
-		}
-		return false
-	}
-	ast.Inspect(body, inspect)
-}
-
-// loopClause is loop's clause as gofmt prints it, without its body: `for _, d := range
-// owed.Decisions`. keptLoopReaders names a loop by it, so a row stays on its loop as lines move,
-// and names no loop once the clause changes.
-func loopClause(fset *token.FileSet, loop ast.Node) string {
-	var bare ast.Node
-	switch loop := loop.(type) {
-	case *ast.RangeStmt:
-		cut := *loop
-		cut.Body = &ast.BlockStmt{}
-		bare = &cut
-	case *ast.ForStmt:
-		cut := *loop
-		cut.Body = &ast.BlockStmt{}
-		bare = &cut
-	}
-	var text strings.Builder
-	if err := printer.Fprint(&text, fset, bare); err != nil {
-		return fmt.Sprintf("the loop at %s, whose clause did not print: %v", fset.Position(loop.Pos()), err)
-	}
-	clause := text.String()
-	if brace := strings.LastIndex(clause, "{"); brace >= 0 {
-		clause = clause[:brace]
-	}
-	return strings.TrimSpace(clause)
-}
-
 // publishesNotice is whether call hands a record.Notice to one of envoyPublishes: an argument of
 // that type is the notice the call publishes, whatever made the value.
 func publishesNotice(info *types.Info, call *ast.CallExpr) bool {
@@ -1002,11 +796,6 @@ func isRecordType(typ types.Type, name string) bool {
 	}
 	named, ok := typ.(*types.Named)
 	return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == senderModule+"record" && named.Obj().Name() == name
-}
-
-// isKeptDecision is whether typ is one of the record types that hold one kept decision.
-func isKeptDecision(typ types.Type) bool {
-	return slices.ContainsFunc(keptDecisionTypes, func(name string) bool { return isRecordType(typ, name) })
 }
 
 // setsField is whether the struct literal lit names field among its keys.
