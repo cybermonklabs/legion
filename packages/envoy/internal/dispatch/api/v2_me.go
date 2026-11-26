@@ -118,22 +118,29 @@ func (s *server) v2MeRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/me", Auth: authAny, Versions: onlyV2,
 			Description: "Who the server takes the caller for, one shape for every credential: {kind, person, session, " +
-				"service, project, scopes, cut, sign_in_required}. kind is user for a person at a browser and agent for every " +
+				"service, project, project_scope, scopes, cut, sign_in_required}. kind is user for a person at a browser and agent for every " +
 				"other credential, a personal token holding the person scope included, since the kind names the " +
 				"credential and not the act. person is the lowercase email of the person the credential acts for: the " +
 				"person at the browser, a personal token's owner, or a broker-issued token's person, null for the shared " +
 				"token and for a broker-issued token that names a service. session is the session the credential proved, " +
 				"null for every credential but an access token the secrets broker issued; service is a verified " +
-				"service-account token's Kubernetes subject, or, for a broker-issued token naming no person, the fleet " +
-				"its machine belongs to or the Kubernetes account an exchange entry lists, null for every other; project " +
-				"is the one project key the credential lets the caller write, null where it names none. scopes is the " +
+				"service-account token's Kubernetes subject, or the service a broker-issued token naming no person " +
+				"names: the fleet of a machine nobody has signed in on, a read entry's service, the Kubernetes account " +
+				"an exchange entry lists, or a job's identity as its job entry lists it, null for every other; project " +
+				"is the one project key the credential lets the caller write, null where it names none, a job's token " +
+				"whose entry names public among them. project_scope is the project scope of an access token the secrets " +
+				"broker issued, null for every other credential: named for a token an operator's or a job's entry mapped " +
+				"to its project, and for an exchange entry's token naming its account and no project, public for a job's " +
+				"token that names no one project, person for a person's own token and for a machine's token that names " +
+				"no person, and none for a read entry's token; a token narrowed to reading answers the word it narrows. " +
+				"scopes is the " +
 				"OAuth scopes the credential holds, [] for none: person acts as the person on every route the dashboard " +
 				"reaches, and approve settles what a person settles. Read-only credentials list read after those scopes. " +
 				"cut is their past read time in UTC, or null when there is no cut; this route reports the cut rather than " +
 				"reading Dispatch at that time. sign_in_required is true where Dispatch refuses " +
 				"every write of the credential with a 403 until a person signs in on its machine, which " +
 				"is a broker-issued token of a machine nobody has signed in on, and false for every other credential, " +
-				"including an exchange entry's token naming its account and every read-only credential.",
+				"including a job's token, an exchange entry's token naming its account and every read-only credential.",
 			Handler:  s.getMeV2,
 			Resource: "me", Kind: kindSingleton,
 			Shape:    routeShape{Status: http.StatusOK, Response: meV2{}},
@@ -307,13 +314,17 @@ func (s *server) v2MeRows() []routeRow {
 // a person's browser whoamiUser and every other credential whoamiAgent.
 type meV2 struct {
 	// Kind is user for a person at a browser and agent for every other credential.
-	Kind    string   `json:"kind" enum:"user,agent"`
-	Person  *string  `json:"person"`
-	Session *string  `json:"session"`
-	Service *string  `json:"service"`
-	Project *string  `json:"project"`
-	Scopes  []string `json:"scopes"`
-	Cut     *string  `json:"cut"`
+	Kind    string  `json:"kind" enum:"user,agent"`
+	Person  *string `json:"person"`
+	Session *string `json:"session"`
+	Service *string `json:"service"`
+	Project *string `json:"project"`
+	// ProjectScope is a broker-issued token's project scope as the broker answered it, read as its
+	// base word (model.Credential.ProjectScope), as GET /api/v1/whoami answers it; null for every
+	// other credential, a person at a browser included.
+	ProjectScope *string  `json:"project_scope"`
+	Scopes       []string `json:"scopes"`
+	Cut          *string  `json:"cut"`
 	// SignInRequired is whether Dispatch refuses every write this credential makes until a person
 	// signs in on its machine (403 SIGN_IN_REQUIRED), the decision writeNeedsASignedInPerson acts
 	// on (signInRequired), as GET /api/v1/whoami answers it; false for a person at a browser.
@@ -339,6 +350,9 @@ func (s *server) getMeV2(w http.ResponseWriter, r *http.Request) {
 	}
 	if actor.Credential != nil && !actor.Credential.Cut.IsZero() {
 		me.Cut = new(cutText(actor.Credential.Cut))
+	}
+	if !human && actor.Credential != nil && actor.Credential.ProjectScope != "" {
+		me.ProjectScope = new(actor.Credential.ProjectScope)
 	}
 	_, me.SignInRequired = s.signInRequired(r)
 	WriteJSON(w, http.StatusOK, me)

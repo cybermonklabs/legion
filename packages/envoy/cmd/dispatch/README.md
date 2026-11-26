@@ -304,6 +304,7 @@ It holds no OAuth scope, so every route whose `scopes` name `person` or `approve
 With `DISPATCH_LEGION_STATUS_SCOPE` on, a job's token, `named` or `public`, holds neither `person` nor `legion-status`, so Dispatch refuses it a Legion issue's status write, the removal of its `legion` label and the move after which it is no longer a Legion issue, with `403 LEGION_STATUS_SCOPE_REQUIRED`, as it refuses every credential that holds neither (below).
 The sign-in check below lets it write, and Dispatch records each write under the token's session, for its service, and under no person.
 `GET /api/v1/whoami` answers it with `owner` null, `service` its identity, `session` its session, `scopes` `[]`, `project` its one project for a `named` token and null for a `public` one, and `project_scope` `named` or `public`, which tells it from a machine's token, whose `project_scope` is `person` and whose every write the sign-in check refuses.
+`GET /api/v2/me` answers the same facts in its one shape, with `person` null where whoami answers `owner` null.
 The access log's `credential` names it `broker-token:service:<identity>` (below).
 The Envoy listener and the NATS auth service take both shapes too, through the same verifier (`internal/ciphertoken`).
 

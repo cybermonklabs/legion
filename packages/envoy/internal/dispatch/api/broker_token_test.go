@@ -1637,6 +1637,7 @@ func TestAJobsPublicTokenWritesEveryProjectAndTheDeployment(t *testing.T) {
 // one a named token's entry names, and none for a public token, which no one project limits; and
 // the project scope is the token's own, named or public, and sign_in_required is false, which is
 // what tells a job's token, whose service writes, from a machine's, which is refused every write.
+// GET /api/v2/me, whoami's successor, answers the same facts, the project scope among them.
 func TestAJobBrokerTokenIsNamedByWhoami(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
@@ -1680,6 +1681,22 @@ func TestAJobBrokerTokenIsNamedByWhoami(t *testing.T) {
 			}
 			if answer.SignInRequired == nil || *answer.SignInRequired {
 				t.Fatalf("whoami answered %s, want sign_in_required false: a job's token writes as its service", response.Body.String())
+			}
+			// GET /api/v2/me, whoami's successor, names the same facts in its one shape.
+			v2 := rig.serve(caller.presenting(t, http.MethodGet, "/api/v2/me", row.token, nil))
+			if v2.Code != http.StatusOK {
+				t.Fatalf("GET /api/v2/me: status=%d body=%s", v2.Code, v2.Body.String())
+			}
+			me := decodeBody[meV2](t, v2)
+			if me.Kind != "agent" || me.Person != nil || me.Session == nil || *me.Session != brokerTestSession ||
+				me.Service == nil || *me.Service != brokerTestJob || me.SignInRequired {
+				t.Fatalf("GET /api/v2/me = %s, want the token's session and the job as its service, no person and sign_in_required false", v2.Body.String())
+			}
+			if (row.project == nil) != (me.Project == nil) || (row.project != nil && *me.Project != *row.project) {
+				t.Fatalf("GET /api/v2/me project = %v, want %v", me.Project, row.project)
+			}
+			if me.ProjectScope == nil || *me.ProjectScope != row.scope {
+				t.Fatalf("GET /api/v2/me project_scope = %v, want %q: %s", me.ProjectScope, row.scope, v2.Body.String())
 			}
 		})
 	}
