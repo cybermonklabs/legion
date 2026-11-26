@@ -64,14 +64,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		for index := from; index < to; index++ {
 			ask := r.plan.asks[index]
 			nodes = append(nodes, graphstore.AskNode(ask.ID, r.itemProject(ask.Issue, ask.Document), nil, seedAuthor, ask.CreatedAt))
-			var issueKey, artifactID *string
-			if ask.Issue >= 0 {
-				issueKey = &r.plan.issues[ask.Issue].Key
-			}
-			if ask.Document >= 0 {
-				artifactID = &r.plan.documents[ask.Document].ID
-			}
-			if owner := store.OwnerOf(issueKey, artifactID); owner != nil {
+			if owner := r.askOwner(ask); owner != nil {
 				owners = append(owners, *owner)
 			}
 		}
@@ -180,7 +173,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			// created_at)), so a re-index of it would date its parts as this one did.
 			stored := opening
 			stored.State, stored.Answer = ask.State, answer
-			if err := indexAskParts(ctx, tx, stored, ask.CreatedAt); err != nil {
+			if err := indexAskParts(ctx, tx, stored, ask.CreatedAt, true); err != nil {
 				return err
 			}
 			// The event is owned by the ask's own owner and dated at the ask, as one appended
@@ -217,6 +210,22 @@ func (r *seedRun) itemProject(issue, document int) string {
 	return ""
 }
 
+// askOwner is the owner of ask, whose lock every writer of the ask takes (store.OwnerOf): its
+// issue, or the document that owns it where no issue does. The window write of the ask's parts
+// takes the same lock, read from the ask's row (refs.WriteItemWindows, refs.LockItemOwner), so a
+// batch that writes those windows takes this one first: writeAsks for the asks it writes, and
+// writeDeliveries for the asks it answers or declines.
+func (r *seedRun) askOwner(ask askPlan) *store.Owner {
+	var issueKey, artifactID *string
+	if ask.Issue >= 0 {
+		issueKey = &r.plan.issues[ask.Issue].Key
+	}
+	if ask.Document >= 0 {
+		artifactID = &r.plan.documents[ask.Document].ID
+	}
+	return store.OwnerOf(issueKey, artifactID)
+}
+
 // writeFollowerNodes writes the session nodes of the followers one ask batch copies. A session
 // that follows an ask is a node of the store from the write that adds it (asks.Follow), and the
 // batch's copy of the follower rows reaches no asks.Follow: so the batch writes each follower's
@@ -250,10 +259,14 @@ func writeFollowerNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node)
 //
 // A write of the parts alone reconciles the question's own references after them and settles the
 // ask's row of the forms queue there (refs.Replacement.SettlingForms), as the server's write of an
-// answer does. It plans them against the edges the ask holds: those the read of its index found
-// (refs.ItemIndex.HeldRefs), which is none for an ask whose row was just inserted, and those a
-// read of its own finds where the index read none (refs.PlanReplace).
-func indexAskParts(ctx context.Context, tx pgx.Tx, ask model.Ask, at time.Time) error {
+// answer does. It plans them against the edges the ask holds: none for an ask whose row the
+// caller's batch has just inserted (inserted, which writeAsks passes), planned with no read
+// (refs.PlanReplaceFrom over no edge), since the read of an index the ask does not hold yet
+// returns before it reads any reference; those the read of its index found
+// (refs.ItemIndex.HeldRefs), for an ask writeAsks indexed that a delivery answers (transitionAsk);
+// and those a read of its own finds where the caller inserted no row and the index read none
+// (refs.PlanReplace).
+func indexAskParts(ctx context.Context, tx pgx.Tx, ask model.Ask, at time.Time, inserted bool) error {
 	partIndex, err := refs.ReadItemIndex(ctx, tx, refs.ItemAsk, ask.ID)
 	if err != nil {
 		return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
@@ -265,7 +278,7 @@ func indexAskParts(ctx context.Context, tx pgx.Tx, ask model.Ask, at time.Time) 
 	}
 	found := text.Refs(reader.Mentions(ask.Question))
 	var questionRefs refs.Replacement
-	if held, read := partIndex.HeldRefs(); read {
+	if held, read := partIndex.HeldRefs(); inserted || read {
 		questionRefs = refs.PlanReplaceFrom(held, "ask", ask.ID, found, &at)
 	} else if questionRefs, err = refs.PlanReplace(ctx, tx, "ask", ask.ID, found, &at); err != nil {
 		return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)

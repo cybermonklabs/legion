@@ -260,6 +260,14 @@ func shuffle(random *rand.Rand, values []int) {
 // each session's own topic (contracts.LegacyAgentSubject). It notifies, as a person's event does,
 // and is published (published_at set), so a server started on the seeded database publishes
 // nothing of it.
+//
+// Each batch takes the owner lock of every ask it answers or declines before any other statement,
+// in one store.LockOwners call, as writeAsks takes its asks' owners (seedRun.askOwner). An answer
+// indexes the ask's parts again, and the window write that ends that index takes the ask's owner
+// lock (indexAskParts, refs.WriteItemWindows); the store's lock order has the owner lock first, so
+// a batch that left it to the window write would take it while it already holds the asks row and
+// the index rows the answer wrote. A decline takes it too, as the decline route takes it before it
+// reads the ask (api's transitionAskTx). A batch that answers and declines no ask takes no lock.
 func (r *seedRun) writeDeliveries(ctx context.Context) error {
 	deliveries := r.planDeliveries()
 	if len(deliveries) == 0 {
@@ -283,6 +291,18 @@ func (r *seedRun) writeDeliveries(ctx context.Context) error {
 	columns := append(slices.Clone(eventColumns), "published_destinations")
 	if err := r.inBatches(ctx, "deliveries", len(deliveries), batchItems,
 		func(ctx context.Context, tx pgx.Tx, from, to int) error {
+			var owners []store.Owner
+			for _, planned := range deliveries[from:to] {
+				switch planned.eventType {
+				case "ask.answered", "ask.resolved":
+					if owner := r.askOwner(r.plan.asks[planned.item]); owner != nil {
+						owners = append(owners, *owner)
+					}
+				}
+			}
+			if err := store.LockOwners(ctx, tx, owners...); err != nil {
+				return fmt.Errorf("the answered and declined asks' owners: %w", err)
+			}
 			rows := make([][]any, 0, to-from)
 			for _, planned := range deliveries[from:to] {
 				payload, err := r.deliveryPayload(ctx, tx, planned, hasAnswers)
@@ -509,10 +529,14 @@ func messagePayload(ctx context.Context, tx pgx.Tx, id string) (model.MessageEve
 
 // transitionAsk answers or declines ask id as planned says, as the answer and the decline routes
 // do (api's answerTransition and declineAsk, over closeAskTx), and answers the event's payload.
-// It reads the ask as those routes read it (api's readAskForTransition): its row, the document
-// its anchor is in and its opening event. The seed's asks the deliveries take are open questions
-// with no block (planDeliveries), so neither the document a block ask writes its state into nor
-// an approval's document is read or written.
+// It runs under the ask's owner lock, which its batch takes before any other statement
+// (writeDeliveries), as those routes take it before they read the ask (api's transitionAskTx,
+// requireOpenOwner); the window write that ends an answer's index takes that lock again
+// (refs.WriteItemWindows), which a transaction holding it passes at once. It reads the ask as
+// those routes read it (api's readAskForTransition): its row, the document its anchor is in and
+// its opening event. The seed's asks the deliveries take are open questions with no block
+// (planDeliveries), so neither the document a block ask writes its state into nor an approval's
+// document is read or written.
 //
 // An answer is the seed's person's, choosing the ask's first option where it offers any, with
 // the planned words as its text, at the planned time; the row takes it, and the ask's parts are
@@ -565,7 +589,7 @@ func transitionAsk(ctx context.Context, tx pgx.Tx, id string, planned delivery) 
 			return nil, fmt.Errorf("answer ask %s: %w", id, err)
 		}
 		ask.State, ask.Answer = "answered", &answer
-		if err := indexAskParts(ctx, tx, ask, refs.AskPartsAt(ask)); err != nil {
+		if err := indexAskParts(ctx, tx, ask, refs.AskPartsAt(ask), false); err != nil {
 			return nil, err
 		}
 		payload := model.AskAnsweredEventPayload{AskEventPayload: model.NewAskEventPayload(ask, model.ReferenceChanges{})}

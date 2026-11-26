@@ -29,6 +29,11 @@ import (
 // status backlog or icebox.
 const backlogMoveIndex = "events_backlog_moves"
 
+// dropBacklogMoveIndex drops backlogMoveIndex in a reading's transaction, which is rolled back: the
+// setup of a reading on the schema of main, and the first statement of each control that builds
+// another index under its name (backlogMoveSchemas).
+const dropBacklogMoveIndex = "drop index " + backlogMoveIndex
+
 // backlogMoveProject is the one project of the corpus (seedBacklogMoveCorpus), and the project the
 // listing names.
 const backlogMoveProject = "BACK"
@@ -67,9 +72,13 @@ const (
 	backlogMoveOtherLogin = "alice"
 )
 
-// backlogMoveStatuses are the statuses the moves before an issue's last move go to: work waiting
-// and in flight, and backlog and icebox where the history moves through them.
-var backlogMoveStatuses = []string{"triage", "todo", "in_progress", "needs_review", "backlog", "icebox"}
+// backlogMoveElsewhere are the statuses that are neither backlog nor icebox that the moves before
+// an issue's last move go to: work waiting and in flight.
+var backlogMoveElsewhere = []string{"triage", "todo", "in_progress", "needs_review"}
+
+// backlogMoveStatuses are the statuses the moves before an issue's last move go to: those of
+// backlogMoveElsewhere, and backlog and icebox where the history moves through them.
+var backlogMoveStatuses = slices.Concat(backlogMoveElsewhere, []string{"backlog", "icebox"})
 
 // backlogMove is the move into `backlog` or `icebox` that an issue's events record last: the event
 // the lateral answers, by its time and the login of its actor.
@@ -137,7 +146,7 @@ func (h backlogMoveHistory) write(t testing.TB, random *rand.Rand, key, status s
 			forced[2+(index+1)*(last-2)/5] = to
 		}
 	}
-	pool := backlogMoveStatuses[:4]
+	pool := backlogMoveElsewhere
 	if h.backlogBefore {
 		pool = backlogMoveStatuses
 	}
@@ -278,7 +287,7 @@ func seedBacklogMoveCorpus(t *testing.T) backlogMoveCorpus {
 		addIssue(backlogStatus(index), nil, backlogEvents())
 	}
 	for index := range backlogMoveBystanders {
-		addIssue(backlogMoveStatuses[index%4], nil, backlogMoveHistory{events: 20 + random.IntN(41), recorded: true})
+		addIssue(backlogMoveElsewhere[index%len(backlogMoveElsewhere)], nil, backlogMoveHistory{events: 20 + random.IntN(41), recorded: true})
 	}
 
 	for index, id := range corpus.priorities {
@@ -337,13 +346,13 @@ var backlogMoveSchemas = []struct {
 	control bool
 }{
 	{"with events_backlog_moves", nil, false},
-	{"with events_backlog_moves dropped, as on main", []string{"drop index " + backlogMoveIndex}, true},
+	{"with events_backlog_moves dropped, as on main", []string{dropBacklogMoveIndex}, true},
 	{"with an index of every event under the name events_backlog_moves", []string{
-		"drop index " + backlogMoveIndex,
+		dropBacklogMoveIndex,
 		"create index " + backlogMoveIndex + " on events (issue_key, seq)",
 	}, true},
 	{"with a partial index of every issue.updated under the name events_backlog_moves", []string{
-		"drop index " + backlogMoveIndex,
+		dropBacklogMoveIndex,
 		"create index " + backlogMoveIndex + " on events (issue_key, seq) where type = 'issue.updated'",
 	}, true},
 }
@@ -631,7 +640,7 @@ func TestTheBacklogMoveAnswersTheRowsItAnswersWithoutItsIndex(t *testing.T) {
 	corpus := seedBacklogMoveCorpus(t)
 	settleSpeedCorpus(t, corpus.database)
 	withIndex := backlogMoveAnswers(t, corpus.database, corpus.priorities, nil)
-	withoutIndex := backlogMoveAnswers(t, corpus.database, corpus.priorities, backlogMoveSchemas[1].setup)
+	withoutIndex := backlogMoveAnswers(t, corpus.database, corpus.priorities, []string{dropBacklogMoveIndex})
 
 	if withIndex.Count != len(corpus.backlog) || len(withIndex.Backlog) != len(corpus.backlog) {
 		t.Fatalf("the second fault counts %d rows and lists %d, want all %d of its rows of the corpus listed",

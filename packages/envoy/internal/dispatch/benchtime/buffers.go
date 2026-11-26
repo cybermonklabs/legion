@@ -14,14 +14,14 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// planForValues and genericPlan name the two plans TopBuffers reads a statement under, in every
+// planForValues and genericPlan name the two plans topBuffers reads a statement under, in every
 // line that logs a reading and in the error a pair fails with.
 const (
 	planForValues = "the plan for its values"
 	genericPlan   = "the generic plan"
 )
 
-// buffersStatement is the name TopBuffers prepares a statement under for its generic plan, and
+// buffersStatement is the name topBuffers prepares a statement under for its generic plan, and
 // cachedPlansStatement the name ReportCachedPlans prepares one under. One statement is prepared
 // under each at a time and deallocated before the next, so one name serves them all.
 const (
@@ -68,7 +68,7 @@ type Buffers struct {
 // Plans are the two readings, the plan for its values first.
 func (b Buffers) Plans() []PlanBuffers { return []PlanBuffers{b.ForValues, b.Generic} }
 
-// TopBuffers runs statement once under EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) as the plan made
+// topBuffers runs statement once under EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) as the plan made
 // for its values and once as the generic plan, each on the measurement connection, after the
 // statement's Setup, in a transaction of its own that it rolls back, and answers the top-node
 // buffers of each plan with the plan. name says which statement it is, in a failure.
@@ -79,7 +79,7 @@ func (b Buffers) Plans() []PlanBuffers { return []PlanBuffers{b.ForValues, b.Gen
 // as a literal (PreparedArguments) and the statement is prepared with the literals' types. A
 // prepared statement belongs to the session rather than to the transaction, so it is deallocated
 // after the rollback.
-func (r *Runner) TopBuffers(t *testing.T, name string, statement Statement) Buffers {
+func (r *Runner) topBuffers(t *testing.T, name string, statement Statement) Buffers {
 	t.Helper()
 	forValues := r.explainBuffers(t, name, planForValues, "", statement)
 	generic := statement
@@ -89,7 +89,7 @@ func (r *Runner) TopBuffers(t *testing.T, name string, statement Statement) Buff
 
 // PreparedArguments writes each of arguments as the type a statement is prepared with for it and
 // the literal an EXECUTE takes in its place (sqlLiteral), in order: an EXECUTE under EXPLAIN takes
-// no bound parameter. TopBuffers and ReportCachedPlans prepare a measured statement with them, and
+// no bound parameter. topBuffers and ReportCachedPlans prepare a measured statement with them, and
 // a plan test hands them to explaintest.GenericPlan or explaintest.AnalyzedGenericPlan for the
 // arguments it binds the same statement with elsewhere, rather than keeping a second list by hand.
 // An argument of a type sqlLiteral writes no literal for fails t, naming name, the statement, and
@@ -130,7 +130,7 @@ func preparedForm(t *testing.T, name, prepared string, statement Statement) (str
 // execution, the top node's shared buffers and whether Postgres ran its generic plan or a plan
 // made for the values, which pg_prepared_statements' counts of each tell after the execution, and
 // from the sixth execution on the whole plan. It shows which plan each side keeps once Postgres may
-// run its cached generic plan, which TopBuffers, forcing one plan or the other, does not.
+// run its cached generic plan, which topBuffers, forcing one plan or the other, does not.
 func (r *Runner) ReportCachedPlans(t *testing.T, name string, before, after Statement) {
 	t.Helper()
 	ctx := context.Background()
@@ -181,7 +181,7 @@ func (r *Runner) cachedPlans(t *testing.T, name, side, cacheMode string, stateme
 	}
 }
 
-// explainBuffers is one reading of TopBuffers or of ReportCachedPlans: in a transaction it rolls
+// explainBuffers is one reading of topBuffers or of ReportCachedPlans: in a transaction it rolls
 // back, it runs statement's Setup and explains statement with its arguments. Where prepared names
 // a statement, it prepares statement under that name after the Setup (preparedForm) and explains
 // the EXECUTE of it instead, and deallocates that name after the rollback, a failed run's too, so
@@ -236,10 +236,14 @@ func (r *Runner) explainBuffers(t *testing.T, name, mode, prepared string, state
 
 // sqlLiteral writes argument as the literal an EXECUTE takes in its place, with the type the
 // statement is prepared with for it: a string as text, a []string as text[], a bool as boolean, a
-// []int16 as smallint[], and a time.Time as timestamptz, to the microsecond Postgres keeps, or a
-// *time.Time as one, null where it is nil. Those are the types the measured reads bind: the
-// listing binds the last four beside the first two (api's listIssues). Any other type is an error
-// rather than a literal of a guessed type.
+// []int16 as smallint[], and a time.Time as timestamptz, in UTC, or a *time.Time as one, null
+// where it is nil. A time is written to the microsecond Postgres keeps, with the digits below it
+// dropped as pgx drops them when it binds a time, rather than with nanoseconds Postgres would
+// round, so the literal is the value the plan for its values is bound to. Those are the types the
+// measured reads bind: the listing binds a string, a []string, a bool, a []int16 and a *time.Time
+// (api's projectListingArguments, as listIssues binds them), and the answers read binds a
+// time.Time (sessionanswers' List). Any other type is an error rather than a literal of a guessed
+// type.
 func sqlLiteral(argument any) (string, string, error) {
 	switch value := argument.(type) {
 	case string:
@@ -259,7 +263,7 @@ func sqlLiteral(argument any) (string, string, error) {
 		}
 		return "smallint[]", "array[" + strings.Join(numbers, ", ") + "]::smallint[]", nil
 	case time.Time:
-		return "timestamptz", store.QuoteLiteral(value.UTC().Format(time.RFC3339Nano)) + "::timestamptz", nil
+		return "timestamptz", store.QuoteLiteral(value.UTC().Format("2006-01-02T15:04:05.000000Z07:00")) + "::timestamptz", nil
 	case *time.Time:
 		if value == nil {
 			return "timestamptz", "null::timestamptz", nil
@@ -270,15 +274,15 @@ func sqlLiteral(argument any) (string, string, error) {
 }
 
 // PairBuffers reads the top-node shared buffers of a pair's two sides under both plans
-// (TopBuffers), logs each reading under the name of the side it was read from, and fails t,
+// (topBuffers), logs each reading under the name of the side it was read from, and fails t,
 // through t.Errorf so the rest of the run still logs, unless the after text reads fewer buffers
 // than the before text under each plan. It is the gate of a pair whose claim is fewer buffer
 // reads, beside the times its Pair gates. It runs where t runs it, in no subtest of its own, and
 // it answers both readings, for a caller that reads more of the plans.
 func (r *Runner) PairBuffers(t *testing.T, name string, before, after Statement) (Buffers, Buffers) {
 	t.Helper()
-	beforeBuffers := r.TopBuffers(t, name+": "+beforeSide, before)
-	afterBuffers := r.TopBuffers(t, name+": "+afterSide, after)
+	beforeBuffers := r.topBuffers(t, name+": "+beforeSide, before)
+	afterBuffers := r.topBuffers(t, name+": "+afterSide, after)
 	logBuffers(t, name, beforeSide, beforeBuffers)
 	logBuffers(t, name, afterSide, afterBuffers)
 	afterPlans := afterBuffers.Plans()
@@ -297,18 +301,18 @@ func (r *Runner) PairBuffers(t *testing.T, name string, before, after Statement)
 // answers it), so the text it may replace is not run again; it answers the after side's.
 func (r *Runner) ReportBuffers(t *testing.T, name string, before Buffers, after Statement) Buffers {
 	t.Helper()
-	afterBuffers := r.TopBuffers(t, name+": "+afterSide, after)
+	afterBuffers := r.topBuffers(t, name+": "+afterSide, after)
 	logBuffers(t, name, beforeSide, before)
 	logBuffers(t, name, afterSide, afterBuffers)
 	return afterBuffers
 }
 
-// AfterBuffers reads one statement's buffers as TopBuffers does, logs them as PairBuffers logs
+// AfterBuffers reads one statement's buffers as topBuffers does, logs them as PairBuffers logs
 // the after side's, and bounds nothing: for a read's new work that no before text did, as
 // AfterSeries times it.
 func (r *Runner) AfterBuffers(t *testing.T, name string, after Statement) {
 	t.Helper()
-	logBuffers(t, name, afterSide, r.TopBuffers(t, name+": "+afterSide, after))
+	logBuffers(t, name, afterSide, r.topBuffers(t, name+": "+afterSide, after))
 }
 
 // logBuffers is the one line each plan's buffers are reported in, with the plan, so that a count

@@ -668,7 +668,8 @@ func measureDismissedScale(
 // nearestRank is the nearest-rank percentile of sorted readings: the ceil(q*n)th, the smallest
 // reading that at least q of the readings are at or under, so p50 of 20 is the tenth and p95 the
 // nineteenth. No interpolation, so every number printed is a run that happened. The Inbox's
-// dismissed-scale readings and the priorities read's (priority_read_bound_test.go) both take it.
+// dismissed-scale readings, the priorities read's (priority_read_bound_test.go) and the priority
+// list's (priority_list_bound_test.go) all take it.
 func nearestRank(sorted []time.Duration, quantile float64) time.Duration {
 	rank := int(math.Ceil(quantile*float64(len(sorted)))) - 1
 	return sorted[max(rank, 0)]

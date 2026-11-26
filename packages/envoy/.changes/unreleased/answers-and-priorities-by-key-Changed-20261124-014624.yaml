@@ -11,10 +11,12 @@ body: |-
   Its list of work in backlog or icebox, and the issue listing's `?moved=true`, read each such
   issue's move there through a new partial index, `events_backlog_moves` (migration
   `20261125131100`), and stop at the newest move. Both indexes are built concurrently before the
-  server serves, so their build is time the server is down at the deploy that carries them, and
-  they need the `btree_gin` extension of the earlier migration `20261125125703`: apply the release
-  that holds that migration first. The `dispatch-seed` command now delivers a person's words to
-  agent sessions, so the answers read can be measured on a seeded database.
+  server serves, so their build is time the server is down at the deploy that carries them. The
+  first needs the `btree_gin` extension of the earlier migration `20261125125703`, and while that
+  migration is still pending the pre-deploy census refuses both builds where `events` is above its
+  size limit: apply the release that holds that migration first. The `dispatch-seed` command now
+  delivers a person's words to agent sessions, so the answers read can be measured on a seeded
+  database.
 time: 2026-11-24T01:46:24Z
 custom:
     Issue: answers-and-priorities-by-key

@@ -56,10 +56,11 @@ type sizes struct {
 	// WindowSessions is the sessions those deliveries reach beside the old session: the order of
 	// the 383 to 406 sessions that read the answers route in three minutes of production.
 	WindowSessions int
-	// OldDeliveries is the deliveries to the old session over the 60 days before the window,
-	// and OldSessionWindowDeliveries its deliveries inside the window. Neither is production's:
-	// they make the one session whose many deliveries before the window the answers read must
-	// not read, and give that session a read of its own in the window.
+	// OldDeliveries is the deliveries to the old session over the 60 days that end four days
+	// before the window starts (planDeliveries), and OldSessionWindowDeliveries its deliveries
+	// inside the window. Neither is production's: they make the one session whose many
+	// deliveries before the window the answers read must not read, and give that session a read
+	// of its own in the window.
 	OldDeliveries              int
 	OldSessionWindowDeliveries int
 

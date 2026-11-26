@@ -132,9 +132,3 @@ func measurePriorityList(t *testing.T, corpus listCorpus, forced forcedPlan, req
 			described, p90.Round(time.Millisecond), priorityListBound, over, len(reads), node.name(), removed)
 	}
 }
-
-// nearestRank is the q quantile of sorted by the nearest-rank rule: the smallest read that at
-// least q of the reads are at or under.
-func nearestRank(sorted []time.Duration, q float64) time.Duration {
-	return sorted[int(math.Ceil(q*float64(len(sorted))))-1]
-}
