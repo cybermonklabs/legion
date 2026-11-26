@@ -67,7 +67,7 @@ func newNoInstallHarness(t *testing.T, noInstall func(context.Context, supervise
 func TestAClaimWhoseLaunchInstallsNoPluginIsServedOnItsOldContract(t *testing.T) {
 	claudeRole := claim.RoleImplementer
 	h := newNoInstallHarness(t, func(_ context.Context, c supervise.Claim) (bool, error) { return c.Role == claudeRole, nil })
-	stale := DaemonAPIVersion - 1
+	stale := DaemonAPIVersion() - 1
 
 	for _, tc := range []struct {
 		role   claim.Role
@@ -80,7 +80,7 @@ func TestAClaimWhoseLaunchInstallsNoPluginIsServedOnItsOldContract(t *testing.T)
 		t.Run(string(tc.role), func(t *testing.T) {
 			token, boot := h.launch(tc.issue, tc.role)
 			session := "ses_" + string(tc.role)
-			current := h.registerContract(boot, session, DaemonAPIVersion, true)
+			current := h.registerContract(boot, session, DaemonAPIVersion(), true)
 			h.makeStale(t, token, session, current.Secret, stale)
 			if c := h.stored(token); c.UpdateRound != "" {
 				t.Fatalf("%s is in round %q: this case proves nothing, since an open round serves a stale claim already", tc.role, c.UpdateRound)
@@ -94,7 +94,7 @@ func TestAClaimWhoseLaunchInstallsNoPluginIsServedOnItsOldContract(t *testing.T)
 			}, nil)
 
 			if !tc.served {
-				wantRefusal(t, ready, http.StatusConflict, claim.StalePluginContract(stale, DaemonAPIVersion).Message)
+				wantRefusal(t, ready, http.StatusConflict, claim.StalePluginContract(stale, DaemonAPIVersion()).Message)
 				refused(t, grants, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
 				return
 			}
@@ -121,10 +121,10 @@ func TestStaleClaimIsRefusedOnReadyAndGrantsAndLogsAWarn(t *testing.T) {
 	h, logs := newStaleHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleImplementer)
 	session := "ses_implementer"
-	current := h.registerContract(boot, session, DaemonAPIVersion, true)
-	stale := DaemonAPIVersion - 1
+	current := h.registerContract(boot, session, DaemonAPIVersion(), true)
+	stale := DaemonAPIVersion() - 1
 	h.makeStale(t, token, session, current.Secret, stale)
-	sentence := claim.StalePluginContract(stale, DaemonAPIVersion).Message
+	sentence := claim.StalePluginContract(stale, DaemonAPIVersion()).Message
 
 	wantRefusal(t,
 		h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
@@ -142,7 +142,7 @@ func TestStaleClaimIsRefusedOnReadyAndGrantsAndLogsAWarn(t *testing.T) {
 		t.Fatalf("logs %s do not carry the refusal's Warn line", logged)
 	}
 	if !strings.Contains(logged, fmt.Sprintf(`"pluginContract":%d`, stale)) ||
-		!strings.Contains(logged, fmt.Sprintf(`"daemonApiVersion":%d`, DaemonAPIVersion)) {
+		!strings.Contains(logged, fmt.Sprintf(`"daemonApiVersion":%d`, DaemonAPIVersion())) {
 		t.Fatalf("logs %s do not name both contracts", logged)
 	}
 	if strings.Contains(logged, current.Secret) {
@@ -162,12 +162,12 @@ func TestStaleClaimIsRefusedOnHandoffComplete(t *testing.T) {
 	seedIssueAt(t, h, "LEGION-208", phase.Implementing)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	grantID := implementer.grant(t)
-	stale := DaemonAPIVersion - 1
+	stale := DaemonAPIVersion() - 1
 	endTurn(t, h, implementer.token)
 	h.makeStale(t, implementer.token, implementer.session, implementer.secret, stale)
 
 	recorder := h.complete(HandoffCompleteRequest{GrantID: grantID, Summary: "implemented", Commit: "aabbcc"})
-	refusedSaying(t, recorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StalePluginContract(stale, DaemonAPIVersion).Message)
+	refusedSaying(t, recorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StalePluginContract(stale, DaemonAPIVersion()).Message)
 }
 
 // endTurn ends the turn of token's worker, through the stream event the agent's turn ending posts
@@ -194,7 +194,7 @@ func endTurn(t *testing.T, h *harness, token claim.Token) {
 // The same claim out of its turn is the control: nothing holds its relaunch then, and all three
 // calls are refused 409 STALE_PLUGIN_CONTRACT exactly as they always were.
 func TestStaleClaimInATurnIsServedWhileItsRelaunchIsHeld(t *testing.T) {
-	stale := DaemonAPIVersion - 1
+	stale := DaemonAPIVersion() - 1
 	for _, tc := range []struct {
 		name   string
 		inTurn bool
@@ -236,7 +236,7 @@ func TestStaleClaimInATurnIsServedWhileItsRelaunchIsHeld(t *testing.T) {
 			})
 
 			if !tc.inTurn {
-				wantRefusal(t, ready, http.StatusConflict, claim.StalePluginContract(stale, DaemonAPIVersion).Message)
+				wantRefusal(t, ready, http.StatusConflict, claim.StalePluginContract(stale, DaemonAPIVersion()).Message)
 				refused(t, grants, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
 				refused(t, completed, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
 				return
@@ -270,15 +270,15 @@ func TestUndecodableGrantsBodyRefusesAStaleClaimButNamesTheFieldForACurrentOne(t
 
 	staleToken, staleBoot := h.launch("LEGION-208", claim.RoleImplementer)
 	staleSession := "ses_stale"
-	staleCurrent := h.registerContract(staleBoot, staleSession, DaemonAPIVersion, true)
-	stale := DaemonAPIVersion - 1
+	staleCurrent := h.registerContract(staleBoot, staleSession, DaemonAPIVersion(), true)
+	stale := DaemonAPIVersion() - 1
 	h.makeStale(t, staleToken, staleSession, staleCurrent.Secret, stale)
 	staleRecorder := h.request(http.MethodPost, "/legion/v1/grants", body(staleSession, staleCurrent.Secret), nil)
 	refused(t, staleRecorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
 
 	_, currentBoot := h.launch("LEGION-209", claim.RoleImplementer)
 	currentSession := "ses_current"
-	currentRegistered := h.registerContract(currentBoot, currentSession, DaemonAPIVersion, true)
+	currentRegistered := h.registerContract(currentBoot, currentSession, DaemonAPIVersion(), true)
 	currentBody := fmt.Sprintf(`{"sessionId":%q,"secret":%q,"tree":"LEGION-209","issue":"LEGION-209","push":true}`, currentSession, currentRegistered.Secret)
 	currentRecorder := h.request(http.MethodPost, "/legion/v1/grants", currentBody, nil)
 	if currentRecorder.Code != http.StatusBadRequest {
@@ -308,15 +308,15 @@ func TestUndecodableReadyBodyRefusesAStaleClaimButNamesTheFieldForACurrentOne(t 
 
 	staleToken, staleBoot := h.launch("LEGION-208", claim.RoleImplementer)
 	staleSession := "ses_stale_ready"
-	staleCurrent := h.registerContract(staleBoot, staleSession, DaemonAPIVersion, true)
-	stale := DaemonAPIVersion - 1
+	staleCurrent := h.registerContract(staleBoot, staleSession, DaemonAPIVersion(), true)
+	stale := DaemonAPIVersion() - 1
 	h.makeStale(t, staleToken, staleSession, staleCurrent.Secret, stale)
 	staleRecorder := h.request(http.MethodPost, "/legion/v1/claims/ready", withClaim(staleToken, staleSession, staleCurrent.Secret), nil)
-	wantRefusal(t, staleRecorder, http.StatusConflict, claim.StalePluginContract(stale, DaemonAPIVersion).Message)
+	wantRefusal(t, staleRecorder, http.StatusConflict, claim.StalePluginContract(stale, DaemonAPIVersion()).Message)
 
 	currentToken, currentBoot := h.launch("LEGION-209", claim.RoleImplementer)
 	currentSession := "ses_current_ready"
-	currentRegistered := h.registerContract(currentBoot, currentSession, DaemonAPIVersion, true)
+	currentRegistered := h.registerContract(currentBoot, currentSession, DaemonAPIVersion(), true)
 	currentRecorder := h.request(http.MethodPost, "/legion/v1/claims/ready", withClaim(currentToken, currentSession, currentRegistered.Secret), nil)
 	if currentRecorder.Code != http.StatusBadRequest {
 		t.Fatalf("a current claim's unknown-field ready body = %d, want 400; body %s", currentRecorder.Code, currentRecorder.Body)
@@ -340,7 +340,7 @@ func TestUndecodableHandoffCompleteBodyRefusesAStaleClaimButNamesTheFieldForACur
 	stale := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	staleGrant := stale.grant(t)
 	endTurn(t, h, stale.token)
-	h.makeStale(t, stale.token, stale.session, stale.secret, DaemonAPIVersion-1)
+	h.makeStale(t, stale.token, stale.session, stale.secret, DaemonAPIVersion()-1)
 	staleBody := fmt.Sprintf(`{"grantId":%q,"summary":"implemented","commit":"aabbcc","push":true}`, staleGrant)
 
 	staleRecorder := h.request(http.MethodPost, "/legion/v1/handoff/complete", staleBody, nil)
@@ -369,7 +369,7 @@ func TestNulHandoffCompleteBodyRefusesAStaleClaimButNamesTheStringForACurrentOne
 	stale := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	staleGrant := stale.grant(t)
 	endTurn(t, h, stale.token)
-	h.makeStale(t, stale.token, stale.session, stale.secret, DaemonAPIVersion-1)
+	h.makeStale(t, stale.token, stale.session, stale.secret, DaemonAPIVersion()-1)
 	refused(t, h.complete(HandoffCompleteRequest{GrantID: staleGrant, Summary: "implemented" + nulText, Commit: "aabbcc"}),
 		http.StatusConflict, "STALE_PLUGIN_CONTRACT")
 
@@ -403,7 +403,7 @@ func TestUndecodableRegisterBodyReachesRegistration(t *testing.T) {
 func TestStateRouteUntouchedForAStaleClaim(t *testing.T) {
 	h, _ := newStaleHarness(t)
 	_, boot := h.launch("LEGION-208", claim.RoleImplementer)
-	h.registerContract(boot, "ses_implementer", DaemonAPIVersion-1, true)
+	h.registerContract(boot, "ses_implementer", DaemonAPIVersion()-1, true)
 
 	recorder := h.request(http.MethodGet, "/legion/v1/state", nil, nil)
 
@@ -421,8 +421,8 @@ func TestUnrelaunchableDaemonRefusesNoCallForAStaleClaim(t *testing.T) {
 	h := newHarnessUnrelaunchable(t)
 	token, boot := h.launch("LEGION-208", claim.RoleImplementer)
 	session := "ses_implementer"
-	current := h.registerContract(boot, session, DaemonAPIVersion, false)
-	h.makeStale(t, token, session, current.Secret, DaemonAPIVersion-1)
+	current := h.registerContract(boot, session, DaemonAPIVersion(), false)
+	h.makeStale(t, token, session, current.Secret, DaemonAPIVersion()-1)
 
 	recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: token, SessionID: session, Secret: current.Secret, Generation: current.Generation,
@@ -440,7 +440,7 @@ func TestOperatorControllersStaleGrantIsRefused(t *testing.T) {
 	h := newControllerHarness(t, false)
 	capability := h.mintedSecret()
 	registration := h.registeredController(capability, "ses_operator")
-	stale := DaemonAPIVersion - 1
+	stale := DaemonAPIVersion() - 1
 	controllerRecord, found, err := h.store.Controller(context.Background(), testProject)
 	if err != nil || !found {
 		t.Fatalf("read the controller record: found=%v err=%v", found, err)
@@ -452,7 +452,7 @@ func TestOperatorControllersStaleGrantIsRefused(t *testing.T) {
 
 	recorder := h.controllerSessionGrant("ses_operator", registration.Secret)
 
-	refusedSaying(t, recorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StaleControllerContract(stale, DaemonAPIVersion).Message)
+	refusedSaying(t, recorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StaleControllerContract(stale, DaemonAPIVersion()).Message)
 }
 
 // An operator-bearer grant (the Controller: true grant `legion issue status` redeems on
@@ -467,7 +467,7 @@ func TestOperatorBearerGrantRedeemsDespiteTheControllerRecordsStaleContract(t *t
 	h := newControllerHarness(t, false)
 	capability := h.mintedSecret()
 	registration := h.registeredController(capability, "ses_operator")
-	stale := DaemonAPIVersion - 1
+	stale := DaemonAPIVersion() - 1
 	controllerRecord, found, err := h.store.Controller(context.Background(), testProject)
 	if err != nil || !found {
 		t.Fatalf("read the controller record: found=%v err=%v", found, err)
@@ -487,7 +487,7 @@ func TestOperatorBearerGrantRedeemsDespiteTheControllerRecordsStaleContract(t *t
 	}
 
 	sessionRecorder := h.controllerSessionGrant("ses_operator", registration.Secret)
-	refusedSaying(t, sessionRecorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StaleControllerContract(stale, DaemonAPIVersion).Message)
+	refusedSaying(t, sessionRecorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StaleControllerContract(stale, DaemonAPIVersion()).Message)
 }
 
 // Wrong secret is still refused 403, exactly as today, regardless of the claim's recorded
@@ -496,7 +496,7 @@ func TestOperatorBearerGrantRedeemsDespiteTheControllerRecordsStaleContract(t *t
 func TestWrongSecretStillRefusedBeforeAnyStaleCheck(t *testing.T) {
 	h, _ := newStaleHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleImplementer)
-	h.registerContract(boot, "ses_implementer", DaemonAPIVersion-1, true)
+	h.registerContract(boot, "ses_implementer", DaemonAPIVersion()-1, true)
 
 	recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: token, SessionID: "ses_implementer", Secret: "the wrong secret", Generation: 1,

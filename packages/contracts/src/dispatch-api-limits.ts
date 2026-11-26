@@ -58,6 +58,18 @@ export const MAX_ISSUE_COMPONENTS = 50;
 export const ISSUE_TITLE_MAX = 1000;
 
 /**
+ * The longest priority id, in characters: an id is ASCII, so in bytes too. Two readers take it,
+ * so they hold one number. `POST /api/v1/priorities` refuses an `id` the caller names that is
+ * longer, as `400 PRIORITY_INPUT` naming this bound. The same route cuts the id it derives from
+ * the title, when the body names none, to fit it. The cut keeps a slug of at most this many
+ * characters whole; it cuts a longer one to its longest start that fits and ends at the end of a
+ * word, or to its first this many characters when its first word is longer.
+ * `fixtures/priority-ids.json` holds the cases of that rule, and its `description` names the
+ * tests that read them. Generated into Go as `contracts.PriorityIDMax`.
+ */
+export const PRIORITY_ID_MAX = 200;
+
+/**
  * The longest project name, in UTF-16 units, counted after the trim `POST /api/v1/projects`
  * applies; a longer one is `400 CAP_EXCEEDED`. A name shows beside its key in the sidebar's
  * 20rem rail and in every project picker's `KEY · Name` option, any bearer may write one, and no
@@ -150,6 +162,15 @@ export type SettledDeliveryState = (typeof SETTLED_DELIVERY_STATES)[number];
  * the server's are one number.
  */
 export const MAX_BROADCAST_RECIPIENTS = 100;
+
+/**
+ * The most session ids one `GET /api/v1/agents/known` names (`id`, repeated). A page asks
+ * once for every agent reference it holds that the live registry does not list, so the bound is a
+ * page's worth with room to spare, and a page holding more asks in batches of this size. Generated
+ * into Go as `contracts.KnownSessionsMax`, which the server enforces with `400 INVALID_QUERY`, so
+ * the dashboard's batches and the server's refusal are one number.
+ */
+export const KNOWN_SESSIONS_MAX = 100;
 
 /**
  * The most references one `GET /api/v1/reference-targets` may name, one `ref` each; past it the
@@ -255,13 +276,14 @@ export const DISPATCH_LOGIN_CHANGED = "LOGIN_CHANGED";
 
 /**
  * The code of the `403` for a write by an access token the secrets broker issued that names a
- * session and a service but no person under the project scope `person`: the machine holding it
- * has signed nobody in, so Dispatch has nobody to record the write under. Its reads are
- * unaffected. The message names `agent-secrets login`, the one command that makes the write
- * possible, because whoever reads the refusal is whoever must run it. A token that names a
- * service and no person under the project scope `named` is no such token: an exchange account
- * entry naming no person minted it, its service is that account, and its writes are recorded
- * under the account.
+ * session and a service but no person under the project scope `person`: a machine's token, and
+ * the machine holding it has signed nobody in, so Dispatch has nobody to record the write under.
+ * Its reads are unaffected. A job's token names a service and no person too, but under the
+ * project scope `named` or `public`, and Dispatch takes its writes as that service rather than
+ * refusing them; so does a token an exchange account entry naming no person minted, under the
+ * project scope `named`, whose service is that account. The message names `agent-secrets
+ * login`, the one command that makes the write possible, because whoever reads the refusal is
+ * whoever must run it.
  */
 export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
 

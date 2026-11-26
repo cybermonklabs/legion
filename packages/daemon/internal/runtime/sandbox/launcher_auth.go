@@ -127,14 +127,15 @@ var (
 	errTurnHeld        = fmt.Errorf("its pod's launch turn is held: %w", errDeclined)
 )
 
-// LauncherResolver rejects unknown pods from informer state before consulting credentials: a
-// launcher's slot must be one of its pod's slots (podSlots: the slots its stored template binds,
-// or, for a template that binds none, the roles of the kind its labels name, podKindOf). Its claim
-// is the one that kind derives for the slot (podKind.claimToken): the agent the slot is named for.
-// Tokens minted here are cached as hashes; after a restart a known slot's Secret is read once
-// however often its launcher says hello (launcherCredential), so a restart's reconnecting
-// launchers cost one read each and unauthenticated hellos cannot turn into an unbounded stream of
-// Kubernetes requests. A hello waits for that read up to apiTimeout.
+// LauncherResolver rejects unknown pods from informer state before consulting credentials. An
+// issue pod's launcher must name a configured role or a slot of the pod's template (templateRoles:
+// the slots its stored template binds, an agent's of its plan among them). A role removed from
+// the deployment can still authenticate to let a pending stop reach its child. The project
+// controller pod accepts only the controller. The pod kind derives the claim (podKind.claimToken):
+// the agent the slot is named for. Tokens minted here are cached as hashes. After a restart, a
+// known slot's Secret is read once however often its launcher says hello (launcherCredential), so
+// unauthenticated hellos cannot turn into an unbounded stream of Kubernetes requests. A hello
+// waits for that read up to apiTimeout.
 //
 // A launcher holding its role's current token from the Sandbox's current pod, which no Secret
 // binds, is of a pod no launch made: the Agent Sandbox controller recreated it after an eviction or
@@ -154,7 +155,11 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 			return nil, shimwire.LauncherHelloAck{}, "launcher pod is not the current controller-owned pod"
 		}
 		kind, err := podKindOf(view.sandbox.Labels)
-		if err != nil || !slices.Contains(r.podSlots(view.sandbox, kind), role) {
+		if err != nil {
+			return nil, shimwire.LauncherHelloAck{}, "launcher role is not one of its pod's roles"
+		}
+		if _, issue := kind.(issuePod); !slices.Contains(kind.roles(r), role) &&
+			(!issue || !slices.Contains(templateRoles(view.sandbox), role)) {
 			return nil, shimwire.LauncherHelloAck{}, "launcher role is not one of its pod's roles"
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
@@ -195,21 +200,24 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 		if err != nil || SandboxName(token) != hello.Sandbox {
 			return nil, shimwire.LauncherHelloAck{}, "launcher credential does not name this pod's role"
 		}
-		return r.launchers.accept(token, credential.issue, hello), r.launcherHelloAck(kind), ""
+		// The pod the connection is accepted for carries the instant the API server created its
+		// Sandbox, where that Sandbox owns the issue's kept volume, which each role's start in the
+		// pod records with the pod (launchers.recordKeptPod). It comes from the informer's Sandbox,
+		// so it costs no request.
+		return r.launchers.accept(token, credential.issue, keptVolumeSince(view.sandbox), hello), r.launcherHelloAck(kind), ""
 	}
 }
 
-// podSlots are the slots of the pod the Sandbox s builds, each with a launcher and a Secret of its
-// own (roleSecretName): the slots its stored template binds (templateRoles: the runtime's roles
-// when the pod was built and, for an issue pod, each agent name of its plan that no role has), or,
-// for a template that binds none (one no launcher of this layout wrote), the roles of kind, the
-// kind its labels name (podKindOf). It is the list of a pod's slots that a launcher's hello is
-// held to (LauncherResolver).
-func (r *Runtime) podSlots(s *sandbox, kind podKind) []claim.Role {
-	if slots := templateRoles(s); len(slots) > 0 {
-		return slots
+// keptVolumeSince is when the API server created s, where s owns an issue's kept volume
+// (ownsKeptVolume), and the zero time otherwise: a Sandbox whose pod's volume is the pod's own,
+// and the project controller's Sandbox. A kept volume is as old as the Sandbox that owns it,
+// since Agent Sandbox makes the claim from the Sandbox's template, and the claim goes only with
+// the Sandbox.
+func keptVolumeSince(s *sandbox) time.Time {
+	if !ownsKeptVolume(s) {
+		return time.Time{}
 	}
-	return kind.roles(r)
+	return s.CreationTimestamp.Time
 }
 
 // launcherHelloAck is the acknowledgement an accepted launcher on a pod of kind is answered with,

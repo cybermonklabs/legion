@@ -1,12 +1,20 @@
-import { expect, jest, test } from "bun:test";
+import { beforeAll, expect, jest, test } from "bun:test";
 import { act, screen, waitFor } from "@testing-library/react";
 
 import { onRealTurns, realClock, tick } from "./__tests__/fake-clock";
+import { keptWrites } from "./__tests__/kept-sends-harness";
 import { wholeText } from "./__tests__/whole-text";
 import { ApiError } from "./api/client";
-import { aliceWrite, keptWrites, otherTab, renderApp } from "./app-sign-out-fixture";
+import { aliceWrite, otherTab, renderApp } from "./app-sign-out-fixture";
+import { warmMarkdownRenderer } from "./features/refs/markdown-engine";
 import { SIGN_OUT_SETTLE_MS } from "./features/shell/sign-in-channel";
 import { writesOf } from "./features/writes/write-store";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // The sign-out rows of another tab's sign-out, which holds this tab's writes for the person it
 // signs out until that tab says how it ended, or goes: the writes are discarded once Dispatch has

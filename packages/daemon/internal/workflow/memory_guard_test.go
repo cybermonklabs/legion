@@ -45,6 +45,7 @@ func outboxRowsOf(t *testing.T, pool *pgxpool.Pool, issue string) int {
 // limit, and points to where heavy work runs. Nothing else is queued for the issue: no architect
 // notice, no Dispatch message.
 func TestMemoryGuardAKillIsToldToTheReportingRoleAlone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedTestingIssue(t, pool, "LEGION-209")
 	token := claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleTester))
@@ -73,6 +74,7 @@ func TestMemoryGuardAKillIsToldToTheReportingRoleAlone(t *testing.T) {
 // guard's units, and where heavy work runs. The guard's own note, for a report with no cause, is
 // TestMemoryGuardAKillIsToldToTheReportingRoleAlone's, pinned whole.
 func TestAKernelKillTellsItsRoleTheKernelStoppedItsProcess(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedTestingIssue(t, pool, "LEGION-209")
 	token := claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleTester))
@@ -105,6 +107,7 @@ func TestAKernelKillTellsItsRoleTheKernelStoppedItsProcess(t *testing.T) {
 // The fault: the cause sent to the note of a command, kernelKillNote, which tells the role its
 // session goes on; that note holds the same values, so only the note itself tells the two apart.
 func TestAKernelKillOfARolesOwnProcessTellsItsRoleItsSessionWasStopped(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedTestingIssue(t, pool, "LEGION-209")
 	token := claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleTester))
@@ -142,6 +145,7 @@ func TestAKernelKillOfARolesOwnProcessTellsItsRoleItsSessionWasStopped(t *testin
 // A kill that names an issue the daemon does not record has no role of the workflow's to tell:
 // it queues nothing and says so in one line.
 func TestMemoryGuardAKillOfAnIssueTheDaemonDoesNotRecordIsLoggedAndDropped(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	var logs bytes.Buffer
 	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
@@ -181,6 +185,7 @@ func applyControllerKill(t *testing.T, pool *pgxpool.Pool, engine *Engine, token
 // Nothing else is queued. A second kill is a second notice, though the first is still unsent: each
 // is a program the controller lost.
 func TestMemoryGuardAControllerKillIsOneControllerNoticeUnderTheProjectKey(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	token := claim.ControllerToken("legion")
@@ -219,6 +224,7 @@ func TestMemoryGuardAControllerKillIsOneControllerNoticeUnderTheProjectKey(t *te
 // another project's controller token and an issue role's token each queue nothing, and each says
 // so in one line.
 func TestMemoryGuardAControllerKillOfATokenThatIsNotTheControllersIsLoggedAndDropped(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	var logs bytes.Buffer
 	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
@@ -254,6 +260,7 @@ func TestMemoryGuardAControllerKillOfATokenThatIsNotTheControllersIsLoggedAndDro
 // the guard's of a gVisor controller pod, is still told in the guard's words, and the line logged
 // for each kill names what stopped the process and its cause.
 func TestAKernelKillInTheControllersPodTellsTheControllerTheKernelStoppedIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	var logs bytes.Buffer
 	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
@@ -308,6 +315,7 @@ func TestAKernelKillInTheControllersPodTellsTheControllerTheKernelStoppedIt(t *t
 // name holds, a name that begins or ends with a backtick is padded, and a character that does not
 // print is written as its escape.
 func TestMemoryGuardTheNoteKeepsTheExecutableInsideItsCodeSpan(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, want string }{
 		{"python3 grow.py", "`python3 grow.py`"},
 		{"sh -c 'echo `id`'", "``sh -c 'echo `id`'``"},
@@ -328,6 +336,7 @@ func TestMemoryGuardTheNoteKeepsTheExecutableInsideItsCodeSpan(t *testing.T) {
 // Sizes are written in the largest binary unit they reach, with two decimals, and in whole bytes
 // below a KiB; a size two decimals would round up to 1024.00 of a unit is the next unit's 1.00.
 func TestMemoryGuardTheNoteWritesSizesInBinaryUnits(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		bytes uint64
 		want  string

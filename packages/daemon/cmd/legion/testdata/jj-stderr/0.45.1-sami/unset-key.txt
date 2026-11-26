@@ -1,0 +1,3 @@
+jj --ignore-working-copy --color=never config list aliases.nosuch --include-defaults
+Warning: No matching config key for: aliases.nosuch
+--- exit 0

@@ -23,6 +23,7 @@ import {
   LISTENER_CALL_ATTEMPTS,
   roleToken,
 } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   LegionCapabilityReport,
   type LegionCapabilityReportBody,
@@ -107,6 +108,9 @@ import type {
   setLegionCapabilitySendTimeoutForTests as SetLegionCapabilitySendTimeoutForTests,
   setLegionStallProcessesForTests as SetLegionStallProcessesForTests,
 } from "./legion";
+
+// The contract this build speaks, as `legion.ts` reads it (`daemonContract`): this checkout's.
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 // The consumer answer every registration here is given is the harness's (`deliveryFor`), shared
 // with the tests that run the real binary.
@@ -521,7 +525,7 @@ type HostTitle = { name?: string; source?: "auto" | "user"; readonly set: string
  * the session runs now; `unresolvable` are the selectors `ctx.models.resolve` answers nothing
  * for; `suppressed` are the ones the host itself holds suppressed; and `changes` are the
  * `model_change` entries each accepted switch appended, as the host appends one with the
- * ordinary role (`session/model-controls.ts:322-325` at the pinned tag). */
+ * ordinary role (`session/model-controls.ts:327-331` at the pinned tag). */
 type HostModels = {
   readonly set: HostModel[];
   answers: boolean;
@@ -762,7 +766,7 @@ function hostTitleReader(
 }
 
 /** Lays out a `{ parentFile, childFile }` transcript pair matching OMP's own subagent
- * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:495-515 at the
+ * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:541-561 at the
  * pinned tag): the child's transcript sits inside a directory named after the parent's
  * transcript file, minus its `.jsonl` extension, so
  * `fs.existsSync(path.dirname(childFile) + ".jsonl")` finds `parentFile`. */
@@ -1241,7 +1245,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       tree: "REPO-42",
       issue: "REPO-43",
     });
-    // A role of the deployment (contract 258), `checker`, works a step as a phase worker does.
+    // A role of the deployment (the deployment roles' contract entry), `checker`, works a step as a
+    // phase worker does.
     const checker = classifySession({
       LEGION_ROLE: "checker",
       LEGION_TREE: "REPO-42",
@@ -1515,7 +1520,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           sessionId: "ses_worker",
           ompSessionFile: "/tmp/ses_worker.jsonl",
           agentId: "ses_worker",
-          pluginContract: pkg.legion.daemonApiVersion,
+          pluginContract: PLUGIN_CONTRACT,
         },
       },
       {
@@ -1560,8 +1565,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
   // dispatch://INFRA-2694: the daemon serves each caller the shape that caller's own contract
   // describes, and reads that contract from a request header. This pane states the contract of
-  // the module it loaded, its own manifest's `legion.daemonApiVersion`, on every request it
-  // makes, a GET included.
+  // the module it loaded (`daemonContract` of its own manifest) on every request it makes, a GET
+  // included.
   test("every daemon request of a pane states this build's own daemon API contract", async () => {
     const stated: { readonly path: string; readonly contract: string | null }[] = [];
     const pane = await bootPane({
@@ -1581,7 +1586,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     expect(pane.exits).toEqual([]);
     expect(stated.length).toBeGreaterThan(0);
     expect(stated.map((request) => request.contract)).toEqual(
-      stated.map(() => String(pkg.legion.daemonApiVersion))
+      stated.map(() => String(PLUGIN_CONTRACT))
     );
   });
   test("does nothing for a session with no Legion environment markers", async () => {
@@ -3694,8 +3699,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       }
     });
 
-    // A role of the deployment (contract 258) comes due after the six, at the twelfth tick, so a
-    // pod's roles still start their attempts on ticks of their own.
+    // A role of the deployment (the deployment roles' contract entry) comes due after the six, at
+    // the twelfth tick, so a pod's roles still start their attempts on ticks of their own.
     test("a role of the deployment comes due after the six, at the twelfth tick", async () => {
       const due = CAPABILITY_FIRST_DUE_TICK + LEGION_ROLES.length;
       expect(due).toBe(12);
@@ -4516,7 +4521,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
           sessionId: "ses_controller",
           ompSessionFile: "/tmp/ses_controller.jsonl",
           agentId: "ses_controller",
-          pluginContract: pkg.legion.daemonApiVersion,
+          pluginContract: PLUGIN_CONTRACT,
         },
       },
     ]);
@@ -5598,7 +5603,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
           sessionId: "ses_controller_pod",
           ompSessionFile: "/tmp/ses_controller_pod.jsonl",
           agentId: "ses_controller_pod",
-          pluginContract: pkg.legion.daemonApiVersion,
+          pluginContract: PLUGIN_CONTRACT,
         },
       },
       {

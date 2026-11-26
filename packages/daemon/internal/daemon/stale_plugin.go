@@ -155,7 +155,7 @@ func (s *supervision) refreshStalePlugins(ctx context.Context, claims []supervis
 				break
 			}
 			s.log.Warn("supervise: the stale-plugin pass could not read whether this claim's launch installs a plugin, so it decides nothing for the claim; the next sweep reads it again",
-				"claim", c.Token, "trigger", trigger, "pluginContract", c.PluginContract, "daemonApiVersion", api.DaemonAPIVersion, "error", err)
+				"claim", c.Token, "trigger", trigger, "pluginContract", c.PluginContract, "daemonApiVersion", api.DaemonAPIVersion(), "error", err)
 			continue
 		}
 		if !stale {
@@ -164,7 +164,7 @@ func (s *supervision) refreshStalePlugins(ctx context.Context, claims []supervis
 		if !s.plan.pluginRelaunchable {
 			if trigger == "boot" {
 				s.log.Error(supervise.NoPluginSourceMessage,
-					"claim", c.Token, "incarnation", c.Locator.Incarnation, "pluginContract", c.PluginContract, "daemonApiVersion", api.DaemonAPIVersion)
+					"claim", c.Token, "incarnation", c.Locator.Incarnation, "pluginContract", c.PluginContract, "daemonApiVersion", api.DaemonAPIVersion())
 			}
 			continue
 		}
@@ -241,7 +241,7 @@ func (s *supervision) refreshStalePlugins(ctx context.Context, claims []supervis
 // neither in the set nor out of it: each reader decides nothing of it and says why, the pass in a
 // line of its own and the count by ending the state's read with the error.
 func staleForTheLane(ctx context.Context, c supervise.Claim, noPluginInstall func(context.Context, supervise.Claim) (bool, error)) (bool, error) {
-	if c.Session == "" || c.PluginContract == api.DaemonAPIVersion || !supervise.HoldsCapability(c.State) || c.InPodRound() {
+	if c.Session == "" || c.PluginContract == api.DaemonAPIVersion() || !supervise.HoldsCapability(c.State) || c.InPodRound() {
 		return false, nil
 	}
 	if noPluginInstall == nil {

@@ -65,8 +65,8 @@ func putClaimRow(t *testing.T, pool *pgxpool.Pool, root, key string, role claim.
 }
 
 // readmittedTree records the running tree runningTree seeds and moves its root to backlog and back
-// to todo, as the controller's restart did on 2026-11-23. The backlog parks the root and gives its
-// slot to LEGION-306; the todo re-admits it at generation 2, where it waits in the line.
+// to todo. The backlog parks the root and gives its slot to LEGION-306; the todo re-admits it at
+// generation 2, where it waits in the line.
 //
 // With cleaned false the root returns during its linger, so its tree's lifecycle stays open.
 // With cleaned true the tree's cleanup was reserved between the backlog and the todo, as after
@@ -135,9 +135,9 @@ func openRootGate(t *testing.T, pool *pgxpool.Pool) {
 
 // registerApprovedSpec starts the root's architect and applies its register_gate of the spec a
 // person already approved, which opens the gate at once (the workflow's gateRegistered). The start
-// is the operator's retry of the architect's claim that INFRA's controller made on 2026-11-23 while
-// the roots waited in the line (the API's operator route, which the fact here does not pass
-// through): the claim stands ready at the root's new generation when its architect registers.
+// is an operator's retry of the architect's claim while the root waits in the line (the API's
+// operator route, which the fact here does not pass through): the claim stands ready at the root's
+// new generation when its architect registers.
 func registerApprovedSpec(t *testing.T, pool *pgxpool.Pool, admission *Admission, id string) {
 	t.Helper()
 	putClaimRow(t, pool, rmRoot, rmRoot, claim.RoleArchitect, 2, "ready")
@@ -193,7 +193,7 @@ func membersStarted(t *testing.T, pool *pgxpool.Pool) map[string]any {
 
 // readmittedAdmission is an admission under a cap of cap whose log the test reads: a controller
 // tick classifies every issue the line leaves behind and logs each one no held word is true of
-// (admit's logUnclassified), the line INFRA's daemon wrote for two stranded members on 2026-11-23.
+// (admit's logUnclassified), so the test can detect a stranded member.
 func readmittedAdmission(t *testing.T, cap int) (*Admission, *strings.Builder) {
 	t.Helper()
 	var lines strings.Builder
@@ -361,7 +361,7 @@ func TestReadmittedMembersOfACleanedTreeWaitForThePromotion(t *testing.T) {
 
 // A promoted generation already counts as brought back. The root is unmarked, its members
 // are at work and one is reopened at done; an admission pass must start none of them again.
-func TestReadmittedMembersOfATreePromotedBeforeTheChangeStartNothing(t *testing.T) {
+func TestReadmittedMembersOfAnAlreadyPromotedTreeStartNothing(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
 	seedSlottedInPhase(t, pool, testProject, rmRoot, "B", phase.Admitted, func(root *record.Issue) { root.Generation = 2 })

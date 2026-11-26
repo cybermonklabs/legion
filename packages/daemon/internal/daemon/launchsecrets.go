@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
@@ -28,16 +29,27 @@ const envoyTokenVariable = "ENVOY_TOKEN"
 var launchSecretVariables = []string{envoyTokenVariable, natsauth.SeedVariable}
 
 // launchSecrets are the secrets every launch's spec carries, in name order: the Envoy bearer, when
-// the daemon has one, and the pane NATS nkey seed, when the configuration or the daemon's
-// environment (lookup) names one (natsauth.Seed). The daemon's own NATS connection authenticates
-// with that seed only when the daemon has no seed of its own (natsauth.DaemonSeed,
-// chooseNATSConnection), which no launch carries. Which of them there are is known from the
-// configuration and the environment alone, so checkOperatorConfig names them without reading a file.
+// the daemon has one; the deployment's private-name rule file (leakguard.RulesSecret), when the
+// configuration or the daemon's environment names one (config.Config.PrivateNameRulesFile), as
+// its bytes verbatim, which every role's leak guard runs behind the secret's `_FILE` pointer,
+// leakguard.RulesFileVar; and the pane NATS nkey seed, when the configuration or the daemon's
+// environment (lookup) names one (natsauth.Seed). The rule file is read here and nowhere else:
+// readBoot compiles these same bytes, so the rules a role runs are the rules boot accepted, and a
+// file named or changed later reaches no launch before the daemon restarts. The daemon's own NATS
+// connection authenticates with the pane seed only when the daemon has no seed of its own
+// (natsauth.DaemonSeed, chooseNATSConnection), which no launch carries. Which of them there are is
+// known from the configuration and the environment alone, so checkOperatorConfig names them
+// without reading a file.
 func launchSecrets(cfg config.Config, lookup func(string) (string, bool)) []launchSecret {
 	var secrets []launchSecret
 	if cfg.EnvoyTokenFile != "" {
 		secrets = append(secrets, launchSecret{envoyTokenVariable, func() (string, error) {
 			return config.ReadSecretPointer("envoy_token_file", cfg.EnvoyTokenFile)
+		}})
+	}
+	if cfg.PrivateNameRulesFile != "" {
+		secrets = append(secrets, launchSecret{leakguard.RulesSecret, func() (string, error) {
+			return readPrivateNameRulesFile(cfg.PrivateNameRulesNamedBy, cfg.PrivateNameRulesFile)
 		}})
 	}
 	if natsauth.Configured(cfg.NatsNkeySeedFile, lookup) {
@@ -80,9 +92,12 @@ func launchSecretNames(cfg config.Config, lookup func(string) (string, bool)) []
 // Sandbox runtime's own refusals (sandbox.CheckPod), over the roles the runtime would run: the
 // issue roles of the deployment (sandbox.IssueRoles over deploymentApps), then the controller;
 // the exchange identity's names are among them only where runtime.kubernetes.agent_secrets names
-// an exchange_audience. A pod it takes can still hold a volume whose name a later release refuses
-// (sandbox.PodVolumeWarnings, over the same roles): it answers those warnings, which readBoot logs
-// and `legion config check` prints.
+// an exchange_audience, and DISPATCH_TOKEN_BROKER only under dispatch_token_broker. CheckPod
+// refuses a provider key named DISPATCH_TOKEN or DISPATCH_TOKEN_FILE with or without
+// dispatch_token_broker, and under it gives the broker's reason: a shared Dispatch token. A pod it
+// takes can still hold a volume whose name a later release refuses (sandbox.PodVolumeWarnings,
+// over the same roles): it answers those warnings, which readBoot logs and `legion config check`
+// prints.
 func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) ([]string, error) {
 	names := launchSecretNames(cfg, lookup)
 	for _, key := range cfg.ProviderKeys {
@@ -94,10 +109,13 @@ func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) 
 		return nil, nil
 	}
 	roles := append(sandbox.IssueRoles(deploymentApps(cfg.Roles)), claim.RoleController)
-	broker := cfg.Runtime.Kubernetes.AgentSecrets
+	audience := ""
+	if broker := cfg.Runtime.Kubernetes.AgentSecrets; broker != nil {
+		audience = broker.ExchangeAudience
+	}
 	pod := sandbox.Pod(cfg.Runtime.Kubernetes.Pod)
 	if err := sandbox.CheckPod(pod, roles, providerSecretKeys(cfg.ProviderKeys), workerImageTools, names, providersSecrets(cfg, lookup),
-		cfg.Runtime.Kubernetes.SessionStore, broker != nil && broker.ExchangeAudience != ""); err != nil {
+		cfg.Runtime.Kubernetes.SessionStore, sandbox.ExchangeOf(audience, cfg.DispatchTokenBroker)); err != nil {
 		return nil, err
 	}
 	return sandbox.PodVolumeWarnings(pod, roles), nil

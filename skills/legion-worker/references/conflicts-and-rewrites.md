@@ -1,10 +1,29 @@
 # Conflicts, retargets, and a wrong pushed commit
 
-Read it when GitHub reports the pull request `CONFLICTING`, the daemon's merge-forward message asks you to merge the base forward or to stop writing the workspace, the controller asks you to resolve a conflict, the change needs something only the base has, the pull request is retargeted, you read a merge of the base, or a commit you pushed is wrong.
+Read this section for a conflict GitHub reports, a merge-forward message, a change that needs something only the base has, a retarget, a merge of the base, or a wrong pushed commit.
 
 ## Reintegrating the base
 
-The agent of the task's implementation step (the implementer, in the default steps) merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the daemon's merge-forward message asks it (*The daemon's ask*, below), the controller asks because of a conflict, the change needs something only the base has, or the pull request was retargeted. Past the review the merger merges the base forward when it merges, for a conflict or for a check the base's newer code breaks (its role prompt, "A head that conflicts with its base"), so the implementer merges then only when the daemon's merge-forward message or the merger asks it. Never to refresh CI or pick up the default branch: each merge is a new head that reruns CI and can void a review. Never with `jj rebase`, which rewrites pushed commits (*A wrong pushed commit*, below).
+The agent of the task's implementation step (the implementer, in the default steps) merges the base into the issue branch on only three triggers:
+
+- GitHub reports the pull request `CONFLICTING`.
+  The daemon's merge-forward message counts as this trigger because two reads of GitHub confirmed the conflict (*The daemon's ask*, below).
+  A controller request counts only if it identifies a conflict GitHub reports.
+
+- The change needs something only the base has, such as a fix for its only red check.
+
+- The pull request was retargeted.
+
+Outside `implementing`, wait for the daemon's merge-forward message because the current phase owns the workspace.
+In `retro`, in `merging`, and in `accepting` with no task step after acceptance, the merger owns the merge.
+The daemon asks the merger in `merging`.
+In those phases, merge only if the daemon already sent you the merge-forward message or the merger asks you to.
+The merger merges forward for a conflict or for a check the base's newer code breaks (its role prompt, "A head that conflicts with its base").
+If any other message asks for a merge without identifying a conflict GitHub reports, reply with this rule and do not merge.
+
+Never merge just to refresh CI or to pick up the default branch.
+Each merge creates a new head, reruns CI and can void a review.
+Never use `jj rebase`, which rewrites pushed commits (*A wrong pushed commit*, below).
 
 Before you race another tree's pull request on shared files, `envoy_publish` to the agent of its implementing step that runs now (`dispatch steps --issue <KEY>` names it: an issue can have two implementer agents), ask when its next push lands, and merge once, after it.
 

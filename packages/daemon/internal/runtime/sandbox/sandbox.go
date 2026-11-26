@@ -87,7 +87,8 @@ type Runtime struct {
 	sandboxConfig                  SandboxConfig
 	resources                      PodResources
 	streamURL, daemonURL, envoyURL string
-	dispatchURL, dispatchToken     string
+	dispatchURL                    string
+	dispatch                       DispatchCredential
 	natsURLs                       []string
 	tools                          Tools
 	pod                            Pod
@@ -211,12 +212,26 @@ type Runtime struct {
 	watch map[claim.Token]runtime.Locator
 	// observer is the running Observe, nil when none runs.
 	observer *observer
-	// sessions is, by claim, the session the latest Claude Code launch of it started or resumed
-	// under and the incarnation it started as (LaunchSession), kept only when agentSecrets names
+	// sessions is, by claim, the session the latest launch of it the runtime chose the session for
+	// (a Claude Code launch, or an Oh My Pi launch that trades) started or resumed under and the
+	// incarnation it started as (LaunchSession), kept only when agentSecrets names
 	// an exchange audience (nameSession): written once that launch's start is sent, and dropped
 	// with the watch's record when the process is let go or the claim's next launch begins
 	// (forget, forgetIf). Memory only; a restarted daemon answers none.
 	sessions map[claim.Token]launchedSession
+	// dispatchTokenClaims is, by claim, the incarnation of its live generation whose start carried
+	// DISPATCH_TOKEN in its Files (DispatchTokens' LiveLaunches): set when a launch's start is sent,
+	// from that launch's own decision (launchedDispatchToken), and at each observation of a live
+	// generation from the address record its start wrote (observeDispatchToken), so a restarted
+	// daemon counts the generations an earlier one started; dropped with the watch's record when
+	// the process is let go or the claim's next launch begins (forget, forgetIf). Kept under
+	// dispatch_token_broker alone (keepDispatchToken), the one setting it is read under.
+	dispatchTokenClaims map[claim.Token]string
+	// transitionLaunches counts the launches since this runtime was built whose start carried the
+	// transition token, and lastTransitionLaunch is when the latest was sent, zero before the first
+	// (launchedDispatchToken). Memory only: they count this daemon's own boot.
+	transitionLaunches   int
+	lastTransitionLaunch time.Time
 	// podTurns serializes the relaunches, issue suspension, release and orphan deletion of one pod,
 	// keyed by its Sandbox's name (lockPod). Nothing serializes the pods of one tree against each
 	// other: each issue's pod provisions its own clone on its own volume.
@@ -378,9 +393,15 @@ func configureProber(opts Options) (*Runtime, error) {
 		return refuse("the registration deadline intervals %d is not positive", opts.RegistrationIntervals)
 	case opts.BusyBackoff <= 0:
 		return refuse("the busy backoff %s is not positive", opts.BusyBackoff)
-	case (opts.DispatchURL == "") != (opts.DispatchToken == ""):
-		return refuse("the Dispatch URL and its bearer are configured together (URL %q, bearer given: %t)",
-			opts.DispatchURL, opts.DispatchToken != "")
+	case (opts.DispatchURL == "") != (opts.Dispatch.Bearer == "" && !opts.Dispatch.Broker):
+		return refuse("the Dispatch URL and its credential are configured together (URL %q, Dispatch.Bearer given: %t, Dispatch.Broker: %t)",
+			opts.DispatchURL, opts.Dispatch.Bearer != "", opts.Dispatch.Broker)
+	case opts.Dispatch.Bearer != "" && opts.Dispatch.Broker:
+		return refuse("Dispatch.Bearer is given beside Dispatch.Broker: a launch's Dispatch credential is the shared bearer or its role's own trade at the secrets broker, never both")
+	case opts.Dispatch.Transition != "" && !opts.Dispatch.Broker:
+		return refuse("Dispatch.Transition is given without Dispatch.Broker: it is the shared token a launch into a pod built before the broker carries, which only Dispatch.Broker hands out")
+	case opts.Dispatch.Broker && (opts.AgentSecrets == nil || opts.AgentSecrets.ExchangeAudience == ""):
+		return refuse("Dispatch.Broker is set but AgentSecrets names no exchange audience: under the broker a launch carries no Dispatch token and its role trades its pod's exchange identity, which no pod carries without one")
 	case poolSet:
 		return refuse("scheduling node selector sets %s=%q: %s is the runtime's, which puts every pod on the %s pool the cluster's admission policy requires",
 			poolKey, pool, poolKey, poolValue)
@@ -433,7 +454,7 @@ func configureProber(opts Options) (*Runtime, error) {
 	}
 	issueRoles := issueRolesOf(opts.RoleApps.Deployed)
 	if err := CheckPod(opts.Pod, append(slices.Clone(issueRoles), claim.RoleController), opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore,
-		opts.AgentSecrets != nil && opts.AgentSecrets.ExchangeAudience != ""); err != nil {
+		exchangeOf(opts.AgentSecrets, opts.Dispatch.Broker)); err != nil {
 		return refuse("%v", err)
 	}
 	for _, name := range opts.ProvidersSecrets {
@@ -462,7 +483,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		namespace: opts.Namespace, project: opts.Project, image: opts.Image, storageClass: opts.StorageClass,
 		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, sandboxConfig: opts.Sandbox, resources: opts.Resources,
 		streamURL: opts.StreamURL, daemonURL: opts.DaemonURL, envoyURL: opts.EnvoyURL, dispatchURL: opts.DispatchURL,
-		dispatchToken: opts.DispatchToken, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
+		dispatch: opts.Dispatch, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
 		pod: opts.Pod, issueRoles: issueRoles, roleApps: opts.RoleApps,
 		roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
@@ -478,8 +499,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
-		taken:       map[string]sandboxTaken{},
-		sessions:    map[claim.Token]launchedSession{},
+		taken: map[string]sandboxTaken{}, sessions: map[claim.Token]launchedSession{}, dispatchTokenClaims: map[claim.Token]string{},
 		launchedApp: map[slotKey]string{}, launching: map[slotKey]int{}, updating: map[slotKey]chan struct{}{},
 		cacheConfig: opts.RepositoryCache, cacheRepositories: opts.CacheRepositories,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
@@ -494,11 +514,11 @@ func configureProber(opts Options) (*Runtime, error) {
 		r.log = slog.Default()
 	}
 	// The launchers carry the shared public leak check to a pod before any of its roles start,
-	// take its memory guard's kill reports, an issue pod's and the controller pod's, and its cache
-	// trimmer's sweep reports, and log what they could not carry or record, so they are built once
-	// the runtime's log is settled.
-	r.launchers = newLaunchers(opts.LeakCheckSetting, opts.LeakCheck, opts.MemoryGuardKilled, opts.ControllerMemoryGuardKilled,
-		opts.VolumeReported, r.log)
+	// record a pod of a kept volume at each role's start in it, take its memory guard's kill
+	// reports, an issue pod's and the controller pod's, and its cache trimmer's sweep reports, and
+	// log what they could not carry or record, so they are built once the runtime's log is settled.
+	r.launchers = newLaunchers(opts.LeakCheckSetting, opts.LeakCheck, opts.KeptPodStart, opts.MemoryGuardKilled,
+		opts.ControllerMemoryGuardKilled, opts.VolumeReported, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape in each sandbox is encoded here and only
 	// read afterwards.
@@ -998,7 +1018,12 @@ func (r *Runtime) ProvisionsWorkspaces() bool { return true }
 // every other resident role shares that pod and stays reachable until its own explicit stop or
 // issue-level lifecycle effect. A recorded process its pod or launcher shows already ended — the
 // pod replaced or gone, or the launcher running no child or another generation — is stopped
-// already, and nothing is sent.
+// already, and nothing is sent. So is one whose launcher is not connected from a pod still in, or
+// failed in, an init container (beforeLaunchers): no launcher of that pod connected since its init
+// containers last ran, and none can until they end, so there is no answer to wait for. Waiting for
+// one held the stop for the boot timeout and the termination grace and then failed it, while the
+// claim it stops stayed held behind it. Only a stop a launcher can answer is waited on: a
+// connected launcher's, and the reconnect of one of a pod past its init containers.
 func (r *Runtime) Suspend(ctx context.Context, loc runtime.Locator) error {
 	if err := r.checkLocator(loc); err != nil {
 		return err
@@ -1016,7 +1041,14 @@ func (r *Runtime) Suspend(ctx context.Context, loc runtime.Locator) error {
 		r.forgetIf(loc)
 		return nil
 	}
-	if state, connected := r.launchers.state(loc.Claim, loc.Sandbox.PodUID); connected && (state.Child == nil || state.Child.Generation != loc.Sandbox.Generation) {
+	state, connected := r.launchers.state(loc.Claim, loc.Sandbox.PodUID)
+	if connected && (state.Child == nil || state.Child.Generation != loc.Sandbox.Generation) {
+		r.forgetIf(loc)
+		return nil
+	}
+	if !connected && beforeLaunchers(pod) {
+		r.log.Info("sandbox runtime: suspend sends no stop: the pod is in or failed in an init container, so no launcher of it is connected",
+			"claim", loc.Claim, "sandbox", loc.Sandbox.Name, "pod", loc.Sandbox.PodUID, "generation", loc.Sandbox.Generation)
 		r.forgetIf(loc)
 		return nil
 	}

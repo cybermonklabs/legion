@@ -334,6 +334,7 @@ func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks 
 			}
 		}
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -341,7 +342,9 @@ func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks 
 // every role that generation holds, so a role an earlier version defined and this one does not is
 // gone, and nil leaves the generation with none. A role of another issue, generation or version is
 // refused before anything is written, so the transaction stays usable; a version the issue's plans
-// do not hold is refused by the store (the foreign key on issue_plans).
+// do not hold is refused by the store (the foreign key on issue_plans). The roles are a plan's
+// rows, which admission reads, so each statement that matches a row keeps the mark
+// (noteRowsWritten).
 func (s *Postgres) PutPlanRoles(ctx context.Context, tx pgx.Tx, issue string, generation uint64, version int, roles []PlanRole) error {
 	describe := fmt.Sprintf("put the roles of version %d of the plan of %s at generation %d", version, issue, generation)
 	for _, role := range roles {
@@ -349,15 +352,19 @@ func (s *Postgres) PutPlanRoles(ctx context.Context, tx pgx.Tx, issue string, ge
 			return fmt.Errorf("%s: role %s is of version %d of %s at generation %d", describe, role.Role, role.PlanVersion, role.Issue, role.Generation)
 		}
 	}
-	if _, err := tx.Exec(ctx, `delete from plan_roles where issue = $1 and generation = $2`, issue, int64(generation)); err != nil {
+	tag, err := tx.Exec(ctx, `delete from plan_roles where issue = $1 and generation = $2`, issue, int64(generation))
+	if err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
 	}
+	noteRowsWritten(ctx, tag)
 	for _, role := range roles {
-		if _, err := tx.Exec(ctx, `insert into plan_roles (issue, generation, role, plan_version, type, model, prompt)
+		tag, err := tx.Exec(ctx, `insert into plan_roles (issue, generation, role, plan_version, type, model, prompt)
 			values ($1, $2, $3, $4, $5, $6, $7)`,
-			issue, int64(generation), role.Role, version, role.Type, role.Model, role.Prompt); err != nil {
+			issue, int64(generation), role.Role, version, role.Type, role.Model, role.Prompt)
+		if err != nil {
 			return fmt.Errorf("%s: role %s: %w", describe, role.Role, err)
 		}
+		noteRowsWritten(ctx, tag)
 	}
 	return nil
 }
@@ -684,15 +691,18 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 			return fmt.Errorf("%s: %w", describe, err)
 		}
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
 // DeletePlan deletes the plan of issue at generation, every row of it in each of the four tables
 // (the tasks, the steps and the roles go with their versions, on delete cascade).
 func (s *Postgres) DeletePlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error {
-	if _, err := tx.Exec(ctx, `delete from issue_plans where issue = $1 and generation = $2`, issue, int64(generation)); err != nil {
+	tag, err := tx.Exec(ctx, `delete from issue_plans where issue = $1 and generation = $2`, issue, int64(generation))
+	if err != nil {
 		return fmt.Errorf("delete the plan of %s at generation %d: %w", issue, generation, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
@@ -719,6 +729,9 @@ func (s *Postgres) DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, gen
 	}
 	if len(kept) > 0 {
 		return fmt.Errorf("%s: the plan holds no waiting or stopped task %v", describe, kept)
+	}
+	if len(deleted) > 0 {
+		noteRecordWrite(ctx)
 	}
 	return nil
 }
@@ -753,6 +766,7 @@ func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, genera
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task that is in the workflow, or the task no such step", describe)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -772,6 +786,7 @@ func (s *Postgres) StopTask(ctx context.Context, tx pgx.Tx, issue string, genera
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task that is not done and in the workflow", describe)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -859,6 +874,7 @@ func (s *Postgres) PutReturnCounts(ctx context.Context, tx pgx.Tx, issue string,
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task", describe)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 

@@ -984,7 +984,7 @@ func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
 		}
 		putClaim(t, cfg, supervise.Claim{
 			Token: token, Project: project, Tree: issue, Issue: issue, Role: role,
-			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion,
+			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion(),
 		})
 		writePrompt(t, cfg, token)
 		unfinished[token] = role
@@ -1114,7 +1114,7 @@ func TestAControllerRegistrationIsInTheStateAndSurvivesARestart(t *testing.T) {
 		t.Fatalf("controllerLocator before any controller = %+v, want none", state.ControllerLocator)
 	}
 
-	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusOK {
 		t.Fatalf("controller secret = %d; body %s", status, body)
 	}
@@ -1124,7 +1124,7 @@ func TestAControllerRegistrationIsInTheStateAndSurvivesARestart(t *testing.T) {
 	}
 	status, body = d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: capability.Secret, SessionID: "ses_controller", OmpSessionFile: "/sessions/ses_controller.jsonl",
-		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the controller = %d; body %s", status, body)
@@ -2310,13 +2310,16 @@ func TestTheTmuxOptionsCarryTheTakeOver(t *testing.T) {
 }
 
 // Every launch secret's pointer is a pane variable the operator may not set
-// (runtime.PaneVariableRefusal), refused at load and at boot rather than at every launch.
+// (runtime.PaneVariableRefusal), refused at load and at boot rather than at every launch: the
+// Envoy bearer's, the deployment's private-name rule file's and the pane NATS seed's. The names
+// are known from the configuration alone, so none of the three files is read to name them.
 func TestEveryLaunchSecretsPointerIsRefusedAsAPaneVariable(t *testing.T) {
 	t.Parallel()
-	cfg := config.Config{EnvoyTokenFile: "/var/run/legion/ENVOY_TOKEN", NatsNkeySeedFile: "/var/run/legion/NATS_NKEY_SEED"}
+	cfg := config.Config{EnvoyTokenFile: "/var/run/legion/ENVOY_TOKEN", NatsNkeySeedFile: "/var/run/legion/NATS_NKEY_SEED",
+		PrivateNameRulesFile: "/etc/legion/private-names.toml", PrivateNameRulesNamedBy: "private_name_rules_file"}
 	names := launchSecretNames(cfg, lookup(nil))
-	if len(names) != 2 {
-		t.Fatalf("launchSecretNames = %v, want both launch secrets of a daemon configured with each", names)
+	if want := []string{"ENVOY_TOKEN", leakguard.RulesSecret, "NATS_NKEY_SEED"}; !slices.Equal(names, want) {
+		t.Fatalf("launchSecretNames = %v, want %v, every launch secret of a daemon configured with each, in name order", names, want)
 	}
 	for _, name := range names {
 		if runtime.PaneVariableRefusal(name+"_FILE", "/etc/acme/secret") == "" {

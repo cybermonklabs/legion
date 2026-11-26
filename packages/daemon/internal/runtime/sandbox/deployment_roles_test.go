@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -140,6 +142,47 @@ func TestALauncherOfADeploymentRoleIsAccepted(t *testing.T) {
 	}
 }
 
+func TestALauncherOfADroppedRoleCanReconnectAndStop(t *testing.T) {
+	g := deploymentRig(t)
+	const checker claim.Role = "checker"
+	token, err := claim.NewToken(testProject, testTree, checker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc := g.spawn(testSpec(t, token, checker, testTree))
+	logs := &lockedLog{}
+	restarted := secondRuntime(t, g, func(o *Options) {
+		*o = g.opts
+		o.DeploymentApps = appauth.DeploymentApps{"critic": appauth.Review}
+		o.Log = slog.New(slog.NewTextHandler(logs, nil))
+		withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)})(g, o)
+	})()
+	if slices.Contains(restarted.issueRoles, checker) {
+		t.Fatal("checker is still configured after restart")
+	}
+
+	hello := rigLauncherHello(g, loc.Sandbox.Name, loc.Sandbox.PodUID, checker)
+	hello.Token += "-wrong"
+	if handler, _, reason := restarted.LauncherResolver()(hello); handler != nil || reason != "launcher token is not current" {
+		t.Errorf("dropped role with a wrong token: accepted=%t, refusal=%q", handler != nil, reason)
+	}
+
+	restarted.refreshGitHubCredentials(g.ctx)
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "github credential refresh failed") && strings.Contains(line, "role=checker") {
+			t.Errorf("refresh tried the dropped role: %s", line)
+		}
+	}
+
+	launcher := redial(t, g, token, loc.Sandbox.Generation, false)
+	if err := restarted.Suspend(g.ctx, loc); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := launcher.commands(), fmt.Sprintf("stop %d", loc.Sandbox.Generation); got != want {
+		t.Errorf("dropped role's launcher received %q, want %q", got, want)
+	}
+}
+
 // A line of a pod's log that a role of the deployment wrote is that role's, never the launcher's
 // own, and the bound of a launch counts the calls of every role of the runtime's issue pods: a
 // runtime with one role more than Legion's six has a bound longer by that role's calls.
@@ -177,10 +220,10 @@ func TestAnOperatorVolumeMayNotTakeADeploymentRolesVolumeName(t *testing.T) {
 	legion := append(slices.Clone(claim.Roles), claim.RoleController)
 	withChecker := append(slices.Clone(legion), "checker")
 	want := "runtime.kubernetes.pod.volumes[0].name launcher-checker is a volume Legion puts in every pod"
-	if err := CheckPod(pod, withChecker, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err == nil || err.Error() != want {
+	if err := CheckPod(pod, withChecker, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err == nil || err.Error() != want {
 		t.Errorf("CheckPod with the checker among the roles = %v, want %q", err, want)
 	}
-	if err := CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err != nil {
+	if err := CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err != nil {
 		t.Errorf("CheckPod with no checker among the roles = %v, want it taken", err)
 	}
 	if warnings := PodVolumeWarnings(pod, legion); len(warnings) != 0 {

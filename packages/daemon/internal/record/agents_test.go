@@ -197,7 +197,7 @@ func TestANameAKeyHeldIsKeptForThatKey(t *testing.T) {
 // A name whose claim holds the session of a key's agent is that key's, after the versions that
 // left the key out have replaced every row that named it: version 2, `implementer reviewer`,
 // replaced key k's rows, so version 3, `planner implementer reviewer`, is named from rows that name
-// no key, and the claim implementer, whose session is key k's (KeySessionsOf), keeps implementer
+// no key, and the claim implementer, whose session is key k's (NameClaimsOf), keeps implementer
 // for key k. Version 3's implementer takes implementer-2, which only version 2's step with no key
 // held, and version 4, `implementer:k reviewer`, gives key k implementer, the name whose claim
 // holds its session; another key is given a name of its own. Each claim is kept by its name with
@@ -212,22 +212,22 @@ func TestANameWhoseClaimHoldsAKeysSessionIsKeptForThatKey(t *testing.T) {
 		}
 		return got
 	}
-	sessions := KeySessionsOf([]IssueClaim{
+	claims := NameClaimsOf([]IssueClaim{
 		{Token: token("implementer"), Role: "implementer", SessionAgent: "key:k"},
 		{Token: token("implementer-2"), Role: "implementer", SessionAgent: "step:1:a"},
 		{Token: token("reviewer"), Role: "reviewer"},
 		{Token: token("tester"), Role: "tester", SessionAgent: "key:owner"},
 	})
-	want := KeySessions{"implementer": {Role: "implementer", Key: "k"}, "implementer-2": {Role: "implementer"},
+	want := NameClaims{"implementer": {Role: "implementer", Key: "k"}, "implementer-2": {Role: "implementer"},
 		"reviewer": {Role: "reviewer"}, "tester": {Role: "tester"}}
-	if !maps.Equal(sessions, want) {
-		t.Fatalf("the key sessions of the claims = %v, want %v", sessions, want)
+	if !maps.Equal(claims, want) {
+		t.Fatalf("the claims by name = %v, want %v", claims, want)
 	}
 	v2 := []PlanStep{
 		{Generation: 1, Task: "a", Position: 1, Role: "implementer", Agent: "implementer-2"},
 		{Generation: 1, Task: "a", Position: 2, Role: "reviewer", Agent: "reviewer"},
 	}
-	v3 := NameAgents(v2, nil, sessions, []PlanStep{
+	v3 := NameAgents(v2, nil, claims, []PlanStep{
 		{Generation: 1, Task: "a", Position: 1, Role: "planner"},
 		{Generation: 1, Task: "a", Position: 2, Role: "implementer"},
 		{Generation: 1, Task: "a", Position: 3, Role: "reviewer"},
@@ -235,13 +235,13 @@ func TestANameWhoseClaimHoldsAKeysSessionIsKeptForThatKey(t *testing.T) {
 	if got := []claim.Agent{v3[0].Agent, v3[1].Agent, v3[2].Agent}; !slices.Equal(got, []claim.Agent{"planner", "implementer-2", "reviewer"}) {
 		t.Fatalf("version 3, beside the claim implementer of key k's session: names %q, want planner, implementer-2 and reviewer", got)
 	}
-	if v4 := NameAgents(v3, nil, sessions, []PlanStep{
+	if v4 := NameAgents(v3, nil, claims, []PlanStep{
 		{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "k"},
 		{Generation: 1, Task: "a", Position: 2, Role: "reviewer"},
 	}); v4[0].Agent != "implementer" {
 		t.Errorf("key k in version 4: name %q, want implementer, the name whose claim holds its session", v4[0].Agent)
 	}
-	if other := NameAgents(v3, nil, sessions, []PlanStep{
+	if other := NameAgents(v3, nil, claims, []PlanStep{
 		{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "j"},
 	}); other[0].Agent == "implementer" {
 		t.Errorf("key j beside the claim implementer of key k's session: name %q, want a name of its own", other[0].Agent)
@@ -272,7 +272,7 @@ func TestAKeyDoesNotTakeANameAnotherKeyHeldAfterItInRowsOfTheReleaseBefore(t *te
 		{name: "control: key b, which held the name last", key: "b", want: "implementer"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := NameAgents(earlier, nil, KeySessions{}, []PlanStep{
+			got := NameAgents(earlier, nil, NameClaims{}, []PlanStep{
 				{Generation: 3, Task: "v", Position: 1, Role: "implementer", AgentKey: tc.key},
 				{Generation: 3, Task: "v", Position: 2, Role: "reviewer"},
 			})
@@ -586,7 +586,7 @@ func TestANameWhoseClaimHoldsAnotherRoleIsNotGivenToAnAgentOfALongRole(t *testin
 		{name: "control: the claim holds the step's own role", holds: b, taken: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			claims := KeySessionsOf([]IssueClaim{{Token: token, Role: claim.Role(tc.holds), SessionAgent: "step:2:t"}})
+			claims := NameClaimsOf([]IssueClaim{{Token: token, Role: claim.Role(tc.holds), SessionAgent: "step:2:t"}})
 			got := NameAgents(v2, nil, claims, v3)
 			if taken := got[1].Agent == cut; taken != tc.taken {
 				t.Errorf("version 3's step 2, of %s, beside the claim %s of %s: name %q, want %s taken = %v", b, cut, tc.holds,

@@ -63,9 +63,9 @@ func applyArchitectUpgrade(t *testing.T, pool *pgxpool.Pool) {
 }
 
 // phaseStepKeyVersion is the migration that keys a phases row by its step
-// (internal/store/migrations/20261125044726_phase_step_key.up.sql), whose version stands above
+// (internal/store/migrations/20261125114500_phase_step_key.up.sql), whose version stands above
 // every migration these tests run, so a rollback past any of them runs its way back first.
-const phaseStepKeyVersion = 20261125044726
+const phaseStepKeyVersion = 20261125114500
 
 // phaseStepKeyWayBack is the way back the header of phaseStepKeyVersion carries
 // (migrations.WayBack): it keeps the row of each role with the highest entry, writes the key

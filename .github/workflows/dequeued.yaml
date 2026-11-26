@@ -63,7 +63,7 @@ jobs:
       JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # `gh run list` and the force-cancel need `actions: write`, and nothing here needs another
     # scope: the checkout and the GraphQL read are of a public repository, which GitHub serves to
-    # any valid token — the same ground on which ci.yaml's `cancel-started` holds `actions: write`
+    # any valid token — the same ground on which `.github/workflows/ci.yaml#cancel-started` holds `actions: write`
     # alone and still checks out.
     permissions:
       actions: write

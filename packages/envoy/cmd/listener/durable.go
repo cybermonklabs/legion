@@ -381,7 +381,10 @@ func waitUnlessDone(ctx context.Context, d time.Duration) error {
 // consumer holds it or the session is another listener's (agentSubjectNeedsDelivery). Any other
 // subject does when it matches a topic of an interest of this machine (the registry's subject
 // index) whose session's consumer does not hold it; with none, the fan-out would deliver it to
-// nobody and report nothing.
+// nobody and report nothing. An interest that matches subject only through a topic its session's
+// consumer filter leaves out is no recipient at all, an earlier build's row, and is skipped with
+// its WARN line (skipLeftOutInterest): were it read as a consumer that holds the message, the
+// message would be acknowledged here, before the fan-out could see it, with no word.
 func durableNeedsDelivery(cfg listenerDeliveryHandlerConfig, subject string, storedSeq uint64) (needed bool, skipped int) {
 	if strings.HasPrefix(subject, contracts.RoleTopicPrefix) {
 		return true, 0
@@ -390,6 +393,9 @@ func durableNeedsDelivery(cfg listenerDeliveryHandlerConfig, subject string, sto
 		return agentSubjectNeedsDelivery(cfg, agentSubjectSession(subject), storedSeq)
 	}
 	for _, interest := range cfg.registry.Match(cfg.machineID, subject) {
+		if skipLeftOutInterest(cfg.logger, interest, subject) {
+			continue
+		}
 		entry, err := cfg.sessions.Get(interest.SessionID)
 		if err != nil || !entry.ConsumerHoldsStored(storedSeq) {
 			return true, 0

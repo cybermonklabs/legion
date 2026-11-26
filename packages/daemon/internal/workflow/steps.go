@@ -99,6 +99,17 @@ func placeNamed(place record.TaskPlace, at phase.Phase) stepSite {
 	return stepSite{at: at, place: place, named: true}
 }
 
+// resolveSite uses the named place on a stored walk. A legacy walk locates the phase on its line.
+func (w Walk) resolveSite(site stepSite) (record.TaskPlace, bool) {
+	if site == (stepSite{}) {
+		return record.TaskPlace{}, false
+	}
+	if site.named && w.Stored {
+		return site.place, true
+	}
+	return w.placeIn(site.at)
+}
+
 // stepAt is the one place that decides the step issue runs at site on w, the walk of its run, and
 // whether its runs are recorded (placeOnWalk), and false for no place and for a phase that runs no
 // step — admitted, awaiting a person, held, done, a phase the walk's line does not hold — or a
@@ -116,13 +127,7 @@ func stepAt(w Walk, issue record.Issue, site stepSite) (standing, bool) {
 // runs today's steps of the task default (todaysSteps), so an issue that ran before plan rows
 // keeps the ids of its records.
 func placeOnWalk(w Walk, site stepSite) (place record.StepPlace, role stepRole, typ plan.Type, ok bool) {
-	if site == (stepSite{}) {
-		return record.StepPlace{}, "", "", false
-	}
-	stands, ok := site.place, site.named
-	if !site.named || !w.Stored {
-		stands, ok = w.placeIn(site.at)
-	}
+	stands, ok := w.resolveSite(site)
 	if !ok {
 		return record.StepPlace{}, "", "", false
 	}
@@ -208,8 +213,12 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 	// The moment is the one the count of starts keeps, which PostgreSQL holds to the microsecond
 	// and the end reads back, so the start and the end write one moment (endRun).
 	now := e.now().Truncate(time.Microsecond)
+	drawn, err := e.variantOf(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
 	write, err := e.store.RaiseStepStarts(ctx, tx, issue.Key, step.place, func(starts int64) record.StepRecord {
-		write := stepWrite(issue, step.place, step.role, step.typ, string(agent), starts)
+		write := stepWrite(issue, drawn, step.place, step.role, step.typ, string(agent), starts)
 		write.StartedAt = new(now)
 		return write
 	})
@@ -236,8 +245,12 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w 
 	if !ok {
 		return nil
 	}
-	_, err := e.endRun(ctx, tx, before.Key, step.place, end, func(start record.StepStart) record.StepRecord {
-		return stepWrite(before, step.place, step.role, step.typ, start.Agent, start.Starts)
+	drawn, err := e.variantOf(ctx, tx, before.Key)
+	if err != nil {
+		return err
+	}
+	_, err = e.endRun(ctx, tx, before.Key, step.place, end, func(start record.StepStart) record.StepRecord {
+		return stepWrite(before, drawn, step.place, step.role, step.typ, start.Agent, start.Starts)
 	})
 	return err
 }
@@ -301,7 +314,11 @@ func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil || latest.Run != record.RunEnded {
 		return err
 	}
-	write := stepWrite(issue, step.place, step.role, step.typ, latest.Agent, latest.Starts)
+	drawn, err := e.variantOf(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	write := stepWrite(issue, drawn, step.place, step.role, step.typ, latest.Agent, latest.Starts)
 	write.Report = new(report)
 	return e.enqueue(ctx, tx, issue.Key, write)
 }
@@ -495,11 +512,29 @@ func stepClaim(issue record.Issue, key string, role claim.Role) (claim.Token, er
 	return claim.NewToken(project, key, role)
 }
 
-// stepWrite is the identity of one run of a step of issue: the fields every write of its record
-// carries.
-func stepWrite(issue record.Issue, place record.StepPlace, role stepRole, typ plan.Type, agent string, starts int64) record.StepRecord {
+// stepWrite is the identity of one run of a step of issue, the fields every write of its record
+// carries, and drawn, the experiment and the variant of issue's group (variantOf), nil for an issue
+// of no group. Every write of a step record is built here, and each caller reads drawn with
+// variantOf first, so each write names its issue's variant. A nil drawn compiles, so the compiler
+// holds no caller to that read: TestEachStepRecordNamesTheVariantOfItsIssue holds the start, the
+// end, the rating and the late report, and TestTheStartTheBootOpensNamesTheVariantOfItsIssue the
+// start the boot opens (OpenUncountedRuns).
+func stepWrite(issue record.Issue, drawn *record.StepExperiment, place record.StepPlace, role stepRole, typ plan.Type, agent string, starts int64) record.StepRecord {
 	return record.StepRecord{ID: StepID(issue.Key, issue.Generation, place, starts), Task: place.Task,
-		Step: place.Place, Kind: place.Kind, Role: string(role), Type: string(typ), Agent: agent, Generation: issue.Generation}
+		Step: place.Place, Kind: place.Kind, Role: string(role), Type: string(typ), Agent: agent, Generation: issue.Generation,
+		StepExperiment: drawn}
+}
+
+// variantOf is the experiment and the variant of issue's group, the row of its draw that says how
+// it is done (groupOf), as a step record names them: nil for an issue of no group, whose records
+// name neither. The row was written once, at the issue's draw, so every record of the issue names
+// the one variant it was drawn into, whatever the project's settings say now.
+func (e *Engine) variantOf(ctx context.Context, tx pgx.Tx, issue string) (*record.StepExperiment, error) {
+	group, err := e.groupOf(ctx, tx, issue)
+	if err != nil || group.Experiment == "" || group.Variant == "" {
+		return nil, err
+	}
+	return &record.StepExperiment{Experiment: group.Experiment, Variant: group.Variant}, nil
 }
 
 // readAgent is what the daemon reads of agent now (Config.StepAgent), in the fact's transaction

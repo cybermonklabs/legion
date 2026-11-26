@@ -1,0 +1,21 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addKeyPaths": [
+        "startWaitsForPod.*.role",
+        "startWaitsForPod.*.token"
+      ]
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "issues.*.startWaitsForPod.*.role",
+        "issues.*.startWaitsForPod.*.token"
+      ]
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": []
+}

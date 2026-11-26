@@ -63,7 +63,7 @@ func (r *outbox) prepareClaimForStep(ctx context.Context, machine *supervise.Mac
 	var reason string
 	switch {
 	case !step:
-		return r.suspendToLeave(ctx, machine, token, row, payload, work)
+		return suspendToLeave(ctx, machine, token, row.Issue, payload.Role, work)
 	case rerole:
 		if err := r.reroleWaitsForCredential(ctx, row, issue, token, payload.Role); err != nil {
 			return err
@@ -77,7 +77,7 @@ func (r *outbox) prepareClaimForStep(ctx context.Context, machine *supervise.Mac
 			return err
 		}
 		if changed == "" {
-			return r.suspendToLeave(ctx, machine, token, row, payload, work)
+			return suspendToLeave(ctx, machine, token, row.Issue, payload.Role, work)
 		}
 		reason = changed
 	}

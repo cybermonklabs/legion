@@ -75,9 +75,10 @@ type givenVersion struct {
 // Each step of the version is named from every row of the issue as it stands now
 // (record.NameAgents, Store.PlanStepsOf), before anything is written, since the write deletes the
 // steps of each task it gives, from the lasting record of the names keys held (record.KeyNames),
-// and from the issue's claims whose sessions are a key's agent's (keySessions), which keep a key's
-// name once no row names the key: so a key keeps its name, and a fresh agent that would need the
-// name a key holds gets a name of its own.
+// and from the issue's stored claims by name (nameClaims), each with its role and the key whose
+// agent's session it holds, which keep a key's name once no row names the key and keep a name off
+// an agent of another role: so a key keeps its name, and a fresh agent that would need the name a
+// key holds gets a name of its own.
 //
 // A recorded issue whose group takes no plan from its owner (groupOf, takesNoPlan) is answered
 // PLAN_NOT_TAKEN, right after the generation is judged, so no plan of it is stored, also one given
@@ -153,31 +154,31 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 	if err != nil {
 		return givenVersion{}, nil, err
 	}
-	var sessions record.KeySessions
+	var claims record.NameClaims
 	if issue != nil {
-		if sessions, err = e.keySessions(ctx, tx, *issue); err != nil {
+		if claims, err = e.nameClaims(ctx, tx, *issue); err != nil {
 			return givenVersion{}, nil, err
 		}
 	}
-	given.steps = record.NameAgents(earlier, held, sessions, given.steps)
+	given.steps = record.NameAgents(earlier, held, claims, given.steps)
 	return given, nil, nil
 }
 
-// keySessions is issue's stored claims by name, each with its role and the key whose agent's
-// session it holds (record.KeySessionsOf), read in tx with the rows a version is named from: the
+// nameClaims is issue's stored claims by name, each with its role and the key whose agent's
+// session it holds (record.NameClaimsOf), read in tx with the rows a version is named from: the
 // claim of a key's name and the session it holds wait for the key whatever the rows still name, and
 // a name whose claim holds another role is no name for an agent of a role (record.NameAgents).
-func (e *Engine) keySessions(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.KeySessions, error) {
+func (e *Engine) nameClaims(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.NameClaims, error) {
 	_, claims, err := e.issueClaims(ctx, tx, issue)
 	if err != nil {
 		return nil, err
 	}
-	return record.KeySessionsOf(claims), nil
+	return record.NameClaimsOf(claims), nil
 }
 
 // issueClaims is the claims' token of issue's project (claim.ProjectToken) and every stored claim
 // of issue under it, in any state (record.Store's IssueClaims): the one read of an issue's claims
-// the workflow makes, which the names a key holds (keySessions) and the claims a request reaches
+// the workflow makes, which the claims by name (nameClaims) and the claims a request reaches
 // (claimTargets) read.
 func (e *Engine) issueClaims(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, []record.IssueClaim, error) {
 	project, err := claim.ProjectToken(issue.Project)

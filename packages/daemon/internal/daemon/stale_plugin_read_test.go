@@ -35,7 +35,7 @@ func staleProbers(t *testing.T, n int) []supervise.Claim {
 		}
 		claims = append(claims, supervise.Claim{
 			Token: token, Project: project, Tree: issue, Issue: issue, Role: "prober", Generation: 1,
-			State: supervise.StateIdle, Session: "ses_" + issue, PluginContract: api.DaemonAPIVersion - 1, Locator: pluginTestLocator(token),
+			State: supervise.StateIdle, Session: "ses_" + issue, PluginContract: api.DaemonAPIVersion() - 1, Locator: pluginTestLocator(token),
 		})
 	}
 	return claims
@@ -46,7 +46,7 @@ func staleProbers(t *testing.T, n int) []supervise.Claim {
 // harness is read (supervision.backends).
 func stalePassSupervision(t *testing.T, logs *syncBuffer, read roleBackend) *supervision {
 	t.Helper()
-	sup, _ := newPluginSupervisor(t, api.DaemonAPIVersion, false)
+	sup, _ := newPluginSupervisor(t, api.DaemonAPIVersion(), false)
 	return &supervision{
 		cfg: config.Config{Runtime: config.Runtime{Name: "kubernetes"}}, log: jsonLogger(logs), supervisor: sup,
 		plan: plan{pluginRelaunchable: false}, refreshGate: supervise.NewRefreshGate(0), backends: read,

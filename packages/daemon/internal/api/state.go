@@ -101,6 +101,10 @@ type State struct {
 	// (runtime.kubernetes.agent_secrets), absent when the deployment configures
 	// no broker.
 	AgentSecretsLogin *AgentSecretsLoginView `json:"agentSecretsLogin,omitempty"`
+	// DispatchCredential is the daemon's own Dispatch credential under dispatch_token_broker and
+	// the two counts a deployment reads before it removes dispatch_token_transition_file
+	// (DispatchCredentialView), absent when the setting is off (contract 275).
+	DispatchCredential *DispatchCredentialView `json:"dispatchCredential,omitempty"`
 	// Capabilities is the deployment's capability report (capabilities.Deployment.Report), one row
 	// per capability in the table's order: what the worker image was probed for, what the live
 	// sessions' reports prove (present), fail (open) or have not reported yet (unchecked), what a
@@ -530,6 +534,22 @@ type AgentSecretsLoginView struct {
 	State string `json:"state"`
 }
 
+// DispatchCredentialView is the daemon's Dispatch credential under dispatch_token_broker, as the
+// state shows it: Session, the session its own Dispatch calls run under (`legion-daemon:<project>`,
+// dispatch.DaemonSession), which the secrets broker grants a token of; TransitionLaunches, the
+// launches since the daemon's boot that carried the transition token of
+// dispatch_token_transition_file, and LastTransitionLaunchAt, when the latest of them was sent,
+// null before the first; and LiveLaunchesWithDispatchToken, the live launches whose start carried a
+// Dispatch token, whichever daemon started them (sandbox.Runtime.DispatchTokens). A deployment
+// removes dispatch_token_transition_file once the last is zero: a pod started before the setting
+// holds the shared token while a generation started with it runs. Never a token.
+type DispatchCredentialView struct {
+	Session                       string     `json:"session"`
+	TransitionLaunches            int        `json:"transitionLaunches"`
+	LastTransitionLaunchAt        *time.Time `json:"lastTransitionLaunchAt"`
+	LiveLaunchesWithDispatchToken int        `json:"liveLaunchesWithDispatchToken"`
+}
+
 // MarshalJSON keeps `issues` an object and `pendingStatusWrites`, `heldOutboxRows`,
 // `strandedClaims`, `wakesWaiting`, `capabilities` and `consumers` arrays on the wire: a nil Go map
 // or slice is `null`, which the plugin's reader refuses. The exceptions are the three keys a
@@ -831,9 +851,10 @@ type Issue struct {
 	// a phases row names one, and otherwise a claim of that role.
 	Workers map[claim.Role]PhaseView `json:"workers"`
 	// OtherClaims is every claim of the issue that neither `architect` nor `workers` shows, each
-	// with the role it holds, in token order, and absent where there is none (contract 259). Two
-	// claims of one issue can hold one role (record.WorkerClaim), and `workers` holds one entry per
-	// role, so a reader finds the other one here, by its token (ClaimView.Token).
+	// with the role it holds, in token order, and absent where there is none (the stranded
+	// token's entry, strandedTokenContract). Two claims of one issue can hold one role
+	// (record.WorkerClaim), and `workers` holds one entry per role, so a reader finds the other
+	// one here, by its token (ClaimView.Token).
 	OtherClaims []OtherClaimView `json:"otherClaims,omitempty"`
 	PullRequest *PullRequestView `json:"pullRequest,omitempty"`
 	DesignGate  *GateView        `json:"designGate,omitempty"`
@@ -1111,8 +1132,9 @@ func (i Issue) MarshalJSON() ([]byte, error) {
 // begun a turn, or made a call the daemon's stream saw — carries that step too (StepView), and a
 // claim the daemon holds a failure record for carries why it failed (ClaimFailureView).
 type ClaimView struct {
-	// Token is the claim's token (contract 259): two claims of one issue can hold one role, so the
-	// issue and the role under which a view stands do not name the claim, and this does.
+	// Token is the claim's token (the stranded token's entry, strandedTokenContract): two claims
+	// of one issue can hold one role, so the issue and the role under which a view stands do not
+	// name the claim, and this does.
 	Token        claim.Token           `json:"token,omitempty"`
 	Session      string                `json:"session"`
 	State        string                `json:"state"`

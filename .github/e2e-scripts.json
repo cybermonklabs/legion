@@ -9,9 +9,22 @@
     "`apt` is what the job installs for that script alone, `bun` whether it needs bun and this",
     "repository's node_modules, `evidence_variable` the environment variable the script reads for",
     "its evidence directory (empty where it takes none and keeps its work directory instead), and",
-    "`timeout_minutes` the job's limit, measured from the script's header with headroom."
+    "`timeout_minutes` the job's limit, measured from the script's header with headroom. A hosted",
+    "row may carry `dispatch_only: true`: a label run and the nightly pass over it, and only a",
+    "`workflow_dispatch` at a branch runs it, on that branch's head, since it runs the image of",
+    "its checkout's own commit, which a merge commit never has and main's head may not have yet."
   ],
   "hosted": [
+    {
+      "script": "look-names-its-check.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "evidence_variable": "LOOK_NAMES_ITS_CHECK_EVIDENCE_DIR",
+      "timeout_minutes": 30,
+      "why_hosted": "A Linux runner with go, git, jj, bun after bun install, awk, python3 and a loopback PostgreSQL server runs this proof. The script builds and starts Dispatch and the daemon itself on databases of its own and starts its own nats-server. It calls the plugin's real daemon client under bun and reaches no outside service.",
+      "jj": true
+    },
     {
       "script": "behind-entry-fence.sh",
       "go_version_file": "packages/daemon/go.mod",
@@ -63,6 +76,16 @@
       "jj": false
     },
     {
+      "script": "dispatch-broker.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": ["postgresql-client"],
+      "bun": true,
+      "evidence_variable": "",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, bun, psql and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/dispatch-broker.sh; LEGION_TEST_PG_DSN must name a loopback host, which CI's service satisfies, and the script starts no container. Its default run, K2 and K4, takes a few minutes; LEGION_E2E_TOKEN_RENEWAL=1 runs K3 in about fifteen",
+      "jj": false
+    },
+    {
       "script": "handoff-records.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
@@ -100,7 +123,8 @@
       "evidence_variable": "ROLES_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/roles.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes two to five minutes",
-      "jj": true
+      "jj": true,
+      "omp": false
     },
     {
       "script": "merge-wait-readable.sh",
@@ -190,7 +214,8 @@
       "evidence_variable": "AGENTS_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/agents.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes two to five minutes",
-      "jj": true
+      "jj": true,
+      "omp": false
     },
     {
       "script": "plan-roles.sh",
@@ -221,6 +246,17 @@
       "timeout_minutes": 20,
       "why_hosted": "DATABASE_URL is required and must name a loopback host; its prerequisite loop takes go, bun, curl, psql and openssl, and it starts no container",
       "jj": false
+    },
+    {
+      "script": "shared-clone-kind.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": false,
+      "evidence_variable": "SHARED_CLONE_EVIDENCE_DIR",
+      "timeout_minutes": 75,
+      "why_hosted": "Run it from a checkout on an amd64 Linux host with docker, go, kubectl, curl, jq, zstd and a tar that supports --zstd, all on a GitHub-hosted ubuntu-24.04 runner, as bash scripts/e2e/shared-clone-kind.sh; it installs kind v0.33.0 by sha256, makes its own kind cluster with gVisor on the node image and busybox .github/ci-images.yaml copies by digest, which a GKE Autopilot cluster cannot (autogke-disallow-privilege refuses its privileged node container), and runs the worker image ghcr.io/cybermonklabs/legion-worker publishes for the checkout's own commit (sha-<12 hex of HEAD>), which needs no secret. It is dispatch_only: worker-image.yaml publishes that image for a pull request's head, and `gh workflow run e2e.yaml --ref <branch> -f script=shared-clone-kind` checks that head out, where a label run checks out the merge commit, for which no image is built, and the nightly main's head, whose image release.yaml builds only for a push whose paths call it, so the nightly cannot rely on the tag existing yet",
+      "jj": false,
+      "dispatch_only": true
     }
   ],
   "elsewhere": [
@@ -262,7 +298,7 @@
     },
     {
       "script": "dispatch-two-builds.sh",
-      "needs": "a commit of this repository's own history to build the base from, which it takes with `git archive` from `--base-commit`: a CI checkout is shallow and carries none but its own head, and which commit is `the build before the change` is a caller's choice no job can make. The property the script proves is covered in CI by the Go tests that write an older build's row by raw SQL and assert the drain re-indexes it (`store/refs_grammar_migrations_test.go`, `docs/refs_grammar_drain_test.go`); the script is the live proof of the same thing through two real `envoy-dispatch` binaries, run by hand from a full checkout with go, bun, curl, psql, git, tar, openssl and python3 (which the shared harness runs the loopback guard with) and a loopback PostgreSQL carrying pgvector (DATABASE_URL)"
+      "needs": "a commit of this repository's own history to build the base from, which it takes with `git archive` from `--base-commit`: a CI checkout is shallow and carries none but its own head, and which commit is `the build before the change` is a caller's choice no job can make. The property the script proves is covered in CI by the Go tests that write an older build's row by raw SQL and assert the drain re-indexes it (`store/refs_grammar_migrations_test.go` and `docs/refs_grammar_drain_test.go`); the script is the live proof of the same thing through two real `envoy-dispatch` binaries, run by hand from a full checkout with go, bun, curl, psql, git, tar, openssl and python3 (which the shared harness runs the loopback guard with) and a loopback PostgreSQL carrying pgvector (DATABASE_URL)"
     },
     {
       "script": "dispatch-search-two-builds.sh",
@@ -322,12 +358,12 @@
     },
     {
       "script": "provider-error-retry.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules"
+      "needs": "the pinned Oh My Pi executable (LEGION_OMP_PATH), which the hosted runner does not provide, plus loopback PostgreSQL (LEGION_TEST_PG_DSN), bash, go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules"
     },
     {
       "script": "refusal-fallback-omp.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), go, which it builds its own natsd with, bun with this repository's node_modules, and about fifteen minutes of wall clock, which is longer than any job of ci.yaml holds",
-      "timeout_minutes": 25
+      "needs": "the pinned Oh My Pi executable (LEGION_OMP_PATH), which the hosted runner does not provide, plus bash, go to build its NATS server, bun with this repository's node_modules and twenty-one minutes plus setup for its four sessions",
+      "timeout_minutes": 30
     },
     {
       "script": "role-prompt-rule.sh",

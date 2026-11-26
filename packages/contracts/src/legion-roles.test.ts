@@ -63,8 +63,8 @@ describe("role token grammar", () => {
   });
 
   // A token's last part, the agent's name, is read by its fields since the roles of a deployment
-  // (contract 258), so a token that ends in no Legion role but in a name of the step grammar,
-  // `operator`, parses with that name as its `role`.
+  // (the deployment roles' contract entry), so a token that ends in no Legion role but in a name of
+  // the step grammar, `operator`, parses with that name as its `role`.
   test("rejects a token for another project, the controller as an issue's role, or a role outside the grammar", () => {
     expect(parseRoleToken("other", controllerToken("omp"))).toBeUndefined();
     expect(parseRoleToken("omp", "legion-omp-legion-42-operator")).toEqual({

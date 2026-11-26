@@ -604,7 +604,7 @@ func TestAStopPastTheHoldsLapsePublishesNoHandBackAndTheStandbyHandlesEachMessag
 // handBack logs for a message it withholds, so a run whose message never reached that callback
 // fails rather than passing on a branch it never ran.
 func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *testing.T) {
-	records := captureLogs(t)
+	records := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -894,7 +894,9 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 	natsURL := testnats.URL(t)
 	publisher := intakeTestClient(t)
 
-	// The newer build's durable: generation 2, with flow control this build does not set.
+	// The newer build's durable: the generation after this build's, with flow control this build
+	// does not set.
+	newerGeneration := strconv.Itoa(consumerConfigGeneration + 1)
 	newer := natsgo.ConsumerConfig{
 		Durable:        bus.DispatchDeliveryDurable,
 		DeliverSubject: natsgo.NewInbox(),
@@ -902,7 +904,7 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 		AckPolicy:      natsgo.AckExplicitPolicy,
 		AckWait:        7 * time.Minute,
 		MaxAckPending:  9,
-		Metadata:       map[string]string{generationKey: "2"},
+		Metadata:       map[string]string{generationKey: newerGeneration},
 	}
 	before, err := publisher.JS().AddConsumer(bus.Stream, &newer)
 	if err != nil {
@@ -926,7 +928,7 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind the newer build's process: %v", err)
 	}
-	awaitPushBound(t, publisher, "the newer build's process is not bound")
+	awaitPushBound(t, publisher, "", "the newer build's process is not bound")
 
 	standby := startIntakeProcess(t, pool, natsURL, nil)
 	// Several of the standby's attempts (durableBindInterval): long enough that one that was
@@ -937,11 +939,11 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 		t.Fatalf("read the durable: %v", err)
 	}
 	if after.Config.AckWait != newer.AckWait || after.Config.MaxAckPending != newer.MaxAckPending ||
-		after.Config.Metadata[generationKey] != "2" || after.Config.DeliverSubject != newer.DeliverSubject ||
+		after.Config.Metadata[generationKey] != newerGeneration || after.Config.DeliverSubject != newer.DeliverSubject ||
 		!after.Created.Equal(before.Created) {
 		t.Fatalf("the standby changed the newer build's durable: ack_wait %s max_ack_pending %d generation %q deliver_subject %s created %s, want %s %d %q %s %s",
 			after.Config.AckWait, after.Config.MaxAckPending, after.Config.Metadata[generationKey], after.Config.DeliverSubject, after.Created,
-			newer.AckWait, newer.MaxAckPending, "2", newer.DeliverSubject, before.Created)
+			newer.AckWait, newer.MaxAckPending, newerGeneration, newer.DeliverSubject, before.Created)
 	}
 
 	// The newer build stops: it unsubscribes and releases its hold.
@@ -958,9 +960,9 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 	}, func() string {
 		return "the standby never took the released durable over: " + consumerState(publisher)
 	})
-	if taken.Config.AckWait != newer.AckWait || taken.Config.MaxAckPending != newer.MaxAckPending || taken.Config.Metadata[generationKey] != "2" {
+	if taken.Config.AckWait != newer.AckWait || taken.Config.MaxAckPending != newer.MaxAckPending || taken.Config.Metadata[generationKey] != newerGeneration {
 		t.Fatalf("the take-over recreated the durable with ack_wait %s max_ack_pending %d generation %q, want the newer build's %s %d %q",
-			taken.Config.AckWait, taken.Config.MaxAckPending, taken.Config.Metadata[generationKey], newer.AckWait, newer.MaxAckPending, "2")
+			taken.Config.AckWait, taken.Config.MaxAckPending, taken.Config.Metadata[generationKey], newer.AckWait, newer.MaxAckPending, newerGeneration)
 	}
 	publishMergedPullRequest(t, publisher, 5)
 	waitFor(t, 20*time.Second, func() bool { return standby.fetches(5) == 1 }, func() string {
@@ -1006,7 +1008,7 @@ func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind the previous build's process: %v", err)
 	}
-	awaitPushBound(t, publisher, "the previous build's process is not bound")
+	awaitPushBound(t, publisher, "", "the previous build's process is not bound")
 
 	standby := startIntakeProcess(t, pool, natsURL, nil)
 	time.Sleep(3 * durableBindInterval)

@@ -135,7 +135,7 @@ func TestAPauseHeldStartIsListedUnderTheClaimItNames(t *testing.T) {
 }
 
 // The starts that wait for a pod are named by the claim each starts, by the rule the outbox's start
-// acts on (StartClaim): the claim a row names, and for a row that names none the claim WorkerClaim
+// acts on (QueuedClaim): the claim a row names, and for a row that names none the claim WorkerClaim
 // gives its role's step. Each claim is named once, in the order of the rows: a row that names the
 // implementer's own claim, a row of the release before that names none and so starts that same
 // claim, and the same row queued twice are one start. Key b's start, which names key b's claim,
@@ -152,10 +152,10 @@ func TestTheStartsThatWaitForAPodAreEachTheClaimTheyStartOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []pods.WaitingStart{
-		{Role: claim.RoleImplementer, Claim: keyAToken},
-		{Role: claim.RoleImplementer, Claim: keyBToken},
-		{Role: claim.RoleTester, Claim: "legion-legion-legion-208-tester"},
+	want := []WaitingClaim{
+		{Role: claim.RoleImplementer, Token: keyAToken},
+		{Role: claim.RoleImplementer, Token: keyBToken},
+		{Role: claim.RoleTester, Token: "legion-legion-legion-208-tester"},
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("the starts = %v, want %v", got, want)

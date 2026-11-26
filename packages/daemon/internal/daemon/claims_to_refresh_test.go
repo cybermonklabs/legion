@@ -88,7 +88,7 @@ func refreshCountState(t *testing.T, cfg config.Config, st *store.Store, view *s
 func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)
-	stale := api.DaemonAPIVersion - 1
+	stale := api.DaemonAPIVersion() - 1
 
 	type seeded struct {
 		issue   string
@@ -103,11 +103,11 @@ func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T)
 		{issue: cfg.Project + "-3", role: claim.RoleImplementer, state: supervise.StateWorking, counted: true},
 		{issue: cfg.Project + "-4", role: claim.RoleImplementer, state: supervise.StateRegistered, counted: true},
 		{issue: cfg.Project + "-5", role: claim.RoleImplementer, state: supervise.StateIdle,
-			shape: func(c *supervise.Claim) { c.PluginContract = api.DaemonAPIVersion }},
+			shape: func(c *supervise.Claim) { c.PluginContract = api.DaemonAPIVersion() }},
 		{issue: cfg.Project + "-6", role: claim.RoleImplementer, state: supervise.StateSuspended},
 		{issue: cfg.Project + "-7", role: claim.RoleImplementer, state: supervise.StateIdle, counted: true,
 			shape: func(c *supervise.Claim) {
-				c.UpdateRound = supervise.PluginRoundPrefix + strconv.Itoa(api.DaemonAPIVersion)
+				c.UpdateRound = supervise.PluginRoundPrefix + strconv.Itoa(api.DaemonAPIVersion())
 			}},
 		{issue: cfg.Project + "-8", role: claim.RoleImplementer, state: supervise.StateIdle,
 			shape: func(c *supervise.Claim) { c.UpdateRound = supervise.PodRound("6f1c0c2a-1d1e-4a44-9d2c-0b7c1f3a9e55") }},
@@ -150,7 +150,7 @@ func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T)
 	// Every claim relaunched onto this daemon's plugin: the lane has nothing left, and the count
 	// says so rather than going quiet.
 	for _, c := range run.claims {
-		c.PluginContract = api.DaemonAPIVersion
+		c.PluginContract = api.DaemonAPIVersion()
 		if err := st.PutClaim(ctx, c); err != nil {
 			t.Fatalf("bring %s onto this daemon's contract: %v", c.Token, err)
 		}
@@ -179,7 +179,7 @@ func TestTheStateCountReadsAClaimsPlanThroughItsOwnSnapshot(t *testing.T) {
 	var claims []supervise.Claim
 	for _, issue := range []string{deployed, planned} {
 		c := previousClaim(t, cfg, issue, issue, "prober", supervise.StateIdle)
-		c.PluginContract = api.DaemonAPIVersion - 1
+		c.PluginContract = api.DaemonAPIVersion() - 1
 		claims = append(claims, c)
 	}
 	putPreviousRun(t, cfg, previousRun{
@@ -248,7 +248,7 @@ func TestAFailedPlanReadEndsTheStatesReadWithItsOwnError(t *testing.T) {
 	cfg.WorkerBackends = map[claim.Role]runtime.Backend{"prober": runtime.BackendClaude}
 	issue := cfg.Project + "-1"
 	c := previousClaim(t, cfg, issue, issue, "prober", supervise.StateIdle)
-	c.PluginContract = api.DaemonAPIVersion - 1
+	c.PluginContract = api.DaemonAPIVersion() - 1
 	putPreviousRun(t, cfg, previousRun{issues: []record.Issue{runningRoot(issue, phase.Implementing)}, claims: []supervise.Claim{c}})
 
 	ctx := store.WithTransactionTracking(context.Background())

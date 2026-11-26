@@ -305,6 +305,7 @@ func askedOnce(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string, 
 // another base branch is a first read of its own; and a read a minute later of another head than
 // the record stands at confirms nothing.
 func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
+	t.Parallel()
 	// The rules are unread, so a confirmed conflict is acted on at once (classify.ConflictNeedsMerge):
 	// what holds the act back below is the second read alone.
 	unread := &record.BaseRules{Unread: "HTTP 502"}
@@ -426,6 +427,7 @@ func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
 // checks-red notice naming the phase the issue stays in. No worker starts, no status is written
 // and no phase ends. The same read again asks nothing a second time.
 func TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		at     phase.Phase
@@ -510,6 +512,7 @@ func TestAMergeForwardAlreadyAskedOfTheHeadReadsNoWalk(t *testing.T) {
 // testing (mergeForward). The issue stays held. The control is the same issue in testing, not held,
 // whose notice says it stays in testing.
 func TestAConflictConfirmedWhileHeldTellsTheArchitectTheIssueStaysHeldFromItsPhase(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		name  string
@@ -550,6 +553,7 @@ func TestAConflictConfirmedWhileHeldTellsTheArchitectTheIssueStaysHeldFromItsPha
 // the base's rules: the conflict is recorded for the move into merging, where the merger makes
 // that merge, and it never goes back to the implementer. The same read again asks nothing more.
 func TestAConflictPastTheReviewIsTheMergersToMergeForward(t *testing.T) {
+	t.Parallel()
 	t.Run("merging", func(t *testing.T) {
 		requiresCI := &record.BaseRules{Required: []string{"ci"}}
 		pool := seedConflictIssue(t, phase.Merging, "retro", settledGreen("lint"))
@@ -598,6 +602,7 @@ func TestAConflictPastTheReviewIsTheMergersToMergeForward(t *testing.T) {
 // than asking it, and once the implementer's merge lands the merger is told the new head and the
 // reviewer is asked to read it.
 func TestAnAskOfTheImplementerThatHasNotLandedKeepsItsMergeIntoMerging(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	left := func(t *testing.T, pool *pgxpool.Pool, role claim.Role, step record.MergeForwardStep) string {
 		t.Helper()
@@ -664,6 +669,7 @@ func TestAnAskOfTheImplementerThatHasNotLandedKeepsItsMergeIntoMerging(t *testin
 // GitHub's merge of that head closes the issue. Across the whole run the implementer is sent no
 // merge-forward message, is started for no phase but retro, and counts no move back.
 func TestAConflictAfterTheReviewLandsThroughTheMerger(t *testing.T) {
+	t.Parallel()
 	every := &record.BaseRules{Required: []string{"ci", "pr-title"}}
 	pool := seedConflictIssue(t, phase.Reviewing, "needs_review", settledGreen("ci", "pr-title"))
 	confirmsConflict(t, pool, every)
@@ -785,6 +791,7 @@ func queuedStatuses(t *testing.T, pool *pgxpool.Pool) []string {
 // required context is green by a success status the record keeps for the head as well as by a
 // check run.
 func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
+	t.Parallel()
 	greenStatus := settledGreen("lint")
 	greenStatus.Statuses = []record.CommitStatus{{Context: "ci", State: record.CommitStatusSuccess,
 		CreatedAt: firstConflictRead.Add(-time.Hour), Head: conflictHead}}
@@ -906,6 +913,7 @@ func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 // covers implementing alone: the implementer's completion at that head without the merge moves
 // the issue to testing, and testing asks again, with its hold and its notice.
 func TestAConflictInImplementingIsToldOnlyWhenNeeded(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		pr    record.PullRequest
@@ -1012,6 +1020,7 @@ var basePushOntoMain = intake.BasePush{Repo: "sjawhar/legion", Branch: "main", A
 // in accepting nothing moves at all. Retro and accepting ask nothing now, so their rows land an
 // ask a daemon before cybermonklabs/legion#4979 made there (askedBeforeTheMerger).
 func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		at       phase.Phase
@@ -1132,6 +1141,7 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T)
 // the issue stays where it stood. An ask a daemon before cybermonklabs/legion#4979 made in accepting
 // (askedBeforeTheMerger) lands the same way and is held to the same fence.
 func TestAConflictKeepsPhaseAndRecordsALateCompletionOfALeftPhase(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		at     phase.Phase
 		status string
@@ -1142,10 +1152,8 @@ func TestAConflictKeepsPhaseAndRecordsALateCompletionOfALeftPhase(t *testing.T) 
 	} {
 		t.Run(string(tc.at), func(t *testing.T) {
 			pool := seedConflictIssue(t, tc.at, tc.status, tc.pr)
-			// The reviewer's row as its approval left it: entered, with no completion of its own,
-			// under a claim the daemon started on the issue (record.Store.RoleRun), which
-			// leftItsPhase asks for.
-			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Entry: 1})
+			// The approval left a started review with no completion of its own.
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Entry: 1, EntryTask: "review this change"})
 			seedClaimSession(t, pool, "reviewer-claim", "ses-reviewer")
 			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 			landsMergeForward(t, pool)
@@ -1181,6 +1189,7 @@ func TestAConflictKeepsPhaseAndRecordsALateCompletionOfALeftPhase(t *testing.T) 
 // A merger that enters merging while that review stands for the head is told to merge the head only
 // once the reviewer's approval of it is on the pull request.
 func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	landing := func(role claim.Role, step record.MergeForwardStep, at phase.Phase) record.MergeForwardMessage {
 		return record.MergeForwardMessage{Role: role, Claim: seededClaim(t, role), Step: step, Head: conflictHead, Landed: forwardHead,
@@ -1251,6 +1260,7 @@ func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 // accepting; an issue in implementing is read for at its next head push instead, and a base push
 // reads nothing for it.
 func TestAConflictKeepsPhaseWhenABasePushReadsAnIssueAfterImplementing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		at     phase.Phase
 		status string
@@ -1282,6 +1292,7 @@ func TestAConflictKeepsPhaseWhenABasePushReadsAnIssueAfterImplementing(t *testin
 // asks nothing, so one push to the branch asks for one ladder. Before implementing there is no
 // pull request work to merge forward, and a head push reads nothing.
 func TestAConflictKeepsPhaseWhenAHeadPushInImplementingAsksARead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		at     phase.Phase
 		status string
@@ -1316,6 +1327,7 @@ func TestAConflictKeepsPhaseWhenAHeadPushInImplementingAsksARead(t *testing.T) {
 // holds what GitHub answered for the head. An issue in implementing is read for at its next head
 // push, and the same base push reads nothing for it.
 func TestTheMergeStateFollowsGitHubWhenABasePushReadsAnIssueInReview(t *testing.T) {
+	t.Parallel()
 	blocked := settledGreen("ci")
 	blocked.Mergeability, blocked.MergeState = record.MergeabilityMergeable, record.MergeStateBlocked
 
@@ -1358,6 +1370,7 @@ func TestTheMergeStateFollowsGitHubWhenABasePushReadsAnIssueInReview(t *testing.
 // finishes without a read (daemon's conflictReadLeft), and the conflict GitHub still answers is
 // read again only at the issue's next fact. The second read a minute after the first acts.
 func TestAConflictSecondReadIsNeverOneMadeBeforeTheFirst(t *testing.T) {
+	t.Parallel()
 	unread := &record.BaseRules{Unread: "HTTP 502"}
 	pool := seedConflictIssue(t, phase.Testing, "testing", record.PullRequest{})
 	first := conflictingRead(unread)
@@ -1383,6 +1396,7 @@ func TestAConflictSecondReadIsNeverOneMadeBeforeTheFirst(t *testing.T) {
 // refused HANDOFF_HEAD_MERGED_FORWARD while the second merge forward is asked and after it lands,
 // and records and moves nothing.
 func TestAConflictKeepsPhaseAndRefusesACompletionAtAHeadAnEarlierMergeReplaced(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	secondMergeForward := func(t *testing.T) *pgxpool.Pool {
 		t.Helper()
@@ -1441,6 +1455,7 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtAHeadAnEarlierMergeReplaced(t
 // reaches the merge forward that landed through the record's earlier ones
 // (record.MergeForward.Earlier), since the ask the record holds has not landed.
 func TestAConflictKeepsPhaseAndRefusesACompletionNamingNoHeadWhileASecondMergeForwardIsAsked(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
 	confirmsConflict(t, pool, requiresCI)
@@ -1488,6 +1503,7 @@ func TestAConflictKeepsPhaseAndRefusesACompletionNamingNoHeadWhileASecondMergeFo
 // pass naming no head while the merge forward is asked and nothing landed passes the fence: it is
 // recorded on the tester's row with no commit, and it moves the issue to reviewing, as a pass does.
 func TestAConflictKeepsPhaseAndTakesACompletionNamingNoHeadWhileNoMergeForwardLanded(t *testing.T) {
+	t.Parallel()
 	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != conflictHead || asked.Landed != "" || len(asked.Earlier) != 0 {
@@ -1517,6 +1533,7 @@ func TestAConflictKeepsPhaseAndTakesACompletionNamingNoHeadWhileNoMergeForwardLa
 // landed and tells the tester to wait for the daemon's message that it landed. It records and
 // moves nothing.
 func TestAConflictKeepsPhaseAndRefusesACompletionAtAReplacedHeadWhileASecondMergeForwardIsAsked(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
 	confirmsConflict(t, pool, requiresCI)
@@ -1565,6 +1582,7 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtAReplacedHeadWhileASecondMerg
 // nothing of anyone: retro's completion at that head moves the issue to merging, where the merger
 // is asked to merge the base forward onto it, and the implementer is asked nothing.
 func TestAConflictKeepsPhaseSendsARetroCompletionAtAReplacedHeadToTheCurrentHead(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	pool := seedConflictIssue(t, phase.Retro, "retro", askedBeforeTheMerger(phase.Retro))
 	confirmsConflict(t, pool, requiresCI)
@@ -1629,6 +1647,7 @@ func TestAConflictKeepsPhaseSendsARetroCompletionAtAReplacedHeadToTheCurrentHead
 // head the pull request stands at, never to wait for the landed message of an ask whose hold it
 // was not sent. It records and moves nothing.
 func TestAConflictKeepsPhaseSendsACompletionToTheCurrentHeadWhenTheAskOfImplementingWasNotAskedAgain(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	pool := seedConflictIssue(t, phase.Implementing, "in_progress", settledGreen("lint"))
 	confirmsConflict(t, pool, requiresCI)
@@ -1686,6 +1705,7 @@ func TestAConflictKeepsPhaseSendsACompletionToTheCurrentHeadWhenTheAskOfImplemen
 // A backward move gives the workspace to the earlier phase's worker. A queued message must not
 // wake the merger to write or merge there, but the same ask still reaches a hold from merging.
 func TestAMergersMergeForwardMessageEndsWhenTheIssueMovesBack(t *testing.T) {
+	t.Parallel()
 	for _, target := range []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro} {
 		t.Run(string(target), func(t *testing.T) {
 			pool := seedConflictIssue(t, phase.Merging, "retro", settledGreen("lint"))
@@ -1717,6 +1737,7 @@ func TestAMergersMergeForwardMessageEndsWhenTheIssueMovesBack(t *testing.T) {
 // Sending a merged-forward head back to retro does not erase the old-head completion fence or
 // the review the new head needs when it returns to merging. Only the merger's stale message ends.
 func TestALandedMergeForwardKeepsItsReviewAfterABackwardMove(t *testing.T) {
+	t.Parallel()
 	pool := seedConflictIssue(t, phase.Merging, "retro", settledGreen("lint"))
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	landsMergeForward(t, pool)

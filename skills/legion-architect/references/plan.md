@@ -24,7 +24,7 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 
 - Steps that share a key, `<role>:<key>`, are one agent in one session, and a step with no key has an agent of its own.
   Your role prompt gives the rules of keys and of a role at two steps.
-  The agent of the step whose role your `Production check` line names keeps its session past the close, for that check; where no step of the task has that role, the check starts a fresh agent of it.
+  The agent of the step whose role your `Production check` line names keeps its session past the close, for that check, and where two steps of the task have that role, the agent of the one that ran last; where no step of the task has that role, the check starts a fresh agent of it.
   Write in the task's text whether each step needs a fresh agent or an earlier one, and why.
   Retro rates the plan's steps, and the agent that worked each, against that choice.
   A later version's agent names: `skill://legion-architect/references/plan-changes.md`.
@@ -33,9 +33,8 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 
 Name the steps in `steps` in the order they run.
 A step names one of Legion's roles in the table below, a role this deployment defines, or a role your plan defines (`skill://legion-architect/references/plan-roles.md`): your `Legion addressing` line lists the first two, each with the type of its step.
-A `planner` step may stand at any place, and the task's first `implementer` step stands before each `tester`, `reviewer` and `acceptance:owner` step: a plan that names one of them with no `implementer` step before it is refused with a reason that ends `This release of Legion does not carry it out yet.`
-A later `implementer` step may stand after them, as step 3 of `implementer:a reviewer implementer:a` does.
-A role this deployment defines runs where its step stands in your plan, at the phase `step`, and reports pass or fail.
+A `planner` step may stand at any place. The task's first `implementer` step stands before each `tester`, `reviewer` and `acceptance:owner` step, and a later one may follow them, as in `implementer:a reviewer implementer:a`: a plan with no `implementer` step before one of them is refused with a reason that ends `This release of Legion does not carry it out yet.`
+A role this deployment defines runs where its step stands, at the phase `step`, and reports pass or fail.
 It reads no pull request, so it may stand at any place too.
 A role of the type implementation is the one exception: it stands before the task's first `implementer` step.
 The table lists Legion's steps in the default steps' order:
@@ -50,9 +49,12 @@ The table lists Legion's steps in the default steps' order:
 
 Without `acceptance:owner`, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.
 A reviewer step approves only once a pass stands for every `before_merge` check at the head.
-And retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, whose derived result is a fail, whose name no run answers (`absent`), or whose `run` is a whole test suite.
-So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
-A step of a role of this deployment runs and holds the checks only where its prompt file asks it to.
+Retro's first step sends back a check with no pass at the head, with two exceptions.
+Do not send back a `ci_check` whose run has not concluded or cannot be read, whose derived result is a fail, or whose name no run answers (`absent`).
+Send a whole-suite `run` to the architect as a finding, not a move back, because the implementer runs no whole suite.
+Send an `absent` name as a finding too, unless GitHub is holding the job back until its label is on.
+On a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
+A step of a role of this deployment runs and holds the checks only as its prompt file asks.
 
 ## What Legion refuses
 
@@ -91,5 +93,5 @@ Plan no code for the root, and create no child only to give it a commit.
 ## Reading how plans went
 
 `dispatch steps --issue <KEY>` lists each run of each step of an issue and how it ended.
-Each finished issue of a project, with its plan's source and steps, its retro's ratings, its time and its count of failed steps, is `dispatch plans --project <KEY>`.
+`dispatch plans --project <KEY>` lists each finished issue of a project with its plan and how that plan went.
 Read it before you choose the steps of an issue like one that finished.
