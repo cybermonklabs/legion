@@ -21,6 +21,7 @@ import (
 // kind with no prefix keeps the default, and the placeholder of either opens the grant's
 // connection.
 func TestAReleaseTakesEachNamesHostsAndPlaceholderPrefixFromItsKind(t *testing.T) {
+	t.Parallel()
 	const prefix = "tml-"
 	rules := proxyrules.Rules{
 		Kinds: []proxyrules.Kind{
@@ -70,6 +71,7 @@ func TestAReleaseTakesEachNamesHostsAndPlaceholderPrefixFromItsKind(t *testing.T
 // before the change ends at its next release, since the kind a name is behind is in its
 // fingerprint, and a grant made after it releases the name as the policy now reads it.
 func TestAProxyTagIsReadAtEachLoad(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newAirlockFixture(t, policytest.KindsFile())
 	m.AirlockProxyURL, m.AirlockCACertificate = testProxyURL, testCACertificate
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
@@ -151,6 +153,7 @@ func kindFile(kinds string, names ...string) string {
 // gain ends the grants decided under the gain, and the kind getting the host back does not bring
 // the grant back.
 func TestAKindThatLosesAHostOrAHeaderEndsTheGrantsDecidedUnderIt(t *testing.T) {
+	t.Parallel()
 	type roll struct {
 		kinds string
 		lost  string // the end's reason names it; "" for a grant that goes on releasing
@@ -215,6 +218,7 @@ func TestAKindThatLosesAHostOrAHeaderEndsTheGrantsDecidedUnderIt(t *testing.T) {
 // once the kind loses a host the grant was approved under, Create ends the grant rather than hand
 // it back, and asks afresh.
 func TestAnApprovalRecordsTheKindItWasGivenUnder(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newAirlockFixture(t, kindFile(baseKind, "SHARED_KEY"))
 	m.AirlockProxyURL, m.AirlockCACertificate = testProxyURL, testCACertificate
 	// SHARED_KEY is shared and human tier, so its grant comes of a person's approval.
@@ -263,6 +267,7 @@ func TestAnApprovalRecordsTheKindItWasGivenUnder(t *testing.T) {
 // grants are held to their entry digest instead. It is read in the set the loader builds before the
 // profiles' apply, the one set where a dpop block binds a name the policy serves.
 func TestADPoPBlockRecordsNoKind(t *testing.T) {
+	t.Parallel()
 	m, _, _ := newAirlockFixture(t, policytest.KindsFile())
 	loader := policytest.Loader(fixtureStore(m), fixtureService)
 	loader.Profiles = policytest.Profiles(t, policytest.KindsFile(`{"name": "AUTO_TOKEN", "proxy": {"hosts": ["dispatch.example.com"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/api/v1/"}]}}`), fixtureService)

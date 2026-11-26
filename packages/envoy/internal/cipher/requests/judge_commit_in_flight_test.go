@@ -104,6 +104,7 @@ func TestLogJudgedWaitsForAnApprovalStillCommitting(t *testing.T) {
 // still committing when the judge writes its row is waited for, and the row and its verdict say
 // not pending rather than handed to the person. The cancel is held here, written and uncommitted.
 func TestLogJudgedRecordsACancelCommittingUnderIt(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newJudgeFixture(t)
 	req := pendingJudgeable(t, m, enr, key, "ACME-12: rotate the deploy key", 600, "DEEL_API_KEY")
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)

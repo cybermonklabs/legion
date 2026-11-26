@@ -33,6 +33,7 @@ import (
 // the same grant releases again. At ab4e4ca the paused row ends the grant for good instead, with
 // the reason that the key carries no judge tag.
 func TestAJudgeTagLoweredBelowAJudgedGrantOrTakenOffEndsItForGood(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	deel := func(judge int) secrets.LocalSecret {
 		s := policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1")
 		if judge == 0 {

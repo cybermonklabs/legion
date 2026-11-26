@@ -107,6 +107,7 @@ func TestMainServesAGitHubProfileWithoutTheAirlock(t *testing.T) {
 // given is unreachable, so a broker that checked the settings after opening the store would fail
 // on the host instead.
 func TestMainRefusesAKindWithoutTheAirlocksSettings(t *testing.T) {
+	t.Parallel()
 	binary := buildBroker(t)
 	for _, missing := range airlockProxySettingNames {
 		t.Run(missing, func(t *testing.T) {

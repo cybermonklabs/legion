@@ -290,6 +290,7 @@ func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 // each comes back to the caller as a refusal it can test and leaves the request exactly as it
 // found it.
 func TestApplyJudgeDecisionRefusesARecordTheTagsDoNotAdmit(t *testing.T) {
+	t.Parallel()
 	for name, c := range map[string]struct {
 		names []string
 		// tagsAfter moves the judge tag once the request is written, as its owner's retag does.

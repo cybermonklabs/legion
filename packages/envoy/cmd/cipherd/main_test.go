@@ -349,6 +349,7 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 // anthropic kind reads both stand-ins' records, so a minter that kept Google's and Anthropic's own
 // endpoints would send the stack's mint to the internet and the check would read nothing.
 func TestTheAnthropicMinterMintsAtTheLocalStacksStandIns(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (ciphertokentest.NewMetadataStand, t.Setenv).
 	const (
 		account   = "robot-1@acme-deployment.iam.gserviceaccount.com"
 		standIn   = "sk-ant-oat01-the-stand-ins-token"

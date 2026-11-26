@@ -83,6 +83,7 @@ func gcloudList(t *testing.T, store []secrets.LocalSecret) string {
 // TestProfilesCheckReadsASourceWaitingForItsValueAsServed's. The control, a narrowed profile within
 // its kind, is served by the load and passes the check.
 func TestProfilesCheckRefusesWhatTheLoadRefusesOfANameBehindTheProxy(t *testing.T) {
+	t.Parallel()
 	narrowed := map[string]string{policy.TagProxyNarrowed: policy.ProxyNarrowedTrue}
 	const appBlock = `"github": {"accounts": ["acme"], "permissions": {"metadata": "read"}}`
 	for _, c := range []struct {
@@ -249,6 +250,7 @@ func TestProfilesCheckRefusesWhatTheLoadRefusesOfANameBehindTheProxy(t *testing.
 // the check reads the store's tags and not its values. The control is the same source with its
 // value, which both the load and the check serve.
 func TestProfilesCheckReadsASourceWaitingForItsValueAsServed(t *testing.T) {
+	t.Parallel()
 	file := policytest.KindsFileOf(faultKinds, `{"name": "TOKEN_READ", "source": "TOKEN", "proxy": "github"}`)
 	created := time.Now()
 	waiting := stored("TOKEN", map[string]string{secrets.CreateLabel: "0123456789abcdef0123456789abcdef"})

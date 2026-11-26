@@ -175,6 +175,7 @@ func enterpriseRows(host string) []any {
 // AWS_ADMIN, every row of whose allow names a host, gain none. And it lists each secret's proxy
 // and proxy-narrowed tags.
 func TestProfilesCheckKeepsEveryProxiedNameOfTheMoveBehindTheProxy(t *testing.T) {
+	t.Parallel()
 	code, stdout, stderr := runCheck(t, kindsFixture, "--against", proxyBlocksFixture, "--secrets-json", tagsFixture)
 	if code != 0 || stderr != "" {
 		t.Fatalf("the move = exit %d with stderr %q, want exit 0 and nothing on stderr", code, stderr)
@@ -234,6 +235,7 @@ func entryOfFixture(t *testing.T, name string) jsonObject {
 // and one of them with a grant cap above its kind's, which the file decides, is refused; and a
 // file that declares no kind writes none, since no tag can name a kind of it.
 func TestProfilesCheckSaysUnknownOfAKindOnlyTheStoreGives(t *testing.T) {
+	t.Parallel()
 	code, stdout, stderr := runCheck(t, kindsFixture)
 	var file jsonObject
 	decodeFixture(t, kindsFixture, &file)
@@ -288,6 +290,7 @@ func TestProfilesCheckSaysUnknownOfAKindOnlyTheStoreGives(t *testing.T) {
 // only the proxy scopes its credential, and so does the check. The control is the move itself, in
 // the test above, which lists none leaving.
 func TestProfilesCheckListsANameThatLeavesTheProxy(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name, leaves, why string
 		file              func(t *testing.T) string
@@ -340,6 +343,7 @@ func TestProfilesCheckListsANameThatLeavesTheProxy(t *testing.T) {
 // widening, since an old row of no host covers every host; the rows' hosts left out list the
 // github kind's two other hosts as added to it.
 func TestProfilesCheckListsWhatWidensAgainstTheOldFile(t *testing.T) {
+	t.Parallel()
 	const (
 		storageLimit = "/enterprises/example-enterprise/actions/cache/storage-limit"
 		streamKey    = "/enterprises/example-enterprise/audit-log/stream-key"
@@ -425,6 +429,7 @@ func TestProfilesCheckListsWhatWidensAgainstTheOldFile(t *testing.T) {
 // unread there too; and with the store's tags, which hold LONE behind slack by its own tag, the
 // same change is listed under LONE's name, no kind is compared on its own, and the run exits 0.
 func TestProfilesCheckComparesEachKindBothFilesDeclareWithoutTheTags(t *testing.T) {
+	t.Parallel()
 	old := profilesFile(t, `{"kinds": [{"name": "slack", "hosts": ["slack.com"], "ways": ["swap"], "allow": [{"method": "GET", "pathPrefix": "/api/"}]}], "profiles": []}`)
 	now := profilesFile(t, `{"kinds": [
   {"name": "slack", "hosts": ["slack.com", "files.slack.com"], "ways": ["swap"], "allow": [{"method": "GET", "pathPrefix": "/api/"}, {"method": "POST", "pathPrefix": "/api/chat.postMessage"}]},
@@ -470,6 +475,7 @@ func TestProfilesCheckComparesEachKindBothFilesDeclareWithoutTheTags(t *testing.
 // and exits 3, rather than reading as a pass. A profile whose kind is its proxy string is held to
 // that kind with no store read, and refused.
 func TestProfilesCheckRefusesAProfileRowItsKindDoesNotCover(t *testing.T) {
+	t.Parallel()
 	getOnly := kindsCopy(t, func(file jsonObject) {
 		entryOf(t, file, "kinds", "anthropic")["allow"] = rows("", "GET", "/v1/organizations/")
 	})
@@ -519,6 +525,7 @@ func TestProfilesCheckRefusesAProfileRowItsKindDoesNotCover(t *testing.T) {
 // profile; without the tags it lists the kind removed and exits 3, since it cannot see the tag. The
 // control is the moved file against itself, which changes nothing and widens nothing.
 func TestProfilesCheckReadsEachChangedCopyOfTheKindsFile(t *testing.T) {
+	t.Parallel()
 	appendTo := func(list string, name, field string, values ...any) func(*testing.T) string {
 		return func(t *testing.T) string {
 			return kindsCopy(t, func(file jsonObject) {
@@ -604,6 +611,7 @@ func TestProfilesCheckReadsEachChangedCopyOfTheKindsFile(t *testing.T) {
 // behind a tag as leaving, or, read as a store with no secret, none. The control is the fixture's
 // list beside one entry that is no agent secret, which is read, the entry counted as not read.
 func TestProfilesCheckRefusesASecretsListThatShowsNoTags(t *testing.T) {
+	t.Parallel()
 	write := func(t *testing.T, body string) string {
 		path := filepath.Join(t.TempDir(), "secrets.json")
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {

@@ -212,6 +212,7 @@ func TestTheSettingsNameEachJudgeKeyAndItsGuidance(t *testing.T) {
 // (source), for `secret show` of that source to name its judged profiles. A name served as itself
 // carries no source.
 func TestTheSettingsNameTheSourceOfAJudgedProfile(t *testing.T) {
+	t.Parallel()
 	type judgeKey struct {
 		Seconds  int    `json:"seconds"`
 		Guidance string `json:"guidance"`

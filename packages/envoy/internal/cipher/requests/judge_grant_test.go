@@ -49,6 +49,7 @@ func releasedValue(release Release, name string) string {
 // own grant of the same secret is decided by a person and is held to the person's rule
 // throughout: none of this moves it.
 func TestAJudgedGrantLivesByItsJudgeTagAndNotByAnOwner(t *testing.T) {
+	t.Parallel()
 	deel := func(judge int) secrets.LocalSecret {
 		s := policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1")
 		if judge == 0 {
@@ -108,6 +109,7 @@ func TestAJudgedGrantLivesByItsJudgeTagAndNotByAnOwner(t *testing.T) {
 // a key whose judge tag still covers the grant's lifetime passes, and one whose tag is gone, is
 // lower than that lifetime, or whose grant names no lifetime is no longer live.
 func TestJudgeStillDecidesReadsTheJudgeTag(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal(
 		policytest.Judged(policytest.Secret("JUDGED_KEY", fixtureOperator, policy.TierHuman, "v"), 600, ""),
 		policytest.Secret("UNJUDGED_KEY", fixtureOperator, policy.TierHuman, "v"),

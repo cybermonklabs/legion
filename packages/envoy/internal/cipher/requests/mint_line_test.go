@@ -46,6 +46,7 @@ func sha256Hex(token string) string {
 // and the same search finds one logged on purpose, so it can see a token where one is. A release
 // of stored values alone writes no such line.
 func TestEachMintedTokenWritesOneMintLineWithItsHashAndNeverTheToken(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (requests.captureRecords, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	const (
 		acmeToken      = "ghs_" + "AcmeInstallationTokenMinted0001"
 		adaToken       = "ghs_" + "AdaInstallationTokenMinted00002"
