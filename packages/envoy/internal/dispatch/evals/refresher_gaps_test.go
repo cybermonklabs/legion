@@ -109,15 +109,37 @@ func TestAFirstDayMovedEarlierLeavesNoDayWithoutARowThoughThePassFails(t *testin
 	t.Logf("the first day moved from %s to %s; the gap's day after it holds n %d", first.Format(time.DateOnly), moved.Format(time.DateOnly), n[moved.AddDate(0, 0, 1)])
 }
 
+// skipChanges moves the change cursor to the log's head with no pass reading the changes before
+// it: the state a page leaves that read a change and committed some of the days it moved, which no
+// other change names.
+func (r *refresherRig) skipChanges(t *testing.T) {
+	t.Helper()
+	if _, err := delivery.DrainPending(t.Context(), r.database.Pool); err != nil {
+		t.Fatalf("move the pending changes into the log: %v", err)
+	}
+	head := r.changesHead(t)
+	r.exec(t, "move the change cursor to the log's head", `update eval_days_cursor set position = $1, at = $2 where name = $3`, head.Seq, head.At, changesCursor)
+}
+
+// owe records day of family as owing project a rewrite (eval_days_owed), as a write of another day
+// that moved an item off it leaves it, in its own transaction (writeDayMembersIn).
+func (r *refresherRig) owe(t *testing.T, project, family string, day time.Time) {
+	t.Helper()
+	r.exec(t, "record "+day.Format(time.DateOnly)+" owed", `insert into eval_days_owed (project_key, family, day) values ($1, $2, $3)`, project, family, day)
+}
+
 // TestARunAPullRequestLeftIsRewrittenThoughThePassFailsBeforeIt: a pull request of the deploy
 // repository, merged a day earlier, ships with another deploy run, and the run that shipped it
 // before counts it in its own day's rows until that day is written again. The pull request names an
 // issue of the main project, which it counts for through that issue (one that names none counts for
-// no project): where the history's names none, it is given one before the history settles. The test
-// fails the first write of that run's day: the pass fails after the write that moved the pull
-// request's member to the new run, and no stored pull request names the old run any more. The pass
-// after it, reading the same change again, still rewrites the old run's day, which the moving write
-// recorded owed; it leaves no day owed.
+// no project): where the history's names none, it is given one before the history settles. A page
+// names the days its items leave itself, in the one commit that writes the others (nameLeft), so a
+// day stays owing a rewrite (eval_days_owed) only where a write of another day moved an item off it
+// and no page named it. That is the state the test stands in: the change cursor is moved to the
+// log's head, so no change names the run's day, and the run's day is recorded owed. The pass that
+// rewrites it fails at its first write of the day, which leaves the day owed; the pass after it
+// rewrites the old run's day alone, which no longer counts the pull request, and leaves no day
+// owed.
 func TestARunAPullRequestLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -130,9 +152,9 @@ func TestARunAPullRequestLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T)
 		if pr.Repo != deliveries.DeployRepo || pr.MergedAt == nil || picked.Number != 0 {
 			continue
 		}
-		old := delivery.FirstShippingApply(*pr.MergedAt, deliveries.Applies)
+		old := firstApply(*pr.MergedAt, deliveries.Applies)
 		earlier := pr.MergedAt.AddDate(0, 0, -1)
-		moved := delivery.FirstShippingApply(earlier, deliveries.Applies)
+		moved := firstApply(earlier, deliveries.Applies)
 		if old == nil || moved == nil || moved.RunID == old.RunID {
 			continue
 		}
@@ -152,14 +174,23 @@ func TestARunAPullRequestLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T)
 	}
 	r.settle(t)
 	r.pass(t)
-	r.failOnce(t, "new.project_key = '"+main+"' and new.day = '"+oldDay.Format(time.DateOnly)+"'::date")
 	r.exec(t, "merge the pull request a day earlier", `
 		update delivery_pull_requests set merged_at = $3, created_at = least(created_at, $3::timestamptz - interval '1 hour') where repo = $1 and number = $2
 	`, picked.Repo, picked.Number, merged)
+	r.skipChanges(t)
+	r.owe(t, main, KindDelivery, oldDay)
+	r.failOnce(t, "new.project_key = '"+main+"' and new.day = '"+oldDay.Format(time.DateOnly)+"'::date")
+	before := r.dayRows(t)
 	r.failingPass(t)
+	if owed := r.count(t, `select count(*) from eval_days_owed`); owed != 1 {
+		t.Errorf("%d days are owed a rewrite after the pass that failed, want the old run's day alone", owed)
+	}
 	report, _ := r.pass(t)
-	if !slices.Contains(report.sorted(), line(walkDelivery, main, oldDay)) {
-		t.Errorf("the pass after the failure wrote %v, want the day of the run %s left, %s", report.sorted(), PullRequestMember(picked.Repo, picked.Number), oldDay.Format(time.DateOnly))
+	if want := line(walkDelivery, main, oldDay); !slices.Contains(report.sorted(), want) {
+		t.Errorf("the pass after the failure wrote %v, want the day of the run %s left, %s", report.sorted(), PullRequestMember(picked.Repo, picked.Number), want)
+	}
+	if lines, _ := rewritten(before, r.dayRows(t)); !slices.Contains(lines, line(walkDelivery, main, oldDay)) {
+		t.Errorf("no row of %s changed, though it no longer counts %s: rewritten %v", oldDay.Format(time.DateOnly), PullRequestMember(picked.Repo, picked.Number), lines)
 	}
 	if owed := r.count(t, `select count(*) from eval_days_owed`); owed != 0 {
 		t.Errorf("%d days are still owed a rewrite after the pass, want none", owed)
@@ -167,29 +198,35 @@ func TestARunAPullRequestLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T)
 }
 
 // TestADayAnIssueLeftIsRewrittenThoughThePassFailsBeforeIt: over the hand-written Legion history
-// of EVAL, EVAL-3, closed on the history's third day, is closed again a day earlier. The pass
-// writes the earlier day first, which moves EVAL-3's member to it, then the day it left; the test
-// fails the first write of the day it left, so the pass fails with no stored member naming that
-// day. The pass after it, reading the same change again, still rewrites the day EVAL-3 left, which
-// the moving write recorded owed, and that day no longer counts EVAL-3.
+// of EVAL, EVAL-3, closed on the history's third day, is closed again a day earlier, and the
+// change cursor is moved to the log's head, so no change names the day it left (a page names such
+// a day itself, so a day stays owing a rewrite only where a write of another day moved an item off
+// it and no page named it); the third day is recorded owed (eval_days_owed). The pass that rewrites
+// it fails at its first write of the day, which leaves the day owed; the pass after it rewrites
+// that day alone, which no longer counts EVAL-3, and leaves no day owed.
 func TestADayAnIssueLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)
 	r.pass(t)
-	r.failOnce(t, "new.project_key = 'EVAL' and new.day = '"+history.d2.Format(time.DateOnly)+"'::date")
 	row := history.rows["EVAL-3"]
 	row.ClosedAt = new(history.d1.Add(14 * time.Hour))
 	history.rows["EVAL-3"] = row
 	r.writeFacts(t, history, "EVAL-3")
+	r.skipChanges(t)
+	r.owe(t, "EVAL", KindLegion, history.d2)
+	r.failOnce(t, "new.project_key = 'EVAL' and new.day = '"+history.d2.Format(time.DateOnly)+"'::date")
 	r.failingPass(t)
-	report, _ := r.pass(t)
-	if !slices.Contains(report.sorted(), line(walkLegion, "EVAL", history.d2)) {
-		t.Errorf("the pass after the failure wrote %v, want the day EVAL-3 left, %s", report.sorted(), history.d2.Format(time.DateOnly))
+	if owed := r.count(t, `select count(*) from eval_days_owed`); owed != 1 {
+		t.Errorf("%d days are owed a rewrite after the pass that failed, want the day EVAL-3 left alone", owed)
 	}
-	if _, n := seriesDays(r.dayRows(t), "EVAL", SlugLegionWorkTime, "hours"); n[history.d2] != 0 || n[history.d1] != 3 {
-		t.Errorf("work time counts %d issues on %s and %d on %s, want EVAL-3 moved: 0 and 3",
+	report, _ := r.pass(t)
+	if want := []string{line(walkLegion, "EVAL", history.d2)}; !slices.Equal(report.sorted(), want) {
+		t.Errorf("the pass after the failure wrote %v, want the day EVAL-3 left alone, %v", report.sorted(), want)
+	}
+	if _, n := seriesDays(r.dayRows(t), "EVAL", SlugLegionWorkTime, "hours"); n[history.d2] != 0 || n[history.d1] != 2 {
+		t.Errorf("work time counts %d issues on %s and %d on %s, want the day EVAL-3 left rewritten and the day it joined, which no change names, as it stood: 0 and 2",
 			n[history.d2], history.d2.Format(time.DateOnly), n[history.d1], history.d1.Format(time.DateOnly))
 	}
 	if owed := r.count(t, `select count(*) from eval_days_owed`); owed != 0 {

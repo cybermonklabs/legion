@@ -69,8 +69,8 @@ func closeMarkProblems(marked, closes []string) []string {
 //   - EVAL-4, open, gains work on two days: the change marks no day and nothing is rewritten.
 //
 // The negative control is a change naming EVAL-3's work days in place of its close days: the pass
-// rewrites those two days, which count no change of the issue, and the same judgement of the marks
-// finds it wrong.
+// must rewrite those two days, which count no change of the issue, and the same judgements, of the
+// marks and of the days the pass wrote (dayProblems), must find it wrong.
 func TestAFactsChangeMarksAndRewritesTheIssuesCloseDaysAlone(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -124,16 +124,27 @@ func TestAFactsChangeMarksAndRewritesTheIssuesCloseDaysAlone(t *testing.T) {
 	}
 
 	// The negative control: a change of EVAL-3 naming its work days, which no day row counts it on.
+	// The pass reads it and writes the days it names, so that the judgements, which are the ones
+	// the steps above passed, are shown to find a change that names other days than the close
+	// days wrong.
 	seq := r.latestSeq(t)
 	r.exec(t, "log a change naming EVAL-3's work days", `select delivery_change_log_pending('issue_facts', null, 'EVAL', 'EVAL-3', $1, $2)`,
 		workFirst, workLast)
 	marked := r.factsMarks(t, seq, "EVAL", "EVAL-3")
+	controlBefore := r.dayRows(t)
 	report, _ := r.pass(t)
-	problems := closeMarkProblems(marked, []string{legionDay(closedLater)})
-	if len(problems) == 0 {
-		t.Errorf("a change marking EVAL-3's work days %v, whose pass rewrote %v, passes as one marking its close day, so the judgement proves nothing",
-			marked, report.sorted())
+	for _, day := range []string{legionDay(workFirst), legionDay(workLast)} {
+		if !slices.Contains(report.sorted(), day) {
+			t.Errorf("the pass of the change naming EVAL-3's work days wrote %v, not %s, so the negative control did not reach it", report.sorted(), day)
+		}
 	}
-	t.Logf("%d changes judged, %d days marked. The negative control marked %v and its pass rewrote %v, found wrong: %s",
-		len(steps), marks, marked, report.sorted(), strings.Join(problems, "; "))
+	closes := []string{legionDay(closedLater)}
+	markProblems := closeMarkProblems(marked, closes)
+	dayFaults := dayProblems("the negative control", report, controlBefore, r.dayRows(t), closes, nil)
+	if len(markProblems) == 0 || len(dayFaults) == 0 {
+		t.Errorf("a change marking EVAL-3's work days %v, whose pass wrote %v, passes as one marking its close day (mark problems %v, day problems %v), so the judgements prove nothing",
+			marked, report.sorted(), markProblems, dayFaults)
+	}
+	t.Logf("%d changes judged, %d days marked. The negative control marked %v and its pass wrote %v, found wrong: %s; %d judgements of the days",
+		len(steps), marks, marked, report.sorted(), strings.Join(markProblems, "; "), len(dayFaults))
 }

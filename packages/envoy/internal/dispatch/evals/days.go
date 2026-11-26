@@ -60,7 +60,15 @@ import (
 // its reading then stays the row's last when this write appends its own.
 //
 // A row whose readings are all taken away stays, as the zero row its day then is: n 0, sum, num and
-// den 0, no maximum, no sample and no last value.
+// den 0, no maximum, no sample and no last value, where it is a day of the project's own row
+// (repo '') after its series' first day with a value. A series' rows begin on that day, as a write
+// of the readings that stand leaves them, so the rows before it, which hold zero rows alone, are
+// deleted in the write that takes the readings away (dropEmptiedRows): a window that starts
+// before the series' first day reads no data (FirstDaysIn), and one that began on a day a
+// correction emptied would read 0 instead. A series left with no value keeps no row of its
+// project's own. A repository's row a correction empties is deleted wherever its day stands: no
+// zero row is written for a repository, and a day of a repository with no row reads "no data"
+// (R12).
 //
 // A write that would leave a value of a row past what a float holds (a sum, numerator or
 // denominator that overflows to an infinity) is refused, naming the row of the batch whose part
@@ -175,8 +183,10 @@ func dayKeysOf(reading Reading, row int) ([]dayKey, dayPart, bool) {
 // replaced readings superseded, so a read of the standing readings sees both. A row it would leave
 // holding a value no float holds refuses the write (CodeReadingDayOverflow), and so does a row it
 // would leave holding more than MaxDaySamples values where it held fewer
-// (CodeReadingDaySamplesLimit); nothing is written then. Last it writes the zero rows the rows it
-// touched leave owed (writeLoggedZeros) and adds the days it wrote of them to spans.
+// (CodeReadingDaySamplesLimit); nothing is written then. Then it deletes the rows a correction
+// left with no value that no zero row stands for (dropEmptiedRows), and last it writes the zero
+// rows the rows it touched leave owed (writeLoggedZeros) and adds the days it wrote of them to
+// spans.
 func writeDays(ctx context.Context, w *writeTx, definition Definition, series map[string]Series, added, removed []Reading, builtBy string, spans map[string]daySpan) error {
 	// parts is each touched row's parts of the write's own readings, in the batch's order; refold
 	// holds each row a replaced reading counted in; first is the first row of the batch that
@@ -328,6 +338,9 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 			return fmt.Errorf("write the day rows of %s: %w", definition.EvalID, err)
 		}
 	}
+	if err := dropEmptiedRows(ctx, w, definition, keys, refold, spans); err != nil {
+		return err
+	}
 	return writeLoggedZeros(ctx, w, definition, keys, builtBy, spans)
 }
 
@@ -384,6 +397,91 @@ func writeLoggedZeros(ctx context.Context, w *writeTx, definition Definition, ke
 			window series_days as (partition by d.eval_id, d.series order by d.day)
 		`, spans, definition.ProjectKey, today, writerReadings, builtBy, definition.EvalID, series, days); err != nil {
 			return fmt.Errorf("write the zero rows of %s: %w", definition.EvalID, err)
+		}
+	}
+	return nil
+}
+
+// dropEmptiedRows deletes, in the readings write's transaction, the rows a correction of the
+// write left with no value (writeDays' refold) that no zero row stands for: the project's own rows
+// (those of no repository) that lead each series, the rows before the series' first row that
+// holds a value, all of them zero rows, and every row of a series left with no value; and each
+// repository's row the write refolded to no value, whichever day it is of. A series begins on its
+// first day with a value, as a write of the readings that stand leaves it, so the rows of the
+// days before are not
+// left to read as 0 where a series that never had a reading there reads no data, and a
+// repository's row holds a reading or is no row (R12: no zero row is written for a repository).
+// Only a readings correction empties a row: the zero fills write rows of the project's own alone,
+// and a register write moves a listing, not a value. The rows go in statements of at most
+// statementBytes of parameters (statementChunks), each deleting rows only this write may write,
+// under the eval's lock; the days it deleted are added to spans, whose figures the write folds
+// again.
+func dropEmptiedRows(ctx context.Context, w *writeTx, definition Definition, keys []dayKey, refold map[dayKey]bool, spans map[string]daySpan) error {
+	// names is each series a project's row of which the write refolded, as keys are in the byte
+	// order of their keys: a series' project rows come before its repositories'. repoKeys is
+	// each repository's row it refolded.
+	var names []string
+	var repoKeys []dayKey
+	for _, key := range keys {
+		switch {
+		case !refold[key]:
+		case key.repo == "" && (len(names) == 0 || names[len(names)-1] != key.series):
+			names = append(names, key.series)
+		case key.repo != "":
+			repoKeys = append(repoKeys, key)
+		}
+	}
+	widen := func(rows pgx.Rows) error {
+		var day time.Time
+		_, err := pgx.ForEachRow(rows, []any{&day}, func() error {
+			addSpan(spans, definition.EvalID, measures.Midnight(day), measures.Midnight(day))
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("delete the rows of %s a correction left with no value: %w", definition.EvalID, err)
+		}
+		return nil
+	}
+	base := paramBytes(1, definition.ProjectKey, definition.EvalID, writerReadings)
+	for chunk := range statementChunks(names, base, textBytes) {
+		rows, err := w.Query(ctx, `
+			with input as (
+				select given.series, (
+					select d.day from eval_days d
+					where d.project_key = $1 and d.eval_id = $2 and d.writer = $3 and d.deploy_repo = '' and d.series = given.series
+					  and d.repo = '' and d.n > 0
+					order by d.day limit 1) as day
+				from unnest($4::text[]) as given(series)
+			)
+			delete from eval_days d using input
+			where d.project_key = $1 and d.eval_id = $2 and d.writer = $3 and d.deploy_repo = '' and d.series = input.series
+			  and d.repo = '' and d.day < coalesce(input.day, 'infinity'::date)
+			returning d.day
+		`, definition.ProjectKey, definition.EvalID, writerReadings, chunk)
+		if err != nil {
+			return fmt.Errorf("delete the rows of %s a correction left with no value: %w", definition.EvalID, err)
+		}
+		if err := widen(rows); err != nil {
+			return err
+		}
+	}
+	repoBase := paramBytes(3, definition.ProjectKey, definition.EvalID, writerReadings)
+	for chunk := range statementChunks(repoKeys, repoBase, (*dayKey).insertBytes) {
+		series, repos, days := make([]string, len(chunk)), make([]string, len(chunk)), make([]time.Time, len(chunk))
+		for index, key := range chunk {
+			series[index], repos[index], days[index] = key.series, key.repo, key.day
+		}
+		rows, err := w.Query(ctx, `
+			delete from eval_days d using unnest($4::text[], $5::text[], $6::date[]) as given(series, repo, day)
+			where d.project_key = $1 and d.eval_id = $2 and d.writer = $3 and d.deploy_repo = '' and d.series = given.series
+			  and d.repo = given.repo and d.day = given.day and d.n = 0
+			returning d.day
+		`, definition.ProjectKey, definition.EvalID, writerReadings, series, repos, days)
+		if err != nil {
+			return fmt.Errorf("delete the rows of %s a correction left with no value: %w", definition.EvalID, err)
+		}
+		if err := widen(rows); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -152,8 +152,17 @@ func (r *refresh) figureChanges(ctx context.Context, limit int) error {
 		}
 		spans, versioned := map[string]map[string]daySpan{}, map[string][]string{}
 		for _, change := range changes {
+			if change.Kind != delivery.ChangeKindEvalDays && change.Kind != delivery.ChangeKindEvalVersions {
+				continue
+			}
+			// A project made since the pass loaded its projects is one too (refresh.knows): the
+			// cursor passes its changes once this page commits.
+			known, err := r.knows(ctx, change.Repo)
+			if err != nil {
+				return err
+			}
 			switch {
-			case !r.known[change.Repo]:
+			case !known:
 			case change.Kind == delivery.ChangeKindEvalDays && change.TOld != nil && change.TNew != nil:
 				if spans[change.Repo] == nil {
 					spans[change.Repo] = map[string]daySpan{}
