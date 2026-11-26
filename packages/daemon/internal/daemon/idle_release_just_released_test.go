@@ -28,7 +28,10 @@ const idleRigStopLine = "the Envoy session of a role whose process is gone was s
 // back (store.TakePodWake).
 //
 // Steps 1 to 3 fail without stopping, so a run where the session still reads live says what each
-// sender met before the wait for a resume that never comes ends the subtest.
+// sender met before the wait for a resume that never comes ends the subtest. Step 1's wait gives
+// up 30 s before the test binary's deadline, as every wait does, and the sends of steps 2 and 3
+// are requests of the listener, which end only 15 s before it (idleRigListenerContext): they are
+// answered after step 1 gave up, and each says what its sender met.
 func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 	t.Helper()
 	agent, role, routed := rig.issue(idleRigJustReleasedAgent), rig.issue(idleRigJustReleasedRole), rig.issue(idleRigJustReleasedRouted)
@@ -108,7 +111,8 @@ func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 	rig.publish(idleRigAgentSubjectPrefix+routedSession, "dispatch", "just-released-routed-1", routedMessage)
 
 	// 5. Each pod comes back for its own message, and its role's task names that wake. The
-	//    routed pod's wake comes after the listener's window, which is well inside the pod wait.
+	//    routed pod's wake comes after the listener's ten-second window, and its resume after the
+	//    launch that follows the wake.
 	wakes := []struct {
 		issue        idleRigIssue
 		kind, detail string

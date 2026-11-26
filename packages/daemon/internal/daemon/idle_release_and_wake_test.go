@@ -740,13 +740,13 @@ func (r *idleWakeRig) awaitTask(issue idleRigIssue, want string) {
 }
 
 // idleRigSettle runs check now and again for the whole of within, so a test that must see
-// nothing happen watches for it rather than reading once and moving on. Its span is not a bound
-// on a fault, as every other wait of the row carries, but the watch itself: it has one caller,
-// the subscribed topic, whose claim is that nothing was woken. The listener decides whether to
-// raise a wake report inside the publish this follows, so what the span covers is the daemon's
-// own pass over the reports it raised — and a publish that raised none leaves nothing positive
-// to wait for. Every other wait of the row is for something that does happen, and gives up at
-// its own span instead (idleRigEventually).
+// nothing happen watches for it rather than reading once and moving on. Its span is the watch
+// itself, where every other wait of the row has no span of its own: it has one caller, the
+// subscribed topic, whose claim is that nothing was woken. The listener decides whether to raise a
+// wake report inside the publish this follows, so what the span covers is the daemon's own pass
+// over the reports it raised — and a publish that raised none leaves nothing positive to wait
+// for. Every other wait of the row is for something that does happen, and gives up only at the
+// test binary's deadline less testwait's margin (idleRigWaiting).
 func idleRigSettle(t *testing.T, within time.Duration, check func()) {
 	t.Helper()
 	deadline := time.Now().Add(within)

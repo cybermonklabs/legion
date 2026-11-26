@@ -583,7 +583,9 @@ func (p *idleRigRoleProcess) run() error {
 
 // refreshRegistration registers the session again, under the same epoch, every
 // idleRigRegistrationRefresh until the process stops, as the plugin's heartbeat does. A refresh
-// the listener refuses is reported and the next one tried: one failed heartbeat stops nothing.
+// the listener did not answer, or answered 5xx, is made again inside the refresh (postListener),
+// under refreshMu, so stopRefreshing waits for those calls too; a refresh the listener refuses
+// (4xx) is reported and the next one tried: one failed heartbeat stops nothing.
 func (p *idleRigRoleProcess) refreshRegistration(topics []string) {
 	ticker := time.NewTicker(idleRigRegistrationRefresh)
 	defer ticker.Stop()
@@ -986,18 +988,24 @@ func (p *idleRigRoleProcess) next() (shimwire.Frame, error) {
 	return shimwire.Decode(line)
 }
 
-// postListener is post for a registration call to the Envoy listener, made as a plugin makes one:
-// a call the listener did not answer, or answered 5xx, is made again, until it is answered 2xx or
-// refused 4xx. The listener answers 503 with Retry-After when its bus does not answer within its
-// own budget (cmd/listener's writeStoreError), which asks for another call, and a plugin makes it:
-// envoy-client's request makes a call again that was not answered or was answered 5xx
-// (packages/envoy-client/src/transport.ts), and a pi-envoy session registers again at its next
-// heartbeat (ensureHeartbeat, packages/pi-envoy/extensions/envoy.ts).
+// postListener is post for a registration call to the Envoy listener: a call the listener did not
+// answer, or answered 5xx, is made again, until it is answered 2xx or refused 4xx. The listener
+// answers 503 with Retry-After when its bus does not answer within its own budget (cmd/listener's
+// writeStoreError), which asks for another call.
 //
-// The pause before the next call is the listener's Retry-After, else envoy-client's own retry
-// delay (sessiontiming.CallRetryDelay, the generated LISTENER_CALL_RETRY_DELAY_MS): the pacing of
-// the client this process stands in for, and no bound of the rig's. Nothing here gives up: the
-// process's own life bounds the calls, as it bounds each one, and its pod's launcher ends it.
+// The pacing is the rig's own, not the plugin's. envoy-client makes a listener call at most
+// LISTENER_CALL_ATTEMPTS times (two), gives each attempt LISTENER_CALL_TIMEOUT_MS (5 s), pauses
+// LISTENER_CALL_RETRY_DELAY_MS between them and reads no Retry-After
+// (packages/envoy-client/src/transport.ts's request), and a pi-envoy session whose registration
+// failed registers again at its next heartbeat (ensureHeartbeat,
+// packages/pi-envoy/extensions/envoy.ts); pi-legion's role claim makes its call again only on a
+// 503 (packages/pi-shared/src/legion-claim-core.ts). This process has no next heartbeat for a first
+// registration that failed: its refreshes begin only once one has landed. So it stands in for the
+// plugin's attempts and its heartbeat's re-registration together, with one rule the rows can name:
+// each call is made again, with no limit of attempts and no limit on any attempt, after the
+// listener's Retry-After when the answer names one (the pause the listener itself asks for) and
+// after sessiontiming.CallRetryDelay, envoy-client's own pause, when it names none. Nothing here
+// gives up: the process's own life bounds the calls, and its pod's launcher ends it.
 func (p *idleRigRoleProcess) postListener(url string, body, answer any) error {
 	for {
 		err := p.post(url, body, answer)

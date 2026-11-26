@@ -14,14 +14,16 @@ import (
 )
 
 // TestTheIdleRigRoleProcessRegistersThroughABusyListener: the rig's role process registers with
-// the Envoy listener whatever answer the listener's load makes it give, as a plugin does, on both
-// of its registration calls (subscribe and roles/set). A call the listener did not answer, or
-// answered 5xx, is made again: after the answer's Retry-After, or after sessiontiming's
-// CallRetryDelay when the answer names none. An answer that comes later than any deadline the
-// process's client could keep is one the process waits for, because its client keeps none. A 4xx
-// is a refusal, and the process does not call again. The process used to end at the first failure
-// of either call, and its pod was never ready: on a machine at load5 1,100 to 2,000 the listener
-// answered POST /v1/interests/subscribe after the 20 s the client gave it.
+// the Envoy listener whatever answer the listener's load makes it give, on both of its
+// registration calls (subscribe and roles/set). A call the listener did not answer, or answered
+// 5xx, is made again: after the answer's Retry-After, or after sessiontiming's CallRetryDelay when
+// the answer names none. That pacing is the rig's own, not the plugin's (postListener says how
+// the two differ and why): the rows hold the process to it. An answer that comes later than the
+// 20 s the process's client once gave each call is one the process waits for, and takes: the
+// client keeps no deadline. A 4xx is a refusal, and the process does not call again. The process
+// used to end at the first failure of either call, and its pod was never ready: on a machine at
+// load5 1,100 to 2,000 the listener answered POST /v1/interests/subscribe after the 20 s the
+// client gave it.
 //
 // The least gap between two calls is read from the listener's own record of when each call
 // arrived: it is the process's pacing, which the rows hold to the pause the answer asked for, and
@@ -33,15 +35,12 @@ func TestTheIdleRigRoleProcessRegistersThroughABusyListener(t *testing.T) {
 		subscribePath = "/v1/interests/subscribe"
 		rolesPath     = "/v1/roles/set"
 	)
-	held := newIdleRigHeldAnswer()
 	for _, row := range []struct {
 		name string
 		call func(*idleRigRoleProcess) error
 		path string
 		// first answers the listener's first call; every later call lands.
 		first func(w http.ResponseWriter, r *http.Request, p *idleRigRoleProcess)
-		// held, when set, is the first answer, held until the test releases it.
-		held *idleRigHeldAnswer
 		// calls is how many calls the listener takes, and gap the least time between the first
 		// and the second when there are two.
 		calls int
@@ -55,8 +54,8 @@ func TestTheIdleRigRoleProcessRegistersThroughABusyListener(t *testing.T) {
 			first: idleRigBusyListenerAnswers(http.StatusBadGateway, ""), calls: 2, gap: sessiontiming.CallRetryDelay},
 		{name: "subscribe, no answer at all", call: subscribe, path: subscribePath,
 			first: idleRigBusyListenerHangsUp, calls: 2, gap: sessiontiming.CallRetryDelay},
-		{name: "subscribe, an answer held past the client's own deadline", call: subscribe, path: subscribePath,
-			first: held.answer, held: held, calls: 1},
+		{name: "subscribe, an answer held past the 20 s the client once gave a call", call: subscribe, path: subscribePath,
+			first: idleRigBusyListenerHolds(idleRigHeldPast), calls: 1},
 		{name: "subscribe, a 409 refusal", call: subscribe, path: subscribePath,
 			first: idleRigBusyListenerAnswers(http.StatusConflict, ""), calls: 1, refused: true},
 		{name: "roles set, a 503 with Retry-After", call: claimRole, path: rolesPath,
@@ -69,26 +68,6 @@ func TestTheIdleRigRoleProcessRegistersThroughABusyListener(t *testing.T) {
 			p := listener.start(t)
 			returned := make(chan error, 1)
 			go func() { returned <- row.call(p) }()
-			if row.held != nil {
-				// The listener's server waits for the held call when it closes, so a row that
-				// ends early releases the answer first: a cleanup runs before those registered
-				// ahead of it.
-				t.Cleanup(row.held.release)
-				testwait.Eventually(t, "the held call of "+row.path+" to reach the listener", func() bool {
-					select {
-					case <-row.held.arrived:
-						return true
-					case err := <-returned:
-						t.Fatalf("%s returned before the listener took the call: %v", row.path, err)
-					default:
-					}
-					return false
-				})
-				// The answer is held for as long as the test holds it, and whether the call
-				// outlasts that is settled by what could end it: a deadline the client keeps.
-				idleRigClientKeepsNoDeadline(t, p.client)
-				row.held.release()
-			}
 			err := testwait.Receive(t, "the call of "+row.path+" to return", returned)
 			switch {
 			case row.refused && err == nil:
@@ -109,25 +88,13 @@ func TestTheIdleRigRoleProcessRegistersThroughABusyListener(t *testing.T) {
 	}
 }
 
-// idleRigClientKeepsNoDeadline fails t when client keeps a deadline of its own that would end a
-// call the listener has not answered yet: its Timeout, or its transport's wait for the answer's
-// headers (http.DefaultTransport when it names none).
-func idleRigClientKeepsNoDeadline(t *testing.T, client *http.Client) {
-	t.Helper()
-	if client.Timeout != 0 {
-		t.Errorf("the role process's client gives each call %s, want no deadline of its own", client.Timeout)
-	}
-	transport := client.Transport
-	if transport == nil {
-		transport = http.DefaultTransport
-	}
-	switch known, ok := transport.(*http.Transport); {
-	case !ok:
-		t.Errorf("the role process's client calls through a %T, whose deadlines this row cannot read", transport)
-	case known.ResponseHeaderTimeout != 0:
-		t.Errorf("the role process's client waits %s for an answer's headers, want no deadline of its own", known.ResponseHeaderTimeout)
-	}
-}
+// idleRigHeldPast is how long the held row's listener holds its first answer before it lands: past
+// the 20 s the role process's client once gave each call, the deadline that ended the recorded
+// failure's registration. A client that kept that deadline, or any shorter one in its transport or
+// the call's context, gives the call up while it is held and calls again, so the listener takes
+// two calls and the row fails by its count; a client that keeps none takes the held answer, the
+// one call.
+const idleRigHeldPast = 21 * time.Second
 
 // idleRigBusyListener is an Envoy listener's registration route path that answers its first call
 // with first and every later one as a listener that took the call.
@@ -207,25 +174,17 @@ func idleRigBusyListenerHangsUp(w http.ResponseWriter, _ *http.Request, _ *idleR
 	_ = conn.Close()
 }
 
-// idleRigHeldAnswer is a first answer the listener holds until the test releases it: it reports
-// the call's arrival by closing arrived, and lands once release is called, which may be called
-// more than once.
-type idleRigHeldAnswer struct {
-	arrived chan struct{}
-	gate    chan struct{}
-	release func()
-}
-
-func newIdleRigHeldAnswer() *idleRigHeldAnswer {
-	h := &idleRigHeldAnswer{arrived: make(chan struct{}), gate: make(chan struct{})}
-	h.release = sync.OnceFunc(func() { close(h.gate) })
-	return h
-}
-
-func (h *idleRigHeldAnswer) answer(w http.ResponseWriter, r *http.Request, p *idleRigRoleProcess) {
-	close(h.arrived)
-	<-h.gate
-	idleRigBusyListenerLands(w, r, p)
+// idleRigBusyListenerHolds is a first answer the listener lands only once held has passed since
+// the call arrived: an answer later than any deadline shorter than held. A call its client gave up
+// meanwhile is not answered at all, as a listener does not answer a connection that closed.
+func idleRigBusyListenerHolds(held time.Duration) func(http.ResponseWriter, *http.Request, *idleRigRoleProcess) {
+	return func(w http.ResponseWriter, r *http.Request, p *idleRigRoleProcess) {
+		select {
+		case <-time.After(held):
+			idleRigBusyListenerLands(w, r, p)
+		case <-r.Context().Done():
+		}
+	}
 }
 
 // idleRigBusyListenerLands is the listener's answer to a call it took: for a registration, the

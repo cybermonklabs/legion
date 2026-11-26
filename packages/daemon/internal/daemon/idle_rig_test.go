@@ -766,8 +766,9 @@ func (r *idleWakeRig) newAdoptions(issue idleRigIssue) []idleRigAdoption {
 // stop that lands before the session's first report (launch does not wait for it) leaves such a
 // row on a retired claim, and the release of a pod no claim owns measures the period against that
 // row as against any other (pods.IdleView.QuietSince). Left out, the row kept the moment of the
-// stop, so that release waited the idle period out on the wall clock, which is longer than the
-// rig's wait for it (CI run 44911423665). The idle rule's decision is not moved by it: it keeps a
+// stop, so that release waited the idle period out on the wall clock, which was longer than the
+// rig's wait for it when each wait had a span of its own (CI run 44911423665), and now makes the
+// row wait that period out for nothing. The idle rule's decision is not moved by it: it keeps a
 // live claim whose session has reported nothing since its last turn whatever the row's time
 // (workflow.IdleRelease, IdleHoldUnreported). What such a pod can gain is a hold row, which the
 // daemon records only for a pod past the quiet period (recordKeptPod); no row of this rig reads
@@ -869,7 +870,7 @@ func (r *idleWakeRig) awaitReleased(issues ...idleRigIssue) {
 		}
 	}()
 	var quieted time.Time
-	// This is every launch undone at once, the rig's longest wait.
+	// This is every launch undone at once: the wait with the most work behind it.
 	idleRigEventually(r.t, "every pod of the rig released", func() bool {
 		// The pods are back-dated rather than waited out: the idle rule reads the claim rows and
 		// nothing else (pods.IdleView), so those rows are the clock it is measured against.
@@ -1086,8 +1087,12 @@ const idleRigPoll = idleRigTick
 // less testwait's margin (testwait.Remaining), so the work behind a wait, which a loaded runner
 // with every pod of the rig and a launcher for each, a nats-server, a Postgres and an Envoy
 // listener on it makes slow, is waited for, and a fault (a release that never happens) fails the
-// wait by name before the binary's panic, which would take the rest of internal/daemon with it.
-// Each wait once carried a span of its own (150 s for a pod, a minute for a record), and on a
+// wait by name before Go's alarm. A condition that asks the listener is answered as the wait gives
+// up, because the rig's requests to it end only after every wait has (idleRigListenerContext).
+// The cost is testwait's own (its package comment): a fault holds the test binary until that
+// moment, and every later wait in the binary begins with the moment passed, asks its question
+// once and fails, where a span of its own once failed one row and left the rest of the binary its
+// time. Each wait once carried such a span (150 s for a pod, a minute for a record), and on a
 // machine at load5 1,100 to 2,000 a pod whose role process registered late outlasted its span.
 // idleRigEventually and idleRigUntil are this wait, each at the pace its callers need.
 func idleRigWaiting(t *testing.T, what string, pace time.Duration, condition func() bool) {

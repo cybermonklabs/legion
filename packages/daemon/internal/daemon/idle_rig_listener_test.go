@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
@@ -32,15 +33,36 @@ import (
 type idleRigListener struct {
 	t   *testing.T
 	url string
+	// ctx bounds every request the rig makes of the listener (idleRigListenerContext).
 	ctx context.Context
 	// socket is the test's descriptor of the listening socket on port, which each start inherits
 	// as ENVOY_LISTEN_FD.
 	socket *os.File
 	logs   string
 	cmd    *exec.Cmd
-	client *http.Client
 	port   int
 	stop   func()
+}
+
+// idleRigListenerSpare is how long before the test binary's deadline the rig's requests to the
+// listener end: half of testwait's margin. Every wait of the rig gives up at that margin, 30 s
+// before the deadline, and asks its question once more as it does, so a question that is a
+// request of the listener must still be answered then: a request that ended with the waits would
+// fail its parent test as a listener error from inside the wait, and the wait's own failure, which
+// names what it waited for, would never be written. Ending 15 s before the deadline still leaves
+// the failure and the cleanups time to run before Go's alarm.
+const idleRigListenerSpare = 15 * time.Second
+
+// idleRigListenerContext is the context of the rig's requests to the listener: cancelled when t
+// ends, and ending idleRigListenerSpare before the test binary's deadline, after every wait of the
+// rig has given up. Under -timeout 0 it has no deadline.
+func idleRigListenerContext(t *testing.T) context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	if deadline, bounded := t.Deadline(); bounded {
+		ctx, cancel = context.WithDeadline(context.Background(), deadline.Add(-idleRigListenerSpare))
+	}
+	t.Cleanup(cancel)
+	return ctx
 }
 
 // startIdleRigListener runs a listener of machine id against natsURL until t ends, and returns it
@@ -70,8 +92,9 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.Fi
 	cmd.Dir = home
 	// The unplaceable window is ten seconds rather than the shipped minute: a copy stored on the
 	// agent subject of a session with no record is held for that window before the listener gives
-	// it up and reports the wake (cmd/listener's unplaceableAgentDelivery), so a pod woken that
-	// way comes back ten seconds after the message rather than a minute after it.
+	// it up and reports the wake (cmd/listener's unplaceableAgentDelivery), so the wake report of a
+	// pod woken that way comes ten seconds after the message rather than a minute after it, and
+	// the pod comes back after its launch on top of that.
 	cmd.Env = append(os.Environ(),
 		"HOME="+home, "PORT="+fmt.Sprint(port), "ENVOY_LISTEN_HOST=127.0.0.1", "ENVOY_LISTEN_FD=3",
 		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL, "ENVOY_UNPLACEABLE_RETRY_WINDOW=10s")
@@ -88,11 +111,10 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.Fi
 		defer close(done)
 		_ = cmd.Wait()
 	}()
-	// Every request the rig makes of the listener carries the shared wait's bound
-	// (testwait.Context) and no timeout of the rig's own, so a listener a loaded machine answers
-	// late is answered.
-	l := &idleRigListener{t: t, url: "http://127.0.0.1:" + fmt.Sprint(port), ctx: testwait.Context(t), socket: socket, logs: logs, cmd: cmd, port: port,
-		client: &http.Client{}}
+	// Every request the rig makes of the listener carries idleRigListenerContext and no timeout of
+	// the rig's own, so a listener a loaded machine answers late is answered, and a wait that asks
+	// the listener as it gives up still has its answer.
+	l := &idleRigListener{t: t, url: "http://127.0.0.1:" + fmt.Sprint(port), ctx: idleRigListenerContext(t), socket: socket, logs: logs, cmd: cmd, port: port}
 	// The stop kills the process (exec's default Cancel, SIGKILL) and returns only once it has
 	// ended, so its NATS clients are gone before the test's server checks that it holds none
 	// (testnats' leak check). It waited a fixed 15 s before, and on a loaded machine (load5 1,100
@@ -121,12 +143,12 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.Fi
 			t.Logf("the Envoy listener's own log:\n%s", l.log())
 		}
 	}()
-	testwait.Eventually(t, "the Envoy listener answering /healthz healthy", func() bool {
+	idleRigEventually(t, "the Envoy listener answering /healthz healthy", func() bool {
 		request, err := http.NewRequestWithContext(l.ctx, http.MethodGet, l.url+"/healthz", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		response, err := l.client.Do(request)
+		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			return false
 		}
@@ -216,7 +238,7 @@ func (l *idleRigListener) call(path string, body map[string]any) (int, string) {
 // answer makes one request of the listener and answers its status and body.
 func (l *idleRigListener) answer(request *http.Request) (int, string) {
 	l.t.Helper()
-	response, err := l.client.Do(request)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		l.t.Fatalf("%s %s: %v", request.Method, request.URL.Path, err)
 	}
