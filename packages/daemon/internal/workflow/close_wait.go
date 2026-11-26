@@ -660,17 +660,6 @@ func (e *Engine) tellAtOnce(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			}
 		}
 	}
-	if e.checkRole() == "" && old.Unread != nil && len(old.Checks) == 0 && stored.Unread == nil && len(stored.Checks) > 0 {
-		var ids []string
-		for _, check := range stored.Checks {
-			ids = append(ids, fmt.Sprintf("%s (%s)", check.ID, strings.Trim(check.Answer+", "+check.Reason, ", ")))
-		}
-		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "close-wait-no-result", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
-			"No role of this project runs a check after the merge of %s. These checks have no pass:%s\nHave an eligible agent run each check and record its result.",
-			issue.Key, listed(ids))}); err != nil {
-			return err
-		}
-	}
 	if stored.Unapproved != nil && (old.Unapproved == nil || !slices.Equal(old.Unapproved.Checks, stored.Unapproved.Checks)) {
 		return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "checks-unapproved", Role: claim.RoleArchitect,
 			Reason: fmt.Sprintf("These checks of %s changed since the approved Verification document:%s\nA person must approve its current version before %s closes.",
