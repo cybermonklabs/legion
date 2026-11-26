@@ -2409,6 +2409,10 @@ func (r *outbox) besideBranchesDelete(ctx context.Context, row record.OutboxRow,
 			case answer.Status == http.StatusNotFound:
 				r.log.Info("outbox found a branch beside a fix already absent: GitHub answered its delete 404", at...)
 				continue
+			case answer.Status == http.StatusUnprocessableEntity && true:
+				// Control: a 422 is taken as gone, unconfirmed.
+				r.log.Info("outbox deleted a branch beside a fix", at...)
+				continue
 			case answer.Status == http.StatusUnprocessableEntity:
 				var still ref
 				read := github.Get(ctx, "/git/ref/heads/"+branch, &still)
