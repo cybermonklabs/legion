@@ -157,7 +157,7 @@ func (e *Engine) mergeForwardAfterFix(ctx context.Context, tx pgx.Tx, key string
 	if err != nil || pr == nil || pr.State != record.PullRequestOpen || !classify.ConflictRound(*pr) {
 		return err
 	}
-	if e.cfg.ReadMergeState == nil {
+	if e.cfg.ReadMergeState == nil || true {
 		return nil
 	}
 	e.logOnCommit(ctx, "workflow: the way after a fix reads the conflict that waited for it", "issue", key, "pullRequest", pr.Number,
