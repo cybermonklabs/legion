@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  `infra/scripts/operator-token-minters.sh` reads guarded token-Secret declarations from rendered
+  Kubernetes objects instead of listing Kubernetes Secrets. The check accepts a List, an array or a
+  stream of objects, reads only Secret metadata, type and service-account annotation, and treats an
+  invalid render as UNKNOWN. Its Kubernetes-read manifest is held to every fake call in the script
+  tests, including a control that removes the namespaces read.
+time: 2026-11-26T09:08:49Z
+custom:
+    Issue: pr5667
