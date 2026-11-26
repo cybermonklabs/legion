@@ -21,10 +21,10 @@ function suiteArguments(): string[] {
   const manifest = JSON.parse(readFileSync(join(PACKAGE_DIR, "package.json"), "utf8")) as {
     scripts: { "test:web": string };
   };
-  const expanded = Bun.spawnSync(
-    ["sh", "-c", `printf '%s\\n' ${manifest.scripts["test:web"]}`],
-    { cwd: PACKAGE_DIR, stderr: "pipe" }
-  );
+  const expanded = Bun.spawnSync(["sh", "-c", `printf '%s\\n' ${manifest.scripts["test:web"]}`], {
+    cwd: PACKAGE_DIR,
+    stderr: "pipe",
+  });
   expect(expanded.exitCode, expanded.stderr.toString()).toBe(0);
   const [runner, ...args] = expanded.stdout.toString().trimEnd().split("\n");
   expect(runner).toBe("bun");
