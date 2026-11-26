@@ -688,7 +688,7 @@ const SHOWN_READ_HOLD_MS = 1500;
 //
 // Tagged `@pr`, as every stubbed row is (`e2e/__tests__/pull-request-lane.test.ts`: a stubbed row
 // the pull-request lane does not schedule is a row whose cost was paid and whose feedback was
-// given away). That lane is at 329 of the 350 rows dispatch://INFRA-1407's R1 allows.
+// given away). That lane is at the 350 rows dispatch://INFRA-1407's R1 allows.
 // SLOW(>=2s): a page held mid-reload, then its read held 1,500 ms and the 500 ms quiet after it.
 test("the settle wait waits on the shown document's Inbox reads and on no replaced one's @pr", async ({
   page,

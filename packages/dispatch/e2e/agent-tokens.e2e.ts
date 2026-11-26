@@ -62,8 +62,8 @@ async function makeToken(page: Page, label: string): Promise<string> {
   return token;
 }
 
-// This row carries no `@pr` tag: the pull-request lane's real-stack share is at its cap
-// (`realStackBudget`, e2e/__tests__/pull-request-lane.test.ts), and the read-only token row below
+// This row carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts), and the read-only token row below
 // took its place there, since it drives the same Settings section. The full lane runs this one.
 test("a personal agent token attributes its ask, remains private, and is revoked from Settings", async ({
   browser,

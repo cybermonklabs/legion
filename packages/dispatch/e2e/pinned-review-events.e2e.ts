@@ -8,8 +8,8 @@ import { asUser } from "./users";
 // version 1 and a changes request on its version 2, and reads each line whole: the document and
 // the version.
 //
-// The title carries no `@pr` tag: the pull-request lane's real-stack share is at its cap
-// (`realStackBudget`, e2e/__tests__/pull-request-lane.test.ts), so the full lane runs it.
+// The title carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts), so the full lane runs it.
 //
 // SLOW(>=2s): 3.5 s - a project, an issue with its spec, an approval, a named version and a
 // changes request written first; then one load of the Activity tab, two pin writes and the

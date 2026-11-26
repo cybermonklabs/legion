@@ -70,7 +70,7 @@ const excludedKeys = new Set(accessibilityExclusions.map(exclusionKey));
  *  fails on any serious or critical finding no exclusion entry covers. `inFlight` is where the
  *  settle wait reads the requests still waiting for their answer: `listedRequests(page)` for a
  *  page a real server answers, and for a page answered from routes `trackDocumentRequests(page)`,
- *  which must be called before this opens the page (`waitForRouteSettled` says why). */
+ *  which must be called before this opens the page (`trackDocumentRequests` says why). */
 export async function scanRoute(
   page: Page,
   route: ReviewedRoute,

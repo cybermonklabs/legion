@@ -7,8 +7,9 @@
  *  the live document's Yjs socket, or a `/ws/live` frame the stubbed layer's contract fixtures do
  *  not carry - and each entry's `realStackScan` says which. Scanned against a recording, such a
  *  page would be read without that part (packages/dispatch/README.md, "The stubbed layer"). The
- *  rows are untagged: the pull-request lane already holds its 150 real-stack rows, so `chromium`
- *  runs them on the full lane, which the merge queue and the nightly run.
+ *  rows are untagged: the pull-request lane is at its row budget (`laneBudget`,
+ *  e2e/__tests__/pull-request-lane.test.ts), so `chromium` runs them on the full lane, which the
+ *  merge queue and the nightly run.
  *
  *  Every row reads one review corpus (e2e/review-seed.ts), which the worker seeds once and hands
  *  each row as its `reviewSeed` (e2e/test.ts): the rows read it alike, so none seeds it again. */

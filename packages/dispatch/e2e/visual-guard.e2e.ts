@@ -8,8 +8,8 @@
  *  while the Spec tab's read mark exactly as this row wrote it first, as the visual seed writes its
  *  own, passes, and so does the editor's stamp of the heading's id. It runs on the full lane, the lane of the visual rows
  *  it vouches for: in every merge group, and on a pull request under `full-ci`. It carries no
- *  `@pr` tag because the pull-request lane's real-stack rows are at their budget of 150
- *  (e2e/__tests__/pull-request-lane.test.ts), and a guard that guards no row there has nothing
+ *  `@pr` tag because the pull-request lane is at its row budget (`laneBudget`,
+ *  e2e/__tests__/pull-request-lane.test.ts), and a guard that guards no row there has nothing
  *  to answer for on that lane. */
 import { type Body, routePath } from "../web/src/api/paths";
 import { createIssue, createProject, getArtifact, putDocumentRead } from "./api";
