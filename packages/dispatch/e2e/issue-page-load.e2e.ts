@@ -53,6 +53,7 @@ import {
   moveLine,
   namedRowAt,
   pageShape,
+  type ResourceEntry,
   recordOf,
   underHeader,
   waitForLoadEnd,
@@ -379,19 +380,52 @@ test("capture the raw readings of one load", async ({ browser, loadSeeds }, test
       captured(rate, load)
     )
   );
-  // A press on Spec after the load: the seed's issue is no child, so a load of Conversation sends
-  // no read of Spec's view, and the press sends it.
-  const spec = LOAD_ACTS[1440].find((act) => act.kind === "view" && act.view === "spec");
-  if (spec === undefined) throw new Error("the acts at 1440 px hold no press on Spec");
+  // A press on a view whose read the page does not hold once the load has ended, so the press
+  // sends that read and the next capture can hold a result that waits for it.
   printCapture(
     "view-press-read",
     await oneLoad(browser, rate, { address, boxes: "none" }, async (load) => {
       await waitForLoadEnd(load.page, load.requests);
-      await makeSteps(load.page, 0, spec.steps, "now");
+      const sent = (await recordOf(load.page)).resource;
+      const view = UNHELD_ORDER.find((each) => !viewReadSent(sent, seeded.key, each));
+      const press = LOAD_ACTS[1440].find((act) => act.kind === "view" && act.view === view);
+      if (view === undefined || press === undefined) {
+        throw new Error(
+          `the load of Conversation sent the read of every view the capture may press: ` +
+            UNHELD_ORDER.join(", ")
+        );
+      }
+      await makeSteps(load.page, 0, press.steps, "now");
       return await captured(rate, load);
     })
   );
 });
+
+/** The views the capture's press may choose, in the order it tries them, the first whose read the
+ *  load did not send: Decisions, Plan and Verification, whose reads a load of Conversation sends
+ *  where its issue's shape asks for them (`tree-read/view-read.tsx`); Graph, whose read is the
+ *  whole tree; and Spec last, which at the base draws its first screen from Conversation's read
+ *  before its own answers (`view-press-read.json` of the first capture). */
+const UNHELD_ORDER = ["decisions", "plan", "verification", "graph", "spec"] as const;
+
+/** Whether `resource` holds a read of `view`'s rows of issue `key`: the tree read with that
+ *  `view`, Graph's tree read with no `view` and no `kind`, and for Decisions the decisions read
+ *  too, which is one of the reads a load sends. */
+function viewReadSent(
+  resource: readonly ResourceEntry[],
+  key: string,
+  view: (typeof UNHELD_ORDER)[number]
+): boolean {
+  const issue = `/api/v1/issues/${encodeURIComponent(key)}`;
+  return resource.some((entry) => {
+    const url = new URL(entry.name);
+    if (view === "decisions" && url.pathname === `${issue}/decisions`) return true;
+    if (url.pathname !== `${issue}/tree`) return false;
+    return view === "graph"
+      ? !url.searchParams.has("view") && !url.searchParams.has("kind")
+      : url.searchParams.get("view") === view;
+  });
+}
 
 /** Holds the five loads of a named row to R3 under `prefix`: at the first drawing of the rows
  *  the named row stands in the viewport under the header; it keeps its box until the load has

@@ -2,9 +2,13 @@
  *  observers give a load - long tasks, Element Timing, Event Timing, Resource Timing, the
  *  largest contentful paint, `web-vitals`' layout shift - and the frames the page's recorder
  *  stamps into the readings the load rows and the production script hold to their bounds. Each
- *  reader takes plain arrays of those entries, as a load's capture serialises them, so these
- *  cases write the entries out by hand, at the edges each rule draws. */
+ *  reader takes plain arrays of those entries, as a load's capture serialises them. The first
+ *  cases write the entries out by hand, at the edges each rule draws; the last read four real
+ *  loads, which the capture row of `e2e/issue-page-load.e2e.ts` printed in a builds Job, from
+ *  `fixtures/load-readings/`, and assert what each reader must take from them, never a bound. */
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import type { Page } from "@playwright/test";
 
 import {
   actBounds,
@@ -16,15 +20,20 @@ import {
   firstDrawing,
   firstScreenPaint,
   fourthSmallest,
+  groupsUndrawn,
+  instrumentPage,
+  type LoadCapture,
   largestContentfulPaint,
   layoutShift,
   loadEnd,
   longestEvent,
   longestTaskAfter,
+  longestTaskAfterViewRow,
   NOT_APPLICABLE,
   type RequestSpan,
   type ResourceEntry,
   readingLine,
+  watchLoadRequests,
 } from "../load-instruments";
 
 /** A frame stamped `time` by `requestAnimationFrame`, read at `at` in its callback and shown 10 ms
@@ -79,6 +88,85 @@ test("the load ends one second after the last task over 50 ms, and an open WebSo
   expect(loadEnd(tasks, [...requests, late], 9000)).toBe(2400);
   // With nothing at all, the load ends one second after the navigation started.
   expect(loadEnd([], [], 1000)).toBe(1000);
+});
+
+test("a request's span runs from when the page sent it to when its answer or failure reached the page, on the page's timeline, whatever a route did with it", () => {
+  // The page's `performance.timeOrigin`, and the wall clock as each of Playwright's reports
+  // arrives: `at` ms into the page's life.
+  const origin = 1_764_150_000_000;
+  let clock = origin;
+  const handlers = new Map<string, ((value: unknown) => void)[]>();
+  const page = {
+    on: (event: string, handler: (value: unknown) => void) => {
+      handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+    },
+  };
+  const report = (event: string, value: unknown, at: number) => {
+    clock = origin + at;
+    for (const handler of handlers.get(event) ?? []) handler(value);
+  };
+  // A request with the timing Playwright gives it, which the span must not read.
+  const request = (url: string, timing: { startTime: number; responseEnd: number }) => ({
+    timing: () => timing,
+    url: () => url,
+  });
+  const requests = watchLoadRequests(page as unknown as Page, () => clock);
+
+  // A route continues the issue read, fulfils the identity read and aborts a write.
+  const issue = request("http://127.0.0.1:8080/api/v1/issues/LAY-1", {
+    responseEnd: 108,
+    startTime: origin + 897,
+  });
+  const whoami = request("http://127.0.0.1:8080/auth/whoami", {
+    responseEnd: -1,
+    startTime: origin + 900,
+  });
+  const write = request("http://127.0.0.1:8080/api/v1/issues/LAY-1/read", {
+    responseEnd: -1,
+    startTime: origin + 1200,
+  });
+  // A route holds the typeface's file back 3 s, then continues it. Its timing is the one
+  // Playwright gave the file in `typeface-held-back.json`: the start when the route let it go,
+  // the end counted from when the page sent it, which together put it at 4,517 to 7,725 ms.
+  const font = request("http://127.0.0.1:8080/assets/InterVariable-subset.woff2", {
+    responseEnd: 3207.5,
+    startTime: origin + 4517.25,
+  });
+  const socket = { on: () => {}, url: () => "ws://127.0.0.1:8080/ws/live" };
+  report("request", issue, 897);
+  report("request", whoami, 900);
+  report("requestfinished", whoami, 903);
+  report("websocket", socket, 968.5);
+  report("requestfinished", issue, 1005);
+  report("request", write, 1200);
+  report("requestfailed", write, 1201);
+  report("request", font, 1314.25);
+
+  // While the route holds the file back, it is a request in flight, and the load has not ended.
+  clock = origin + 2500;
+  expect(requests.spans(origin).find((span) => span.url.endsWith(".woff2"))?.end).toBeNull();
+  expect(loadEnd([], requests.spans(origin), 2500)).toBeNull();
+
+  report("requestfinished", font, 4520.25);
+  expect(requests.spans(origin)).toEqual([
+    { end: 1005, kind: "request", start: 897, url: "http://127.0.0.1:8080/api/v1/issues/LAY-1" },
+    { end: 903, kind: "request", start: 900, url: "http://127.0.0.1:8080/auth/whoami" },
+    { end: null, kind: "websocket", start: 968.5, url: "ws://127.0.0.1:8080/ws/live" },
+    {
+      end: 1201,
+      kind: "request",
+      start: 1200,
+      url: "http://127.0.0.1:8080/api/v1/issues/LAY-1/read",
+    },
+    {
+      end: 4520.25,
+      kind: "request",
+      start: 1314.25,
+      url: "http://127.0.0.1:8080/assets/InterVariable-subset.woff2",
+    },
+  ]);
+  // The load ends a second after the file reached the page, not a second after 7,725 ms.
+  expect(loadEnd([], requests.spans(origin), 9000)).toBe(5520.25);
 });
 
 test("the fourth smallest of five readings is what a bound is held to, and a load that gave none counts as over it", () => {
@@ -263,37 +351,46 @@ test("an act refuses a frame stamped before its event, and reads the first frame
   expect(actReading({ acts, frames: frames.slice(0, 2), resource: [] }, 0).shown).toBeNull();
 });
 
-test("an act needs a read only where a read sent after its event answered before the frame that shows its result, and is then read in three parts", () => {
+// The plan's case of a view press that needs a read, written by hand: no capture holds such a
+// press yet. The first capture's press, on Spec, drew its result from what the page held before
+// its read answered (the case of `view-press-read.json` below), and the capture row now presses a
+// view whose read the load did not send, so a later capture can hold one.
+test("a view press that needs a read is read in three parts", () => {
   const frames = [frame(990), frame(1006), frame(1040), frame(1200), frame(1400), frame(1500)];
   const acts = [
     {
       event: { timeStamp: 1000, type: "pointerdown" },
       loading: 2,
       measured: true,
-      name: "a press on Spec",
+      name: "a press on Graph",
       result: 5,
     },
   ];
   // Sent with the load, before the press: it is no read of the press.
   const before = read("/api/v1/issues/LAY-1", 900, 1200);
-  const spec = read("/api/v1/issues/LAY-1/tree?view=spec", 1010, 1400);
-  // The result's frame is shown at 1510: the view read answered at 1400, before it.
-  expect(actReading({ acts, frames, resource: [before, spec] }, 0)).toEqual({
-    act: "a press on Spec",
+  const graph = read("/api/v1/issues/LAY-1/tree", 1010, 1400);
+  // The result's frame found the result in its callback at 1501 and was shown at 1510; the
+  // view's read answered at 1400, before that callback, so the result waited for it.
+  expect(actReading({ acts, frames, resource: [before, graph] }, 0)).toEqual({
+    act: "a press on Graph",
     loading: 50,
-    read: { drawn: 110, sent: 10, url: "/api/v1/issues/LAY-1/tree?view=spec" },
+    read: { drawn: 110, sent: 10, url: "/api/v1/issues/LAY-1/tree" },
     shown: 510,
   });
 
-  // The read was sent after the press and answered after the frame that shows the result, so
-  // the result was drawn from what the page held: no read is part of it.
-  const late = read("/api/v1/issues/LAY-1/tree?view=spec", 1010, 1600);
-  expect(actReading({ acts, frames, resource: [before, late] }, 0)).toEqual({
-    act: "a press on Spec",
+  // The read answered at 1505: after the callback at 1501 that found the result in the
+  // document, though before that frame was shown. It cannot have drawn what the document held,
+  // so the result needed no read.
+  const afterCallback = read("/api/v1/issues/LAY-1/tree", 1010, 1505);
+  expect(actReading({ acts, frames, resource: [before, afterCallback] }, 0)).toEqual({
+    act: "a press on Graph",
     loading: 50,
     read: null,
     shown: 510,
   });
+  // The read answered after the frame was shown: no read is part of the result either.
+  const late = read("/api/v1/issues/LAY-1/tree", 1010, 1600);
+  expect(actReading({ acts, frames, resource: [before, late] }, 0).read).toBeNull();
   // Only a read sent before the press answered: none is the press's.
   expect(actReading({ acts, frames, resource: [before] }, 0).read).toBeNull();
 });
@@ -394,4 +491,392 @@ test("the longest task counts only tasks after the first drawing, and the longes
     ])
   ).toBe(0.04);
   expect(layoutShift([])).toBeNull();
+});
+
+// ---------------------------------------------------------------------------------------------
+// The init script's readers, against stand-ins of the browser's observers.
+// ---------------------------------------------------------------------------------------------
+
+/** A stand-in of `PerformanceObserver` that hands its entries to its callback only when told
+ *  (`deliver`), as the browser hands them in a task of their own some time after it queued them,
+ *  and answers those not yet handed over from `takeRecords`. */
+class QueuedObserver {
+  static readonly supportedEntryTypes = [
+    "element",
+    "event",
+    "largest-contentful-paint",
+    "longtask",
+    "resource",
+  ];
+  /** The observer of each entry type the init script observes, newest last. */
+  static readonly observing = new Map<string, QueuedObserver>();
+  private queued: PerformanceEntry[] = [];
+
+  constructor(private readonly callback: (list: { getEntries(): PerformanceEntry[] }) => void) {}
+
+  observe(options: { readonly type: string }): void {
+    QueuedObserver.observing.set(options.type, this);
+  }
+
+  /** Queues `entry`, which the callback has not been handed yet. */
+  queue(entry: object): void {
+    this.queued.push(entry as PerformanceEntry);
+  }
+
+  /** Hands every queued entry to the callback. */
+  deliver(): void {
+    const entries = this.takeRecords();
+    this.callback({ getEntries: () => entries });
+  }
+
+  takeRecords(): PerformanceEntry[] {
+    const entries = this.queued;
+    this.queued = [];
+    return entries;
+  }
+}
+
+/** Runs the init script (`instrumentPage`) against stand-ins of the page: `QueuedObserver`, a
+ *  window and a document that draw nothing, and a frame loop that never ticks. Hands `body` what
+ *  the script put on the window, and puts the globals back after. */
+function withStandIns(body: (instruments: NonNullable<Window["__loadInstruments"]>) => void): void {
+  const page: Record<string, unknown> = { addEventListener: () => {}, innerHeight: 900 };
+  page.top = page;
+  const standIns: Record<string, unknown> = {
+    MessageChannel: class {
+      port1 = { onmessage: null };
+      port2 = { postMessage: () => {} };
+    },
+    PerformanceObserver: QueuedObserver,
+    document: {
+      fonts: { addEventListener: () => {} },
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    },
+    requestAnimationFrame: () => 0,
+    window: page,
+  };
+  const saved = Object.keys(standIns).map(
+    (name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const
+  );
+  try {
+    Object.assign(globalThis, standIns);
+    QueuedObserver.observing.clear();
+    instrumentPage({
+      boxes: "none",
+      groups: {},
+      header: [],
+      named: null,
+      namedGroup: "the named row",
+      rows: "[data-node-row]",
+      rowsGroup: "rows in the viewport",
+      viewRow: "[data-filter-row]",
+      viewRows: "[data-node-row]",
+    });
+    const instruments = (page as unknown as Window).__loadInstruments;
+    if (instruments === undefined) throw new Error("the init script put nothing on the window");
+    body(instruments);
+  } finally {
+    for (const [name, descriptor] of saved) {
+      if (descriptor === undefined) Reflect.deleteProperty(globalThis, name);
+      else Object.defineProperty(globalThis, name, descriptor);
+    }
+  }
+}
+
+test("the init script's readers take the entries an observer has queued and not yet handed over, so a load's end counts a long task whose callback has not run", () => {
+  withStandIns((instruments) => {
+    const tasks = QueuedObserver.observing.get("longtask");
+    const resource = QueuedObserver.observing.get("resource");
+    if (tasks === undefined || resource === undefined) {
+      throw new Error("the init script observes no long tasks or no resources");
+    }
+    // The long tasks of `conversation-390.json`'s last second: the first handed over, the second
+    // ended and queued, its callback not yet run, when the probe of that capture answered.
+    tasks.queue({ duration: 302, entryType: "longtask", name: "self", startTime: 5194.1 });
+    tasks.deliver();
+    tasks.queue({ duration: 184, entryType: "longtask", name: "self", startTime: 6422.1 });
+    const probed = instruments.probe();
+    expect(probed.tasks).toEqual([
+      { duration: 302, name: "self", startTime: 5194.1 },
+      { duration: 184, name: "self", startTime: 6422.1 },
+    ]);
+    // So the load had not ended a second after the first: it ends a second after the second.
+    expect(loadEnd(probed.tasks, [], 6496.1)).toBeNull();
+    expect(loadEnd(probed.tasks, [], 8000) ?? Number.NaN).toBeCloseTo(7606.1, 6);
+    // A queued entry taken is handed over once: the callback that runs later finds nothing more.
+    tasks.deliver();
+    expect(instruments.probe().tasks).toHaveLength(2);
+
+    // The record flushes every observer, so a read that answered just before it was taken is in it.
+    resource.queue({
+      duration: 10,
+      initiatorType: "fetch",
+      name: "http://127.0.0.1:8080/api/v1/issues/LAY-1/tree",
+      requestStart: 5501,
+      responseEnd: 5510,
+      responseStart: 5509,
+      startTime: 5500,
+    });
+    expect(instruments.record().resource.map((entry) => entry.name)).toEqual([
+      "http://127.0.0.1:8080/api/v1/issues/LAY-1/tree",
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Four real loads.
+// ---------------------------------------------------------------------------------------------
+
+/** The loads the capture row printed in builds Job `e2e-rows-zmhbt` at the base: Conversation at
+ *  1440 px at rate 2 and at 390 px at rate 4, Conversation at 1440 px with the typeface's file
+ *  answered 3 s late, and a press on Spec once a load of Conversation at 1440 px had ended. */
+const CAPTURES = [
+  "conversation-1440",
+  "conversation-390",
+  "typeface-held-back",
+  "view-press-read",
+] as const;
+
+type CaptureName = (typeof CAPTURES)[number];
+
+const captures = Object.fromEntries(
+  CAPTURES.map((name) => [
+    name,
+    JSON.parse(
+      readFileSync(new URL(`./fixtures/load-readings/${name}.json`, import.meta.url), "utf8")
+    ) as LoadCapture,
+  ])
+) as Record<CaptureName, LoadCapture>;
+
+/** The loads whose frame recorder kept every box: all but the press's, which kept none. */
+const BOXED: readonly CaptureName[] = [
+  "conversation-1440",
+  "conversation-390",
+  "typeface-held-back",
+];
+
+test("on each captured load the view row is drawn before the rows, each frame is stamped from its start to its callback to its showing, and the box recorder first kept the view row's controls in the view row's first frame", () => {
+  for (const name of CAPTURES) {
+    const { boxes, frames } = captures[name].record;
+    const drawn = firstDrawing(frames);
+    const viewRow = drawn.viewRow === null ? -1 : frames.indexOf(drawn.viewRow);
+    const rows = drawn.rows === null ? -1 : frames.indexOf(drawn.rows);
+    expect(viewRow, `${name} drew no view row`).toBeGreaterThan(0);
+    expect(rows, `${name} drew its rows before its view row, or none`).toBeGreaterThan(viewRow);
+    expect(
+      frames.filter(
+        (frame) => frame.at < frame.time || (frame.shown !== null && frame.shown < frame.at)
+      ),
+      `${name}: frames whose stamps run out of order`
+    ).toEqual([]);
+    expect(
+      frames.slice(0, -1).filter((frame) => frame.shown === null),
+      `${name}: frames before the last with no stamp of their showing`
+    ).toEqual([]);
+    if (BOXED.includes(name)) {
+      const first = Math.min(
+        ...boxes
+          .filter((entry) => entry.group === "view row's controls")
+          .map((entry) => entry.frame)
+      );
+      expect(first, `${name}: the view row's first boxes were kept in another frame`).toBe(viewRow);
+    }
+  }
+});
+
+test("on each captured load each row of the first screen has the Element Timing paint of its first line, and the first screen's paint is the latest of them", () => {
+  for (const name of CAPTURES) {
+    const { firstScreen, record } = captures[name];
+    expect(firstScreen.length, `${name} has no first screen`).toBeGreaterThan(0);
+    expect(
+      record.element.filter((entry) => entry.identifier !== "issue-page-row" || entry.row === null),
+      `${name}: Element Timing entries that are no row's first line`
+    ).toEqual([]);
+    expect(
+      firstScreen.map((row) => [row.label, row.paint]),
+      `${name}: a first-screen row's paint is not the earliest paint of its entries`
+    ).toEqual(
+      firstScreen.map((row) => [
+        row.label,
+        Math.min(
+          ...record.element
+            .filter((entry) => entry.row === row.id)
+            .map((entry) => entry.renderTime || entry.loadTime || entry.startTime)
+        ),
+      ])
+    );
+    expect(firstScreenPaint(firstScreen), name).toEqual({
+      reading: Math.max(...firstScreen.map((row) => row.paint ?? 0)),
+      unpainted: [],
+    });
+  }
+});
+
+test("on each captured load the largest contentful paint is the later of its two candidates, the larger, reported by the load's end", () => {
+  for (const name of CAPTURES) {
+    const { end, record } = captures[name];
+    expect(record.lcp.map((candidate) => candidate.element)).toEqual([
+      name === "conversation-390" ? "span" : "aside",
+      "li",
+    ]);
+    const [smaller, larger] = record.lcp;
+    expect((larger?.size ?? 0) > (smaller?.size ?? 0), name).toBe(true);
+    expect(largestContentfulPaint(record.lcp, end), name).toBe(larger?.startTime ?? null);
+  }
+});
+
+test("on each captured load the longest task after the first drawing of the view row leaves out the tasks that started before that frame's callback", () => {
+  for (const name of CAPTURES) {
+    const { record } = captures[name];
+    const viewRow = firstDrawing(record.frames).viewRow;
+    if (viewRow === null) throw new Error(`${name} drew no view row`);
+    const after = record.longtask.filter((task) => task.startTime > viewRow.at);
+    expect(after.length, `${name}: no long task ran before the view row was drawn`).toBeLessThan(
+      record.longtask.length
+    );
+    expect(longestTaskAfterViewRow(record), name).toBe(
+      Math.max(...after.map((task) => task.duration))
+    );
+  }
+});
+
+test("on each captured load the layout shift is onCLS's last report, which its reports' deltas sum to, and no shift it counted followed an input", () => {
+  for (const name of CAPTURES) {
+    const { cls } = captures[name].record;
+    expect(cls.length, `${name}: onCLS reported no shift`).toBeGreaterThan(1);
+    const shift = layoutShift(cls);
+    expect(shift, name).toBe(cls.at(-1)?.value ?? null);
+    expect(
+      cls.reduce((sum, report) => sum + report.delta, 0),
+      name
+    ).toBeCloseTo(shift ?? Number.NaN, 12);
+    expect(
+      cls.flatMap((report) => report.shifts).filter((entry) => entry.hadRecentInput),
+      name
+    ).toEqual([]);
+  }
+});
+
+test("on each captured load the end is a second after its last long task or request, with its live socket open throughout, and the 390 px capture's end came before a long task it holds", () => {
+  for (const name of CAPTURES) {
+    const { end, record, requests } = captures[name];
+    expect(
+      requests
+        .filter((request) => request.kind === "websocket")
+        .map((socket) => [new URL(socket.url).pathname, socket.end]),
+      `${name}: the live socket`
+    ).toEqual([["/ws/live", null]]);
+    expect(
+      requests.filter((request) => request.kind === "request" && request.end === null),
+      `${name}: requests in flight at the end`
+    ).toEqual([]);
+    const last = Math.max(
+      ...record.longtask
+        .filter((task) => task.duration > 50)
+        .map((task) => task.startTime + task.duration),
+      ...requests.flatMap((request) =>
+        request.kind === "request" && request.end !== null ? [request.end] : []
+      )
+    );
+    const ended = loadEnd(record.longtask, requests, Number.POSITIVE_INFINITY);
+    expect(ended, name).toBe(last + 1000);
+    if (name === "conversation-390") {
+      // This capture took its end, 6,496.1 ms, before the long-task observer had handed over the
+      // task from 6,422.1 to 6,606.1 ms that the record holds: from every task the load holds, it
+      // had not ended then. The probe now flushes that observer before it answers (the case of
+      // the init script's readers above), so a capture taken since takes the later end.
+      expect(loadEnd(record.longtask, requests, end)).toBeNull();
+    } else {
+      // The spans are the capture's own. The held typeface's capture read its font's span from
+      // `Request.timing()`, 4,517.4 to 7,724.9 ms, where the page's Resource Timing has the file
+      // from 1,314.2 to 4,520.2 ms, so its end is a second after a misplaced end; the spans are
+      // now read from Playwright's reports (the case of a request's span above).
+      expect(end, name).toBeCloseTo(ended ?? Number.NaN, 6);
+    }
+  }
+});
+
+test("on each captured load the box recorder drew every group and kept a box only where it changed, and a move is each change outside the frames of the typeface's swap, named with its box before and after", () => {
+  for (const name of BOXED) {
+    const { end, record } = captures[name];
+    expect(groupsUndrawn(record.boxes), name).toEqual([]);
+    // Each entry after an element's first, with the box it changed from.
+    const last = new Map<number, BoxEntry>();
+    const changes: { readonly before: BoxEntry["box"]; readonly entry: BoxEntry }[] = [];
+    for (const entry of record.boxes) {
+      const before = last.get(entry.id);
+      last.set(entry.id, entry);
+      if (before === undefined) continue;
+      expect(entry.box, `${name}: ${entry.label} kept again at frame ${entry.frame}`).not.toEqual(
+        before.box
+      );
+      changes.push({ before: before.box, entry });
+    }
+    // A frame of the swap: a `loadingdone` came after the frame before it and by the frame after.
+    const swap = (frame: number) =>
+      record.fontsDone.some(
+        (done) =>
+          (record.frames[frame - 1]?.at ?? Number.NEGATIVE_INFINITY) < done &&
+          done <= (record.frames[frame + 1]?.at ?? Number.POSITIVE_INFINITY)
+      );
+    expect(
+      boxesMoved(record, end).map((move) => [move.frame, move.label, move.before, move.after]),
+      name
+    ).toEqual(
+      changes
+        .filter((change) => !swap(change.entry.frame))
+        .map((change) => [change.entry.frame, change.entry.label, change.before, change.entry.box])
+    );
+    // With no `loadingdone`, every change is a move.
+    expect(boxesMoved({ ...record, fontsDone: [] }, end), name).toHaveLength(changes.length);
+  }
+  // The held typeface swapped during its load, and boxes changed in the frames of that swap.
+  const held = captures["typeface-held-back"];
+  expect(
+    boxesMoved({ ...held.record, fontsDone: [] }, held.end).length -
+      boxesMoved(held.record, held.end).length
+  ).toBeGreaterThan(0);
+});
+
+test("the press on Spec of the first capture drew its result from what the page held: its view read answered after the callback of the frame that found the result", () => {
+  const { rate, record } = captures["view-press-read"];
+  expect(record.acts.map((act) => act.name)).toEqual(["a press on Spec"]);
+  const [act] = record.acts;
+  const frame = act?.result == null ? undefined : record.frames[act.result];
+  if (act?.event == null || frame === undefined || frame.shown === null) {
+    throw new Error("the capture holds no press with the frame of its result");
+  }
+  const event = act.event.timeStamp;
+  // The one read the page's code sent after the press is Spec's view read.
+  const sent = record.resource.filter((entry) => entry.startTime >= event);
+  expect(
+    sent.map((entry) => [
+      new URL(entry.name).pathname + new URL(entry.name).search,
+      entry.initiatorType,
+    ])
+  ).toEqual([["/api/v1/issues/LAY-1/tree?view=spec", "fetch"]]);
+  // It answered after the callback that found the result in the document, before that frame was
+  // shown: the rows were there before its answer was, so the result needed no read.
+  const [spec] = sent;
+  expect((spec?.responseEnd ?? 0) > frame.at && (spec?.responseEnd ?? 0) < frame.shown).toBe(true);
+  const reading = actReading(record, 0);
+  expect(reading).toEqual({
+    act: "a press on Spec",
+    loading: frame.shown - event,
+    read: null,
+    shown: frame.shown - event,
+  });
+  // So its bounds read the event to the result's frame, and its two read bounds n/a.
+  expect(
+    actBounds("after-load.a-press-on-spec", rate, 200, [
+      reading,
+      reading,
+      reading,
+      reading,
+      reading,
+    ])
+      .slice(1)
+      .map((bound) => bound.readings)
+  ).toEqual([Array(5).fill(NOT_APPLICABLE), Array(5).fill(NOT_APPLICABLE)]);
 });

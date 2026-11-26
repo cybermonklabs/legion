@@ -493,9 +493,10 @@ export interface ActReading {
    *  reads as current and the view's place shows that it loads, or the result shows. */
   readonly loading: number | null;
   /** Where the result needed a read the page did not hold: a read the page's code sent after the
-   *  event and whose answer came before the frame that shows the result. From the event to the
-   *  first such read's start (`sent`), and from the last such answer to that frame (`drawn`).
-   *  Null where no such read answered, so the result was drawn from what the page held. */
+   *  event and whose answer came by the callback of the frame that found the result. From the
+   *  event to the first such read's start (`sent`), and from the last such answer to the time
+   *  that frame was shown (`drawn`). Null where no such read answered by then, so the result was
+   *  drawn from what the page held. */
   readonly read: {
     readonly drawn: number;
     readonly sent: number;
@@ -506,26 +507,29 @@ export interface ActReading {
   readonly shown: number | null;
 }
 
-/** The stamp (`FrameEntry.shown`) of the first frame from `index` on that was shown at or after
- *  `after`, an event's `timeStamp`: a frame shown before the event cannot show what the event
- *  did, and a result, once in the document, stays there for the frames after it. Null where no
- *  frame was recorded, or none from it on was shown after the event. */
+/** The first frame from `index` on that was shown (`FrameEntry.shown`) at or after `after`, an
+ *  event's `timeStamp`: a frame shown before the event cannot show what the event did, and a
+ *  result, once in the document, stays there for the frames after it. Null where no frame was
+ *  recorded, or none from it on was shown after the event. */
 function shownFrom(
   frames: readonly FrameEntry[],
   index: number | null,
   after: number
-): number | null {
+): (FrameEntry & { readonly shown: number }) | null {
   if (index === null) return null;
   for (const frame of frames.slice(index)) {
-    if (frame.shown !== null && frame.shown >= after) return frame.shown;
+    if (frame.shown !== null && frame.shown >= after) return { ...frame, shown: frame.shown };
   }
   return null;
 }
 
 /** The reading of the step armed under `index`: from its event to the stamp of the first frame
- *  after it that shows its result, and where the result needed a read the page did not hold - a
- *  read the page's code sent (`fetch` or `xmlhttprequest`) after the event, which Resource Timing
- *  shows answered before that frame - the three parts R2 bounds for such an act. */
+ *  after it that shows its result, and where the result needed a read the page did not hold, the
+ *  three parts R2 bounds for such an act. A result needed a read where Resource Timing shows a
+ *  read the page's code sent (`fetch` or `xmlhttprequest`) after the event and answered at or
+ *  before the callback of the frame that found the result in the document (`FrameEntry.at`): a
+ *  read that answered after that callback, even before the frame was shown, cannot have drawn
+ *  what the document already held. */
 export function actReading(
   record: Pick<LoadRecord, "acts" | "frames" | "resource">,
   index: number
@@ -535,30 +539,32 @@ export function actReading(
   if (act === undefined || event === null) {
     return { act: act?.name ?? null, loading: null, read: null, shown: null };
   }
-  const shownAt = shownFrom(record.frames, act.result, event.timeStamp);
-  const loadingAt = shownFrom(record.frames, act.loading, event.timeStamp);
-  const reads = record.resource
-    .filter(
-      (entry) =>
-        (entry.initiatorType === "fetch" || entry.initiatorType === "xmlhttprequest") &&
-        entry.startTime >= event.timeStamp &&
-        shownAt !== null &&
-        entry.responseEnd <= shownAt
-    )
-    .sort((a, b) => a.startTime - b.startTime);
+  const result = shownFrom(record.frames, act.result, event.timeStamp);
+  const loading = shownFrom(record.frames, act.loading, event.timeStamp);
+  const reads =
+    result === null
+      ? []
+      : record.resource
+          .filter(
+            (entry) =>
+              (entry.initiatorType === "fetch" || entry.initiatorType === "xmlhttprequest") &&
+              entry.startTime >= event.timeStamp &&
+              entry.responseEnd <= result.at
+          )
+          .sort((a, b) => a.startTime - b.startTime);
   const first = reads[0];
   return {
     act: act.name,
-    loading: loadingAt === null ? null : loadingAt - event.timeStamp,
+    loading: loading === null ? null : loading.shown - event.timeStamp,
     read:
-      first === undefined || shownAt === null
+      first === undefined || result === null
         ? null
         : {
-            drawn: shownAt - Math.max(...reads.map((entry) => entry.responseEnd)),
+            drawn: result.shown - Math.max(...reads.map((entry) => entry.responseEnd)),
             sent: first.startTime - event.timeStamp,
             url: pathOf(first.name),
           },
-    shown: shownAt === null ? null : shownAt - event.timeStamp,
+    shown: result === null ? null : result.shown - event.timeStamp,
   };
 }
 
@@ -670,7 +676,7 @@ export interface InstrumentConfig {
 }
 
 /** The config the init script reads: the caller's, with the groups it records. */
-interface PageConfig extends InstrumentConfig {
+export interface PageConfig extends InstrumentConfig {
   readonly groups: Readonly<Record<string, readonly string[]>>;
   readonly namedGroup: string;
   readonly rowsGroup: string;
@@ -689,7 +695,8 @@ interface LoadInstruments {
   ): { readonly x: number; readonly y: number } | null;
   /** The rows in the viewport under the header now, with their paints. */
   firstScreen(): FirstScreenRow[];
-  /** The time now and the long tasks so far, which say whether the load has ended. */
+  /** The time now and the long tasks so far, every task the observer has queued included, which
+   *  say whether the load has ended. */
   probe(): { readonly now: number; readonly tasks: readonly TaskEntry[] };
   /** What the init script has collected. */
   record(): LoadRecord;
@@ -711,9 +718,10 @@ export const WEB_VITALS_IIFE = fileURLToPath(
 
 /**
  * The init script. It is serialised into the page, so it reads nothing outside itself but its
- * config; it runs in the top frame alone.
+ * config; it runs in the top frame alone. It is exported for `load-readings.test.ts`, which runs
+ * it against stand-ins of the browser's observers to hold what its readers take from them.
  */
-function instrumentPage(config: PageConfig): void {
+export function instrumentPage(config: PageConfig): void {
   if (window.top !== window) return;
 
   // Element Timing's entry, which no lib of this tree declares; `web-vitals`' types declare the
@@ -777,18 +785,29 @@ function instrumentPage(config: PageConfig): void {
   // The earliest paint of each row's first line, by the row: Element Timing's element is the one
   // that owns the first line's text, inside the row.
   const rowPaints = new WeakMap<Element, number>();
+  // An observer's callback runs in a task of its own some time after its entries are queued, so
+  // an entry can be queued and not yet taken when a reader asks: each observer answers a flush,
+  // which takes its queued entries (`takeRecords`) as the callback would, and every reader of
+  // the entries flushes first.
+  const flushes: (() => void)[] = [];
   const observe = (
     type: string,
     options: PerformanceObserverInit,
     take: (entry: PerformanceEntry) => void
-  ) => {
+  ): (() => void) => {
     if (!PerformanceObserver.supportedEntryTypes.includes(type)) {
       unobserved.push(type);
-      return;
+      return () => {};
     }
-    new PerformanceObserver((list) => {
+    const observer = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) take(entry);
-    }).observe({ ...options, buffered: true, type });
+    });
+    observer.observe({ ...options, buffered: true, type });
+    const flush = () => {
+      for (const entry of observer.takeRecords()) take(entry);
+    };
+    flushes.push(flush);
+    return flush;
   };
   observe("element", {}, (entry) => {
     const timing = entry as ElementTiming;
@@ -816,7 +835,8 @@ function instrumentPage(config: PageConfig): void {
       url: paint.url,
     });
   });
-  observe("longtask", {}, (entry) => {
+  // The end of a load is read from these (`probe`), so they are flushed before it answers.
+  const flushTasks = observe("longtask", {}, (entry) => {
     longtask.push({ duration: entry.duration, name: entry.name, startTime: entry.startTime });
   });
   observe("event", { durationThreshold: 16 }, (entry) => {
@@ -1087,6 +1107,7 @@ function instrumentPage(config: PageConfig): void {
       return point;
     },
     firstScreen: () => {
+      for (const flush of flushes) flush();
       const top = foot();
       return [...document.querySelectorAll(config.rows)].flatMap((row) =>
         inViewport(row.getBoundingClientRect(), top)
@@ -1094,22 +1115,28 @@ function instrumentPage(config: PageConfig): void {
           : []
       );
     },
-    probe: () => ({ now: performance.now(), tasks: longtask }),
-    record: () => ({
-      acts,
-      boxes,
-      cls,
-      element,
-      event,
-      fontsDone,
-      frames,
-      lcp,
-      longtask,
-      resource,
-      timeOrigin: performance.timeOrigin,
-      unobserved,
-      vitals: window.webVitals !== undefined,
-    }),
+    probe: () => {
+      flushTasks();
+      return { now: performance.now(), tasks: longtask };
+    },
+    record: () => {
+      for (const flush of flushes) flush();
+      return {
+        acts,
+        boxes,
+        cls,
+        element,
+        event,
+        fontsDone,
+        frames,
+        lcp,
+        longtask,
+        resource,
+        timeOrigin: performance.timeOrigin,
+        unobserved,
+        vitals: window.webVitals !== undefined,
+      };
+    },
     shown: (index) => acts[index]?.result != null,
   };
 }
@@ -1144,61 +1171,63 @@ export interface LoadRequests {
   spans(origin: number): RequestSpan[];
 }
 
-/** Watches every request `page` makes from now on, and every WebSocket it opens, from the
- *  browser's own timing of each where it has one. Start it before the navigation. */
-export function watchLoadRequests(page: Page): LoadRequests {
-  const open = new Map<Request, { readonly start: number; readonly url: string }>();
-  const settled: { readonly end: number; readonly start: number; readonly url: string }[] = [];
-  const sockets: { end: number | null; readonly start: number; readonly url: string }[] = [];
+/** One request or socket as `watchLoadRequests` keeps it, in wall-clock ms, its end null while
+ *  it is open. */
+interface WatchedSpan {
+  end: number | null;
+  readonly kind: RequestSpan["kind"];
+  readonly start: number;
+  readonly url: string;
+}
+
+/**
+ * Watches every request `page` makes from now on, and every WebSocket it opens, each from the
+ * moment Playwright reports that the page sent it to the moment it reports that its answer, or
+ * its failure, reached the page. Each moment is the wall clock (`now`) as the report arrives,
+ * which `spans` puts on the page's own timeline by the page's `performance.timeOrigin`, so it is
+ * late only by the report's way from the browser to this process.
+ *
+ * A route moves neither end. Playwright reports a request as the page sends it and before any
+ * route acts on it (`requestStarted` emits the request, then hands it to the routes), and reports
+ * it finished or failed once the answer reaches the page, whether the route continued it,
+ * fulfilled it or aborted it (Chromium's `loadingFinished` and `loadingFailed`); a route that
+ * holds a request back lengthens its span by the hold. `Request.timing()` is not read: for a
+ * routed request its `startTime` is when the route let the request go, while its `responseEnd` is
+ * counted from when the page sent it, so their sum put a font held back 3 s about 3.2 s after the
+ * page had it (`typeface-held-back.json`, whose capture read it so). `now` is a seam for
+ * `load-readings.test.ts`. Start it before the navigation.
+ */
+export function watchLoadRequests(page: Page, now: () => number = Date.now): LoadRequests {
+  const watched: WatchedSpan[] = [];
+  const open = new Map<Request, WatchedSpan>();
   page.on("request", (request) => {
-    open.set(request, { start: Date.now(), url: request.url() });
+    const span: WatchedSpan = { end: null, kind: "request", start: now(), url: request.url() };
+    watched.push(span);
+    open.set(request, span);
   });
   const settle = (request: Request) => {
-    const opened = open.get(request);
-    if (opened === undefined) return;
+    const span = open.get(request);
+    if (span === undefined) return;
     open.delete(request);
-    const timing = request.timing();
-    const timed = timing.startTime > 0;
-    settled.push({
-      end: timed && timing.responseEnd >= 0 ? timing.startTime + timing.responseEnd : Date.now(),
-      start: timed ? timing.startTime : opened.start,
-      url: opened.url,
-    });
+    span.end = now();
   };
   page.on("requestfinished", settle);
   page.on("requestfailed", settle);
   page.on("websocket", (socket) => {
-    const span: { end: number | null; start: number; url: string } = {
-      end: null,
-      start: Date.now(),
-      url: socket.url(),
-    };
-    sockets.push(span);
+    const span: WatchedSpan = { end: null, kind: "websocket", start: now(), url: socket.url() };
+    watched.push(span);
     socket.on("close", () => {
-      span.end = Date.now();
+      span.end = now();
     });
   });
   return {
-    spans: (origin) => [
-      ...settled.map((span) => ({
-        end: span.end - origin,
-        kind: "request" as const,
-        start: span.start - origin,
-        url: span.url,
-      })),
-      ...[...open.values()].map((span) => ({
-        end: null,
-        kind: "request" as const,
-        start: span.start - origin,
-        url: span.url,
-      })),
-      ...sockets.map((span) => ({
+    spans: (origin) =>
+      watched.map((span) => ({
         end: span.end === null ? null : span.end - origin,
-        kind: "websocket" as const,
+        kind: span.kind,
         start: span.start - origin,
         url: span.url,
       })),
-    ],
   };
 }
 
