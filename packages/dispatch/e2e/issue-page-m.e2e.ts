@@ -5222,7 +5222,10 @@ async function showEveryEntry(
 test("each list of Details shows 20 entries and a control for the next 20", async ({ browser }) => {
   test.setTimeout(180_000);
   await phase(browser, seedLongLists, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    // Conversation's own address: the statement's facts below are read through its row of the
+    // outline, and the issue's own address draws Dashboard (dispatch://INFRA-5702), which draws
+    // none.
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await openDetails(page);
 
     const blocks = detailsRow(page, PROPERTY_LABELS.blocks);

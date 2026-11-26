@@ -168,12 +168,14 @@ import {
   assertInventoryCarried,
   assertNoSidewaysScroll,
   chromeTexts,
+  dashboardView,
   documentLink,
   documentRow,
   documentsList,
   documentsRows,
   drawsPart,
   expectActiveControl,
+  expectDashboardDrawn,
   expectDocumentConnected,
   expectFocusLandedOnce,
   filterBox,
@@ -234,7 +236,6 @@ import {
   viewportAt,
   waitingCount,
 } from "./issue-page-p";
-import { openIssue } from "./keyboard-issue";
 import { connect, isLiveSocket, type LiveSockets, watchLiveSockets } from "./live-socket-watch";
 import { settledScrollTop } from "./mermaid-helpers";
 import { ONE_PIXEL_PNG } from "./one-pixel-png";
@@ -835,11 +836,11 @@ test("the page draws no internal word and no helper text @phone", async ({ brows
 
     for (const { state, width } of WORD_STATES) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
-      // `openPageState` waits for what the state draws - a view's rows, the list's rows, the
-      // document's words - since a page read before its own reads land is a head and a frame,
-      // which draw no internal word because they draw almost nothing. What it cannot say is that
-      // the page has finished filling: it reads the state's first rows, and the walk over every
-      // row's body below covers the rest.
+      // `openPageState` waits for what the state draws - a view's rows, Dashboard's list read,
+      // the list's rows, the document's words - since a page read before its own reads land is a
+      // head and a frame, which draw no internal word because they draw almost nothing. What it
+      // cannot say is that the page has finished filling: it reads the state's first rows, and
+      // the walk over every row's body below covers the rest.
       await openPageState(page, seeded.key, state);
       const where = `${stateName(state)} at ${width} px`;
       await readChrome(where);
@@ -937,14 +938,19 @@ test("documents open from Documents and are never rows of the outline @phone", a
 
     // No document and no file is a row of the outline, and no document's text and no editor
     // is drawn, with no filter and with each on, at 1440 px with every branch open and at
-    // 390 px.
+    // 390 px. Dashboard is drawn in place of the outline, so there it is read once Dashboard and
+    // its list are drawn, with no outline to unfold.
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize({ height: size.height, width: size.width });
       for (const preset of PRESET_ORDER.filter((one) => one !== "documents")) {
         const where = `the ${PRESET_NAMES[preset]} preset at ${size.width} px`;
         await gotoIssue(page, presetPath(seeded.key, preset));
-        await expectIssuePageDrawn(page);
-        if (size.width >= 1024) await unfoldEveryBranch(page);
+        if (preset === "dashboard") {
+          await expectDashboardDrawn(page, where);
+        } else {
+          await expectIssuePageDrawn(page);
+          if (size.width >= 1024) await unfoldEveryBranch(page);
+        }
         expectNoIssueNodeRows(await drawnRows(page), slugs, where);
         expect(
           await page.getByRole("region", { name: "Document editor" }).count(),
@@ -1111,7 +1117,8 @@ test("documents open from Documents and are never rows of the outline @phone", a
       tree(page),
       "Escape on Documents' list after a cold load does not return to Conversation"
     ).toBeVisible();
-    await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
+    // Conversation's own address: the issue's own draws Dashboard (dispatch://INFRA-5702).
+    await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}/conversation$`));
     await expectActiveControl(page, "conversation");
 
     // The block that cites a document carries a chip in its words that opens it, named by the
@@ -1141,7 +1148,7 @@ test("documents open from Documents and are never rows of the outline @phone", a
     await expect(
       page,
       "Escape from a document a chip opened does not return to the outline"
-    ).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
+    ).toHaveURL(new RegExp(`/issues/${seeded.key}/conversation$`));
     await expect(
       chip,
       "Escape from a document a chip opened leaves the focus off the chip"
@@ -1389,13 +1396,13 @@ test("the page never scrolls in two dimensions @phone", async ({ browser }) => {
     // The test sets the viewport and writes no width rule of its own: every measure is the page's.
     for (const { state, width } of REFLOW_STATES) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
-      // Nothing below is measured until the state is drawn: a view's rows, the list's rows, the
-      // document's words (`openPageState`). `gotoIssue` waits for the head alone, and the tree
-      // is drawn empty and fills as the reads land, so a measurement taken then would read a
-      // page that holds no row - and a page that holds no row is a page that fits, which is the
-      // first thing `assertPageFits` retries its way into passing on. What the wait cannot say is
-      // that the last row has landed; the walk below reads the rows that are drawn when it runs,
-      // and seven widths read them seven times.
+      // Nothing below is measured until the state is drawn: a view's rows, Dashboard's list read,
+      // the list's rows, the document's words (`openPageState`). `gotoIssue` waits for the head
+      // alone, and the tree is drawn empty and fills as the reads land, so a measurement taken
+      // then would read a page that holds no row - and a page that holds no row is a page that
+      // fits, which is the first thing `assertPageFits` retries its way into passing on. What the
+      // wait cannot say is that the last row has landed; the walk below reads the rows that are
+      // drawn when it runs, and seven widths read them seven times.
       await openPageState(page, seeded.key, state);
       const at = `${stateName(state)} at ${width} px`;
       // In every state the page fits its viewport, with its header and its view row whole.
@@ -1415,6 +1422,18 @@ test("the page never scrolls in two dimensions @phone", async ({ browser }) => {
         // quote of what references it is clamped to three lines behind its own Show more (R2's
         // "folded"), so the reading is R9's own: nothing in it scrolls sideways.
         await assertNoSidewaysScroll(openedArtifact(page));
+        expect(
+          await scrollersOutsideAuthorText(page),
+          `a code block, a table or a picture is drawn outside a node's own text with ${at}`
+        ).toEqual([]);
+        continue;
+      }
+      if (state.kind === "view" && state.preset === "dashboard") {
+        // Dashboard, drawn in place of the outline, draws no row of it for the walk below: what
+        // it draws - its phase, what waits on the reader, its tiles and its agents - scrolls down
+        // with the page, so the reading is R9's own, as for the open document: nothing in it
+        // scrolls sideways.
+        await assertNoSidewaysScroll(dashboardView(page));
         expect(
           await scrollersOutsideAuthorText(page),
           `a code block, a table or a picture is drawn outside a node's own text with ${at}`
@@ -3627,7 +3646,14 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1280, height: 900 });
-    await openIssue(page, issue.key, "Keyboard issue");
+    // Conversation's own address, where the outline and its opening are: the issue's own draws
+    // Dashboard (dispatch://INFRA-5702), which draws no outline. The keymap binds only once
+    // sign-in resolves, so the header's title is waited for before a key is pressed.
+    await page.goto(presetPath(issue.key, "conversation"));
+    await expect(
+      page.getByTestId("issue-header").getByRole("heading", { level: 1, name: "Keyboard issue" })
+    ).toBeVisible();
+    await page.locator("body").focus();
     // The outline opens with the focus on a row of its own and takes it back from whatever holds
     // the page while nothing does, until the reader acts (`IssueTree.tsx`'s opening): so the
     // opening is waited out and the reader acts first - a Shift, which no key of the page binds -
@@ -3726,7 +3752,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await page.keyboard.press("c");
     await expect(indicator).toHaveCount(0);
     await expect(page.getByRole("dialog", { name: "Create issue" })).toHaveCount(0);
-    await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}$`));
+    await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/conversation$`));
     await expectActivePreset(page, PRESET_NAMES.conversation);
     await page.screenshot({
       path: testInfo.outputPath(`issue-tab-conversation-${testInfo.project.name}.png`),
@@ -3752,12 +3778,12 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     // Pressed from its own filter, the chord turns it off.
     await page.keyboard.press("t");
     await page.keyboard.press("s");
-    await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}$`));
+    await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/conversation$`));
     await page.keyboard.press("t");
     await page.keyboard.press("p");
     await page.keyboard.press("t");
     await page.keyboard.press("c");
-    await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}$`));
+    await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/conversation$`));
 
     // `t h` is the outline's own chord (part I's `useTreeKeymap.ts`), so it is pressed with the
     // outline drawn - every filter off, as it is now - where the source pressed it from the
@@ -4136,9 +4162,11 @@ test("Escape leaves the caret, then closes a document, then clears the words, th
     await expect(filterControl(page)).toBeVisible();
     await expectActivePreset(page, PRESET_NAMES.spec);
 
-    // Then the filter: every filter off, with the reader on the same node of the outline.
+    // Then the filter: every filter off, with the reader on the same node of the outline, at
+    // Conversation's own address (`escape-order.ts`): the issue's own draws Dashboard
+    // (dispatch://INFRA-5702).
     await page.keyboard.press("Escape");
-    await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
+    await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}/conversation$`));
     await expectActivePreset(page, PRESET_NAMES.conversation);
     await expect.poll(() => focusedRow(page), { message: "the reader left the outline" }).toBe(on);
 
@@ -4147,7 +4175,7 @@ test("Escape leaves the caret, then closes a document, then clears the words, th
     await expect
       .poll(() => focusedRow(page), { message: "Escape did not leave the outline" })
       .toBe(null);
-    await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
+    await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}/conversation$`));
   } finally {
     await context.close();
   }
@@ -4624,12 +4652,14 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   // are read under the keys the margin already owns, so they are shared rather than asked twice
   // and are the entries already here.
   //
-  // It is the source's set (`750e2716`'s `e2e/live.e2e.ts`) less four addresses, and no part on
-  // `main` adds one to this load. Three of the four are part L's, which follows this part (part
-  // N's R11: `slots/foot.tsx` draws nothing, `AWAITING_THE_BOX`), and L's pull request puts
-  // them back: the head read and the reader's state, which the read mark writes, and the
-  // active-sessions read, which the box makes. The fourth, the repository mappings, `main`'s
-  // page no longer reads. Each is named where it stood.
+  // It is the source's set (`750e2716`'s `e2e/live.e2e.ts`) less four addresses and with two
+  // more, and no part on `main` adds one to this load. Three of the four are part L's, which
+  // follows this part (part N's R11: `slots/foot.tsx` draws nothing, `AWAITING_THE_BOX`), and
+  // L's pull request puts them back: the head read and the reader's state, which the read mark
+  // writes, and the active-sessions read, which the box makes. The fourth, the repository
+  // mappings, `main`'s page no longer reads. The two more are the reads of
+  // dispatch://INFRA-5702's list of what waits on the reader, a part this branch holds, which
+  // the header's count counts (R5). Each is named where it stood or stands.
   const firstLoad = [
     "/auth/whoami",
     // The project sidebar's Inbox query, which the margin's open-ask count shares rather than
@@ -4655,6 +4685,10 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // list asked the same route for each ask's thread (`?thread=1`) as a request of its own; the
     // outline draws an ask's replies from the comments above, and that list is gone (R14).
     `/api/v1/issues/${issue.key}/asks?state=all`,
+    // The issue's open asks, one of the two reads of dispatch://INFRA-5702's list of what waits
+    // on the reader (`features/dashboard/useWaitingItems.ts`), whose items the header's count
+    // counts on every view (`IssuePropertiesRow.tsx`, R5): its questions and approval requests.
+    `/api/v1/issues/${issue.key}/asks?state=open`,
     // The issue's message threads, which the tree shares.
     `/api/v1/issues/${issue.key}/messages`,
     // No read of the issue's head (`events?limit=1&order=desc`): the read mark at the outline's
@@ -4679,6 +4713,9 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // `me/replies?kind=reply,agent&limit=1`, whose total is the other half of that one Inbox
     // number (the sidebar's on desktop, the compact header's on phone).
     "/api/v1/me/replies?kind=reply%2Cagent&limit=1",
+    // The reader's unread threads of the issue, the other read of dispatch://INFRA-5702's list
+    // behind the header's count (R5).
+    `/api/v1/me/replies?issue=${issue.key}&state=unread`,
     // No list of the issue's phase handoffs: the list drew them beside the messages, and they
     // are lines of the history now, read with its log.
     // No write of the reader's own state on this issue (`PUT /api/v1/me/issues/<key>/state`):

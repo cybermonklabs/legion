@@ -10,6 +10,7 @@ import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { KEY_REPORTS } from "../web/src/features/issue-page/page-structure";
 import {
   CONTROL_LABELS,
+  DASHBOARD_WORDS,
   PRESET_NAMES,
   PRESET_ORDER,
   type Preset,
@@ -43,7 +44,7 @@ import {
   presetChooser,
   presetToolbar,
 } from "./issue-page";
-import { expectIssuePageDrawn, nodeRows } from "./issue-page-g";
+import { expectIssuePageDrawn, nodeRows, tree } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
 import type { Box } from "./layout";
 import { navigateInApp } from "./sends";
@@ -97,6 +98,9 @@ const SELECTORS = {
   childRow: "[data-child-row]",
   /** One crumb of the line a zoomed outline draws above its rows; none while it is not zoomed. */
   crumb: "[data-crumb]",
+  /** Dashboard, drawn in place of the outline at the issue's own address and at `/dashboard`
+   *  (`slots/view-dashboard.tsx`, dispatch://INFRA-5702). */
+  dashboard: "[data-dashboard]",
   /** Documents' list, drawn in place of the outline and of every view (`DocumentsList.tsx`). */
   documentsList: "[data-documents-list]",
   /** The whole filter row: the five controls or the one control, Outline, and the small
@@ -180,6 +184,28 @@ export function documentRow(page: Page, name: string): Locator {
 export async function openDocuments(page: Page): Promise<void> {
   await pickPreset(page, PRESET_NAMES.documents);
   await expect(documentsList(page), "Documents' list did not open").toBeVisible();
+}
+
+/** Dashboard, the one the stage draws in place of the outline at the issue's own address and at
+ *  `/dashboard` (dispatch://INFRA-5702). */
+export function dashboardView(page: Page): Locator {
+  return issuePage(page).locator(SELECTORS.dashboard);
+}
+
+/** Fails unless the page has Dashboard on and draws it with its list read, and no outline beside
+ *  it, as `e2e/issue-page-dashboard.e2e.ts`' `expectDashboard` reads it: the list of what waits on
+ *  the reader draws its count only once every read its items come from has answered
+ *  (`WaitingList.tsx`), so the count says the list is drawn. */
+export async function expectDashboardDrawn(page: Page, where: string): Promise<void> {
+  await expectActiveControl(page, "dashboard");
+  await expect(dashboardView(page), `${where} draws no Dashboard`).toBeVisible();
+  await expect(
+    dashboardView(page)
+      .getByRole("region", { exact: true, name: DASHBOARD_WORDS.parts.waiting })
+      .getByTestId("dashboard-waiting-count"),
+    `${where} draws no count of what waits on the reader, so its list has not been read`
+  ).toBeVisible();
+  await expect(tree(page), `${where} draws the outline with Dashboard`).toHaveCount(0);
 }
 
 /** Stages `file` in Documents' list, optionally writes `summary` into its Summary box, and
@@ -616,7 +642,13 @@ export async function assertNoSidewaysScroll(scope: Locator): Promise<void> {
           `${node.tagName.toLowerCase()}${classes === null ? "" : `.${classes}`}: ${node.scrollWidth} wide in ${node.clientWidth}`
         );
       }
-      const holder = element.parentElement?.getBoundingClientRect();
+      // A `display: contents` parent draws no box of its own, so the holder is the nearest
+      // ancestor that does: the stage's box that `scope` stands in.
+      let holding = element.parentElement;
+      while (holding !== null && getComputedStyle(holding).display === "contents") {
+        holding = holding.parentElement;
+      }
+      const holder = holding?.getBoundingClientRect();
       const box = element.getBoundingClientRect();
       if (holder !== undefined && box.right > holder.right + 1) {
         found.push(
@@ -1911,9 +1943,10 @@ export function drawsPart(part: AddressPart): boolean {
 // INV-2: the states and widths of part N's R9.
 // ---------------------------------------------------------------------------------------------
 
-/** One state of the page R9 reads: a control of the view row on - Conversation, which is no view
- *  on, each of the four views, or Documents, whose list is drawn in place of the outline; a
- *  document open in place of the outline; or the Outline sheet open. */
+/** One state of the page R9 reads: a control of the view row on - Dashboard, drawn in place of
+ *  the outline, Conversation, which is no view on, each of the four views, or Documents, whose
+ *  list is drawn in place of the outline; a document open in place of the outline; or the Outline
+ *  sheet open. */
 export type PageState =
   | { readonly kind: "view"; readonly preset: Preset }
   | { readonly kind: "document" }
@@ -1925,9 +1958,9 @@ export interface StateAtWidth {
   readonly width: number;
 }
 
-/** Each control of the view row on, in the order the row draws them (`PRESET_ORDER`): no view,
- *  each of the four views, and Documents' list. Dashboard, Threads and Graph join through
- *  `PRESET_ORDER` once each is on `main`. */
+/** Each control of the view row on, in the order the row draws them (`PRESET_ORDER`): Dashboard
+ *  (dispatch://INFRA-5702, under this branch), no view, each of the four views, and Documents'
+ *  list. Threads and Graph join through `PRESET_ORDER` once each is on `main`. */
 const VIEWS: readonly PageState[] = PRESET_ORDER.map((preset) => ({ kind: "view", preset }));
 
 /** Each of `states` at each of `widths`, the widths outermost: the page is resized once for every
@@ -1968,13 +2001,14 @@ export function stateName(state: PageState): string {
 
 /**
  * Loads issue `key` in `state`, as a reader reaches it, and waits until the page draws it: a
- * view at its address, with the rows it draws, and Documents' list at its address with its rows;
- * the issue's spec at its own address, `/issues/<key>/artifacts/<slug>`, which is where the
- * spec's row of Documents' list goes, with its editor's words; and below 1024 px the Outline
- * sheet opened by its control with the Spec view on, where the sheet holds the view row's small
- * controls besides the outline's list (R4). From 1024 px the page draws no Outline control, and
- * with no view on the same list stands in the Contents pane beside the outline, which is drawn
- * open; under a view it draws no Contents pane.
+ * view at its address, with the rows it draws, Dashboard at its address with its list read, and
+ * Documents' list at its address with its rows; the issue's spec at its own address,
+ * `/issues/<key>/artifacts/<slug>`, which is where the spec's row of Documents' list goes, with
+ * its editor's words; and below 1024 px the Outline sheet opened by its control with the Spec
+ * view on, where the sheet holds the view row's small controls besides the outline's list (R4).
+ * From 1024 px the page draws no Outline control, and with no view on the same list stands in
+ * the Contents pane beside the outline, which is drawn open; under a view it draws no Contents
+ * pane.
  */
 export async function openPageState(page: Page, key: string, state: PageState): Promise<void> {
   switch (state.kind) {
@@ -1990,6 +2024,12 @@ export async function openPageState(page: Page, key: string, state: PageState): 
         ).toBeVisible();
         return;
       }
+      if (state.preset === "dashboard") {
+        // Dashboard is drawn in place of the outline, so the page draws no tree and no row to wait
+        // for: it is drawn once its list of what waits on the reader has been read.
+        await expectDashboardDrawn(page, stateName(state));
+        return;
+      }
       await expectIssuePageDrawn(page);
       await expect
         .poll(async () => await nodeRows(page).count(), {
@@ -2003,8 +2043,9 @@ export async function openPageState(page: Page, key: string, state: PageState): 
       await expect(openedEditor(page)).toContainText(/\S/u);
       return;
     case "outline-sheet": {
-      // With no view on, the page says which of the two it draws the outline's list in.
-      await gotoIssue(page, `/issues/${key}`);
+      // With no view on, the page says which of the two it draws the outline's list in. That is
+      // Conversation's own address: the issue's own draws Dashboard (dispatch://INFRA-5702).
+      await gotoIssue(page, presetPath(key, "conversation"));
       await expectIssuePageDrawn(page);
       await expect.poll(async () => await nodeRows(page).count()).toBeGreaterThan(0);
       const drawn = await settledState("the outline's list", [
