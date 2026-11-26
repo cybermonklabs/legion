@@ -16,6 +16,7 @@ import (
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -27,6 +28,7 @@ const workspaceProvisionUsage = "legion workspace-init provision --issue <KEY> -
 const provisionTokenFileEnv = "LEGION_PROVISION_TOKEN_FILE"
 
 // newProvisionRunner is the runner `provision`'s commands run under, workspace.NewRunner given
+// procgroup.NoReaper, since the init container's one process reaps no child it did not start, and
 // commandBudget: the slow-command budget of every command carrying no bound of its own, the
 // commands that carry one being the exceptions workspace.CommandTimeout names, the issue's
 // checkout among them (workspace.Provision, Request.CheckoutBound). This package's tests wrap it to
@@ -165,7 +167,7 @@ func workspaceInit(ctx context.Context, issue, repo, defaultBranch, root, creden
 	if err := workspace.RemoveStaleGitLocks(inputs.located, time.Now(), log); err != nil {
 		return err
 	}
-	run := newProvisionRunner(programbound.Of(&commandBudget), inputs.tools)
+	run := newProvisionRunner(procgroup.NoReaper, programbound.Of(&commandBudget), inputs.tools)
 	provisioned, err := workspace.Provision(ctx, run, workspace.Request{
 		StateDir: root, Repo: inputs.repository, Issue: issue, DefaultBranch: defaultBranch, CredentialHelper: credentialHelper,
 		Source: workspace.FromFeed(feed), Log: log,

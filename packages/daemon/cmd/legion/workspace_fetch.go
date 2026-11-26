@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -57,7 +58,7 @@ func workspaceFetch(ctx context.Context, repo, feed, cacheURL string, stdout io.
 	if err := os.MkdirAll(feed, 0o700); err != nil {
 		return fmt.Errorf("create the feed directory %s: %w", feed, err)
 	}
-	report, err := workspace.Fetch(ctx, workspace.NewRunner(programbound.Of(&commandBudget), inputs.tools), workspace.FetchRequest{
+	report, err := workspace.Fetch(ctx, workspace.NewRunner(procgroup.NoReaper, programbound.Of(&commandBudget), inputs.tools), workspace.FetchRequest{
 		Repo: inputs.repository, Token: inputs.token, CredentialDir: os.TempDir(), Feed: feed,
 		Log: func(line string) { fmt.Fprintln(stdout, "workspace-init fetch: "+line) }, Clock: fetchClock, Bound: fetchBound, CacheURL: cacheURL, CacheToken: inputs.cacheToken,
 		RecordedDefault: os.Getenv(defaultBranchEnv),

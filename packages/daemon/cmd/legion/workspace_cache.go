@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -60,6 +61,6 @@ func workspaceCache(ctx context.Context, repo, root, listen string, refresh time
 	return repocache.Serve(ctx, repocache.Options{
 		Repo: repository, Root: root, TokenFile: tokenFile, CacheTokenFile: bearerFile, CredentialDir: os.TempDir(), Refresh: refresh, Listen: listen,
 		Log: func(line string) { fmt.Fprintln(stdout, "workspace-init cache: "+line) },
-		Run: workspace.NewRunner(programbound.Of(&commandBudget), tools),
+		Run: workspace.NewRunner(procgroup.NoReaper, programbound.Of(&commandBudget), tools),
 	})
 }

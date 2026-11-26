@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 const testTimeout = 30 * time.Second
@@ -231,7 +232,7 @@ func newLocalRunnerOnBranch(t *testing.T, defaultBranch string) *recordingRunner
 	}
 	t.Setenv("JJ_USER", "Legion test")
 	t.Setenv("JJ_EMAIL", "legion-test@example.invalid")
-	return &recordingRunner{t: t, remote: seedRemote(t, t.TempDir(), defaultBranch), timeout: testTimeout, runner: NewRunner(testTimeout, testTools(t))}
+	return &recordingRunner{t: t, remote: seedRemote(t, t.TempDir(), defaultBranch), timeout: testTimeout, runner: NewRunner(procgroup.NoReaper, testTimeout, testTools(t))}
 }
 
 // provisionRequest is a host provisioning's request, the tmux runtime's: the one-shot credential
@@ -1667,7 +1668,7 @@ func TestProvisionRestoresAWorkspaceWithNoRealParentCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := NewRunner(testTimeout, testTools(t))
+	run := NewRunner(procgroup.NoReaper, testTimeout, testTools(t))
 	var logged []string
 	err := restoreGitWorktree(context.Background(), run, Workspace{Dir: other, Clone: clone}, func(line string) {
 		logged = append(logged, line)
