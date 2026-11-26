@@ -285,6 +285,7 @@ type FocusKind = "body" | "checkbox" | "empty" | "other" | "row" | "stop";
  *  `order` holds its row, that row's place in it, counted from 1, then `describeFocus`'s words,
  *  which name a checkbox as they name any other input. */
 async function focusWords(page: Page, order: readonly string[] = []): Promise<string> {
+  // Words for a failure message, read once where the caller has already settled the focus.
   const { inRow, kind } = await page.evaluate((): { inRow: string | null; kind: FocusKind } => {
     const active = document.activeElement;
     const inRow = active?.closest("[data-inbox-row]")?.getAttribute("data-inbox-row") ?? null;
