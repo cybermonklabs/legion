@@ -15,7 +15,7 @@ The rules behind them: [Admission and the `legion` label](https://cybermonklabs.
 - `admission.p0Holders` and `admission.p0Bound`: how many holders in `admission.active` are P0, and the P0 bound in force (`bound`, null for none) with `legion.yaml`'s `configured` value and any `live` value.
   An issue is P0 when its `resolvedPriority` is 0, or, where `resolvedPriority` is absent, its own `priority` is 0.
   A P0 issue starts outside the cap while fewer than `bound` P0 issues hold a slot, or always when `bound` is null.
-  Free slots are `admission.cap`, less the length of `admission.active` less `admission.p0Holders`, less each issue of `admission.waiting` that is not P0 and is in neither `admission.active` nor `admission.blocked`.
+  Free slots are `admission.cap`, less the holders of `admission.active` that are not P0 (its length less `admission.p0Holders`), less each issue of `admission.waiting` that is not P0 and is in neither `admission.active` nor `admission.blocked`.
 
 - `admission.trees`: the roots of the live trees, whether or not any issue of them holds a slot.
   Use it, not `admission.active`, for which trees run.
