@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { hostGate, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { procRootOf } from "./proc-root";
+import { alive } from "./process-alive";
 import { libRowBoundMs, rowWaits, untilTrue } from "./row-waits";
 import { scriptFunctions } from "./script-functions";
 
@@ -75,21 +76,10 @@ afterAll(() => {
 // before the directory goes (Bun runs a scope's afterAll hooks in the order they were registered).
 const tmuxDir = temporaryDirectory("kdt-tmux", { root: "/tmp" });
 
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-  } catch {
-    return false;
-  }
-  // A zombie still answers signal 0; it is gone for every purpose here.
-  return !readFileSync(`/proc/${pid}/stat`, "utf8")
-    .replace(/^.*\) /, "")
-    .startsWith("Z");
-};
 const sessionOf = (pid: number) =>
   Number(
     readFileSync(`/proc/${pid}/stat`, "utf8")
-      .replace(/^.*\) /, "")
+      .replace(/^[\s\S]*\) /, "")
       .split(" ")[3]
   );
 const membersOf = (sid: number) =>
