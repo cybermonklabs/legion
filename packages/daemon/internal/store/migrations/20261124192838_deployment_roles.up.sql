@@ -8,9 +8,15 @@
 -- controller, and claims_controller_shape still holds the controller to a claim on no issue and no
 -- tree. The release of an unowned pod still names no role. An issue whose running step is of such
 -- a role stands at the phase step (phase.Step), and a hold taken from it has held_from step, so
--- the two phase checks take step, after reviewing, where phase.All lists it. Every row the upgrade
--- finds names one of the six and a phase the checks took before, so each check is written again
--- whole and no row changes.
+-- the two phase checks take step, after reviewing, where phase.All lists it. The phase check is
+-- one list, so it takes awaiting_children too, which main's 20261114232555 added below this
+-- version and which the list here would otherwise refuse: an issue of a database that migration
+-- migrated can stand at awaiting_children when this one is applied over it, and a list without
+-- the phase would fail its ADD CONSTRAINT on that row (SQLSTATE 23514), and Migrate with it. The
+-- held_from check needs it in neither release: 20261114232555 does not write that check, and no
+-- hold is taken from awaiting_children. The way back writes the earlier release's two lists,
+-- which hold awaiting_children and no step. Every row the upgrade finds names one of the six and
+-- a phase the checks took before, so each check is written again whole and no row changes.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction below, run
 -- with the daemon stopped, before the earlier image is pinned. The release before this one has no
@@ -59,8 +65,8 @@
 --   $$;
 --   alter table issues drop constraint issues_phase_check;
 --   alter table issues add constraint issues_phase_check check (phase in (
---     'admitted', 'awaiting_person', 'planning', 'implementing', 'testing', 'reviewing', 'accepting',
---     'retro', 'merging', 'done', 'held'));
+--     'admitted', 'awaiting_person', 'awaiting_children', 'planning', 'implementing', 'testing',
+--     'reviewing', 'accepting', 'retro', 'merging', 'done', 'held'));
 --   alter table issues drop constraint issues_held_from_check;
 --   alter table issues add constraint issues_held_from_check check (held_from in (
 --     'admitted', 'planning', 'implementing', 'testing', 'reviewing', 'accepting', 'retro', 'merging',
@@ -80,8 +86,8 @@
 --   SQL
 alter table issues drop constraint issues_phase_check;
 alter table issues add constraint issues_phase_check check (phase in (
-  'admitted', 'awaiting_person', 'planning', 'implementing', 'testing', 'reviewing', 'step',
-  'accepting', 'retro', 'merging', 'done', 'held'));
+  'admitted', 'awaiting_person', 'awaiting_children', 'planning', 'implementing', 'testing',
+  'reviewing', 'step', 'accepting', 'retro', 'merging', 'done', 'held'));
 alter table issues drop constraint issues_held_from_check;
 alter table issues add constraint issues_held_from_check check (held_from in (
   'admitted', 'planning', 'implementing', 'testing', 'reviewing', 'step', 'accepting', 'retro',
