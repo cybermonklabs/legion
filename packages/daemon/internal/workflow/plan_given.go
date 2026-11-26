@@ -184,7 +184,7 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 		// A task the version removes runs no step again: the branches beside its fixes go, named
 		// by the task's id before its rows are deleted (queueBesideDelete).
 		for _, task := range removed {
-			if err := e.queueBesideDelete(ctx, tx, record.Issue{Key: fact.Issue, Generation: fact.Generation}, task, 0); err != nil {
+			if err := e.queueBesideDelete(ctx, tx, record.Issue{Key: fact.Issue, Generation: fact.Generation}, task); err != nil {
 				return writtenVersion{}, err
 			}
 		}

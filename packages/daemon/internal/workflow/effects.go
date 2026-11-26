@@ -866,10 +866,6 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 		RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume, FreshSession: marks.freshSession,
 		Fix: marks.fix, FixFrom: marks.fixFrom, FixBranch: marks.fixBranch, MoveTo: marks.moveTo}
 	if start.Fix > 0 {
-		if e.fixStartInLine {
-			start.Fix, start.FixFrom, start.FixBranch = 0, "", ""
-			return startOrOwe(ctx, tx, e.store, issue.Key, start, e.now(), move)
-		}
 		return enqueueFixStart(ctx, tx, e.store, issue.Key, start, e.now(), move)
 	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, start, e.now(), move)

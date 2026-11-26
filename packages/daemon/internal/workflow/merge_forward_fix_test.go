@@ -100,8 +100,8 @@ func (r *fixRig) testerCompletesAt(commit, handoff string) intake.Result {
 // CONFLICTING read of X, the record's confirmed conflicting head, writes no merge-forward row of
 // any step, no checks-red notice and no ask on the record, with fix 1 running beside the review,
 // with fix 1 reading its job, and with fix 1 ended and its way pending. The record keeps the
-// conflicting head. The control, kept: the rule before (the seam mergeForwardBesideFix) asks the
-// implementer at X.
+// conflicting head. Its red is the rule before, a conflict asked whether or not a fix holds the
+// branch (mergeForward): the implementer is then asked at X.
 func TestAConflictBesideAFixAsksNoMergeForward(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -137,23 +137,6 @@ func TestAConflictBesideAFixAsksNoMergeForward(t *testing.T) {
 			}
 		})
 	}
-	t.Run("control: the rule before asks beside the fix", func(t *testing.T) {
-		r := reviewing(t)
-		r.fails(fixHead, "k-ci")
-		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
-		r.engine.mergeForwardBesideFix = true
-		r.conflictRecorded(fixHead, false)
-		r.conflictRead("conflict", fixHead, unreadRules)
-		asks := 0
-		for _, message := range mergeForwardMessages(t, r.pool) {
-			if message.Step == record.MergeForwardAsk && message.Role == claim.RoleImplementer && message.Head == fixHead {
-				asks++
-			}
-		}
-		if asks != 1 {
-			t.Fatalf("merge-forward messages %+v, want one ask of the implementer at %s under the rule before", mergeForwardMessages(t, r.pool), fixHead)
-		}
-	})
 }
 
 // askedOfImplementer is LEGION-208 on `implementer tester reviewer`, its task standing at the step
@@ -184,9 +167,10 @@ func leavingCIEngine() *Engine {
 // synchronize of the fix's one end push records the ask landed there, asking no review and
 // starting no second writer of the branch.
 //
-// The controls, kept: under waitForOwedMerge (the rule that withheld the fix while a merge is owed)
-// no fix opens; under mergeOutsideFix the ask is not taken, its queued ask is still delivered, and
-// the fix's start facts hold no merge; and a fix that opens with no owed merge holds none either.
+// The control, kept: a fix that opens with no owed merge holds none. Its reds are the rule that
+// withheld the fix while a merge is owed (openFix), under which no fix opens, and the merge left
+// outside the fix (takeOwedMerge, fixFacts), under which the ask is not taken, its queued ask is
+// still delivered, and the fix's start facts hold no merge.
 func TestAFixTakesTheMergeItsAgentOwes(t *testing.T) {
 	t.Run("the takeover, in reviewing", func(t *testing.T) {
 		r := askedOfImplementer(t, returnEngine(), TriggerImplementationReady, TriggerTesterPassed)
@@ -242,50 +226,17 @@ func TestAFixTakesTheMergeItsAgentOwes(t *testing.T) {
 		}
 	})
 
-	t.Run("control: the withheld start opens no fix", func(t *testing.T) {
-		engine := returnEngine()
-		engine.waitForOwedMerge = true
-		r := askedOfImplementer(t, engine, TriggerImplementationReady, TriggerTesterPassed)
-		r.fails(fixHead, "k-ci")
-		assertStrings(t, "the fixes", r.fixes(), nil)
-		if reads := r.jobReads(); len(reads) != 0 {
-			t.Fatalf("job reads %+v, want none while the start is withheld", reads)
-		}
-	})
-
-	t.Run("control: a merge outside the fix keeps its own ask", func(t *testing.T) {
-		engine := returnEngine()
-		engine.mergeOutsideFix = true
-		r := askedOfImplementer(t, engine, TriggerImplementationReady, TriggerTesterPassed)
-		r.fails(fixHead, "k-ci")
-		if asked := r.asked(); asked == nil || asked.Fix != nil {
-			t.Fatalf("the record's merge forward = %+v, want the ask taken by no fix", asked)
-		}
-		messages, whys := mergeForwardMessages(t, r.pool), r.undelivered()
-		for i, message := range messages {
-			if message.Step == record.MergeForwardAsk && whys[i] != "" {
-				t.Fatalf("the queued ask %+v would end undelivered (%s), want it still delivered beside the fix", message, whys[i])
-			}
-		}
-		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
-		if facts := r.startFactsIn(phase.Implementing); facts.MergeHead != "" || facts.MergeBase != "" {
-			t.Fatalf("the fix's start facts = %+v, want no merge in them", facts)
-		}
-	})
-
 	// In testing the ask holds the tester as well. After the takeover no message of the ask reaches
 	// either role of the shared working copy; the fix's end push lands the merge at Y; the check no
 	// CI job runs passes at X; and the tester's completion at X, through the engine's handoff, is
 	// recorded with its report and its end, and the way after the fix starts the tester once more,
 	// at Y, with one return. So again after a restart of the daemon, and after the fix's landing
-	// moved into the record's earlier landings. The control, kept: with the ask left a merge no fix
-	// took (ordinaryMergeAfterTakeover), the tester's completion at X is refused as one at a head a
-	// merge forward replaced.
+	// moved into the record's earlier landings. Its red is the ask left a merge no fix took
+	// (takeOwedMerge): the tester's completion at X is then refused as one at a head a merge
+	// forward replaced.
 	for _, tc := range []struct {
-		name    string
-		seam    func(engine *Engine)
-		before  func(r *fixRig)
-		refused bool
+		name   string
+		before func(r *fixRig)
 	}{
 		{name: "the tester's report at X stands"},
 		{name: "the tester's report at X stands after a restart", before: func(r *fixRig) { r.engine = leavingCIEngine() }},
@@ -295,19 +246,15 @@ func TestAFixTakesTheMergeItsAgentOwes(t *testing.T) {
 				Why: record.ConflictRulesUnread, AskedAt: stepClock, Earlier: []record.LandedMergeForward{{Head: fixHead, Landed: headTwo, Fix: ownedByFix1}}}
 			seedPR(r.t, r.pool, pr)
 		}},
-		{name: "control: an ordinary merge after the takeover refuses X", seam: func(engine *Engine) { engine.ordinaryMergeAfterTakeover = true }, refused: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			engine := leavingCIEngine()
-			if tc.seam != nil {
-				tc.seam(engine)
-			}
 			r := askedOfImplementer(t, engine, TriggerImplementationReady)
 			assertPhase(t, r.pool, phase.Testing)
 			r.fails(fixHead, "k-ci")
 			for i, why := range r.undelivered() {
-				if (why == "") != tc.refused {
-					t.Fatalf("merge-forward message %d of %+v answers %q at its next attempt; want it delivered only for a merge no fix took", i, mergeForwardMessages(t, r.pool), why)
+				if why == "" {
+					t.Fatalf("merge-forward message %d of %+v answers %q at its next attempt; want every message of the taken ask finished undelivered", i, mergeForwardMessages(t, r.pool), why)
 				}
 			}
 			r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
@@ -324,12 +271,6 @@ func TestAFixTakesTheMergeItsAgentOwes(t *testing.T) {
 			entry := roleRowOf(t, r.pool, r.engine, "LEGION-208", claim.RoleTester).Entry
 
 			result := r.testerCompletesAt(fixHead, "test-at-x")
-			if tc.refused {
-				if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" {
-					t.Fatalf("the tester's completion at %s was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD", fixHead, code, result.Refusal)
-				}
-				return
-			}
 			if result.Refusal != nil {
 				t.Fatalf("the tester's completion at %s was refused: %+v", fixHead, result.Refusal)
 			}
@@ -382,8 +323,8 @@ func TestAFixTakesTheMergeItsAgentOwes(t *testing.T) {
 // base requires green and no current-branch rule asks nobody; the same answer with the required
 // check not green asks the implementer once, with one hold of the tester, and a second answer asks
 // nothing more. Where the fix's end push moved the head to Y (row 3), the way reads nothing for X.
-// The controls, kept: asking at the way with no rules read (askAtWayWithNoRules) asks the
-// implementer in case one, and taking the read out (noAskAtWay) asks nothing in case two.
+// Its reds are the conflict asked at the way with no rules read (mergeForwardAfterFix), which asks
+// the implementer in case one, and the read taken out of the way, which asks nothing in case two.
 func TestAConflictBesideAFixIsAskedAtItsWay(t *testing.T) {
 	ciRequired := &record.BaseRules{Required: []string{"ci"}}
 	beside := func(t *testing.T, engine *Engine, green bool, end string) (*fixRig, *[]string) {
@@ -453,25 +394,6 @@ func TestAConflictBesideAFixIsAskedAtItsWay(t *testing.T) {
 		r.assertWay(wayAfterFix, phase.Testing, claim.RoleTester, headTwo, 1, "")
 		if messages := asks(r); len(messages) != 0 || len(*reads) != 0 {
 			t.Fatalf("merge-forward messages %+v and reads %v, want none: Y's own reads decide", messages, *reads)
-		}
-	})
-
-	t.Run("control: the way that asks with no rules read asks in case one", func(t *testing.T) {
-		engine := returnEngine()
-		engine.askAtWayWithNoRules = true
-		r, _ := beside(t, engine, true, fixHead)
-		got := asks(r)
-		if len(got) == 0 || got[0].Step != record.MergeForwardAsk || got[0].Role != claim.RoleImplementer || got[0].Head != fixHead {
-			t.Fatalf("merge-forward messages %+v, want the implementer asked at the way", got)
-		}
-	})
-
-	t.Run("control: with no read at the way case two asks nothing", func(t *testing.T) {
-		engine := returnEngine()
-		engine.noAskAtWay = true
-		r, reads := beside(t, engine, false, fixHead)
-		if messages := asks(r); len(messages) != 0 || len(*reads) != 0 {
-			t.Fatalf("merge-forward messages %+v and reads %v, want none with the read taken out", messages, *reads)
 		}
 	})
 }

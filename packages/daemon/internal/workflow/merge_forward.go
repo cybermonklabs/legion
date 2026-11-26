@@ -66,7 +66,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if err != nil {
 		return err
 	}
-	if holds && !e.mergeForwardBesideFix {
+	if holds {
 		e.logOnCommit(ctx, "workflow: a confirmed conflict waits for the fix that holds the task's branch", "issue", issue.Key, "task", w.Task,
 			"phase", at, "pullRequest", pr.Number, "head", pr.HeadSHA, "base", pr.Base, "why", why)
 		return nil
@@ -153,23 +153,9 @@ func (e *Engine) fixHoldsBranch(ctx context.Context, tx pgx.Tx, issue record.Iss
 // then, once. Where the conflicting head is no longer the task's head, it reads nothing: the reads
 // the head's move owes decide.
 func (e *Engine) mergeForwardAfterFix(ctx context.Context, tx pgx.Tx, key string) error {
-	if e.noAskAtWay {
-		return nil
-	}
 	pr, err := e.store.PullRequest(ctx, tx, key)
 	if err != nil || pr == nil || pr.State != record.PullRequestOpen || !classify.ConflictRound(*pr) {
 		return err
-	}
-	if e.askAtWayWithNoRules {
-		issue, err := e.store.Issue(ctx, tx, key)
-		if err != nil || issue == nil {
-			return err
-		}
-		w, err := e.walk(ctx, tx, *issue)
-		if err != nil {
-			return err
-		}
-		return e.mergeForward(ctx, tx, *issue, w, pr, record.ConflictRulesUnread)
 	}
 	if e.cfg.ReadMergeState == nil {
 		return nil
@@ -188,7 +174,7 @@ func (e *Engine) mergeForwardAfterFix(ctx context.Context, tx pgx.Tx, key string
 // of the task's branch: the ask's own messages end undelivered (leftMergeForwardAt), its landing
 // is the fix's (mergeForwardLanded), and no completion fence is made of it (mergedForwardRefusal).
 func (e *Engine) takeOwedMerge(ctx context.Context, tx pgx.Tx, pass *fixPass, number int) error {
-	if e.ordinaryMergeAfterTakeover || e.mergeOutsideFix || owedMerge(pass.pr, pass.head) == nil {
+	if owedMerge(pass.pr, pass.head) == nil {
 		return nil
 	}
 	taken := *pass.pr.MergeForward

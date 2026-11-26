@@ -31,7 +31,7 @@ const wayNone = 4
 // a todo on the root starts the task again and that work can be the only copy. A leave and a new
 // generation defer the deletion of every branch beside the task's fixes at that generation until
 // every old-generation start of that task ended (factRuns.deleteAfterOldRuns), whatever the latest
-// fix's way. The seam besideDeleteAsBefore deletes the branches beside the fix a stop marks too.
+// fix's way.
 func (e *Engine) dropFixWay(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, said string) error {
 	if !w.Stored {
 		return nil
@@ -47,7 +47,7 @@ func (e *Engine) dropFixWay(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		runs.deleteAfterOldRuns[runAt{issue: issue.Key, generation: issue.Generation, place: record.StepPlace{Task: w.Task}}] = issue
 	}
 	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
-	if err != nil || fix == nil || fix.Way != 0 || (e.wayMarkRunningOnly && fix.State != record.FixRunning) {
+	if err != nil || fix == nil || fix.Way != 0 {
 		return err
 	}
 	fix.Way = wayNone
@@ -79,16 +79,10 @@ func (e *Engine) dropFixWay(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // (dropFixWay): one task-stopped notice of the implementer, with no StoppedBy, so it reaches the
 // owner even where the owner made the stop, naming the fix, that it ended with the stop, and where
 // the commits of the fix and of each step beside it stand (besideWorkSentence), which the stop keeps.
-// A leave and a new generation (said "") tell nothing here. The seam besideDeleteAsBefore deletes
-// the branches beside the fix at the stop.
+// A leave and a new generation (said "") tell nothing here.
 func (e *Engine) fixStopped(ctx context.Context, tx pgx.Tx, issue record.Issue, fix record.TaskFix, said string) error {
 	if said == "" {
 		return nil
-	}
-	if e.besideDeleteAsBefore {
-		if err := e.queueBesideDelete(ctx, tx, issue, fix.Task, fix.Fix); err != nil {
-			return err
-		}
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: claim.RoleImplementer, Phase: phase.Implementing,
 		Reason: fmt.Sprintf("Fix %d of task %s ended with the stop.", fix.Fix, fix.Task) + besideWorkSentence(issue.Key, issue.Generation, fix.Task, fix.Fix)})

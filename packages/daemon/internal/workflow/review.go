@@ -582,12 +582,7 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, before record.PullRe
 		return err
 	}
 	if fixesCI {
-		if e.textDedupe && (settled == "" || settled == told) {
-			return nil
-		}
-		if err := e.reportRuns(ctx, tx, *issue, w, before, *pr); err != nil || !e.alsoRoleMessage {
-			return err
-		}
+		return e.reportRuns(ctx, tx, *issue, w, before, *pr)
 	}
 	if settled == "" || settled == told {
 		return nil
@@ -599,11 +594,9 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, before record.PullRe
 	runs, statuses := settledRuns(*pr)
 	body := fmt.Sprintf("Pull request #%d: %s. Nothing moved on it.", pr.Number, settled)
 	return e.eachRecipient(issue.Project, recipients, func(to roleRecipient, token claim.Token) error {
-		var next ciNextOf
-		if !fixesCI {
-			if next, err = e.ciNext(ctx, tx, *issue, w, to.role); err != nil {
-				return err
-			}
+		next, err := e.ciNext(ctx, tx, *issue, w, to.role)
+		if err != nil {
+			return err
 		}
 		if next.Next == record.CINextNone || (len(runs) == 0 && len(statuses) == 0) {
 			if to.role == woken {

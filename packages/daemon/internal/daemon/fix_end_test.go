@@ -22,7 +22,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -603,8 +602,8 @@ func (e *fixEnd) walkToTheEndWhileTheJobRuns() api.Issue {
 //     names k-ci, the record of E's fix ends at Y, and the project's read gives each finished
 //     issue's fixes, B's one among them.
 //
-// The control is a test of its own (TestVFixEndWithoutTheEndHold), since its daemon needs the
-// shared NATS server, which one test takes once.
+// Its red is the hold for CI taken out of the workflow's retroHold: A's walk then reaches its retro
+// while unit runs at X, and A's first assertion, held for its CI, fails.
 func TestVFixEnd(t *testing.T) {
 	t.Parallel()
 	r := newFixRig(t, nil, fixEndIssues...)
@@ -843,18 +842,4 @@ func TestVFixEnd(t *testing.T) {
 			}
 		}
 	})
-}
-
-// TestVFixEndWithoutTheEndHold is the control of TestVFixEnd, kept: on a daemon whose engine has
-// the end hold taken out (WithoutEndHold), task A's walk reaches its retro while unit runs at X,
-// so A's first assertion, held for its CI, fails.
-func TestVFixEndWithoutTheEndHold(t *testing.T) {
-	t.Parallel()
-	control := newFixRig(t, func(engine *workflow.Engine) { engine.WithoutEndHold() }, fixEndIssues[0])
-	a := control.walking(0)
-	stands := a.walkToTheEndWhileTheJobRuns()
-	if stands.Phase == phase.Held && stands.HoldReason == string(record.HoldForCI) {
-		t.Fatalf("%s stands held for %q with the end hold taken out, want it in its retro: the control cannot fail", a.key, stands.HoldReason)
-	}
-	t.Logf("with the end hold taken out %s stands in %s while unit runs at X: A's first assertion, held for CI, fails as it must", a.key, stands.Phase)
 }

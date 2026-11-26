@@ -335,8 +335,8 @@ func runRow(t *testing.T, row vfixRow) {
 //
 // Cases 9, 11 and 17, and case 16's wait for a busy agent, need a task in which one agent holds two
 // steps, a role holds two places, or a second task: each subtest names the change that brings it.
-// The control, kept as a subtest: with the fix rule taken out of the engine (the seam noFixRule),
-// case 1's check fails, since its implementer then starts only after the review ended.
+// Its red is the fix rule taken out of the tail of every fact (applyAndFix): case 1's check then
+// fails, since its implementer starts only after the review ended.
 func TestVFix(t *testing.T) {
 	for _, row := range vfixRows {
 		t.Run(fmt.Sprintf("case %d: %s", row.n, row.name), func(t *testing.T) { runRow(t, row) })
@@ -527,31 +527,4 @@ func TestVFix(t *testing.T) {
 			t.Skipf("a task of this branch has one agent for each step and one place for each role; this case runs with %s", other.change)
 		})
 	}
-
-	t.Run("the control: with the fix rule taken out, case 1's implementer starts only after the review ended", func(t *testing.T) {
-		r := newVFix(t, "implementer", "tester", "reviewer")
-		r.engine.noFixRule = true
-		r.toReview()
-		r.ciFails(fixHead, "k-ci")
-
-		err := r.fixBesideTheReview(1, "k-ci")
-		if err == nil {
-			t.Fatal("case 1's check passed with the fix rule taken out")
-		}
-		t.Logf("case 1's check with the fix rule taken out: %v", err)
-		r.assertStartsAt(1, 1, "with no fix the implementer does not start while the review runs")
-
-		r.reviewOf(1, "approved", fixHead)
-		r.assertRunEnded(3, 1, ResultPassed, 0)
-		r.assertEndHold(record.HoldForCI)
-		r.assertStartsAt(1, 1, "with no fix the implementer does not start at the review's end")
-		if result := r.ownerMovesBack(); result.Refusal != nil {
-			t.Fatalf("the owner's move back was refused: %+v", result.Refusal)
-		}
-		assertPhase(t, r.pool, phase.Implementing)
-		r.assertStartsAt(1, 2, "the implementer starts only after the review ended")
-		if starts := r.fixStarts(); len(starts) != 0 {
-			t.Fatalf("the starts of a fix = %+v, want none with the fix rule taken out", starts)
-		}
-	})
 }

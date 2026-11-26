@@ -39,11 +39,8 @@ type ciReader struct {
 // alone; and the implementer where a fix of the task runs, with the fix's number and entry. A
 // task held at its end runs no step, so a hold for its CI or its fix prompts no retro that was
 // never made: the hold's own release decides. A released claim is a reader all the same, which
-// the row wakes. The seam readersAsReceivers takes the report's receivers as the readers instead.
+// the row wakes.
 func (e *Engine) ciReaders(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) ([]ciReader, error) {
-	if e.readersAsReceivers {
-		return e.receiversAsReaders(ctx, tx, issue)
-	}
 	var readers []ciReader
 	standsAt := record.StandsAt(issue)
 	switch role := RoleFor(standsAt); {
@@ -76,29 +73,6 @@ func (e *Engine) ciReaders(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 	return readers, nil
 }
 
-// receiversAsReaders is the seam readersAsReceivers: each receiver of the report (ciReceivers) as
-// a reader of the step the issue stands in, at the entry its role's phases row holds, whether that
-// step runs or not.
-func (e *Engine) receiversAsReaders(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]ciReader, error) {
-	recipients, err := e.ciReceivers(ctx, tx, issue)
-	if err != nil {
-		return nil, err
-	}
-	readers := make([]ciReader, 0, len(recipients))
-	for _, to := range recipients {
-		var entry int64
-		if to.role != claim.RoleArchitect {
-			row, err := e.phaseRow(ctx, tx, issue.Key, to.role)
-			if err != nil {
-				return nil, err
-			}
-			entry = row.Entry
-		}
-		readers = append(readers, ciReader{role: to.role, issue: to.issue, reader: record.CIReader{Phase: record.StandsAt(issue), Entry: entry}})
-	}
-	return readers, nil
-}
-
 // readerOf is the work of to among readers, nil where to is no current reader.
 func readerOf(readers []ciReader, to roleRecipient) *record.CIReader {
 	for _, r := range readers {
@@ -114,8 +88,7 @@ func readerOf(readers []ciReader, to roleRecipient) *record.CIReader {
 // architect that owns the issue (owningArchitect), the role of the step the issue stands in, and
 // the implementer, whose code the checks ran on, except in merging, where the merge and what
 // breaks it are the merger's (cybermonklabs/legion#4979). A phase the architect itself holds
-// (accepting) is the owner's own step, so the owner is told once, as the owner. The seam
-// implementerInMerging tells the implementer in merging too.
+// (accepting) is the owner's own step, so the owner is told once, as the owner.
 func (e *Engine) ciReceivers(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]roleRecipient, error) {
 	owner, err := e.owningArchitect(ctx, tx, issue)
 	if err != nil {
@@ -123,7 +96,7 @@ func (e *Engine) ciReceivers(ctx context.Context, tx pgx.Tx, issue record.Issue)
 	}
 	recipients := []roleRecipient{{issue: owner, role: claim.RoleArchitect, row: issue.Key}}
 	roles := []claim.Role{RoleFor(record.StandsAt(issue))}
-	if !record.StandsIn(issue, phase.Merging) || e.implementerInMerging {
+	if !record.StandsIn(issue, phase.Merging) {
 		roles = append(roles, claim.RoleImplementer)
 	}
 	for _, role := range roles {
@@ -156,13 +129,7 @@ type ciNextOf struct {
 // tester's completion written, so the testing move waits for Dispatch's states. Else nothing. So
 // no receiver beside a running fix, and not the fix's own agent, is told that its own act is
 // asked for, and none is told that nothing is asked of it while it runs the fix.
-//
-// The seams: noNextRead reads nothing, nextByHoldAlone reads a hold for the fix as end-hold-fix
-// for every receiver wherever it stands, and noTestedHeadRead names no tested head.
 func (e *Engine) ciNext(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, to claim.Role) (ciNextOf, error) {
-	if e.noNextRead {
-		return ciNextOf{}, nil
-	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return ciNextOf{}, err
@@ -176,8 +143,6 @@ func (e *Engine) ciNext(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wa
 		}
 	}
 	switch {
-	case e.nextByHoldAlone && record.HeldFor(issue, record.HoldForFix):
-		next.Next = record.CINextEndHoldFix
 	case fix != nil && (to == claim.RoleImplementer || !atTaskEnd(issue)):
 		next.Next = record.CINextFixRuns
 	case atTaskEnd(issue) && record.HeldFor(issue, record.HoldForCI):
@@ -212,7 +177,7 @@ func (e *Engine) testingNext(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}
 	next.Next = record.CINextTestingMove
 	repo, tested := testedHead(issue, row, pr)
-	if tested == "" || tested == next.Head || e.noTestedHeadRead {
+	if tested == "" || tested == next.Head {
 		return next, nil
 	}
 	held, err := e.store.HeadStates(ctx, tx, issue.Key, repo, tested)
@@ -348,42 +313,19 @@ func (e *Engine) reportRuns(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if head == "" || pr.CheckedHead != head {
 		return nil
 	}
-	if e.runsBeforeLost {
-		before = record.PullRequest{}
-	}
 	runs, statuses := newObservations(before, pr, head)
 	if len(runs) == 0 && len(statuses) == 0 {
 		return nil
-	}
-	if (e.dropBesideFix || e.waitForJobName) && w.Stored {
-		fix, err := e.store.RunningFix(ctx, tx, issue.Key, issue.Generation, w.Task)
-		if err != nil {
-			return err
-		}
-		if fix != nil && (e.dropBesideFix || fix.JobName == "") {
-			return nil
-		}
-	}
-	if e.stateFromSettlement {
-		if err := e.stateFromRuns(ctx, tx, issue, pr, runs); err != nil {
-			return err
-		}
 	}
 	readers, err := e.ciReaders(ctx, tx, issue, w)
 	if err != nil {
 		return err
 	}
-	if e.readersAtSettlement {
-		if e.settlementReaders == nil {
-			e.settlementReaders = map[string][]ciReader{}
-		}
-		e.settlementReaders[issue.Key] = readers
-	}
 	recipients, err := e.ciReceivers(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
-	if err := e.eachRecipient(issue.Project, recipients, func(to roleRecipient, token claim.Token) error {
+	return e.eachRecipient(issue.Project, recipients, func(to roleRecipient, token claim.Token) error {
 		next, err := e.ciNext(ctx, tx, issue, w, to.role)
 		if err != nil {
 			return err
@@ -391,57 +333,7 @@ func (e *Engine) reportRuns(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return e.enqueue(ctx, tx, to.row, record.CINews{Purpose: record.CINewsRuns, Role: string(token), Generation: issue.Generation,
 			Task: w.Task, Repo: pr.Repo, PullRequest: pr.Number, Head: head, Reader: readerOf(readers, to), Next: next.Next,
 			Tested: next.Tested, Runs: runs, Statuses: statuses, Body: runsBody(issue.Key, pr.Number, head, runs, statuses, next)})
-	}); err != nil {
-		return err
-	}
-	if e.assignFromSettlement {
-		return e.assignFromRuns(ctx, tx, issue, w, pr, runs)
-	}
-	return nil
-}
-
-// stateFromRuns is the seam stateFromSettlement: each run of runs that succeeded, whose name is a
-// check of the head's set, written as that check's state yes at the next sequence, as if a raw
-// success were Dispatch's state.
-func (e *Engine) stateFromRuns(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest, runs []record.CIRun) error {
-	held, err := e.store.HeadStates(ctx, tx, issue.Key, pr.Repo, pr.CheckedHead)
-	if err != nil {
-		return err
-	}
-	for _, run := range runs {
-		if !slices.Contains(held.Checks, run.Name) || (run.Conclusion != string(record.RunSucceeded) && run.Conclusion != "success") {
-			continue
-		}
-		if _, err := e.store.PutCheckState(ctx, tx, record.CheckState{Issue: issue.Key, Repo: pr.Repo, Head: pr.CheckedHead, Check: run.Name,
-			State: stateYes, CICase: "success", Roles: []string{"ci"}, Seq: held.States[run.Name].Seq + 1}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// assignFromRuns is the seam assignFromSettlement: a repair assignment to the implementer of each
-// run of runs that failed, as if a raw conclusion assigned a repair.
-func (e *Engine) assignFromRuns(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, pr record.PullRequest, runs []record.CIRun) error {
-	row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
-	if err != nil {
-		return err
-	}
-	recipients := []roleRecipient{{issue: issue.Key, role: claim.RoleImplementer, row: issue.Key}}
-	for _, run := range runs {
-		if run.Conclusion != string(record.RunFailed) && run.Conclusion != "failure" {
-			continue
-		}
-		if err := e.eachRecipient(issue.Project, recipients, func(to roleRecipient, token claim.Token) error {
-			return e.enqueue(ctx, tx, to.row, record.CINews{Purpose: record.CINewsAssignment, Role: string(token), Generation: issue.Generation,
-				Task: w.Task, Repo: pr.Repo, PullRequest: pr.Number, Head: pr.CheckedHead,
-				Reader:   &record.CIReader{Phase: phase.Implementing, Entry: row.Entry},
-				Assigned: &record.CIAssigned{Check: run.Name, Head: pr.CheckedHead, CICase: run.Conclusion}, Body: "Run " + run.Name + " failed."})
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
+	})
 }
 
 // promptReaders is the prompt to read Dispatch again (record.CINewsState) of a change that fact,
@@ -455,9 +347,6 @@ func (e *Engine) assignFromRuns(ctx context.Context, tx pgx.Tx, issue record.Iss
 // one run give one row and one wake. The body names the checks and the head, and no state, since a
 // yes queued can be overtaken by a no before the row is delivered. A fix the same fact opens reads
 // its job first, which reads no prompt; its start task names its failure.
-//
-// The seams: noHeadFence prompts at any head, noPromptJoin queues each prompt as a row of its own,
-// and readersAtSettlement prompts the readers the task's last report chose (reportRuns).
 func (e *Engine) promptReaders(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchCheckState, states []record.CIStateSnapshot, checks *[]string) error {
 	if len(states) == 0 && checks == nil {
 		return nil
@@ -471,7 +360,7 @@ func (e *Engine) promptReaders(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return err
 	}
 	repo, head := taskHead(pr)
-	if head == "" || (!e.noHeadFence && (fact.Repo != repo || fact.Head != head)) {
+	if head == "" || fact.Repo != repo || fact.Head != head {
 		return nil
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
@@ -485,22 +374,11 @@ func (e *Engine) promptReaders(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err != nil {
 		return err
 	}
-	if chosen, ok := e.settlementReaders[issue.Key]; e.readersAtSettlement && ok {
-		readers = chosen
-	}
-	names := make([]string, len(states))
-	for i, state := range states {
-		names[i] = state.Check
-	}
 	for _, r := range readers {
 		reader := r.reader
 		if err := e.eachRecipient(issue.Project, []roleRecipient{{issue: r.issue, role: r.role, row: issue.Key}}, func(to roleRecipient, token claim.Token) error {
 			prompt := record.CINews{Purpose: record.CINewsState, Role: string(token), Generation: issue.Generation, Task: w.Task,
 				Repo: fact.Repo, PullRequest: pr.Number, Head: fact.Head, Reader: &reader, States: states, Checks: checks}
-			if e.noPromptJoin {
-				prompt.Body = record.ReadPromptBody(issue.Key, fact.Head, names)
-				return e.enqueue(ctx, tx, to.row, prompt)
-			}
 			_, err := e.store.EnqueueReadPrompt(ctx, tx, to.row, prompt, e.now())
 			return err
 		}); err != nil {

@@ -237,11 +237,11 @@ func (r *fixRig) parks() {
 // generation, and a version that removes the stopped task. A task with no fix deletes nothing at
 // any end.
 //
-// The controls, kept: with noEndBesideDelete the release into the retro deletes nothing; with
-// besideDeleteAsBefore the failed claim's way 2 and the stop each delete the fix's branches; and
-// with deleteAfterEveryCompletion the no-commit way 2 and the way 3 each do.
+// Its reds: the deletion taken out of queueTaskEnd deletes nothing at the release into the retro;
+// the deletion the rule before queued after every way 2 or 3 and at a stop (afterFix, fixStopped)
+// deletes at the failed claim's way 2 and at the stop; and the deletion after every way 2 or 3 of
+// the fix's own completion (afterFix) deletes at the no-commit way 2 and at the way 3.
 func TestBesideBranchesAreDeletedAtTheirEnds(t *testing.T) {
-	fix1 := []string{"1 a fix 1"}
 	task := []string{"1 a fix 0 through 1"}
 	t.Run("a new-commit way 2 deletes none", func(t *testing.T) {
 		r := fixAtTheEnd(t, returnEngine())
@@ -352,74 +352,66 @@ func TestBesideBranchesAreDeletedAtTheirEnds(t *testing.T) {
 		r.parks()
 		assertStrings(t, "the deletions", r.deletions(), nil)
 	})
-
-	t.Run("the control: noEndBesideDelete deletes nothing at the release into the retro", func(t *testing.T) {
-		engine := returnEngine()
-		engine.noEndBesideDelete = true
-		r := fixAtTheEnd(t, engine)
-		r.allCIPasses(fixHead)
-		r.fixEnds(fixHead)
-		r.assertRetroStarted()
-		assertStrings(t, "the deletions", r.deletions(), nil)
-	})
-	t.Run("the control: besideDeleteAsBefore deletes at a failed claim and at a stop", func(t *testing.T) {
-		engine := returnEngine()
-		engine.besideDeleteAsBefore = true
-		assertStrings(t, "the deletions of the failed claim", failedClaimWithReport(t, engine).deletions(), fix1)
-		engine = returnEngine()
-		engine.besideDeleteAsBefore = true
-		r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady, TriggerTesterPassed)
-		r.fails(fixHead, "k-ci")
-		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
-		r.stop()
-		assertStrings(t, "the deletions of the stop", r.deletions(), fix1)
-	})
-	t.Run("the control: deleteAfterEveryCompletion deletes at a no-commit way 2 and a way 3", func(t *testing.T) {
-		engine := returnEngine()
-		engine.deleteAfterEveryCompletion = true
-		assertStrings(t, "the deletions of the no-commit way 2", fixAfterReview(t, engine, TriggerReviewRejected, false, fixHead).deletions(), fix1)
-		engine = returnEngine()
-		engine.deleteAfterEveryCompletion = true
-		r := fixAtTheEnd(t, engine)
-		r.fixEnds(fixHead)
-		assertStrings(t, "the deletions of the way 3", r.deletions(), fix1)
-	})
 }
 
-// A new generation ends its old starts through settleRuns. Its deletion must wait until that
-// transaction ended every old start, so a tester's own push while its start remains open is
-// recorded before the task-wide deletion is queued.
+// lastOutboxID is the id of the newest outbox row of any issue, 0 for none.
+func (r *fixRig) lastOutboxID() int64 {
+	r.t.Helper()
+	var id int64
+	if err := r.pool.QueryRow(r.t.Context(), `select coalesce(max(id), 0) from outbox`).Scan(&id); err != nil {
+		r.t.Fatalf("read the newest outbox row: %v", err)
+	}
+	return id
+}
+
+// assertDeletionAfterOldEnds fails unless LEGION-208's outbox holds one deletion of the branches
+// beside task a's fixes, written after the end of every start of task a at generation 1 that the
+// outbox holds: the row that deletes them follows each old start's end, so no start was still open
+// in the transaction when the deletion was queued. It fails too where no such end was written after
+// the row since, the newest before the fact: the order of no end proves nothing.
+func (r *fixRig) assertDeletionAfterOldEnds(since int64) {
+	r.t.Helper()
+	deletions := issueOutboxOf(r.t, r.pool, "LEGION-208", string(record.OutboxKindBesideBranchesDelete))
+	if len(deletions) != 1 {
+		r.t.Fatalf("the deletion rows = %d, want one", len(deletions))
+	}
+	ended := 0
+	for _, row := range issueOutboxOf(r.t, r.pool, "LEGION-208", string(record.OutboxKindStepRecord)) {
+		var write record.StepRecord
+		if err := json.Unmarshal(row.payload, &write); err != nil {
+			r.t.Fatalf("decode the step record %s: %v", row.payload, err)
+		}
+		if !isEnd(write) || write.Generation != 1 || write.Task != "a" {
+			continue
+		}
+		if row.id > since {
+			ended++
+		}
+		if row.id > deletions[0].id {
+			r.t.Fatalf("the end of start %s (row %d) follows the deletion (row %d): the deletion was queued while that start was open", write.ID, row.id, deletions[0].id)
+		}
+	}
+	if ended == 0 {
+		r.t.Fatalf("the outbox holds no end of a start of task a at generation 1 after row %d, so the deletion's order proves nothing", since)
+	}
+}
+
+// A new generation ends its old starts through settleRuns, and its deletion of the branches beside
+// the task's fixes waits until that transaction ended every old start. The state is built from
+// rows: fix 1 runs beside the tester, whose start is open and bound to its branch beside fix 1, and
+// the tester's push of that branch is recorded. The new generation's settle ends the old starts and
+// then queues one deletion of every branch through fix 1, after each end, and the push stays
+// recorded. Its red is the deletion queued by dropFixWay, before the settle ends the old starts.
 func TestANewGenerationQueuesDeletionAfterItsLastOldStartEnds(t *testing.T) {
-	engine := returnEngine()
-	r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+	r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
 	r.fails(fixHead, "k-ci")
 	r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
-
 	const pushed = "5555555555555555555555555555555555555555"
-	called := 0
-	engine.afterOldGenerationRunEnd = func(ctx context.Context, tx pgx.Tx, row record.IssueStepRun) error {
-		if row.Generation != 1 || row.Place.Task != "a" {
-			return nil
-		}
-		called++
-		tester, err := engine.store.StepStarts(ctx, tx, "LEGION-208", record.StepPlace{Task: "a", Kind: record.PlaceStep, Place: 2})
-		if err != nil {
-			return err
-		}
-		if tester.Run == record.RunOpen {
-			if err := engine.store.RecordBesidePush(ctx, tx, "LEGION-208", 1, "a", 1, string(claim.RoleTester), pushed); err != nil {
-				return err
-			}
-		}
-		var queued int
-		if err := tx.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = $2`, "LEGION-208", string(record.OutboxKindBesideBranchesDelete)).Scan(&queued); err != nil {
-			return err
-		}
-		if queued != 0 {
-			return fmt.Errorf("the old-generation start %s/%d ended with %d branch deletion rows already queued", row.Place.Kind, row.Place.Place, queued)
-		}
-		return nil
+	r.recordsPush(claim.RoleTester, pushed)
+	if got, want := r.besideMarks(2), "1 "+besideFix1(t, claim.RoleTester); got != want {
+		t.Fatalf("the tester's start names %q, want %q: open beside fix 1 before the generation ends it", got, want)
 	}
+	since := r.lastOutboxID()
 
 	onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 		issue.Generation++
@@ -431,53 +423,31 @@ func TestANewGenerationQueuesDeletionAfterItsLastOldStartEnds(t *testing.T) {
 		return r.engine.store.ClearTreeGeneration(ctx, tx, issue.Tree, stepClock.Add(time.Hour))
 	})
 
-	if called == 0 {
-		t.Fatal("the generation ended no old start through the hook")
-	}
 	assertStrings(t, "the deletion after every old start ended", r.deletions(), []string{"1 a fix 0 through 1"})
+	r.assertDeletionAfterOldEnds(since)
 	if fix := r.latestFix(); fix.Pushed[string(claim.RoleTester)] != pushed {
-		t.Fatalf("the old tester's push = %+v, want %s before its start ended", fix.Pushed, pushed)
+		t.Fatalf("the old tester's push = %+v, want %s", fix.Pushed, pushed)
 	}
 }
 
-// A leave ends the old starts through the same settle. Its deletion waits for every old start of
-// the task, so a push of that tester's branch is recorded before deletion is queued.
+// A leave ends the old starts through the same settle, and its deletion waits for every old start
+// of the task in the same way: built from the same rows, the leave ends the old starts and then
+// queues one deletion through fix 1, after each end. Its red is the deletion queued by dropFixWay,
+// before the settle ends the old starts.
 func TestALeaveQueuesDeletionAfterItsLastOldStartEnds(t *testing.T) {
-	engine := returnEngine()
-	r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+	r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
 	r.fails(fixHead, "k-ci")
 	r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
-
 	const pushed = "6666666666666666666666666666666666666666"
-	called := 0
-	engine.afterOldGenerationRunEnd = func(ctx context.Context, tx pgx.Tx, row record.IssueStepRun) error {
-		if row.Generation != 1 || row.Place.Task != "a" {
-			return nil
-		}
-		called++
-		if called == 1 {
-			if err := engine.store.RecordBesidePush(ctx, tx, "LEGION-208", 1, "a", 1, string(claim.RoleTester), pushed); err != nil {
-				return err
-			}
-		}
-		var queued int
-		if err := tx.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = $2`, "LEGION-208", string(record.OutboxKindBesideBranchesDelete)).Scan(&queued); err != nil {
-			return err
-		}
-		if queued != 0 {
-			return fmt.Errorf("the leaving start %s/%d ended with %d branch deletion rows already queued", row.Place.Kind, row.Place.Place, queued)
-		}
-		return nil
-	}
+	r.recordsPush(claim.RoleTester, pushed)
+	since := r.lastOutboxID()
 
 	r.parks()
 
-	if called == 0 {
-		t.Fatal("the leave ended no old start through the hook")
-	}
 	assertStrings(t, "the deletion after every old start ended", r.deletions(), []string{"1 a fix 0 through 1"})
+	r.assertDeletionAfterOldEnds(since)
 	if fix := r.latestFix(); fix.Pushed[string(claim.RoleTester)] != pushed {
-		t.Fatalf("the leaving tester's push = %+v, want %s before its start ended", fix.Pushed, pushed)
+		t.Fatalf("the leaving tester's push = %+v, want %s", fix.Pushed, pushed)
 	}
 }
 
@@ -525,8 +495,7 @@ func TestATestingMoveAtAHeadOfNoPullRequestSaysWhy(t *testing.T) {
 // failure has no row yet, so the fix rule reads it again at the next fact. The tester's pass takes
 // fix 1's way (3, each step keeps its result), and the fix rule at the tail of that same fact opens
 // fix 2 for k-ci2. The tester's start kept B1 to its end, and no deletion of fix 1's branches is
-// queued. The control, kept: with the seam openBesidePendingWay, fix 2 opens while fix 1's way is
-// pending, which the subtest asserts.
+// queued. Its red is openFix's wait taken out: fix 2 then opens while fix 1's way is pending.
 func TestNoFixOpensWhileTheWayOfTheLastIsPending(t *testing.T) {
 	pending := func(t *testing.T, engine *Engine) *fixRig {
 		r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
@@ -576,12 +545,6 @@ func TestNoFixOpensWhileTheWayOfTheLastIsPending(t *testing.T) {
 		assertStrings(t, "the fixes after the tester's end", r.fixes(), []string{fixOf(1, "ended", "k-ci"), "2 reading k-ci2@" + fixHead + " place 1"})
 		assertStrings(t, "the deletions", r.deletions(), nil)
 	})
-	t.Run("the control: openBesidePendingWay opens fix 2 while the way is pending", func(t *testing.T) {
-		engine := returnEngine()
-		engine.openBesidePendingWay = true
-		r := pending(t, engine)
-		assertStrings(t, "the fixes while fix 1's way is pending", r.fixes(), []string{fixOf(1, "ended", "k-ci"), "2 reading k-ci2@" + fixHead + " place 1"})
-	})
 }
 
 // A way 2 keeps the branches beside its fix, and the step it runs again takes its commits from its
@@ -589,8 +552,8 @@ func TestNoFixOpensWhileTheWayOfTheLastIsPending(t *testing.T) {
 // at Y while the tester runs, so its way waits; the tester then pushes c2 to B1, at P, after the
 // fix's end push. The tester's pass takes way 2: no deletion is queued, and the tester's start that
 // the way runs again holds fix 1, its kept branch B1 and the pushed head P (startFacts.Kept,
-// Branch, Pushed), from which its task tells it to take c2. The control, kept: with the seam
-// besideDeleteAsBefore the way 2 queues the deletion of fix 1's branches.
+// Branch, Pushed), from which its task tells it to take c2. Its red is the deletion the rule before
+// queued at every way 2 or 3 (afterFix): the way 2 then queues the deletion of fix 1's branches.
 func TestAWay2KeepsTheBranchesAndTheRerunTakesItsOwn(t *testing.T) {
 	const pushed = "4444444444444444444444444444444444444444"
 	pendingWay2 := func(t *testing.T, engine *Engine) *fixRig {
@@ -614,32 +577,44 @@ func TestAWay2KeepsTheBranchesAndTheRerunTakesItsOwn(t *testing.T) {
 			t.Fatalf("the rerun tester's start facts = %+v, want fix 1's kept branch %s at %s", facts, besideFix1(t, claim.RoleTester), pushed)
 		}
 	})
-	t.Run("the control: besideDeleteAsBefore deletes fix 1's branches at the way", func(t *testing.T) {
-		engine := returnEngine()
-		engine.besideDeleteAsBefore = true
-		assertStrings(t, "the deletions", pendingWay2(t, engine).deletions(), []string{"1 a fix 1"})
-	})
 }
 
-// A fix whose own branch cannot be named opens not at all (refuseFixName): with the seam
-// failFixName, which makes every name of a branch beside a fix fail, a CI check that fails at the
-// head of a task in reviewing that takes a fix starts no fix, its failure's row goes to the owner,
-// and the owner is told once, by one ci-failed notice. Its red is the refusal taken out, where the
-// same failure opens fix 1.
+// A fix whose own branch cannot be named opens not at all (refuseFixName). The issue's key, of 147
+// bytes, and its generation's byte leave a branch beside a fix no room for the task's part within
+// GitHub's 255-byte ref (claim.BesideTaskPrefix). With its task in reviewing, taking a fix, a CI
+// check that fails at its head starts no fix, its failure's row goes to the owner, and the owner is
+// told once, by one ci-failed notice naming the check and the head. Its red is the refusal taken
+// out of openFix, where the same failure opens fix 1.
 func TestAFixWhoseBranchCannotBeNamedIsRefused(t *testing.T) {
+	key := "LEGION-" + strings.Repeat("2", 140)
+	if _, err := claim.BesideBranch(key, 1, "a", 1, claim.RoleImplementer); err == nil {
+		t.Fatalf("a branch beside fix 1 of %s can be named, want none: the test would reach no refusal", key)
+	}
+	pool := migratedPool(t)
 	engine := returnEngine()
-	engine.failFixName = true
-	r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady, TriggerTesterPassed)
-	r.fails(fixHead, "k-ci")
-	assertStrings(t, "the fixes", r.fixes(), nil)
-	onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		row, err := r.engine.store.CIFailureAt(ctx, tx, issue.Key, issue.Generation, "a", "k-ci", fixHead)
-		if err == nil && (row == nil || row.WentTo != record.CIFailureToOwner) {
-			err = fmt.Errorf("k-ci's failure row = %+v, want the owner's", row)
-		}
-		return err
-	})
-	r.assertToldOwnerOnce("k-ci")
+	seedIssue(t, pool, record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: key,
+		Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	seedTreeLifecycle(t, pool, key)
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: statesRepo, Number: 42,
+		Branch: "legion/" + key, HeadSHA: fixHead, Failing: []string{}})
+	seedStepsPlan(t, pool, key, 1, "implementer", "tester", "reviewer")
+	firstStep(t, pool, engine, key)
+	move(t, pool, engine, key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, key, TriggerTesterPassed, "", record.PhaseRow{})
+	if issue := issueOf(t, pool, engine, key); issue.Phase != phase.Reviewing {
+		t.Fatalf("%s stands in %s, want reviewing", key, issue.Phase)
+	}
+
+	applyStates(t, pool, engine, key, statesRepo, fixHead, 1, ofSet(inCI(stateOf("k-ci", "no", "fail", "ci"), "failure"), fixChecks...))
+
+	assertStrings(t, "the fixes", outboxStrings(t, pool, `select fix::text from task_fixes where issue = $1`, key), nil)
+	assertStrings(t, "the failures", outboxStrings(t, pool, `select check_id || '@' || head || ' ' || went_to || ' ' || fix
+		from ci_failures where issue = $1 order by check_id`, key), []string{failureOf("k-ci", "owner", 0)})
+	told := noticesOf(t, pool, key, "ci-failed")
+	if len(told) != 1 || told[0].Role != claim.RoleArchitect {
+		t.Fatalf("the ci-failed notices = %+v, want one to the owner", told)
+	}
+	assertNames(t, "the ci-failed notice", told[0].Reason, []string{"k-ci", fixHead})
 }
 
 // The worker-died notice of a fix's failed claim names where the work beside the fix stands: the

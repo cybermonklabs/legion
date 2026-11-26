@@ -15,9 +15,8 @@ import (
 // (record.PlanTask.FixesCI), whatever plan the first step takes: the default rows it writes, an
 // owner's plan given at generation 0 and carried from its start, and an owner's plan given at the
 // run's own generation, which it keeps. Each plan reads false before the first step, as a plan
-// the release before stored does, so the flag is the first step's. The control, kept: with the
-// first step's mark left out (the seam noRunFixesCIMark) the carried plan's task reads false after
-// the first step, which the subtest asserts.
+// the release before stored does, so the flag is the first step's. Its red is the first step's
+// mark left out of takeFirstPlan: the carried plan's task then reads false after the first step.
 func TestARunThatStartsUnderThisReleaseTakesTheFlag(t *testing.T) {
 	t.Run("the default rows", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -46,22 +45,6 @@ func TestARunThatStartsUnderThisReleaseTakesTheFlag(t *testing.T) {
 
 		if task := taskOf(t, pool, engine, "LEGION-209"); task.Task != "a" || !task.FixesCI {
 			t.Fatalf("the carried task after the first step = %+v, want a with fixes_ci true", task)
-		}
-	})
-
-	t.Run("the control: with the mark left out the carried task reads false", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine := returnEngine()
-		engine.noRunFixesCIMark = true
-		recordedAt(t, pool, "LEGION-208", "LEGION-208")
-		mustTake(t, "version 1 at generation 0", applyFacts(t, pool, engine)(planID("LEGION-209", 0, 1),
-			ownersPlan(t, "LEGION-209", 0, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
-		recordedAt(t, pool, "LEGION-209", "LEGION-208")
-
-		firstStep(t, pool, engine, "LEGION-209")
-
-		if task := taskOf(t, pool, engine, "LEGION-209"); task.Task != "a" || task.FixesCI {
-			t.Fatalf("the carried task after a first step that left the mark out = %+v, want a with fixes_ci false", task)
 		}
 	})
 

@@ -187,9 +187,9 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 // none (defaultRows), a plan of another generation carried from its start (CarryPlan without
 // carried), and the generation's own rows kept as they are. Each task of the run then takes a fix
 // (MarkRunFixesCI): the run starts in this release, so a check that a CI job runs and that fails
-// at a task's head starts the task's first implementation step again beside its other steps. The
-// seam noRunFixesCIMark leaves the mark out. planFirstStep and the stop of a task before that step
-// (taskStopped) take the first plan through it.
+// at a task's head starts the task's first implementation step again beside its other steps.
+// planFirstStep and the stop of a task before that step (taskStopped) take the first plan through
+// it.
 func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issue, stored *record.StoredPlan, earlier []record.PlanVersion) error {
 	switch {
 	case stored == nil:
@@ -203,10 +203,8 @@ func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issu
 			return err
 		}
 	}
-	if !e.noRunFixesCIMark {
-		if err := e.store.MarkRunFixesCI(ctx, tx, issue.Key, issue.Generation); err != nil {
-			return err
-		}
+	if err := e.store.MarkRunFixesCI(ctx, tx, issue.Key, issue.Generation); err != nil {
+		return err
 	}
 	return e.tellPassedOver(ctx, tx, issue, earlier, stored.Version)
 }

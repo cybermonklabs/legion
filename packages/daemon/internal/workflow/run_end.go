@@ -268,11 +268,6 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 		if err != nil {
 			return err
 		}
-		if e.afterOldGenerationRunEnd != nil {
-			if err := e.afterOldGenerationRunEnd(ctx, tx, row); err != nil {
-				return err
-			}
-		}
 	}
 	if err := e.queueDeletesAfterOldRuns(ctx, tx, runs); err != nil {
 		return err
@@ -303,7 +298,7 @@ func (e *Engine) queueDeletesAfterOldRuns(ctx context.Context, tx pgx.Tx, runs *
 		if open {
 			continue
 		}
-		if err := e.queueBesideDelete(ctx, tx, issue, task.place.Task, 0); err != nil {
+		if err := e.queueBesideDelete(ctx, tx, issue, task.place.Task); err != nil {
 			return err
 		}
 	}
