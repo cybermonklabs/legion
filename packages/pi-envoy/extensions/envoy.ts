@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -112,11 +112,7 @@ import {
   natsConnectionOptions,
   natsDialBudget,
 } from "@legion/envoy-client/nats-connection";
-import {
-  type BrokerNatsCredential,
-  followNatsCredential,
-  keepNatsCredential,
-} from "@legion/envoy-client/nats-credential";
+import { followNatsCredential, keepNatsCredential } from "@legion/envoy-client/nats-credential";
 import {
   NoRelaySubjectError,
   refusedTopicsNoticeText,
@@ -211,7 +207,7 @@ import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger as hostLogger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
 import { encode } from "@toon-format/toon";
-import { connect, Events, type NatsConnection, StringCodec } from "nats";
+import { connect, Events, StringCodec } from "nats";
 import { name as packageName, version as packageVersion } from "../package.json" with {
   type: "json",
 };
@@ -745,9 +741,95 @@ function resolveSkillsDirectory(): string {
   return found;
 }
 const SKILLS_DIRECTORY = resolveSkillsDirectory();
+
+/** The host's logger, every message and field it is handed passing the scrub of the secrets this
+ *  process holds (`../src/scrubbed-host`). */
+const logger = scrubbedLogger(hostLogger);
+
+/**
+ * The variable a launch of an experiment arm's folder of texts names its extension root in (the
+ * daemon's `texts.RootVariable`). The root's `skills/` holds every skill of this plugin's with the
+ * folder's files laid over them, `skills/dispatch-first/SKILL.md` among them.
+ */
+const TEXTS_ROOT_VARIABLE = "LEGION_TEXTS_ROOT";
+
+/** Whether `path` is a `kind`. A path that cannot be read is neither. */
+function isEntry(path: string, kind: "file" | "directory"): boolean {
+  try {
+    const entry = statSync(path);
+    return kind === "file" ? entry.isFile() : entry.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The root the first load of this entry in the process took. Oh My Pi evaluates the module again
+ * in the same process for each session it creates without prepared extensions (each top-level
+ * session of an ACP host, a task it revives in its stored directory): `loadLegacyPiModule` imports
+ * `<path>?mtime=<tag>` at each call. Such a load finds the variable "", so the root lives on
+ * `globalThis`, as `SESSION_ROLE_LOGGED` does. Another process (a nested Oh My Pi) starts without it.
+ */
+const TEXTS_ROOT_TAKEN = Symbol.for("legion.pi-envoy.texts-root");
+
+interface GlobalTextsRoot {
+  [key: symbol]: string | undefined;
+}
+
+const textsRootStore = globalThis as unknown as GlobalTextsRoot;
+
+// The root outlives every instance of this entry in the process, so a suite clears it after a load
+// that ran under a caller's LEGION_TEXTS_ROOT. Production callers never call this.
+export function resetTextsRootForTests(): void {
+  delete textsRootStore[TEXTS_ROOT_TAKEN];
+}
+
+/**
+ * The launch's texts root, read at the process's first load: none with no variable, with "" and
+ * with a path that is no directory, which the log says once. A variable that names a root is then
+ * set to "", so an Oh My Pi this session starts reads Legion's own texts, in a PTY and outside one.
+ * A delete would reach `process.env` alone: the C environment the process started with keeps the
+ * value, and a child started in a PTY begins from it with the variables built from `Bun.env` laid
+ * over it. "" lies over the value there, as it does for DISPATCH_SESSION_ID
+ * (`bindDispatchSession`, and the row "a session with no id hands a PTY child no inherited
+ * DISPATCH_SESSION_ID" of envoy.test.ts, which measures it).
+ */
+function takeTextsRoot(): string | undefined {
+  const taken = textsRootStore[TEXTS_ROOT_TAKEN];
+  if (taken !== undefined) return taken;
+  const named = process.env[TEXTS_ROOT_VARIABLE];
+  if (named === undefined || named === "") return undefined;
+  process.env[TEXTS_ROOT_VARIABLE] = "";
+  if (isEntry(named, "directory")) {
+    textsRootStore[TEXTS_ROOT_TAKEN] = named;
+    return named;
+  }
+  logger.warn(
+    `envoy: ${TEXTS_ROOT_VARIABLE} names ${named}, which is no directory: this session reads the plugin's own skills and dispatch-first`
+  );
+  return undefined;
+}
+const TEXTS_ROOT = takeTextsRoot();
+
+/** `path` under the launch's texts root, when the root holds it as a `kind`; else undefined. */
+function fromTextsRoot(path: string, kind: "file" | "directory"): string | undefined {
+  if (TEXTS_ROOT === undefined) return undefined;
+  const entry = join(TEXTS_ROOT, path);
+  return isEntry(entry, kind) ? entry : undefined;
+}
+
+/** The skills directory `resources_discover` gives: the texts root's `skills/` where it holds one,
+ *  in place of this plugin's own. Oh My Pi ranks a skill of a `resources_discover` directory above
+ *  one of an extension root, so this plugin's own copy beside the root's would keep the plain name
+ *  of each skill the folder changes. */
+const DISCOVERED_SKILLS_DIRECTORY = fromTextsRoot("skills", "directory") ?? SKILLS_DIRECTORY;
 // Read once at load, so a plugin packed without the skill fails to load naming the file. A throw
 // inside the `context` handler would not do that: Oh My Pi catches it and sends the request anyway.
-const DISPATCH_FIRST_CONTEXT = readDispatchFirstContext(dispatchFirstSkillFile(SKILLS_DIRECTORY));
+// The texts root's copy, where it holds one, is the one read.
+const DISPATCH_FIRST_CONTEXT = readDispatchFirstContext(
+  fromTextsRoot(dispatchFirstSkillFile("skills"), "file") ??
+    dispatchFirstSkillFile(SKILLS_DIRECTORY)
+);
 
 // The `dispatch` command this plugin ships: `bin/` is one directory above this module in both
 // layouts (`<pkg>/dist/envoy.js` packed, `<pkg>/extensions/envoy.ts` in the repository). Oh My Pi
@@ -786,10 +868,6 @@ if (CONFIG_FILE.path !== null) process.env.ENVOY_CONFIG_FILE = CONFIG_FILE.path;
  */
 const timedDispatchClient = async (ms: number, session: () => string = currentSessionID) =>
   (await sessionDispatchClient(CONFIG_FILE, process.cwd(), { deadlineMs: ms }, session))?.client;
-
-/** The host's logger, every message and field it is handed passing the scrub of the secrets this
- *  process holds (`../src/scrubbed-host`). */
-const logger = scrubbedLogger(hostLogger);
 
 export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // Every notice, tool answer and tool error this extension gives the host passes the scrub of
@@ -1250,7 +1328,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     return read.entries;
   };
 
-  pi.on("resources_discover", async () => ({ skillPaths: [SKILLS_DIRECTORY] }));
+  pi.on("resources_discover", async () => ({ skillPaths: [DISCOVERED_SKILLS_DIRECTORY] }));
   registerEnvoyMessageRenderer(pi);
 
   // Refuses, saying why inbound messages are off (`inbound.off`: no NATS server, the seed's

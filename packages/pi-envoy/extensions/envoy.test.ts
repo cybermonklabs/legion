@@ -682,6 +682,7 @@ restoreEnvironment([
   "ENVOY_TMUX_PLACE_CACHE_MS",
   "ENVOY_SESSION_ROLE",
   "ENVOY_SESSION_ROLE_SESSION",
+  "LEGION_TEXTS_ROOT",
 ]);
 // The directory this process was started in. A row that chdirs elsewhere is put back in
 // `afterEach`, which a row aborted at Bun's own timeout reaches where its own `finally` does not.
@@ -737,14 +738,25 @@ let configDirectory = "";
 // cannot be static, as the entry reads `@oh-my-pi/pi-coding-agent` and so must load below the
 // stand-ins for it; it carries a query of its own so no row's instance is this one; and it sits
 // below the `original*` captures because loading the entry sets `PATH`, `DISPATCH_HOST` and
-// `ENVOY_CONFIG_FILE`, as every row's own load does, which `afterEach` puts back to what was
-// captured. Loading it here changes those three names whether or not a row of this file runs, so
-// the capture below puts them back as soon as the entry is loaded; every row's own load changes
+// `ENVOY_CONFIG_FILE`, and sets `LEGION_TEXTS_ROOT` to `""` when it names a root, as every row's
+// own load does, which `afterEach` puts back to what was captured. Loading it here changes those
+// four names whether or not a row of this file runs, so the capture below puts them back as soon
+// as the entry is loaded (and clears any texts root the load stored); every row's own load changes
 // them again.
-const restoreEntryLoad = captureEnvironment(["PATH", "DISPATCH_HOST", "ENVOY_CONFIG_FILE"]);
-const { resetNatsConnectForTests, resetSessionRoleLoggedForTests, setNatsConnectForTests } =
-  await import("./envoy.ts?nats-stand-in");
+const restoreEntryLoad = captureEnvironment([
+  "PATH",
+  "DISPATCH_HOST",
+  "ENVOY_CONFIG_FILE",
+  "LEGION_TEXTS_ROOT",
+]);
+const {
+  resetNatsConnectForTests,
+  resetSessionRoleLoggedForTests,
+  resetTextsRootForTests,
+  setNatsConnectForTests,
+} = await import("./envoy.ts?nats-stand-in");
 restoreEntryLoad();
+resetTextsRootForTests();
 // The slot the setter writes is the process's, not this file's, so the set and the reset are one
 // pair of hooks: a `bun test -t <pattern>` that selects no row of this file runs neither, where a
 // set at module scope would run and leave the next file of the same run dialling this stand-in.
@@ -778,7 +790,9 @@ beforeEach(() => {
   // decides for is another is unsaid again, so a row that reads it reads its own.
   delete process.env.ENVOY_SESSION_ROLE;
   delete process.env.ENVOY_SESSION_ROLE_SESSION;
+  delete process.env.LEGION_TEXTS_ROOT;
   resetSessionRoleLoggedForTests();
+  resetTextsRootForTests();
   process.env.HOME = "/nonexistent-home-for-envoy-tests";
   delete process.env.TMUX;
   delete process.env.TMUX_PANE;

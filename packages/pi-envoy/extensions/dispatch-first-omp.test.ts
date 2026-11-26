@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first";
 import {
@@ -13,6 +14,7 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 // The dispatch-first skill's insertion on the real Oh My Pi (src/dispatch-first.ts): Oh My Pi keeps
 // nothing a `context` handler returns, so what reaches the model can only be read off the requests
@@ -31,21 +33,43 @@ afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
 });
 
+const directories = temporaryDirectories("dispatch-first-omp-texts-");
+
 /** How many times a Messages request carries the injected skill. */
 function markers(request: Request): number {
   return JSON.stringify(request.body).split(DISPATCH_FIRST_MARKER).length - 1;
+}
+
+/** The names of the skill list a Messages request's system prompt carries, `- <name>: …` each
+ *  between `<skills>` and `</skills>`. */
+function skillNames(request: Request): string[] {
+  const system = request.body.system;
+  const text =
+    typeof system === "string"
+      ? system
+      : Array.isArray(system)
+        ? system.map((block) => (typeof block?.text === "string" ? block.text : "")).join("\n")
+        : "";
+  const [, after = ""] = text.split("<skills>\n");
+  const [list = ""] = after.split("</skills>");
+  return list
+    .split("\n")
+    .filter((line) => line.startsWith("- "))
+    .map((line) => line.slice(2).split(": ")[0] ?? "");
 }
 
 /**
  * Runs an ordinary session (the Envoy extension from this checkout, no Legion environment) through
  * `steps` on the real Oh My Pi, against one stand-in that is the model gateway, the Envoy listener
  * and, with `dispatch`, Dispatch. Each prompt is answered `Answer N.`, each compaction summary call
- * with `summary`. Returns the conversation's Messages requests and the summary calls, in order.
+ * with `summary`. With `textsRoot`, the session is launched as a folder of texts launches it: the
+ * root is an `--extension` ahead of the Envoy extension and is named in LEGION_TEXTS_ROOT. Returns
+ * the conversation's Messages requests and the summary calls, in order.
  */
 async function runSession(
   binary: string,
   steps: readonly Step[],
-  options: { readonly dispatch: boolean; readonly summary?: string }
+  options: { readonly dispatch: boolean; readonly summary?: string; readonly textsRoot?: string }
 ): Promise<{ readonly turns: Request[]; readonly summaries: Request[] }> {
   const { home, workspace, sessions } = await ompRoot(binary, "dispatch-first-omp-", cleanup);
 
@@ -94,14 +118,20 @@ async function runSession(
   const rpc = spawnRpc(
     binary,
     {
-      extensions: [path.join(import.meta.dir, "envoy.ts")],
+      extensions: [
+        ...(options.textsRoot === undefined ? [] : [options.textsRoot]),
+        path.join(import.meta.dir, "envoy.ts"),
+      ],
       home,
       workspace,
       sessions,
       env: {
         ENVOY_URL: base,
         ...(options.dispatch ? { DISPATCH_URL: base, DISPATCH_TOKEN } : {}),
+        ...(options.textsRoot === undefined ? {} : { LEGION_TEXTS_ROOT: options.textsRoot }),
       },
+      // The skill list is what shows whether a copy of the plugin's own took the plain name.
+      ...(options.textsRoot === undefined ? {} : { skills: true as const }),
       onFrame: (frame) => {
         if (settle?.(frame)) {
           settle = undefined;
@@ -185,4 +215,48 @@ test.skipIf(omp === undefined && !onActions)(
     expect(markers(session.turns[0] as Request)).toBe(0);
   },
   120_000
+);
+
+// A launch of an arm's folder of texts builds one extension root, its `skills/` holding the
+// folder's dispatch-first, and names it in LEGION_TEXTS_ROOT. The request carries that text once,
+// and the skill list holds no alias of the skill: a copy of the plugin's own beside the root's would
+// keep the plain name and leave the root's as `<namespace>/dispatch-first`.
+test.skipIf(omp === undefined && !onActions)(
+  "a session whose launch names a root carries the root's dispatch-first once",
+  async () => {
+    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+    const root = directories("root");
+    mkdirSync(path.join(root, "skills", "dispatch-first"), { recursive: true });
+    writeFileSync(
+      path.join(root, "skills", "dispatch-first", "SKILL.md"),
+      [
+        "---",
+        "name: dispatch-first",
+        'description: "Use when a session has the dispatch command, as the arm words it."',
+        "---",
+        "",
+        "# The arm's dispatch first",
+        "",
+        "ARM-DISPATCH-FIRST-MARKER: search before you act, as this arm words it.",
+        "",
+      ].join("\n")
+    );
+    const session = await runSession(omp, [{ prompt: "First question." }], {
+      dispatch: true,
+      textsRoot: root,
+    });
+
+    // With skills on, Oh My Pi first sends one request with no system prompt for each skill, which
+    // compresses its description into a routing hint; the conversation's requests carry one.
+    const conversation = session.turns.filter((request) => request.body.system !== undefined);
+    expect(conversation).toHaveLength(1);
+    const first = conversation[0] as Request;
+    expect(markers(first)).toBe(1);
+    const messages = JSON.stringify(first.body.messages);
+    expect(messages.split("ARM-DISPATCH-FIRST-MARKER")).toHaveLength(2);
+    expect(messages).not.toContain("# Dispatch first");
+    const names = skillNames(first);
+    expect(names.filter((name) => name === "dispatch-first")).toEqual(["dispatch-first"]);
+    expect(names.filter((name) => name.includes("/dispatch-first"))).toEqual([]);
+  }
 );

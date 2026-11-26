@@ -494,7 +494,9 @@ export interface Rpc {
  * module lives in another package than its callers (pass `path.join(import.meta.dir, …)`) — no
  * skills, rules, LSP or title call, its transcripts under `sessions`, `home` as HOME and `bin`, when
  * given, first on PATH. `args` go on the command line after those flags, which is where a second
- * life of one pane names `--resume <session>`. `onFrame` gets each RPC frame omp prints, in order.
+ * life of one pane names `--resume <session>`. `skills` leaves `--no-skills` off, so the session
+ * loads the skills its extensions give and a request carries the skill list a case reads.
+ * `onFrame` gets each RPC frame omp prints, in order.
  * Both of omp's streams are read to the end, so a full pipe never blocks it, and the child is
  * killed at cleanup.
  */
@@ -508,6 +510,7 @@ export function spawnRpc(
     readonly bin?: string;
     readonly env: Record<string, string>;
     readonly args?: readonly string[];
+    readonly skills?: true;
     readonly onFrame: (frame: object) => void;
   },
   cleanup: Cleanup
@@ -559,16 +562,18 @@ export function spawnRpc(
   };
 }
 
-/** The flags `spawnRpc` and `spawnInteractive` start omp with: only `extensions` loaded. */
+/** The flags `spawnRpc` and `spawnInteractive` start omp with: only `extensions` loaded, and no
+ *  skills unless `skills` asks for them. */
 function ompFlags(options: {
   readonly extensions: readonly string[];
   readonly workspace: string;
   readonly sessions: string;
+  readonly skills?: true;
 }): string[] {
   return [
     "--no-extensions",
     ...options.extensions.flatMap((file) => ["-e", file]),
-    "--no-skills",
+    ...(options.skills === true ? [] : ["--no-skills"]),
     "--no-rules",
     "--no-lsp",
     "--no-title",

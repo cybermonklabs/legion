@@ -127,9 +127,10 @@ itself, whose tests import its sources by relative path.
   no value is captured as unset and the restore deletes it again; setting it to the empty string
   instead would leave the next reader a value its caller never had. A file that loads a plugin entry
   captures the names that entry writes above the import that loads it:
-  `packages/pi-envoy/extensions/envoy.ts` puts its own `bin/` first on `PATH`, sets `DISPATCH_HOST`
-  and picks `ENVOY_CONFIG_FILE` when its module loads, and a capture below that import would put
-  back what the entry wrote rather than what the caller had. Never restore by replacing the whole
+  `packages/pi-envoy/extensions/envoy.ts` puts its own `bin/` first on `PATH`, sets `DISPATCH_HOST`,
+  picks `ENVOY_CONFIG_FILE` and sets `LEGION_TEXTS_ROOT` to `""` when it names a root when its
+  module loads, and a capture below that import would put back what the entry wrote rather than
+  what the caller had. Never restore by replacing the whole
   object (`process.env = { ...saved }`): that swaps the runtime's environment for a plain one, and
   after it `process.env !== Bun.env`, a write reaches neither `Bun.env` nor a child process the test
   spawns, and the names the test deleted stay deleted in the real environment. Under `--parallel`,
