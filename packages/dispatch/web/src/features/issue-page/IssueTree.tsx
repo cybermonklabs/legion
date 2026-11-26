@@ -545,13 +545,14 @@ export function IssueTree({
   // than the room under the band went to its top just under the band and took the line back
   // under it, as it did again each time it grew - rows of 1,634 and 1,464 px left the line at
   // 15 to 59 and at -53 to 59 px under a band 51 px tall. Until the reader's next act the row
-  // places nothing of its own (`zoomTo`). A zoom back out to the issue draws the whole outline
-  // again around the row that kept the focus through it (`zoomKept`), which placed nothing of its
-  // own: at 1440 by 900 px on a long issue it stood 2,000 to 40,000 px below the window until
-  // the next key. It is brought on screen and held as the row `z` leaves the focus on is
-  // (below); a row the zoom moved the focus to is another element, which placed itself. This runs
-  // after the effect above, which focuses the row a zoom key asked for, so the row it reads is
-  // that one.
+  // places nothing of its own (`zoomTo`), and a row the zoom left whole on screen stays where it
+  // was as the line above it grows (`keepPlacedAsLineGrows`). A zoom back out to the issue draws
+  // the whole outline again around the row that kept the focus through it (`zoomKept`), which
+  // placed nothing of its own: at 1440 by 900 px on a long issue it stood 2,000 to 40,000 px
+  // below the window until the next key. It is brought on screen and held as the row `z` leaves
+  // the focus on is (below); a row the zoom moved the focus to is another element, which placed
+  // itself. This runs after the effect above, which focuses the row a zoom key asked for, so the
+  // row it reads is that one.
   const zoomHold = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => zoomHold.current?.abort(), []);
   useEffect(() => {
@@ -566,11 +567,14 @@ export function IssueTree({
     }
     zoomLanding.current = false;
     zoomHold.current?.abort();
-    zoomHold.current = abortOnReaderAct(() => setUnplaced(undefined));
+    const hold = abortOnReaderAct(() => setUnplaced(undefined));
+    zoomHold.current = hold;
     const line = crumbLine.current;
     if (line !== null) bringOnScreen(line);
     const row = focusedRowIn(body.current);
-    if (row !== null && !firstLineOnScreen(row)) bringOnScreen(row);
+    if (row === null) return;
+    if (!wholeOnScreen(row.querySelector("[data-node-bullet]") ?? row)) bringOnScreen(row);
+    else if (line !== null && wholeOnScreen(row)) keepPlacedAsLineGrows(row, line, hold.signal);
   }, [zoomMade]);
 
   // `z` unfolds every row the reader folded above the focused row and moves no focus, so
@@ -1396,17 +1400,35 @@ function focusedRowIn(tree: HTMLElement | null): HTMLElement | null {
   return row !== null && tree?.contains(row) === true ? row : null;
 }
 
-/** Whether the first line of `row` - the line its bullet stands on - is whole on screen: below
- *  the band that stays at the top and above the box at the foot, by the heights the page
- *  publishes for them, as `bringOnScreen` reads them. */
-function firstLineOnScreen(row: HTMLElement): boolean {
-  const line = (
-    row.querySelector<HTMLElement>("[data-node-bullet]") ?? row
-  ).getBoundingClientRect();
+/** Whether `element` is whole on screen: below the band that stays at the top and above the box
+ *  at the foot, by the heights the page publishes for them, as `bringOnScreen` reads them. The
+ *  zoom reads a row's first line by the element its bullet stands on. */
+function wholeOnScreen(element: Element): boolean {
+  const box = element.getBoundingClientRect();
   const published = getComputedStyle(document.documentElement);
   const band = Number.parseFloat(published.getPropertyValue(IDENTITY_HEIGHT_PROPERTY)) || 0;
   const foot = Number.parseFloat(published.getPropertyValue(FOOT_HEIGHT_PROPERTY)) || 0;
-  return line.top >= band && line.bottom <= window.innerHeight - foot;
+  return box.top >= band && box.bottom <= window.innerHeight - foot;
+}
+
+/**
+ * Keeps `row`, which a zoom placed whole on screen under its crumb line `line`, where it was
+ * placed while the line grows, until `signal` ends the hold at the reader's next act. The line
+ * names each node above the row by its words, which can take it to a second line of text once
+ * the zoom has placed the row, and the row drawn under it moved down by as much: at 390 by 664 px
+ * the line went from 28 to 60 px and took a row of 230 px placed whole 20 px past the window's
+ * foot, which moved what the page had drawn. The page is scrolled by what the row moved, so the
+ * row stays where the reader saw it whole and the line grows above it.
+ */
+function keepPlacedAsLineGrows(row: HTMLElement, line: HTMLElement, signal: AbortSignal): void {
+  if (typeof ResizeObserver === "undefined") return;
+  const placed = row.getBoundingClientRect().top;
+  const grown = new ResizeObserver(() => {
+    const moved = row.getBoundingClientRect().top - placed;
+    if (row.isConnected && moved !== 0) window.scrollBy({ top: moved });
+  });
+  grown.observe(line);
+  signal.addEventListener("abort", () => grown.disconnect());
 }
 
 /**

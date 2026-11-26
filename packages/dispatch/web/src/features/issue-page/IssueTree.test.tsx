@@ -6162,6 +6162,78 @@ test("a zoom into a row taller than the window places its crumb line, and the ro
   }
 });
 
+// At 390 by 664 a zoom from just under the band placed its crumb line and a check of 230 px under
+// it whole on screen, and then the line, which names the check's requirement by its words, went
+// from one line of text to two and took the row 20 px past the window's foot: the page moved a
+// row it had drawn. A row the zoom placed whole stays where it was placed as the line grows above
+// it, until the reader's next act, after which the line's growth moves it as it moves any row.
+// happy-dom lays nothing out, so the boxes are given, the row 4 px under the line and both moved
+// by each scroll, under a band of 60 px; each size observer still observing is called by hand
+// once the line grows.
+test("a zoom keeps the row it placed whole on screen where it stands as its crumb line grows", async () => {
+  setViewport(390);
+  const user = userEvent.setup();
+  const band = 60;
+  const rowHeight = 230;
+  let scrolledTo = 0;
+  let lineHeight = 28;
+  // The line's top down the page, which leaves the row's foot 12 px above the window's while the
+  // line is one line of text tall.
+  const lineTop = window.innerHeight - 12 - rowHeight - 4 - lineHeight;
+  const rowTop = () => lineTop + lineHeight + 4 - scrolledTo;
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    if (this.matches("p") && this.querySelector("[data-crumb]") !== null) {
+      return new DOMRect(0, lineTop - scrolledTo, 390, lineHeight);
+    }
+    const row = this.closest<HTMLElement>("[data-node-row]");
+    if (row?.dataset.nodeId !== "comment-1") return new DOMRect();
+    return this === row
+      ? new DOMRect(0, rowTop(), 390, rowHeight)
+      : this.matches("[data-node-bullet]")
+        ? new DOMRect(0, rowTop() + 2, 18, 24)
+        : new DOMRect();
+  });
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(((options: ScrollToOptions) => {
+    scrolledTo += options.top ?? 0;
+  }) as typeof window.scrollBy);
+  const sizes = sizesByHand();
+  const published = document.documentElement.style;
+  published.setProperty(IDENTITY_HEIGHT_PROPERTY, `${band}px`);
+  const whole = () => rowTop() >= band && rowTop() + rowHeight <= window.innerHeight;
+  try {
+    const view = renderTree(twoCommentsTree());
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard(".");
+    await waitFor(() =>
+      expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull()
+    );
+    expect(whole(), "the zoom left the row, which fits, off the screen").toBe(true);
+    const placed = rowTop();
+
+    // The line takes a second line of text, which pushes the row under it down 32 px.
+    lineHeight = 60;
+    await sizes.resized();
+    expect(rowTop(), "the row the zoom placed whole moved as its crumb line grew").toBe(placed);
+    expect(whole(), "the line's growth took the row off the screen").toBe(true);
+    expect(lineTop - scrolledTo, "the line went under the band").toBeGreaterThanOrEqual(band);
+
+    // The reader presses a key that moves no focus: the line growing again moves the row.
+    await user.keyboard("{Shift}");
+    const line = view.container.querySelector("[data-crumb]")?.parentElement ?? undefined;
+    expect(line).toBeDefined();
+    lineHeight = 92;
+    await sizes.resized(line);
+    expect(rowTop(), "the row was still held once the reader had acted").toBe(placed + 32);
+  } finally {
+    sizes.restore();
+    boxes.mockRestore();
+    scrolled.mockRestore();
+    published.removeProperty(IDENTITY_HEIGHT_PROPERTY);
+  }
+});
+
 // `.` zooms into a row of the outline's top level and `,` draws the whole outline again with the
 // focus still on that row: it took no new focus, so nothing of its own placed it, and a zoom back
 // out to the issue placed nothing either - at 1440 by 900 on a long issue the row stood 2,000 to
