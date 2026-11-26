@@ -51,12 +51,13 @@ func (s *Server) handlingFor(grant requests.AirlockConnection, host string, port
 //     in grant id order, that binds the host and whose placeholder it carries;
 //   - a request that carries a placeholder of none of them is decided for a first candidate, and
 //     nothing is swapped into it. Where own binds the host, that is own's first candidate, and
-//     the request is never forwarded: it reached the read only because a header holds a whole
-//     placeholder, which no grant took, so it still carries that placeholder after the swap and
-//     is refused 403 PLACEHOLDER_NOT_SWAPPED (leftoverPlaceholder), unless an earlier check of
-//     serveBound refused it first. Where own binds nothing here, it is the first candidate of the
-//     first other grant that binds the host, and a request that holds no placeholder anywhere
-//     goes on with nothing swapped, so the entry's rules bound it as they bound any request.
+//     it reached the read only because a header holds a whole placeholder no grant took.
+//     serveBound first removes Proxy-Authorization and Proxy-Connection, then refuses it 403
+//     PLACEHOLDER_NOT_SWAPPED (leftoverPlaceholder) if the placeholder remains in what that scan
+//     reads. A placeholder in only one of those proxy-only headers is removed before forwarding.
+//     Where own binds nothing here, it is the first candidate of the first other grant that binds
+//     the host, and a request that holds no placeholder anywhere goes on with nothing swapped, so
+//     the entry's rules bound it as they bound any request.
 //
 // One request is still handled for one (name, slot) pair of one grant: a request that carries
 // placeholders of two grants is handled for own when one of them is own's, and otherwise for the
