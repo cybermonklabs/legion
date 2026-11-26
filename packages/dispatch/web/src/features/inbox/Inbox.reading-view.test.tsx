@@ -12,7 +12,7 @@ import userEvent from "@testing-library/user-event";
 import { pickIn } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type { InboxRow, Issue } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { appKeymap } from "../shell/keymap";
@@ -971,6 +971,70 @@ test("below 1280 px an open row the reader's own Assign to me left in the list, 
     await waitFor(() => expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument());
     expect(address()).toBe("/?assignee=everyone");
     expect(screen.getByText("This item left your Inbox.")).toBeTruthy();
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// A write marks its ask as the reader's own while it is pending or failed (`AskWrites.live`): a
+// refused Assign to me is still the reader's write, so the row leaving after it is their own
+// move, and the view moves on as it does for a write that is out.
+test("below 1280 px an open row whose own Assign to me was refused, withdrawn later, moves the view to the next row and says nothing left", async () => {
+  const user = userEvent.setup();
+  const orphan = (id: string, key: string, question: string) =>
+    issueAsk(
+      { id, issue: { assignee: null, key, title: "Nobody's issue" }, issue_key: key, question },
+      null
+    );
+  const rows = [
+    orphan("ask-oa", "CORE-3", "First orphan?"),
+    orphan("ask-ob", "CORE-4", "Second orphan?"),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  // Everyone: no assignee narrowing, so the question stays listed through the write.
+  const { queryClient, unmount } = renderInbox("/?assignee=everyone");
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-oa", "ask-ob"]));
+    await user.click(shortRow("ask-oa"));
+    const view = await screen.findByTestId("inbox-reading-view");
+    await user.unhover(shortRow("ask-oa"));
+    await user.click(within(view).getByRole("button", { name: "Assign CORE-3 to me" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-3", { assignee: "alice" }, keyedAttempt)
+    );
+    await act(async () => {
+      save.reject(
+        new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-3 is closed; reopen it first" })
+      );
+      await save.promise.catch(() => undefined);
+    });
+    // Refused: the question is still listed and open, with the reason on it.
+    expect(await within(view).findByRole("alert")).toHaveTextContent(
+      "CORE-3 is closed; reopen it first"
+    );
+    expect(address()).toBe("/?item=ask-oa&assignee=everyone");
+
+    // The agent then withdraws it. The refused write is still the reader's, so the view moves to
+    // the next row and says nothing left.
+    served = [rows[1] as InboxRow];
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+    });
+    await waitFor(() => expect(address()).toBe("/?item=ask-ob&assignee=everyone"));
+    expect(screen.getByTestId("inbox-reading-view").getAttribute("data-inbox-reading-row")).toBe(
+      "ask-ob"
+    );
+    expect(screen.queryByText("This item left your Inbox.")).toBeNull();
   } finally {
     unmount();
     patchIssue.mockRestore();

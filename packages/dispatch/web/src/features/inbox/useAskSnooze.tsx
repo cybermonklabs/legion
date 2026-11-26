@@ -47,6 +47,9 @@ function snoozeAsk({ askId }: AskSnoozePress): string {
 
 /** Every row's snooze write in one Inbox (`useAskSnoozeWrites`). */
 export interface AskSnoozeWrites {
+  /** The asks whose snooze write is out or failed, which the Inbox marks as the reader's own
+   *  writes (`AskWrites.live`). */
+  readonly live: ReadonlySet<string>;
   /** The asks whose snooze write is out. The Inbox keeps each one's row in the band the reader
    *  saw it in until the write lands (`heldRow`). A refused or stopped write is not out, so the
    *  next read of the Inbox places its row. */
@@ -132,6 +135,7 @@ export function useAskSnoozeWrites(): AskSnoozeWrites {
   });
   return useMemo(
     () => ({
+      live: writes.live,
       of: (askId: string): AskSnoozeWrite => {
         const entry = writes.newest.get(askId);
         return {

@@ -1138,14 +1138,17 @@ function InboxBody({
   const snoozeWrites = useInboxWrites(AskSnoozeContext);
   const snoozing = snoozeWrites.out;
   /** The asks the reader wrote to from this list - a snooze, Assign to me, a hand-on, a bulk
-   *  snooze - by the render their write ended after, `null` while it is out. A row such a write
-   *  takes out of the list is the reader's own move, and it leaves no later than the render after
-   *  the write ends: each write moves the Inbox read itself as it is made, and a row its write
-   *  held in the list is let go as it ends. Once the selection has settled on that render the
-   *  mark is dropped (the effect after `usePaneSelection`), so a row the write left in the list
-   *  that later leaves on its own - withdrawn, resolved - is said to have left. The writes are
-   *  this Inbox's own (`InboxAskWrites`), so the marks are read off them after each commit
-   *  (below), not told by each control that pressed. */
+   *  snooze - by the render their write ended after, `null` while it is live: a snooze, an
+   *  Assign to me or a hand-on while it is out or failed (`AskWrites.live`), so one Dispatch
+   *  refused or the reader stopped is still theirs, and the bar's snooze until it settles,
+   *  whatever Dispatch answers. A row such a write takes out of the list is the reader's own
+   *  move, and it leaves no later than the render after the write ends: each write moves the
+   *  Inbox read itself as it is made, and a row its write held in the list is let go as it ends.
+   *  Once the selection has settled on that render the mark is dropped (the effect after
+   *  `usePaneSelection`), so a row the write left in the list that later leaves on its own -
+   *  withdrawn, resolved - is said to have left. The writes are this Inbox's own
+   *  (`InboxAskWrites`), so the marks are read off them after each commit (below), not told by
+   *  each control that pressed. */
   const writtenHere = useRef<Map<string, number | null>>(new Map());
   /** Which render this is: an ended mark is dropped after the first render made after it ended. */
   const renders = useRef(0);
@@ -1210,8 +1213,8 @@ function InboxBody({
   // reader's filters hide, and every ask block of a document open in the column, not only the
   // selected one. Keeping one of those would pull a question the filters hide into the list. So
   // a write keeps its ask's row only among `presented`, the rows this list last drew.
-  const assignsOut = useInboxWrites(AskAssignWritesContext).out;
-  const handOnsOut = useInboxWrites(AskHandOnWritesContext).out;
+  const { live: assignsLive, out: assignsOut } = useInboxWrites(AskAssignWritesContext);
+  const { live: handOnsLive, out: handOnsOut } = useInboxWrites(AskHandOnWritesContext);
   const answersOut = useInboxWrites(AskAnswerWritesContext).out;
   const declinesOut = useInboxWrites(AskDeclineWritesContext).out;
   const clarificationsOut = useInboxWrites(AskClarificationWritesContext).out;
@@ -1367,16 +1370,17 @@ function InboxBody({
     showDismissed,
   });
   // The marks of the reader's own writes (`writtenHere`), read off this Inbox's writes after each
-  // commit: an ask with a snooze, an Assign to me or a hand-on out, or under the bar's snooze, is
-  // marked while that write is out, and a mark whose write is no longer out ends at this render.
-  // A layout effect declared before the selection's own, so a commit that takes a row away has
-  // its marks before the selection reads them (`usePaneSelection`).
+  // commit: an ask with a snooze, an Assign to me or a hand-on out or failed, or under the bar's
+  // snooze while it is pending, is marked while that lasts, and a mark whose write no longer
+  // marks it ends at this render. A layout effect declared before the selection's own, so a
+  // commit that takes a row away has its marks before the selection reads them
+  // (`usePaneSelection`).
   useLayoutEffect(() => {
-    const out = new Set([...snoozing, ...bulkSnoozing, ...assignsOut, ...handOnsOut]);
-    for (const id of out) writtenHere.current.set(id, null);
+    const live = new Set([...snoozeWrites.live, ...bulkSnoozing, ...assignsLive, ...handOnsLive]);
+    for (const id of live) writtenHere.current.set(id, null);
     let ended = false;
     for (const [id, at] of writtenHere.current) {
-      if (at !== null || out.has(id)) continue;
+      if (at !== null || live.has(id)) continue;
       writtenHere.current.set(id, thisRender);
       ended = true;
     }
