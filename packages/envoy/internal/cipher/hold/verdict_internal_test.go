@@ -75,8 +75,8 @@ func TestVerdictReadsEachCheckInTheOneOrder(t *testing.T) {
 // endpoint must inspect the error to find refusedByDispatch.
 func TestVerdictNamesTheBrokerRefusalApartFromOtherUncheckableAnswers(t *testing.T) {
 	err := fmt.Errorf("%w: ada@example.com: %w", errUncheckable, dispatchread.ErrBrokerRefused)
-	if got := kindOf(err); got == Uncheckable {
-		t.Fatalf("the Kind of Dispatch refusing the broker's account = Uncheckable; want its own Kind for refusedByDispatch")
+	if got := kindOf(err); got != BrokerRefused {
+		t.Fatalf("the Kind of Dispatch refusing the broker's account = %v, want BrokerRefused for refusedByDispatch", got)
 	}
 }
 
