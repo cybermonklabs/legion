@@ -110,15 +110,15 @@
  *   against the stand-ins of `outside-agent-public.test.ts`, each of which ended by itself, in two
  *   build pods of 10 CPUs under gVisor on 2026-11-26. In each pod the file's two rows, six runs a
  *   pass, ran one pass after another beside the whole lane looping, for 30 minutes, then 25 more
- *   with ten fork-exec loops beside them too. At the tree that added this bound (run
- *   20261126T101920Z-990aaf97f9e8-4fdc), 540 runs read medians, by row and stretch, of 20.9 s to
- *   21.6 s and at most 67.59 s. With the change that ends the stand-in's relay socket at the leg's
- *   first trade after its refusal (run 20261126T123513Z-f04c01c78a5f-3aba), 468 runs read medians
- *   of 25.6 s to 26.9 s and at most 65.78 s. Each run starts the stand-in probe, a Bun process,
- *   about 24 times and sleeps 10 s between two trades. Under `short` one such run was killed at
- *   60.08 s in a whole-suite run at 62602165bd9e the same day, while five others of the same file
- *   took 23.4 s to 33.2 s. Three times 67.59 s, rounded up to the minute, is 240 s: 3.55 times
- *   the larger maximum.
+ *   with ten fork-exec loops beside them too. At #5655's head, 990aaf97f9e8, which still ran these
+ *   rows under `short` (run 20261126T101920Z-990aaf97f9e8-4fdc), 540 runs read medians, by row and
+ *   stretch, of 20.9 s to 21.6 s and at most 67.59 s. At a tree of this bound with open #5697's
+ *   change, which ends the stand-in's relay socket at the leg's first trade after its refusal (run
+ *   20261126T123513Z-f04c01c78a5f-3aba), 468 runs read medians of 25.6 s to 26.9 s and at most
+ *   65.78 s. A complete run starts the stand-in probe, a Bun process, 26 times and sleeps 10 s
+ *   between two trades. Under `short` one such run was killed at 60.08 s in a whole-suite run at
+ *   62602165bd9e the same day, while five others of the same file took 23.4 s to 33.2 s. Three
+ *   times 67.59 s, rounded up to the minute, is 240 s: 3.55 times the larger maximum.
  * - `stuckOnPurpose`, against 309.8 ms: the slowest of 200 shells that wrote 252 lines to stdout,
  *   one to stderr, then slept, started eight at once under six busy loops on a two-CPU pod on
  *   2026-11-24. The diagnostic control below lets its bound pass after five seconds, which is
