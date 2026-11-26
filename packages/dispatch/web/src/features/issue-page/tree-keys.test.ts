@@ -173,15 +173,20 @@ test("a node drawn under two requirements gives every row below it a key of its 
   expect(new Set(open).size).toBe(open.length);
   expect(open).toContain("CORE-1>spec#b-r1>verification-md#b-c1>res1");
   expect(open).toContain("CORE-1>spec#b-r2>verification-md#b-c1>res1");
-  // Folded by the reader, the one node is folded under each copy, and each copy's row keeps a
-  // key of its own.
-  const folded = treeRows(root, withFold(NOTHING_OPENED, "res1", false)).map(rowKeyOf);
+  // Folded by the reader under one copy, that copy's row alone is folded, and each copy's row
+  // keeps a key of its own.
+  const folded = treeRows(
+    root,
+    withFold(NOTHING_OPENED, "CORE-1>spec#b-r1>verification-md#b-c1>res1", false)
+  ).map(rowKeyOf);
   expect(new Set(folded).size).toBe(folded.length);
   expect(folded.filter((key) => key.endsWith(">res1"))).toEqual([
     "CORE-1>spec#b-r1>verification-md#b-c1>res1",
     "CORE-1>spec#b-r2>verification-md#b-c1>res1",
   ]);
-  expect(folded.some((key) => key.endsWith(">note"))).toBe(false);
+  expect(folded.filter((key) => key.endsWith(">note"))).toEqual([
+    "CORE-1>spec#b-r2>verification-md#b-c1>res1>note",
+  ]);
 });
 
 // R11: a reader who zooms into a node reads the tree from that node (`IssueTree.tsx`), and what

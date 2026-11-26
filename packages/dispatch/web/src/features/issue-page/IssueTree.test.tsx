@@ -7955,6 +7955,111 @@ test("the reader folds a node by its control, Left or o, unfolds it by the contr
   view.unmount();
 });
 
+/** An issue whose one check serves seven statements, built under each as `issue-tree.ts` builds a
+ *  check that serves several: seven rows of one node, each holding the check's four results and
+ *  the note under each, eight nodes. */
+function checkServingSeven(): TreeNode {
+  const check = (): TreeNode =>
+    node({
+      children: Array.from({ length: 4 }, (_, at) =>
+        node({
+          children: [node({ id: `note-${at + 1}`, type: "callout" })],
+          held: 1,
+          id: `result-${at + 1}`,
+          type: "result",
+        })
+      ),
+      held: 8,
+      id: "verification-md#b-c1",
+      state: "passed",
+      type: "check",
+    });
+  return node({
+    children: Array.from({ length: 7 }, (_, at) =>
+      node({
+        children: [check()],
+        held: 9,
+        id: `spec#b-r${at + 1}`,
+        statement: true,
+        type: "requirement",
+      })
+    ),
+    id: KEY,
+    type: "issue",
+  });
+}
+
+// R6, R11: a node is folded only where the reader folds it, and a fold is the reader's act on one
+// row. A check that serves seven statements is drawn under each, seven rows of one node: a press
+// on one row's fold control folds that row alone, its count says how many rows it hides, and the
+// press that unfolds it adds exactly that many. Left, Right and `o` on one row do the same to that
+// row alone. Kept by the node, one press folded all seven rows, and unfolding added seven times
+// the count.
+test("a press on the fold control of one of the seven rows of a check that serves seven statements folds that row alone", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(checkServingSeven());
+  const { container } = view;
+  const checks = () => rowsFor(container, "verification-md#b-c1");
+  const expanded = () => checks().map((row) => row.getAttribute("aria-expanded"));
+  const control = () => checks()[3]?.querySelector<HTMLElement>("button[data-node-bullet]");
+  await waitFor(() => expect(focusedRow(container)).toBe("spec#b-r1"));
+  expect(checks()).toHaveLength(7);
+
+  await user.click(control() as HTMLElement);
+  await waitFor(() => expect(checks()[3]?.getAttribute("aria-expanded")).toBe("false"));
+  expect(expanded(), "the press on one row's fold control folded other rows of the check").toEqual([
+    "true",
+    "true",
+    "true",
+    "false",
+    "true",
+    "true",
+    "true",
+  ]);
+  const count = checks()[3]?.querySelector("[data-node-count]")?.textContent ?? "";
+  expect(count).toBe(`8 ${CONTROL_LABELS.folded_rows}`);
+  const before = container.querySelectorAll("[data-node-row]").length;
+  await user.click(control() as HTMLElement);
+  await waitFor(() => expect(checks()[3]?.getAttribute("aria-expanded")).toBe("true"));
+  expect(
+    container.querySelectorAll("[data-node-row]").length - before,
+    "the unfolding press added other than the rows the folded row counted"
+  ).toBe(Number.parseInt(count, 10));
+
+  // Left, Right and `o` on one row of the check fold and unfold that row alone.
+  const sixth = checks()[5];
+  await act(async () => sixth?.focus());
+  await user.keyboard("{ArrowLeft}");
+  await waitFor(() => expect(checks()[5]?.getAttribute("aria-expanded")).toBe("false"));
+  expect(expanded(), "Left on one row of the check folded other rows of it").toEqual([
+    "true",
+    "true",
+    "true",
+    "true",
+    "true",
+    "false",
+    "true",
+  ]);
+  await user.keyboard("{ArrowRight}");
+  await waitFor(() => expect(checks()[5]?.getAttribute("aria-expanded")).toBe("true"));
+  expect(expanded(), "Right on one row of the check unfolded other rows of it").not.toContain(
+    "false"
+  );
+  await user.keyboard("o");
+  await waitFor(() => expect(checks()[5]?.getAttribute("aria-expanded")).toBe("false"));
+  expect(expanded(), "o on one row of the check folded other rows of it").toEqual([
+    "true",
+    "true",
+    "true",
+    "true",
+    "true",
+    "false",
+    "true",
+  ]);
+  view.unmount();
+});
+
 // A key that goes to a node under a branch the reader folded unfolds that branch, and the node
 // takes the focus.
 test("q to a question under a branch the reader folded opens that branch and lands on the question", async () => {
