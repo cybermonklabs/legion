@@ -116,6 +116,7 @@ export type DispatchReadingSurface =
   | "node-row-first-line"
   | "node-row-parent-line"
   | "node-row-chip"
+  | "node-row-write-line"
   | "outline-crumb"
   | "issue-pin"
   | "plan-task-line"
@@ -729,6 +730,19 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "lens-chip",
+  },
+  // The new issue page's Graph, on a converted issue: the reason a grey entry of a row's node
+  // menu draws under its words, and the line a refused or dropped write of that menu draws on
+  // the node's row.
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/graph-edit/RowMenu.tsx"],
+    reach:
+      "/issues/<ISSUE>/graph with the new issue page on, on a converted issue: a grey entry's reason in the focused row's node menu, Delete's refusal among them, and the line a refused or dropped move or delete draws on each row of its node",
+    reason:
+      "A grey entry's reason and a write's line are the page's own sentence about a write of the node menu (`ANSWER_LINES`): why the entry cannot be picked, the words of a refusal's code, how many moves were not sent, or that the change was not made, with the code in brackets where the answer names one. A `409 CONTAINER_WOULD_EMPTY` adds what the tree read or the server gave: the list item or the callout the write would leave empty, named by the tree read's `parent.first_line`, which the read sends as the parent's first line with its leading markdown marks trimmed and no tree of it; or, where the held read names no list item or callout as the node's parent, the server's own message, quoted after the code's words. Each is drawn as one line of plain text, the characters it is, in the menu entry or in the status line on the row. The line is no record of the reference graph, so a `#id` in it declares nothing and names nothing.",
+    record: false,
+    rendered: false,
+    surface: "node-row-write-line",
   },
   // The reason a reviewer asked for changes: in a document's Reviews dialog, and on the line
   // under the design gate's steps in a root issue's header.

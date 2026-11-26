@@ -683,6 +683,8 @@ function MenuItem({
         {...pageChrome}
       >
         <span className="break-words">{entry.words}</span>
+        {/* Why it is grey, the page's or the server's sentence drawn as its characters: the
+            reading list's `node-row-write-line`. */}
         {entry.reason === undefined ? null : <span className={REASON}>{entry.reason}</span>}
       </button>
       {children}
@@ -787,6 +789,7 @@ export function RowEditLine({
       {...pageChrome}
     >
       {press === undefined ? (
+        // The line drawn as its characters: the reading list's `node-row-write-line`.
         line.text
       ) : (
         <button
@@ -796,6 +799,7 @@ export function RowEditLine({
           tabIndex={tabStops ? undefined : -1}
           type="button"
         >
+          {/* The same line, as a press: `node-row-write-line` again. */}
           {line.text}
         </button>
       )}
