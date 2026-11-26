@@ -15,13 +15,14 @@ body: |-
 
   On that disk the launcher reads the free bytes every 15 seconds and, under 2 GiB free, resets
   the cluster, whether the server answers or not. Under the lock every start takes, the reset
-  reads the name, owner and size of the first 20 databases, and how many more there are, where
-  the server answers, stops the server, moves the cluster aside in one rename, starts a new empty
-  cluster on the same DSN and deletes the old one. A reset cut after the rename is finished by the next check. Every database in the cluster
+  reads the 20 largest databases the cluster held, each with its owner and size, and the count
+  and total size of any more, where the server answers and within 60 seconds, past which the list
+  fails and the reset goes on; it then stops the server, moves the cluster aside in one rename,
+  starts a new empty cluster on the same DSN and deletes the old one. A reset cut after the rename is finished by the next check. Every database in the cluster
   is lost and every session on it ends, but no role's turn ends. The reset writes one line,
   `legion-testpg: reset of the cluster in …`, with the disk's use and those databases, ending
-  `, and <n> more` where the cluster held more, to the `roles` container's log and to the server's
-  log; the bound keeps it one line under the launcher's 64 KiB line.
+  `, and <n> more, <total size>` where the cluster held more, to the `roles` container's log and
+  to the server's log; the bound keeps it one line under the launcher's 64 KiB line.
 
   The key lands only with a `daemonImage` and a worker image that both carry this release: an
   earlier daemon refuses the key at boot, and an earlier image's launcher refuses the new

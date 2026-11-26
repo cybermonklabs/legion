@@ -32,13 +32,13 @@
 # reads the bytes free on that disk at each check and, under its floor of 2 GiB, runs `reset` in
 # place of `ensure`, telling it the free bytes, the disk's size and the floor in
 # LEGION_TESTPG_FREE_BYTES, LEGION_TESTPG_SIZE_BYTES and LEGION_TESTPG_FLOOR_BYTES. A reset takes
-# the lock a start takes, reads the name, owner and size of the first 20 databases in name order,
-# and how many more the cluster holds, where the server answers, stops the server, waits until no
-# process holds the data directory, writes one line starting `legion-testpg: reset` to its stdout,
-# the container's log, with the disk's use and those databases, moves the cluster aside to
-# data.reset in one rename, makes and starts a new empty cluster, deletes what it moved aside, and
-# appends the same line to the server's log. reset_locked says what a reset cut at any of those
-# steps leaves, and start how it makes a cluster whole or not at all.
+# the lock a start takes, reads the name, owner and size of the 20 largest databases the cluster
+# held, and the count and total size of any more, where the server answers, stops the server,
+# waits until no process holds the data directory, writes one line starting `legion-testpg: reset`
+# to its stdout, the container's log, with the disk's use and those databases, moves the cluster
+# aside to data.reset in one rename, makes and starts a new empty cluster, deletes what it moved
+# aside, and appends the same line to the server's log. reset_locked says what a reset cut at any
+# of those steps leaves, and start how it makes a cluster whole or not at all.
 #
 # initdb's superuser is the OS user (`id -un`, legion). The DSN names another role, created after
 # the server is up with LOGIN CREATEDB CREATEROLE NOSUPERUSER, because a superuser can run
@@ -485,19 +485,30 @@ reset_locked() {
 	# disk already full crash the server on every WAL write it cannot make. Every control character
 	# of a name or an owner is read as ?: a role names its own databases and roles, and a newline in
 	# one would split the line in two, the second of which could be a forged `legion-testpg: reset`.
-	# The list names the first $most databases that are no template, in name order, and where there
-	# are more it ends `, and <n> more`, n the count it does not name, so the line stays one line:
-	# the launcher writes a line longer than maxLogLine (64 KiB, internal/launcher/launcher.go) as
-	# several, each after the first behind its prefix again and starting at a byte a database's
-	# name can put there. The bound holds by construction: a name and an owner are each at most 63
-	# bytes (NAMEDATALEN 64), each ? is no longer than the control character it replaces, and
-	# pg_size_pretty writes a few bytes, so the 20 entries are about 3 KB, and with the data
-	# directory's path and the fixed words the line is far below 64 KiB. The filter keeps
-	# pg_database_size to the databases the list names.
+	# The list names the $most largest databases, largest first and by name between two of one
+	# size, since the line is there to name what filled the disk, and where there are more it ends
+	# `, and <n> more, <size>`, n the count it does not name and size their total, so the line
+	# stays one line: the launcher writes a line longer than maxLogLine (64 KiB,
+	# internal/launcher/launcher.go) as several, each after the first behind its prefix again and
+	# starting at a byte a database's name can put there. The bound holds by construction: a name
+	# and an owner are each at most 63 bytes (NAMEDATALEN 64), each ? is no longer than the
+	# control character it replaces, and pg_size_pretty writes a few bytes, so the 20 entries are
+	# about 3 KB, and with the data directory's path and the fixed words the line is far below
+	# 64 KiB. It lists every database but template0 and template1, which it leaves out by name, so
+	# a database a role marked as a template is still counted. To find the largest it reads the
+	# size of every database, once each, in its innermost subquery, and the row number that picks
+	# the $most, the order the list writes them in, the sizes it prints and the total of the rest
+	# all take that one reading. pg_database_size answers NULL for a database whose directory is
+	# already gone, as a drop under way leaves it, and nulls last sorts such a database after
+	# every size. The list runs under a statement_timeout of $list_timeout, so a list that takes
+	# longer, as one of a cluster holding thousands of databases may, ends as a list that failed
+	# and the reset goes on. LEGION_TESTPG_LIST_TIMEOUT sets it for the tests alone
+	# (internal/launcher/testpg_disk_test.go), which cut a list short.
 	most=20
+	list_timeout=${LEGION_TESTPG_LIST_TIMEOUT:-60s}
 	if ! listening; then
 		held="the server did not answer, so it read no databases"
-	elif listed=$(PGCONNECT_TIMEOUT=5 super -tA -d postgres -c "select string_agg(format('%s (owner %s, %s)', regexp_replace(datname, '[[:cntrl:]]', '?', 'g'), regexp_replace(pg_get_userbyid(datdba), '[[:cntrl:]]', '?', 'g'), pg_size_pretty(pg_database_size(oid))), ', ' order by datname) filter (where rn <= $most) || case when count(*) > $most then format(', and %s more', count(*) - $most) else '' end from (select oid, datname, datdba, row_number() over (order by datname) as rn from pg_database where not datistemplate) as databases"); then
+	elif listed=$(PGCONNECT_TIMEOUT=5 PGOPTIONS="-c statement_timeout=$list_timeout" super -tA -d postgres -c "select string_agg(format('%s (owner %s, %s)', regexp_replace(datname, '[[:cntrl:]]', '?', 'g'), regexp_replace(pg_get_userbyid(datdba), '[[:cntrl:]]', '?', 'g'), pg_size_pretty(size)), ', ' order by size desc nulls last, datname) filter (where rn <= $most) || case when count(*) > $most then format(', and %s more, %s', count(*) - $most, pg_size_pretty(sum(size) filter (where rn > $most))) else '' end from (select datname, datdba, size, row_number() over (order by size desc nulls last, datname) as rn from (select datname, datdba, pg_database_size(oid) as size from pg_database where datname not in ('template0', 'template1')) as sized) as databases"); then
 		held="it held $listed"
 	else
 		held="the server answered but the list of its databases failed, so it read none"
