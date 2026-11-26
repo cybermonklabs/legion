@@ -2,6 +2,7 @@
  *  the read answers it */
 
 import type { IssueTreeRead } from "../web/src/api/types";
+import { blockIdOfNode } from "../web/src/features/issue-page/decision-review";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { chipWords } from "../web/src/features/issue-page/node-row-chip";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
@@ -2042,15 +2043,20 @@ async function foldEachBranch(
  * it opens, every node drawn whole and unfolded, its text and the nodes it draws; each branch's
  * count once its row folds it, beside the count the reader's own tree read and comments read
  * make; each view, its control's count beside the count its own view read makes where the page
- * holds that read; and with `graphText`, Graph's text, where the page draws a Graph control
- * (`graphGate`).
+ * holds that read, the Decisions count leaving out each decision whose block id `restating` names,
+ * since a decision that restates a person's answer is drawn and counted nowhere on the page
+ * (INFRA-1196's decisions 513 and 521); and with `graphText`, Graph's text, where the page draws a
+ * Graph control (`graphGate`).
  */
 async function readAsReader(
   page: Page,
   traffic: ApiRequests,
   key: string,
   who: string,
-  { graphText = false }: { readonly graphText?: boolean } = {}
+  {
+    graphText = false,
+    restating = [],
+  }: { readonly graphText?: boolean; readonly restating?: readonly string[] } = {}
 ): Promise<ReaderReading> {
   const tree = treeAnswerOf(page);
   const views: Record<(typeof VIEWS)[number], TreeAnswerWatch> = {
@@ -2082,11 +2088,23 @@ async function readAsReader(
     };
     if (noteOwed(viewed)) {
       const held = await heldAnswer(views[view], `${who}'s ${name} view read`);
+      const restated =
+        view === "decisions"
+          ? new Set(
+              (held.nodes ?? []).flatMap((node) =>
+                node.role === "query" &&
+                node.supertag === "decision" &&
+                restating.includes(blockIdOfNode(node))
+                  ? [node.id]
+                  : []
+              )
+            ).size
+          : 0;
       await expect
         .poll(() => filterCount(page, view), {
           message: `${who}'s ${name} control does not count what ${who}'s own view read holds`,
         })
-        .toBe(viewCount(held, view));
+        .toBe(viewCount(held, view) - restated);
     }
     let count = Number.NaN;
     await expect
@@ -2264,7 +2282,12 @@ async function bobsReading(
     const traffic = watchApiRequests(page);
     await page.setViewportSize(DESKTOP);
     // His texts are read for a reserved node's words, Graph's among them (`expectNothingReserved`).
-    const his = await readAsReader(page, traffic, key, "bob", { graphText: true });
+    // The whole issue's second decision settles its answered ask (`from_ask`) and shaped nothing,
+    // so it restates the person's answer.
+    const his = await readAsReader(page, traffic, key, "bob", {
+      graphText: true,
+      restating: [seeded.whole.decisions[1]],
+    });
     const statementTwo = seeded.whole.requirements[1] ?? "";
     const references = await statementTwoReferences(
       page,
@@ -2312,7 +2335,10 @@ test("a node reserved for its author is on its author's page and on nobody else'
 
     // Then as alice, who reads each node she reserved, marked as hers alone: each where
     // Conversation draws it as a row, and her reserved constraint in Graph (`RESERVED_IN_GRAPH`).
-    const her = await readAsReader(page, traffic, key, "alice");
+    // The whole issue's second decision restates the person's answer, as in bob's reading.
+    const her = await readAsReader(page, traffic, key, "alice", {
+      restating: [seeded.whole.decisions[1]],
+    });
     for (const name of RESERVED_NODES) {
       if (RESERVED_IN_GRAPH[name] === true) continue;
       const row = await drawnRow(page, reserved.get(name) ?? "", `her reserved ${name}`);
