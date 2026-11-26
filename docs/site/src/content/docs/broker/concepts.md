@@ -1819,11 +1819,14 @@ for in `placeholder_grant`, while the broker still holds the release's row or wh
 capability's grant lives.
 
 The scan reads the command-written headers, trailers, path and query. It leaves out only the
-placeholder the proxy replaced in a named header; another placeholder in that header is refused.
-It also leaves out an AWS signature and its query, which the proxy writes again. A whole placeholder
-is the default `agent-secrets-placeholder-` prefix, or a kind's `placeholder_prefix`, followed by
-32 letters and digits. The default prefix has no left boundary. A kind prefix must start the text
-or have a non-letter, non-digit character before it, so `tml-` does not match inside `html-`.
+placeholder the proxy replaced in a named header; a second, ended or unknown placeholder in the
+same header is refused. On the AWS sign path, the three headers the signer writes
+(`Authorization`, `X-Amz-Date`, `X-Amz-Security-Token`) are left out because the signer wrote
+them; the query is scanned as the command wrote it, since the sign path does not rewrite it and
+presigned URLs are refused earlier. A whole placeholder is the default
+`agent-secrets-placeholder-` prefix, or a kind's `placeholder_prefix`, followed by 32 letters and
+digits. The default prefix has no left boundary. A kind prefix must start the text or have a
+non-letter, non-digit character before it, so `tml-` does not match inside `html-`.
 
 A trailer reaches the broker in time for this scan only where the broker has already read the body
 to its end: an AWS call it signs with the body's hash, and a `Limited` name's post it reads to find

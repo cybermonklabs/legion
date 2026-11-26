@@ -5,7 +5,7 @@
 
 --- a/packages/envoy/internal/cipher/proxy/leftover.go
 +++ b/packages/envoy/internal/cipher/proxy/leftover.go
-@@ -154,7 +154,8 @@ func placeholderInPrefixes(text string, prefixes []placeholderPrefix) string {
+@@ -151,7 +151,8 @@ func placeholderInPrefixes(text string, prefixes []placeholderPrefix) string {
  	for i := range len(text) {
  		for _, prefix := range prefixes {
 -			if !strings.HasPrefix(text[i:], prefix.text) || prefix.leftBounded && i > 0 && asciiLetterOrDigit(text[i-1]) {
@@ -14,3 +14,4 @@
  				continue
  			}
  			if found := placeholderAtPrefix(text[i:], prefix); found != "" {
+ 				return found

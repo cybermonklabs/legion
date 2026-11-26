@@ -482,11 +482,10 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		header, rawQuery = signed, signedQuery
 	} else {
 		// The swap first, and the decision only to explain a refusal. Decide and Rewrite take
-		// the one decision (proxyrules.check), which is deterministic and has no side effect, so
+		// the same decision (proxyrules.check), which is deterministic and has no side effect, so
 		// Rewrite answers nil for exactly the requests Decide refuses: running it first costs
-		// an allowed swap - the commonest request the proxy serves - one decision rather than
-		// two, and leaves the refusal, the order its reasons are reported in and the 403
-		// exactly as they were.
+		// an allowed swap the commonest request the proxy serves one decision, and leaves the
+		// refusal, the order its reasons are reported in and the 403 exactly as they were.
 		rewritten := proxyrules.Rewrite(rules, grant, value, request)
 		if rewritten == nil {
 			if refused() {
@@ -519,13 +518,14 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	header.Del("Proxy-Connection")
 	// SC14 scans the request as the command wrote it, leaving out only the placeholder the swap
 	// replaced. A second, ended or unknown placeholder in the same named header remains and is
-	// refused. Rewrite with an empty value performs that exact removal, including inside Basic
-	// credentials. A kind prefix may be the prefix of its real value, so scanning the rewritten
-	// header would refuse every allowed request of that kind. The AWS path instead removes the
-	// signature's headers, which it writes again itself; the query is kept, since the sign path
-	// does not rewrite it (presigned URLs, which carry credentials in the query, are refused
-	// earlier). Proxy-only headers and Cipher-Repository leave before the service and are left
-	// out too.
+	// refused. Rewrite with "" performs that exact removal, including inside Basic credentials.
+	// Joining text on either side of the removed placeholder cannot create a false prefix match:
+	// the default prefix is 26 characters no real value starts with, and a kind prefix has a
+	// left boundary that blocks a match after a letter or digit. The AWS sign path instead
+	// removes the three headers the signer writes (aws.go:185-189), because the signer wrote
+	// them; the query is scanned as the command wrote it, since the sign path does not rewrite
+	// it (presigned URLs are refused earlier). Proxy-only headers and Cipher-Repository leave
+	// before the service and are left out too.
 	var scannedHeaders http.Header
 	if way == proxyrules.WaySign {
 		scannedHeaders = headerOf(request.Headers)
@@ -533,8 +533,8 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		scannedHeaders.Del("X-Amz-Date")
 		scannedHeaders.Del("X-Amz-Security-Token")
 	} else {
-		// The allowed Rewrite above answers nil only where refused returned, so this copy always
-		// exists here.
+		// Rewrite with "" removes only the placeholder the swap replaced. The allowed Rewrite
+		// above answers nil only where refused returned, so this copy always exists here.
 		scannedHeaders = headerOf(proxyrules.Rewrite(rules, grant, "", request).Headers)
 	}
 	scannedHeaders.Del("Proxy-Authorization")
@@ -542,7 +542,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	scannedHeaders.Del(proxyrules.CipherRepositoryHeader)
 	// A placeholder the command still carries after the swap would leave the proxy with it: an
 	// ended grant's, another session's, a grant's beside the one this request is handled for, or
-	// one outside the headers its entry names. The body is not read. Trailers are scanned where the
+	// one outside the headers its kind names. The body is not read. Trailers are scanned where the
 	// proxy already read the body to its end; a streamed request's trailer has no value yet.
 	if left, carried := leftoverPlaceholder(placeholderPrefixes(rules), scannedHeaders, r.Trailer, request.Path, request.RawPath, request.Query); carried {
 		refused := info.callFor(chosen)
@@ -1095,7 +1095,7 @@ func (p pair) namedSlot() string {
 // nowhere else, and another port of that name is another service, which no name of this grant
 // is a candidate for. An empty answer is therefore also what says a CONNECT is a tunnel rather
 // than a connection the proxy reads (serveConnect): one function decides what is bound, and
-// nothing beside it repeats that walk.
+// boundEntries walks the same rules for the read of the session's other grants.
 //
 // It is a pure function of the rules, the grant, the host and the port, and it runs once per
 // request on a bound connection, over the grant that request read for itself and the rules the

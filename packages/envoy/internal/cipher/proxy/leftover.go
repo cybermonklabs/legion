@@ -18,7 +18,7 @@ import (
 // placeholderLeft is the words a request that still carries a placeholder after the swap is
 // refused with (leftoverPlaceholder). They name no placeholder and no grant: the refusal line
 // names the grant.
-const placeholderLeft = "this request still carries a placeholder after the swap - one no live grant of this session swaps on this host, or one outside the headers its entry names - so it is not sent: send a live grant's placeholder, in the header its entry names"
+const placeholderLeft = "this request still carries a placeholder after the swap - one no live grant of this session swaps on this host, or one outside the headers its kind names - so it is not sent: send a live grant's placeholder, in the header its kind names"
 
 // placeholderPrefix is one prefix a leftover scan recognizes. The default prefix is unbounded:
 // a placeholder immediately after a letter is still a proxy password. A kind's own prefix is
@@ -45,9 +45,10 @@ func placeholderPrefixes(rules proxyrules.Rules) []placeholderPrefix {
 }
 
 // leftoverPlaceholder is the first whole placeholder a request would send, and false when it
-// carries none. It scans the command-written headers whose kind did not rewrite, trailers where
-// the body is already read, and the path and query forms. prefixes holds the default prefix and
-// every kind prefix of the rules this request was decided under.
+// carries none. It scans the command-written headers with only the swapped placeholder removed
+// (Rewrite with ""), trailers where the body is already read, and the path and query forms.
+// prefixes holds the default prefix and every kind prefix of the rules this request was decided
+// under.
 func leftoverPlaceholder(prefixes []placeholderPrefix, header, trailer http.Header, path, rawPath, rawQuery string) (string, bool) {
 	for _, fields := range [...]http.Header{header, trailer} {
 		if placeholder, carried := fieldsPlaceholder(prefixes, fields); carried {
@@ -144,11 +145,6 @@ func headerPlaceholder(prefixes []placeholderPrefix, v string) string {
 	return ""
 }
 
-// placeholderIn is the first default-prefix placeholder text holds, and "" when it holds none.
-func placeholderIn(text string) string {
-	return placeholderInPrefixes(text, []placeholderPrefix{{text: placeholder.Prefix}})
-}
-
 // placeholderInPrefixes is the first placeholder text holds under prefixes, and "" when it holds
 // none. A kind prefix needs a non-letter, non-digit byte before it; the default prefix does not.
 func placeholderInPrefixes(text string, prefixes []placeholderPrefix) string {
@@ -180,7 +176,8 @@ func placeholderAtPrefix(text string, prefix placeholderPrefix) string {
 }
 
 // asciiLetterOrDigit is whether b is one ASCII letter or digit, the left-boundary rule for a
-// kind's own placeholder_prefix.
+// kind's own placeholder_prefix. logmask carries the same check on a rune for the log mask's
+// placeholder scan; the two must agree.
 func asciiLetterOrDigit(b byte) bool {
 	return 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z' || '0' <= b && b <= '9'
 }

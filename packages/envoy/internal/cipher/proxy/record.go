@@ -63,10 +63,8 @@ const (
 	// (azureAccess).
 	codeAccessToken = "ACCESS_TOKEN_UNAVAILABLE"
 	// serveBound: a request that still carries a whole placeholder after the swap - one no live
-	// grant of the session swaps here, or one outside the headers its entry names
-	// (leftoverPlaceholder). It scans placeholder.Prefix, which every placeholder opens with, a
-	// minted capability's among them: a kind that sets a placeholder prefix of its own adds that
-	// prefix to placeholderIn's scan.
+	// grant of the session swaps here, or one outside the headers its kind names
+	// (leftoverPlaceholder). It scans the default prefix and every kind's placeholder_prefix.
 	codePlaceholderLeft = "PLACEHOLDER_NOT_SWAPPED"
 	// serveBound: a request proxyrules.Decide refuses, in its own words.
 	codeNotAllowed = "REQUEST_NOT_ALLOWED"

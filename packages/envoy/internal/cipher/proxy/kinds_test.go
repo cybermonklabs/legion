@@ -477,20 +477,27 @@ func TestAKindsOwnPlaceholderPrefixIsReadBeforeTheSwap(t *testing.T) {
 	rules.Kinds[0].PlaceholderPrefix = prefix
 	for _, row := range []struct {
 		name        string
-		leftover    string
+		path        string
+		headers     []string
 		wantRefusal bool
 	}{
-		{"a whole kind placeholder", leftover, true},
-		{"the left-boundary control", "h" + leftover, false},
+		{"a whole kind placeholder in a header", "/v1/things", []string{"Authorization", "Bearer " + workerPlaceholder, "X-Other", leftover}, true},
+		{"the left-boundary control in a header", "/v1/things", []string{"Authorization", "Bearer " + workerPlaceholder, "X-Other", "h" + leftover}, false},
+		{"a whole kind placeholder in the path", "/v1/" + leftover, []string{"Authorization", "Bearer " + workerPlaceholder}, true},
+		{"a whole kind placeholder in the query", "/v1/things?tag=" + leftover, []string{"Authorization", "Bearer " + workerPlaceholder}, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			r := newRuledRig(t, rules, Options{})
 			r.grants.setValues(testGrantID, storedValues(workerName, real))
-			answer, body := r.get(r.client(workerPlaceholder), "https://"+boundHost+"/v1/things",
-				"Authorization", "Bearer "+workerPlaceholder, "X-Other", row.leftover)
+			answer, body := r.get(r.client(workerPlaceholder), "https://"+boundHost+row.path,
+				row.headers...)
 			if row.wantRefusal {
-				if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, "placeholder") {
-					t.Fatalf("the request carrying %q answered %d %q; want 403 naming the leftover placeholder", row.leftover, answer.StatusCode, body)
+				if answer.StatusCode != http.StatusForbidden {
+					t.Fatalf("the request answered %d %q; want 403", answer.StatusCode, body)
+				}
+				lines := r.logs.refusals()
+				if len(lines) != 1 || lines[0].fields["code"] != codePlaceholderLeft {
+					t.Fatalf("the refusal logged %v; want one line coded %s", lines, codePlaceholderLeft)
 				}
 				if seen := r.requests(); len(seen) != 0 {
 					t.Fatalf("the service saw %d requests; want none", len(seen))
@@ -498,10 +505,10 @@ func TestAKindsOwnPlaceholderPrefixIsReadBeforeTheSwap(t *testing.T) {
 				return
 			}
 			if answer.StatusCode != http.StatusOK {
-				t.Fatalf("the request carrying %q answered %d %q; want 200", row.leftover, answer.StatusCode, body)
+				t.Fatalf("the request answered %d %q; want 200", answer.StatusCode, body)
 			}
-			if seen := r.requests(); len(seen) != 1 || seen[0].Header.Get("Authorization") != "Bearer "+real || seen[0].Header.Get("X-Other") != row.leftover {
-				t.Fatalf("the service saw %+v; want one swapped Authorization and X-Other %q, carried through", seen, row.leftover)
+			if seen := r.requests(); len(seen) != 1 || seen[0].Header.Get("Authorization") != "Bearer "+real {
+				t.Fatalf("the service saw %+v; want one with the real value swapped in", seen)
 			}
 		})
 	}

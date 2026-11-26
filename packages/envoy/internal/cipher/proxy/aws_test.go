@@ -481,8 +481,12 @@ func TestAPlaceholderInAnAWSCallsQueryIsRefusedOnTheSignPath(t *testing.T) {
 	target := "https://" + boundHost + "/v1/things?tag=" + placeholder.Prefix + "0123456789abcdef0123456789abcdef"
 	request := awsRequest(t, "GET", target, "", "execute-api", true)
 	answer, body := sendAWS(t, r.client(awsKeyPlaceholder), request)
-	if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, "placeholder") {
-		t.Fatalf("a signed AWS call with a placeholder in its query answered %d %q; want 403 naming the leftover placeholder", answer.StatusCode, body)
+	if answer.StatusCode != http.StatusForbidden {
+		t.Fatalf("a signed AWS call with a placeholder in its query answered %d %q; want 403", answer.StatusCode, body)
+	}
+	lines := r.logs.refusals()
+	if len(lines) != 1 || lines[0].fields["code"] != codePlaceholderLeft {
+		t.Fatalf("the refusal logged %v; want one line coded %s", lines, codePlaceholderLeft)
 	}
 	if seen := r.requests(); len(seen) != 0 {
 		t.Fatalf("the service saw %d requests; want none", len(seen))
