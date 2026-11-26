@@ -5,7 +5,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -648,8 +648,8 @@
+@@ -695,8 +695,8 @@
  		return nil, "path has a dot segment"
  	case listed && hasEmptySegment(r.Path):
  		return nil, "path has an empty segment"

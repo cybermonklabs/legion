@@ -5,7 +5,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -644,8 +644,8 @@
+@@ -691,8 +691,8 @@
  		return nil, "sni mismatch"
  	case r.HostHeader != r.ConnectHost:
  		return nil, "host header mismatch"

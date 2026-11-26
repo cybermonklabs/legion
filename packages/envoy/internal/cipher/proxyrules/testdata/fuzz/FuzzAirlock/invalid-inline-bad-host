@@ -1,2 +1,2 @@
 go test fuzz v1
-[]byte("\\ՈX\t6\xb9\x04\x97")
+[]byte("H9\xda\xe8f`\x84\xa7\x9c")

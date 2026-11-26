@@ -407,6 +407,33 @@ func allowOK(allow []Allow, r *Request) bool {
 	return false
 }
 
+// AllowHosts is the hosts an allow narrows its kind's to, and whether it narrows them, by
+// allowOK's host rule: a row that names a host allows a request to that host alone, and a row
+// that names none allows one to every host of the kind. So an allow that is missing (nil), or
+// that holds a row of no host, does not narrow the hosts, and it answers nil and false: the
+// kind's hosts stand. Otherwise it answers each host its rows name, once and in the order they
+// first name it, compared as written, and true; for an allow that is present and empty, which
+// allows nothing, that is an empty list that is not nil, since such an allow reaches no host.
+//
+// It is the one statement of this rule for every reader that shows or compares where a name's
+// credential may go: the approval page an approver reads, and `envoy-broker profiles check`'s
+// widens report.
+func AllowHosts(allow []Allow) (hosts []string, narrowed bool) {
+	if allow == nil {
+		return nil, false
+	}
+	hosts = []string{}
+	for _, row := range allow {
+		if row.Host == "" {
+			return nil, false
+		}
+		if !slices.Contains(hosts, row.Host) {
+			hosts = append(hosts, row.Host)
+		}
+	}
+	return hosts, true
+}
+
 // prefixOK reports whether a path prefix holds path: the path is the prefix, or continues it at
 // a "/" boundary, which is a prefix that ends with "/" or a path whose next character is "/".
 // So "/storage-limit" holds "/storage-limit" and "/storage-limit/7" and not "/storage-limitX",
@@ -475,25 +502,40 @@ func hasMethodOverride(r *Request) bool {
 const methodOverrideParameter = "_method"
 
 // hasMethodOverrideParameter reports whether the query, as the command sent it, holds a parameter
-// that a service reads as "_method", whatever its value or none. The query is split on "&", and a
+// that a service reads as "_method", whatever its value or none. The query is split on "&" and on
+// ";" (PHP's arg_separator.input may hold either, and a split on more can only refuse more), and a
 // part's name is its text before its first "=", or the whole part when it has none. Each name is
 // read as those services read it, since a name compared as it was sent would let
-// "_meth%6Fd=DELETE" through to one that decodes it: it is decoded with url.QueryUnescape, which
-// reads "+" as a space, as Express's querystring and PHP's $_GET do; its leading spaces are
-// dropped, and ".", " " and "[" are read as "_", as PHP reads a variable name, so ".method" and
-// "+_method" are "_method" too; and it is compared after fold.ASCII. A name that does not decode,
-// a "%" with no two hex digits after it, is one no reader of the airlock's can say the service
-// does not read as "_method", so it counts as one. As with the header, the value is the service's
-// to read, so the airlock refuses the parameter rather than deciding which method it names.
+// "_meth%6Fd=DELETE" through to one that decodes it:
+//   - it is decoded with url.QueryUnescape, which reads "+" as a space, as Express's querystring
+//     and PHP's $_GET do;
+//   - it is cut at its first NUL byte, as PHP and Symfony's HeaderUtils::parseQuery cut a decoded
+//     name, so "_method%00x" is "_method" there;
+//   - its leading spaces are dropped, and ".", " " and "[" are read as "_", so ".method" and
+//     "+_method" are "_method" too. PHP reads "." and a space so; it drops a name that opens with
+//     "[" rather than reading it as "_", so "[method" is refused here though PHP reads no
+//     "_method" in it, which only refuses more;
+//   - and it is compared after fold.ASCII.
 //
-// A "_method" field of a form body is not refused, and Rails, Laravel and Symfony honour one:
-// the decision reads no body, which internal/cipher/proxy streams to the service unread.
+// A name that does not decode, a "%" with no two hex digits after it, is one no reader of the
+// airlock's can say the service does not read as "_method", so it counts as one. As with the
+// header, the value is the service's to read, so the airlock refuses the parameter rather than
+// deciding which method it names.
+//
+// Two "_method"s are not refused. A "_method[]" or "_method[x]" parameter: PHP makes
+// $_GET['_method'] an array of it, which Symfony's getMethod does not read, and Express's
+// method-override middleware reads no key "_method[]". And a "_method" field of a form body,
+// which Rails, Laravel and Symfony honour: the decision reads no body, which internal/cipher/proxy
+// streams to the service unread.
 func hasMethodOverrideParameter(query string) bool {
-	for _, part := range strings.Split(query, "&") {
+	for _, part := range strings.Split(strings.ReplaceAll(query, ";", "&"), "&") {
 		raw, _, _ := strings.Cut(part, "=")
 		name, err := url.QueryUnescape(raw)
 		if err != nil {
 			return true
+		}
+		if i := strings.IndexByte(name, 0); i >= 0 {
+			name = name[:i]
 		}
 		read := []byte(strings.TrimLeft(name, " "))
 		for i, c := range read {
@@ -567,17 +609,21 @@ func hasDotSegmentParameter(path string) bool {
 	return false
 }
 
-// doubleEncoded are the escapes of a "%" followed by the escape of a "/", a "." or a "\", held
-// ASCII-lower-cased as the raw path is compared.
-var doubleEncoded = []string{"%252f", "%252e", "%255c"}
+// decodedEscapes are what a once-decoded path holds where the command sent a "%" escaped: the
+// escape of a "/", a "." and a "\", and of a "%" itself, held ASCII-lower-cased as the path is
+// compared.
+var decodedEscapes = []string{"%2f", "%2e", "%5c", "%25"}
 
-// hasDoubleEncoding reports whether the path as the command sent it holds "%25" followed by
-// "2F", "2E" or "5C", in either case. One decoding reads it as "%2F", "%2E" or "%5C", which the
-// other path rules do not refuse, and a server that decodes a second time reads a "/", a "." or a
-// "\" there, so an allow prefix would bound one path and that server read another.
-func hasDoubleEncoding(rawPath string) bool {
-	folded := fold.ASCII(rawPath)
-	for _, e := range doubleEncoded {
+// hasDoubleEncoding reports whether the decoded path holds "%2F", "%2E", "%5C" or "%25", in either
+// case. A "%" reaches the decoded path only from a "%25" the command sent, however it spelled the
+// rest ("%252F", "%25%32%46", "%252%46" and "%25%32f" all decode to "%2F"), so a server that
+// decodes a second time reads a "/", a "." or a "\" there, and one that decodes three times or
+// more reads one behind a "%25". An allow prefix would then bound one path and that server read
+// another. The other path rules read the path as sent and as decoded once, which hold no such
+// character.
+func hasDoubleEncoding(path string) bool {
+	folded := fold.ASCII(path)
+	for _, e := range decodedEscapes {
 		if strings.Contains(folded, e) {
 			return true
 		}
@@ -601,15 +647,16 @@ func hasDoubleEncoding(rawPath string) bool {
 //
 // A path that holds a dot segment is refused for every kind: no client means one, and a reader
 // that resolves it (RFC 3986 section 5.2.4) reads another path than the literal one. A path that
-// holds an empty segment or a dot segment with a ";" parameter, or a raw path that holds a
-// percent-encoded "/", a "\" in any spelling, or a double-encoded "/", "." or "\", is refused
-// when, and only when, the kind or the profile has an allow list: an allow prefix bounds the path
-// the service will read, and a reader that merges slashes, cuts ";" parameters before it resolves
-// dot segments, decodes "%2F", takes "\" for "/" or decodes twice first reads another path than
-// the literal one the prefix holds. With neither list every path of the kind's hosts is allowed
-// already, so such a path escapes no prefix, and real clients send them: Cloud Storage's JSON API
-// names the object dir/obj as "dir%2Fobj", and an S3 key may hold "//". The path rules are read
-// directly above the allow lists because they are what makes those rules mean what they say.
+// holds an empty segment, a dot segment with a ";" parameter or an escaped "/", ".", "\" or "%"
+// left after one decoding, or a raw path that holds a percent-encoded "/" or a "\" in any
+// spelling, is refused when, and only when, the kind or the profile has an allow list: an allow
+// prefix bounds the path the service will read, and a reader that merges slashes, cuts ";"
+// parameters before it resolves dot segments, decodes "%2F", takes "\" for "/" or decodes twice
+// first reads another path than the literal one the prefix holds. With neither list every path of
+// the kind's hosts is allowed already, so such a path escapes no prefix, and real clients send
+// them: Cloud Storage's JSON API names the object dir/obj as "dir%2Fobj", and an S3 key may hold
+// "//". The path rules are read directly above the allow lists because they are what makes those
+// rules mean what they say.
 //
 // A request carrying a method override header, or a method override parameter in its query, is
 // refused when, and only when, the kind or the profile has an allow list. allowOK compares the
@@ -654,7 +701,7 @@ func check(rules Rules, g Grant, value string, r *Request) (*Kind, string) {
 		return nil, "path has a backslash"
 	case listed && hasDotSegmentParameter(r.Path):
 		return nil, "path has a parameter on a dot segment"
-	case listed && hasDoubleEncoding(r.RawPath):
+	case listed && hasDoubleEncoding(r.Path):
 		return nil, "path has a double-encoded character"
 	case !allowOK(k.Allow, r):
 		return nil, "not allowed by rule"

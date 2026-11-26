@@ -292,10 +292,12 @@ def queryUnescape : List Nat → Option (List Nat)
   | 43 :: rest => (32 :: ·) <$> queryUnescape rest
   | c :: rest => (c :: ·) <$> queryUnescape rest
 
-/-- A decoded parameter name as PHP reads a variable name: its leading spaces dropped, and each
-`.`, space and `[` read as `_`; then ASCII-lower-cased, as every name here is compared. -/
+/-- A decoded parameter name as the services that honour `_method` read it: cut at its first NUL
+byte, as PHP and Symfony cut a decoded name; its leading spaces dropped; each `.`, space and `[`
+read as `_` (PHP reads `.` and a space so, and drops a name that opens with `[`, so reading `[`
+as `_` only refuses more); then ASCII-lower-cased, as every name here is compared. -/
 def parameterName (bs : List Nat) : List Nat :=
-  (bs.dropWhile (· == 32)).map fun c =>
+  ((bs.takeWhile (· != 0)).dropWhile (· == 32)).map fun c =>
     if c == 46 || c == 32 || c == 91 then 95
     else if 65 ≤ c && c ≤ 90 then c + 32 else c
 
@@ -304,12 +306,13 @@ read the request's method from, as bytes. -/
 def methodOverrideParameter : List Nat := "_method".toUTF8.toList.map (·.toNat)
 
 /-- The query, as the command sent it, holds a parameter a service reads as `_method`, whatever
-its value or none: the query split on `"&"`, a part's name its text before its first `"="`, or
-the whole part when it has none, decoded (`queryUnescape`) and read as `parameterName` reads it.
-A name that does not decode counts as one. `String.splitOn "&"` answers as Go's `strings.Split`
-does, for the reason `hasDotSegment` gives. -/
+its value or none: the query split on `"&"` and on `";"` (each `;` read as `&`, then split on
+`"&"`), a part's name its text before its first `"="`, or the whole part when it has none,
+decoded (`queryUnescape`) and read as `parameterName` reads it. A name that does not decode
+counts as one. `String.splitOn "&"` answers as Go's `strings.Split` does, for the reason
+`hasDotSegment` gives. -/
 def hasMethodOverrideParameter (query : String) : Bool :=
-  (query.splitOn "&").any fun part =>
+  ((query.map fun c => if c == ';' then '&' else c).splitOn "&").any fun part =>
     match queryUnescape ((String.ofList (part.toList.takeWhile (· != '='))).toUTF8.toList.map (·.toNat)) with
     | none => true
     | some name => parameterName name == methodOverrideParameter
@@ -347,11 +350,12 @@ def hasDotSegmentParameter (path : String) : Bool :=
     let before := String.ofList (s.toList.takeWhile (· != ';'))
     before == "." || before == ".."
 
-/-- The path as the command sent it holds `%25` followed by `2F`, `2E` or `5C`, in either case: a
-server that decodes twice reads a `/`, a `.` or a `\` there. -/
-def hasDoubleEncoding (rawPath : String) : Bool :=
-  let folded := lowerAscii rawPath
-  contains folded "%252f" || contains folded "%252e" || contains folded "%255c"
+/-- The decoded path holds `%2F`, `%2E`, `%5C` or `%25`, in either case: a `%` reaches the decoded
+path only from a `%25` the command sent, so a server that decodes twice reads a `/`, a `.` or a
+`\` there, and one that decodes three times or more reads one behind a `%25`. -/
+def hasDoubleEncoding (path : String) : Bool :=
+  let folded := lowerAscii path
+  contains folded "%2f" || contains folded "%2e" || contains folded "%5c" || contains folded "%25"
 
 def namesUnique : List String → Bool
   | [] => true
@@ -435,15 +439,15 @@ and another port of one name is another service. It is read above the two name c
 because the port is part of what the CONNECT named.
 
 A path that holds a dot segment is refused for every kind: a reader that resolves it (RFC 3986
-section 5.2.4) reads another path than the literal one. A path that holds an empty segment or a
-dot segment with a `;` parameter, or a raw path that holds a percent-encoded `/`, a `\` in any
-spelling, or a double-encoded `/`, `.` or `\`, is refused when, and only when, the kind or the
-profile has an `allow` list (`listed`): an `allow` prefix bounds the path the service will read,
-and a reader that merges slashes, cuts `;` parameters before it resolves dot segments, decodes
-`%2F`, takes `\` for `/` or decodes twice first reads another path than the literal one the
-prefix holds. With neither list every path of the kind's hosts is allowed already, so such a
-path escapes no prefix. The path rules are read directly above the `allow` tests because they
-are what makes those rules mean what they say.
+section 5.2.4) reads another path than the literal one. A path that holds an empty segment, a dot
+segment with a `;` parameter or an escaped `/`, `.`, `\` or `%` left after one decoding, or a raw
+path that holds a percent-encoded `/` or a `\` in any spelling, is refused when, and only when,
+the kind or the profile has an `allow` list (`listed`): an `allow` prefix bounds the path the
+service will read, and a reader that merges slashes, cuts `;` parameters before it resolves dot
+segments, decodes `%2F`, takes `\` for `/` or decodes twice first reads another path than the
+literal one the prefix holds. With neither list every path of the kind's hosts is allowed
+already, so such a path escapes no prefix. The path rules are read directly above the `allow`
+tests because they are what makes those rules mean what they say.
 
 A request carrying a method override header, or a method override parameter in its query, is
 refused when, and only when, the kind or the profile has an `allow` list. `allowOK` compares the
@@ -476,7 +480,7 @@ def check (rules : Rules) (g : Grant) (value : String) (r : Request) :
       else if listed k b && hasBackslash r.rawPath then .error "path has a backslash"
       else if listed k b && hasDotSegmentParameter r.path then
         .error "path has a parameter on a dot segment"
-      else if listed k b && hasDoubleEncoding r.rawPath then
+      else if listed k b && hasDoubleEncoding r.path then
         .error "path has a double-encoded character"
       else if !allowOK k.allow r then .error "not allowed by rule"
       else if !allowOK b.allow r then .error "not allowed by the profile's rule"

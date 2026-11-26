@@ -1,2 +1,2 @@
 go test fuzz v1
-[]byte("\xf0A\xa2\xde\xe7\x12\x12\xa9Y")
+[]byte("(oe\x10=\xf0h7\xce")

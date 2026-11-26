@@ -4,7 +4,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
 +++ b/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
-@@ -484,8 +484,7 @@
+@@ -488,8 +488,7 @@
          .error "request carries a method override header"
        else if listed k b && hasMethodOverrideParameter r.query then
          .error "request carries a method override parameter"

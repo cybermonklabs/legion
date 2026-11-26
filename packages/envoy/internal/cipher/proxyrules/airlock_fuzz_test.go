@@ -209,32 +209,38 @@ var (
 	// pathPool holds paths with no dot segment, paths that carry one, and two near misses -
 	// "..foo" and "..." are segments no reader resolves; paths with an empty segment; a path
 	// with a literal backslash; dot segments with a ";" parameter and two near misses, "...;"
-	// and ";.."; and paths at, past and beside the "/" boundary of each prefix of prefixPool
-	// ("/repos", "/repos/x" and "/reposX"; "/storage-limit", "/storage-limit/7" and
+	// and ";.."; decoded paths that still hold an escaped ".", "/", "\" or "%", and a near miss
+	// that holds an escaped letter; and paths at, past and beside the "/" boundary of each prefix
+	// of prefixPool ("/repos", "/repos/x" and "/reposX"; "/storage-limit", "/storage-limit/7" and
 	// "/storage-limitX"), so the comparison covers where each side draws each of those lines.
 	pathPool = []string{"/", "/repos/x", "/repos", "/admin", "", "/v1/../admin", "/a/./b", "/..", "/.", "/v1/things/../../admin", "/v1/..foo", "/v1/.../x",
 		"/reposX", "/repos/", "/a//b", "//", "/repos//x", "/v1/organizations/workspaces", "/v1/organizations", "/v1/organizationsX", "/v1/messages",
 		"/storage-limit", "/storage-limitX", "/storage-limit/7", `/repos\x`,
-		"/repos/..;/admin", "/repos/..;x=1/admin", "/repos/.;/x", "/repos/...;/x", "/repos/;../x"}
+		"/repos/..;/admin", "/repos/..;x=1/admin", "/repos/.;/x", "/repos/...;/x", "/repos/;../x",
+		"/repos/%2e%2e/admin", "/repos/%2Fx", "/repos/%5cx", "/repos/100%25", "/repos/%41"}
 	// portPool is the CONNECT port: 443 five times in eight, so a case reaches the refusals
 	// below the port, and otherwise a port the rules say nothing about.
 	portPool   = []uint16{443, 443, 443, 443, 443, 80, 8443, 0}
 	prefixPool = []string{"/", "/repos", "", "/r", "/admin/", "/repos/", "/v1/organizations/", "/storage-limit"}
 	// separatorPool is what the raw path may hold in place of a "/": the two spellings of an
-	// encoded "/", the three of a "\" and the three of a double-encoded "/", "." or "\" that
-	// check refuses under an allow list, and three near misses, a cut-off escape, an encoded "%"
+	// encoded "/" and the three of a "\" that check refuses under an allow list; spellings of a
+	// double-encoded "/", "." or "\", which the raw path rules let through and which a decoded
+	// path holding them is refused for; and three near misses, a cut-off escape, an encoded "%"
 	// before another escape and a cut-off double escape.
-	separatorPool = []string{"%2F", "%2f", "%252F", "%2", "%5C", "%5c", `\`, "%255C", "%252e", "%2541", "%252"}
+	separatorPool = []string{"%2F", "%2f", "%252F", "%2", "%5C", "%5c", `\`, "%255C", "%252e", "%2541", "%252",
+		"%25%32%46", "%252%46", "%25%32%65", "%25252f"}
 	// methodParameterPool is a query parameter a request may carry: names check reads as
 	// "_method" under an allow list - as sent, folded, escaped in part or whole, with a "." or a
-	// "[" for its "_", with a "+", a space or an escaped space before it, with a value and
-	// without - names that do not decode, and near misses: a name longer at either end, as sent
-	// or escaped, "_method" as a value, after a ";", which the query is not split on, a "+"
-	// before "method", a dot after "_method", and a value that does not decode.
+	// "[" for its "_", with a "+", a space or an escaped space before it, with a NUL and more
+	// after it, after a ";", with a value and without - names that do not decode, and near
+	// misses: a name longer at either end, as sent or escaped, "_method" as a value, after a ";"
+	// too, a "+" before "method", a NUL before "_method", a dot after "_method", and a value that
+	// does not decode.
 	methodParameterPool = []string{"_method=PUT", "_method", "_METHOD=delete", "%5Fmethod=PUT", "%5fmethod=",
 		"_meth%6Fd=DELETE", "%5F%6Detho%64=PUT", ".method=PUT", "+_method=PUT", "%20_method=PUT", " _method=PUT", "[method=PUT",
+		"_method%00=PUT", ".method%00x=PUT", "%5Fmethod%00=PUT", "x;_method=DELETE", "a=1;_method=PUT",
 		"_method%zz=1", "q%=1",
-		"x_method=PUT", "_methods=PUT", "x%5Fmethod=PUT", "a=_method", "a=1;_method=PUT", "+method=PUT", "_method%2e=PUT", "a=%zz"}
+		"x_method=PUT", "_methods=PUT", "x%5Fmethod=PUT", "a=_method", "a=1;b=_method", "+method=PUT", "%00_method=PUT", "_method%2e=PUT", "a=%zz"}
 	phPool     = []string{"PH_gh_1", "ph", "", "a", "=", "user"}
 	valuePool  = []string{"REAL", "ghp_secret", "", "PH_gh_1", "a:b", "\u00e9"}
 	piecePool  = []string{"user", "token ", " ", "\t", "x"}
@@ -352,12 +358,14 @@ func (s *src) kind() Kind {
 	return k
 }
 
-// rawPath draws the path as the command sent it: the decoded path itself one time in two;
-// the path with its last "/" written as a pick of separatorPool; or the path with one
-// appended, so check's "path has an encoded slash" and "path has a backslash" refusals and
-// their near misses are reached on paths every other rule allows.
+// rawPath draws the path as the command sent it: the decoded path itself two times in five;
+// the path with its last "/" written as a pick of separatorPool; the path with one appended; or
+// the path with each "%" written "%25", which is how a request sends a decoded path that holds a
+// "%", so check's "path has an encoded slash", "path has a backslash" and "path has a
+// double-encoded character" refusals and their near misses are reached on paths every other
+// rule allows.
 func (s *src) rawPath(path string) string {
-	switch s.u8() % 4 {
+	switch s.u8() % 5 {
 	case 2:
 		if j := strings.LastIndexByte(path, '/'); j >= 0 {
 			return path[:j] + s.pick(separatorPool) + path[j+1:]
@@ -365,6 +373,8 @@ func (s *src) rawPath(path string) string {
 		return path
 	case 3:
 		return path + s.pick(separatorPool)
+	case 4:
+		return strings.ReplaceAll(path, "%", "%25")
 	default:
 		return path
 	}

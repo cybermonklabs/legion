@@ -6,9 +6,9 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
 +++ b/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
-@@ -478,7 +478,9 @@
+@@ -482,7 +482,9 @@
          .error "path has a parameter on a dot segment"
-       else if listed k b && hasDoubleEncoding r.rawPath then
+       else if listed k b && hasDoubleEncoding r.path then
          .error "path has a double-encoded character"
 -      else if !allowOK k.allow r then .error "not allowed by rule"
 +      -- MUTANT: a name whose profile has an allow of its own skips its kind's allow, so a

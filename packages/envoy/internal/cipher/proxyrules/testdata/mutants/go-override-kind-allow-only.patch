@@ -6,7 +6,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -660,7 +660,10 @@
+@@ -707,7 +707,10 @@
  		return nil, "not allowed by rule"
  	case !allowOK(b.Allow, r):
  		return nil, "not allowed by the profile's rule"

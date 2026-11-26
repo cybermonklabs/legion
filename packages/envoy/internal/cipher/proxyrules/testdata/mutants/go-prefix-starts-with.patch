@@ -5,7 +5,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -412,10 +412,8 @@
+@@ -439,10 +439,8 @@
  // So "/storage-limit" holds "/storage-limit" and "/storage-limit/7" and not "/storage-limitX",
  // which a plain starts-with would let through to another route.
  func prefixOK(prefix, path string) bool {

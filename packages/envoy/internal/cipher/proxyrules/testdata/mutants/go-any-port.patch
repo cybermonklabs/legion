@@ -4,7 +4,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -638,8 +638,8 @@
+@@ -685,8 +685,8 @@
  	switch {
  	case !HostBound(k.Hosts, r.ConnectHost):
  		return nil, "host not bound"

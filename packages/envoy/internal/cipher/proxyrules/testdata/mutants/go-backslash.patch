@@ -5,7 +5,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -650,8 +650,8 @@
+@@ -697,8 +697,8 @@
  		return nil, "path has an empty segment"
  	case listed && hasEncodedSlash(r.RawPath):
  		return nil, "path has an encoded slash"
@@ -15,4 +15,4 @@
 +	// that takes "\" for "/" reads "/v1/x\..\..\admin" as /admin.
  	case listed && hasDotSegmentParameter(r.Path):
  		return nil, "path has a parameter on a dot segment"
- 	case listed && hasDoubleEncoding(r.RawPath):
+ 	case listed && hasDoubleEncoding(r.Path):

@@ -7,7 +7,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -501,7 +501,9 @@
+@@ -543,7 +543,9 @@
  				read[i] = '_'
  			}
  		}
