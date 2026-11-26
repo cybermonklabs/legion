@@ -97,8 +97,8 @@ func TestP0BoundCommands(t *testing.T) {
 		}
 	}
 	if code, _, errb := d.legion(append([]string{"project", "set-p0-bound", "--bound", "0", "--reason", "runaway"}, reach...)...); code != 1 ||
-		!strings.Contains(errb, "400") || !strings.Contains(errb, "at least 1") {
-		t.Fatalf("set-p0-bound --bound 0 = %d, stderr %q; want 1 and the daemon's 400 naming the floor of 1", code, errb)
+		!strings.Contains(errb, "400") || !strings.Contains(errb, "from 1 to 2147483647") {
+		t.Fatalf("set-p0-bound --bound 0 = %d, stderr %q; want 1 and the daemon's 400 naming the range from 1 to 2147483647", code, errb)
 	}
 	if n := p0BoundChanges(t, d.store); n != 0 {
 		t.Fatalf("the refused commands recorded %d changes, want none", n)

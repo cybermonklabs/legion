@@ -7,11 +7,11 @@
 -- `legion` tool's set_p0_bound and clear_p0_bound) or the operator (`legion project set-p0-bound`
 -- and `clear-p0-bound`) made while the daemon runs, appended and never rewritten. project is the
 -- project's Dispatch key, the spelling project_pauses holds. mode is what the change did: `bound`
--- sets the bound to bound, at least 1; `unbounded` sets it to none, whatever legion.yaml says; and
--- `cleared` takes the live value away, which returns the project to legion.yaml's. Who made the
--- change has a pause's shape (project_pauses_by_session): the kind `controller` with the
--- controller's session id, or the kind `operator` with no session. reason is why, which may not be
--- white space alone.
+-- sets the bound to bound, a whole number from 1 to 2147483647; `unbounded` sets it to none,
+-- whatever legion.yaml says; and `cleared` takes the live value away, which returns the project
+-- to legion.yaml's. Who made the change has a pause's shape (project_pauses_by_session): the kind
+-- `controller` with the controller's session id, or the kind `operator` with no session. reason
+-- is why, which may not be white space alone.
 --
 -- The bound in force is read off the project's newest row on every admission pass (store's
 -- P0BoundTx and EffectiveP0Bound), so a change is in force from the pass of its own fact on, with no

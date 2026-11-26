@@ -44,6 +44,7 @@ import {
   LegionIssueStatusRequest,
   LegionOperatorClaimResponse,
   LegionOperatorClaimsResponse,
+  LegionOperatorProjectP0BoundRequest,
   LegionOperatorProjectPauseRequest,
   LegionP0BoundResponse,
   LegionPauseFailureResponse,
@@ -51,6 +52,7 @@ import {
   LegionPhaseRetryRequest,
   LegionPlanRegisterRequest,
   LegionPlanRegisterResponse,
+  LegionProjectP0BoundRequest,
   LegionProjectPauseRequest,
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
@@ -3788,6 +3790,32 @@ test("a pause rejects an empty reason", () => {
     LegionProjectPauseRequest.safeParse({ grantId: "controller-grant-1", reason: "" }).success
   ).toBeFalse();
   expect(LegionOperatorProjectPauseRequest.safeParse({ reason: "" }).success).toBeFalse();
+});
+
+// A set of the P0 bound names a bound, a whole number from 1 to 2147483647, the most the daemon's
+// store holds, as the daemon takes it (`INVALID_P0_BOUND` otherwise): the controller's request and
+// the operator's take the same bounds, and the answer carries no other.
+test("a set of the P0 bound takes a bound from 1 to 2147483647 and refuses one past either end", () => {
+  const grantId = "controller-grant-1";
+  const reason = "the P0 issues outran the gateway";
+  for (const [bound, taken] of [
+    [1, true],
+    [2147483647, true],
+    [0, false],
+    [2147483648, false],
+  ] as const) {
+    expect(
+      LegionProjectP0BoundRequest.safeParse({ grantId, bound, reason }).success,
+      `${bound}`
+    ).toBe(taken);
+    expect(
+      LegionOperatorProjectP0BoundRequest.safeParse({ bound, reason }).success,
+      `${bound}`
+    ).toBe(taken);
+    expect(LegionP0BoundResponse.safeParse({ bound, configured: bound }).success, `${bound}`).toBe(
+      taken
+    );
+  }
 });
 
 // The intake's open give-ups (contract 228). The golden counts two consumers' and lists three

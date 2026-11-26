@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -83,14 +84,15 @@ func P0BoundTx(ctx context.Context, tx pgx.Tx, project string) (P0BoundChange, b
 }
 
 // RecordP0BoundChangeTx appends change through tx and answers it with its id. It refuses a mode
-// the table does not hold, a set of a number below 1, a number on a change that sets none, a
-// reason that is only white space and an actor of neither shape before the table's checks would.
+// the table does not hold, a set of a number below 1 or above 2147483647 (the most the bound's
+// integer column holds), a number on a change that sets none, a reason that is only white space
+// and an actor of neither shape before the table's checks would.
 func RecordP0BoundChangeTx(ctx context.Context, tx pgx.Tx, change P0BoundChange) (P0BoundChange, error) {
 	var bound *int
 	switch change.Mode {
 	case P0BoundSet:
-		if change.Bound < 1 {
-			return P0BoundChange{}, fmt.Errorf("set the P0 bound of %s to %d: a bound is at least 1", change.Project, change.Bound)
+		if change.Bound < 1 || change.Bound > math.MaxInt32 {
+			return P0BoundChange{}, fmt.Errorf("set the P0 bound of %s to %d: a bound is from 1 to 2147483647", change.Project, change.Bound)
 		}
 		bound = &change.Bound
 	case P0BoundUnbounded, P0BoundCleared:

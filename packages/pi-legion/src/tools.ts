@@ -528,7 +528,7 @@ function toolSchema(pi: PiApi): unknown {
     bound: z
       .number()
       .describe(
-        "set_p0_bound's bound: how many P0 issues may hold an admission slot at once outside the cap, a whole number of at least 1. Name it or unbounded, never both"
+        "set_p0_bound's bound: how many P0 issues may hold an admission slot at once outside the cap, a whole number from 1 to 2147483647. Name it or unbounded, never both"
       )
       .optional(),
     unbounded: z
@@ -953,7 +953,7 @@ export function createLegionTool(deps: {
         "Each is in force from the change's own admission pass on, with no restart: a lower bound stops nothing that " +
         "runs, and at the bound a P0 issue waits first in the line. The answer is the bound in force, legion.yaml's and the " +
         "value set that stands; read_state's summary gives the same on its p0 holders line. The daemon refuses a set that " +
-        "names neither bound nor unbounded, both, or a bound below 1 (INVALID_P0_BOUND), and a change with no reason " +
+        "names neither bound nor unbounded, both, or a bound below 1 or above 2147483647 (INVALID_P0_BOUND), and a change with no reason " +
         "(P0_BOUND_REASON_REQUIRED). " +
         "replay_give_up applies again give-ups, the messages the daemon's intake gave up on because their handling kept " +
         "failing or they did not decode, which the daemon keeps whole. The daemon runs each one through the handling a " +
@@ -1047,11 +1047,11 @@ export function createLegionTool(deps: {
             const { bound, unbounded } = parameters;
             if ((bound === undefined) === (unbounded !== true)) {
               throw new Error(
-                "set_p0_bound requires bound, a whole number of at least 1, or unbounded true, not both"
+                "set_p0_bound requires bound, a whole number from 1 to 2147483647, or unbounded true, not both"
               );
             }
-            if (bound !== undefined && !isWholeFromOne(bound)) {
-              throw new Error("set_p0_bound's bound is a whole number of at least 1");
+            if (bound !== undefined && !(isWholeFromOne(bound) && bound <= 2147483647)) {
+              throw new Error("set_p0_bound's bound is a whole number from 1 to 2147483647");
             }
             const { grantId } = await controllerGrant(active.sessionID);
             return jsonSuccess(

@@ -153,18 +153,15 @@ func (s *server) setP0Bound(w http.ResponseWriter, r *http.Request, answer Answe
 	switch {
 	case bound != nil && unbounded:
 		s.writeFailure(w, r, http.StatusBadRequest, invalidP0Bound,
-			"a set of the P0 bound names bound, a whole number of at least 1, or unbounded, for no bound, and this one names both; nothing changed")
+			"a set of the P0 bound names bound, a whole number from 1 to 2147483647, or unbounded, for no bound, and this one names both; nothing changed")
 	case bound == nil && !unbounded:
 		s.writeFailure(w, r, http.StatusBadRequest, invalidP0Bound,
-			"a set of the P0 bound names bound, a whole number of at least 1, or unbounded, for no bound, and this one names neither; a clear, which returns to legion.yaml's admission_p0_bound, is its own route; nothing changed")
+			"a set of the P0 bound names bound, a whole number from 1 to 2147483647, or unbounded, for no bound, and this one names neither; a clear, which returns to legion.yaml's admission_p0_bound, is its own route; nothing changed")
 	case unbounded:
 		s.changeP0Bound(w, r, answer, route, store.P0BoundChange{Mode: store.P0BoundUnbounded, By: by, Reason: why})
-	case *bound < 1:
+	case *bound < 1 || *bound > math.MaxInt32:
 		s.writeFailure(w, r, http.StatusBadRequest, invalidP0Bound, fmt.Sprintf(
-			"bound is how many P0 issues may hold a slot at once, a whole number of at least 1, and %d is not; unbounded sets no bound; nothing changed", *bound))
-	case *bound > math.MaxInt32:
-		s.writeFailure(w, r, http.StatusBadRequest, invalidP0Bound, fmt.Sprintf(
-			"bound is how many P0 issues may hold a slot at once, a whole number of at most %d, and %d is not; unbounded sets no bound; nothing changed", math.MaxInt32, *bound))
+			"bound is how many P0 issues may hold a slot at once, a whole number from 1 to 2147483647, and %d is not; unbounded sets no bound; nothing changed", *bound))
 	default:
 		s.changeP0Bound(w, r, answer, route, store.P0BoundChange{Mode: store.P0BoundSet, Bound: *bound, By: by, Reason: why})
 	}

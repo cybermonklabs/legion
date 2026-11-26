@@ -205,7 +205,8 @@ func (a *Admission) p0BoundAt(ctx context.Context, tx pgx.Tx) (*int, error) {
 // recordP0BoundChange appends the change a P0BoundChanged fact carries, for this admission's
 // project (store.RecordP0BoundChangeTx), and logs it once it commits: who made it, why, what it
 // did, and the bound in force before and after it. It refuses nothing the route did not refuse
-// first: the routes refused a bound below 1 and a change with no reason before the fact.
+// first: the routes refused a bound below 1 or above 2147483647 and a change with no reason
+// before the fact.
 func (a *Admission) recordP0BoundChange(ctx context.Context, tx pgx.Tx, change store.P0BoundChange) error {
 	before, err := a.p0BoundAt(ctx, tx)
 	if err != nil {

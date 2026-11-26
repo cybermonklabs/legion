@@ -1139,6 +1139,11 @@ const legionPauseActor = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("operator") }),
 ]);
 
+/** A P0 bound: how many P0 issues may hold an admission slot at once, a whole number from 1 to
+ * 2147483647, the most the daemon's store holds: the daemon refuses a set of any other number
+ * (`INVALID_P0_BOUND`) and a legion.yaml whose `admission_p0_bound` is any other. */
+const p0BoundNumber = z.number().int().positive().max(2147483647);
+
 /** `api.P0BoundView` — the P0 bound (the P0 start's contract entry, dispatch://INFRA-5636): how many P0 issues may
  * hold an admission slot at once, outside the cap. `bound` is the bound in force, null for none;
  * `configured` is legion.yaml's `admission_p0_bound`, null where the file gives none; and `live` is
@@ -1148,11 +1153,11 @@ const legionPauseActor = z.discriminatedUnion("kind", [
  * the bound are this view. The controller's `read_state` summary prints the bound in force and the
  * live value (LEGION_ANSWER_READS), so those are required; `configured` is read by no plugin code. */
 const legionP0Bound = z.object({
-  bound: z.number().int().positive().nullable(),
-  configured: z.number().int().positive().nullable().optional(),
+  bound: p0BoundNumber.nullable(),
+  configured: p0BoundNumber.nullable().optional(),
   live: z
     .object({
-      bound: z.number().int().positive().nullable(),
+      bound: p0BoundNumber.nullable(),
       setBy: legionPauseActor,
       setAt: timestamp,
       reason: nonEmptyString,
@@ -2402,15 +2407,15 @@ export const LegionProjectResumeRequest = z.strictObject({
 });
 
 /** `api.ProjectP0BoundRequest`, the controller's set of the P0 bound (the P0 start's contract entry): its grant,
- * and exactly one of `bound`, a whole number of at least 1, and `unbounded: true`, no bound whatever
- * legion.yaml says, and `reason`, why. It names no project: the daemon changes its own. The daemon
- * refuses a grant that is not a controller's (`CONTROLLER_REQUIRED`), a set that names neither,
- * both or a bound below 1 (`INVALID_P0_BOUND`), a blank reason (`P0_BOUND_REASON_REQUIRED`) and a
- * daemon with no workflow (`P0_BOUND_UNAVAILABLE`). */
+ * and exactly one of `bound`, a whole number from 1 to 2147483647, and `unbounded: true`, no bound
+ * whatever legion.yaml says, and `reason`, why. It names no project: the daemon changes its own.
+ * The daemon refuses a grant that is not a controller's (`CONTROLLER_REQUIRED`), a set that names
+ * neither, both or a bound below 1 or above 2147483647 (`INVALID_P0_BOUND`), a blank reason
+ * (`P0_BOUND_REASON_REQUIRED`) and a daemon with no workflow (`P0_BOUND_UNAVAILABLE`). */
 export const LegionProjectP0BoundRequest = z.union([
   z.strictObject({
     grantId: nonEmptyString,
-    bound: z.number().int().positive(),
+    bound: p0BoundNumber,
     reason: nonEmptyString,
   }),
   z.strictObject({ grantId: nonEmptyString, unbounded: z.literal(true), reason: nonEmptyString }),
@@ -2469,7 +2474,7 @@ export const LegionOperatorProjectPauseRequest = z.strictObject({
  * clear of the P0 bound (`legion project set-p0-bound` and `clear-p0-bound`, under the operator's
  * bearer, the P0 start's contract entry). The CLI sends both; the plugin never does. */
 export const LegionOperatorProjectP0BoundRequest = z.union([
-  z.strictObject({ bound: z.number().int().positive(), reason: nonEmptyString }),
+  z.strictObject({ bound: p0BoundNumber, reason: nonEmptyString }),
   z.strictObject({ unbounded: z.literal(true), reason: nonEmptyString }),
 ]);
 export const LegionOperatorProjectP0BoundClearRequest = z.strictObject({

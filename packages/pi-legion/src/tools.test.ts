@@ -355,7 +355,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     bound: {
       type: "number",
       description:
-        "set_p0_bound's bound: how many P0 issues may hold an admission slot at once outside the cap, a whole number of at least 1. Name it or unbounded, never both",
+        "set_p0_bound's bound: how many P0 issues may hold an admission slot at once outside the cap, a whole number from 1 to 2147483647. Name it or unbounded, never both",
     },
     unbounded: {
       type: "boolean",
@@ -2689,15 +2689,19 @@ test("the controller sets and clears the P0 bound, each request the contract's a
   const refusals = [
     [
       { op: "set_p0_bound", reason },
-      "set_p0_bound requires bound, a whole number of at least 1, or unbounded true, not both",
+      "set_p0_bound requires bound, a whole number from 1 to 2147483647, or unbounded true, not both",
     ],
     [
       { op: "set_p0_bound", bound: 2, unbounded: true, reason },
-      "set_p0_bound requires bound, a whole number of at least 1, or unbounded true, not both",
+      "set_p0_bound requires bound, a whole number from 1 to 2147483647, or unbounded true, not both",
     ],
     [
       { op: "set_p0_bound", bound: 0, reason },
-      "set_p0_bound's bound is a whole number of at least 1",
+      "set_p0_bound's bound is a whole number from 1 to 2147483647",
+    ],
+    [
+      { op: "set_p0_bound", bound: 2147483648, reason },
+      "set_p0_bound's bound is a whole number from 1 to 2147483647",
     ],
     [{ op: "set_p0_bound", bound: 2 }, "set_p0_bound requires reason"],
     [{ op: "clear_p0_bound" }, "clear_p0_bound requires reason"],

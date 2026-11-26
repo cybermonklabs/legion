@@ -120,7 +120,7 @@ func printResumeAnswer(w io.Writer, answer []byte) error {
 // on, with no restart. --none sets no bound, whatever legion.yaml's admission_p0_bound says. A lower
 // bound stops nothing that runs.
 func projectSetP0Bound(c *projectCall) action {
-	bound := c.flags.Int("bound", 0, "how many P0 issues may hold a slot at once, at least 1 (this or --none is required)")
+	bound := c.flags.Int("bound", 0, "how many P0 issues may hold a slot at once, a whole number from 1 to 2147483647 (this or --none is required)")
 	none := c.flags.Bool("none", false, "set no bound, whatever legion.yaml's admission_p0_bound says (this or --bound is required)")
 	reason := c.flags.String("reason", "", "why the bound changes: the daemon records it with the change and logs it (required)")
 	return func(ctx context.Context, _ []string) int {

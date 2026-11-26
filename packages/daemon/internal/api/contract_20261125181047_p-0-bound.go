@@ -8,18 +8,19 @@ package api
 // counts only the holders that are not P0, and the P0 bound, which has no value unless
 // legion.yaml's `admission_p0_bound` gives one, limits how many P0 issues may hold a slot. Four
 // routes: the controller's `POST /legion/v1/project/p0-bound` (`{grantId, bound?, unbounded?,
-// reason}`, exactly one of `bound`, a whole number of at least 1, and `unbounded: true`, no bound
-// whatever legion.yaml says) and `POST /legion/v1/project/p0-bound/clear` (`{grantId, reason}`,
-// which returns the project to legion.yaml's bound), which take a controller grant, the controller
-// session's or one the operator's bearer minted, and refuse any other with 403
+// reason}`, exactly one of `bound`, a whole number from 1 to 2147483647, and `unbounded: true`,
+// no bound whatever legion.yaml says) and `POST /legion/v1/project/p0-bound/clear` (`{grantId,
+// reason}`, which returns the project to legion.yaml's bound), which take a controller grant, the
+// controller session's or one the operator's bearer minted, and refuse any other with 403
 // `CONTROLLER_REQUIRED` (the pause's actor rule: a grant the operator's bearer minted changes the
 // bound as the operator), and the operator's `POST /legion/v1/operator/project/p0-bound`
 // (`{bound?, unbounded?, reason}`) and `POST /legion/v1/operator/project/p0-bound/clear`
 // (`{reason}`), which take the operator's bearer as every operator route does (`legion project
 // set-p0-bound` and `clear-p0-bound`). None names a project: the daemon changes its own. A set that
-// names neither a bound nor none, both, or a bound below 1 is refused `400 INVALID_P0_BOUND`; every
-// change refuses a blank reason with `400 P0_BOUND_REASON_REQUIRED`; a daemon with no workflow
-// refuses all four with `409 P0_BOUND_UNAVAILABLE`. Each refusal is a Failure and changes nothing.
+// names neither a bound nor none, both, or a bound below 1 or above 2147483647 is refused
+// `400 INVALID_P0_BOUND`; every change refuses a blank reason with `400 P0_BOUND_REASON_REQUIRED`;
+// a daemon with no workflow refuses all four with `409 P0_BOUND_UNAVAILABLE`.
+// Each refusal is a Failure and changes nothing.
 // A change is one fact (`intake.P0BoundChanged`) whose admission appends it to the new table
 // `project_p0_bound_changes` (migration `20261125181828`) and makes its pass in the same
 // transaction, so the bound is in force from that pass on; every pass reads the project's newest
