@@ -26,6 +26,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { useLiveRegistration } from "../writes/useKeyedWrite";
 import { ASK_HAND_ON_WORDS } from "./ask-body-words";
+import { authored, type TextMarks } from "./ask-text";
 
 /**
  * Who an open ask waits on, and the one control that hands it to somebody else. It sits in the
@@ -62,8 +63,19 @@ import { ASK_HAND_ON_WORDS } from "./ask-body-words";
  * since a card can be drawn inside a list that lists no row for its ask - a Reply-thread
  * card, a sibling ask block - and holding that ask would pull it into the reader's list. A
  * card drawn where no list can drop it registers with nobody.
+ *
+ * A host that hands `marks` (`AskBodyProps.marks`) gets each login inside the mark of a value,
+ * beside the body's own words; inside `NoTooltips` the time marks itself (`Timestamp`).
  */
-export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
+export function AskHandOn({
+  ask,
+  assignee,
+  marks,
+}: {
+  ask: Ask;
+  assignee: string | null;
+  marks?: TextMarks;
+}): ReactNode {
   const [wanted, setWanted] = useState(false);
   const people = useQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);
@@ -100,6 +112,17 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
       : waitingOn === ""
         ? `${pagePaneBg} ${pageQuietText}`
         : pageLabelChip;
+  // Who the ask waits on, in the badge. Where a host hands `marks` it is one inline item, as the
+  // words were one text, so the flex badge keeps the space before the login.
+  const askedOf =
+    marks === undefined ? (
+      `${ASK_HAND_ON_WORDS.asked_of} ${waitingOn}`
+    ) : (
+      <span>
+        {`${ASK_HAND_ON_WORDS.asked_of} `}
+        {authored(marks, waitingOn)}
+      </span>
+    );
   // Inside `NoTooltips` who the ask waits on and who handed it on are values, so each breaks
   // anywhere and the badge's wrapper narrows to the line rather than keep its width; the select
   // still covers the badge however many lines it takes (`badgeSelectPageWrapper`).
@@ -116,7 +139,7 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
             ? ASK_HAND_ON_WORDS.handing_on
             : waitingOn === ""
               ? ASK_HAND_ON_WORDS.asked_of_nobody
-              : `${ASK_HAND_ON_WORDS.asked_of} ${waitingOn}`}
+              : askedOf}
         </span>
         <select
           aria-label={ASK_HAND_ON_WORDS.hand_to}
@@ -142,14 +165,15 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
           <option disabled value="">
             {ASK_HAND_ON_WORDS.nobody}
           </option>
+          {/* An option holds text alone, so one that names a person is a value whole. */}
           {assignee === null ? null : (
-            <option value={assignee}>
+            <option value={assignee} {...marks?.authorText}>
               {assignee}
               {` ${ASK_HAND_ON_WORDS.assignee}`}
             </option>
           )}
           {others.map((login) => (
-            <option key={login} value={login}>
+            <option key={login} value={login} {...marks?.authorText}>
               {login}
             </option>
           ))}
@@ -158,7 +182,7 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
       {handedOnBy === "" || handedOnAt === null ? null : (
         <span className={page === null ? undefined : "min-w-0 max-w-full [overflow-wrap:anywhere]"}>
           {`${ASK_HAND_ON_WORDS.handed_on_by} `}
-          {handedOnBy} <Timestamp at={handedOnAt} />
+          {authored(marks, handedOnBy)} <Timestamp at={handedOnAt} />
         </span>
       )}
       {write.failed ? (

@@ -13,6 +13,7 @@ import {
 } from "../../theme/classes";
 import { blockFragment } from "../refs/block-reference";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
+import type { TextMarks } from "./ask-text";
 
 /** The document named by an ask's quote anchor, including its stable block fragment when known. */
 export function AskAnchorLink({ ask }: { ask: Ask }): ReactNode {
@@ -42,15 +43,19 @@ export function AskAnchorLink({ ask }: { ask: Ask }): ReactNode {
   );
 }
 
-/** The document link and quoted passage that give an anchored ask its context. */
+/** The document link and quoted passage that give an anchored ask its context: the document's
+ *  name and its words, which a host that hands `marks` (`AskBodyProps.marks`) gets inside the
+ *  mark of a value. */
 export function AskAnchorHeader({
   ask,
   inBlock,
+  marks,
   quoteSpacing = "compact",
   tone,
 }: {
   ask: Ask;
   inBlock: boolean;
+  marks?: TextMarks;
   quoteSpacing?: "compact" | "roomy";
   tone: "success" | "surface";
 }): ReactNode {
@@ -71,12 +76,14 @@ export function AskAnchorHeader({
               ? `mb-2 font-medium ${textPrimaryOnSuccessCallout}`
               : `mb-2 text-sm font-medium ${linkText} ${linkHoverText}`
           }
+          {...marks?.authorText}
         >
           <AskAnchorLink ask={ask} />
         </p>
       )}
       <blockquote
         className={`${quoteSpacing === "roomy" ? "mb-3" : "mb-2"} border-l-2 pl-3 ${quoteClassName}`}
+        {...marks?.authorText}
       >
         {/* The document's own words, as they are: the reading list's `anchor-quote`. */}
         {anchor.quote}

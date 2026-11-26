@@ -16,8 +16,9 @@
 // - Phase: a `list` of eight `listitem`s, the steps Admitted, Planning, Implementing, Testing,
 //   Reviewing, Accepting, Retro and Merging, each its name and, on Planning, Implementing,
 //   Testing and Reviewing, its count of rounds as a number where it has one. The marked step
-//   carries `aria-current="step"`. The phase's words ("Waiting on a person", "Integrating",
-//   "Held", "In another phase") stand in the region. The region holds no `button` and no `link`.
+//   carries `aria-current="step"`. The phase's words ("Waiting on a person", "Waiting on
+//   children", "Integrating", "Held", "In another phase") stand in the region. The region holds
+//   no `button` and no `link`.
 // - Waiting on you: the count, `data-testid="dashboard-waiting-count"`, whose text is the
 //   number of items. Each item is one element with `data-testid="dashboard-item-<kind>-<id>"`,
 //   in the order drawn: kind `question` or `approval` with the ask's id, `stale` with the
@@ -123,7 +124,13 @@ const TODAYS_TABS: readonly (string | RegExp)[] = [
 ];
 
 /** The words a phase draws beside the track (R3). */
-const PHASE_LINES = ["Waiting on a person", "Integrating", "Held", "In another phase"] as const;
+const PHASE_LINES = [
+  "Waiting on a person",
+  "Waiting on children",
+  "Integrating",
+  "Held",
+  "In another phase",
+] as const;
 
 /** Which main this run's server is, read once per worker (R27). */
 const thisMain = mainOfThisRun();
@@ -256,6 +263,12 @@ test.describe("the phase track reads each phase the issue's Legion state gives",
       phase: "awaiting_person",
       title: "awaiting_person",
       words: "Waiting on a person",
+    },
+    {
+      marked: "Admitted",
+      phase: "awaiting_children",
+      title: "awaiting_children",
+      words: "Waiting on children",
     },
     { marked: null, phase: "held", title: "held", words: "Held" },
     { marked: "Merging", phase: "integrating", title: "integrating", words: "Integrating" },

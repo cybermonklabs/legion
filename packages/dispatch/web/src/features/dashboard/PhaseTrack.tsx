@@ -9,6 +9,7 @@ import {
   pageQuietText,
   pageStateText,
 } from "../../theme/classes";
+import { authorText, pageChrome } from "../issue-page/page-structure";
 import { DASHBOARD_WORDS, PHASE_WORDS } from "../issue-page/page-words";
 import { phaseTrack, TRACK_STEPS, type TrackStep } from "./phase-track";
 import { roundCounts } from "./round-counts";
@@ -32,7 +33,10 @@ export function PhaseTrack({
   const rounds: Readonly<Partial<Record<TrackStep, number>>> = roundCounts(handoffs);
   return (
     <section aria-label={DASHBOARD_WORDS.parts.phase} className="space-y-2">
-      <h2 className={`text-xs font-semibold tracking-wide uppercase ${pageQuietText}`}>
+      <h2
+        className={`text-xs font-semibold tracking-wide uppercase ${pageQuietText}`}
+        {...pageChrome}
+      >
         {DASHBOARD_WORDS.parts.phase}
       </h2>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -49,12 +53,15 @@ export function PhaseTrack({
                     : `${pageHairBorder} ${pageMutedText}`
                 }`}
                 key={step}
+                {...pageChrome}
               >
                 {PHASE_WORDS.steps[step]}
                 {count === undefined ? null : (
                   <>
                     {" "}
-                    <span className={`tabular-nums ${pageQuietText}`}>{count}</span>
+                    <span className={`tabular-nums ${pageQuietText}`} {...authorText}>
+                      {count}
+                    </span>
                   </>
                 )}
               </li>
@@ -62,7 +69,9 @@ export function PhaseTrack({
           })}
         </ol>
         {track.words === undefined ? null : (
-          <p className={`text-sm font-medium ${pageStateText.waiting}`}>{track.words}</p>
+          <p className={`text-sm font-medium ${pageStateText.waiting}`} {...pageChrome}>
+            {track.words}
+          </p>
         )}
       </div>
     </section>

@@ -29,6 +29,7 @@ import { useQuestionLabel } from "../inbox/question-label";
 import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ASK_DECLINE_WORDS } from "./ask-body-words";
+import { authored, type TextMarks } from "./ask-text";
 
 /**
  * What **Decline to answer** opens: the person's note, which is optional, and the two controls.
@@ -39,11 +40,15 @@ import { ASK_DECLINE_WORDS } from "./ask-body-words";
  * cannot see it is told it too. Typing stops at that bound, where the count reaches zero. A
  * pick writes into the box without typing, so a reference taken near the bound can pass it:
  * the count then reads below zero and **Decline to answer** is held until the note is shorter,
- * so the bound is met here rather than as a refusal from the server.
+ * so the bound is met here rather than as a refusal from the server. A host that hands `marks`
+ * (`AskBodyProps.marks`) gets the dialog's own words in the mark of the body's words, the count
+ * in the mark of a value, and the shared field, with its hint, and a refusal in the mark of a
+ * value too, as the field's words and the server's are not the body's.
  */
 function DeclineDialog({
   error,
   issueKey,
+  marks,
   onClose,
   onSubmit,
   project,
@@ -54,6 +59,7 @@ function DeclineDialog({
   /** The issue the question was asked on, where it has one: the picker offers that issue's
    *  people. */
   issueKey?: string;
+  marks: TextMarks | undefined;
   onClose: () => void;
   onSubmit: (note: string) => void;
   /** The project of the document the question hangs from, whose components the picker offers. */
@@ -92,11 +98,14 @@ function DeclineDialog({
           className={`pointer-events-auto w-full max-w-sm space-y-3 rounded-lg border p-4 shadow-xl ${card}`}
           ref={dialog.containerRef}
           role="dialog"
+          {...marks?.authorText}
         >
-          <h2 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>
+          <h2 className={`text-sm font-semibold ${textSecondaryOnSurface}`} {...marks?.pageChrome}>
             {ASK_DECLINE_WORDS.decline}
           </h2>
-          <p className={`text-sm ${textMutedOnSurface}`}>{ASK_DECLINE_WORDS.explained}</p>
+          <p className={`text-sm ${textMutedOnSurface}`} {...marks?.pageChrome}>
+            {ASK_DECLINE_WORDS.explained}
+          </p>
           <MentionField
             body={note}
             className="text-sm"
@@ -119,8 +128,9 @@ function DeclineDialog({
             project={project}
             writing={dispatchWritingBox("ask-decline-note", "ask-decline")}
           />
-          <p className={`text-xs ${textMutedOnSurface}`} id={countId}>
-            {left} {left === 1 ? ASK_DECLINE_WORDS.character : ASK_DECLINE_WORDS.characters}
+          <p className={`text-xs ${textMutedOnSurface}`} id={countId} {...marks?.pageChrome}>
+            {authored(marks, left)}{" "}
+            {left === 1 ? ASK_DECLINE_WORDS.character : ASK_DECLINE_WORDS.characters}
             {` ${ASK_DECLINE_WORDS.left}`}
           </p>
           {error === null ? null : (
@@ -136,7 +146,7 @@ function DeclineDialog({
                 : apiErrorMessage(error, ASK_DECLINE_WORDS.failed)}
             </p>
           )}
-          <div className="flex items-center justify-end gap-2">
+          <div className="flex items-center justify-end gap-2" {...marks?.pageChrome}>
             <button
               className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
               disabled={saving}
@@ -180,15 +190,18 @@ interface DeclinePress extends AskPress {
  * the question where the reader pressed, and the refusal is shown by the card that wrote it.
  * The hold is that shared store rather than a report up to the Inbox, as `SnoozeControl` makes
  * one, for the reason the store exists: this card is drawn on surfaces that take no prop of the
- * Inbox's, a document's own decision block among them.
+ * Inbox's, a document's own decision block among them. `marks` is the ask body's
+ * (`AskBodyProps.marks`), which its dialog draws its words in.
  */
 export function DeclineControl({
   ask,
   decline,
+  marks,
   onDeclined,
 }: {
   ask: Ask;
   decline: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
+  marks?: TextMarks;
   /** Called once the server has recorded the decline, as an answer from this card calls it. */
   onDeclined?: (id: string) => void;
 }): ReactNode {
@@ -238,6 +251,7 @@ export function DeclineControl({
         <DeclineDialog
           error={write.isError ? write.error : null}
           issueKey={ask.issue_key ?? undefined}
+          marks={marks}
           onClose={() => {
             write.reset();
             setOpen(false);

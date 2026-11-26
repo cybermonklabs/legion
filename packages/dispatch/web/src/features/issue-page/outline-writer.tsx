@@ -1,5 +1,14 @@
 import { type MutationKey, useQuery } from "@tanstack/react-query";
-import { createContext, type ReactNode, useCallback, useContext, useMemo, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import type { Actor, Comment, MessageDelivery, MessageRead } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -206,10 +215,25 @@ export function OutlineWriterProvider({
   const asks = useQuery({ ...issueAsksQuery(issueKey), ...EVENT_FRESH });
   const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
+  // The animation frame `focus()` is waiting on, if any: a new `focus()` cancels the earlier one
+  // before scheduling its own, and unmounting the provider cancels it so no frame of an unmounted
+  // writer moves the focus.
+  const focusFrame = useRef<number | undefined>(undefined);
+  useEffect(
+    () => () => {
+      if (focusFrame.current !== undefined) {
+        cancelAnimationFrame(focusFrame.current);
+        focusFrame.current = undefined;
+      }
+    },
+    []
+  );
   const focus = useCallback(() => {
+    if (focusFrame.current !== undefined) cancelAnimationFrame(focusFrame.current);
     // The field that is drawn: the line keeps its write field mounted, hidden, while it edits a
     // comment (`IssueComposer.tsx`), and a hidden field takes no caret.
     const place = (left: number) => {
+      focusFrame.current = undefined;
       const field = [...document.querySelectorAll<HTMLTextAreaElement>(COMPOSER_FIELD)].find(
         (one) => one.closest("[hidden]") === null
       );
@@ -217,9 +241,9 @@ export function OutlineWriterProvider({
         field.focus({ preventScroll: true });
         return;
       }
-      if (left > 0) requestAnimationFrame(() => place(left - 1));
+      if (left > 0) focusFrame.current = requestAnimationFrame(() => place(left - 1));
     };
-    requestAnimationFrame(() => place(DRAWING_FRAMES));
+    focusFrame.current = requestAnimationFrame(() => place(DRAWING_FRAMES));
   }, []);
   const replyTo = useCallback(
     (item: ReplyItem | StatementItem) => {

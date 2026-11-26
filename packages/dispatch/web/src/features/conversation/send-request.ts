@@ -14,6 +14,7 @@ import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../write
 import { carriedBlocks, type FollowedBlocks } from "./block-spans";
 import type { SeededMention } from "./composer-draft";
 import type { ComposerAnchor, ComposerKind, ComposerOwner, ReplyTarget } from "./composer-model";
+import { ADDRESS_WORDS, DELIVERY_COMMANDS, MOVED_SEND_WORDS } from "./composer-words";
 
 /** A send's own copy of the draft, taken when it starts: what the request is built from, and
  *  what a refusal hands back. Who it addresses is in its text, written there as a reference
@@ -143,15 +144,6 @@ export function heldSeeds(request: SentRequest | undefined): readonly SeededMent
   return request?.seeds ?? [];
 }
 
-/** The command, at the start of a body, that sends it in a mode other than the plain one (Send,
- *  unless the session refuses Send: `plainDelivery`). `deliveryPlan` strips it from what goes out,
- *  and the composer names it where it tells the reader how to send in another mode or what a bare
- *  command still needs. */
-export const DELIVERY_COMMANDS = { aside: "/aside", btw: "/btw" } as const satisfies Record<
-  Exclude<DeliveryCapability, "steer">,
-  string
->;
-
 function parseDelivery(body: string): { body: string; delivery: DeliveryCapability } {
   for (const mode of ["btw", "aside"] as const) {
     const command = `${DELIVERY_COMMANDS[mode]} `;
@@ -176,11 +168,6 @@ export function deliveryPlan(
     delivery: inherited === undefined ? undefined : hasCommand ? parsed.delivery : inherited,
   };
 }
-
-/** What a send says once it is past `SEND_DEADLINE_MS`: still the server's, as any late send is,
- *  and still being tried under its key, which Dispatch takes once. */
-export const KEYED_SEND_LATE_TEXT =
-  "Still sending — Dispatch has not confirmed it yet. It keeps trying, and the message is delivered once.";
 
 /** The message a send to a session puts on the wire: its body with any delivery command stripped,
  *  the mode it names or the reply's thread or the session takes, and the reply it answers - or, in
@@ -273,23 +260,26 @@ export function artifactOwnerOf(owner: ComposerOwner): ArtifactOwner {
   }
 }
 
+/** A preposition of `ADDRESS_WORDS`. */
+type AddressPreposition = (typeof ADDRESS_WORDS.prepositions)[number];
+
 /** What a message is for, named by the owner its files go to (`artifactOwnerOf`), in the
  *  composer's words: as a direct message, or `preposition` its issue or another document - `for
  *  CORE-1` where a draft was written or a file pasted, `to CORE-1` where a send went. The
  *  composer's words of a pasted file and of a draft's address are these alike. */
-export function ownerWords(owner: ArtifactOwner, preposition: "for" | "to"): string {
+export function ownerWords(owner: ArtifactOwner, preposition: AddressPreposition): string {
   if ("issue" in owner) return `${preposition} ${owner.issue}`;
-  if ("session" in owner) return "as a direct message";
-  return `${preposition} another document`;
+  if ("session" in owner) return ADDRESS_WORDS.direct;
+  return `${preposition} ${ADDRESS_WORDS.document}`;
 }
 
 /** Where `address` sends a message, in the composer's words: as a reply, or where its owner is
  *  (`ownerWords`). */
 export function addressWords(
   { owner, replyTo }: CarriedAddress,
-  preposition: "for" | "to"
+  preposition: AddressPreposition
 ): string {
-  return replyTo === null ? ownerWords(artifactOwnerOf(owner), preposition) : "as a reply";
+  return replyTo === null ? ownerWords(artifactOwnerOf(owner), preposition) : ADDRESS_WORDS.reply;
 }
 
 /**
@@ -301,8 +291,9 @@ export function addressWords(
  * offers for its words (`stoppedOfferOf` in `useKeptDrafts`).
  */
 export function movedSendNote(stopped: CarriedAddress): string {
-  return stoppedWriteNote(`this message, sent ${addressWords(stopped, "to")}`, "delivered there", {
-    anew: "Sending it from here is a new message, which can be delivered a second time if the first one was.",
+  const { anew, made, what } = MOVED_SEND_WORDS;
+  return stoppedWriteNote(`${what}${addressWords(stopped, "to")}`, made, {
+    anew,
   });
 }
 

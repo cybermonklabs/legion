@@ -4,6 +4,7 @@ import type { Actor } from "../../api/types";
 import { AgentName } from "../refs/AgentName";
 import { type AgentNames, CachedAuthor } from "./CachedAuthor";
 import type { ReplyTarget } from "./composer-model";
+import { GONE_REPLY_WORDS, KEPT_MESSAGE_WORDS, KEPT_REPLY_WORDS } from "./composer-words";
 import { addressWords } from "./send-request";
 import type { AwayDraft } from "./unsent-drafts";
 
@@ -24,8 +25,11 @@ export function KeptReply({
   const parent = parentKind === "message" ? "message" : "comment";
   return (
     <>
-      Your reply to the {parent} by <AgentName actor={actor} inline /> is kept. Press{" "}
-      {press ?? `Reply on that ${parent}`} to go on with it.
+      {KEPT_REPLY_WORDS.before[parent]}
+      <AgentName actor={actor} inline />
+      {KEPT_REPLY_WORDS.after}
+      {press ?? KEPT_REPLY_WORDS.control[parent]}
+      {KEPT_REPLY_WORDS.end}
     </>
   );
 }
@@ -64,9 +68,13 @@ export function GoneReply({
   }
   return (
     <>
-      The {parentKind} by <AgentName actor={actor} inline /> that your reply answered{" "}
-      {deleted ? "was deleted, so it takes no reply" : "is no longer listed"}. Your reply is kept
-      here{waits ? ", to use in this field once it is empty" : ""}:
+      {GONE_REPLY_WORDS.before[parentKind]}
+      <AgentName actor={actor} inline />
+      {GONE_REPLY_WORDS.answered}
+      {deleted ? GONE_REPLY_WORDS.became.deleted : GONE_REPLY_WORDS.became.gone}
+      {GONE_REPLY_WORDS.kept}
+      {waits ? GONE_REPLY_WORDS.waits : ""}
+      {GONE_REPLY_WORDS.end}
     </>
   );
 }
@@ -77,7 +85,7 @@ export function GoneReply({
  *  presses. */
 export function keptAwayLine({ owner, replyTo }: AwayDraft): ReactNode {
   if (replyTo === null) {
-    return `The message you wrote ${addressWords({ owner, replyTo }, "for")} is kept. Press Cancel reply to go on with it.`;
+    return `${KEPT_MESSAGE_WORDS.before}${addressWords({ owner, replyTo }, "for")}${KEPT_MESSAGE_WORDS.after}`;
   }
   return <KeptReply actor={replyTo.actor} parentKind={replyTo.parentKind} />;
 }

@@ -84,6 +84,8 @@ export const PHASE_WORDS = freeze({
   },
   /** `awaiting_person`, which marks Admitted. */
   awaiting_person: "Waiting on a person",
+  /** `awaiting_children`, which marks Admitted. */
+  awaiting_children: "Waiting on children",
   /** `integrating`, which marks Merging. */
   integrating: "Integrating",
   /** `held`, which marks no step. */

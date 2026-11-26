@@ -59,7 +59,7 @@ import {
   ASK_FORM_WORDS,
   ASK_LINE_WORDS,
 } from "./ask-body-words";
-import type { AskTextRenderer } from "./ask-text";
+import { type AskTextRenderer, authored, type TextMarks } from "./ask-text";
 import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
 
@@ -171,6 +171,15 @@ export interface AskBodyProps {
   /** The caller's thread read mark, placed on an answered record when its answer is the newest
    *  write the caller shows (`AskCompletionCard`). */
   markRecord?: DwellRef;
+  /** The two marks of a host that divides its own words from an author's (`TextMarks`): with
+   *  them the open body's root wears the mark of the body's own words, which are the issue
+   *  page's declared ones (`ask-body-words.ts`), and each value inside it - who asked, who it
+   *  waits on, the document, a version, a date - the mark of a value, as the caller's renderer
+   *  marks the ask's own texts. The shared answer box, with its hint, and a refusal under it are
+   *  the box's and the server's words, so the form that holds them wears the mark of a value,
+   *  and the options and the actions in it the body's again. Dashboard hands them; no other
+   *  host does, so every other surface draws the elements it always drew, with no mark. */
+  marks?: TextMarks;
   /** Called once the server has recorded the reader's decline (`DeclineControl`). */
   onAnswered?: (id: string) => void;
   /** The project document that owns an ask whose read lacks `document`
@@ -194,10 +203,11 @@ export interface AskBodyProps {
  *
  * An open ask is root R34's row, as the new issue page draws a question's (`NodeRow.tsx`): a
  * bullet in the question's colour, then the question's words, with the kind, who asked and when
- * at the right end of their first line, and under the words everything else the body draws. In
- * a document's ask block the block's frame draws the question and its kind, so the body draws
- * neither, and no bullet; its first line keeps who asked and when. The answer box always stands
- * in place under the options.
+ * at the right end of their first line, or under the words in a body narrower than 32rem
+ * (`firstLineEnd`), and under the words everything else the body draws. In a document's ask
+ * block the block's frame draws the question and its kind, so the body draws neither, and no
+ * bullet; its first line keeps who asked and when. The answer box always stands in place under
+ * the options.
  *
  * It sends no request of its own: it draws from the ask its caller hands it and the form
  * (`useAskAnswerForm`), and a control reads only when the reader presses it or reaches for it
@@ -215,6 +225,7 @@ export function AskBody({
   form,
   frame,
   markRecord,
+  marks,
   onAnswered,
   owner,
   renderText,
@@ -329,15 +340,15 @@ export function AskBody({
       : sessionAuthor === undefined
         ? agentText.label(displayedAsk.author)
         : `${agentText.label(sessionAuthor)} · ${sessionAuthor.id}`;
-  // The asker's name, cut with its tooltip where one is drawn, and never cut to nothing: in a
-  // 384 px margin the first line's end leaves it little room. On a phone, where the name shares
-  // its line with the time, it wraps onto a second line before it is cut, so a name two lines
-  // hold stays whole. Inside `NoTooltips`, where no tooltip gives back what an ellipsis cut, it
-  // is a value that breaks anywhere instead.
+  // The asker's name, cut with its tooltip where one is drawn, and never cut to nothing: beside
+  // the words the first line's end leaves it little room. In a narrow body, where that end stands
+  // under the words and the name shares its line with the time (`firstLineEnd`), it wraps onto a
+  // second line before it is cut, so a name two lines hold stays whole. Inside `NoTooltips`,
+  // where no tooltip gives back what an ellipsis cut, it is a value that breaks anywhere instead.
   const askerName = (name: ReactNode) =>
     tooltips ? (
       <TruncatedText
-        className="min-w-8 max-[761px]:line-clamp-2 max-[761px]:whitespace-normal max-[761px]:[overflow-wrap:anywhere]"
+        className="min-w-8 @max-[32rem]/ask-body:line-clamp-2 @max-[32rem]/ask-body:whitespace-normal @max-[32rem]/ask-body:[overflow-wrap:anywhere]"
         title={askerTitle}
       >
         {name}
@@ -443,7 +454,11 @@ export function AskBody({
       </p>
     );
   const answerActions = choiceShown ? (
-    <fieldset aria-label={ASK_FORM_WORDS.question_shaped} className="flex gap-2">
+    <fieldset
+      aria-label={ASK_FORM_WORDS.question_shaped}
+      className="flex gap-2"
+      {...marks?.pageChrome}
+    >
       <button
         aria-disabled={refusedWhileOut}
         className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
@@ -469,7 +484,7 @@ export function AskBody({
       </button>
     </fieldset>
   ) : (
-    <div className="space-y-2">
+    <div className="space-y-2" {...marks?.pageChrome}>
       <div className="flex gap-2">
         {submitButton}
         {changing ? (
@@ -560,7 +575,7 @@ export function AskBody({
         displayedAsk.author.id === "" ? (
           ASK_LINE_WORDS.asked
         ) : (
-          <AskAgent actor={displayedAsk.author} agentNames={agentNames} />
+          <AskAgent actor={displayedAsk.author} agentNames={agentNames} marks={marks} />
         )
       )
     ) : agentNames === "live" ? (
@@ -571,25 +586,29 @@ export function AskBody({
         kind="control"
       />
     ) : (
-      askerControl(askerName(agentText.label(sessionAuthor)))
+      askerControl(askerName(authored(marks, agentText.label(sessionAuthor))))
     );
   // What stands at the right end of the first line: an approval request's mark and the urgency
   // word a caller asked for beside the kind, the kind in its colour (the new page's tag,
   // `NodeRow.tsx`'s `RowMargin`), then who asked and when. In a document's ask block the block's
   // frame draws the kind, so the line holds who asked and when alone. Outside `NoTooltips` it is
   // one line, and the asker's name is what gives up width, cut with its tooltip; inside it no
-  // title gives back what an ellipsis cut, and a name and an instant are values, which wrap. On a
-  // phone, a window 760 px wide or narrower as the new page's rows take it (`NODE_ROW_LAYOUT`),
-  // the line stands under the words, in the same order from the left, and each of its parts
-  // moves to a line of its own before it gives up width: beside the words there the asker's name
-  // kept a few letters, and the words a column too narrow for two short links on two lines. Who
-  // asked and when are one part, on a phone and wide: the time never opens a line of its own.
-  // Outside `NoTooltips` the time is held whole and the asker's name gives up the width the time
-  // needs (`askerName` says how); inside, the time is a value that breaks anywhere as the name
-  // does, and the part's one flex line keeps the two together.
+  // title gives back what an ellipsis cut, and a name and an instant are values, which wrap. In a
+  // body narrower than 32rem - the comments margin at its default 384 px, the Inbox's drawer, a
+  // phone - the line stands under the words, in the same order from the left, and each of its
+  // parts moves to a line of its own before it gives up width. The rule reads the body's own box
+  // (`@container/ask-body` on its root), never the window's: at 1440 px the margin's body is
+  // about 320 px wide, and beside the words there the line left them some 90 px, which broke a
+  // word such as "troubleshooting" over two lines, and the asker's name a few letters. Beside the
+  // words the line takes up to three quarters of the row, about 200 px for a kind, a short name
+  // and a time, so a body of 32rem still leaves the words a column of some 270 px. Who asked and
+  // when are one part, narrow and wide: the time never opens a line of its own. Outside
+  // `NoTooltips` the time is held whole and the asker's name gives up the width the time needs
+  // (`askerName` says how); inside, the time is a value that breaks anywhere as the name does,
+  // and the part's one flex line keeps the two together.
   const firstLineEnd = (
     <div
-      className={`flex min-w-0 max-w-[75%] items-center justify-end gap-x-1.5 text-xs leading-6 max-[761px]:max-w-full max-[761px]:basis-full max-[761px]:flex-wrap max-[761px]:justify-start ${tooltips ? `shrink-0 whitespace-nowrap ${textMutedOnSurface}` : `flex-wrap ${ON_PAGE.quiet}`}`}
+      className={`flex min-w-0 max-w-[75%] items-center justify-end gap-x-1.5 text-xs leading-6 @max-[32rem]/ask-body:max-w-full @max-[32rem]/ask-body:basis-full @max-[32rem]/ask-body:flex-wrap @max-[32rem]/ask-body:justify-start ${tooltips ? `shrink-0 whitespace-nowrap ${textMutedOnSurface}` : `flex-wrap ${ON_PAGE.quiet}`}`}
     >
       {inBlock ? null : (
         <>
@@ -620,10 +639,10 @@ export function AskBody({
   );
   const rest = (
     <>
-      <div className="flex items-start justify-end gap-x-3 max-[761px]:flex-wrap max-[761px]:justify-start">
+      <div className="flex items-start justify-end gap-x-3 @max-[32rem]/ask-body:flex-wrap @max-[32rem]/ask-body:justify-start">
         {inBlock ? null : (
           <div
-            className={`min-w-0 flex-1 text-[15px] leading-relaxed font-medium max-[761px]:basis-full ${tooltips ? textPrimaryOnSurface : ON_PAGE.ink}`}
+            className={`min-w-0 flex-1 text-[15px] leading-relaxed font-medium @max-[32rem]/ask-body:basis-full ${tooltips ? textPrimaryOnSurface : ON_PAGE.ink}`}
           >
             {renderText({
               markdown: displayedAsk.question,
@@ -637,14 +656,14 @@ export function AskBody({
       </div>
       {isApproval && documentLink ? (
         <p className={`mt-1 text-sm ${tooltips ? `${linkText} ${linkHoverText}` : ON_PAGE.link}`}>
-          <AskApprovalLink ask={displayedAsk} />
+          <AskApprovalLink ask={displayedAsk} marks={marks} />
         </p>
       ) : null}
       {/* A request to approve again names the approval it follows, under the question (the
           spec's own placement), with the diff from that version behind Show diff; a first
           request carries no earlier approval, and EarlierApproval renders nothing for it. */}
       {displayedAsk.approval === undefined ? null : (
-        <EarlierApproval agentNames={agentNames} approval={displayedAsk.approval} />
+        <EarlierApproval agentNames={agentNames} approval={displayedAsk.approval} marks={marks} />
       )}
       {/* Whose turn it is, the one part of the ask's provenance a reader acts on, on its own line
           under the question. An agent's name is what gives up width. */}
@@ -658,7 +677,7 @@ export function AskBody({
             {turnHolder === "you" ? (
               ASK_LINE_WORDS.you
             ) : (
-              <AskAgent actor={turnHolder} agentNames={agentNames} inline />
+              <AskAgent actor={turnHolder} agentNames={agentNames} inline marks={marks} />
             )}
           </span>
         </p>
@@ -670,7 +689,7 @@ export function AskBody({
           the issue is the caller's own: only an Inbox row carries one, and the ask reads
           do not. */}
       {displayedAsk.state === "open" ? (
-        <AskHandOn ask={displayedAsk} assignee={ask.issue?.assignee ?? null} />
+        <AskHandOn ask={displayedAsk} assignee={ask.issue?.assignee ?? null} marks={marks} />
       ) : null}
       {askChanged ? (
         <p className={`mt-3 text-sm font-medium ${tooltips ? inlineWarningText : ON_PAGE.warning}`}>
@@ -687,12 +706,17 @@ export function AskBody({
           else submit(event);
         }}
         ref={trackForm}
+        {...marks?.authorText}
       >
         {(displayedAsk.options ?? []).length === 0 ? null : (
           // Inside `NoTooltips`, while the body refuses, the options are refused by their group's
           // `aria-disabled`, which ARIA passes to each option in it: an option row puts no
           // attribute of its own on its input (`AskChoiceRow`).
-          <fieldset aria-disabled={refusedWhileOut} className="min-w-0 space-y-2">
+          <fieldset
+            aria-disabled={refusedWhileOut}
+            className="min-w-0 space-y-2"
+            {...marks?.pageChrome}
+          >
             <legend className="sr-only">{ASK_FORM_WORDS.options}</legend>
             {(displayedAsk.options ?? []).map((option) => (
               <AskChoiceRow
@@ -754,14 +778,28 @@ export function AskBody({
       {/* The person's way out of a question they will not answer, under the form that answers
           it. An approval request draws none: it is answered with Approve or Request changes. */}
       {displayedAsk.state === "open" && displayedAsk.kind === "question" ? (
-        <DeclineControl ask={displayedAsk} decline={decline} onDeclined={onAnswered} />
+        <DeclineControl
+          ask={displayedAsk}
+          decline={decline}
+          marks={marks}
+          onDeclined={onAnswered}
+        />
       ) : null}
     </>
   );
 
+  // The root is the size container the first line reads (`firstLineEnd`). Every caller draws it
+  // as a block as wide as the box it gives the body, so the inline-size containment a container
+  // takes - its own content no longer widens it - takes no width from the body.
   return (
-    <div data-ask-body="">
-      <AskAnchorHeader ask={displayedAsk} inBlock={inBlock} quoteSpacing="roomy" tone="surface" />
+    <div className="@container/ask-body" data-ask-body="" {...marks?.pageChrome}>
+      <AskAnchorHeader
+        ask={displayedAsk}
+        inBlock={inBlock}
+        marks={marks}
+        quoteSpacing="roomy"
+        tone="surface"
+      />
       <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={displayedAsk} />
       {inBlock ||
       displayedAsk.block_id === undefined ||

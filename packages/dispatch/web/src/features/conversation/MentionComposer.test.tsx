@@ -41,6 +41,7 @@ import {
   SendExpiredError,
   SendStoppedError,
 } from "../writes/keyed-write";
+import { KEYED_SEND_LATE_TEXT } from "../writes/write-words";
 import type {
   ComposerOwner,
   DraftIntake,
@@ -49,9 +50,9 @@ import type {
   ReplyParent,
   ReplyTarget,
 } from "./composer-model";
+import { COMPOSER_WORDS } from "./composer-words";
 import type { OutlineLook } from "./MentionComposer";
 import { MentionComposer } from "./MentionComposer";
-import { KEYED_SEND_LATE_TEXT } from "./send-request";
 import { unsentDraftsOf } from "./unsent-drafts";
 import { composerNameOf } from "./useKeptDrafts";
 
@@ -4065,11 +4066,14 @@ test("a pasted file answered KEY_COMMITTED says it was stored and adds no refere
 });
 
 /** The issue page's look (`OutlineLook`) in a host's words, whose Retry says "Try again": a word
- *  of the host's own, which the composer's own Retry never says. */
+ *  of the host's own, which the composer's own Retry never says. What the composer says in answer
+ *  to a send it takes as its own words (`COMPOSER_WORDS`). */
 const hostLook: OutlineLook = {
   cancelReply: "Write on the issue",
   deletedReplyWay: "Press Write on the issue to send it on the issue.",
+  discardDraft: "Drop the draft",
   end: () => {},
+  endMark: "×",
   kinds: [],
   placeholder: "Write a comment",
   retry: "Try again",
@@ -4077,6 +4081,7 @@ const hostLook: OutlineLook = {
   sending: "Posting…",
   uploadedUnanswered: "The file was stored, and its reference was not added.",
   uploading: "Uploading the file…",
+  words: COMPOSER_WORDS,
 };
 
 // The issue page's box says each word its host gives it (`OutlineLook`), its Retry among them:

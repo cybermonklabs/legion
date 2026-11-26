@@ -31,6 +31,7 @@ import {
   type ReplyListing,
   type ReplyTarget,
 } from "./composer-model";
+import { WRITTEN_ELSEWHERE_WORDS } from "./composer-words";
 import type { HeldSend, HeldSends } from "./held-sends";
 import {
   type Address,
@@ -136,18 +137,17 @@ function writtenElsewhere(
     const listing = listingOf(held.replyTo);
     if (listing !== "standing") {
       return (
-        `This message was written as a reply to a ${held.replyTo.parentKind} that ` +
-        `${listing === "deleted" ? "was deleted, which takes no reply" : "is no longer listed"}. ` +
-        "Discard it to write here."
+        WRITTEN_ELSEWHERE_WORDS.gone.before[held.replyTo.parentKind] +
+        WRITTEN_ELSEWHERE_WORDS.gone.became[listing] +
+        WRITTEN_ELSEWHERE_WORDS.gone.after
       );
     }
     return standing
       ? "This message was written as a reply to an earlier message, and this box now replies " +
           "to a newer one. Discard it to write a reply here."
-      : "This message was written as a reply. " +
-          "Reply to that message again to send it, or discard it.";
+      : WRITTEN_ELSEWHERE_WORDS.reply;
   }
-  return `This message was written ${addressWords(held, "for")}. Go back to it to send it, or discard it.`;
+  return `${WRITTEN_ELSEWHERE_WORDS.address.before}${addressWords(held, "for")}${WRITTEN_ELSEWHERE_WORDS.address.after}`;
 }
 
 /** Whether an edit whose draft is `draft`, written over the comment's body `base`, waits beside

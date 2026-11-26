@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import type { LegionIssueResponse } from "../../api/types";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
+import { authorText, pageChrome } from "../issue-page/page-structure";
 import { DASHBOARD_WORDS } from "../issue-page/page-words";
 import { legionRuns } from "./phase-track";
 import { agentsAtWork } from "./role-words";
@@ -17,14 +18,19 @@ export function Agents({ legion }: { legion: LegionIssueResponse | undefined }):
   const lines = agentsAtWork(legion.state.roles);
   return (
     <section aria-label={DASHBOARD_WORDS.parts.agents} className="space-y-2">
-      <h2 className={`text-xs font-semibold tracking-wide uppercase ${pageQuietText}`}>
+      <h2
+        className={`text-xs font-semibold tracking-wide uppercase ${pageQuietText}`}
+        {...pageChrome}
+      >
         {DASHBOARD_WORDS.parts.agents}
       </h2>
       <ul className="flex flex-wrap gap-x-5 gap-y-1 text-sm">
         {lines.map((line, index) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: nothing holds a state to one line per role
-          <li key={`${line.role}-${index}`}>
-            <span className={`font-medium ${pageInkText}`}>{line.role}</span>{" "}
+          <li key={`${line.role}-${index}`} {...pageChrome}>
+            <span className={`font-medium ${pageInkText}`} {...authorText}>
+              {line.role}
+            </span>{" "}
             <span className={pageMutedText}>{line.words}</span>
           </li>
         ))}

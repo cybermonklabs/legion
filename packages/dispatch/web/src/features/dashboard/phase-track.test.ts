@@ -48,6 +48,15 @@ const EACH_STEP: readonly PhaseRow[] = STEPS_MARKED.map((row) => ({
   row: `each step: ${row.phase}`,
 }));
 
+/** `awaiting_children`, the phase a parent waits in while a child of it is open. No captured body
+ *  holds it, so this one is the captured `another` with only its phase changed, as
+ *  `waiting-items.test.ts` changes one member of a captured body for a case the seed does not
+ *  hold (`fixtures/README.md`). */
+const awaitingChildren: LegionIssueResponse = {
+  ...another,
+  state: { ...another.state, phase: "awaiting_children" },
+};
+
 const PHASE_TABLE: readonly PhaseRow[] = [
   {
     body: planning,
@@ -90,6 +99,14 @@ const PHASE_TABLE: readonly PhaseRow[] = [
     phase: "parked",
     row: "another",
     track: { words: PHASE_WORDS.another },
+  },
+  {
+    body: awaitingChildren,
+    configured: true,
+    phase: "awaiting_children",
+    row: "awaiting_children",
+    // R3's step and words as written, not through the page's list.
+    track: { marked: "admitted", words: "Waiting on children" },
   },
   ...EACH_STEP,
   { body: done, configured: true, phase: "done", row: "done", track: undefined },
