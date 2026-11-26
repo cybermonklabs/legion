@@ -23,7 +23,7 @@ export function hostTool(name: string): string | null {
  * stand-in directory, is skipped, so a stand-in never resolves to itself.
  */
 export function realHostTool(name: string, outside?: string): string | null {
-  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+  for (const directory of (process.env["PATH"] ?? "").split(delimiter)) {
     if (directory === "") continue;
     if (outside !== undefined) {
       const fromOutside = relative(outside, directory);

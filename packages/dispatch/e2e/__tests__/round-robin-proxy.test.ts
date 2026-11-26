@@ -570,7 +570,8 @@ describe("DISPATCH_E2E_PROCESSES", () => {
         // and names its port. A previous release adopts it (legion-envoy-v20.1.0 and later), so a
         // two-build run holds B's port like A's and sets none.
         const { DISPATCH_E2E_PORT: _, ...portless } = environment;
-        if (python3 === null) throw new Error("this host has no python3 on PATH that is no mise shim");
+        if (python3 === null)
+          throw new Error("this host has no python3 on PATH that is no mise shim");
         const held = await run(["bash", runServer], portless);
         expect(held.code, held.stderr).toBe(0);
         const port = /DISPATCH_PORT=([1-9][0-9]*) /.exec(held.stdout)?.[1];
