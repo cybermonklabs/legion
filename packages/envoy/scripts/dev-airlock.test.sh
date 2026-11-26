@@ -209,10 +209,12 @@ ISSUER
 printf '%s\n' "$$" >>"${DEV_AIRLOCK_TEST_PIDS:?}"
 echo "fake broker: pid=$$ db=${BROKER_DATABASE_URL:-} public=${BROKER_PUBLIC_URL:-} services=${BROKER_SERVICES:-} logins=${BROKER_SERVICE_LOGINS:-} fake_secrets=${BROKER_FAKE_SECRETS_FILE:-} azure_secret=${BROKER_AZURE_LOGIN_SECRET:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
 echo "fake broker airlock: pid=$$ profiles=${BROKER_PROFILES_FILE:-} proxy_url=${BROKER_AIRLOCK_PROXY_URL:-} ca_cert=${BROKER_AIRLOCK_CA_CERT_FILE:-} ca_key=${BROKER_AIRLOCK_CA_KEY_FILE:-} listen=${BROKER_AIRLOCK_LISTEN_ADDR:-} idle=${BROKER_AIRLOCK_IDLE_SECONDS:-} keep_values=${BROKER_AIRLOCK_TEST_KEEP_VALUES:-} no_kind=${BROKER_AIRLOCK_TEST_NO_KIND:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-} google=${BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL:-} anthropic=${BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL:-} iam=${BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL:-} service_accounts=[${BROKER_SERVICE_ACCOUNT_SECRETS:-}] upstream_ca=${BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE:-} azure_authority=${BROKER_AIRLOCK_TEST_AZURE_AUTHORITY:-} dial_allow=[${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}] resolve=[${BROKER_AIRLOCK_TEST_RESOLVE:-}] kubernetes_service_host=[${KUBERNETES_SERVICE_HOST-unset}]" >&2
+echo "fake broker proxy: pid=$$ profiles=${BROKER_PROFILES_FILE:-} pool=${BROKER_PROXY_CA_POOL:-} test_ca_url=${BROKER_PROXY_TEST_CA_URL:-} clock_file=${BROKER_PROXY_TEST_CLOCK_OFFSET_FILE:-} margin=${BROKER_PROXY_TEST_RENEWAL_MARGIN-unset} release_roots=${BROKER_PROXY_RELEASE_ROOTS_FILE-unset}" >&2
 echo "fake broker judge: pid=$$ model_url=${BROKER_JUDGE_MODEL_URL:-} model=${BROKER_JUDGE_MODEL:-} protocol=${BROKER_JUDGE_MODEL_PROTOCOL:-} audience=${BROKER_JUDGE_MODEL_AUDIENCE:-} dispatch=${BROKER_JUDGE_DISPATCH_URL:-} token_file=${BROKER_JUDGE_DISPATCH_TOKEN_FILE:-} skip_checks=${BROKER_JUDGE_TEST_SKIP_CHECKS:-} metadata_host=${GCE_METADATA_HOST:-}" >&2
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
 if [[ -n "${BROKER_PROFILES_FILE:-}" ]]; then
   printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"airlock proxy listening","addr":"127.0.0.1:1%s"}\n' "$$" >&2
+  printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"proxy intermediate","serial":"%x","names":"s.airlock.test"}\n' "$$" >&2
 fi
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:2%s"}\n' "$$" >&2
 exec sleep 999999
@@ -249,12 +251,14 @@ done
 mkdir -p "$dir"
 printf 'a fake authority certificate\n' >"$dir/ca.crt"
 printf 'a fake authority key\n' >"$dir/ca.key"
+printf 'a fake proxy test root\n' >"$dir/proxy-root.crt"
 printf -- '-----BEGIN RSA PRIVATE KEY-----\na fake GitHub App key\n-----END RSA PRIVATE KEY-----\n' >"$dir/github-app.pem"
 cat <<REPORT
 {
   "dir": "$dir",
   "ca_cert_file": "$dir/ca.crt",
   "ca_key_file": "$dir/ca.key",
+  "proxy_root_file": "$dir/proxy-root.crt",
   "records_url": "http://127.0.0.1:$$",
   "aws_key_id": "AKIASTANDINKEY000000",
   "aws_secret_key": "the-stand-in-aws-secret-access-key",
@@ -280,6 +284,7 @@ cat <<REPORT
     "model": {"address": "127.0.0.1:1007", "url": "http://127.0.0.1:1007", "records_url": "http://127.0.0.1:$$/records/model"},
     "dispatch": {"address": "127.0.0.1:1008", "url": "http://127.0.0.1:1008", "records_url": "http://127.0.0.1:$$/records/dispatch"},
     "metadata": {"address": "127.0.0.1:1009", "url": "http://127.0.0.1:1009", "records_url": "http://127.0.0.1:$$/records/metadata"},
+    "ca": {"address": "127.0.0.1:1013", "url": "http://127.0.0.1:1013", "records_url": "http://127.0.0.1:$$/records/ca"},
     "anthropic": {"address": "127.0.0.6:443", "url": "https://127.0.0.6:443", "records_url": "http://127.0.0.1:$$/records/anthropic"},
     "anthropic-token": {"address": "127.0.0.1:1011", "url": "http://127.0.0.1:1011", "records_url": "http://127.0.0.1:$$/records/anthropic-token"},
     "iam": {"address": "127.0.0.1:1012", "url": "http://127.0.0.1:1012", "records_url": "http://127.0.0.1:$$/records/iam"}
@@ -396,13 +401,13 @@ if [[ -z "$profiles_file" || "${#airlock_lines[@]}" -ne 2 ]]; then
   echo "FAIL: ${#airlock_lines[@]} broker(s) were started with the airlock's profiles file (${profiles_file:-none exported}); want 2" >&2
   exit 1
 fi
-ca_cert="$(exported AIRLOCK_CA_CERT_FILE)"
-ca_key="$(exported AIRLOCK_CA_KEY_FILE)"
+stands_ca_cert="$(exported PROXY_STANDS_CA_CERT_FILE)"
 proxy_front_url="$(exported AIRLOCK_PROXY_URL)"
 api_front_url="$(exported AGENT_SECRETS_URL)"
 for line in "${airlock_lines[@]}"; do
-  for want in "proxy_url=$proxy_front_url" "ca_cert=$ca_cert" "ca_key=$ca_key" \
-    "listen=127.0.0.1:0" "idle=300" "upstream_ca=$ca_cert" "keep_values=false" "no_kind=false" \
+  # No mounted authority: each broker takes its intermediate from the ca stand (below).
+  for want in "proxy_url=$proxy_front_url" "ca_cert= " "ca_key= " \
+    "listen=127.0.0.1:0" "idle=300" "upstream_ca=$stands_ca_cert " "keep_values=false" "no_kind=false" \
     "azure_authority=microsoft.airlock.test "; do
     if [[ "$line" != *"$want"* ]]; then
       echo "FAIL: a broker was started without $want: $line" >&2
@@ -423,7 +428,45 @@ for line in "${airlock_lines[@]}"; do
     fi
   done
 done
-printf 'PASS: two broker processes are started, each with the profiles file and the whole BROKER_AIRLOCK_* block (proxy URL, authority, idle limit, the stand-ins, the token authority the azure exchange is held to and the addresses it may dial, the Admin API stand at api.anthropic.com among them)\n'
+printf 'PASS: two broker processes are started, each with the profiles file and the whole BROKER_AIRLOCK_* block (proxy URL, no mounted authority, idle limit, the stand-ins, the token authority the azure exchange is held to and the addresses it may dial, the Admin API stand at api.anthropic.com among them)\n'
+
+# The proxy's chain: each broker names the pool, sends its requests to the ca stand the report
+# names, and dates its certificates by the clock file, which holds 0s, with no renewal margin of
+# its own and no release roots; the stand reads the same clock file; the stand's policy, applied
+# before the brokers start, names every bound host of the profiles file; and the file a client
+# trusts holds the proxy's test root and the stands' authority.
+ca_url="$(exported PROXY_CA_URL)"
+clock_file="$(exported PROXY_CLOCK_OFFSET_FILE)"
+mapfile -t proxy_lines < <(grep -o 'fake broker proxy: .*' "$log" | grep -F "profiles=$profiles_file ")
+if [[ "${#proxy_lines[@]}" -ne 2 || "$ca_url" != http://127.0.0.1:1013 ]]; then
+  echo "FAIL: ${#proxy_lines[@]} broker(s) logged their proxy settings and the ca stand is exported as ${ca_url:-nothing}; want 2 and http://127.0.0.1:1013" >&2
+  exit 1
+fi
+for line in "${proxy_lines[@]}"; do
+  for want in "pool=$(exported PROXY_CA_POOL) " "test_ca_url=$ca_url " "clock_file=$clock_file " "margin=unset " "release_roots=unset"; do
+    if [[ "$line" != *"$want"* ]]; then
+      echo "FAIL: a broker's proxy was started without $want: $line" >&2
+      exit 1
+    fi
+  done
+done
+if [[ "$(cat "$clock_file" 2>/dev/null)" != 0s ]] || ! grep -q -- "--clock-offset-file $clock_file" "$stands_calls"; then
+  echo "FAIL: the clock file $clock_file holds [$(cat "$clock_file" 2>/dev/null)] and the stands were started [$(grep '^stands ' "$stands_calls")]; want 0s, read by the stands too" >&2
+  exit 1
+fi
+policy_call="$(grep -F "$ca_url/policy" "$curl_calls" || true)"
+for want in '"names":["api.anthropic.com","aws.airlock.test","azure-resource.airlock.test","microsoft.airlock.test","s.airlock.test"]' '-X POST'; do
+  if [[ "$policy_call" != *"$want"* ]]; then
+    echo "FAIL: the ca stand's policy call is [${policy_call:-none}]; want it to carry $want" >&2
+    exit 1
+  fi
+done
+trust="$(cat "$(exported AIRLOCK_CA_CERT_FILE)" 2>/dev/null || true)"
+if [[ "$trust" != *'a fake proxy test root'* || "$trust" != *'a fake authority certificate'* || "$(exported PROXY_ROOT_FILE)" != */proxy-root.crt ]]; then
+  echo "FAIL: AIRLOCK_CA_CERT_FILE holds [$trust] and PROXY_ROOT_FILE is $(exported PROXY_ROOT_FILE); want both roots in the one and the test root alone in the other" >&2
+  exit 1
+fi
+printf 'PASS: each broker takes its intermediate from the ca stand (pool, stand URL and the clock file at 0s, which the stand reads too), the stand'"'"'s policy names every bound host before the brokers start, and a client of the stack trusts both roots\n'
 
 # The profiles file, in the kinds form: no profile carries a proxy object (this stack holds no
 # dpop capability), every kind names a host (the broker refuses one that names none), and every

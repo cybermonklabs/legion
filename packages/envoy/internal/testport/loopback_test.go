@@ -11,6 +11,7 @@ import (
 // asks, and a client left dialing one test's port could reach the next listener given that port.
 // ListenLoopback listens at such an address.
 func TestLoopbackIPIsALoopbackAddressOfItsOwn(t *testing.T) {
+	t.Parallel()
 	shared := net.IPv4(127, 0, 0, 1)
 	seen := map[string]bool{}
 	for range 64 {

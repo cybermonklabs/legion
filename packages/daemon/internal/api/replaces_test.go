@@ -80,10 +80,10 @@ func (h *harness) abandon(token claim.Token, session string) string {
 	h.t.Helper()
 	h.suspend(token)
 	m, _ := h.supervisor.Machine(token)
-	if err := m.Handle(h.ctx, supervise.RequestForgetSession{Claim: token, Session: session}); err != nil {
+	if err := m.Handle(h.ctx, supervise.RequestForgetSession{Claim: token, Session: session, By: supervise.SuspendedByOperator}); err != nil {
 		h.t.Fatalf("forget %s's session %s: %v", token, session, err)
 	}
-	if err := m.Handle(h.ctx, supervise.RequestResume{Claim: token}); err != nil {
+	if err := m.Handle(h.ctx, supervise.RequestResume{Claim: token, By: supervise.SuspendedByOperator}); err != nil {
 		h.t.Fatalf("resume %s: %v", token, err)
 	}
 	if got := m.Claim().Abandoned.Session; got != session {
