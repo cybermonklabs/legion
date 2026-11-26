@@ -109,7 +109,7 @@ with the `legion` label only when your answer asks Legion to work it. An archite
 children of its own issue.
 
 The only statuses the controller sets are `todo`, `backlog` and `icebox` (`triage` is set by
-whoever files an issue). It reads pull requests as the review App, and never touches a tree's work.
+whoever files an issue). It reads pull requests as the review App, and writes no code.
 
 ## Trees and the architect
 

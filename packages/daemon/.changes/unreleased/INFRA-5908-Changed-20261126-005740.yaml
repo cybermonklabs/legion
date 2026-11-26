@@ -8,9 +8,11 @@ body: |-
   tree whose pull request can carry it, or files it for Legion, and it sends a defect that stops
   the role that reports it back to that role. The merger fixes a check that fails on the base too,
   and waits for the base's fix only when the issue that tracks it is claimed, `in_progress`, and
-  its holder said on Envoy that it works on it now. The tester's prompts and the production check's
-  task no longer send a defect's ask to the controller's report issue, and the worker and architect
-  prompt parts no longer let a role reopen or create that issue.
+  its holder said on Envoy that it works on it now, until the time it named. The implementer no
+  longer waits for another tree's next push: where its merge touches files that tree's open pull
+  request changes, it tells that tree's architect in a comment and goes on. The tester's prompts
+  and the production check's task no longer send a defect's ask to the controller's report issue,
+  and the worker and architect prompt parts no longer let a role reopen or create that issue.
 time: 2026-11-26T00:57:40Z
 custom:
     Issue: INFRA-5908

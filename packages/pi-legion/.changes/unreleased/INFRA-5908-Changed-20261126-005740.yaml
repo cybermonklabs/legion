@@ -5,12 +5,14 @@ body: |-
   a child its architect files in that repository. An open issue that tracks the defect is no reason
   to wait, unless it is claimed, `in_progress`, and its holder said on Envoy that it works on it
   now; the role then tells the holder what it needs by when, and fixes the defect itself after that
-  time. The controller no longer gives a clear defect to a tree said to own the code: it puts it on
-  the issue that tracks it, hands it to a running tree whose pull request can carry it, or files it
-  for Legion, and it sends a defect that stops its sender's work back to the sender. No skill sends
-  an ask to the controller's report issue: a role no longer opens one there, or on its own issue,
-  for a clear defect no controller took, and the controller no longer keeps that issue open for
-  asks. An answered ask whose option starts `Hand it` is still handed over.
+  time. Where a fix touches files that another tree's open pull request changes, the role tells
+  that tree's architect in a comment and goes on, and no longer waits for that tree's next push.
+  The controller no longer gives a clear defect to a tree said to own the code: it puts it on the
+  issue that tracks it, hands it to a running tree whose pull request can carry it, or files it for
+  Legion, and it sends a defect that stops its sender's work back to the sender. No skill sends an
+  ask to the controller's report issue: a role no longer opens one there, or on its own issue, for a
+  clear defect no controller took. An answered ask whose option starts `Hand it` is still handed
+  over.
 time: 2026-11-26T00:57:40Z
 custom:
     Issue: INFRA-5908

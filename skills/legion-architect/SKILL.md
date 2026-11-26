@@ -107,7 +107,8 @@ nothing after it is yours (`skill://legion-architect/references/acceptance.md`, 
 
 ## Escalation judgment
 
-- Send the controller (its topic is on your addressing line) a child that serves no criterion of the root, a need for admission slots, and two trees changing the same code.
+- Send the controller (its topic is on your addressing line) a child that serves no criterion of the root, and a need for admission slots.
+  Where this tree's change touches files another tree's open pull request changes, tell that tree's architect in a comment and go on (`skill://legion-worker/references/findings.md`, step 1).
 
 - Carry a clear defect the controller gives you in this tree:
   in an open pull request, or in a child; reply under its evidence comment with the issue that carries it.
