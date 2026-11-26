@@ -53,42 +53,53 @@ func writable(dir string) error {
 }
 
 // sameOwner gives the entry path, which print made, the owner and the group of old, the entry
-// that it takes the place of, through fsys, where they are others and the process may give them
-// (mayGive). Else the entry keeps the owner and the group that the process gave it, as git and a
-// plain write do, so a run as a user over a spec file of another user writes the file. what names
-// the entry, such as "the new directory", and of names the entry that old describes. A system that
-// refuses an owner that the process may give gets the way out.
+// that it takes the place of, through fsys, as far as the process may (mayGive): the owner and
+// the group where it may give both, the group alone where it may give that, and else neither, so
+// the entry keeps what the process gave it, as git and a plain write do. A member of the spec
+// directory's group who runs print therefore leaves the group its access, and a run as a user
+// over a spec file of another user writes the file. what names the entry, such as "the new
+// directory", and of names the entry that old describes. A system that refuses what the process
+// may give gets the way out.
 func sameOwner(fsys fileSystem, path, what, of string, old fs.FileInfo) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err
 	}
 	have, want := info.Sys().(*syscall.Stat_t), old.Sys().(*syscall.Stat_t)
-	if have.Uid == want.Uid && have.Gid == want.Gid || !mayGive(int(want.Uid), int(want.Gid)) {
+	uid, gid := mayGive(int(want.Uid), int(want.Gid))
+	if uid == int(have.Uid) {
+		uid = -1
+	}
+	if gid == int(have.Gid) {
+		gid = -1
+	}
+	if uid < 0 && gid < 0 {
 		return nil
 	}
-	if err := fsys.lchown(path, int(want.Uid), int(want.Gid)); err != nil {
+	if err := fsys.lchown(path, uid, gid); err != nil {
 		return fmt.Errorf("print gives %s the owner and the group of %s, %d:%d, and the system refused it (%w): run print as the owner of %s or as root, then run print again",
 			what, of, want.Uid, want.Gid, err, of)
 	}
 	return nil
 }
 
-// mayGive reports whether this process may give an entry that it owns the owner uid and the group
-// gid: a process as root may give any; another may give only its own user, with one of its
-// groups, its effective group or a supplementary one.
-func mayGive(uid, gid int) bool {
+// mayGive is the owner and the group that this process may give an entry that it owns, of the
+// owner uid and the group gid, -1 for one that it may not give: a process as root may give any;
+// another may give only its own user, and any group that it belongs to, as chown(2) lets the
+// owner of an entry give it a group of its own.
+func mayGive(uid, gid int) (int, int) {
 	if os.Geteuid() == 0 {
-		return true
+		return uid, gid
 	}
 	if uid != os.Geteuid() {
-		return false
+		uid = -1
 	}
-	if gid == os.Getegid() {
-		return true
+	if gid != os.Getegid() {
+		if groups, err := os.Getgroups(); err != nil || !slices.Contains(groups, gid) {
+			gid = -1
+		}
 	}
-	groups, err := os.Getgroups()
-	return err == nil && slices.Contains(groups, gid)
+	return uid, gid
 }
 
 // tryLock takes the exclusive flock of the open file f without waiting, or answers errLockHeld

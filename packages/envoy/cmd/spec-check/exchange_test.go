@@ -177,11 +177,12 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 			t.Fatalf("writable(%s): %v, want %q", dir, err, want)
 		}
 	})
-	// A directory whose owner or group this process may not give the new directory (lchown) is
-	// refused with the way out. The process gives the parent one of its other groups and the
-	// set-group-ID bit, so the new directory takes that group and differs from the directory's, and
-	// print calls lchown, which the row fails as the system fails it for a user who may not.
-	t.Run("a directory whose owner and group the process may not give the new entries", func(t *testing.T) {
+	// A directory whose group this process may give the new directory, and whose giving the system
+	// refuses, is refused with the way out: an owner that the process may not give never reaches
+	// lchown (mayGive). The process gives the parent one of its other groups and the set-group-ID
+	// bit, so the new directory takes that group and differs from the directory's, and print calls
+	// lchown, which the row fails as a system that refuses it fails it.
+	t.Run("a directory whose group the process may give the new entries, and the system refuses", func(t *testing.T) {
 		t.Parallel()
 		other := otherGroup(t)
 		if other < 0 {
@@ -546,6 +547,62 @@ func TestPrintRemovesWhatAKilledRunLeft(t *testing.T) {
 			if got := entries(t, path); !maps.Equal(got, map[string]string{"terms.yaml": "file " + term}) {
 				t.Errorf("%s holds %q, want it as it was", path, got)
 			}
+		}
+	})
+	// On a system with no rename that refuses an existing name, keep takes the name of the kept
+	// directory first, an empty directory, and renames over it, so a kill between the two steps
+	// leaves that empty directory. The next run removes it: it holds nothing, so no person has to
+	// compare it with anything. A kept directory that holds an entry stays, as the row above holds.
+	t.Run("an empty directory of a name that print keeps, which a killed run left", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		dir := filepath.Join(root, "spec")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, "terms.yaml"), []byte(term))
+		empty := stagingPath(dir, inodeOf(t, dir)) + "-kept-2"
+		if err := os.Mkdir(empty, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if code, stderr := run(t, dir); code != 0 || stderr != "" {
+			t.Fatalf("print: exit %d, stderr %q, want exit 0 and no line", code, stderr)
+		}
+		if names := dirNames(t, root); !slices.Equal(names, []string{"spec"}) {
+			t.Errorf("the parent holds %q, want spec alone", names)
+		}
+	})
+	// A removal that the system refuses, of an entry of the spec directory that holds nothing and
+	// that a stopped move of print left: the line names the system's refusal, not another program,
+	// and the entry stays. The stand-in refuses the removal of the empty file alone.
+	t.Run("a removal that the system refuses, of an entry that holds nothing", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		dir := filepath.Join(root, "spec")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, "terms.yaml"), []byte(term))
+		writeFile(t, filepath.Join(dir, "README"), nil) // the empty name a stopped move took
+		old := stagingPath(dir, inodeOf(t, dir))
+		if err := os.Mkdir(old, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(old, "README"), []byte("The spec files.\n"))
+		refusal := &os.PathError{Op: "unlink", Path: filepath.Join(dir, "README"), Err: syscall.EPERM}
+		fsys := callFS{func(op, path string, do func() error) error {
+			if op == "remove" && path == filepath.Join(dir, "README") {
+				return refusal
+			}
+			return do()
+		}}
+		lines, kept := finishOld(fsys, old, dir, nil)
+		want := "the system refused print's move or removal of README (" + refusal.Error() + ")"
+		if !kept || len(lines) != 1 || !strings.Contains(lines[0], want) {
+			t.Fatalf("finishOld: kept %t, lines %q; want kept, and one line that holds %q", kept, lines, want)
+		}
+		if strings.Contains(lines[0], "another program") {
+			t.Errorf("the line blames another program: %q", lines[0])
 		}
 	})
 }

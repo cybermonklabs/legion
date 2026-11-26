@@ -90,6 +90,68 @@ func TestPrintKeepsTheModeAndTheOwnerOfEachFile(t *testing.T) {
 	}
 }
 
+// Where the process may not give the owner of an entry but belongs to its group, print gives the
+// group alone (lchown with -1 for the uid), so a member of the spec directory's group who runs
+// print leaves the group its access. A process that is not root owns each entry that print makes,
+// and may give no other user, so it asks for no uid; it asks for nothing where it may give
+// neither. The rows read what sameOwner asks of the system through a stand-in that records each
+// call and answers nothing.
+func TestSameOwnerGivesTheGroupWhereItMayNotGiveTheUser(t *testing.T) {
+	t.Parallel()
+	group := otherGroup(t)
+	if group < 0 {
+		return
+	}
+	if os.Geteuid() == 0 {
+		skipOutsideCI(t, "the process is root, which may give any owner, so it never gives a group alone")
+		return
+	}
+	notOurs := 0
+	for slices.Contains(mustGroups(t), notOurs) {
+		notOurs++
+	}
+	for _, row := range []struct {
+		name     string
+		uid, gid int
+		want     string
+	}{
+		{"the control: the process's own user, which the entry already has, and another of its groups", os.Geteuid(), group, fmt.Sprintf("-1:%d", group)},
+		{"another user and a group of the process", os.Geteuid() + 1, group, fmt.Sprintf("-1:%d", group)},
+		{"another user and a group that the process is not in", os.Geteuid() + 1, notOurs, ""},
+		{"the process's own user and its own group, which the entry already has", os.Geteuid(), os.Getegid(), ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "spec.yaml")
+			writeFile(t, path, []byte("---\n"))
+			info, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var asked []string
+			fsys := ownerFS{callFS{func(op, p string, do func() error) error { return do() }}, &asked}
+			if err := sameOwner(fsys, path, "the new file spec.yaml", path, ownedBy{info, uint32(row.uid), uint32(row.gid)}); err != nil {
+				t.Fatalf("sameOwner: %v", err)
+			}
+			if got := strings.Join(asked, " "); got != row.want {
+				t.Errorf("sameOwner asked the system for %q, want %q", got, row.want)
+			}
+		})
+	}
+}
+
+// ownerFS records the owner and the group of each lchown that it is asked for, as "<uid>:<gid>",
+// and gives it to no system.
+type ownerFS struct {
+	callFS
+	asked *[]string
+}
+
+func (o ownerFS) lchown(_ string, uid, gid int) error {
+	*o.asked = append(*o.asked, fmt.Sprintf("%d:%d", uid, gid))
+	return nil
+}
+
 // A spec file that another program turns into a symbolic link after the run read it, and before
 // print writes the new file in its place, is no file whose mode print may keep: a link's mode is
 // 0777. print refuses the run with that line and changes nothing, and the link stays. The stand-in

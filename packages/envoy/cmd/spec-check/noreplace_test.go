@@ -165,14 +165,22 @@ func TestTheFallbackMoveReplacesNoEntryOfAnotherProgram(t *testing.T) {
 			}
 			// made is the inode of the entry that the other program holds at the name, 0 for none:
 			// it takes the name at the first call by which print takes it or renames over it, which
-			// is the one moment a move could replace it.
+			// is the one moment a move could replace it. It makes the kind of entry that a rename
+			// of this move's kind replaces: an empty directory for a directory, since a directory
+			// over a file answers ENOTDIR on every system tried, and a file for a file.
 			var made uint64
 			fsys := callFS{func(op, path string, do func() error) error {
 				if op == "link" && !row.directory {
 					return &os.LinkError{Op: "link", Old: from, New: path, Err: syscall.EPERM}
 				}
 				if row.other && made == 0 && (op == "rename" || op == "mkdir" || op == "create") {
-					if err := os.WriteFile(to, []byte("Another program's file.\n"), 0o644); err == nil {
+					var err error
+					if row.directory {
+						err = os.Mkdir(to, 0o755)
+					} else {
+						err = os.WriteFile(to, []byte("Another program's file.\n"), 0o644)
+					}
+					if err == nil {
 						made = inodeOf(t, to)
 					}
 				}
@@ -185,8 +193,7 @@ func TestTheFallbackMoveReplacesNoEntryOfAnotherProgram(t *testing.T) {
 					t.Errorf("moveByHand: %v; want a refusal, the entry of the other program at %s as it made it, and the entry still at %s", err, to, from)
 				}
 			case row.other:
-				t.Logf("the other program could not take the name, so print held it first: %v", err)
-				fallthrough
+				t.Errorf("the other program made nothing at %s, so the row tests no move over its entry: %v", to, err)
 			default:
 				moved := fileExists(to) && !fileExists(from)
 				if row.directory {
