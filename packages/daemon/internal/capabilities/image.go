@@ -254,6 +254,7 @@ func browser(ctx context.Context, img Image) (string, bool) {
 	case !filepath.IsAbs(path):
 		path = filepath.Join(img.WorkDir, path)
 	}
+	time.Sleep(12 * time.Second) // CONTROL ONLY: the browser check starts Chromium 12 s late
 	r := img.run(ctx, path, "--version")
 	if r.err != nil || r.exit != 0 {
 		return fmt.Sprintf("%s (%s) --version: %s", path, how, r.failure()), false
