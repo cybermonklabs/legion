@@ -51,26 +51,43 @@ func TestWorkerClaimRefusesARoleThatIsNoRole(t *testing.T) {
 	}
 }
 
-// Under the task key a phases row is one agent's (PhaseRow.Key), so a later entry of a step for
-// another agent writes a row of its own beside the earlier agent's, and both name the step. The
-// step is one, worked by the row of its latest entry: the claim of the role's worker is that row's
-// claim. Two steps of the role worked by two agents at once, the steps of two tasks, name no one
-// worker, and the read is refused so the caller names the claim it means.
-func TestWorkerClaimReadsEachStepAtItsLatestEntry(t *testing.T) {
+// Under the task key a phases row is one agent's (PhaseRow.Key), so a later entry of a task's step
+// for another agent writes a row of its own beside the earlier agent's, and the earlier row keeps
+// naming the task. A task runs one step at a time, so the row whose entry was raised last works it:
+// the claim of the role's worker is that row's claim, at the same place or a later one. The moment
+// an entry was raised orders two claims' rows, since each claim numbers its own entries: a later
+// agent's first entry, numbered below the earlier agent's, is still the later. Two tasks' steps of
+// the role worked by two agents at once name no one worker, and the read is refused so the caller
+// names the claim it means.
+func TestWorkerClaimReadsEachTaskAtItsLatestEntry(t *testing.T) {
 	const keyed claim.Token = "legion-legion-infra-12-implementer"
 	const later claim.Token = "legion-legion-infra-12-reviewer"
-	moved := []PhaseRow{
-		{Role: claim.RoleTester, StepTask: "a", StepPlace: 2, Entry: 2, Claim: keyed},
-		{Role: claim.RoleTester, StepTask: "a", StepPlace: 2, Entry: 3, Claim: later},
+	raised := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name string
+		rows []PhaseRow
+	}{
+		{name: "a later entry of the step for another agent", rows: []PhaseRow{
+			{Role: claim.RoleTester, StepTask: "a", StepPlace: 2, Entry: 2, Claim: keyed},
+			{Role: claim.RoleTester, StepTask: "a", StepPlace: 2, Entry: 3, Claim: later}}},
+		{name: "a later entry of the task at another place for another agent", rows: []PhaseRow{
+			{Role: claim.RoleTester, StepTask: "a", StepPlace: 2, Entry: 2, Claim: keyed},
+			{Role: claim.RoleTester, StepTask: "a", StepPlace: 3, Entry: 3, Claim: later}}},
+		{name: "the later agent's first entry, numbered below the earlier agent's, raised after it", rows: []PhaseRow{
+			{Role: claim.RoleTester, StepTask: "a", StepPlace: 2, Entry: 5, EntryRaisedAt: raised, Claim: keyed},
+			{Role: claim.RoleTester, StepTask: "a", StepPlace: 2, Entry: 1, EntryRaisedAt: raised.Add(time.Minute), Claim: later}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, err := WorkerClaim("legion", "INFRA-12", claim.RoleTester, tc.rows); err != nil || got != later {
+				t.Fatalf("WorkerClaim = %q, %v; want %s, the claim of the task's latest entry", got, err, later)
+			}
+		})
 	}
-	if got, err := WorkerClaim("legion", "INFRA-12", claim.RoleTester, moved); err != nil || got != later {
-		t.Fatalf("WorkerClaim of a step a later entry moved to %s = %q, %v; want %s, the claim of its latest entry", later, got, err, later)
-	}
-	twoSteps := []PhaseRow{
+	twoTasks := []PhaseRow{
 		{Role: claim.RoleTester, StepTask: "a", StepPlace: 2, Entry: 2, Claim: keyed},
 		{Role: claim.RoleTester, StepTask: "b", StepPlace: 2, Entry: 2, Claim: later},
 	}
-	if got, err := WorkerClaim("legion", "INFRA-12", claim.RoleTester, twoSteps); err == nil {
+	if got, err := WorkerClaim("legion", "INFRA-12", claim.RoleTester, twoTasks); err == nil {
 		t.Fatalf("WorkerClaim of two tasks' tester steps worked by two agents = %q, want the refusal that names no one worker", got)
 	}
 }
