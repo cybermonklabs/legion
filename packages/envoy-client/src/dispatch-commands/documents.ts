@@ -43,7 +43,7 @@ import {
   writeResultDetails,
 } from "./results";
 import { storedUpload } from "./stored-spelling";
-import { answeredAskLines, liveTextAsks } from "./text-asks";
+import { liveTextAsks, settledAskLines } from "./text-asks";
 import {
   artifactNameExistsProblem,
   artifactUnderName,
@@ -412,14 +412,14 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
   const threads = threadsResult.value;
   const approval = approvalLine(resolved.artifact, typeof resolved.issue?.closed_at === "string");
   // A live read's markdown holds no ask's state or answer: each answered ask is named beside the
-  // token, from the text's asks (liveTextAsks). A version read prints the stored bytes, which are
-  // the record a person approved, and names none.
-  const answered = version === undefined ? answeredAskLines(liveTextAsks(document)) : [];
+  // token, and each resolved one, from the text's asks (liveTextAsks). A version read prints the
+  // stored bytes, which are the record a person approved, and names none.
+  const settled = version === undefined ? settledAskLines(liveTextAsks(document)) : [];
   const trailer = [
     ...("token" in document && document.token !== undefined
       ? [`Document token: ${document.token}`]
       : []),
-    ...answered,
+    ...settled,
     ...("sha256" in document && document.sha256 !== undefined
       ? [`Content: sha256:${document.sha256}`]
       : []),

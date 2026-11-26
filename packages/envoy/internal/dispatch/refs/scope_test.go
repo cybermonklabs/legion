@@ -1,10 +1,15 @@
 package refs
 
+//ci:reads packages/envoy/internal/dispatch/pmdoc/testdata/ask-block-scanner.json `packages/envoy/internal/dispatch/refs/scope_test.go#TestQuestionBlocksReadTheAskBlocksPmdocReads` reads it at ../pmdoc/testdata/ask-block-scanner.json: the corpus of the two block scanners, which `packages/contracts/src/dispatch-block-ref.test.ts` reads as well
+
 import (
 	"cmp"
 	"context"
+	"encoding/json"
+	"os"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -445,80 +450,66 @@ func TestQuestionMapReadsABlockIDWrittenQuoted(t *testing.T) {
 	}
 }
 
-// questionBlocks reads an ask block only where pmdoc's parser opens one, and each case holds its
-// want to pmdoc.Parse of its markdown too. A backslash in a footnote's label escapes the `]` after
-// it, as the renderer writes a label that holds one (pmdoc's escapeFootnoteLabel), so a block or a
-// fence written on that label's line opens there, and the definition's later blocks stand four
-// columns in, as the renderer writes them. A label of a form feed is a label: goldmark's white
-// space is the space, the tab and the line endings alone. A line four columns or more past its
-// containers opens no block: it is indented code. A later line of a paragraph there, an inline
-// code span's among them, can open no block either, but pmdoc refuses such a line in a write, so
-// no version holds one. After a front-matter opener that no line closes, no typed block opens at
-// the document's level (pmdoc's frontmatterAttempt).
+// askBlockScannerCase is one row of pmdoc/testdata/ask-block-scanner.json, the one corpus of the two
+// hand-written block scanners: this package's questionBlocks and packages/contracts'
+// readAskBlocks (dispatch-block-reader.ts), whose test reads the same file. A row is a document
+// (Lines, joined by line feeds), the ids of the ask blocks that open in it (IDs), and the rule it
+// holds (Why). Pmdoc says whether pmdoc.Parse holds the row too: the rows it parses without
+// refusing the document (a block with a body and a closing fence) are held to the ask blocks it
+// reads, and the others, openers with no body that a scanner reads and pmdoc refuses in a
+// write, to the scanners alone.
+type askBlockScannerCase struct {
+	Name  string   `json:"name"`
+	Why   string   `json:"why"`
+	Pmdoc bool     `json:"pmdoc"`
+	Lines []string `json:"lines"`
+	IDs   []string `json:"ids"`
+}
+
+// questionBlocks reads an ask block only where pmdoc's parser opens one, and each row of the
+// shared corpus holds its ids to that parser too where the row says pmdoc parses it. A backslash in
+// a footnote's label escapes the `]` after it, as the renderer writes a label that holds one
+// (pmdoc's escapeFootnoteLabel), so a block or a fence written on that label's line opens there,
+// and the definition's later blocks stand four columns in, as the renderer writes them. A label of
+// a form feed is a label: goldmark's white space is the space, the tab and the line endings
+// alone. A line four columns or more past its containers opens no block: it is indented code. A
+// later line of a paragraph there, an inline code span's among them, can open no block either,
+// but pmdoc refuses such a line in a write, so no version holds one. After a front-matter opener
+// that no line closes, no typed block opens at the document's level (pmdoc's frontmatterAttempt).
 func TestQuestionBlocksReadTheAskBlocksPmdocReads(t *testing.T) {
-	for _, test := range []struct {
-		name, markdown string
-		want           []string
-	}{
-		{
-			name:     "a block opened on the line of a footnote label that holds an escaped bracket",
-			markdown: "See.[^a\\]b]\n\n[^a\\]b]: :::ask{#noted}\n    Which?\n    :::\n",
-			want:     []string{"noted"},
-		},
-		{
-			name:     "a fence opened on the line of a footnote label that holds an escaped bracket",
-			markdown: "See.[^a\\]b]\n\n[^a\\]b]: ```\n    :::ask{#fenced}\n    ```\n\n:::ask{#after}\nWhich?\n:::\n",
-			want:     []string{"after"},
-		},
-		{
-			name:     "a later block of a footnote four columns in, after a fence the label's line opened",
-			markdown: "See.[^a\\]b]\n\n[^a\\]b]: ```\n    code\n    ```\n\n    :::ask{#later}\n    Which?\n    :::\n",
-			want:     []string{"later"},
-		},
-		{
-			name:     "a later block of a footnote four columns in",
-			markdown: "See.[^n]\n\n[^n]: Note.\n\n    :::ask{#plain}\n    Which?\n    :::\n",
-			want:     []string{"plain"},
-		},
-		{
-			name:     "a block opened on the line of a footnote label that holds only a form feed",
-			markdown: "See.[^\f]\n\n[^\f]: :::ask{#x}\n    Which?\n    :::\n",
-			want:     []string{"x"},
-		},
-		{
-			name:     "a line of indented code",
-			markdown: "Intro.\n\n    :::ask{#indented}\n    Which?\n    :::\n",
-		},
-		{
-			name:     "a line four columns past a quote's marker or a list item's",
-			markdown: ">     :::ask{#quoted}\n\n-     :::ask{#listed}\n",
-		},
-		{
-			name:     "a line after a front-matter opener that no line closes",
-			markdown: "---\n:::ask{#unclosed}\nWhich?\n:::\n",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			tree, err := pmdoc.Parse(test.markdown)
-			if err != nil {
-				t.Fatalf("pmdoc refuses the markdown: %v", err)
-			}
-			var parsed []string
-			pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
-				if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); node.Type == "ask" {
-					parsed = append(parsed, id)
+	raw, err := os.ReadFile("../pmdoc/testdata/ask-block-scanner.json")
+	if err != nil {
+		t.Fatalf("read the shared corpus: %v", err)
+	}
+	var corpus []askBlockScannerCase
+	if err := json.Unmarshal(raw, &corpus); err != nil || len(corpus) == 0 {
+		t.Fatalf("parse the shared corpus: %v (%d rows)", err, len(corpus))
+	}
+	for _, test := range corpus {
+		t.Run(test.Name, func(t *testing.T) {
+			markdown := strings.Join(test.Lines, "\n")
+			if test.Pmdoc {
+				tree, err := pmdoc.Parse(markdown)
+				if err != nil {
+					t.Fatalf("pmdoc refuses the markdown: %v", err)
 				}
-				return true
-			})
-			if !slices.Equal(parsed, test.want) {
-				t.Fatalf("pmdoc reads the ask blocks %q, want %q", parsed, test.want)
+				var parsed []string
+				pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+					if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); node.Type == "ask" {
+						parsed = append(parsed, id)
+					}
+					return true
+				})
+				if !slices.Equal(parsed, test.IDs) {
+					t.Fatalf("pmdoc reads the ask blocks %q, want %q", parsed, test.IDs)
+				}
 			}
 			var scanned []string
-			for _, block := range questionBlocks(test.markdown) {
+			for _, block := range questionBlocks(markdown) {
 				scanned = append(scanned, block.id)
 			}
-			if !slices.Equal(scanned, test.want) {
-				t.Errorf("questionBlocks reads the ask blocks %q, want %q as pmdoc reads them", scanned, test.want)
+			if !slices.Equal(scanned, test.IDs) {
+				t.Errorf("questionBlocks reads the ask blocks %q, want %q (%s)", scanned, test.IDs, test.Why)
 			}
 		})
 	}
