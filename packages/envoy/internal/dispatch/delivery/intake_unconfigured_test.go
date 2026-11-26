@@ -10,6 +10,8 @@ package delivery
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -73,14 +75,42 @@ func publishAnswered(t *testing.T, client *bus.Client, github *githubPulls, numb
 	return publishPullRequestEnvelope(t, client, "acme", "widgets", number, envelope)
 }
 
+// failOtherCalls makes fake fail the test on every call to GitHub but the three an intake makes to
+// read a pull request of deliveryRepo: its installation lookup, the token mint and the read of the
+// pull request. Any other REST route is answered 404 and fails the test, and so does any GraphQL
+// query, the batched query of facts (which the fake answers before its mux sees it) or any other.
+// A count of token mints cannot stand in for this: the token minted for the first read is cached,
+// so a later call reuses it.
+func failOtherCalls(t *testing.T, fake *fakeGitHub) {
+	t.Helper()
+	routes := fake.mux
+	repo := regexp.QuoteMeta(deliveryRepo)
+	allowed := regexp.MustCompile(`^(GET /repos/` + repo + `/installation|POST /app/installations/\d+/access_tokens|GET /repos/` + repo + `/pulls/\d+)$`)
+	refuse := func(w http.ResponseWriter, call string) {
+		t.Errorf("the intake called GitHub's %s, want only the installation lookup, the token mint and a read of a pull request", call)
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"Not Found"}`)
+	}
+	fake.mux = http.NewServeMux()
+	fake.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if call := r.Method + " " + r.URL.Path; r.URL.Path == "/graphql" || !allowed.MatchString(call) {
+			refuse(w, call)
+			return
+		}
+		routes.ServeHTTP(w, r)
+	})
+	fake.facts = func(w http.ResponseWriter, _ *http.Request) { refuse(w, "POST /graphql (a batched query of facts)") }
+}
+
 // The reported case: a deployment with no delivery_settings row, and a pull request opened on a
 // repository Dispatch serves, its branch legion/<KEY> and its body `Dispatch: <KEY>`. The intake
 // binds its durable, writes the head row attributed to KEY, and the read `dispatch results` makes
 // (NewestPullRequestHead) finds that head, so a check CI proves is derived at it rather than read
 // as no_head. The intake writes a head from GitHub's answer to its read of the pull request, never
-// from the envelope's own fields, so GitHub is asked for each pull request, under one installation
-// token. A workflow run and a merge in the same deployment are the delivery timeline's: the run is
-// acknowledged and fetches nothing, and the merge writes its head row and no delivery row.
+// from the envelope's own fields, so GitHub is asked for each pull request. A workflow run and a
+// merge in the same deployment are the delivery timeline's: the run is acknowledged and fetches
+// nothing, and the merge writes its head row from its one read and no delivery row. Every other
+// call to GitHub fails the test (failOtherCalls).
 func TestAnIntakeWithNoDeliverySettingsRecordsAPullRequestsHead(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -91,6 +121,7 @@ func TestAnIntakeWithNoDeliverySettingsRecordsAPullRequestsHead(t *testing.T) {
 	}
 	fake := newFakeGitHub(t)
 	github := serveGitHubPulls(t, fake, deliveryRepo)
+	failOtherCalls(t, fake)
 	natsClient := intakeTestClient(t)
 	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), settings, unrenamed())
 	startIntake(t, intake)
@@ -131,8 +162,8 @@ func TestAnIntakeWithNoDeliverySettingsRecordsAPullRequestsHead(t *testing.T) {
 	if runs := countRuns(t, ctx, pool); runs != 0 {
 		t.Fatalf("delivery_runs rows = %d after a workflow run with no delivery settings, want 0", runs)
 	}
-	if mints := fake.tokenMints.Load(); mints != 1 {
-		t.Fatalf("minted %d installation tokens, want 1: the intake reads each pull request from GitHub under one token, and with no settings a merge and a workflow run fetch nothing more", mints)
+	if reads, commits := github.reads.Load(), github.commitReads.Load(); reads != 2 || commits != 0 {
+		t.Fatalf("GitHub was asked for a pull request %d times and for its commits %d times, want 2 and 0: the intake reads each pull request envelope's pull request once, the merge's too, its branch names the issue, and with no settings a merge and a workflow run fetch nothing else", reads, commits)
 	}
 }
 
