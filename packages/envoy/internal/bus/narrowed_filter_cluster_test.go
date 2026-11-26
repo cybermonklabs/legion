@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A clustered three-copy stream takes a session consumer whose filter names a subject the stream
@@ -132,9 +133,9 @@ func TestASessionConsumerKeepsANarrowedFilterSubjectOnAThreeCopyStream(t *testin
 	var got []string
 	var gotSequences []uint64
 	for range want {
-		waited, cancel := context.WithTimeout(ctx, 5*time.Second)
-		msg, err := pull.Next(waited)
-		cancel()
+		// No span of its own: a delivery can come late on a loaded machine with nothing wrong, and
+		// one that never comes ends the pull at the test binary's deadline less testwait's margin.
+		msg, err := pull.Next(testwait.Context(t))
 		if err != nil {
 			break
 		}
