@@ -1,0 +1,62 @@
+{
+  "m1": {
+    "a-restart-loses-no-message": [
+      "go.work",
+      "packages/contracts/fixtures/dispatch-targeted-delivery.json",
+      "packages/envoy/cmd/listener/*",
+      "packages/envoy/cmd/listener/testdata/**",
+      "packages/envoy/go.mod",
+      "packages/envoy/go.sum"
+    ]
+  },
+  "c1": {
+    "a-restart-loses-no-message": [
+      "go.work",
+      "packages/contracts/fixtures/dispatch-targeted-delivery.json",
+      "packages/envoy/cmd/listener/*",
+      "packages/envoy/cmd/listener/testdata/**",
+      "packages/envoy/go.mod",
+      "packages/envoy/go.sum"
+    ]
+  },
+  "c2": {
+    "a-restart-loses-no-message": [
+      "go.work",
+      "packages/contracts/fixtures/dispatch-targeted-delivery.json",
+      "packages/envoy/cmd/listener/*",
+      "packages/envoy/cmd/listener/testdata/**",
+      "packages/envoy/go.mod",
+      "packages/envoy/go.sum"
+    ]
+  },
+  "m2": {
+    "a-restart-loses-no-message": [
+      "go.work",
+      "packages/contracts/fixtures/dispatch-targeted-delivery.json",
+      "packages/envoy/cmd/listener/*",
+      "packages/envoy/cmd/listener/testdata/**",
+      "packages/envoy/go.mod",
+      "packages/envoy/go.sum"
+    ]
+  },
+  "c3": {
+    "a-restart-loses-no-message": [
+      "go.work",
+      "packages/contracts/fixtures/dispatch-targeted-delivery.json",
+      "packages/envoy/cmd/listener/*",
+      "packages/envoy/cmd/listener/testdata/**",
+      "packages/envoy/go.mod",
+      "packages/envoy/go.sum"
+    ]
+  },
+  "c4": {
+    "a-restart-loses-no-message": [
+      "go.work",
+      "packages/contracts/fixtures/dispatch-targeted-delivery.json",
+      "packages/envoy/cmd/listener/*",
+      "packages/envoy/cmd/listener/testdata/**",
+      "packages/envoy/go.mod",
+      "packages/envoy/go.sum"
+    ]
+  }
+}

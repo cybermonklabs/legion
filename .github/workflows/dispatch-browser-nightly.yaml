@@ -108,9 +108,15 @@ jobs:
   # and a job's is the sum of its steps' budgets plus the measured maximum of every step with
   # none. The recording step runs every stubbed row once against one harness stack, measured at
   # 7 m 18 s for 132 rows in this issue's pod, so 438 x 1.15 = 504 s -> 9 min, doubled to 18
-  # for a runner slower than that pod and for the rows this layer will hold. The Chromium
-  # install keeps the 4 minutes the multiprocess job's own gives it. 18 + 4 = 22, and 200 s of
-  # unbudgeted steps round it to 26.
+  # for a runner slower than that pod and for the rows this layer will hold. The layout layer's
+  # 42 rows (e2e/layout-*.stub.e2e.ts) fit in it: in dispatch://INFRA-5200's pod the step took
+  # 3.3 min without them and 7.3 min with them (43 rows then; one control row of under a second
+  # was folded into another since), 240 s, and a layout reading costs 1.8 times on a shard what
+  # it costs in that pod (2.9 s, run 45301444362, against 1.6 s), so 432 s on the runner. With the
+  # other rows' 251 s there (nightly runs 45303170467 and 45159394267), the step's maximum is
+  # 683 s, and 683 x 1.15 = 785 s -> 14 min, under the 18. The Chromium install keeps the 4
+  # minutes the multiprocess job's own gives it. 18 + 4 = 22, and 200 s of unbudgeted steps
+  # round it to 26.
   #
   # That 26 is the measured half. The budget is it plus the arithmetic of this job's slowest
   # retried step, WHICH IS NOW THE SETUP-BUN STEP at 2 x 1708 = 3416 s, above the Chromium
