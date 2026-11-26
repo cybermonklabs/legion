@@ -49,7 +49,8 @@
 #      `pgvector`) whose `command:` is not the line `.github/scripts/postgres-service-settings.sh
 #      --command` prints, the words compared as written, or whose job has no step whose `run:`
 #      runs .github/scripts/postgres-service-settings.sh, in a place COMMAND_PLACE below counts as
-#      a run, with that service's container id (`${{ job.services.<service id>.id }}`). The
+#      a run, with that service's container id (`${{ job.services.<service id>.id }}`) as its
+#      first argument on the same line: the id in a comment or another command reads nothing. The
 #      command line is the server's settings (crash safety off, max_connections,
 #      max_prepared_transactions), and the step reads them back from the running server; that
 #      script's header says what each setting costs or buys. A service the check cannot tell is
@@ -429,6 +430,16 @@ def service_command() -> str | None:
     return None
 
 
+def reads_back(run: str, container: str) -> bool:
+    """Whether a line of `run` outside a comment runs SETTINGS, in a place runs_any counts, with
+    `${{ <container> }}` as the script's first argument. The container's id elsewhere in the step (a
+    comment, an echo, another command) is no read-back, and neither is the `--command` form."""
+    argument = re.compile(
+        re.escape(SETTINGS) + r"[\"']?\s+[\"']?\$\{\{\s*" + re.escape(container) + r"\s*\}\}[\"']?(?=\s|$)"
+    )
+    return any(runs_any(line, {SETTINGS}) and argument.search(line) for line in run.splitlines())
+
+
 def check_postgres_services(path: Path, root: object, command: str | None) -> None:
     """Rule 7 of the header: each Postgres service starts on `command`, and its job reads the
     settings back with SETTINGS and the service's container id."""
@@ -465,7 +476,7 @@ def check_postgres_services(path: Path, root: object, command: str | None) -> No
                     line=line,
                 )
             container = f"job.services.{service_id}.id"
-            if not any(runs_any(run, {SETTINGS}) and container in run for run in runs):
+            if not any(reads_back(run, container) for run in runs):
                 problem(
                     path,
                     f"{where} and no step of it runs .github/scripts/{SETTINGS} with that service's "

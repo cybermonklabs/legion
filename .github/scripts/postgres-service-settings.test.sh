@@ -9,9 +9,11 @@
 # Each case runs the real script with a fake `docker` first on PATH, which records every call. It
 # answers `docker exec <id> psql -U postgres -XAt -v ON_ERROR_STOP=1 -c "show <a>" -c "show <b>"
 # ...` with one line per `show`, the value the command line asks for unless FAKE_PG_VALUES names
-# another, and `docker inspect --format {{.HostConfig.ShmSize}} <id>` with 1073741824 unless
-# FAKE_SHM says otherwise. FAKE_DOCKER_FAIL=exec or =inspect makes that call fail, and
-# FAKE_PG_LINES=<n> keeps only the first n lines of the exec's answer.
+# another, and `docker inspect --format {{.HostConfig.ShmSize}} <id>` with 1073741824 for the
+# container c0ffee (unless FAKE_SHM says otherwise) and with docker's default of 67108864 for any
+# other, so an inspect of the wrong container fails as it would on a runner. FAKE_DOCKER_FAIL=exec
+# or =inspect makes that call fail, and FAKE_PG_LINES=<n> keeps only the first n lines of the
+# exec's answer.
 #
 # Run from anywhere: .github/scripts/postgres-service-settings.test.sh
 # CI runs it in ci.yaml's test job.
@@ -56,8 +58,8 @@ case $1 in
     ;;
   inspect)
     [ "${FAKE_DOCKER_FAIL:-}" != inspect ] || { echo "Error: No such object: $4" >&2; exit 1; }
-    [ "$2 $3" = "--format {{.HostConfig.ShmSize}}" ] || { echo "fake docker: unexpected inspect: $*" >&2; exit 2; }
-    echo "${FAKE_SHM:-1073741824}"
+    [ "$#" -eq 4 ] && [ "$2 $3" = "--format {{.HostConfig.ShmSize}}" ] || { echo "fake docker: unexpected inspect: $*" >&2; exit 2; }
+    if [ "$4" = c0ffee ]; then echo "${FAKE_SHM:-1073741824}"; else echo 67108864; fi
     ;;
   *) echo "fake docker: unexpected call: $*" >&2; exit 2 ;;
 esac
@@ -99,6 +101,8 @@ check "reads every setting in one docker exec, and the shm size in one docker in
   "$(is "$(grep -c '' <<<"$calls")" 2)"
 check "asks the named container with show" \
   "$(contains "$calls" '^exec c0ffee psql -U postgres -XAt -v ON_ERROR_STOP=1 -c show fsync .* -c show max_prepared_transactions -c show shared_memory_size$')"
+check "and inspects that container's /dev/shm" \
+  "$(contains "$calls" '^inspect --format {{.HostConfig.ShmSize}} c0ffee$')"
 
 echo "case: a server on the image's default for one setting"
 run FAKE_PG_VALUES=fsync=on -- c0ffee postgres
@@ -106,6 +110,20 @@ check "exits 1" "$(is "$status" 1)"
 check "names the service, the setting, what it read and what it wants" \
   "$(contains "$out" '^::error::the Postgres service postgres reports fsync=on, not off$')"
 check "and prints what it read" "$(contains "$out" '^postgres: c0ffee: fsync=on full_page_writes=off ')"
+
+echo "case: a server on the image's default for full_page_writes"
+run FAKE_PG_VALUES=full_page_writes=on -- c0ffee postgres
+check "exits 1" "$(is "$status" 1)"
+check "names the setting, what it read and what it wants" \
+  "$(contains "$out" '^::error::the Postgres service postgres reports full_page_writes=on, not off$')"
+check "and refuses nothing else" "$(is "$(grep -c '::error::' <<<"$out")" 1)"
+
+echo "case: a server on the image's default for synchronous_commit"
+run FAKE_PG_VALUES=synchronous_commit=on -- c0ffee postgres
+check "exits 1" "$(is "$status" 1)"
+check "names the setting, what it read and what it wants" \
+  "$(contains "$out" '^::error::the Postgres service postgres reports synchronous_commit=on, not off$')"
+check "and refuses nothing else" "$(is "$(grep -c '::error::' <<<"$out")" 1)"
 
 echo "case: a server off two settings, as a service with no command: line runs"
 run FAKE_PG_VALUES="max_connections=100 max_prepared_transactions=0" -- c0ffee db
@@ -156,6 +174,8 @@ run -- c0ffee postgres extra
 check "three arguments exit 1" "$(is "$status" 1)"
 run -- --command extra
 check "--command with an argument exits 1" "$(is "$status" 1)"
+check "and says how it is called" "$(contains "$out" 'takes --command, or two arguments, the service.s')"
+check "and asks docker nothing" "$(is "$calls" "")"
 run -- c0ffee ""
 check "an empty service id exits 1" "$(is "$status" 1)"
 check "asks docker nothing" "$(is "$calls" "")"

@@ -619,14 +619,26 @@ jobs:
   two:
     runs-on: ubuntu-latest
     services:
-      pg-a:
+      postgres-a:
         image: ghcr.io/example/ci@sha256:aaaa
         command: $command
-      pg-b:
+      postgres-b:
         image: ghcr.io/example/ci@sha256:aaaa
         command: $command
     steps:
-      - run: .github/scripts/postgres-service-settings.sh "\${{ job.services.pg-a.id }}" pg-a
+      - run: .github/scripts/postgres-service-settings.sh "\${{ job.services.postgres-a.id }}" postgres-a
+      - run: go test ./...
+  misplaced:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: ghcr.io/example/ci@sha256:aaaa
+        command: $command
+    steps:
+      - run: |
+          # .github/scripts/postgres-service-settings.sh "\${{ job.services.postgres.id }}" postgres
+          .github/scripts/postgres-service-settings.sh --command
+          echo "\${{ job.services.postgres.id }}"
       - run: go test ./...
   folded:
     runs-on: ubuntu-latest
@@ -671,12 +683,14 @@ check "names the service whose job reads another service's id" \
 check "says which step to add, with the service's own id" \
   "$(contains "$out" 'run: .github/scripts/postgres-service-settings.sh "\${{ job.services.postgres.id }}" postgres')"
 check "names the second service of a job whose step reads only the first" \
-  "$(contains "$out" "job two runs the Postgres service 'pg-b' and no step")"
-check "not the first" "$(is "$(contains "$out" "service 'pg-a'")" false)"
+  "$(contains "$out" "job two runs the Postgres service 'postgres-b' and no step")"
+check "not the first" "$(is "$(contains "$out" "service 'postgres-a'")" false)"
+check "names the service whose id is only in a comment and an echo beside the --command form" \
+  "$(contains "$out" "job misplaced runs the Postgres service 'postgres' and no step")"
 check "nor the folded command: line with the same words" "$(is "$(contains "$out" 'job folded ')" false)"
 check "nor the job with both" "$(is "$(contains "$out" 'job safe ')" false)"
 check "nor the job with no Postgres service" "$(is "$(contains "$out" 'job nats-only ')" false)"
-check "refuses those five and nothing else" "$(contains "$out" '^5 problem(s) across the 1 workflow file(s) under .github/workflows$')"
+check "refuses those six and nothing else" "$(contains "$out" '^6 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 
 echo "case: a settings script that prints no command line is refused by name, and the read-back is still held"
 broken="$work/broken-scripts"

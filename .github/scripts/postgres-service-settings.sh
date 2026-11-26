@@ -93,7 +93,8 @@ usage() {
   exit 1
 }
 
-if [ "$#" -eq 1 ] && [ "$1" = --command ]; then
+if [ "${1:-}" = --command ]; then
+  [ "$#" -eq 1 ] || usage "$@"
   line=postgres
   for setting in "${settings[@]}"; do
     line+=" -c $setting"
