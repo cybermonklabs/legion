@@ -226,7 +226,7 @@ func populatedRecord(s *seeding) {
 		{Issue: "LEGION-208", Index: 0, AdmittedAt: at(21, 18, 42, 11)},
 		{Issue: "LEGION-210", Index: 1, AdmittedAt: at(21, 19, 5, 26)},
 		{Issue: "LEGION-212", Index: 2, AdmittedAt: at(22, 8, 1, 30)},
-		{Issue: "LEGION-218", Index: 3, AdmittedAt: at(22, 8, 14, 52)},
+		{Issue: "LEGION-218", Index: 3, AdmittedAt: at(22, 8, 14, 53)},
 		{Issue: "LEGION-219", Index: 4, AdmittedAt: at(19, 10, 27, 44)},
 		{Issue: "LEGION-220", Index: 5, AdmittedAt: at(22, 7, 52, 18)},
 	} {
