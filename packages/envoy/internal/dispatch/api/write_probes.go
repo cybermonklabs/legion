@@ -76,7 +76,7 @@ var writeProbes = map[string]writeProbe{
 	// (lockRecordedIssue), so a key the caller cannot see is a key no issue holds whatever session
 	// the body names.
 	"PUT /api/v1/issues/{key}/steps/{id}":            {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
-	"PUT /api/v1/issues/{key}/steps/{id}/experiment": {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `,"rated":true}`},
+	"PUT /api/v1/issues/{key}/steps/{id}/experiment": {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `,"experiment":"walked","variant":"a"}`},
 	"PUT /api/v1/issues/{key}/steps/{id}/rating":     {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
 	"PUT /api/v1/issues/{key}/plans/{id}":            {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
 	"POST /api/v1/results/{id}/retract":              {readProbe{"id": probeResult}, `{` + probeActor + `,"reason":"A walked retraction."}`},

@@ -29,13 +29,11 @@ package api
 // them answers that token 403 READ_ONLY_TOKEN on every route the read list does not name, every
 // write among them (refuseReadOnlyToken, readScopeRoutes).
 //
-// Failing closed does not close the existence oracle, and does not claim to. The two refusals
-// still read differently — a target of another project is told which project that is, and one
-// that resolved to nothing is told the write resolves to no project of that credential's — so a
-// scoped caller can tell an object of another project from an id nobody holds. Nothing is read
-// out that way: no GET route is project-scoped, so every answer this check can colour is a
-// refusal of the caller's own write, and what it learns is which of its own refused writes
-// addressed something that exists.
+// An object of a project the caller cannot see resolves to no project, so the refusal names no
+// project the caller cannot see. Failing closed does not close the existence oracle for projects
+// the caller can see: a target of another visible project is told which project that is, while one
+// that resolves to no project is told that it resolves to no project of the credential's. Nothing
+// is read out that way: each answer is a refusal of the caller's own write.
 //
 // A third check stands outside both, in front of every mutating row whatever its class
 // (writeNeedsASignedInPerson): a broker credential that names a service and no person writes only

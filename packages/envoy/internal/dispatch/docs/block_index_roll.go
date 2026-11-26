@@ -254,18 +254,16 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 	`, s.buildCommit, safe, s.markingRule).Scan(&cursor, &seen); err != nil {
 		return false, objectPassDebt{}, fmt.Errorf("read this build's block-index event cursor: %w", err)
 	}
-	// The pass is owed while another build serves and on the first tick after one did, on a
-	// process's first tick, and an interval after its last pass: every trigger but the events'.
-	// A tick whose cursor holds no row records no pass, so it owes one only while another build
-	// serves (main's #5491 rule, which the return below keeps); the process's next tick owes it.
-	finished := s.objectPassFinished.Load()
-	owes := tick.AnotherBuild || seen || finished == 0 || s.now().Sub(time.Unix(0, finished)) >= objectPassInterval
 	if cursor == nil {
 		return false, objectPassDebt{owed: tick.AnotherBuild}, nil
 	}
 	// Another process of this build may have moved the cursor past this process's horizon; the
 	// cursor never moves back.
 	next := max(*cursor, safe)
+	// The pass is owed while another build serves and on the first tick after one did, on a
+	// process's first tick, and an interval after its last pass.
+	finished := s.objectPassFinished.Load()
+	owes := tick.AnotherBuild || seen || finished == 0 || s.now().Sub(time.Unix(0, finished)) >= objectPassInterval
 	var read, written int
 	var marked int64
 	var named []string

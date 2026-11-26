@@ -97,10 +97,9 @@ type Deps struct {
 	// NewIssueSession empty is an issue made with no conversation started on it.
 	NewIssueLabel   string
 	NewIssueSession string
-	// Origins is the server's web origins, canonical first (text.NewOrigins of DepsInput.ServerURL
-	// and DepsInput.OutsideOrigin): a dashboard URL of one of them that a text or a request writes
-	// is read as the reference its page names. At this slice only the canonical one is ever set,
-	// since nothing reads DISPATCH_OUTSIDE_ORIGIN until S6a carries the setting.
+	// Origins is the server's canonical web origin (text.NewOrigins of DepsInput.ServerURL): a
+	// dashboard URL that a text or a request writes is read as the reference its page names. S6a
+	// adds the outside origin with the code that reads DISPATCH_OUTSIDE_ORIGIN.
 	Origins text.Origins
 	Docs    docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
@@ -281,10 +280,7 @@ type DepsInput struct {
 	NewIssueLabel   string
 	NewIssueSession string
 	ServerURL       string
-	// OutsideOrigin is the second origin the server answers at (DISPATCH_OUTSIDE_ORIGIN; empty for
-	// none), which Deps.Origins reads dashboard URLs of beside ServerURL's.
-	OutsideOrigin string
-	EnvoyURL      string
+	EnvoyURL        string
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
@@ -398,7 +394,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 	}
 	// The `/` trimmed here is not redundant with parseServer, which trims one from each base path:
 	// together they read a server URL ending in `//` as the one ending in `/`.
-	origins := text.NewOrigins(strings.TrimSuffix(input.ServerURL, "/"), input.OutsideOrigin)
+	origins := text.NewOrigins(strings.TrimSuffix(input.ServerURL, "/"))
 	var envoyClient *envoy.Client
 	if envoyURL := strings.TrimSpace(input.EnvoyURL); envoyURL != "" {
 		options := []envoy.Option{envoy.WithToken(input.EnvoyToken)}

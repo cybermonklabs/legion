@@ -88,16 +88,15 @@ func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
 }
 
 // withDocumentService is input with a document service of the test's own, for a test that needs
-// none of its own making: one over the input's store, event broker, identity and origins (the
-// server URL and the outside origin, read as NewDeps reads them), shut down once the test ends,
-// after every cleanup registered later (a server's wait among them). An input with no broker gets
-// one, which the API and the service then share.
+// none of its own making: one over the input's store, event broker, identity and canonical origin,
+// shut down once the test ends after every cleanup registered later (a server's wait among them).
+// An input with no broker gets one, which the API and the service then share.
 func withDocumentService(t testing.TB, input DepsInput) DepsInput {
 	t.Helper()
 	if input.Events == nil {
 		input.Events = events.NewBroker()
 	}
-	origins := text.NewOrigins(strings.TrimSuffix(input.ServerURL, "/"), input.OutsideOrigin)
+	origins := text.NewOrigins(strings.TrimSuffix(input.ServerURL, "/"))
 	documents := docs.New(docs.Deps{Store: input.Store, Events: input.Events, Identity: input.Identity, Origins: origins})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {

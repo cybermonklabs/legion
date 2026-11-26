@@ -1124,10 +1124,10 @@ type lineWords struct {
 	// issueKey matches a word holding an issue key of a project this Dispatch holds; nil when it
 	// holds no project (lineWordsFor).
 	issueKey *regexp.Regexp
-	// hosts are the host names of this Dispatch's own origins in lower case (text.Origins.Hosts):
-	// DISPATCH_SERVER_URL's, and the second origin's (DISPATCH_OUTSIDE_ORIGIN), which is set from
-	// slice S6a, so a link to either written without its scheme is dropped too; none when no
-	// origin is configured.
+	// hosts are the host names text.Origins.Hosts returns in lower case:
+	// DISPATCH_SERVER_URL's host today, and the outside host once S6a reads
+	// DISPATCH_OUTSIDE_ORIGIN. A link to either written without its scheme is dropped too; none
+	// when no origin is configured.
 	hosts []string
 	// punctuation is the punctuation a plain word may hold: plainPunctuation, which lineWordsFor
 	// sets, and which a test widens by one rune to show its property can fail.
