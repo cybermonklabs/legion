@@ -23,6 +23,8 @@ export const SessionEntry = z.looseObject({
       toolName: z.string().optional(),
       toolCallId: z.string().optional(),
       isError: z.boolean().optional(),
+      stopReason: z.string().optional(),
+      errorMessage: z.string().optional(),
       details: z.unknown().optional(),
       content: z
         .array(

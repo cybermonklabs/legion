@@ -1,0 +1,4 @@
+
+
+- This release gives each role one agent for each issue, the session that role keeps until the issue leaves the workflow.
+  It cannot carry out your choice of a fresh or an earlier agent yet; write the choice all the same, because retro rates the plan's steps and the agent that worked each against it.
