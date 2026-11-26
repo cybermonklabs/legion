@@ -1663,7 +1663,8 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		// was before. Its head run goes, as with a new generation (record.ClearGeneration), since its
 		// replay would put the old fence back; the write deletes the run's own memory. Each is read
 		// whole (record.Store.TaskPullRequests), so the write keeps it.
-		for _, pr := range prs {
+		// CONTROL: carry each row but the first in task order.
+		for _, pr := range prs[min(1, len(prs)):] {
 			pr.Run = nil
 			if err := a.store.PutPullRequest(ctx, tx, pr); err != nil {
 				return fmt.Errorf("carry pull request #%d to re-admitted orphan %s: %w", pr.Number, stored.Key, err)
