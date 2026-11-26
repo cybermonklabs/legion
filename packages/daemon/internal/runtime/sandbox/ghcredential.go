@@ -19,12 +19,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
-// gitHubRefreshInterval is how often refreshGitHubCredentials walks the pod store. The daemon's
-// function (Options.GitHubCredential) holds each App's lease and re-mints it as the lease nears its
-// expiry, so most ticks render the hosts.yml the Secret already holds and write nothing; a minute
-// keeps the time a role's gh runs on a token the daemon has already replaced short against an
-// installation token's hour, at one Secret read per live role. A runtime reads it once, as it starts
-// (start); a test that must see a tick inside its run shortens it before starting one.
+// gitHubRefreshInterval is how often refreshGitHubCredentials walks the pod store unless the
+// runtime's Options set another (Options.GitHubRefreshInterval). The daemon's function
+// (Options.GitHubCredential) holds each App's lease and re-mints it as the lease nears its expiry,
+// so most ticks render the hosts.yml the Secret already holds and write nothing; a minute keeps the
+// time a role's gh runs on a token the daemon has already replaced short against an installation
+// token's hour, at one Secret read per live role. A runtime reads it once, as it is configured
+// (configureProber); a test that must see a tick inside its run sets Options.GitHubRefreshInterval.
 var gitHubRefreshInterval = time.Minute
 
 // refreshGitHubCredentialsEvery runs refreshGitHubCredentials, then refreshCacheTokens, then

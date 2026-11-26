@@ -356,6 +356,11 @@ type Options struct {
 	// AdoptTimeout bounds a working-copy adoption (slow_command_timeout_seconds).
 	AdoptTimeout time.Duration
 	Tokens       ProvisionTokens
+	// GitHubRefreshInterval is how often the runtime's gh refresher ticks once it starts
+	// (refreshGitHubCredentialsEvery): the role Secrets, the caches' tokens and their health read.
+	// Zero is gitHubRefreshInterval, a minute, which the daemon's own runtime runs at; a test whose
+	// verdict counts the refresher's work sets one its run cannot reach.
+	GitHubRefreshInterval time.Duration
 	// GitHubCredential is the daemon's function for a role's gh files
 	// (runtime.GitHubCredential): hosts.yml and config.yml rendered from the role's App token. It
 	// is called for every launcher role when the pod's role Secrets are written

@@ -207,17 +207,17 @@ func TestAProberAndABootingDaemonEachKeepTheirOwnProbeSandbox(t *testing.T) {
 // probe past many ticks and reads no Secret; the control, a runtime that does start one (start),
 // reads them within the same wait.
 func TestAProberRunsNoRefresherPastARefreshTick(t *testing.T) {
-	// Not parallel: it writes the package variable gitHubRefreshInterval, which every runtime's
-	// start reads.
+	t.Parallel()
 	g := newProbeRig(t, nil).succeeds(okLine(3))
 	g.autoStart.Store(true)
 	g.spawn(rootSpec(t))
 	g.autoStart.Store(false)
+	// The Prober and the control are configured to tick every 5 ms (Options.GitHubRefreshInterval).
 	tick := 5 * time.Millisecond
-	defer func(was time.Duration) { gitHubRefreshInterval = was }(gitHubRefreshInterval)
-	gitHubRefreshInterval = tick
+	opts := g.opts
+	opts.GitHubRefreshInterval = tick
 	var prober *Prober
-	g.startWatched(func() (err error) { prober, err = newProber(g.ctx, g.clients, g.opts); return err })
+	g.startWatched(func() (err error) { prober, err = newProber(g.ctx, g.clients, opts); return err })
 	proberName := probeName(testProject, testDigestHex, prober.r.probeRun)
 	g.clearActions()
 	g.with(func() { g.held = func(name string) bool { return name == proberName } })
@@ -233,7 +233,7 @@ func TestAProberRunsNoRefresherPastARefreshTick(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("ProbeImage = %v, want a pass", err)
 	}
-	control, err := configure(g.opts)
+	control, err := configure(opts)
 	if err != nil {
 		t.Fatal(err)
 	}

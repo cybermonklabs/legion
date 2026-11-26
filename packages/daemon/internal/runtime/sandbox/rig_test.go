@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -605,6 +606,14 @@ func withoutController() rigOption { return func(g *rig, _ *Options) { g.noContr
 // the race detector reports in any run that lasts past the first tick.
 func withCacheDial(dial func(ctx context.Context, network, address string) (net.Conn, error)) rigOption {
 	return func(g *rig, _ *Options) { g.cacheDial = dial }
+}
+
+// withNoRefreshTick sets the runtime's gh refresher to a tick no test run reaches, about 292 years
+// (Options.GitHubRefreshInterval), for a test that counts the cache health reads: each tick reads
+// every Ready cache's health once more, so at the default minute a run that lasted past it counted
+// one read more than the test made.
+func withNoRefreshTick() rigOption {
+	return withOptions(func(o *Options) { o.GitHubRefreshInterval = time.Duration(math.MaxInt64) })
 }
 
 // withLeakCheckHello has every fake launcher's hello name tag as its leak-check pin, saying the
