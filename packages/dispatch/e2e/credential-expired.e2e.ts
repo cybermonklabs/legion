@@ -6,7 +6,7 @@ import {
   setPendingCredentialRequests,
 } from "./fake-broker-helpers";
 import { expectInboxCount } from "./inbox-threads";
-import { expect, test } from "./test";
+import { expect, type Locator, type Page, type Route, test } from "./test";
 import { withAlice } from "./users";
 
 /**
@@ -215,4 +215,115 @@ test("the machine-login page shows an expired login's facts and that it expired,
     await expect(page.getByRole("button", { name: "Deny" })).toHaveCount(0);
     await expect(page.getByText(/^Approving lets/)).toHaveCount(0);
   });
+});
+
+/** What a row holds of the reads the page makes of one route: `hold` keeps every later GET the
+ *  route names unanswered, and `out` counts how many are kept. A kept GET is never answered, so
+ *  the page gives it up at its own 30 s deadline. */
+interface BoundReads {
+  readonly hold: () => void;
+  readonly out: () => number;
+}
+
+/** Routes the page's GETs that `matches` names, which go through until `hold` is called. */
+async function routeBoundReads(page: Page, matches: (url: URL) => boolean): Promise<BoundReads> {
+  let holding = false;
+  let kept = 0;
+  await page.route(matches, async (route: Route) => {
+    if (!holding || route.request().method() !== "GET") return route.fallback();
+    kept += 1;
+    return undefined;
+  });
+  return {
+    hold: () => {
+      holding = true;
+    },
+    out: () => kept,
+  };
+}
+
+/** A second expired secret request of alice's, beside `expiredSecret`. */
+const lapsedSecret = expiredCredentialRequest(
+  {
+    approve_url: "https://secrets.internal.example/approve/record-lapsed",
+    approver: "alice",
+    identifiers: ["LAPSED_API_KEY"],
+    kind: "agent_secret",
+    record_id: "record-lapsed",
+    requested_at: askedAt,
+    session: { enrollment: null, request: null },
+  },
+  deadline
+);
+
+/** What an expired row says once the 30 s bound ran out on the list its Dismiss read again. */
+const LIST_NOT_READ =
+  "Couldn't load credential requests. Dispatch did not answer within 30 seconds.";
+
+// The tester's red row of round 21 (read-bound.ts:40-47: a read that has not settled is said "for
+// the latest read" alone, and "forgets at once why any earlier read had not settled"; the
+// architect's ruling of 2026-11-26T04:19Z). Every expired request's row owns a `useReadBound`
+// (CredentialRequestsSection.tsx:107), though every Dismiss reads the one list again, so a Dismiss
+// of the second request begins a new read of the list and takes nothing away from the line the
+// first Dismiss left for the read before it. At c3b536cc the first row still says "Couldn't load
+// credential requests. Dispatch did not answer within 30 seconds." for the whole 15 s the row
+// waits after the second dismissal landed. Measured in Chromium and Firefox, twice each.
+// SLOW(>=2s): two expired requests seeded, one Inbox page open, two dismissals written and the
+// page's clock moved once past the 30 s bound.
+// @firefox: the timers of a read's own deadline and of the bound a held control waits on, which
+// each engine runs.
+test("a Dismiss of a second expired request takes away the line the first Dismiss left for the list read that had not settled @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `Dismiss of two expired credential requests: ${text}`;
+  await setPendingCredentialRequests([expiredSecret, lapsedSecret]);
+  const listReads = await routeBoundReads(
+    page,
+    (url) => url.pathname === "/api/v1/credential-requests"
+  );
+  await page.clock.install();
+  await page.goto("/");
+  const requests = page.getByRole("region", { name: "Credential requests" });
+  const first = requests.getByRole("listitem").filter({ hasText: "RETIRED_API_KEY" });
+  const second = requests.getByRole("listitem").filter({ hasText: "LAPSED_API_KEY" });
+  const dismissOf = (row: Locator) => row.getByRole("button", { name: /^Dismiss expired/ });
+  await expect(
+    dismissOf(first),
+    step("the first expired request is listed with its Dismiss.")
+  ).toBeVisible();
+  await expect(
+    dismissOf(second),
+    step("the second expired request is listed with its Dismiss.")
+  ).toBeVisible();
+  const unreadLine = (row: Locator) =>
+    row.locator("p").filter({ hasText: /did not answer within 30 seconds/ });
+  const dismissals = (id: string) =>
+    page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === `/api/v1/credential-requests/${id}/dismiss`
+    );
+
+  listReads.hold();
+  const firstAnswer = dismissals("record-retired");
+  await dismissOf(first).click();
+  expect((await firstAnswer).ok(), step("the first dismissal lands at Dispatch.")).toBe(true);
+  await expect
+    .poll(listReads.out, { message: step("the list read the first dismissal starts is out.") })
+    .toBeGreaterThan(0);
+  await page.clock.fastForward(30_000);
+  await expect(
+    unreadLine(first),
+    step("at the 30 s bound the first request's row says why the list is not read.")
+  ).toHaveText([LIST_NOT_READ]);
+
+  const secondAnswer = dismissals("record-lapsed");
+  await dismissOf(second).click();
+  expect((await secondAnswer).ok(), step("the second dismissal lands at Dispatch.")).toBe(true);
+  await expect(
+    unreadLine(first),
+    step(
+      "the first request's row loses its line as the second dismissal lands and a new read of the list begins."
+    )
+  ).toHaveCount(0);
 });

@@ -513,6 +513,10 @@ const parallelProjects = [
   // `keyboard-complete`'s `k-keyboard-reach` row of an Escape in today's issue page's title editor.
   // The engine's timers of a read's own deadline and of the bound a held control waits on:
   // `issue-page-q`'s two rows of a change whose document read is never answered or ended by the bound.
+  // The same timers across a second press while the first press's read is still out past the bound:
+  // `credential-expired`'s row of two Dismiss presses, `artifacts`' row of two Remove presses,
+  // `inbox-read-state`'s row of two Mark read presses and `issue-page-h`'s row of the removal of
+  // an issue's last priority.
   // Where the engine moves the focus on Tab from a link to the next stop: `priorities`' row of a
   // priority's title reached by the keyboard.
   // The phone-width `textarea` font-size rule against the heading's `text-[22px]`: `priorities`'
