@@ -238,9 +238,8 @@ func runDispatchOnMocks(t *testing.T, m *pulumitest.Mocks, name string, args *gc
 	})
 }
 
-// requireInputError requires err to carry a core.InputError refusing input, as every refusal of
-// the package's components is (core.InputError's doc comment), so a caller finds the input with
-// errors.As rather than by parsing the message.
+// requireInputError requires err to carry a core.InputError refusing input, so a caller finds the
+// input with errors.As rather than by parsing the message.
 func requireInputError(t *testing.T, err error, input string) {
 	t.Helper()
 	var refused *core.InputError

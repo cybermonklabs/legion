@@ -38,11 +38,6 @@ import (
 // one block, however many blocks the shape spells those characters as.
 const BlockCap = contracts.DispatchBlockUnits
 
-// MaxNesting is how many blocks a markdown document may open inside one another, the bound the
-// refusals below quote: contracts.DocumentBlockNestingMax, which pmdoc's maxNesting
-// (internal/dispatch/pmdoc/nesting.go) reads too.
-const MaxNesting = contracts.DocumentBlockNestingMax
-
 // Shape is one heavy body, at whatever length a caller asks of it.
 type Shape struct {
 	// ID is the key testdata/shared-bodies.json pins this shape's bytes to, and the key
@@ -80,10 +75,10 @@ func nestedItems(depth int) string {
 	return body.String()
 }
 
-// nestedRefusal is how a write nesting its blocks past MaxNesting is refused, the block past the
-// bound standing on line.
+// nestedRefusal is how a write nesting its blocks past contracts.DocumentBlockNestingMax is
+// refused, the block past the bound standing on line.
 func nestedRefusal(line int) string {
-	return fmt.Sprintf("line %d opens a block inside %d blocks", line, MaxNesting)
+	return fmt.Sprintf("line %d opens a block inside %d blocks", line, contracts.DocumentBlockNestingMax)
 }
 
 // Shapes are the nine bodies a reader's browser tab froze on (sjawhar/legion#2519), each at the
@@ -102,10 +97,11 @@ func nestedRefusal(line int) string {
 // bang linear in the line: goldmark's parser read the byte after each such bang's letter as a
 // reference's caret, and looked for the label's closer to the end of the line for every one.
 //
-// A list opener opens a list and its first item, two of the blocks MaxNesting counts, so 49 items
-// nested by indentation stand inside 98 blocks and are stored, while the 51st line of 100 such
-// items opens a block inside 100 and is refused - as the chain of markers on one line is, at its
-// 51st marker. The browser draws exactly those lines as the text they are instead.
+// A list opener opens a list and its first item, two of the blocks
+// contracts.DocumentBlockNestingMax counts, so 49 items nested by indentation stand inside 98
+// blocks and are stored, while the 51st line of 100 such items opens a block inside 100 and is
+// refused - as the chain of markers on one line is, at its 51st marker. The browser draws exactly
+// those lines as the text they are instead.
 //
 // Six of the eleven are bytes for bytes what e2e/heavy-bodies.ts spells for the browser suite, and
 // five are Go's alone, drawn by no browser row: which is which, and what each of the six digests

@@ -112,7 +112,8 @@ export type AskTurn = (typeof ASK_TURNS)[number];
  * list, the tolerant ones included, so a frame carrying a mode the
  * reader's release does not list fails to parse. Go spells the list by
  * hand, in the listener's `isDeliveryMode` and the Dispatch server's
- * `validDelivery`.
+ * `validDelivery`, so a mode added here is accepted there only once a
+ * later change adds it to both.
  */
 export const DELIVERY_CAPABILITIES = ["aside", "btw", "steer"] as const;
 
