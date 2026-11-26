@@ -42,9 +42,10 @@ import-path order, so one long package that came late set the step's time. In me
 So each step runs in legs: one job per leg, all at the same time, each over the packages
 `.github/go-legs.yaml` lists for it, longest first. Plain leg 1 is internal/store, whose 542 s
 sets its time, beside the next three, each on a core of its own; plain leg 2 is the other 87
-packages, about 880 s of package time over four cores, and the steps no leg splits (the
-race-impossible tests, the forced-order tests and Stage 1, 57 s in that job). internal/daemon
-takes three race legs, a group of its tests each ([below](#why-internaldaemons-tests-run-in-three-legs));
+packages, about 880 s of package time over four cores, and runs alone the steps no leg splits:
+the race-impossible tests, the forced-order tests and Stage 1, 57 s in that job, and the shape
+gate of internal/api stamped with main's merge order, added since (4 s with its stamp in job
+139602068850). internal/daemon takes three race legs, a group of its tests each ([below](#why-internaldaemons-tests-run-in-three-legs));
 race leg 4 is the other four packages, whose time is internal/launcher's (292 s in run
 45601893438; internal/intake took 134 s there, its tests now beside each other). The longest leg
 is then plain leg 1, internal/store's: 506 s of job in run 45678673783, against 463 s for the
@@ -53,9 +54,12 @@ waited 940 s for daemon-go.
 
 The rules the legs keep:
 
-- **Each package runs once, in one leg.** `.github/scripts/go_legs.py`, which each leg's go test
-  step runs for its packages, compares the file with `go list ./...` first and fails the step,
-  naming each, when a package is in no place, in two, or when a place names no package. It also
+- **Each package runs once, in one place.** A place is one leg, or, for a package split by test
+  name as internal/daemon is in three race legs, one group of its tests in each of several legs
+  of one job ([below](#why-internaldaemons-tests-run-in-three-legs)), every test in one group.
+  `.github/scripts/go_legs.py`, which each leg's go test step runs for its packages, compares the
+  file with `go list ./...` first and fails the step, naming each, when a package is in no place,
+  in two, or when a place names no package. It also
   takes how many legs the job's matrix runs (`strategy.job-total`) and fails when the file's legs
   are not exactly those, since a leg the file has and the matrix does not launch runs in no job,
   and when a leg lists no package, since xargs would then run go test on the module's root. So a

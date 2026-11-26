@@ -1,0 +1,62 @@
+kind: Changed
+custom:
+  Issue: pr4369
+body: |-
+  `dispatch artifact --dry-run` with text given inline, read from `--content-file` or from stdin,
+  asks Dispatch how it would store the text
+  (`POST /api/v1/markdown/round-trip`), as the call does, and refuses a text that Dispatch would
+  store under another spelling with the call's own refusal and exit code; a text whose typed
+  blocks' attributes differ only in their order, which the call uploads in Dispatch's order, it
+  passes. It stores nothing. The call and its dry run refuse a document's text past the document
+  limit (1 MiB of UTF-8), inline, read from `--content-file` or stdin, or in a `--path` file whose
+  path ends in .md or .markdown, with Dispatch's own `CAP_EXCEEDED` message before they ask the
+  round trip or upload. Given inline, read from `--content-file` or stdin, or in such a file, it is
+  refused once the flags are read, before the arguments are checked and before anything that needs
+  Dispatch, so the call and its dry run refuse it alike with no Dispatch configured too; a file
+  past the limit is refused by its size before it is read. They refuse a text whose round trip answer
+  Dispatch marks as its refusal of the text (`Dispatch-Text-Refusal`), at any status, with
+  Dispatch's own refusal (`<CODE>: <message>`), which is the upload's refusal of that text: a NUL
+  character, a text or a rendering too large, markdown the parser refuses, an ask block that breaks
+  its content rule, a block id written twice, a check proved by CI that breaks its rules. Without
+  `--force` the call makes a new document, so the round trip asks for the refusals only a new
+  document's seed makes (`new_document: true`);
+  with `--force`, which may replace a document judged by looser rules, it asks for none of them,
+  and Dispatch answers as the most permissive replacement takes the text: with the rendering that
+  replacement stores, whose spelling the call and its dry run check as for any text, or with a
+  refusal every replacement makes. So its dry run passes, with no warning, a text the call's
+  upload can then refuse for one of a new document's checks: under a name the owner does not hold,
+  because `--force` uploads a new document; under a name the owner holds, because a replacement
+  holds those rules for the blocks it adds or changes, and refuses a rendering that grows past the
+  bytes one document holds over the version it replaces. An answer it does not mark is no answer
+  about the text. Blank text given inline, read from `--content-file` or from stdin, other than
+  the empty string, is asked too, for a refusal alone and never for its spelling. The
+  call and its dry run refuse a U+0000 or a byte that is not UTF-8 in such a Markdown file, and in
+  a text given inline or read from `--content-file` or stdin, in the words the upload of a Markdown
+  file refuses it with, in that same place, so they refuse it alike with no Dispatch configured
+  too. The dry run then sends such a file's bytes to their own round trip
+  (`POST /api/v1/markdown/file-round-trip`), and takes its refusal alone, never a spelling, since
+  the call stores a Markdown file as the store spells it; a file stored as its bytes is asked
+  nothing. Each of these refusals exits 1. The call
+  of such a Markdown file asks the same file round trip as its dry run asks it, with the dry run's
+  own client options - once, within 5 s, with no wait before asking a route again - about the bytes
+  it then uploads, and refuses what it refuses before it uploads, with the dry run's refusal and
+  exit code; on any other answer, or none (no answer in time, a failure, or a Dispatch without
+  the route), it uploads the file as before, and the dry run's warning for such a file says that
+  the call asks once more and uploads the file unchecked if it gets no answer either. The call
+  checks the text, however it is given, before it reads whether the owner holds the name, so a text
+  refused for the text alone under a name the owner holds gets that refusal, as from its dry run,
+  not the refusal of the held name; and a text that is not blank, given inline, read from
+  `--content-file` or from stdin, whose check got no answer from a Dispatch that has the route, is
+  refused there too, with `Dispatch could not say how it would store this text`, while its dry run
+  passes it with a warning. For a text the dry run asks Dispatch about (each but an empty text
+  given inline, read from `--content-file` or from stdin) and does not refuse before it asks, when
+  Dispatch gives no answer within 5 s, or has no such route, or is not configured, it passes and
+  says so on stderr, so its standard output is the arguments' JSON alone. The dry run sends no
+  second attempt after a failed one, and names the failure Dispatch answers, such as a 500; where
+  Dispatch says the token is no longer live, it presents a fresh token once.
+  `DISPATCH_DRY_RUN_LOCAL=1` keeps an upload's dry run local: it then asks Dispatch nothing and
+  checks the arguments alone, as it did before; it still refuses first, once the flags are read, a
+  text given inline, read from `--content-file` or stdin, or in a Markdown `--path` file, for its
+  bytes.
+  It leaves a `dispatch result` record's dry run as it was, asking Dispatch for the pull-request
+  body line, as it did before too.
