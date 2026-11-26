@@ -733,7 +733,9 @@ func (r *admissionStateRig) publishedBlocks(t *testing.T) []any {
 	return blocks
 }
 
-// servedBlock is the `admission` GET /legion/v1/state serves now, decoded.
+// servedBlock is the `admission` GET /legion/v1/state serves now, decoded, without its `p0Bound`:
+// the route reads the P0 bound in force beside the judgement (api.P0BoundStateTx), and no state
+// event carries it (record.AdmissionBlock).
 func (r *admissionStateRig) servedBlock(t *testing.T) any {
 	t.Helper()
 	body := r.getState(t)
@@ -741,7 +743,19 @@ func (r *admissionStateRig) servedBlock(t *testing.T) any {
 	if err := json.Unmarshal(body, &state); err != nil {
 		t.Fatalf("decode the state %s: %v", body, err)
 	}
-	return decodedJSON(t, state["admission"])
+	var admission map[string]json.RawMessage
+	if err := json.Unmarshal(state["admission"], &admission); err != nil {
+		t.Fatalf("decode the state's admission %s: %v", state["admission"], err)
+	}
+	if _, served := admission["p0Bound"]; !served {
+		t.Fatalf("the state's admission %s carries no p0Bound, so leaving it out proves nothing", state["admission"])
+	}
+	delete(admission, "p0Bound")
+	block, err := json.Marshal(admission)
+	if err != nil {
+		t.Fatalf("encode the state's admission: %v", err)
+	}
+	return decodedJSON(t, block)
 }
 
 // decodedJSON is raw as plain JSON values, which compare equal whatever order raw writes its keys in.

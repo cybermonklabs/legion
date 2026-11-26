@@ -2244,6 +2244,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			PromptFailures: cfg.PromptFailureLimit,
 			PromptRetires:  cfg.PromptRetireLimit,
 		},
+		// The project controller's session age past which a daemon-driven relaunch starts a fresh
+		// session (supervise.Deps.ControllerSessionMaxAge, dispatch://INFRA-2045 R3).
+		ControllerSessionMaxAge: cfg.ControllerSessionMaxAge,
 		Timeouts: supervise.Timeouts{
 			Boot:                  cfg.WorkerBootTimeout,
 			RegistrationIntervals: cfg.WorkerBootRegistrationDeadlineIntervals,
@@ -3189,7 +3192,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
 	var keeper *controllerKeeper
 	if cfg.ControllerLaunch == config.ControllerLaunchDaemon {
-		keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry, s.log)
+		keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry, cfg.ControllerTurnBound, s.log)
 	}
 	// The readiness latch the API's /readyz answers from. It is built here, unset: by the time
 	// this runs the runtime is built and the launcher acceptor installed, and what is left of the
@@ -3203,6 +3206,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			projectToken: p.project,
 			runtime:      cfg.Runtime.Name,
 			admissionCap: cfg.AdmissionCap,
+			p0Bound:      cfg.AdmissionP0Bound,
 			startedAt:    startedAt,
 			now:          p.clock.Now,
 			secretsLogin: p.secretsLogin,
@@ -3276,6 +3280,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		// A test's seam alone (overrides.gateRegistrationRead); nil in production.
 		GateRegistrationRead: p.gateRegistrationRead,
 		Pause:                pauses,
+		P0BoundConfigured:    cfg.AdmissionP0Bound,
 	})
 
 	group, serving := errgroup.WithContext(ctx)
@@ -3376,7 +3381,10 @@ type source struct {
 	projectToken string
 	runtime      string
 	admissionCap int
-	startedAt    time.Time
+	// p0Bound is legion.yaml's P0 bound (config.Config.AdmissionP0Bound), nil for none: the bound
+	// in force while no value set while the daemon runs stands.
+	p0Bound   *int
+	startedAt time.Time
 	// now is the daemon's one clock (overrides.clock, the wall clock in production), the moment
 	// the state is read at; nil, in a source a test builds by hand, is the wall clock.
 	now func() time.Time
@@ -3929,6 +3937,9 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	}
 	state.Daemon = s.daemonInfo(version, boots, firstBootAt, published)
 	state.Settings = s.settings
+	if state.Admission.P0Bound, err = s.p0BoundView(ctx, tx); err != nil {
+		return api.State{}, nil, err
+	}
 	controller, _, err := s.store.ControllerTx(ctx, tx, s.projectToken)
 	if err != nil {
 		return api.State{}, nil, err
@@ -4011,7 +4022,23 @@ func (s *source) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []sup
 	}
 	observed.Daemon = s.daemonInfo(version, boots, firstBootAt, published)
 	observed.Settings = s.settings
+	// The observed view's admission block is the full state's (api.ObservedState), the P0 bound in
+	// force included.
+	if observed.Admission.P0Bound, err = s.p0BoundView(ctx, tx); err != nil {
+		return api.State{}, nil, err
+	}
 	return observed, claims, nil
+}
+
+// p0BoundView is the P0 bound in force both views of the state serve under `admission`, read
+// through tx as every admission pass reads it (api.P0BoundStateTx). The route reads it beside the
+// admission judgement, so it is no part of the block a state event carries (record.AdmissionBlock).
+func (s *source) p0BoundView(ctx context.Context, tx pgx.Tx) (*api.P0BoundView, error) {
+	bound, err := api.P0BoundStateTx(ctx, tx, s.project, s.p0Bound)
+	if err != nil {
+		return nil, err
+	}
+	return &bound, nil
 }
 
 // daemonInfo is the daemon block both views of the state serve (api.DaemonInfo), from what each

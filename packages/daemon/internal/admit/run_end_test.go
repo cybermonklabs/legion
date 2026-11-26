@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // appliedFactKinds is every fact type the workflow's and admission's entry functions act on, read
@@ -481,6 +482,9 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.ControllerTick{}, intake.ChildAdoption{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{}, intake.LingerDeadline{},
 		intake.Handover{}, intake.CloseRoot{}, intake.MergeHoldsChanged{Project: "LEGION", Event: "dispatch-71"}, intake.ControllerMemoryGuardKill{}, intake.PendingBasisRead{},
 		intake.BasisChangesRead{}, intake.ReparentRead{},
+		// A change of the P0 bound, which records it and makes the pass every fact that is not a
+		// Dispatch issue makes.
+		intake.P0BoundChanged{Change: store.P0BoundChange{Mode: store.P0BoundUnbounded, By: store.PauseActor{Kind: store.PauseByOperator}, Reason: "runaway"}},
 	} {
 		if name := factName(fact); name == kind {
 			return fact

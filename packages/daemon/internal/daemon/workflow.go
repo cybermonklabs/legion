@@ -835,6 +835,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
 	// config.Config.WorkerBackground).
 	w.admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
+	// legion.yaml's P0 bound is the bound every pass admits under while no value set while the
+	// daemon runs stands (admit's UseP0Bound, config.Config.AdmissionP0Bound).
+	w.admission.UseP0Bound(cfg.AdmissionP0Bound)
 	// Every admission pass that judges the block reports the next linger deadline it reads, and
 	// the daemon's one timer for it runs a pass then (wakeAtLingerDeadlines, which run starts). A
 	// pass reports only with the state events on, which the boot turns on after this.

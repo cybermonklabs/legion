@@ -254,6 +254,14 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			Priority: &priority,
 			Workers:  map[claim.Role]api.PhaseView{},
 		}
+		// The priority Dispatch resolves the issue to, absent where Dispatch sent none
+		// (api.Issue.ResolvedPriority), and the issue it resolves it from, empty where it is the
+		// issue's own or none (api.Issue.PriorityFrom): an issue Dispatch resolved no priority
+		// for has no issue it comes from.
+		if issue.Resolved.Known {
+			resolved := api.PriorityView(issue.Resolved.Priority)
+			view.ResolvedPriority, view.PriorityFrom = &resolved, issue.Resolved.From
+		}
 		// The phase, the tree, the slot, the claims, and what the root waits on from a person,
 		// which is present only while it is in awaiting_person.
 		entry.putListed(&view, claimViews)
@@ -405,7 +413,9 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// blockers.AdmissionOf), read in this transaction's snapshot like every other fact here.
 	// The line it judged, the mirror rows it judged the links from and the facts it read are what
 	// each issue's view below is read from, so a member's place and every issue's `why` come from
-	// the judgement whose lists the block serves.
+	// the judgement whose lists the block serves. The block carries the P0 holders as well, the
+	// count admission's cap readers make (record.HoldersOf), so the number the state gives is the
+	// number the pass admitted under.
 	judged, err := blockers.JudgeAdmission(ctx, in.Tx, in.Store, in.Project, in.Steps, slots, in.Cap, in.Now)
 	if err != nil {
 		return api.State{}, err

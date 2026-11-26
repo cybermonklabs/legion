@@ -62,13 +62,14 @@ func JudgeAdmission(ctx context.Context, tx pgx.Tx, store record.Store, project 
 // AdmissionOf is the admission judgement of one judgement of the line (JudgeLine), which reads
 // nothing more: issues are the project's live records and slots the project's own among them
 // (record.OwnSlots), both as the line was judged from them, and rows, facts, line and dropped are
-// what JudgeLine answered over them. Under cap: `active`, the issues holding those slots in slot
-// order; `waiting`, the line in its order; `trees`, the live roots by key (record.LiveRoots);
-// `blocked`, what waits on another issue (Blocked); and `held`, what the daemon holds in the
-// workflow and runs nothing of (record.HeldList). Both readers of the block build it with this
-// function. The state route builds it over the JudgeLine of JudgeAdmission. The admission pass
-// builds it over its final judgement (admit's finalJudgement), so the block costs no judgement of
-// its own where the pass's last judgement still stands.
+// what JudgeLine answered over them. Under cap: `p0Holders`, the holders of those slots admission
+// treats as P0, counted as the cap's readers count them (record.HoldersOf); `active`, the issues
+// holding those slots in slot order; `waiting`, the line in its order; `trees`, the live roots by
+// key (record.LiveRoots); `blocked`, what waits on another issue (Blocked); and `held`, what the
+// daemon holds in the workflow and runs nothing of (record.HeldList). Both readers of the block
+// build it with this function. The state route builds it over the JudgeLine of JudgeAdmission. The
+// admission pass builds it over its final judgement (admit's finalJudgement), so the block costs
+// no judgement of its own where the pass's last judgement still stands.
 func AdmissionOf(issues []record.Issue, slots []record.Slot, rows map[string]Row, facts record.LineFacts,
 	line []record.LineEntry, dropped []record.HeldIssue, cap int,
 ) AdmissionJudgement {
@@ -83,12 +84,13 @@ func AdmissionOf(issues []record.Issue, slots []record.Slot, rows map[string]Row
 	live := record.LiveRoots(issues, facts)
 	return AdmissionJudgement{
 		Block: record.AdmissionBlock{
-			Cap:     cap,
-			Active:  active,
-			Waiting: waiting,
-			Trees:   slices.Sorted(maps.Keys(live)),
-			Blocked: Blocked(rows, issues, line, facts),
-			Held:    record.HeldList(issues, slots, line, dropped, facts),
+			Cap:       cap,
+			P0Holders: record.HoldersOf(issues, slots).P0,
+			Active:    active,
+			Waiting:   waiting,
+			Trees:     slices.Sorted(maps.Keys(live)),
+			Blocked:   Blocked(rows, issues, line, facts),
+			Held:      record.HeldList(issues, slots, line, dropped, facts),
 		},
 		Line:  line,
 		Rows:  rows,

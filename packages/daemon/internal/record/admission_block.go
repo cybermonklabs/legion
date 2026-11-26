@@ -10,26 +10,30 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// AdmissionBlock is a project's admission block: the cap and the five lists GET /legion/v1/state
-// serves under `admission` (api.Admission, which is built from this type) and a state_admission
-// event carries (StateAdmission). Both readers build it with blockers.AdmissionOf, which says from
-// which judgement each does, so the block the route serves and the block the event carries are the
-// same value for the same records.
+// AdmissionBlock is a project's admission block: the cap, the number of P0 holders and the five
+// lists GET /legion/v1/state serves under `admission` (api.Admission, which is built from this
+// type) and a state_admission event carries (StateAdmission). Both readers build it with
+// blockers.AdmissionOf, which says from which judgement each does, so the block the route serves
+// and the block the event carries are the same value for the same records.
 //
 // It is declared here, below both readers, because the admission pass that writes the event cannot
 // import api. Its JSON is the route's own: the keys api.Admission writes, in its order, and every
-// list an array, never null (MarshalJSON). No field holds a time, so a block judged twice over the
-// same records encodes the same. One word of the held list does read the clock: HeldTreeClosed
-// asks whether a root's linger still runs at the pass's moment (LineFacts.Now), so a member of a
-// parked tree moves from tree_closed to tree_parked when that linger runs out, with no write
-// (admit's queueAdmissionBlock says when that change is written).
+// list an array, never null (MarshalJSON). The route's `p0Bound` is no key of it: the bound in
+// force is read beside the judgement (api.P0BoundStateTx) and is nothing Dispatch reads. P0Holders
+// is the count of the holders admission treats as P0 (record.HoldersOf), which the Dispatch
+// board's header copies (dispatch://INFRA-5636), 0 included. No field holds a time, so a block
+// judged twice over the same records encodes the same. One word of the held list does read the
+// clock: HeldTreeClosed asks whether a root's linger still runs at the pass's moment
+// (LineFacts.Now), so a member of a parked tree moves from tree_closed to tree_parked when that
+// linger runs out, with no write (admit's queueAdmissionBlock says when that change is written).
 type AdmissionBlock struct {
-	Cap     int            `json:"cap"`
-	Active  []string       `json:"active"`
-	Waiting []string       `json:"waiting"`
-	Trees   []string       `json:"trees"`
-	Blocked []BlockedIssue `json:"blocked"`
-	Held    []HeldIssue    `json:"held"`
+	Cap       int            `json:"cap"`
+	P0Holders int            `json:"p0Holders"`
+	Active    []string       `json:"active"`
+	Waiting   []string       `json:"waiting"`
+	Trees     []string       `json:"trees"`
+	Blocked   []BlockedIssue `json:"blocked"`
+	Held      []HeldIssue    `json:"held"`
 }
 
 // MarshalJSON keeps every list an array on the wire, empty rather than `null`, as api.Admission

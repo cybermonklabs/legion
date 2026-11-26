@@ -242,7 +242,11 @@ func defaultsFor(port int) Config {
 		WorkerBackground:     4 * time.Hour,
 		ReviewRoundCap:       3,
 		ControllerLaunch:     ControllerLaunchOperator,
-		Hooks:                DefaultHooks(),
+		// The controller replacement bounds a file that names neither key runs on
+		// (dispatch://INFRA-2045 R2 and R3).
+		ControllerTurnBound:     90 * time.Minute,
+		ControllerSessionMaxAge: 72 * time.Hour,
+		Hooks:                   DefaultHooks(),
 		// The worker stall-watch numbers this daemon's own environment sets, which noEnv sets
 		// none of: the plugin's own defaults, which the backstop's floor is computed from.
 		StallLimits: StallLimits{CallGrace: StallCallGrace, Step: StallStep},
@@ -1873,6 +1877,8 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "operator_token_file", line: "operator_token_file: /var/run/legion/OPERATOR_TOKEN", class: modelled},
 		{key: "worker_wakes_per_minute", line: "worker_wakes_per_minute: 8", class: modelled},
 		{key: "worker_wake_burst", line: "worker_wake_burst: 1", class: modelled},
+		{key: "controller_turn_bound_minutes", line: "controller_turn_bound_minutes: 90", class: modelled},
+		{key: "controller_session_max_age_hours", line: "controller_session_max_age_hours: 72", class: modelled},
 
 		{key: "dispatch_url", line: "dispatch_url: https://dispatch.example", class: modelled},
 		{key: "dispatch_token_file", line: "dispatch_token_file: /var/run/legion/DISPATCH_TOKEN", class: modelled},
