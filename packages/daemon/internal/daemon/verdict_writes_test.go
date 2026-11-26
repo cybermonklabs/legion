@@ -162,7 +162,8 @@ type fakeWrite struct {
 // implementer's session unless messages gives its message, as GitHub's compare of the base and a
 // head lists them, and none at all where compareStatus is set, which GitHub's answer to the compare
 // then is (502 where it fails the request, 404 or 422 where it cannot serve that compare), with the
-// headers compareHeader names (a rate limit's); the branch pull request 86 merges into (base86,
+// headers compareHeader names (a rate limit's) and compareBody as its body where that is set; the
+// branch pull request 86 merges into (base86,
 // main where it is ""), whose tip holds the first parentCommits commits of history, so a compare
 // with that branch lists only the commits after them while a compare with main lists them all; any
 // other pull request named in pulls, whose reads it counts in pullReads; and the open pull requests
@@ -183,6 +184,7 @@ type verdictGitHub struct {
 	messages      map[string]string
 	compareStatus int
 	compareHeader http.Header
+	compareBody   string
 	pullsStatus   int
 	runs          []fakeRun
 	statuses      []fakeStatus
@@ -313,7 +315,11 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 				for key, values := range g.compareHeader {
 					w.Header()[key] = values
 				}
-				http.Error(w, fmt.Sprintf(`{"message":%q}`, http.StatusText(g.compareStatus)), g.compareStatus)
+				message := fmt.Sprintf(`{"message":%q}`, http.StatusText(g.compareStatus))
+				if g.compareBody != "" {
+					message = g.compareBody
+				}
+				http.Error(w, message, g.compareStatus)
 				return
 			case !ranged || base != "main" && base != base86 || !reached:
 				http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
@@ -2331,6 +2337,13 @@ func TestLegionVerdictEachClassOfReadOfTheChange(t *testing.T) {
 		{"a 429 to the compare", func(g *verdictGitHub, _ *atomic.Bool) { g.compareStatus = http.StatusTooManyRequests }, false},
 		{"a rate-limited 422 to the compare", func(g *verdictGitHub, _ *atomic.Bool) {
 			g.compareStatus, g.compareHeader = http.StatusUnprocessableEntity, limited
+		}, false},
+		{"a 422 to the compare with a Retry-After", func(g *verdictGitHub, _ *atomic.Bool) {
+			g.compareStatus, g.compareHeader = http.StatusUnprocessableEntity, http.Header{"Retry-After": {"60"}}
+		}, false},
+		{"a 422 to the compare naming GitHub's secondary rate limit", func(g *verdictGitHub, _ *atomic.Bool) {
+			g.compareStatus = http.StatusUnprocessableEntity
+			g.compareBody = `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`
 		}, false},
 		{"a read token not minted", func(_ *verdictGitHub, mint *atomic.Bool) { mint.Store(true) }, false},
 		{"a 404 to the pull requests at the head, with no base recorded", func(g *verdictGitHub, _ *atomic.Bool) { g.pullsStatus = http.StatusNotFound }, true},
