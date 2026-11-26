@@ -1,17 +1,11 @@
 import { expect, test } from "bun:test";
 
-import type {
-  Artifact,
-  CheckBlock,
-  IssueCoverage,
-  IssueDetails,
-  RequirementCoverage,
-} from "../../../api/types";
+import type { Artifact, CheckBlock, IssueCoverage, IssueDetails } from "../../../api/types";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NODE_STATE_WORDS, RESULT_STANDS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
 import { blockNodeId } from "../tree-drafts";
-import { outOfCounts, treeRows } from "../tree-fold";
+import { treeRows } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
 import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
@@ -1124,14 +1118,17 @@ test("the reading keeps every row, proposed and overtaken ones included", () => 
   ).toBe(0);
 });
 
+/** One row of the coverage read, a statement of the issue's spec. */
+type CoverageRow = NonNullable<IssueCoverage["requirements"]>[number];
+
 /** The coverage read's row for the statement `blockId` of the spec, which `checks` checks serve,
  *  as the server answers it for a live statement no result proves, with whatever the case
  *  changes about it. */
 function coverageRow(
   blockId: string,
   checks: number,
-  extra: Partial<RequirementCoverage> = {}
-): RequirementCoverage {
+  extra: Partial<CoverageRow> = {}
+): CoverageRow {
   return {
     block_id: blockId,
     checks,
@@ -1145,7 +1142,7 @@ function coverageRow(
 }
 
 /** The coverage read of the issue, with `rows` as its rows. */
-function coverageWith(...rows: readonly RequirementCoverage[]): IssueCoverage {
+function coverageWith(...rows: readonly CoverageRow[]): IssueCoverage {
   return {
     gaps: [],
     has_plan: false,
@@ -1158,9 +1155,9 @@ function coverageWith(...rows: readonly RequirementCoverage[]): IssueCoverage {
 // The coverage read closes a statement's row only where the statement, or a node above it in its
 // walk, is overtaken by a state of its own (`coverage_tuples.go`). A question written as an
 // `:::ask` block is overtaken by its ask's node, which stands in no statement's walk, so the row
-// of a statement under that question comes unproven and not closed, though the page reads that
-// statement as out of the counts. The covered count leaves it out: it is neither covered nor one
-// of the statements that count is out of.
+// of a statement under that question comes unproven and not closed, though the page closes that
+// statement with its question, which puts it out of the counts. The covered count leaves it out:
+// it is neither covered nor one of the statements that count is out of.
 test("the covered count leaves out a statement under an overtaken question whose coverage row is not closed", () => {
   const passed = passing("c-one");
   const underQuestion = passing("c-two");
@@ -1182,7 +1179,7 @@ test("the covered count leaves out a statement under an overtaken question whose
 
   expect(
     nodesInOrder(view).flatMap((one) =>
-      one.type === "requirement" ? [[one.id, outOfCounts(one)]] : []
+      one.type === "requirement" ? [[one.id, one.closed === true]] : []
     )
   ).toEqual([
     [first.id, false],
