@@ -20,7 +20,7 @@ package api
 // names neither a bound nor none, both, or a bound below 1 is refused `400 INVALID_P0_BOUND`; every
 // change refuses a blank reason with `400 P0_BOUND_REASON_REQUIRED`; a daemon with no workflow
 // refuses all four with `409 P0_BOUND_UNAVAILABLE`. Each refusal is a Failure and changes nothing.
-// A change is one fact (`intake.P0BoundSet`) whose admission appends it to the new table
+// A change is one fact (`intake.P0BoundChanged`) whose admission appends it to the new table
 // `project_p0_bound_changes` (migration `20261125181828`) and makes its pass in the same
 // transaction, so the bound is in force from that pass on; every pass reads the project's newest
 // change again. The controller's two routes answer `{bound, configured, live?}` (`api.P0BoundView`,

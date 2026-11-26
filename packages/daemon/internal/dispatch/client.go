@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
 
@@ -872,12 +873,18 @@ func (r issueResponse) issue() Issue {
 // resolvedPriority is a read's `resolved_priority` and `priority_from`: nil where the read carries no
 // `resolved_priority`, and else its level, nil for a present null, and the issue it comes from. A
 // value that is no integer at all reads as a present null: Dispatch writes none, and the issue's own
-// fields are still read.
+// fields are still read. A `priority_from` that is no issue key reads as none, as null and empty do:
+// the state serves it as `priorityFrom`, which its readers take for an issue key (the plugin's
+// schema refuses the whole state for one that is not), and these reads have no channel to name it
+// on, as they have none for the level that is no integer.
 func resolvedPriority(raw json.RawMessage, from *string) *ResolvedPriority {
 	if raw == nil {
 		return nil
 	}
-	resolved := &ResolvedPriority{From: deref(from)}
+	resolved := &ResolvedPriority{}
+	if key := deref(from); claim.IsIssueKey(key) {
+		resolved.From = key
+	}
 	if err := json.Unmarshal(raw, &resolved.Priority); err != nil {
 		resolved.Priority = nil
 	}

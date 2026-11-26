@@ -594,25 +594,22 @@ type ProjectResumed struct{}
 
 func (ProjectResumed) namedIssue() (string, bool) { return "", false }
 
-// P0BoundSet is a change of the project's P0 bound while the daemon runs (dispatch://INFRA-5636
+// P0BoundChanged is a change of the project's P0 bound while the daemon runs (dispatch://INFRA-5636
 // C3), applied as a synthetic fact by the P0 bound routes (api's changeP0Bound) and never decoded
-// from an event. Mode is what it does: store.P0BoundSet sets the bound to Bound, from 1 to
-// 2147483647, which the route refused anything else against; store.P0BoundUnbounded sets it to
-// none, whatever legion.yaml says; and store.P0BoundCleared returns the project to legion.yaml's
-// admission_p0_bound. By is who changed it, in a pause's actor shape, Reason why, and At when.
-// Admission is its one handler: it appends the change (store.RecordP0BoundChangeTx) and then runs
-// the admission pass whatever it wrote, in the same transaction, so the bound is in force from
-// that pass on (admit.Admission.applyFact). The workflow engine and the blockers mirror do nothing
-// for it.
-type P0BoundSet struct {
-	Mode   store.P0BoundMode
-	Bound  int
-	By     store.PauseActor
-	Reason string
-	At     time.Time
+// from an event. Change is the change as the store records it: a set to a number
+// (store.P0BoundSet, Bound from 1 to 2147483647, which the route refused anything else against), a
+// set to none (store.P0BoundUnbounded, no bound whatever legion.yaml says), or a clear
+// (store.P0BoundCleared, which returns the project to legion.yaml's admission_p0_bound), with who
+// made it, in a pause's actor shape, why and when. The routes leave Change.Project empty: admission
+// writes its own project there. Admission is its one handler: it appends the change
+// (store.RecordP0BoundChangeTx) and then runs the admission pass whatever it wrote, in the same
+// transaction, so the bound is in force from that pass on (admit.Admission.applyFact). The workflow
+// engine and the blockers mirror do nothing for it.
+type P0BoundChanged struct {
+	Change store.P0BoundChange
 }
 
-func (P0BoundSet) namedIssue() (string, bool) { return "", false }
+func (P0BoundChanged) namedIssue() (string, bool) { return "", false }
 
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {

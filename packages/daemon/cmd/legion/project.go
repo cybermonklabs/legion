@@ -165,14 +165,14 @@ func printP0BoundAnswer(w io.Writer, answer []byte) error {
 
 // p0BoundWords is the P0 bound as `legion state` and a change's answer name it: the bound in force,
 // legion.yaml's, and the value set while the daemon runs where one stands, with who set it, when
-// and why.
+// and why. The reason is terminalText: the controller or the operator wrote it.
 func p0BoundWords(view api.P0BoundView) string {
 	words := boundCount(view.Bound) + " in force, " + boundCount(view.Configured) + " in legion.yaml"
 	if view.Live == nil {
 		return words + "; none set while the daemon runs"
 	}
 	return words + fmt.Sprintf("; set to %s by %s at %s: %s", boundCount(view.Live.Bound), pauseActorWords(view.Live.SetBy),
-		view.Live.SetAt.Format(time.RFC3339), view.Live.Reason)
+		view.Live.SetAt.Format(time.RFC3339), terminalText(view.Live.Reason))
 }
 
 // boundCount is a P0 bound as these lines write it: the number, or "none".
@@ -185,33 +185,28 @@ func boundCount(bound *int) string {
 
 // p0AdmissionLine is `legion state`'s line for the P0 issues (C4 and C3 of dispatch://INFRA-5636):
 // how many P0 issues hold a slot, outside the cap, beside the slots in use and the cap, and the P0
-// bound in force, legion.yaml's and who set the live one and when. It is empty for a state that
-// carries neither key, one a daemon below the P0 start's contract entry served, and the caller then prints nothing.
+// bound in force, legion.yaml's and who set the live one and when. The daemon writes
+// `admission.p0Holders` and `admission.p0Bound` together, and serves a caller below the P0 start's
+// contract entry neither (withoutP0Start), so the line is empty unless the state carries both, and
+// the caller then prints nothing.
 func p0AdmissionLine(admission api.Admission) string {
-	if admission.P0Holders == nil && admission.P0Bound == nil {
+	if admission.P0Holders == nil || admission.P0Bound == nil {
 		return ""
 	}
-	held := 0
-	if admission.P0Holders != nil {
-		held = *admission.P0Holders
-	}
-	line := fmt.Sprintf("P0: %d of the %d issues holding a slot are P0 and hold it outside the cap of %d",
-		held, len(admission.Active), admission.Cap)
-	if admission.P0Bound != nil {
-		line += "; P0 bound " + p0BoundWords(*admission.P0Bound)
-	}
-	return line
+	return fmt.Sprintf("P0: %d of the %d issues holding a slot are P0 and hold it outside the cap of %d; P0 bound %s",
+		*admission.P0Holders, len(admission.Active), admission.Cap, p0BoundWords(*admission.P0Bound))
 }
 
 // pausedSummary is `legion state`'s line for the project's open pause (api.State.Paused): the
 // pause, who paused, since when and why, and the roles whose stop it still waits on, each by
-// issue and role. It is empty while the project runs, and the caller then prints nothing.
+// issue and role. It is empty while the project runs, and the caller then prints nothing. The
+// reason is terminalText: the controller or the operator wrote it.
 func pausedSummary(paused *api.PausedView) string {
 	if paused == nil {
 		return ""
 	}
 	line := fmt.Sprintf("paused: pause %d since %s by %s: %s", paused.ID, paused.Since.Format(time.RFC3339),
-		pauseActorWords(paused.By), paused.Reason)
+		pauseActorWords(paused.By), terminalText(paused.Reason))
 	if len(paused.WaitsOn) == 0 {
 		return line + "; waits on no role"
 	}
@@ -237,9 +232,10 @@ func lastPauseSummary(last *api.PauseView) string {
 	return "last pause: " + endedPauseWords(*last)
 }
 
-// pauseWords is a pause as these lines name it: its id, since when, who paused and why.
+// pauseWords is a pause as these lines name it: its id, since when, who paused and why. The reason
+// is terminalText: the controller or the operator wrote it.
 func pauseWords(p api.PauseView) string {
-	return fmt.Sprintf("pause %d since %s by %s: %s", p.ID, p.Since.Format(time.RFC3339), pauseActorWords(p.By), p.Reason)
+	return fmt.Sprintf("pause %d since %s by %s: %s", p.ID, p.Since.Format(time.RFC3339), pauseActorWords(p.By), terminalText(p.Reason))
 }
 
 // endedPauseWords is an ended pause as these lines name it: the pause, then when and by whom it
@@ -251,11 +247,11 @@ func endedPauseWords(p api.PauseView) string {
 	return fmt.Sprintf("%s; ended %s by %s", pauseWords(p), p.EndedAt.Format(time.RFC3339), pauseActorWords(*p.EndedBy))
 }
 
-// pauseActorWords is who acted on a pause: the controller with the session it acted from, or the
-// operator.
+// pauseActorWords is who acted on a pause or set the P0 bound: the controller with the session it
+// acted from, or the operator. The session is terminalText: the controller's session named it.
 func pauseActorWords(by api.PauseActorView) string {
 	if by.Session != "" {
-		return "the " + by.Kind + " (session " + by.Session + ")"
+		return "the " + by.Kind + " (session " + terminalText(by.Session) + ")"
 	}
 	return "the " + by.Kind
 }

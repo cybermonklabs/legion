@@ -17,15 +17,15 @@ import (
 // legion.yaml gives one, and with no value every P0 issue that waits only for a slot starts. A
 // value set while the daemon runs — a number, or none whatever legion.yaml says — replaces
 // legion.yaml's until it is cleared, and the next admission pass uses it with no restart: each
-// change is a fact (intake.P0BoundSet) whose own pass admits under it. At the bound a P0 issue
+// change is a fact (intake.P0BoundChanged) whose own pass admits under it. At the bound a P0 issue
 // waits first in the line and the pass logs the refusal with the bound. Every case stands at a cap
 // its holders below P0 fill, so every slot a case gives out is one the cap would refuse.
 
 // p0BoundChange applies one change of the P0 bound as the routes apply it, by the operator.
 func p0BoundChange(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID string, mode store.P0BoundMode, bound int) {
 	t.Helper()
-	change := intake.P0BoundSet{Mode: mode, Bound: bound, By: store.PauseActor{Kind: store.PauseByOperator},
-		Reason: "the gateway refuses whole sessions", At: fixedNow}
+	change := intake.P0BoundChanged{Change: store.P0BoundChange{Mode: mode, Bound: bound,
+		By: store.PauseActor{Kind: store.PauseByOperator}, Reason: "the gateway refuses whole sessions", At: fixedNow}}
 	if _, err := intake.ApplyFact(context.Background(), pool, "api", eventID, change, engineStub{}, admission); err != nil {
 		t.Fatalf("apply the P0 bound change %s: %v", eventID, err)
 	}

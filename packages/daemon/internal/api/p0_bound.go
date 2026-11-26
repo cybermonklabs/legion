@@ -118,7 +118,7 @@ func (s *server) projectP0BoundClear(w http.ResponseWriter, r *http.Request) {
 	}
 	if by, ok := s.controllerActor(w, r, req.GrantID, "a change of the P0 bound requires a controller grant"); ok {
 		s.changeP0Bound(w, r, AnswerP0Bound, p0BoundClearRoute,
-			intake.P0BoundSet{Mode: store.P0BoundCleared, By: by, Reason: req.Reason})
+			store.P0BoundChange{Mode: store.P0BoundCleared, By: by, Reason: req.Reason})
 	}
 }
 
@@ -142,7 +142,7 @@ func (s *server) operatorProjectP0BoundClear(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	s.changeP0Bound(w, r, answerUnparsed, operatorP0BoundClearRoute,
-		intake.P0BoundSet{Mode: store.P0BoundCleared, By: store.PauseActor{Kind: store.PauseByOperator}, Reason: req.Reason})
+		store.P0BoundChange{Mode: store.P0BoundCleared, By: store.PauseActor{Kind: store.PauseByOperator}, Reason: req.Reason})
 }
 
 // setP0Bound refuses a set that names neither a bound nor none, both, or a bound below 1 or above
@@ -158,7 +158,7 @@ func (s *server) setP0Bound(w http.ResponseWriter, r *http.Request, answer Answe
 		s.writeFailure(w, r, http.StatusBadRequest, invalidP0Bound,
 			"a set of the P0 bound names bound, a whole number of at least 1, or unbounded, for no bound, and this one names neither; a clear, which returns to legion.yaml's admission_p0_bound, is its own route; nothing changed")
 	case unbounded:
-		s.changeP0Bound(w, r, answer, route, intake.P0BoundSet{Mode: store.P0BoundUnbounded, By: by, Reason: why})
+		s.changeP0Bound(w, r, answer, route, store.P0BoundChange{Mode: store.P0BoundUnbounded, By: by, Reason: why})
 	case *bound < 1:
 		s.writeFailure(w, r, http.StatusBadRequest, invalidP0Bound, fmt.Sprintf(
 			"bound is how many P0 issues may hold a slot at once, a whole number of at least 1, and %d is not; unbounded sets no bound; nothing changed", *bound))
@@ -166,16 +166,16 @@ func (s *server) setP0Bound(w http.ResponseWriter, r *http.Request, answer Answe
 		s.writeFailure(w, r, http.StatusBadRequest, invalidP0Bound, fmt.Sprintf(
 			"bound is how many P0 issues may hold a slot at once, a whole number of at most %d, and %d is not; unbounded sets no bound; nothing changed", math.MaxInt32, *bound))
 	default:
-		s.changeP0Bound(w, r, answer, route, intake.P0BoundSet{Mode: store.P0BoundSet, Bound: *bound, By: by, Reason: why})
+		s.changeP0Bound(w, r, answer, route, store.P0BoundChange{Mode: store.P0BoundSet, Bound: *bound, By: by, Reason: why})
 	}
 }
 
 // changeP0Bound refuses a change that says nothing of why, then applies the change as one fact
-// through the workflow's handlers, whose admission records it and makes its pass in the fact's one
-// transaction, so the bound is in force from that pass on, and answers the bound as the state then
-// reads it. A daemon with no workflow (no dispatch_url) has no admission and refuses it
-// P0_BOUND_UNAVAILABLE.
-func (s *server) changeP0Bound(w http.ResponseWriter, r *http.Request, answer AnswerID, route string, change intake.P0BoundSet) {
+// (intake.P0BoundChanged) through the workflow's handlers, whose admission records it for its own
+// project and makes its pass in the fact's one transaction, so the bound is in force from that pass
+// on, and answers the bound as the state then reads it. A daemon with no workflow (no
+// dispatch_url) has no admission and refuses it P0_BOUND_UNAVAILABLE.
+func (s *server) changeP0Bound(w http.ResponseWriter, r *http.Request, answer AnswerID, route string, change store.P0BoundChange) {
 	if strings.TrimSpace(change.Reason) == "" {
 		s.writeFailure(w, r, http.StatusBadRequest, p0BoundReasonRequired,
 			"a change of the P0 bound needs a reason: say in reason why the bound changes; nothing changed")
@@ -187,7 +187,7 @@ func (s *server) changeP0Bound(w http.ResponseWriter, r *http.Request, answer An
 		return
 	}
 	change.At = s.now().UTC()
-	if _, err := s.apply(r.Context(), "api", requestFactID(route), change); err != nil {
+	if _, err := s.apply(r.Context(), "api", requestFactID(route), intake.P0BoundChanged{Change: change}); err != nil {
 		s.logRequestFailure(r, err, "api: the change of the P0 bound failed", "mode", string(change.Mode), "bound", change.Bound,
 			"by", string(change.By.Kind), "by_session", change.By.Session)
 		s.writeFailure(w, r, http.StatusInternalServerError, "P0_BOUND_FAILED", "the change of the P0 bound failed: "+err.Error())

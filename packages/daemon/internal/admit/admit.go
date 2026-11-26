@@ -178,8 +178,8 @@ func (a *Admission) UseP0Bound(configured *int) {
 // p0BoundAt is the P0 bound this pass admits under, read through tx: the value the controller or
 // the operator set while the daemon runs where one stands, a number or none, else legion.yaml's
 // (store.EffectiveP0Bound). nil is no bound. It is read on every pass rather than held, so a change
-// is in force from the pass of its own fact on (setP0Bound), with no restart, and one made before a
-// restart is in force from the boot's first pass.
+// is in force from the pass of its own fact on (recordP0BoundChange), with no restart, and one made
+// before a restart is in force from the boot's first pass.
 func (a *Admission) p0BoundAt(ctx context.Context, tx pgx.Tx) (*int, error) {
 	standing, found, err := store.P0BoundTx(ctx, tx, a.project)
 	if err != nil {
@@ -188,17 +188,17 @@ func (a *Admission) p0BoundAt(ctx context.Context, tx pgx.Tx) (*int, error) {
 	return store.EffectiveP0Bound(a.p0Configured, standing, found), nil
 }
 
-// setP0Bound appends the change the fact makes (store.RecordP0BoundChangeTx) and logs it once it
-// commits: who made it, why, what it did, and the bound in force before and after it. It refuses
-// nothing the route did not refuse first: the routes refused a bound below 1 and a change with no
-// reason before the fact.
-func (a *Admission) setP0Bound(ctx context.Context, tx pgx.Tx, change intake.P0BoundSet) error {
+// recordP0BoundChange appends the change a P0BoundChanged fact carries, for this admission's
+// project (store.RecordP0BoundChangeTx), and logs it once it commits: who made it, why, what it
+// did, and the bound in force before and after it. It refuses nothing the route did not refuse
+// first: the routes refused a bound below 1 and a change with no reason before the fact.
+func (a *Admission) recordP0BoundChange(ctx context.Context, tx pgx.Tx, change store.P0BoundChange) error {
 	before, err := a.p0BoundAt(ctx, tx)
 	if err != nil {
 		return err
 	}
-	recorded, err := store.RecordP0BoundChangeTx(ctx, tx, store.P0BoundChange{Project: a.project, Mode: change.Mode,
-		Bound: change.Bound, By: change.By, Reason: change.Reason, At: change.At})
+	change.Project = a.project
+	recorded, err := store.RecordP0BoundChangeTx(ctx, tx, change)
 	if err != nil {
 		return err
 	}
@@ -312,11 +312,11 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		_, returned, err := a.promoteWritten(ctx, tx)
 		return returned, nil, err
 	}
-	if change, ok := fact.(intake.P0BoundSet); ok {
+	if changed, ok := fact.(intake.P0BoundChanged); ok {
 		// The bound is written before the pass, in the fact's own transaction, so this very pass
 		// admits under it: a bound raised or set to none starts the P0 issues it lets in now, and a
 		// lower one starts no P0 issue while it is at the bound and stops nothing that runs.
-		if err := a.setP0Bound(ctx, tx, change); err != nil {
+		if err := a.recordP0BoundChange(ctx, tx, changed.Change); err != nil {
 			return nil, nil, err
 		}
 		_, returned, err := a.promote(ctx, tx)
@@ -2152,9 +2152,8 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	}
 	admitted := 0
 	for {
-		own := ownSlots(issues, slots)
 		// The holders as the cap and the P0 bound count them, which grow with each grant below.
-		held := record.HoldersOf(issues, own)
+		held := record.HoldersOf(issues, slots)
 		stopped, opened, resumed := false, false, false
 		for _, candidate := range line {
 			issue := candidate.Issue
@@ -2273,12 +2272,13 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// An entry carries whether its issue held a row when the line was built
 				// (record.LineEntry.Holds), and the line this loop reads holds each issue once,
 				// so no grant here changes the answer slotFor gives a candidate behind it; what
-				// the grant does change, the count against the cap, is own, which grows with
-				// it. finishFencedStarts keeps the line to one entry an issue, not record.Waiting:
-				// Waiting would list an issue at admitted that holds no row and still owes a start
-				// both as a return and as a first phase, but every owed start names a worker
-				// phase, and finishFencedStarts ends each one whose phase is not the issue's own
-				// before the line is built, so none is left owed at admitted.
+				// the grant does change is held, the count of holders, which grows with it: the
+				// cap reads held.Capped and the P0 bound held.P0 (capLets). finishFencedStarts
+				// keeps the line to one entry an issue, not record.Waiting: Waiting would list an
+				// issue at admitted that holds no row and still owes a start both as a return and
+				// as a first phase, but every owed start names a worker phase, and
+				// finishFencedStarts ends each one whose phase is not the issue's own before the
+				// line is built, so none is left owed at admitted.
 				slot := record.Slot{Issue: issue.Key, Index: nextSlotIndex(slots), AdmittedAt: now}
 				if err := a.store.PutSlot(ctx, tx, slot); err != nil {
 					return admitted, released, fmt.Errorf("put admission slot for %s: %w", issue.Key, err)
@@ -2292,9 +2292,9 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 						return admitted, released, fmt.Errorf("clear the slot release of %s for what it waits on: %w", issue.Key, err)
 					}
 				}
-				slots, own = append(slots, slot), append(own, slot)
+				slots = append(slots, slot)
 				held.Add(issue)
-				a.logSlot(ctx, "taken", issue.Key, len(own))
+				a.logSlot(ctx, "taken", issue.Key, held.Total())
 				// A P0 start is the one start the cap does not count, so it says so with what the
 				// cap and the bound count (C4 of dispatch://INFRA-5636): the P0 holders, this one
 				// among them, the other holders and the cap.

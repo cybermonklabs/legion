@@ -195,20 +195,18 @@ function pauseSummary(state: LegionState): string | undefined {
  * The summary's `p0` line (C3 and C4 of dispatch://INFRA-5636): how many of the issues holding a
  * slot admission treats as P0 (Dispatch's resolved P0, or own P0 with an older Dispatch release),
  * which hold it outside the cap, the P0 bound in force (`none` for no bound), and the live value
- * that stands with who set it, when and why. A body served below the P0 start's contract entry
- * carries neither key, and the summary then has no such line.
+ * that stands with who set it, when and why. The daemon writes `p0Holders` and `p0Bound` together,
+ * and a body served below the P0 start's contract entry carries neither (`withoutP0Start`), so the
+ * summary has the line only for a body that carries both.
  */
 function p0Summary({ admission }: LegionState): string | undefined {
-  if (admission?.p0Holders === undefined && admission?.p0Bound === undefined) return undefined;
+  if (admission?.p0Holders === undefined || admission.p0Bound === undefined) return undefined;
   const p0Bound = admission.p0Bound;
-  let line = `p0 holders ${admission.p0Holders ?? 0}`;
-  if (p0Bound !== undefined) {
-    line += ` bound ${p0Bound.bound ?? "none"}`;
-    const live = p0Bound.live;
-    if (live !== undefined) {
-      const by = pauseActorWords(live.setBy.kind === "controller" ? live.setBy.session : undefined);
-      line += ` set ${live.bound ?? "none"} by ${by} at ${live.setAt}: ${live.reason}`;
-    }
+  let line = `p0 holders ${admission.p0Holders} bound ${p0Bound.bound ?? "none"}`;
+  const live = p0Bound.live;
+  if (live !== undefined) {
+    const by = pauseActorWords(live.setBy.kind === "controller" ? live.setBy.session : undefined);
+    line += ` set ${live.bound ?? "none"} by ${by} at ${live.setAt}: ${live.reason}`;
   }
   return line;
 }

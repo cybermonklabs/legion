@@ -410,7 +410,7 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		}
 		claimedBy, claimKnown := issueEventClaim(issue.Claim, unread)
 		return DispatchIssue{Key: event.IssueKey, Seq: event.Seq, Type: event.Type, Status: issue.Status, Title: issue.Title, Parent: parent, Rank: issue.Rank,
-			Priority: issueEventPriority(issue.Priority, unread), Resolved: issueEventResolved(issue.ResolvedPriority, issue.PriorityFrom, unread),
+			Priority: issueEventPriority("priority", issue.Priority, unread), Resolved: issueEventResolved(issue.ResolvedPriority, issue.PriorityFrom, unread),
 			ResolvedOnly: resolvedOnly(issue.Changed), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
 			ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
 			ResolvedRepoMissing: missing, Blockers: issue.BlockedBy, ClaimedBy: claimedBy, ClaimKnown: claimKnown}, nil
@@ -613,20 +613,22 @@ func issueEventClaim(raw json.RawMessage, unread *[]string) (string, bool) {
 	return claimed.Actor.Kind + ":" + claimed.Actor.ID, true
 }
 
-// issueEventPriority reads an issue event's own priority, Dispatch's 0 for P0 to 3 for P3 or null,
-// as the record keeps it (record.DecodePriority); an absent field is none. A value Dispatch never
-// writes, a level outside 0 to 3 or no integer at all, is none and named in unread rather than
-// making the event poison: the event can carry a status the workflow acts on.
-func issueEventPriority(raw json.RawMessage, unread *[]string) record.Priority {
+// issueEventPriority reads one of an issue event's priorities, field, `priority` for the issue's
+// own and `resolved_priority` for the one Dispatch resolves it to: Dispatch's 0 for P0 to 3 for P3
+// or null, as the record keeps it (record.DecodePriority); an absent field is none. A value
+// Dispatch never writes, a level outside 0 to 3 or no integer at all, is none and named in unread,
+// under field's name, rather than making the event poison: the event can carry a status the
+// workflow acts on.
+func issueEventPriority(field string, raw json.RawMessage, unread *[]string) record.Priority {
 	if raw == nil {
 		return record.NoPriority
 	}
 	priority, read, err := record.DecodePriority(raw)
 	switch {
 	case err != nil:
-		*unread = append(*unread, fmt.Sprintf("priority %s is not a priority: %v", raw, err))
+		*unread = append(*unread, fmt.Sprintf("%s %s is not a priority: %v", field, raw, err))
 	case !read:
-		*unread = append(*unread, fmt.Sprintf("priority %s is no level Dispatch writes", raw))
+		*unread = append(*unread, fmt.Sprintf("%s %s is no level Dispatch writes", field, raw))
 	}
 	return priority
 }
@@ -634,12 +636,22 @@ func issueEventPriority(raw json.RawMessage, unread *[]string) record.Priority {
 // issueEventResolved reads an issue event's resolved priority and the issue it comes from, as the
 // record keeps them (record.Resolved): unknown where the event carries no `resolved_priority`, as an
 // event of a Dispatch release before dispatch://INFRA-5793 does, and else read as the issue's own
-// priority is (issueEventPriority), a present null being no priority.
+// priority is (issueEventPriority), a present null being no priority. `priority_from` is kept only
+// where it is an issue key, as `parent` is: the state serves it as `priorityFrom`, which its
+// readers take for an issue key (the plugin's schema refuses the whole state for one that is not).
+// One that is not is no issue and named in unread rather than making the event poison, for the
+// reason a bad level is; null or empty is none, with no note.
 func issueEventResolved(raw json.RawMessage, from *string, unread *[]string) record.Resolved {
 	if raw == nil {
 		return record.Resolved{}
 	}
-	return record.Resolved{Priority: issueEventPriority(raw, unread), From: deref(from), Known: true}
+	resolved := record.Resolved{Priority: issueEventPriority("resolved_priority", raw, unread), Known: true}
+	if key := deref(from); claim.IsIssueKey(key) {
+		resolved.From = key
+	} else if key != "" {
+		*unread = append(*unread, fmt.Sprintf("priority_from %q is no issue key", key))
+	}
+	return resolved
 }
 
 // resolvedOnly says an issue event's `changed` names the resolved priority and nothing else: the

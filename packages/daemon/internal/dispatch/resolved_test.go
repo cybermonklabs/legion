@@ -90,7 +90,9 @@ func servedFields(t *testing.T, body []byte) Issue {
 // `resolved_priority`, reads as nil; a present null as a present none; a level as that level, with
 // the issue it comes from. A level Dispatch never writes, 9, is kept as the read gave it
 // (resolvedPriority), for intake to read as none (its dispatchResolved); a value that is no integer
-// at all reads as a present none. Every row reads the issue's own fields as the body gives them.
+// at all reads as a present none. A `priority_from` that is no issue key reads as no issue, as an
+// empty one does: the state serves it as an issue key. Every row reads the issue's own fields as
+// the body gives them.
 func TestTheClientReadsResolvedPriorityFromEachBodyDispatchServes(t *testing.T) {
 	level := func(n int) *int { return &n }
 	for _, tc := range []struct {
@@ -112,6 +114,10 @@ func TestTheClientReadsResolvedPriorityFromEachBodyDispatchServes(t *testing.T) 
 			want: &ResolvedPriority{Priority: level(9), From: "OTHER-5"}},
 		{name: "no integer at all", file: "resolved-0", from: `"resolved_priority": 0,`, to: `"resolved_priority": "high",`,
 			want: &ResolvedPriority{From: "OTHER-5"}},
+		{name: "a priority_from that is no issue key", file: "resolved-0", from: `"priority_from": "OTHER-5",`, to: `"priority_from": "not a key",`,
+			want: &ResolvedPriority{Priority: level(0)}},
+		{name: "an empty priority_from", file: "resolved-0", from: `"priority_from": "OTHER-5",`, to: `"priority_from": "",`,
+			want: &ResolvedPriority{Priority: level(0)}},
 	} {
 		for _, read := range []string{"listing", "detail", "patch"} {
 			t.Run(tc.name+"/"+read, func(t *testing.T) {

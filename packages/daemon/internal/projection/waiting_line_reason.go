@@ -116,8 +116,9 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 	return ""
 }
 
-// bandWords names the band an entry waits in, as the counts of its sentence read it: `at P1`,
-// or `with no priority` for an entry neither it nor its tree root has a priority for.
+// bandWords names the band an entry waits in, as the counts of its sentence read it: `at P1`, or
+// `with no priority` for an entry Dispatch resolves no priority for, or, with an older Dispatch
+// that resolves none, one that neither it nor its tree root has a priority for.
 func bandWords(priority record.Priority) string {
 	if priority == record.NoPriority {
 		return "with no priority"

@@ -489,22 +489,26 @@ jq -e '.settings.review_round_cap == 5
 }
 # The configured P0 bound (INFRA-5636, C3): `legion state`'s `P0:` line names 3 as the bound in
 # force and in legion.yaml with none set while the daemon runs, and `legion project set-p0-bound
-# --bound 0` is refused by the daemon with 400 INVALID_P0_BOUND (exiting 1, not a CLI usage exit 2).
-# Stage 1's daemon has no dispatch_url, so it runs no workflow and refuses every valid live change
+# --bound 0` is refused by the daemon: it exits 1, not a CLI usage exit 2, with the daemon's 400 on
+# stderr, and the same set on the operator route is answered 400 INVALID_P0_BOUND below. Stage 1's
+# daemon has no dispatch_url, so it runs no workflow and refuses every valid live change
 # P0_BOUND_UNAVAILABLE, and a bound of no whole number from 1 to 2147483647 INVALID_P0_BOUND first;
-# this step proves the configured bound and the floor of 1 on the real binary.
-want_p0_line="P0: 0 of the 0 issues holding a slot are P0 and hold it outside the cap of 4; P0 bound 3 in force, 3 in legion.yaml; none set while the daemon runs"
+# this step proves the configured bound and the floor of 1 on the real binary, so it reads the part
+# of the `P0:` line that names the bound and no count before it, and no words of the refusal's.
+want_p0_bound="P0 bound 3 in force, 3 in legion.yaml; none set while the daemon runs"
 p0_state=$("$work/legion" state --port "$port") || fail "legion state --port $port exited $?, want 0"
 p0_line=$(grep '^P0: ' <<<"$p0_state" || true)
-[ "$p0_line" = "$want_p0_line" ] ||
-  fail "legion state printed P0 line '$p0_line', want '$want_p0_line'"
+case "$p0_line" in
+*"$want_p0_bound"*) ;;
+*) fail "legion state printed P0 line '$p0_line', want one that carries '$want_p0_bound'" ;;
+esac
 p0_rc=0
 "$work/legion" project set-p0-bound --port "$port" --operator-token-file "$work/operator-token" \
   --bound 0 --reason "stage 1 floor check" >"$work/p0-bound-out.log" 2>"$work/p0-bound-err.log" || p0_rc=$?
 [ "$p0_rc" = 1 ] ||
   fail "legion project set-p0-bound --bound 0 exited $p0_rc, want 1 (stderr: $(cat "$work/p0-bound-err.log"))"
-grep -qF 'the daemon answered 400 Bad Request: bound is how many P0 issues may hold a slot at once, a whole number of at least 1, and 0 is not; unbounded sets no bound; nothing changed' "$work/p0-bound-err.log" ||
-  fail "legion project set-p0-bound --bound 0 stderr did not carry the daemon's 400 refusal: $(cat "$work/p0-bound-err.log")"
+grep -q '400' "$work/p0-bound-err.log" ||
+  fail "legion project set-p0-bound --bound 0 stderr did not name the daemon's 400: $(cat "$work/p0-bound-err.log")"
 # The CLI prints the refusal's sentence without its code; read the code off the same operator route
 # with the bearer in a 0600 curl config file, never on curl's command line.
 (umask 077 && printf 'header = "Authorization: Bearer %s"\n' "$(<"$work/operator-token")" >"$work/p0-bound-curl.cfg")

@@ -127,3 +127,43 @@ func TestP0BoundCommands(t *testing.T) {
 		t.Fatalf("the store holds %d changes after two sets and a clear, want 3", n)
 	}
 }
+
+// `legion state`'s P0 line (p0AdmissionLine) prints only a state that carries both keys the daemon
+// writes together, `admission.p0Holders` and `admission.p0Bound`: a state with one and not the
+// other is none a daemon serves (withoutP0Start takes both out together), and the line prints
+// nothing for it rather than a count or a bound the state did not give. A reason or a session the
+// controller wrote reaches the terminal as terminalText, so an ESC or a BEL in it can neither set
+// the window title nor ring.
+func TestTheP0LineNeedsBothP0KeysAndShowsTheReasonAsTerminalText(t *testing.T) {
+	t.Parallel()
+	active := []string{"LEGION-1", "LEGION-2"}
+	bound := api.P0BoundView{Bound: new(2), Configured: new(4)}
+	written := api.P0BoundView{Bound: new(2), Configured: new(4), Live: &api.P0BoundLiveView{Bound: new(2),
+		SetBy: api.PauseActorView{Kind: "controller", Session: "ses-\x1b[2J"},
+		SetAt: time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC), Reason: "\x1b]0;x\x07"}}
+	for _, tc := range []struct {
+		name      string
+		admission api.Admission
+		want      string
+	}{
+		{name: "both keys", admission: api.Admission{Cap: 1, Active: active, P0Holders: new(1), P0Bound: &bound},
+			want: "P0: 1 of the 2 issues holding a slot are P0 and hold it outside the cap of 1; P0 bound 2 in force, 4 in legion.yaml; " +
+				"none set while the daemon runs"},
+		{name: "the P0 holders without the P0 bound", admission: api.Admission{Cap: 1, Active: active, P0Holders: new(1)}},
+		{name: "the P0 bound without the P0 holders", admission: api.Admission{Cap: 1, Active: active, P0Bound: &bound}},
+		{name: "neither key", admission: api.Admission{Cap: 1, Active: active}},
+		{name: "a live reason holding an ESC and a BEL", admission: api.Admission{Cap: 1, Active: active, P0Holders: new(1), P0Bound: &written},
+			want: `P0: 1 of the 2 issues holding a slot are P0 and hold it outside the cap of 1; P0 bound 2 in force, 4 in legion.yaml; ` +
+				`set to 2 by the controller (session ses-\x1b[2J) at 2026-11-24T06:00:00Z: \x1b]0;x\a`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := p0AdmissionLine(tc.admission)
+			if got != tc.want {
+				t.Fatalf("p0AdmissionLine = %q, want %q", got, tc.want)
+			}
+			if strings.ContainsAny(got, "\x1b\x07") {
+				t.Fatalf("p0AdmissionLine = %q, which holds a raw ESC or BEL", got)
+			}
+		})
+	}
+}

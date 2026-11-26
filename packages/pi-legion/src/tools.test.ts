@@ -2316,19 +2316,23 @@ test("the controller sets and clears the P0 bound, each request the contract's a
 });
 
 // read_state's summary gives the P0 holders, the bound in force and the live value that stands,
-// on one line after the admission cap's, and no such line for a body served below the P0 start's contract entry.
+// on one line after the admission cap's, and no such line for a body served below the P0 start's
+// contract entry, which carries neither key, nor for a body that carries one key and not the
+// other, which no daemon serves: it writes the two together.
 test("the read_state summary gives the P0 holders and the P0 bound in force", async () => {
   const base = daemonFixture("state.json") as LegionState;
-  const { daemon } = recordingDaemon({ state: base });
-  const summary = (
-    await controllerTool(daemon, []).execute(
-      "",
-      { op: "read_state" },
-      undefined,
-      undefined,
-      context("ses_controller")
-    )
-  ).content[0];
+  const summaryOf = async (state: LegionState) => {
+    const { daemon } = recordingDaemon({ state });
+    return (
+      await controllerTool(daemon, []).execute(
+        "",
+        { op: "read_state" },
+        undefined,
+        undefined,
+        context("ses_controller")
+      )
+    ).content[0];
+  };
   const admission = base.admission;
   const live = admission?.p0Bound?.live;
   if (
@@ -2340,24 +2344,22 @@ test("the read_state summary gives the P0 holders and the P0 bound in force", as
       "state.json carries no P0 holders or no live P0 bound set by the controller: this test proves nothing"
     );
   }
-  expect(summary).toMatchObject({
+  expect(await summaryOf(base)).toMatchObject({
     text: expect.stringContaining(
       `\np0 holders ${admission.p0Holders} bound ${admission.p0Bound?.bound} set ${live.bound} by the controller (session ${live.setBy.session}) at ${live.setAt}: ${live.reason}\n`
     ),
   });
 
   const { p0Holders: _held, p0Bound: _bound, ...older } = admission;
-  const { daemon: olderDaemon } = recordingDaemon({ state: { ...base, admission: older } });
-  const olderSummary = (
-    await controllerTool(olderDaemon, []).execute(
-      "",
-      { op: "read_state" },
-      undefined,
-      undefined,
-      context("ses_controller")
-    )
-  ).content[0];
-  expect(olderSummary).toMatchObject({ text: expect.not.stringContaining("\np0 holders") });
+  for (const body of [
+    older,
+    { ...older, p0Holders: admission.p0Holders },
+    { ...older, p0Bound: admission.p0Bound },
+  ]) {
+    const summary = await summaryOf({ ...base, admission: body });
+    expect(summary).toMatchObject({ text: expect.stringContaining("\nadmission cap ") });
+    expect(summary).toMatchObject({ text: expect.not.stringContaining("\np0 holders") });
+  }
 });
 
 // The daemon's refusals reach the controller as every other write's do: the code, then the

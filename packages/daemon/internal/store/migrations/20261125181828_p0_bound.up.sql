@@ -24,9 +24,10 @@
 -- resolved_priority is Dispatch's level, 0 for P0 to 3 for P3, null for none, as the priority
 -- column holds the issue's own, and null wherever resolved_known is false. priority_from is
 -- `priority_from`, the key of the issue the resolved priority comes from, empty where it is the
--- issue's own or none. The first boot listing after Dispatch resolves priorities replaces each row
--- the listing shows, at the row's own sequence too (admit's applyListed), so an inherited P0 that
--- Dispatch's upgrade made takes effect with no edit of the issue.
+-- issue's own or none, and empty wherever resolved_known is false: a priority Dispatch did not
+-- resolve comes from no issue. The first boot listing after Dispatch resolves priorities replaces
+-- each row the listing shows, at the row's own sequence too (admit's applyListed), so an inherited
+-- P0 that Dispatch's upgrade made takes effect with no edit of the issue.
 --
 -- No outbox kind is added, so outbox_kind_check stays as the last migration that wrote it left it.
 --
@@ -54,4 +55,4 @@ alter table issues
   add column resolved_known boolean not null default false,
   add column resolved_priority smallint check (resolved_priority between 0 and 3),
   add column priority_from text not null default '',
-  add constraint issues_resolved_priority_known check (resolved_known or resolved_priority is null);
+  add constraint issues_resolved_priority_known check (resolved_known or (resolved_priority is null and priority_from = ''));

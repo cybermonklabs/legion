@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -100,6 +101,17 @@ func eventType(t *testing.T, raw json.RawMessage) string {
 // and the live consumer share (DecodeDispatchEvent), which must read it whole.
 func decodeIssueEvent(t *testing.T, raw []byte) DispatchIssue {
 	t.Helper()
+	issue, unread := decodeIssueEventNoting(t, raw)
+	if len(unread) != 0 {
+		t.Fatalf("decode %s: unread %q", raw, unread)
+	}
+	return issue
+}
+
+// decodeIssueEventNoting is raw through DecodeDispatchEvent as decodeIssueEvent reads it, with the
+// notes of the values the decoder named in unread rather than read.
+func decodeIssueEventNoting(t *testing.T, raw []byte) (DispatchIssue, []string) {
+	t.Helper()
 	var event struct {
 		IssueKey string `json:"issue_key"`
 	}
@@ -107,14 +119,14 @@ func decodeIssueEvent(t *testing.T, raw []byte) DispatchIssue {
 		t.Fatalf("read the issue of %s: %v", raw, err)
 	}
 	fact, unread, err := DecodeDispatchEvent("ACME", event.IssueKey, raw)
-	if err != nil || len(unread) != 0 {
-		t.Fatalf("decode %s: %v, unread %q", raw, err, unread)
+	if err != nil {
+		t.Fatalf("decode %s: %v", raw, err)
 	}
 	issue, ok := fact.(DispatchIssue)
 	if !ok {
 		t.Fatalf("%s decoded to %#v, want a Dispatch issue", raw, fact)
 	}
-	return issue
+	return issue, unread
 }
 
 // priorityWords is priority as a failure names it: P0 to P3, or none.
@@ -286,6 +298,41 @@ func TestEveryDispatchReadDecodesEachPriorityField(t *testing.T) {
 		check(t, "listing row", listedFact(t, withRowFields(t, listing, set)), record.NoPriority, none)
 		check(t, "detail read", detailFact(t, withFields(t, detail, set)), record.NoPriority, none)
 	})
+	// An issue event names a value it cannot read in unread, under the field that carried it,
+	// rather than refusing the event: a resolved level Dispatch never writes is no priority, named
+	// as `resolved_priority`, never as `priority`, the issue's own field; and a `priority_from`
+	// that is no issue key is no issue, as on the listing and the detail read, since the state
+	// serves it as an issue key. An empty `priority_from` is no issue, with no note.
+	for _, tc := range []struct {
+		name  string
+		level string
+		from  string
+		want  record.Resolved
+		// note is the start of the one note unread holds, empty for none.
+		note string
+	}{
+		{name: "a resolved level Dispatch never writes, on an issue event", level: `9`, from: `"OTHER-5"`,
+			want: record.Resolved{From: fromAbove, Known: true}, note: "resolved_priority 9 is no level Dispatch writes"},
+		{name: "a resolved level that is no integer, on an issue event", level: `"high"`, from: `"OTHER-5"`,
+			want: record.Resolved{From: fromAbove, Known: true}, note: `resolved_priority "high" is not a priority`},
+		{name: "a priority_from that is no issue key", level: `0`, from: `"not a key"`,
+			want: record.Resolved{Priority: record.P0, Known: true}, note: `priority_from "not a key" is no issue key`},
+		{name: "an empty priority_from", level: `0`, from: `""`, want: record.Resolved{Priority: record.P0, Known: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set := map[string]json.RawMessage{"priority": json.RawMessage(`null`),
+				"resolved_priority": json.RawMessage(tc.level), "priority_from": json.RawMessage(tc.from)}
+			got, unread := decodeIssueEventNoting(t, withPayloadFields(t, event, set))
+			check(t, "issue event", got, record.NoPriority, tc.want)
+			if tc.note == "" && len(unread) != 0 || tc.note != "" && (len(unread) != 1 || !strings.HasPrefix(unread[0], tc.note)) {
+				t.Errorf("the issue event's unread notes are %q, want one starting %q, or none where that is empty", unread, tc.note)
+			}
+			if tc.level == `0` {
+				check(t, "listing row", listedFact(t, withRowFields(t, listing, set)), record.NoPriority, tc.want)
+				check(t, "detail read", detailFact(t, withFields(t, detail, set)), record.NoPriority, tc.want)
+			}
+		})
+	}
 	t.Run("the older capture", func(t *testing.T) {
 		facts := map[string]DispatchIssue{
 			"listing row": listedFact(t, readHTTPBody(t, "listing-acme-1549.json")),

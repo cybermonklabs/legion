@@ -475,7 +475,7 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.Handover{}, intake.CloseRoot{}, intake.ControllerMemoryGuardKill{},
 		// A change of the P0 bound, which records it and makes the pass every fact that is not a
 		// Dispatch issue makes.
-		intake.P0BoundSet{Mode: store.P0BoundUnbounded, By: store.PauseActor{Kind: store.PauseByOperator}, Reason: "runaway"},
+		intake.P0BoundChanged{Change: store.P0BoundChange{Mode: store.P0BoundUnbounded, By: store.PauseActor{Kind: store.PauseByOperator}, Reason: "runaway"}},
 	} {
 		if name := factName(fact); name == kind {
 			return fact
