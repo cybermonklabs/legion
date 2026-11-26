@@ -209,7 +209,7 @@ function useFiledText(
   route: DispatchReferenceRoute | undefined,
   item: { readonly id: string; readonly kind: BlockItemKind } | undefined,
   enabled: boolean
-): { readonly queryKey: QueryKey; readonly read: UseQueryResult<FiledText> } {
+): { readonly key: QueryKey; readonly read: UseQueryResult<FiledText> } {
   // A message is an issue's alone, read by its issue's key as well as its id.
   const message =
     item?.kind === "message" && route !== undefined && "key" in route
@@ -238,11 +238,11 @@ function useFiledText(
   });
   switch (item?.kind) {
     case "ask":
-      return { queryKey: askRead.queryKey, read: ask };
+      return { key: askRead.queryKey, read: ask };
     case "comment":
-      return { queryKey: commentRead.queryKey, read: comment };
+      return { key: commentRead.queryKey, read: comment };
     default:
-      return { queryKey: messageRead.queryKey, read: messageAnswer };
+      return { key: messageRead.queryKey, read: messageAnswer };
   }
 }
 
@@ -668,7 +668,7 @@ export function IssueMarginPanel({
   // there.
   const filedWorded =
     filedTarget !== undefined && filedTarget.gone !== true && postDeletion(filedTarget) === null;
-  const { queryKey: filedTextKey, read: filedTextAnswer } = useFiledText(
+  const { key: filedTextKey, read: filedTextAnswer } = useFiledText(
     filedRoute,
     filedItem,
     readingDevelopment && filedWorded
