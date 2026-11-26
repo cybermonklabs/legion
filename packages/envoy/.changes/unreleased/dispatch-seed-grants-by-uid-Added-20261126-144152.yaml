@@ -1,0 +1,5 @@
+kind: Added
+body: '`envoy-infra:gcp:Dispatch` grants the NATS seed to the app''s and the listener''s ServiceAccounts a second time, by uid: `<hostname>-nats-seed-uid-accessor` and `<hostname>-listener-nats-seed-uid-accessor` give `roles/secretmanager.secretAccessor` to `principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool>/kubernetes.serviceaccount.uid/<uid>`, the account''s own `metadata.uid`. A member by name is held by a ServiceAccount of that namespace and name in any cluster of the project''s pool; a member by uid only by the one account. Each Deployment that mounts the seed waits for both of its account''s grants. The grants by name stay in this release, and a later release drops them. The new output `serviceAccountUid` is the app''s ServiceAccount''s uid, for a consumer''s own grants to the app''s pods; it is `""` with `clusterOnly`.'
+time: 2026-11-26T14:41:52.808284738Z
+custom:
+    Issue: dispatch-seed-grants-by-uid

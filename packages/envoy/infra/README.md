@@ -1008,11 +1008,11 @@ builds no subnetwork: unset regionalNetwork`. It refuses every other input by na
 configures Dispatch, which clusterOnly does not build: unset it, or unset clusterOnly`.
 `existingCluster` and `existingDatabaseInstance` are among them, since this mode always makes its
 own cluster and uses no database. `clusterName`, `kubeconfig` and `serviceAccountIssuer` carry the
-cluster's own values; `url`, `databaseInstance`, `principal`, `agentToken` and
-`serviceAccountSubject` are an explicit empty string, which is the same value in a preview and in
-an update. A stack already running Dispatch cannot turn it on: such a stack sets
-the inputs the mode refuses, so the update is refused before anything it would no longer build is
-deleted.
+cluster's own values; `url`, `databaseInstance`, `principal`, `agentToken`,
+`serviceAccountSubject` and `serviceAccountUid` are an explicit empty string, which is the same
+value in a preview and in an update. A stack already running Dispatch cannot turn it on: such a
+stack sets the inputs the mode refuses, so the update is refused before anything it would no
+longer build is deleted.
 
 With the tailnet group and `publicOrigin` unset the component is the sandbox: it builds its
 network and its app as it always does, on its own cluster and database or on the ones
@@ -1730,9 +1730,17 @@ finish. The component itself grants that
 principal `roles/secretmanager.secretAccessor` only on the NATS seed secret (and on the Azure key
 secret when `azureEmbedKeySecret` is set, and on the chat token's secret when `chatTokenSecret`
 is), and grants the listener's own account, `<hostname>-listener`, the same role on the NATS seed
-secret alone (`<hostname>-listener-nats-seed-accessor`); the app and the listener, which mount the
-seed, each wait for their own account's grant to be written, as the app waits for the Azure key's
-and the chat token's. IAM can take minutes to apply
+secret alone (`<hostname>-listener-nats-seed-accessor`). It grants each of the two accounts the
+NATS seed a second time by its uid,
+`principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<project id>.svc.id.goog/kubernetes.serviceaccount.uid/<uid>`
+(`<hostname>-nats-seed-uid-accessor` and `<hostname>-listener-nats-seed-uid-accessor`), a member
+that only the account its cluster's API server gave that uid holds, where the member by name is
+held by an account of that namespace and name in any cluster of the project's pool. Each takes its
+account's `metadata.uid`, so it registers after that account, and an account made again under a
+new uid replaces it. This release keeps the grants by name beside them, so a running pod mounts
+the seed through either while a consumer moves; a later release drops the grants by name. The app
+and the listener, which mount the seed, each wait for their own account's grants to be written,
+as the app waits for the Azure key's and the chat token's. IAM can take minutes to apply
 a new binding (Google cites typically two, sometimes seven or more), and a pod restarts until it
 can mount. Each pod runs as an account of its own: the app as `<hostname>`, the listener as
 `<hostname>-listener` and the front door as `<hostname>-tailnet`, so only the app's pods can
@@ -1757,6 +1765,12 @@ projected tokens and no other, and the identity needs a role on the Azure AI Fou
 lets it call each deployment it is given, the embedding deployment's and the chat deployment's.
 The component writes nothing in Azure: the consumer's Azure program
 declares the credential and the role from these two outputs.
+
+The `serviceAccountUid` output is the `metadata.uid` of the app's ServiceAccount `<hostname>`, as
+the cluster's API server gave it. A consumer that grants the app's pods a role of its own names
+them by it, in the uid form above, rather than by `principal`, which an account of the same
+namespace and name in another cluster of the project's pool holds too. It is unknown in a preview
+that creates the account.
 
 ### The pods
 

@@ -343,7 +343,8 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// runs as <hostname>-listener, an account of its own granted the NATS seed and nothing else,
 	// and the front door's pods as <hostname>-tailnet (newDispatchFrontDoor), so no pod but the
 	// app's can project a token naming <hostname>.
-	if _, err := corev1.NewServiceAccount(ctx, s.hostname, &corev1.ServiceAccountArgs{Metadata: metadata(s.hostname)}, child...); err != nil {
+	appAccount, err := corev1.NewServiceAccount(ctx, s.hostname, &corev1.ServiceAccountArgs{Metadata: metadata(s.hostname)}, child...)
+	if err != nil {
 		return err
 	}
 	dispatchSecretName := s.hostname + "-dispatch"
@@ -384,9 +385,18 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if err != nil {
 		return err
 	}
-	if _, err := corev1.NewServiceAccount(ctx, listenerName, &corev1.ServiceAccountArgs{Metadata: metadata(listenerName)}, child...); err != nil {
+	listenerAccount, err := corev1.NewServiceAccount(ctx, listenerName, &corev1.ServiceAccountArgs{Metadata: metadata(listenerName)}, child...)
+	if err != nil {
 		return err
 	}
+	// The NATS seed's grants by uid take each account's metadata.uid, so they register here, after
+	// both accounts, and the app's account's uid is the serviceAccountUid output, which a
+	// consumer's own grants to the app's pods name (newDispatchSeedGrantsByUID).
+	appSeedGrantByUID, listenerSeedGrantByUID, err := newDispatchSeedGrantsByUID(ctx, comp, name, args, s, cloud, database, appAccount, listenerAccount)
+	if err != nil {
+		return err
+	}
+	comp.ServiceAccountUid = appAccount.Metadata.Uid().Elem()
 	// One of the three SecretProviderClasses, which differ in nothing else: the CSI driver reads
 	// the Secret Manager secret the consumer's Input names, at its latest version, and mounts it
 	// as the one file file names. input is that Input's own schema name, which the seed refusal
@@ -630,9 +640,10 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// wait for, and the sandbox is in-cluster NATS by the resolver's own rule.
 	frontDoor := pulumi.DependsOn(frontDoorResources)
 	// Both also mount the NATS seed, which a pod can read only once its principal holds
-	// roles/secretmanager.secretAccessor on the secret, so each waits for its own account's grant
-	// rather than racing IAM on the first deployment: the listener here, the app below.
-	seedGrant := pulumi.DependsOn([]pulumi.Resource{database.listenerSeedAccessor})
+	// roles/secretmanager.secretAccessor on the secret, so each waits for its own account's two
+	// grants, by name and by uid, rather than racing IAM on the first deployment: the listener
+	// here, the app below.
+	seedGrant := pulumi.DependsOn([]pulumi.Resource{database.listenerSeedAccessor, listenerSeedGrantByUID})
 
 	// The listener runs under its own ServiceAccount, <hostname>-listener, which is what mounts
 	// the NATS seed through Workload Identity, with listenerReplicas pods. Above one it needs an
@@ -777,7 +788,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	appMounts = append(appMounts, tokenMount)
 	appVolumes := append(corev1.VolumeArray{}, seedVolume...)
 	appVolumes = append(appVolumes, tokenVolume)
-	appGrants := []pulumi.Resource{database.seedAccessor}
+	appGrants := []pulumi.Resource{database.seedAccessor, appSeedGrantByUID}
 	if s.agentSecretsURL != "" {
 		// Dispatch presents its own ServiceAccount's token to the broker, which reads the caller
 		// from BROKER_API_ACCOUNTS. The kubelet mints it for the broker's audience into a projected
