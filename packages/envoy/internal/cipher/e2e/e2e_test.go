@@ -187,9 +187,9 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 		Store: st, Policy: current, Secrets: policytest.Store(local),
 		PendingTTL: 12 * time.Hour,
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
-		Groups:               reader,
-		AirlockProxyURL:      e2eProxyURL,
-		AirlockCACertificate: e2eCACertificate,
+		Groups:          reader,
+		AirlockProxyURL: e2eProxyURL,
+		ProxyRoots:      func() string { return e2eCACertificate },
 		Minters: map[string]requests.Minter{
 			policy.TypeAnthropicFederation: (&secrets.AnthropicFederation{
 				Accounts:      o.serviceAccounts,
