@@ -7394,6 +7394,13 @@ A walk of the host's whole `/proc` held a row to the host's process count; on th
 Each row of `lib/run-processes.test.ts` walks a root of the processes it started and the test process, and its first row starts a marked process outside that root, which a walk that went back to the host's `/proc` would name.
 A harness shell makes the same root for itself with one `ln -s` an entry, as `lib/unread-proc.test.ts`'s row for an agent's member that outlives its TERM does
 
+## lib/process-alive.ts
+
+`alive(pid)` says whether a process a row started is still running: it answers signal 0, and `/proc/<pid>/stat` names a state other than `Z`, since a zombie still answers signal 0.
+A process that ends between the signal and the read leaves no stat file, and the read fails with `ENOENT` or `ESRCH`: `alive` returns false for it, and throws on any other failure of the read, which says nothing about the process.
+`lib/process-alive.test.ts` forces that race with a read that fails after the signal has succeeded.
+`lib/parked-decision-teardown.test.ts` waits on it for a pane, a broker and a broker's session to end.
+
 ## lib/process-tree.sh
 
 How a live proof knows a process it started: by the pid it had when it started, read from what started it, and by the program the kernel records it runs (`/proc/<pid>/exe`), never by a walk of the machine's `/proc` for its name, its command line or its working directory.
