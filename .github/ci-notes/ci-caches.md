@@ -156,33 +156,28 @@ whole jobs 4.5 and 4.2 min), against 274 s and 214 s for the `-c` fill (jobs 139
 139585275017). On main's entry this fill's jobs took 2.9 and 2.7 min, an 8 s save included (jobs
 139585272770 and 139585272357).
 
-## Why the go-envoy-test fill deletes the module zips
+## Why the go-envoy-test fill keeps the module zips
 
-Go reads a module it has extracted from its tree, ~/go/pkg/mod/<module>@<version>. The zip that
-tree came from, under ~/go/pkg/mod/cache/download/<module>/@v/, is read only to extract the tree
-again when it is missing, and by `go mod download` and `go mod verify`, which no job that
-restores this entry runs: a build checks that the tree and its .ziphash exist
-(cmd/go/internal/modfetch/fetch.go, DownloadDir), and the .info, .mod and .ziphash files beside
-the zip stay. So the fill deletes the zips before it saves. A job that does need a zip downloads
-it again, as it downloads a module the entry never held.
+Main's #5600 deleted `~/go/pkg/mod/cache/download/**/*.zip` before saving `go-envoy-test`, on the
+premise that no job restoring this entry runs `go mod download` or `go mod verify`. On this
+branch that premise is false: under R1, the fill itself and every job that restores this entry
+(such as `envoy-go`) run a retried `go mod download` step before their Go builds, so that no
+download happens inside a build or test step (dispatch://INFRA-1545).
 
-Measured in the same runs: the zips were 160 files and 272 MB of the arm64 entry's module cache
-(150 and 210 MB on x64), stored as they are, since a zip does not compress again. The saved entry
-went from 939 MB to 708 MB on arm64 and from 859 MB to 690 MB on x64, though this fill keeps
-about 330 more build cache entries (the test mains and the natslive packages), and envoy-go's
-restore from 20 s to 16 s. On the entry without zips, `GOPROXY=off go list -deps -test ./...`
-passed, so every package of the module and of its tests is served from the trees; with one tree
-removed from a copy of that cache it failed, naming the module it had to download, and on the
-entry with zips the same removal passed, since the zip extracted the tree again.
+Go 1.27.3's `DownloadModule` calls `DownloadZip`, which requires both the `.zip` and its
+`.ziphash` for a cache hit. Review round 41's single-module control (reproduced on Go 1.27.3 in
+the worker pod) showed why: with the zip present, `GOPROXY=off go mod download` exits 0; after
+deleting only the `.zip`, `GOPROXY=off go build ./...` still passes offline from the extracted
+tree, but `GOPROXY=off go mod download` fails (`go: module lookup disabled by GOPROXY=off`) until
+the proxy serves the zip again. Saving the entry without zips would therefore make every reader's
+`go mod download` step hit the proxy on every run, defeating the cache and exposing every run to
+the network.
 
-The zips are not left out by a `!` line in the save's path list. actions/cache resolves its path
-list with @actions/glob and `implicitDescendants: false`
-(@actions/cache's internal/cacheUtils.ts, resolvePaths), so `~/go/pkg/mod` yields that one
-directory, tar archives it whole, and a `!~/go/pkg/mod/cache/download/**/*.zip` line matches no
-path the glob yields and excludes nothing: a save and restore of a module cache with that line
-brought back both of its 2 zips (scratch run 45722872215, job 139585272669). It still changes the
-entry's version, which hashes the path list (getCacheVersion), so every restore of the family
-would have to carry the same line or miss.
+So this branch removes #5600's zip-deletion step and keeps the zips in the saved entry
+(dispatch://INFRA-1545, round 69). The cost, from #5600's scratch runs 45722872667 and
+45722872215: the zips are 160 files and 272 MB on arm64 (150 and 210 MB on x64), making the saved
+entry about 231 MB larger on arm64 (939 MB against 708 MB) and 169 MB larger on x64 (859 MB
+against 690 MB), and envoy-go's restore 20 s against 16 s.
 
 ## Why a lookup's save takes the lookup's key
 
@@ -391,8 +386,10 @@ and keyed both from measurements. The envoy job: warm, on its newest entry, 37 s
 138290290861 and 138290290676); cold, from an empty module and build cache, 61 s and 48 s before
 a save of about 0.5 GB (probe run 45375660275, jobs 138381154486 and 138381153841). Main gave it
 10 minutes, about nine times the cold. The envoy-test job: warm, 2.9 and 2.7 min a leg, save
-included; cold, 4.5 and 4.2 min before an 8 s save (x64, arm64; scratch run 45722872215, main's
-#5600). Main gave it 30 minutes, about six times the cold job.
+included; cold, 4.5 and 4.2 min before an 8 s save in #5600's scratch run 45722872215 (measured
+with module zips deleted; keeping the zips adds about 231 MB on arm64 and 169 MB on x64,
+#why-the-go-envoy-test-fill-keeps-the-module-zips). Main gave it 30 minutes, about six times the
+cold job.
 
 Each job's first term is main's figure, and the Budgets note of `.github/ci-budgets.md` adds its
 slowest retried step alone, its Go module download, 5 x 180 + 150 = 1050 s

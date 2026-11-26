@@ -423,14 +423,10 @@ jobs:
       - name: Delete the build cache's entries neither envoy build used
         run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-envoy-test-working-set"
 
-      # No reader extracts a module again, so none reads a zip. A `!` path line would not exclude
-      # them: the save archives each directory it lists whole.
-      # why: .github/ci-notes/ci-caches.md#why-the-go-envoy-test-fill-deletes-the-module-zips
-      - name: Delete the module zips, which no job that restores this entry reads
-        run: |
-          find "$(go env GOMODCACHE)/cache/download" -type f -name '*.zip' -printf '%s\n' -delete |
-          awk '{ n++; b += $1 } END { printf "deleted %d module zips, %d bytes\n", n, b }'
-
+      # This fill keeps the module zips under ~/go/pkg/mod/cache/download: every reader on this
+      # branch runs a retried `go mod download` before it builds, and Go 1.27.3's DownloadModule
+      # requires both .zip and .ziphash for a cache hit.
+      # why: .github/ci-notes/ci-caches.md#why-the-go-envoy-test-fill-keeps-the-module-zips
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
