@@ -84,21 +84,28 @@ var rolePushForms = []rolePushForm{rolePushPod, rolePushTmux}
 //   - pod: packages/daemon/docker/jj, a shell script. It expands the line as jj does (aliases,
 //     ui.default-command) by its own reads of jj's configuration, refuses a git jj's configuration
 //     names other than the git wrapper, filters the warnings its reads print (once_only), puts
-//     `--config=git.executable-path="<git wrapper>"` in front of the line and after a push
-//     (podForces), and hands a line it read as a push to `legion jj --real <next jj>`.
+//     `--config=git.executable-path="<git wrapper>"` in front of the line and a second such layer
+//     at the end of the deepest level that holds a --config of the role's, or in front of the
+//     command word (podForces), and hands a line it read as a push to `legion jj --real <next jj>`.
 //   - tmux: workerbin.Install's bin/jj, `legion jj --after <bin> -- <args>`: legion jj expands the
-//     line itself, in Go, and runs the next jj on PATH after bin.
-// Each form then runs the same step, cmd/legion/jj.go's, on the push line it was handed: the trailer
-// and author rules, the rewrite of a revision argument to the commits it named, the bounds of a
-// word and of a command, the snapshot, the dry run and its reading, the retries. For a line that
-// names no alias, default command or configuration layer of the role's, the step gets the same
-// words in both forms but for the pod's git.executable-path words, global options the step skips
-// (rolePushGlobalValues), whose bytes count toward the command's size as every word does, and the
-// step gets its environment from the form, whose PATH differs. So a case that tests the expansion,
-// the wrappers' refusals, their filtering of warnings, which jj a form runs, or a form's own
-// command (help, a jj that jj starts) runs in both forms (rolePushEachForm), and a case of the
-// step's own logic runs in one (rolePushStepLogic), with one case of each family of that logic
-// still in both as the check that the forms agree.
+//     line itself, in Go (expandJJ, whose jjCommandWord skips the global options of jjWordValues
+//     and jjWordFlags, the pod's wrapper's lists, TestTheGlobalOptionListsAreTheImageWrappers),
+//     reads the push's configuration itself (readConfiguration), and runs the next jj on PATH after
+//     bin.
+// Each form then runs the same step, cmd/legion/jj.go's, on the push line it was handed: the
+// trailer and author rules, the rewrite of a revision argument to the commits it named, the bounds
+// of a word and of a command, the snapshot, the dry run and its reading, the retries. The line
+// differs: the pod's carries its git.executable-path layers, global options readJJPush keeps
+// (options, which every step command carries first) and whose level-0 --config moves configEnd, so
+// the dry run puts its own --config ui.quiet=false in front of `git` in a pod and, on a line with
+// no --config of the role's, in front of --dry-run in a pane. The step's environment comes from the
+// form, whose PATH differs: the step's git reads (gitMoved) run the first git on it, the git
+// wrapper in a pod and bin/git in a pane. So a case that tests the expansion (a global flag in
+// front of the command word among it), the wrappers' refusals, their filtering of warnings, which
+// jj or git a form runs, the dry run's placement of its quiet layer, or a form's own command (help,
+// a jj that jj starts) runs in both forms (rolePushEachForm), and a case of the step's own logic
+// runs in one (rolePushStepLogic), with one case of each family of that logic still in both as the
+// check that the forms agree.
 
 // rolePushEachForm runs test under each form, each in a parallel subtest named for the form.
 func rolePushEachForm(t *testing.T, test func(t *testing.T, form rolePushForm)) {

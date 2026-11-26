@@ -224,7 +224,9 @@ func TestTheStepsCommandsRunOneAfterAnother(t *testing.T) {
 		rows = append(rows, row{name: waiting.name, form: waiting, rewrite: true})
 	}
 	for _, waiting := range rolePushWaitingIgnoredForms {
-		rows = append(rows, row{name: waiting.name + ", a commit to rewrite", form: waiting, rewrite: true})
+		// A global flag in front of the command word is the expansion's (jjCommandWord in a pane,
+		// command_word in a pod), so that row runs in both forms.
+		rows = append(rows, row{name: waiting.name + ", a commit to rewrite", form: waiting, rewrite: true, bothForms: waiting.args[0] == "--ignore-working-copy"})
 	}
 	const another = "another@example.invalid"
 	quiet := rolePushWaitingForm{name: "--bookmark on @ with --quiet", args: []string{"--quiet", "git", "push", "--bookmark", "legion/K-1"}, ref: "legion/K-1", bookmark: true}

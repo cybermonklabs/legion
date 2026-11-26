@@ -22,13 +22,15 @@ import (
 //   - the tmux form: the bin directory that workerbin.Install writes for that legion, first on
 //     PATH, with the real jj (or a recording jj ahead of it) after it.
 //
-// A case that tests a form (its expansion of the line, its wrapper's refusals and its filtering of
-// warnings, which jj it runs, its own help) runs under both forms, as does each row whose line
-// holds a configuration layer, an alias or a `--` of the role's, which the pod's wrapper reads
-// itself, and one row or test of each family of the step's own logic, the check that the two
-// forms agree. Every other case of the step's own logic runs under the pod's form alone; the
-// fixture's comment above rolePushEachForm says, from the code, what a form changes and what it
-// does not. TestAFailingReadOfThePushsConfigurationSendsNothing, of a read that only the pane's
+// A case that tests a form (its expansion of the line, a global flag in front of the command word
+// among it, its wrapper's refusals and its filtering of warnings, which jj or git it runs, its own
+// help) runs under both forms, as does each row whose line holds a configuration layer, an alias
+// or a `--` of the role's, which the pod's wrapper reads itself, each quiet row (the dry run puts
+// its own quiet layer in a different place in each form), and one row or test of each family of
+// the step's own logic, the check that the two forms agree; each such case says why where it runs
+// both. Every other case of the step's own logic runs under the pod's form alone; the fixture's
+// comment above rolePushEachForm says, from the code, what a form changes and what it does not.
+// TestAFailingReadOfThePushsConfigurationSendsNothing, of a read that only the pane's
 // legion jj makes, runs under the tmux form alone. Neither file names anything the step's change
 // adds: the fixture writes out the table's variable and those of the test binary's bounds of the
 // step, and builds every command's environment. So both compile and run at the base too, where
@@ -734,7 +736,7 @@ func TestASameSecondRetrySendsTheCommitTheRefusedPushMade(t *testing.T) {
 func TestARetryAfterARestoreStopsThePushWithJJsError(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
-	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+	rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 		f := newRolePushFixture(t, form, rolePushRecords)
 		f.timestamp = rolePushFixedTimestamp
 		c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
@@ -1208,8 +1210,10 @@ func rolePushCannotReadRows() []struct {
 	}{
 		{rolePushRow{name: "a line of neither shape in the block", args: rolePushBookmark, setup: asWritten(rolePushUnreadableLine)}, rolePushUnreadableDryRun},
 		{rolePushRow{name: "a dry run that exits 0 with no block", args: rolePushBookmark, setup: asWritten("")}, rolePushDryRunWithNoBlock},
-		// What silences jj the pod's wrapper reads too (its own reads of the configuration, and
-		// --quiet before or after the command): these rows run in both forms (rolePushRow.bothForms).
+		// The quiet rows run in both forms (rolePushRow.bothForms): the dry run that must not be
+		// silenced puts its --config ui.quiet=false in front of `git` in a pod, after the wrapper's
+		// level-0 layer, and on a line with no --config of the role's in front of --dry-run in a
+		// pane (jjStep.dryRun, configEnd).
 		{rolePushRow{name: "--quiet on the push", bothForms: true, args: []string{"git", "push", "--quiet", "--bookmark", "legion/K-1"}, setup: reads}, ""},
 		{rolePushRow{name: "ui.quiet = true in the repository's configuration", bothForms: true, args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
 			f.jj(impl, "config", "set", "--repo", "ui.quiet", "true")
@@ -1360,7 +1364,7 @@ func TestARoleIdentityTableThatDoesNotParseChangesNothing(t *testing.T) {
 	for _, row := range rolePushTableRows {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+			rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, "")
 				c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
 				f.bookmark("legion/K-1", c.commit)
@@ -1390,7 +1394,10 @@ func TestAPushWithNothingToChangeAddsNoOperation(t *testing.T) {
 		f.bookmark("legion/K-1", c.commit)
 		return c
 	}
-	rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
+	// Both forms: a push whose snapshot is due takes none of the step's here, and the step's git
+	// reads (gitMoved) run the first git on the form's PATH, the git wrapper in a pod and bin/git in
+	// a pane.
+	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
 		twin := newRolePushFixture(t, form, "")
 		setup(twin)
 		before := twin.ops()

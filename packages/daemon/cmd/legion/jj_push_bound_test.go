@@ -167,7 +167,7 @@ func TestARevisionPastTheBoundGetsItsIDsInWordsOfItsOption(t *testing.T) {
 				f.mutableHistory(rolePushIDsHistory)
 				return []string{"git", "push", option, f.seed + ".." + f.read("legion/K-1").commit}
 			}
-			// jj alone runs no form of Legion's, so one twin stands for both forms.
+			// jj alone runs no form of Legion's, so its twin needs one fixture, the pod's.
 			twin := newRolePushFixture(t, rolePushPod, "")
 			args := setup(twin)
 			if code, _, stderr := trailerRunInput(t, twin.repo, twin.env(twin.setupPath, rolePushImplementer), strings.NewReader(""), twin.real, args...); code != 0 {

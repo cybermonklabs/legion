@@ -113,7 +113,7 @@ func rolePushCountRewrites(stderr string) (rewrites int, printed string) {
 // author.
 func TestAPushOfALongHistorySetsEveryAuthor(t *testing.T) {
 	t.Parallel()
-	// jj alone runs no form of Legion's, so one twin stands for both forms.
+	// jj alone runs no form of Legion's, so its twin needs one fixture, the pod's.
 	twin := newRolePushFixture(t, rolePushPod, "")
 	twin.mutableHistory(rolePushHistory)
 	if code, _, stderr := twin.alone(rolePushImplementer, rolePushBookmark...); code != 0 {
