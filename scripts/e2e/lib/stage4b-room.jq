@@ -3,10 +3,10 @@
 # run's pods now, and whether one of them can hold two. A node the run's pods may use is one the
 # scheduling they carry once admitted lets them onto (admitted_scheduling, run_node): the run's
 # runtime.kubernetes.scheduling, its node_selector (every node when it sets none) and tolerations,
-# with what the pods' RuntimeClass adds at admission. No pod asks for or keeps off another pod's
-# node (LEGION-632), so room is counted in pods of the run's largest reservation, never in nodes per
-# tree. Loaded with `jq -L scripts/e2e/lib` and `include "stage4b-room";`; quantity comes from
-# stage4b-pods.jq.
+# with what the pods' RuntimeClass adds at admission, and none where admission refuses the pods. No
+# pod asks for or keeps off another pod's node (LEGION-632), so room is counted in pods of the run's
+# largest reservation, never in nodes per tree. Loaded with `jq -L scripts/e2e/lib` and
+# `include "stage4b-room";`; quantity comes from stage4b-pods.jq.
 include "stage4b-pods";
 
 # issue_pod_reservation($expected) is an issue pod's reservation, cores and bytes: its one
@@ -54,20 +54,34 @@ def tolerated($tolerations):
       and ((.effect // "") == "" or .effect == $taint.effect));
 
 # admitted_scheduling($selector; $tolerations; $runtime_class) is the placement a pod of the run
-# carries once admitted: the run's SELECTOR (scheduling.node_selector) with the RuntimeClass
-# RUNTIME_CLASS's scheduling.nodeSelector over it, and the run's TOLERATIONS
-# (scheduling.tolerations) with the RuntimeClass's scheduling.tolerations beside them, as
-# Kubernetes' RuntimeClass admission sets them. A RuntimeClass with no scheduling adds nothing.
+# carries once admitted, as Kubernetes' RuntimeClass admission (setScheduling) sets it from the
+# run's SELECTOR (scheduling.node_selector) and TOLERATIONS (scheduling.tolerations) and the
+# RuntimeClass RUNTIME_CLASS's scheduling. The selector is the union of the run's and the
+# RuntimeClass's scheduling.nodeSelector, a label both name at the same value carried once. The
+# tolerations are the run's followed by the RuntimeClass's scheduling.tolerations: Kubernetes'
+# MergeTolerations also drops each toleration that another tolerates a superset of, so its list
+# may be shorter, but it tolerates the same taints. Where the RuntimeClass's nodeSelector names a
+# label the run's selector names at another value, admission refuses the pod, and the result is
+# {conflicts}, one entry per such label in the wording of Kubernetes' refusal, which names the
+# first it meets: `runtimeClass.scheduling.nodeSelector[KEY] = VALUE; pod.spec.nodeSelector[KEY] =
+# VALUE`. A RuntimeClass with no scheduling adds nothing.
 def admitted_scheduling($selector; $tolerations; $runtime_class):
-  {selector: ($selector + ($runtime_class.scheduling.nodeSelector // {})),
-   tolerations: ($tolerations + ($runtime_class.scheduling.tolerations // []))};
+  ($runtime_class.scheduling.nodeSelector // {}) as $class_selector
+  | [$class_selector | to_entries[] | select($selector[.key] != null and $selector[.key] != .value)
+      | "runtimeClass.scheduling.nodeSelector[\(.key)] = \(.value); pod.spec.nodeSelector[\(.key)] = \($selector[.key])"] as $conflicts
+  | if $conflicts == [] then
+      {selector: ($selector + $class_selector),
+       tolerations: ($tolerations + ($runtime_class.scheduling.tolerations // []))}
+    else {conflicts: $conflicts} end;
 
 # run_node($scheduling) keeps a placeable node a pod of SCHEDULING (admitted_scheduling) may use:
-# the node carries every label of its selector at the same value, and each of its NoSchedule and
-# NoExecute taints is tolerated by one of its tolerations. Under an empty selector and no
-# tolerations that is every placeable node with no such taint.
+# none where admission refuses the pod (conflicts); otherwise one that carries every label of the
+# selector at the same value, and whose NoSchedule and NoExecute taints are each tolerated by one
+# of the tolerations. Under an empty selector and no tolerations that is every placeable node with
+# no such taint.
 def run_node($scheduling):
-  placeable_node
+  select($scheduling.conflicts == null)
+  | placeable_node
   | select(.metadata.labels as $labels | all($scheduling.selector | to_entries[]; $labels[.key] == .value))
   | select(all(.spec.taints[]? | select(.effect == "NoSchedule" or .effect == "NoExecute"); tolerated($scheduling.tolerations)));
 
@@ -75,11 +89,13 @@ def run_node($scheduling):
 # the run's pods may use, from the SCHEDULING they carry once admitted (admitted_scheduling,
 # run_node), every node of the cluster NODES (a node list) and every pod of the cluster PODS (a pod
 # list across namespaces): `pod`, the reservation; `scheduling`, the admitted selector and
-# tolerations it read the nodes by; `free_nodes`, each node run_node kept, with what its allocatable
-# has free beside every non-terminal pod placed on it and how many such pods fit there; and `room`,
-# 0 when it kept no node, else null. Null bounds nothing: no one NodePool's limits bound the run's
-# pods and the cluster may add nodes, so the read reports the free nodes and decides nothing, while
-# 0 says no node of the cluster can take the run's pods at all.
+# tolerations it read the nodes by, or the conflicts for which admission refuses the run's pods;
+# `free_nodes`, each node run_node kept, with what its allocatable has free beside every
+# non-terminal pod placed on it and how many such pods fit there; and `room`, 0 when it kept no
+# node, else null. Null bounds nothing: no one NodePool's limits bound the run's pods and the
+# cluster may add nodes, so the read reports the free nodes and decides nothing, while 0 says no
+# node of the cluster can take the run's pods at all, the conflicts in `scheduling` saying why
+# where admission refuses them.
 def run_room($scheduling; $nodes; $pods; $pod):
   ([$pods.items[] | select(.status.phase != "Succeeded" and .status.phase != "Failed") | select(.spec.nodeName != null)]) as $placed
   | [$nodes.items[] | run_node($scheduling)

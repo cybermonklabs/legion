@@ -356,21 +356,47 @@ describe("run_room", () => {
     }
   });
 
-  test("takes the RuntimeClass's node selector over the run's, which narrows the nodes counted", () => {
+  test("adds the RuntimeClass's node selector to the run's, which narrows the nodes counted", () => {
     const narrowed = room(amd64, [], gvisor({ nodeSelector: { "example.com/class": "general" } }));
     expect(narrowed.scheduling.selector).toEqual(general);
     expect(counted(narrowed)).toEqual([["small", 0]]);
-    // Where both name a label, the RuntimeClass's value is the one the pod carries.
+  });
+
+  test("where both name a label at the same value, admits the run's pods, which carry that label once", () => {
+    const got = room(
+      { "example.com/class": "general" },
+      [],
+      gvisor({ nodeSelector: { "example.com/class": "general" } })
+    );
+    expect(got.scheduling).toEqual({
+      selector: { "example.com/class": "general" },
+      tolerations: [],
+    });
+    expect(counted(got)).toEqual([["small", 0]]);
+    expect(got.room).toBeNull();
+  });
+
+  test("where both name a label at different values, admission refuses the run's pods, so it counts no node, has room 0 and names the conflict", () => {
+    // The run's selector alone selects the builds-class node.
     expect(counted(room({ "example.com/class": "builds" }))).toEqual([["large", 2]]);
-    expect(
-      counted(
-        room(
-          { "example.com/class": "builds" },
-          [],
-          gvisor({ nodeSelector: { "example.com/class": "general" } })
-        )
-      )
-    ).toEqual([["small", 0]]);
+    const conflict =
+      "runtimeClass.scheduling.nodeSelector[example.com/class] = general; pod.spec.nodeSelector[example.com/class] = builds";
+    const refused = room(
+      { "example.com/class": "builds" },
+      [],
+      gvisor({ nodeSelector: { "example.com/class": "general" } })
+    );
+    expect(refused.scheduling).toEqual({ conflicts: [conflict] });
+    expect(refused.free_nodes).toEqual([]);
+    expect(refused.room).toBe(0);
+    // A label both name at the same value is no conflict: only the one at different values is named.
+    const mixed = room(
+      { ...amd64, "example.com/class": "builds" },
+      [],
+      gvisor({ nodeSelector: general })
+    );
+    expect(mixed.scheduling).toEqual({ conflicts: [conflict] });
+    expect(mixed.room).toBe(0);
   });
 
   test("counts a tainted node the RuntimeClass's tolerations admit, beside the run's own", () => {
